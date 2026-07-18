@@ -49,6 +49,19 @@ pub fn restart(code: ExitCode) -> ! {
     machine_halt();
 }
 
+/// Restarts the system without logging, cleanup, or cross-CPU coordination.
+///
+/// This function is suitable for interrupt and fatal-panic contexts. It invokes the installed
+/// restart handler once. If the handler is missing or returns, the current CPU disables local
+/// interrupts and halts forever.
+pub fn emergency_restart(code: ExitCode) -> ! {
+    if let Some(handler_fn) = RESTART_HANDLER.get() {
+        handler_fn(code);
+    }
+
+    disable_local_and_halt();
+}
+
 static POWEROFF_HANDLER: Once<fn(ExitCode)> = Once::new();
 
 /// Injects a handler that can power off the system.
