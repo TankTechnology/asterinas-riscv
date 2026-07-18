@@ -2,7 +2,12 @@
 
 //! Panic support.
 
-use crate::early_println;
+use spin::Once;
+
+use crate::{
+    early_println,
+    power::{self, ExitCode},
+};
 
 extern crate cfg_if;
 extern crate gimli;
@@ -34,14 +39,57 @@ pub fn __ostd_panic_handler(info: &core::panic::PanicInfo) -> ! {
     abort();
 }
 
+struct FatalAbortRestartPolicy {
+    policy_fn: Once<fn() -> bool>,
+}
+
+impl FatalAbortRestartPolicy {
+    const fn new() -> Self {
+        Self {
+            policy_fn: Once::new(),
+        }
+    }
+
+    fn inject(&self, policy_fn: fn() -> bool) -> bool {
+        let mut was_injected = false;
+        self.policy_fn.call_once(|| {
+            was_injected = true;
+            policy_fn
+        });
+        was_injected
+    }
+
+    fn requests_restart(&self) -> bool {
+        let Some(policy_fn) = self.policy_fn.get() else {
+            return false;
+        };
+        policy_fn()
+    }
+}
+
+static FATAL_ABORT_RESTART_POLICY: FatalAbortRestartPolicy = FatalAbortRestartPolicy::new();
+
+/// Installs the one-shot policy that selects emergency restart on fatal abort.
+///
+/// Returns `true` only when this call installs the policy. The policy runs in fatal-panic context
+/// and must not allocate, log, lock, wait, or panic.
+pub fn inject_fatal_abort_restart_policy(policy_fn: fn() -> bool) -> bool {
+    FATAL_ABORT_RESTART_POLICY.inject(policy_fn)
+}
+
 /// Aborts the system.
 ///
-/// This function will first attempt to power off the system. If that fails, it will halt all CPUs.
+/// If the installed fatal-abort policy requests a restart, this function uses the emergency
+/// restart path. Otherwise it preserves the existing poweroff behavior.
 pub fn abort() -> ! {
+    if FATAL_ABORT_RESTART_POLICY.requests_restart() {
+        power::emergency_restart(ExitCode::Failure);
+    }
+
     // TODO: The main purpose of powering off here is to allow QEMU to exit. Otherwise, the CI may
     // freeze after panicking. However, this is unnecessary and may prevent debugging on a real
     // machine (i.e., the message will disappear afterward).
-    crate::power::poweroff(crate::power::ExitCode::Failure);
+    power::poweroff(ExitCode::Failure);
 }
 
 /// A guard that aborts the system if dropped.
@@ -164,4 +212,46 @@ pub fn begin_panic<R>(_: alloc::boxed::Box<R>) {
 pub fn print_stack_trace() {
     // TODO: Support stack trace print in LoongArch.
     early_println!("Printing stack trace:");
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::*;
+    use crate::prelude::*;
+
+    fn request_restart() -> bool {
+        true
+    }
+
+    fn request_poweroff() -> bool {
+        false
+    }
+
+    #[ktest]
+    fn fatal_abort_policy_defaults_to_poweroff() {
+        let policy = FatalAbortRestartPolicy::new();
+        assert!(!policy.requests_restart());
+    }
+
+    #[ktest]
+    fn fatal_abort_policy_selects_restart() {
+        let policy = FatalAbortRestartPolicy::new();
+        assert!(policy.inject(request_restart));
+        assert!(policy.requests_restart());
+    }
+
+    #[ktest]
+    fn fatal_abort_policy_false_preserves_poweroff() {
+        let policy = FatalAbortRestartPolicy::new();
+        assert!(policy.inject(request_poweroff));
+        assert!(!policy.requests_restart());
+    }
+
+    #[ktest]
+    fn fatal_abort_policy_cannot_be_replaced() {
+        let policy = FatalAbortRestartPolicy::new();
+        assert!(policy.inject(request_restart));
+        assert!(!policy.inject(request_poweroff));
+        assert!(policy.requests_restart());
+    }
 }
