@@ -75,12 +75,13 @@ fn is_efi_boot(mb2_info: &BootInformation) -> bool {
 fn parse_framebuffer_info(mb2_info: &BootInformation) -> Option<BootloaderFramebufferArg> {
     let fb_tag = mb2_info.framebuffer_tag()?.ok()?;
 
-    Some(BootloaderFramebufferArg {
-        address: fb_tag.address() as usize,
-        width: fb_tag.width() as usize,
-        height: fb_tag.height() as usize,
-        bpp: fb_tag.bpp() as usize,
-    })
+    BootloaderFramebufferArg::from_legacy_bpp(
+        fb_tag.address() as usize,
+        fb_tag.width() as usize,
+        fb_tag.height() as usize,
+        fb_tag.pitch() as usize,
+        fb_tag.bpp() as usize,
+    )
 }
 
 impl From<MemoryAreaType> for MemoryRegionType {

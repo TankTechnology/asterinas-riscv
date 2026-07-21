@@ -66,17 +66,212 @@ pub enum BootloaderAcpiArg {
     Xsdt(usize),
 }
 
-/// The framebuffer arguments.
+/// A pixel layout supplied by the bootloader for a linear framebuffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootloaderFramebufferFormat {
+    /// One 8-bit grayscale value per pixel.
+    Grayscale8,
+    /// 5-bit red, 6-bit green, and 5-bit blue.
+    Rgb565,
+    /// 8-bit red, green, and blue values in that order.
+    Rgb888,
+    /// 8-bit blue, green, and red values followed by one reserved byte.
+    BgrReserved8888,
+}
+
+impl BootloaderFramebufferFormat {
+    /// Returns the number of bytes occupied by one pixel.
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Grayscale8 => 1,
+            Self::Rgb565 => 2,
+            Self::Rgb888 => 3,
+            Self::BgrReserved8888 => 4,
+        }
+    }
+}
+
+/// The validated framebuffer arguments supplied by a bootloader.
 #[derive(Clone, Copy, Debug)]
 pub struct BootloaderFramebufferArg {
     /// The address of the buffer.
     pub address: usize,
+    /// The total byte size reserved for the buffer.
+    pub size: usize,
     /// The width of the buffer.
     pub width: usize,
     /// The height of the buffer.
     pub height: usize,
+    /// The distance in bytes between two adjacent rows.
+    pub line_size: usize,
+    /// The pixel layout.
+    pub pixel_format: BootloaderFramebufferFormat,
     /// Bits per pixel of the buffer.
+    ///
+    /// This compatibility field is derived from `pixel_format` and will be
+    /// removed once all framebuffer consumers use the explicit format.
     pub bpp: usize,
+}
+
+impl BootloaderFramebufferArg {
+    /// Creates a framebuffer description after checking all layout arithmetic.
+    pub fn new(
+        address: usize,
+        size: usize,
+        width: usize,
+        height: usize,
+        line_size: usize,
+        pixel_format: BootloaderFramebufferFormat,
+    ) -> Option<Self> {
+        if address == 0 || size == 0 || width == 0 || height == 0 {
+            return None;
+        }
+
+        let bytes_per_pixel = pixel_format.bytes_per_pixel();
+        let visible_row_size = width.checked_mul(bytes_per_pixel)?;
+        if line_size < visible_row_size {
+            return None;
+        }
+
+        let final_row_offset = (height - 1).checked_mul(line_size)?;
+        let visible_size = final_row_offset.checked_add(visible_row_size)?;
+        if visible_size > size {
+            return None;
+        }
+        address.checked_add(size)?;
+
+        Some(Self {
+            address,
+            size,
+            width,
+            height,
+            line_size,
+            pixel_format,
+            bpp: bytes_per_pixel * 8,
+        })
+    }
+
+    pub(crate) fn from_legacy_bpp(
+        address: usize,
+        width: usize,
+        height: usize,
+        line_size: usize,
+        bpp: usize,
+    ) -> Option<Self> {
+        let pixel_format = match bpp {
+            8 => BootloaderFramebufferFormat::Grayscale8,
+            16 => BootloaderFramebufferFormat::Rgb565,
+            24 => BootloaderFramebufferFormat::Rgb888,
+            32 => BootloaderFramebufferFormat::BgrReserved8888,
+            _ => return None,
+        };
+        let line_size = if line_size == 0 {
+            width.checked_mul(pixel_format.bytes_per_pixel())?
+        } else {
+            line_size
+        };
+        let size = line_size.checked_mul(height)?;
+
+        Self::new(address, size, width, height, line_size, pixel_format)
+    }
+}
+
+#[cfg(ktest)]
+mod framebuffer_tests {
+    use super::{BootloaderFramebufferArg, BootloaderFramebufferFormat};
+    use crate::prelude::ktest;
+
+    const ADDRESS: usize = 0xfd80_0000;
+    const WIDTH: usize = 1920;
+    const HEIGHT: usize = 1080;
+    const LINE_SIZE: usize = WIDTH * 4 + 64;
+    const SIZE: usize = LINE_SIZE * HEIGHT;
+
+    #[ktest]
+    fn framebuffer_layout_accepts_padded_stride() {
+        let layout = BootloaderFramebufferArg::new(
+            ADDRESS,
+            SIZE,
+            WIDTH,
+            HEIGHT,
+            LINE_SIZE,
+            BootloaderFramebufferFormat::BgrReserved8888,
+        )
+        .unwrap();
+
+        assert_eq!(layout.address, ADDRESS);
+        assert_eq!(layout.size, SIZE);
+        assert_eq!(layout.line_size, LINE_SIZE);
+    }
+
+    #[ktest]
+    fn framebuffer_layout_rejects_zero_dimensions() {
+        for (width, height) in [(0, HEIGHT), (WIDTH, 0)] {
+            assert!(
+                BootloaderFramebufferArg::new(
+                    ADDRESS,
+                    SIZE,
+                    width,
+                    height,
+                    LINE_SIZE,
+                    BootloaderFramebufferFormat::BgrReserved8888,
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[ktest]
+    fn framebuffer_layout_rejects_short_stride_and_size() {
+        assert!(
+            BootloaderFramebufferArg::new(
+                ADDRESS,
+                SIZE,
+                WIDTH,
+                HEIGHT,
+                WIDTH * 4 - 1,
+                BootloaderFramebufferFormat::BgrReserved8888,
+            )
+            .is_none()
+        );
+        assert!(
+            BootloaderFramebufferArg::new(
+                ADDRESS,
+                (HEIGHT - 1) * LINE_SIZE + WIDTH * 4 - 1,
+                WIDTH,
+                HEIGHT,
+                LINE_SIZE,
+                BootloaderFramebufferFormat::BgrReserved8888,
+            )
+            .is_none()
+        );
+    }
+
+    #[ktest]
+    fn framebuffer_layout_rejects_overflow() {
+        assert!(
+            BootloaderFramebufferArg::new(
+                usize::MAX - 1,
+                SIZE,
+                WIDTH,
+                HEIGHT,
+                LINE_SIZE,
+                BootloaderFramebufferFormat::BgrReserved8888,
+            )
+            .is_none()
+        );
+        assert!(
+            BootloaderFramebufferArg::new(
+                ADDRESS,
+                usize::MAX,
+                usize::MAX,
+                HEIGHT,
+                LINE_SIZE,
+                BootloaderFramebufferFormat::BgrReserved8888,
+            )
+            .is_none()
+        );
+    }
 }
 
 /*************************** Boot-time information ***************************/
