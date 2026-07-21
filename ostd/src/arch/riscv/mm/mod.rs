@@ -8,13 +8,14 @@ pub(crate) use util::{
 };
 
 use crate::{
+    Result,
     arch::{
         boot::DEVICE_TREE,
         cpu::extension::{IsaExtensions, has_extensions},
     },
     mm::{
         PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
-        dma::DmaDirection,
+        dma::{DmaDirection, ToDevice},
         page_prop::{
             CachePolicy, PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags,
         },
@@ -22,7 +23,33 @@ use crate::{
     },
 };
 
+mod eic7700_cache;
 mod util;
+
+pub(super) fn init_platform_cache(io_mem_builder: &crate::io::IoMemAllocatorBuilder) {
+    eic7700_cache::init(io_mem_builder);
+}
+
+pub(crate) fn sync_io_mem_to_device(
+    physical_range: Range<Paddr>,
+    virtual_range: Range<Vaddr>,
+    cache_policy: CachePolicy,
+) -> Result<()> {
+    if cache_policy == CachePolicy::Uncacheable && has_extensions(IsaExtensions::SVPBMT) {
+        // SAFETY: A memory and I/O fence has no memory-safety preconditions.
+        unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+        return Ok(());
+    }
+
+    if has_extensions(IsaExtensions::ZICBOM) {
+        // SAFETY: The caller supplies the mapped virtual range corresponding to
+        // the I/O memory being synchronized, and Zicbom was detected above.
+        unsafe { sync_dma_range::<ToDevice>(virtual_range) };
+        return Ok(());
+    }
+
+    eic7700_cache::sync_to_device(physical_range)
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PagingConsts {}

@@ -40,6 +40,8 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // after the kernel page table is activated.
     let io_mem_builder = unsafe { io::construct_io_mem_allocator_builder() };
 
+    mm::init_platform_cache(&io_mem_builder);
+
     // SAFETY: This function is called once and at most once at a proper timing
     // in the boot context of the BSP, with no external interrupt-related
     // operations having been performed.
