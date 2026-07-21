@@ -106,11 +106,6 @@ pub struct BootloaderFramebufferArg {
     pub line_size: usize,
     /// The pixel layout.
     pub pixel_format: BootloaderFramebufferFormat,
-    /// Bits per pixel of the buffer.
-    ///
-    /// This compatibility field is derived from `pixel_format` and will be
-    /// removed once all framebuffer consumers use the explicit format.
-    pub bpp: usize,
 }
 
 impl BootloaderFramebufferArg {
@@ -147,7 +142,6 @@ impl BootloaderFramebufferArg {
             height,
             line_size,
             pixel_format,
-            bpp: bytes_per_pixel * 8,
         })
     }
 
