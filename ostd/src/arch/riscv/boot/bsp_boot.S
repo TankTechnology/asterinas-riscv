@@ -17,11 +17,36 @@ PAGE_SHIFT             = 12
 
 KERNEL_VMA_OFFSET      = 0xffffffff00000000
 
+RISCV_IMAGE_HEADER_BYTES   = 64
+RISCV_IMAGE_ENTRY_JUMP     = 0x0400006f
+RISCV_IMAGE_HEADER_VERSION = 2
+RISCV_IMAGE_MAGIC          = 0x5643534952
+RISCV_IMAGE_MAGIC2         = 0x05435352
+
+# Standard format: <https://docs.kernel.org/arch/riscv/boot-image-header.html>.
 .section ".boot", "awx", @progbits
 
-# `_start` is also the entrypoint specified in the linker script.
+.balign 8
 .global _start
 _start:
+    .4byte RISCV_IMAGE_ENTRY_JUMP
+    .4byte 0                              # Reserved
+    .8byte RISCV_IMAGE_TEXT_OFFSET_BYTES
+    .8byte KERNEL_IMAGE_SIZE_BYTES
+    .8byte 0                              # Flags
+    .4byte RISCV_IMAGE_HEADER_VERSION
+    .4byte 0                              # Reserved
+    .8byte 0                              # Reserved
+    .8byte RISCV_IMAGE_MAGIC
+    .4byte RISCV_IMAGE_MAGIC2
+    .4byte 0                              # PE/COFF offset
+bsp_riscv_image_header_end:
+    .if (bsp_riscv_image_header_end - _start) != RISCV_IMAGE_HEADER_BYTES
+        .error "RISC-V Image header must be exactly 64 bytes"
+    .endif
+
+.global bsp_boot_entry
+bsp_boot_entry:
     # Arguments passed from SBI:
     #   a0 = hart id
     #   a1 = device tree paddr
