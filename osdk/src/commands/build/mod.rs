@@ -3,6 +3,7 @@
 mod bin;
 mod grub;
 mod qcow2;
+mod riscv;
 
 use std::{
     ffi::OsString,
@@ -19,13 +20,13 @@ use crate::{
     base_crate::{BaseCrateType, new_base_crate},
     bundle::{
         Bundle,
-        bin::{AsterBin, AsterBinType, AsterElfMeta},
+        bin::{self as bundle_bin, AsterBin, AsterBinType, AsterElfMeta, QemuDirectBinKind},
         file::BundleFile,
     },
     cli::BuildArgs,
     config::{
         Config,
-        scheme::{ActionChoice, BootMethod, BootProtocol},
+        scheme::{ActionChoice, BootMethod},
     },
     error::Errno,
     error_msg,
@@ -136,6 +137,16 @@ pub fn do_cached_build(
         ActionChoice::Run => (&config.run.build, &config.run.boot, &config.run.grub),
         ActionChoice::Test => (&config.test.build, &config.test.boot, &config.test.grub),
     };
+    let qemu_direct_bin_kind = matches!(boot.method, BootMethod::QemuDirect)
+        .then(|| bundle_bin::expected_qemu_direct_bin_kind(config.target_arch, grub.boot_protocol));
+    if qemu_direct_bin_kind.is_some_and(|bin_kind| !bin_kind.supports_encoding(&build.encoding)) {
+        error_msg!(
+            "encoding {:?} is not supported for the QEMU-direct {} image",
+            build.encoding,
+            config.target_arch,
+        );
+        process::exit(Errno::BuildCrate as _);
+    }
 
     let mut rustflags = rustflags.to_vec();
     rustflags.push(&build.rustflags);
@@ -185,17 +196,30 @@ pub fn do_cached_build(
             bundle.consume_aster_bin(aster_elf);
         }
         BootMethod::QemuDirect => {
-            let aster_bin = match grub.boot_protocol {
-                BootProtocol::Linux => make_install_bzimage(
+            let bin_kind = qemu_direct_bin_kind.unwrap();
+            let debug_elf = (bin_kind == QemuDirectBinKind::RiscvImage).then(|| aster_elf.clone());
+            let aster_bin = match bin_kind {
+                QemuDirectBinKind::BzImage => make_install_bzimage(
                     &osdk_output_directory,
                     &osdk_output_directory,
                     &boot_elf,
                     build.linux_x86_legacy_boot,
-                    config.build.encoding.clone(),
+                    build.encoding.clone(),
                 ),
-                _ => make_elf_for_qemu(boot_elf),
+                QemuDirectBinKind::RiscvImage => {
+                    riscv::make_riscv_image(&osdk_output_directory, &boot_elf).unwrap_or_else(
+                        |error| {
+                            error_msg!("failed to build RISC-V Image: {error}");
+                            process::exit(Errno::BuildCrate as _);
+                        },
+                    )
+                }
+                QemuDirectBinKind::Elf => make_elf_for_qemu(boot_elf),
             };
             bundle.consume_aster_bin(aster_bin);
+            if let Some(debug_elf) = debug_elf {
+                bundle.consume_debug_elf(debug_elf);
+            }
         }
     }
 
