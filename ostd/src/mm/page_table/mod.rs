@@ -638,3 +638,24 @@ unsafe fn store_pte<E: PteTrait>(ptr: *mut E, new_val: E, ordering: Ordering) {
     let atomic = unsafe { AtomicUsize::from_ptr(ptr.cast()) };
     atomic.store(new_raw, ordering)
 }
+
+/// Atomically replaces a page table entry if it still matches `current`.
+///
+/// # Safety
+///
+/// The safety preconditions are the same as those of
+/// [`AtomicUsize::from_ptr`].
+pub(in crate::mm::page_table) unsafe fn compare_exchange_pte<E: PteTrait>(
+    ptr: *mut E,
+    current: E,
+    new: E,
+    success: Ordering,
+    failure: Ordering,
+) -> Result<E, E> {
+    // SAFETY: The caller upholds `AtomicUsize::from_ptr`'s requirements.
+    let atomic = unsafe { AtomicUsize::from_ptr(ptr.cast()) };
+    atomic
+        .compare_exchange(current.as_usize(), new.as_usize(), success, failure)
+        .map(E::from_usize)
+        .map_err(E::from_usize)
+}

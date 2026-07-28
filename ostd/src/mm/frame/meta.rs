@@ -57,7 +57,7 @@ use crate::{
         CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PrivilegedPageFlags,
         Segment, Vaddr, VmReader,
         frame::allocator::{self, EarlyAllocatedFrameMeta},
-        paddr_to_vaddr, page_size,
+        kspace, paddr_to_vaddr, page_size,
         page_table::boot_pt,
     },
     panic::abort,
@@ -466,8 +466,9 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
         paddr_range
     );
 
-    // In RISC-V and AArch64, the boot page table has mapped the 512GB memory,
-    // so we don't need to add temporary linear mapping.
+    // In RISC-V and AArch64, the boot page table has mapped the 512GB memory
+    // (128 GiB with Sv39 or 512 GiB with Sv48 on RISC-V), so we don't need to
+    // add temporary linear mapping.
     // In LoongArch, the DWM0 has mapped the whole memory,
     // so we don't need to add temporary linear mapping.
     #[cfg(target_arch = "x86_64")]
@@ -481,12 +482,12 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
         for i in 0..nr_meta_pages {
             let frame_paddr = meta_pages + i * PAGE_SIZE;
             let vaddr = mapping::frame_to_meta::<PagingConsts>(min_paddr) + i * PAGE_SIZE;
-            let prop = PageProperty {
+            let prop = kspace::prepare_new_kernel_mapping_prop(PageProperty {
                 flags: PageFlags::RW,
                 cache: CachePolicy::Writeback,
                 priv_flags: PrivilegedPageFlags::GLOBAL,
-            };
-            // SAFETY: We are doing the metadata mappings for the kernel.
+            });
+            // SAFETY: we are doing the metadata mappings for the kernel.
             unsafe { boot_pt.map_base_page(vaddr, frame_paddr, prop) };
         }
     })
