@@ -27,6 +27,7 @@
 #    ignored when QEMU_DISPLAY is set;
 #  - XFSTESTS_NEEDS_BLOCK_DEVICES: "true" or "false", whether to attach
 #    xfstests images (xfstests_test.img and xfstests_scratch.img) to the VM.
+#  - RISCV_QEMU_CPU: RISC-V QEMU CPU model and extensions;
 
 OVMF=${OVMF:-"on"}
 # Directory holding OVMF.fd, OVMF_VARS.fd and microvm/MICROVM.fd. Defaults to the
@@ -40,6 +41,7 @@ NETDEV=${NETDEV:-"user"}
 QEMU_DISPLAY=${QEMU_DISPLAY:-"vnc=0.0.0.0:${VNC_PORT:-42}"}
 CONSOLE=${CONSOLE:-"hvc0"}
 XFSTESTS_NEEDS_BLOCK_DEVICES=${XFSTESTS_NEEDS_BLOCK_DEVICES:-false}
+RISCV_QEMU_CPU=${RISCV_QEMU_CPU:-"rv64,svpbmt=true,zkr=true"}
 
 if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "true" ] && \
    [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "false" ]; then
@@ -125,7 +127,7 @@ if [ "$1" = "riscv" ]; then
     fi
 
     QEMU_ARGS="\
-        -cpu rv64,svpbmt=true,zkr=true \
+        -cpu $RISCV_QEMU_CPU \
         -machine virt \
         -m ${MEM:-8G} \
         -smp ${SMP:-1} \
