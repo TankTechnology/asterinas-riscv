@@ -105,16 +105,17 @@ pub fn poweroff(code: ExitCode) -> ! {
 
     if let Some(handler) = POWEROFF_HANDLER.get() {
         (handler)(code);
+        log_shutdown("failed to power off the system because the poweroff handler fails");
     } else {
         crate::arch::power::try_poweroff(code);
+        log_shutdown("failed to power off the system because a poweroff handler is missing");
     }
-    crate::error!("Failed to power off the system");
 
     machine_halt();
 }
 
 fn machine_halt() -> ! {
-    crate::error!("Halting the machine...");
+    log_shutdown("halting the machine...");
 
     // TODO: `inter_processor_call` may panic again (e.g., if there is an out-of-memory error). We
     // should find a way to make it panic-free.
@@ -122,4 +123,13 @@ fn machine_halt() -> ! {
         ipi_sender.inter_processor_call(&CpuSet::new_full(), || disable_local_and_halt());
     }
     disable_local_and_halt();
+}
+
+fn log_shutdown(message: &str) {
+    // RISC-V UART failures can reach this path while the generic logger is
+    // locked. Its SBI-backed early console remains available independently.
+    #[cfg(target_arch = "riscv64")]
+    crate::early_println!("{}", message);
+    #[cfg(not(target_arch = "riscv64"))]
+    crate::error!("{}", message);
 }
