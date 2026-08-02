@@ -99,12 +99,13 @@ impl<D> Tty<D> {
         !self.ldisc.lock().is_full()
     }
 
-    /// Notifies that the output buffer now has room for new characters.
+    /// Notifies that output readiness or its availability may have changed.
     ///
-    /// This method should be called when the state of [`TtyDriver::can_push`] changes from `false`
-    /// to `true`.
-    pub(super) fn notify_output(&self) {
-        self.pollee.notify(IoEvents::OUT);
+    /// This method should be called whenever output readiness may have changed.
+    pub(super) fn notify_output_change(&self) {
+        // An output-state callback is intentionally untyped: rechecking the
+        // driver may reveal either capacity or an error.
+        self.pollee.notify(IoEvents::OUT | IoEvents::ERR);
     }
 
     /// Notifies that the other end has been closed.
@@ -158,8 +159,10 @@ impl<D: TtyDriver> Tty<D> {
             events |= IoEvents::IN | IoEvents::RDNORM;
         }
 
-        if self.driver.can_push() {
-            events |= IoEvents::OUT;
+        match self.driver.poll_output_ready() {
+            Ok(true) => events |= IoEvents::OUT,
+            Ok(false) => {}
+            Err(_) => events |= IoEvents::ERR,
         }
 
         if self.tty_flags.is_other_closed() {
@@ -207,19 +210,47 @@ impl<D: TtyDriver> Tty<D> {
         }
 
         let mut buf = vec![0u8; reader.remain().min(IO_CAPACITY)];
-        let write_len = reader.read_fallible(&mut buf.as_mut_slice().into())?;
+        let write_len = {
+            let mut snapshot = reader.clone();
+            snapshot.read_fallible(&mut buf.as_mut_slice().into())
+        }?;
+
+        let try_push_output_fn = || {
+            let result = self.driver.push_output(&buf[..write_len]);
+            if result
+                .as_ref()
+                .is_err_and(|error| error.error() == Errno::EAGAIN)
+            {
+                // Besides closing the check-to-arm race, this converts a
+                // readiness-access failure into EIO before a blocking writer
+                // can sleep indefinitely.
+                let _ = self.driver.poll_output_ready()?;
+            }
+            result
+        };
 
         // TODO: Add support for timeout.
         let is_nonblocking = status_flags.contains(StatusFlags::O_NONBLOCK);
-        let len = if is_nonblocking {
-            self.driver.push_output(&buf[..write_len])?
+        let result = if is_nonblocking {
+            try_push_output_fn()
         } else {
-            self.wait_events(IoEvents::OUT, None, || {
-                self.driver.push_output(&buf[..write_len])
-            })?
+            self.wait_events(IoEvents::OUT, None, try_push_output_fn)
         };
         self.pollee.invalidate();
-        Ok(len)
+
+        match &result {
+            Ok(_) => match self.driver.poll_output_ready() {
+                Ok(true) => self.notify_output_change(),
+                Ok(false) => {}
+                Err(_) => self.pollee.notify(IoEvents::ERR),
+            },
+            Err(error) if error.error() == Errno::EIO => self.pollee.notify(IoEvents::ERR),
+            Err(_) => {}
+        }
+
+        let accepted_len = result?;
+        reader.skip(accepted_len);
+        Ok(accepted_len)
     }
 
     pub fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -362,5 +393,200 @@ impl<D: TtyDriver> Device for Tty<D> {
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         D::open(self.weak_self.upgrade().unwrap())
+    }
+}
+#[cfg(ktest)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    use ostd::prelude::ktest;
+    use spin::Once;
+
+    use super::{termio::CTermios, *};
+    use crate::{events::Observer, process::signal::PollAdaptor};
+
+    static TEST_TTY: Once<Weak<Tty<LockCheckingDriver>>> = Once::new();
+
+    struct LockCheckingDriver {
+        echo_saw_unlocked_ldisc: AtomicBool,
+    }
+
+    struct ShortWriteDriver;
+
+    struct ReadinessErrorDriver {
+        failed: AtomicBool,
+    }
+
+    struct RecordingObserver {
+        events: Arc<AtomicU32>,
+    }
+
+    impl Observer<IoEvents> for RecordingObserver {
+        fn on_events(&self, events: &IoEvents) {
+            self.events.fetch_or(events.bits(), Ordering::Relaxed);
+        }
+    }
+
+    impl TtyDriver for LockCheckingDriver {
+        const DEVICE_MAJOR_ID: u32 = 0;
+
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+            None
+        }
+
+        fn open(_tty: Arc<Tty<Self>>) -> Result<Box<dyn PerOpenFileOps>> {
+            unreachable!()
+        }
+
+        fn push_output(&self, chs: &[u8]) -> Result<usize> {
+            Ok(chs.len())
+        }
+
+        fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
+            move |_| {
+                let tty = TEST_TTY.get().unwrap().upgrade().unwrap();
+                self.echo_saw_unlocked_ldisc
+                    .store(tty.ldisc.try_lock().is_some(), Ordering::Relaxed);
+            }
+        }
+
+        fn poll_output_ready(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn notify_input(&self) {}
+
+        fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
+    }
+
+    impl TtyDriver for ShortWriteDriver {
+        const DEVICE_MAJOR_ID: u32 = 0;
+
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+            None
+        }
+
+        fn open(_tty: Arc<Tty<Self>>) -> Result<Box<dyn PerOpenFileOps>> {
+            unreachable!()
+        }
+
+        fn push_output(&self, chs: &[u8]) -> Result<usize> {
+            Ok(chs.len().min(2))
+        }
+
+        fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
+            |_| {}
+        }
+
+        fn poll_output_ready(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn notify_input(&self) {}
+
+        fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
+    }
+
+    impl TtyDriver for ReadinessErrorDriver {
+        const DEVICE_MAJOR_ID: u32 = 0;
+
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+            None
+        }
+
+        fn open(_tty: Arc<Tty<Self>>) -> Result<Box<dyn PerOpenFileOps>> {
+            unreachable!()
+        }
+
+        fn push_output(&self, _chs: &[u8]) -> Result<usize> {
+            if self.failed.load(Ordering::Relaxed) {
+                return_errno_with_message!(Errno::EIO, "the output device failed");
+            }
+            return_errno_with_message!(Errno::EAGAIN, "the output device is busy");
+        }
+
+        fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
+            |_| {}
+        }
+
+        fn poll_output_ready(&self) -> Result<bool> {
+            if self.failed.load(Ordering::Relaxed) {
+                return_errno_with_message!(Errno::EIO, "the output device failed");
+            }
+            Ok(false)
+        }
+
+        fn notify_input(&self) {}
+
+        fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
+    }
+
+    #[ktest]
+    fn tty_echo_runs_without_the_line_discipline_lock() {
+        let tty = Tty::new(
+            0,
+            LockCheckingDriver {
+                echo_saw_unlocked_ldisc: AtomicBool::new(false),
+            },
+        );
+        TEST_TTY.call_once(|| Arc::downgrade(&tty));
+
+        assert_eq!(tty.push_input(b"x").unwrap(), 1);
+        assert!(tty.driver.echo_saw_unlocked_ldisc.load(Ordering::Relaxed));
+    }
+
+    #[ktest]
+    fn short_write_advances_the_reader_only_by_reported_progress() {
+        let tty = Tty::new(0, ShortWriteDriver);
+        let mut reader = VmReader::from(b"abcd".as_slice()).to_fallible();
+
+        assert_eq!(tty.write(&mut reader, StatusFlags::empty()).unwrap(), 2);
+        assert_eq!(reader.remain(), 2);
+    }
+
+    #[ktest]
+    fn output_change_wakes_observers_that_always_poll_errors() {
+        let tty = Tty::new(0, ShortWriteDriver);
+        let events = Arc::new(AtomicU32::new(0));
+        let mut observer = PollAdaptor::with_observer(RecordingObserver {
+            events: events.clone(),
+        });
+
+        assert!(
+            tty.poll(IoEvents::IN, Some(observer.as_handle_mut()))
+                .is_empty()
+        );
+        tty.notify_output_change();
+
+        assert!(
+            IoEvents::from_bits_truncate(events.load(Ordering::Relaxed)).contains(IoEvents::ERR)
+        );
+    }
+
+    #[ktest]
+    fn write_error_wakes_a_registered_output_waiter() {
+        let tty = Tty::new(
+            0,
+            ReadinessErrorDriver {
+                failed: AtomicBool::new(false),
+            },
+        );
+        let events = Arc::new(AtomicU32::new(0));
+        let mut observer = PollAdaptor::with_observer(RecordingObserver {
+            events: events.clone(),
+        });
+        assert!(
+            tty.poll(IoEvents::OUT, Some(observer.as_handle_mut()))
+                .is_empty()
+        );
+
+        tty.driver.failed.store(true, Ordering::Relaxed);
+        let mut reader = VmReader::from(b"x".as_slice()).to_fallible();
+        let error = tty.write(&mut reader, StatusFlags::O_NONBLOCK).unwrap_err();
+
+        assert_eq!(error.error(), Errno::EIO);
+        assert!(
+            IoEvents::from_bits_truncate(events.load(Ordering::Relaxed)).contains(IoEvents::ERR)
+        );
     }
 }
