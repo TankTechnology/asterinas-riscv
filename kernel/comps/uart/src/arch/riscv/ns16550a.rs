@@ -4,7 +4,7 @@ use alloc::string::ToString;
 
 use fdt::node::FdtNode;
 use ostd::{
-    arch::irq::{IRQ_CHIP, InterruptSourceInFdt, MappedIrqLine},
+    arch::irq::{self as arch_irq, MappedIrqLine},
     console::uart_ns16650a::{Ns16550aAccess, Ns16550aRegister, Ns16550aUart},
     io::IoMem,
     irq::IrqLine,
@@ -38,7 +38,7 @@ static IRQ_LINE: Once<MappedIrqLine> = Once::new();
 
 pub(super) fn init(fdt_node: FdtNode) {
     let Some(reg) = fdt_node.reg().and_then(|mut regs| regs.next()) else {
-        ostd::info!("Failed to read 'reg' property from NS16550A node");
+        ostd::info!("failed to read 'reg' property from NS16550A node");
         return;
     };
     let Some(reg_size) = reg.size else {
@@ -52,26 +52,19 @@ pub(super) fn init(fdt_node: FdtNode) {
         return;
     };
 
-    let Some(intr_parent) = fdt_node
-        .property("interrupt-parent")
-        .and_then(|prop| prop.as_usize())
-    else {
-        ostd::info!("Failed to read 'interrupt-parent' property from NS16550A node");
-        return;
-    };
-    let Some(intr) = fdt_node.interrupts().and_then(|mut intrs| intrs.next()) else {
-        ostd::info!("Failed to read 'interrupts' property from NS16550A node");
-        return;
+    let interrupt_source = match super::parse_explicit_interrupt_source(fdt_node) {
+        Ok(source) => source,
+        Err(error) => {
+            ostd::info!("invalid NS16550A interrupt source: {:?}", error);
+            return;
+        }
     };
 
     let Ok(mut irq_line) = IrqLine::alloc().and_then(|irq_line| {
-        IRQ_CHIP.get().unwrap().map_fdt_pin_to(
-            InterruptSourceInFdt {
-                interrupt_parent: intr_parent as u32,
-                interrupt: intr as u32,
-            },
-            irq_line,
-        )
+        arch_irq::IRQ_CHIP
+            .get()
+            .unwrap()
+            .map_fdt_pin_to(interrupt_source, irq_line)
     }) else {
         ostd::info!("IRQ line is not available for NS16550A");
         return;

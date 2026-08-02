@@ -6,7 +6,7 @@
 //! The first NS16550A is retained as a fallback for legacy device trees without that property.
 
 use fdt::node::FdtNode;
-use ostd::arch::boot;
+use ostd::arch::{boot, irq::InterruptSourceInFdt};
 
 mod dw_apb;
 mod ns16550a;
@@ -168,6 +168,63 @@ fn ancestor_buses_are_usable(
         .all(|(index, _)| is_usable_fn(&selected_path[..index]))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExplicitInterruptSourceError {
+    MissingInterruptParent,
+    MissingInterruptCells,
+    UnsupportedInterruptCells,
+    MissingInterrupt,
+    InterruptParentOutOfRange,
+    InterruptOutOfRange,
+}
+
+/// Parses a directly declared, one-cell interrupt source.
+///
+/// This intentionally supports only an explicit `interrupt-parent` and the first `interrupts`
+/// cell. Inherited parents and interrupt-nexus translation are not supported.
+/// A future shared architecture device-tree layer should implement section 2.4 of the spec:
+/// <https://devicetree-specification.readthedocs.io/en/stable/devicetree-basics.html#interrupts-and-interrupt-mapping>.
+fn parse_explicit_interrupt_source(
+    fdt_node: FdtNode,
+) -> Result<InterruptSourceInFdt, ExplicitInterruptSourceError> {
+    let interrupt_parent = fdt_node
+        .property("interrupt-parent")
+        .and_then(|property| property.as_usize());
+    let interrupt_cells = fdt_node
+        .interrupt_parent()
+        .and_then(|parent| parent.interrupt_cells());
+    let interrupt = fdt_node
+        .interrupts()
+        .and_then(|mut interrupts| interrupts.next());
+
+    validate_explicit_interrupt_source(interrupt_parent, interrupt_cells, interrupt)
+}
+
+fn validate_explicit_interrupt_source(
+    interrupt_parent: Option<usize>,
+    interrupt_cells: Option<usize>,
+    interrupt: Option<usize>,
+) -> Result<InterruptSourceInFdt, ExplicitInterruptSourceError> {
+    let interrupt_parent = interrupt_parent
+        .ok_or(ExplicitInterruptSourceError::MissingInterruptParent)?
+        .try_into()
+        .map_err(|_| ExplicitInterruptSourceError::InterruptParentOutOfRange)?;
+    let interrupt_cells =
+        interrupt_cells.ok_or(ExplicitInterruptSourceError::MissingInterruptCells)?;
+    if interrupt_cells != 1 {
+        return Err(ExplicitInterruptSourceError::UnsupportedInterruptCells);
+    }
+    let interrupt = interrupt
+        .ok_or(ExplicitInterruptSourceError::MissingInterrupt)?
+        .try_into()
+        .map_err(|_| ExplicitInterruptSourceError::InterruptOutOfRange)?;
+
+    Ok(InterruptSourceInFdt {
+        interrupt_parent,
+        interrupt,
+    })
+}
+
 #[cfg(ktest)]
 mod tests {
     use core::cell::Cell;
@@ -175,6 +232,40 @@ mod tests {
     use ostd::prelude::*;
 
     use super::*;
+
+    #[ktest]
+    fn explicit_interrupt_source_validates_cells() {
+        let source = validate_explicit_interrupt_source(Some(9), Some(1), Some(4)).unwrap();
+        assert_eq!(source.interrupt_parent, 9);
+        assert_eq!(source.interrupt, 4);
+        assert!(matches!(
+            validate_explicit_interrupt_source(None, Some(1), Some(4)),
+            Err(ExplicitInterruptSourceError::MissingInterruptParent)
+        ));
+        assert!(matches!(
+            validate_explicit_interrupt_source(Some(9), Some(1), None),
+            Err(ExplicitInterruptSourceError::MissingInterrupt)
+        ));
+        assert!(matches!(
+            validate_explicit_interrupt_source(Some(9), Some(2), Some(4)),
+            Err(ExplicitInterruptSourceError::UnsupportedInterruptCells)
+        ));
+        assert!(matches!(
+            validate_explicit_interrupt_source(Some(9), None, Some(4)),
+            Err(ExplicitInterruptSourceError::MissingInterruptCells)
+        ));
+
+        if usize::BITS > u32::BITS {
+            assert!(matches!(
+                validate_explicit_interrupt_source(Some(u32::MAX as usize + 1), Some(1), Some(4)),
+                Err(ExplicitInterruptSourceError::InterruptParentOutOfRange)
+            ));
+            assert!(matches!(
+                validate_explicit_interrupt_source(Some(9), Some(1), Some(u32::MAX as usize + 1)),
+                Err(ExplicitInterruptSourceError::InterruptOutOfRange)
+            ));
+        }
+    }
 
     #[ktest]
     fn uart_selection_strips_serial_options() {
