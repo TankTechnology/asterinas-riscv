@@ -423,6 +423,7 @@ name = "aster-uart"
 version = "0.1.0"
 dependencies = [
  "aster-console",
+ "aster-softirq",
  "aster-util",
  "component",
  "fdt",
