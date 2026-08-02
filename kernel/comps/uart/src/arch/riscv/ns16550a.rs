@@ -5,11 +5,12 @@
 use alloc::string::ToString;
 
 use fdt::node::FdtNode;
-use fdt_util::{AcquireIoMems, AcquireIrqLines};
+use fdt_util::AcquireIoMems;
 use ostd::{
-    arch::irq::MappedIrqLine,
+    arch::irq::{self as arch_irq, MappedIrqLine},
     console::uart_ns16650a::{Ns16550aAccess, Ns16550aRegister, Ns16550aUart},
     io::IoMem,
+    irq::IrqLine,
     mm::VmIoOnce,
     sync::SpinLock,
 };
@@ -43,7 +44,22 @@ pub(super) fn init(fdt_node: FdtNode) {
     else {
         return;
     };
-    let Some([mut irq_line]) = fdt_node.acquire_irq_lines() else {
+
+    let interrupt_source = match super::parse_explicit_interrupt_source(fdt_node) {
+        Ok(source) => source,
+        Err(error) => {
+            ostd::info!("invalid NS16550A interrupt source: {:?}", error);
+            return;
+        }
+    };
+
+    let Ok(mut irq_line) = IrqLine::alloc().and_then(|irq_line| {
+        arch_irq::IRQ_CHIP
+            .get()
+            .unwrap()
+            .map_fdt_pin_to(interrupt_source, irq_line)
+    }) else {
+        ostd::info!("IRQ line is not available for NS16550A");
         return;
     };
 
