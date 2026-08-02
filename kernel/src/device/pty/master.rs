@@ -109,7 +109,7 @@ impl FileOps for PtyMaster {
             })?
         };
         self.slave.driver().pollee().invalidate();
-        self.slave.notify_output();
+        self.slave.notify_output_change();
 
         // TODO: Confirm what we should do if `write_fallible` fails in the middle.
         writer.write_fallible(&mut buf[..read_len].into())?;

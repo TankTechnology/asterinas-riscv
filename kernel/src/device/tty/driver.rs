@@ -34,8 +34,8 @@ pub trait TtyDriver: Send + Sync + 'static {
 
     /// Pushes characters into the output buffer.
     ///
-    /// This method returns the number of bytes pushed or fails with an error if no bytes can be
-    /// pushed.
+    /// `Ok(n)` means that exactly the first `n` bytes were pushed, where `n <= chs.len()`.
+    /// An error may be returned only when no byte was pushed.
     fn push_output(&self, chs: &[u8]) -> Result<usize>;
 
     /// Returns a callback function that echoes input characters to the output buffer.
@@ -44,10 +44,11 @@ pub trait TtyDriver: Send + Sync + 'static {
     /// During this time, calls to other methods such as [`Self::push_output`] may cause deadlocks.
     fn echo_callback(&self) -> impl FnMut(&[u8]) + '_;
 
-    /// Returns whether new characters can be pushed into the output buffer.
+    /// Polls whether new characters can be pushed into the output buffer.
     ///
-    /// This method should return `false` if the output buffer is full.
-    fn can_push(&self) -> bool;
+    /// This method should return `Ok(false)` if the output buffer is full.
+    /// It may also arm a later output-readiness notification.
+    fn poll_output_ready(&self) -> Result<bool>;
 
     /// Notifies that the input buffer now has room for new characters.
     ///
