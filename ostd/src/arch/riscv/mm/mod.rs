@@ -36,8 +36,7 @@ pub(crate) fn sync_io_mem_to_device(
     cache_policy: CachePolicy,
 ) -> Result<()> {
     if cache_policy == CachePolicy::Uncacheable && has_extensions(IsaExtensions::SVPBMT) {
-        // SAFETY: A memory and I/O fence has no memory-safety preconditions.
-        unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+        crate::arch::device::io_mem::fence();
         return Ok(());
     }
 

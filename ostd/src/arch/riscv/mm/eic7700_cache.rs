@@ -55,8 +55,7 @@ pub(super) fn sync_to_device(range: Range<Paddr>) -> Result<()> {
 
         // The controller consumes one address at a time. Order every submission
         // before reusing its command register for the next cache line.
-        // SAFETY: A memory and I/O fence has no memory-safety preconditions.
-        unsafe { core::arch::asm!("fence iorw, iorw", options(nostack)) };
+        crate::arch::device::io_mem::fence();
     }
 
     Ok(())
