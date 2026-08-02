@@ -4,7 +4,7 @@
 
 /// Orders device I/O before and after this fence.
 ///
-/// See the RISC-V FENCE specification:
+/// See the RISC-V `FENCE` specification:
 /// <https://docs.riscv.org/reference/isa/unpriv/rv32.html#_memory_ordering_instructions>.
 #[inline]
 pub fn fence() {
