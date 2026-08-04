@@ -18,7 +18,7 @@ use ostd::{
     io::IoMem,
     irq::IrqLine,
     mm::VmIoOnce,
-    sync::{Mutex, MutexGuard},
+    sync::{LocalIrqDisabled, Mutex, MutexGuard, SpinLock},
 };
 use spin::Once;
 
@@ -171,58 +171,101 @@ enum ImmediateTxError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TxInterruptError {
+    Mmio,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TxInitError {
     Mmio,
     TimedOut,
 }
 
 struct TxOwnerGuard<'a, A: SiFiveAccess> {
-    access: &'a A,
+    uart: &'a SiFiveUart<A>,
     _lock_guard: MutexGuard<'a, ()>,
 }
 
 impl<A: SiFiveAccess> Drop for TxOwnerGuard<'_, A> {
     fn drop(&mut self) {
-        self.access.fence();
+        self.uart.access.fence();
     }
 }
 
 impl<A: SiFiveAccess> TxOwnerGuard<'_, A> {
     fn send_byte_immediate(&self, byte: u8) -> Result<(), ImmediateTxError> {
-        check_tx_ready_once(self.access)?;
-        self.access
+        check_tx_ready_once(&self.uart.access)?;
+        self.uart
+            .access
             .write32(TXDATA_OFFSET_BYTES, u32::from(byte))
             .map_err(|_| ImmediateTxError::Mmio)
     }
 
-    fn poll_send_ready(&self) -> Result<bool, ImmediateTxError> {
-        match check_tx_ready_once(self.access) {
+    fn poll_send_ready(self) -> Result<bool, ImmediateTxError> {
+        let uart = self.uart;
+
+        match check_tx_ready_once(&uart.access) {
             Ok(()) => return Ok(true),
             Err(ImmediateTxError::Busy) => {}
             Err(error) => return Err(error),
         }
 
-        self.access
-            .write32(INTERRUPT_ENABLE_OFFSET_BYTES, TX_WATERMARK_INTERRUPT)
-            .map_err(|_| ImmediateTxError::Mmio)?;
-        // Make the interrupt arm visible before closing the check-to-arm race.
-        self.access.fence();
-        match check_tx_ready_once(self.access) {
-            Ok(()) => {}
-            Err(ImmediateTxError::Busy) => return Ok(false),
-            Err(error) => return Err(error),
-        }
+        // The IRQ handler may notify another hart while the source is armed.
+        // Release TX ownership first so the woken writer can make progress.
+        drop(self);
+        uart.arm_tx_interrupt_and_recheck()
+    }
+}
 
-        self.access
-            .write32(INTERRUPT_ENABLE_OFFSET_BYTES, 0)
-            .map_err(|_| ImmediateTxError::Mmio)?;
-        Ok(true)
+struct TxInterruptState {
+    desired_value: SpinLock<u32, LocalIrqDisabled>,
+}
+
+impl TxInterruptState {
+    fn new() -> Self {
+        Self {
+            desired_value: SpinLock::new(0),
+        }
+    }
+
+    fn enable<A: SiFiveAccess>(&self, access: &A) -> Result<(), TxInterruptError> {
+        self.set_desired_value(access, TX_WATERMARK_INTERRUPT)
+    }
+
+    fn disable<A: SiFiveAccess>(&self, access: &A) -> Result<(), TxInterruptError> {
+        self.set_desired_value(access, 0)
+    }
+
+    fn set_desired_value<A: SiFiveAccess>(
+        &self,
+        access: &A,
+        desired_value: u32,
+    ) -> Result<(), TxInterruptError> {
+        *self.desired_value.lock() = desired_value;
+
+        loop {
+            let desired_value = *self.desired_value.lock();
+
+            // The state lock disables local IRQs, so it cannot span potentially
+            // stalled MMIO. A fenced write is complete only if the desired
+            // value is still current; otherwise, repeat with the latest value.
+            access.fence();
+            access
+                .write32(INTERRUPT_ENABLE_OFFSET_BYTES, desired_value)
+                .map_err(|_| TxInterruptError::Mmio)?;
+            access.fence();
+
+            if *self.desired_value.lock() == desired_value {
+                return Ok(());
+            }
+        }
     }
 }
 
 struct SiFiveUart<A> {
     access: A,
     tx_lock: Mutex<()>,
+    tx_interrupt_state: TxInterruptState,
 }
 
 impl<A: SiFiveAccess> SiFiveUart<A> {
@@ -230,6 +273,7 @@ impl<A: SiFiveAccess> SiFiveUart<A> {
         Self {
             access,
             tx_lock: Mutex::new(()),
+            tx_interrupt_state: TxInterruptState::new(),
         }
     }
 
@@ -271,17 +315,29 @@ impl<A: SiFiveAccess> SiFiveUart<A> {
         self.access.fence();
 
         Ok(TxOwnerGuard {
-            access: &self.access,
+            uart: self,
             _lock_guard: lock_guard,
         })
     }
 
-    fn disable_tx_interrupt(&self) -> Result<(), ImmediateTxError> {
-        let _owner = self.try_claim_tx()?;
-        self.access
-            .write32(INTERRUPT_ENABLE_OFFSET_BYTES, 0)
+    fn arm_tx_interrupt_and_recheck(&self) -> Result<bool, ImmediateTxError> {
+        self.tx_interrupt_state
+            .enable(&self.access)
             .map_err(|_| ImmediateTxError::Mmio)?;
-        Ok(())
+
+        match check_tx_ready_once(&self.access) {
+            Err(ImmediateTxError::Busy) => return Ok(false),
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+
+        self.disable_tx_interrupt()
+            .map_err(|_| ImmediateTxError::Mmio)?;
+        Ok(true)
+    }
+
+    fn disable_tx_interrupt(&self) -> Result<(), TxInterruptError> {
+        self.tx_interrupt_state.disable(&self.access)
     }
 }
 
@@ -425,12 +481,8 @@ fn try_initialize_tx_interrupt(
     let callback_console = uart_console.clone();
     irq_line.on_active(
         move |_| match callback_console.uart().disable_tx_interrupt() {
-            // The enabled TX-watermark source proves that capacity was
-            // observed. If a concurrent owner is still arming it, leave the
-            // source enabled so the interrupt can be retried after release.
             Ok(()) => callback_console.notify_send_ready(),
-            Err(ImmediateTxError::Busy) => {}
-            Err(ImmediateTxError::Mmio) => {
+            Err(TxInterruptError::Mmio) => {
                 console::handle_fatal_diagnostic_error(DiagnosticSendError::Io)
             }
         },
@@ -450,6 +502,7 @@ fn try_initialize_tx_interrupt(
 #[cfg(ktest)]
 mod tests {
     use alloc::{collections::VecDeque, vec, vec::Vec};
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     use ostd::prelude::*;
     use spin::Mutex;
@@ -535,6 +588,36 @@ mod tests {
                 .operations
                 .push(Operation::Write32(offset_bytes, value));
             state.write_results.pop_front().unwrap_or(Ok(()))
+        }
+    }
+
+    struct InterleavingAccess {
+        tx_interrupt_state: Arc<TxInterruptState>,
+        should_interleave_disable: AtomicBool,
+        writes: Mutex<Vec<u32>>,
+    }
+
+    impl SiFiveAccess for InterleavingAccess {
+        fn fence(&self) {}
+
+        fn read32(&self, _offset_bytes: usize) -> Result<u32, ()> {
+            unreachable!()
+        }
+
+        fn write32(&self, offset_bytes: usize, value: u32) -> Result<(), ()> {
+            assert_eq!(offset_bytes, INTERRUPT_ENABLE_OFFSET_BYTES);
+            assert!(self.tx_interrupt_state.desired_value.try_lock().is_some());
+            self.writes.lock().push(value);
+
+            if value == TX_WATERMARK_INTERRUPT
+                && self
+                    .should_interleave_disable
+                    .swap(false, Ordering::Relaxed)
+            {
+                self.tx_interrupt_state.disable(self).unwrap();
+            }
+
+            Ok(())
         }
     }
 
@@ -787,13 +870,40 @@ mod tests {
     }
 
     #[ktest]
-    fn disable_tx_interrupt_does_not_overwrite_an_in_progress_arm() {
+    fn tx_interrupt_can_be_disabled_while_the_transmitter_is_owned() {
         let access = ScriptedAccess::new([]);
         let uart = SiFiveUart::new(access.clone());
         let _owner = uart.try_claim_tx().unwrap();
 
-        assert_eq!(uart.disable_tx_interrupt(), Err(ImmediateTxError::Busy));
-        assert!(access.writes().is_empty());
-        assert_eq!(access.fence_count(), 1);
+        assert_eq!(uart.disable_tx_interrupt(), Ok(()));
+        assert_eq!(access.writes(), vec![(INTERRUPT_ENABLE_OFFSET_BYTES, 0)]);
+    }
+
+    #[ktest]
+    fn poll_send_ready_releases_transmitter_ownership() {
+        let access = ScriptedAccess::new([Ok(TX_FIFO_FULL), Ok(TX_FIFO_FULL)]);
+        let uart = SiFiveUart::new(access.clone());
+        let owner = uart.try_claim_tx().unwrap();
+
+        assert_eq!(owner.poll_send_ready(), Ok(false));
+        assert!(uart.try_claim_tx().is_ok());
+        assert_eq!(
+            access.writes(),
+            vec![(INTERRUPT_ENABLE_OFFSET_BYTES, TX_WATERMARK_INTERRUPT)]
+        );
+    }
+
+    #[ktest]
+    fn concurrent_disable_repairs_an_outdated_interrupt_enable_write() {
+        let tx_interrupt_state = Arc::new(TxInterruptState::new());
+        let access = InterleavingAccess {
+            tx_interrupt_state: tx_interrupt_state.clone(),
+            should_interleave_disable: AtomicBool::new(true),
+            writes: Mutex::new(Vec::new()),
+        };
+
+        assert_eq!(tx_interrupt_state.enable(&access), Ok(()));
+        assert_eq!(*access.writes.lock(), vec![TX_WATERMARK_INTERRUPT, 0, 0]);
+        assert_eq!(*tx_interrupt_state.desired_value.lock(), 0);
     }
 }
