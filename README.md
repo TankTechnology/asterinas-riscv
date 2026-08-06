@@ -3,6 +3,11 @@
     Toward a production-grade Linux alternative—memory safe, high-performance, and more<br/>
 </p>
 
+> [!IMPORTANT]
+> This repository is **asterinas-riscv**, an independently maintained RISC-V
+> downstream of Asterinas. See the
+> [RISC-V status and maintenance policy](docs/porting/asterinas-riscv-status.md)
+> for supported platforms, validation evidence, and the upstream relationship.
 <p align="center">
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml/badge.svg?event=push" alt="Test x86-64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml/badge.svg?event=push" alt="Test aarch64" style="max-width: 100%;"></a>
@@ -132,7 +137,7 @@ Follow the steps below to get Asterinas up and running.
 1. Download the latest source code on an x86-64 (or ARM64) Linux machine:
 
     ```bash
-    git clone https://github.com/asterinas/asterinas
+    git clone https://github.com/TankTechnology/asterinas-riscv
     ```
 
 2. Run a Docker container as the development environment:
