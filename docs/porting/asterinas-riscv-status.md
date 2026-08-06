@@ -17,8 +17,8 @@ evidence, or implementation support under an agreed scope.
 | Environment | Status | Evidence |
 | --- | --- | --- |
 | RISC-V QEMU virt | inherited upstream baseline | upstream RISC-V CI |
-| Sv39/Sv48 with Svadu/Svade | integration pending | downstream validation required |
-| QEMU SiFive U firmware boot | integration pending | downstream validation required |
+| Sv39/Sv48 with Svadu/Svade | currently verified | downstream boot matrix on the reconstructed `main` |
+| QEMU SiFive U firmware boot | currently verified | `make test_riscv_sifive_u` on the reconstructed `main` |
 | Milk-V Megrez | previously verified | `docs/porting/evidence/` |
 
 Entries move to **currently verified** only after validation is reproduced on
