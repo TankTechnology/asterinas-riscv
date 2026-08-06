@@ -10,6 +10,7 @@ use ostd::arch::{boot, irq::InterruptSourceInFdt};
 
 mod dw_apb;
 mod ns16550a;
+mod sifive;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StdoutSelector<'a> {
@@ -22,6 +23,7 @@ enum StdoutSelector<'a> {
 enum UartKind {
     Ns16550a,
     DwApb,
+    SiFive,
 }
 
 pub(super) fn init() {
@@ -88,6 +90,7 @@ pub(super) fn init() {
     match uart_kind {
         UartKind::Ns16550a => ns16550a::init(uart_node),
         UartKind::DwApb => dw_apb::init(uart_node),
+        UartKind::SiFive => sifive::init(uart_node),
     }
 }
 
@@ -122,6 +125,9 @@ fn classify_compatibles<'a>(compatibles: impl IntoIterator<Item = &'a str>) -> O
     for compatible in compatibles {
         if compatible == "snps,dw-apb-uart" {
             return Some(UartKind::DwApb);
+        }
+        if compatible == "sifive,uart0" {
+            return Some(UartKind::SiFive);
         }
         has_ns16550a_compatible |= compatible == "ns16550a";
     }
@@ -311,6 +317,10 @@ mod tests {
             Some(UartKind::DwApb)
         );
         assert_eq!(classify_compatibles(["ns16550a"]), Some(UartKind::Ns16550a));
+        assert_eq!(
+            classify_compatibles(["sifive,uart0"]),
+            Some(UartKind::SiFive)
+        );
         assert_eq!(classify_compatibles(["vendor,unknown"]), None);
     }
 
