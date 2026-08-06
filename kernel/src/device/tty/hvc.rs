@@ -36,16 +36,16 @@ impl TtyDriver for HvcDriver {
     }
 
     fn push_output(&self, chs: &[u8]) -> Result<usize> {
-        self.console.send(chs);
+        self.console.send_diagnostic_or_restart(chs);
         Ok(chs.len())
     }
 
     fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
-        |chs| self.console.send(chs)
+        |chs| self.console.send_diagnostic_or_restart(chs)
     }
 
-    fn can_push(&self) -> bool {
-        true
+    fn poll_output_ready(&self) -> Result<bool> {
+        Ok(true)
     }
 
     fn notify_input(&self) {}
@@ -73,6 +73,12 @@ pub(super) fn init_in_first_process() -> Result<()> {
         .map(|(_, device)| device.clone());
 
     if let Some(virtio_console) = virtio_console {
+        let Some(input_console) = virtio_console.input() else {
+            return_errno_with_message!(
+                Errno::EIO,
+                "the registered hypervisor console has no input capability"
+            );
+        };
         let driver = HvcDriver {
             console: virtio_console.clone(),
         };
@@ -81,7 +87,7 @@ pub(super) fn init_in_first_process() -> Result<()> {
         HVC0.call_once(|| hvc0.clone());
         char::register(hvc0.clone())?;
 
-        virtio_console.register_callback(Box::leak(Box::new(
+        input_console.register_receive_callback(Box::leak(Box::new(
             move |mut reader: VmReader<Infallible>| {
                 let mut chs = vec![0u8; reader.remain()];
                 reader.read(&mut VmWriter::from(chs.as_mut_slice()));

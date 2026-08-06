@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "contract_id": "milkv-megrez-eic7700",
+  "claims": {
+    "identity": {
+      "model": "Milk-V Megrez",
+      "soc": "ESWIN EIC7700",
+      "compatible": [
+        "sifive,hifive-unmatched-a00",
+        "sifive,fu740-c000",
+        "sifive,fu740",
+        "eswin,eic7700"
+      ],
+      "provenance": "observed",
+      "qemu_fidelity": "unmodelled",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "cpu": {
+      "enabled_harts": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "boot_hart": 2,
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_approximate",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "timebase": {
+      "hz": 1000000,
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_approximate",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "mmu": {
+      "value": "riscv,sv48",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "ad_mode": {
+      "value": null,
+      "alternatives": [
+        "svade",
+        "svadu"
+      ],
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_envelope",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    }
+  },
+  "memory": {
+    "dram": {
+      "start": "0x80000000",
+      "end_exclusive": "0x480000000",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_envelope",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "fixed_no_map": [
+      {
+        "name": "spram",
+        "start": "0x59000000",
+        "end_exclusive": "0x59400000",
+        "provenance": "observed",
+        "qemu_fidelity": "unmodelled",
+        "evidence": [
+          "rockos-dtb-transcript"
+        ]
+      },
+      {
+        "name": "g2d-4g-boundary",
+        "start": "0xfffff000",
+        "end_exclusive": "0x100000000",
+        "provenance": "observed",
+        "qemu_fidelity": "unmodelled",
+        "evidence": [
+          "rockos-dtb-transcript"
+        ]
+      },
+      {
+        "name": "g2d-8g-boundary",
+        "start": "0x1fffff000",
+        "end_exclusive": "0x200000000",
+        "provenance": "observed",
+        "qemu_fidelity": "unmodelled",
+        "evidence": [
+          "rockos-dtb-transcript"
+        ]
+      },
+      {
+        "name": "g2d-12g-boundary",
+        "start": "0x2fffff000",
+        "end_exclusive": "0x300000000",
+        "provenance": "observed",
+        "qemu_fidelity": "unmodelled",
+        "evidence": [
+          "rockos-dtb-transcript"
+        ]
+      },
+      {
+        "name": "mmz-nid-0-part-0",
+        "start": "0x300000000",
+        "end_exclusive": "0x480000000",
+        "provenance": "observed",
+        "qemu_fidelity": "unmodelled",
+        "evidence": [
+          "rockos-dtb-transcript"
+        ]
+      }
+    ],
+    "dynamic_cma": {
+      "size": "0x20000000",
+      "alignment": "0x1000",
+      "alloc_start": "0x80000000",
+      "alloc_end_exclusive": "0x480000000",
+      "provenance": "observed",
+      "qemu_fidelity": "unmodelled",
+      "evidence": [
+        "rockos-dtb-transcript"
+      ]
+    }
+  },
+  "handoff": {
+    "kernel": {
+      "address": "0x80200000",
+      "artifact": "kernel",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "initramfs": {
+      "address": "0x83000000",
+      "artifact": "initramfs",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "dtb": {
+      "address": "0xf0000000",
+      "artifact": "dtb",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_approximate",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "bootargs": {
+      "value": "cpu_no_boost_1_6ghz loglevel=info init=/init",
+      "persistent_write_forbidden": true,
+      "provenance": "derived",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    }
+  },
+  "baseline_artifacts": {
+    "kernel": {
+      "size": 11318656,
+      "sha256": "15d411579945c52071996280827e409aa1c89b85dd9656cb4cb119b815f895ca",
+      "crc32": "40b88c04",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "initramfs": {
+      "size": 3411,
+      "sha256": "792246eccce7eab3e20401bd163f64dde0a790847998ec9ffd816071bcbeed2a",
+      "crc32": "153879f1",
+      "provenance": "observed",
+      "qemu_fidelity": "qemu_exact",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    },
+    "dtb": {
+      "size": 154800,
+      "sha256": null,
+      "crc32": "4afcb20e",
+      "provenance": "observed",
+      "qemu_fidelity": "unmodelled",
+      "evidence": [
+        "sv48-board-raw"
+      ]
+    }
+  },
+  "candidate_policy": {
+    "source": "current_git_head",
+    "calculate_identity_per_run": true,
+    "record_dirty_state": true,
+    "baseline_match_required": false
+  },
+  "real_dtb": {
+    "model": "Milk-V Megrez",
+    "compatible": [
+      "sifive,hifive-unmatched-a00",
+      "sifive,fu740-c000",
+      "sifive,fu740",
+      "eswin,eic7700"
+    ],
+    "enabled_cpu_count": 4,
+    "mmu_type": "riscv,sv48",
+    "memory_start": "0x80000000",
+    "memory_end_exclusive": "0x480000000",
+    "size": 154800,
+    "crc32": "4afcb20e",
+    "sha256": null,
+    "identity_strength": "size_crc",
+    "rng_seed_present": false,
+    "runnable_under_qemu": false,
+    "provenance": "observed",
+    "qemu_fidelity": "unmodelled",
+    "evidence": [
+      "sv48-board-raw",
+      "rockos-dtb-transcript"
+    ]
+  },
+  "profiles": {
+    "megrez-sv48-svade-fast": {
+      "memory": "0x80000000",
+      "hart_count": 4,
+      "mmu_type": "riscv,sv48",
+      "ad_extension": "svade",
+      "zkr": false,
+      "svpbmt": false,
+      "bootargs": "cpu_no_boost_1_6ghz loglevel=info init=/init",
+      "remove_rng_seed": true,
+      "resource_gate": false
+    },
+    "megrez-sv48-svadu-fast": {
+      "memory": "0x80000000",
+      "hart_count": 4,
+      "mmu_type": "riscv,sv48",
+      "ad_extension": "svadu",
+      "zkr": false,
+      "svpbmt": false,
+      "bootargs": "cpu_no_boost_1_6ghz loglevel=info init=/init",
+      "remove_rng_seed": true,
+      "resource_gate": false
+    },
+    "megrez-sv48-slow": {
+      "memory": "0x400000000",
+      "hart_count": 4,
+      "mmu_type": "riscv,sv48",
+      "ad_extension": "svade",
+      "zkr": false,
+      "svpbmt": false,
+      "bootargs": "cpu_no_boost_1_6ghz loglevel=info init=/init",
+      "remove_rng_seed": true,
+      "resource_gate": true
+    }
+  },
+  "unmodelled": [
+    "EIC7700 MMIO devices and interrupt topology",
+    "vendor OpenSBI and U-Boot relocation state",
+    "boot hart 2 execution",
+    "board PMP and cache/coherency behaviour",
+    "MMC, UART, PMIC, watchdog, reset, and power behaviour",
+    "execution of the real Megrez DTB under QEMU virt"
+  ],
+  "evidence": {
+    "sv48-board-raw": {
+      "path": "target/megrez-sv48-board-run-6df0f28f-20260716T135736Z/hardware/sv48-board-rawpty-115200.raw",
+      "size": 374132,
+      "sha256": "8f8851bd58fb51e36fcc855f29bf17cd6685a53d9552e1ed1e08dcc1755be476"
+    },
+    "rockos-dtb-transcript": {
+      "path": "porting/logs/megrez-v3-20260712-boot1.serial.log",
+      "sha256": "7a85517c9b3a2b4b0642397409479729776cf84ccc263ed5f0ea529415c02a55"
+    }
+  }
+}

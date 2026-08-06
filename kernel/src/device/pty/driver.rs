@@ -163,9 +163,9 @@ impl TtyDriver for PtyDriver {
         }
     }
 
-    fn can_push(&self) -> bool {
+    fn poll_output_ready(&self) -> Result<bool> {
         let output = self.output.lock();
-        output.capacity() - output.len() >= 2
+        Ok(output.capacity() - output.len() >= 2)
     }
 
     fn notify_input(&self) {
