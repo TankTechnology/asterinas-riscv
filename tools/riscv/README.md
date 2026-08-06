@@ -20,12 +20,14 @@ These tests validate immutable profile definitions, address ranges, generated co
 
 ## Generic U-Boot `booti`
 
-Provide a RISC-V Linux Image and initramfs, then run the generic profile.
+Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
 
 ```bash
+python3 tools/riscv/make_qemu_uboot_initramfs.py \
+  target/qemu-uboot/marker-initramfs.cpio.gz
 make test_riscv_uboot_booti \
   ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  ASTERINAS_INITRAMFS=/absolute/path/to/initramfs
+  ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/marker-initramfs.cpio.gz"
 ```
 
 Generated U-Boot, DTB, disk, logs, and JSON evidence stay below `target/`.
@@ -37,7 +39,7 @@ Use the same Asterinas artifacts to validate the SiFive UART path through U-Boot
 ```bash
 make test_riscv_sifive_u \
   ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  ASTERINAS_INITRAMFS=/absolute/path/to/initramfs
+  ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/marker-initramfs.cpio.gz"
 ```
 
 An optional Linux control run uses the same machine and evidence path.
