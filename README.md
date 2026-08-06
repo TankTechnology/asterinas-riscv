@@ -3,6 +3,12 @@
     Toward a production-grade Linux alternative—memory safe, high-performance, and more<br/>
 </p>
 
+> [!IMPORTANT]
+> This repository is **asterinas-riscv**, an independently maintained RISC-V
+> downstream of Asterinas. See the
+> [RISC-V status and maintenance policy](docs/porting/asterinas-riscv-status.md)
+> for supported platforms, validation evidence, and the upstream relationship.
+
 <!-- Asterinas NixOS 0.18.0 demo. It is uploaded as a Github attachment
 so that GitHub will render that URL as a video player in Markdown.
 The original file name will be displayed up in the top bar of the video player.
@@ -148,7 +154,7 @@ Follow the steps below to get Asterinas up and running.
 1. Download the latest source code on an x86-64 (or ARM64) Linux machine:
 
     ```bash
-    git clone https://github.com/asterinas/asterinas
+    git clone https://github.com/TankTechnology/asterinas-riscv
     ```
 
 2. Run a Docker container as the development environment:
