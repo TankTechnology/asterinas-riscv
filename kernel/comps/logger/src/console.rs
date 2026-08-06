@@ -29,7 +29,7 @@ pub fn _print(args: fmt::Arguments) {
                 ostd::early_print!("{}", s);
             } else {
                 for console in self.0.values() {
-                    console.send(s.as_bytes());
+                    console.send_diagnostic_or_restart(s.as_bytes());
                 }
             }
             Ok(())

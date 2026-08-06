@@ -111,8 +111,8 @@ impl TtyDriver for VtDriver {
         |chs| self.console.send(chs)
     }
 
-    fn can_push(&self) -> bool {
-        true
+    fn poll_output_ready(&self) -> Result<bool> {
+        Ok(true)
     }
 
     fn notify_input(&self) {}

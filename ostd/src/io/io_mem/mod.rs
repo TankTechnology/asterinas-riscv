@@ -169,6 +169,16 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
     }
 }
 
+fn validate_sync_range(base: Paddr, limit: usize, range: Range<usize>) -> Result<Range<Paddr>> {
+    if range.start > range.end || range.end > limit {
+        return Err(Error::InvalidArgs);
+    }
+
+    let start = base.checked_add(range.start).ok_or(Error::InvalidArgs)?;
+    let end = base.checked_add(range.end).ok_or(Error::InvalidArgs)?;
+    Ok(start..end)
+}
+
 #[cfg_attr(target_arch = "loongarch64", expect(unused))]
 impl IoMem<Sensitive> {
     /// Reads a value of the `PodOnce` type at the specified offset using one
@@ -228,6 +238,37 @@ impl IoMem<Insensitive> {
             .unwrap()
             .acquire(range, cache_policy)
             .ok_or(Error::AccessDenied)
+    }
+
+    /// Makes writes in `range` visible to a device that reads this I/O memory.
+    pub fn sync_to_device(&self, range: Range<usize>) -> Result<()> {
+        let physical_range = validate_sync_range(self.pa, self.limit, range.clone())?;
+        if physical_range.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            let virtual_start = self
+                .base()
+                .checked_add(range.start)
+                .ok_or(Error::InvalidArgs)?;
+            let virtual_end = self
+                .base()
+                .checked_add(range.end)
+                .ok_or(Error::InvalidArgs)?;
+            crate::arch::mm::sync_io_mem_to_device(
+                physical_range,
+                virtual_start..virtual_end,
+                self.cache_policy,
+            )
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     /// Reads from MMIO into fallible memory and returns the copied length.
@@ -437,10 +478,40 @@ impl<SecuritySensitivity> Drop for IoMem<SecuritySensitivity> {
 
 #[cfg(ktest)]
 mod test {
+    use core::ops::Range;
+
+    use super::validate_sync_range;
     use crate::{
         arch::io::io_mem::{copy_from_mmio, copy_to_mmio, read_once, write_once},
         prelude::ktest,
     };
+
+    #[ktest]
+    fn validates_sync_to_device_ranges() {
+        const BASE: usize = 0xfd80_0000;
+        const LIMIT: usize = 0x1000;
+
+        assert_eq!(
+            validate_sync_range(BASE, LIMIT, 0x20..0x40),
+            Ok(BASE + 0x20..BASE + 0x40)
+        );
+        for invalid in [
+            Range { start: 1, end: 0 },
+            Range {
+                start: LIMIT,
+                end: LIMIT + 1,
+            },
+            Range {
+                start: usize::MAX,
+                end: usize::MAX,
+            },
+        ] {
+            assert_eq!(
+                validate_sync_range(BASE, LIMIT, invalid),
+                Err(crate::Error::InvalidArgs)
+            );
+        }
+    }
 
     #[ktest]
     fn read_write_u8() {

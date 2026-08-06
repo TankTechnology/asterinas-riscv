@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use aster_console::{AnyConsoleDevice, ConsoleCallback};
+use aster_console::AnyConsoleDevice;
 
 use crate::device::tty::vt::manager::{VtConsole, default_vt};
 
@@ -21,11 +21,9 @@ impl DefaultVtConsoleDevice {
 }
 
 impl AnyConsoleDevice for DefaultVtConsoleDevice {
-    fn send(&self, buf: &[u8]) {
+    fn send_diagnostic_or_restart(&self, buf: &[u8]) {
         self.vt_console().send(buf);
     }
-
-    fn register_callback(&self, _callback: &'static ConsoleCallback) {}
 }
 
 pub(super) fn init_in_first_process() {

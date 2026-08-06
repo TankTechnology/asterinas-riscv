@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, fmt::Debug, string::ToString, sync::Arc, vec::Vec};
 use core::hint::spin_loop;
 
-use aster_console::{AnyConsoleDevice, ConsoleCallback};
+use aster_console::{AnyConsoleDevice, ConsoleReceiveCallback, InputConsoleDevice};
 use aster_util::mem_obj_slice::Slice;
 use ostd::{
     arch::trap::TrapFrame,
@@ -27,11 +27,11 @@ pub struct ConsoleDevice {
     send_buffer: DmaStream,
     receive_buffer: DmaStream,
     #[expect(clippy::box_collection)]
-    callbacks: Rcu<Box<Vec<&'static ConsoleCallback>>>,
+    receive_callbacks: Rcu<Box<Vec<&'static ConsoleReceiveCallback>>>,
 }
 
 impl AnyConsoleDevice for ConsoleDevice {
-    fn send(&self, value: &[u8]) {
+    fn send_diagnostic_or_restart(&self, value: &[u8]) {
         let mut transmit_queue = self.transmit_queue.disable_irq().lock();
         let mut reader = VmReader::from(value);
 
@@ -52,11 +52,17 @@ impl AnyConsoleDevice for ConsoleDevice {
         }
     }
 
-    fn register_callback(&self, callback: &'static ConsoleCallback) {
+    fn input(&self) -> Option<&dyn InputConsoleDevice> {
+        Some(self)
+    }
+}
+
+impl InputConsoleDevice for ConsoleDevice {
+    fn register_receive_callback(&self, callback_fn: &'static ConsoleReceiveCallback) {
         loop {
-            let callbacks = self.callbacks.read();
+            let callbacks = self.receive_callbacks.read();
             let mut callbacks_cloned = callbacks.get().clone();
-            callbacks_cloned.push(callback);
+            callbacks_cloned.push(callback_fn);
             if callbacks.compare_exchange(callbacks_cloned).is_ok() {
                 break;
             }
@@ -113,7 +119,7 @@ impl ConsoleDevice {
             transmit_queue,
             send_buffer,
             receive_buffer,
-            callbacks: Rcu::new(Box::new(Vec::new())),
+            receive_callbacks: Rcu::new(Box::new(Vec::new())),
         });
 
         device.activate_receive_buffer(&mut device.receive_queue.disable_irq().lock());
@@ -151,7 +157,7 @@ impl ConsoleDevice {
             .sync_from_device(0..len as usize)
             .unwrap();
 
-        let callbacks = self.callbacks.read();
+        let callbacks = self.receive_callbacks.read();
         for callback in callbacks.get().iter() {
             let mut reader = self.receive_buffer.reader().unwrap();
             reader.limit(len as usize);

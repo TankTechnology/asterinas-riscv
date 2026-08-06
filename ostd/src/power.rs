@@ -49,6 +49,19 @@ pub fn restart(code: ExitCode) -> ! {
     machine_halt();
 }
 
+/// Restarts the system without logging, cleanup, or cross-CPU coordination.
+///
+/// This function is suitable for interrupt and fatal-panic contexts. It invokes the installed
+/// restart handler once. If the handler is missing or returns, the current CPU disables local
+/// interrupts and halts forever.
+pub fn emergency_restart(code: ExitCode) -> ! {
+    if let Some(handler_fn) = RESTART_HANDLER.get() {
+        handler_fn(code);
+    }
+
+    disable_local_and_halt();
+}
+
 static POWEROFF_HANDLER: Once<fn(ExitCode)> = Once::new();
 
 /// Injects a handler that can power off the system.
@@ -74,16 +87,16 @@ pub fn poweroff(code: ExitCode) -> ! {
 
     if let Some(handler) = POWEROFF_HANDLER.get() {
         (handler)(code);
-        crate::error!("Failed to power off the system because the poweroff handler fails");
+        log_shutdown("failed to power off the system because the poweroff handler fails");
     } else {
-        crate::error!("Failed to power off the system because a poweroff handler is missing");
+        log_shutdown("failed to power off the system because a poweroff handler is missing");
     }
 
     machine_halt();
 }
 
 fn machine_halt() -> ! {
-    crate::error!("Halting the machine...");
+    log_shutdown("halting the machine...");
 
     // TODO: `inter_processor_call` may panic again (e.g., if there is an out-of-memory error). We
     // should find a way to make it panic-free.
@@ -91,4 +104,13 @@ fn machine_halt() -> ! {
         ipi_sender.inter_processor_call(&CpuSet::new_full(), || disable_local_and_halt());
     }
     disable_local_and_halt();
+}
+
+fn log_shutdown(message: &str) {
+    // RISC-V UART failures can reach this path while the generic logger is
+    // locked. Its SBI-backed early console remains available independently.
+    #[cfg(target_arch = "riscv64")]
+    crate::early_println!("{}", message);
+    #[cfg(not(target_arch = "riscv64"))]
+    crate::error!("{}", message);
 }
