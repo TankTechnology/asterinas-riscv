@@ -257,11 +257,11 @@ impl IoMem<Insensitive> {
                 .base()
                 .checked_add(range.end)
                 .ok_or(Error::InvalidArgs)?;
-            return crate::arch::mm::sync_io_mem_to_device(
+            crate::arch::mm::sync_io_mem_to_device(
                 physical_range,
                 virtual_start..virtual_end,
                 self.cache_policy,
-            );
+            )
         }
 
         #[cfg(not(target_arch = "riscv64"))]

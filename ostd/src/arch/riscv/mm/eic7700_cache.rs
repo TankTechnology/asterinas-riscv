@@ -101,7 +101,11 @@ mod tests {
     #[ktest]
     fn rejects_empty_reversed_and_overflowing_ranges() {
         assert!(checked_cache_line_range(DIE0_DRAM_START..DIE0_DRAM_START).is_none());
-        assert!(checked_cache_line_range(DIE0_DRAM_START + 64..DIE0_DRAM_START).is_none());
+        let reversed = core::ops::Range {
+            start: DIE0_DRAM_START + 64,
+            end: DIE0_DRAM_START,
+        };
+        assert!(checked_cache_line_range(reversed).is_none());
         assert!(checked_cache_line_range(usize::MAX - 31..usize::MAX).is_none());
     }
 }
