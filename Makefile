@@ -248,6 +248,78 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+QEMU_UBOOT_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/current
+QEMU_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build
+RISCV_SIFIVE_U_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u
+RISCV_SIFIVE_U_LINUX_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u-linux
+RISCV_SIFIVE_U_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build
+
+effective_path = $(abspath $(or $(strip $(1)),$(2)))
+QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
+QEMU_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/u-boot-build)
+RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u)
+RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
+RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
+
+.PHONY: test_riscv_uboot_booti_unit
+test_riscv_uboot_booti_unit:
+	@python3 -m unittest \
+		tools.riscv.tests.test_qemu_uboot_contracts \
+		tools.riscv.tests.test_qemu_uboot_booti -v
+
+.PHONY: test_riscv_uboot_booti
+test_riscv_uboot_booti: test_riscv_uboot_booti_unit
+	@ASTERINAS_RISCV_BOOTI="$(ASTERINAS_RISCV_BOOTI)" \
+		ASTERINAS_INITRAMFS="$(ASTERINAS_INITRAMFS)" \
+		QEMU_UBOOT_PROFILE="generic-sv39" \
+		QEMU_UBOOT_OUT_DIR="$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)" \
+		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
+		tools/riscv/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu_uboot_booti.py run \
+		--profile "generic-sv39" \
+		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
+		--boot-disk "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/boot.ext4" \
+		--manifest "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		--serial-log "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/serial.log" \
+		--marker-event "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/marker-event.txt" \
+		--result "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/result.json"
+
+.PHONY: test_riscv_sifive_u test_riscv_sifive_u_linux_reference
+test_riscv_sifive_u: SIFIVE_U_PROFILE := sifive-u-asterinas-smoke
+test_riscv_sifive_u: SIFIVE_U_KERNEL := $(ASTERINAS_RISCV_BOOTI)
+test_riscv_sifive_u: SIFIVE_U_INITRAMFS := $(ASTERINAS_INITRAMFS)
+test_riscv_sifive_u: SIFIVE_U_KERNEL_LABEL := ASTERINAS_RISCV_BOOTI
+test_riscv_sifive_u: SIFIVE_U_INITRAMFS_LABEL := ASTERINAS_INITRAMFS
+test_riscv_sifive_u: SIFIVE_U_OUT := $(RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE)
+
+test_riscv_sifive_u_linux_reference: SIFIVE_U_PROFILE := sifive-u-linux-reference
+test_riscv_sifive_u_linux_reference: SIFIVE_U_KERNEL := $(RISCV_LINUX_IMAGE)
+test_riscv_sifive_u_linux_reference: SIFIVE_U_INITRAMFS := $(RISCV_LINUX_INITRAMFS)
+test_riscv_sifive_u_linux_reference: SIFIVE_U_KERNEL_LABEL := RISCV_LINUX_IMAGE
+test_riscv_sifive_u_linux_reference: SIFIVE_U_INITRAMFS_LABEL := RISCV_LINUX_INITRAMFS
+test_riscv_sifive_u_linux_reference: SIFIVE_U_OUT := $(RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE)
+
+test_riscv_sifive_u test_riscv_sifive_u_linux_reference: test_riscv_uboot_booti_unit
+	@test -s "$(SIFIVE_U_KERNEL)" || \
+		(echo "$(SIFIVE_U_KERNEL_LABEL) is required and must be non-empty" >&2; exit 2)
+	@test -s "$(SIFIVE_U_INITRAMFS)" || \
+		(echo "$(SIFIVE_U_INITRAMFS_LABEL) is required and must be non-empty" >&2; exit 2)
+	@ASTERINAS_RISCV_BOOTI="$(SIFIVE_U_KERNEL)" \
+		ASTERINAS_INITRAMFS="$(SIFIVE_U_INITRAMFS)" \
+		QEMU_UBOOT_PROFILE="$(SIFIVE_U_PROFILE)" \
+		QEMU_UBOOT_OUT_DIR="$(SIFIVE_U_OUT)" \
+		QEMU_UBOOT_BUILD_DIR="$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)" \
+		tools/riscv/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu_uboot_booti.py run \
+		--profile "$(SIFIVE_U_PROFILE)" \
+		--uboot "$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
+		--boot-disk "$(SIFIVE_U_OUT)/boot.ext4" \
+		--manifest "$(SIFIVE_U_OUT)/artifacts.json" \
+		--dtb-audit "$(SIFIVE_U_OUT)/qemu-dtb-audit.json" \
+		--serial-log "$(SIFIVE_U_OUT)/serial.log" \
+		--marker-event "$(SIFIVE_U_OUT)/marker-event.txt" \
+		--result "$(SIFIVE_U_OUT)/result.json"
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable
