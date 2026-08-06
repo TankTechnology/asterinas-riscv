@@ -13,6 +13,8 @@ mod dw_apb;
 mod ns16550a;
 mod sifive;
 
+const SIFIVE_FDT_COMPATIBLES: &[&str] = &["sifive,uart0", "sifive,fu540-c000-uart"];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StdoutSelector<'a> {
     Selected(&'a str),
@@ -23,8 +25,8 @@ enum StdoutSelector<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UartKind {
     Ns16550a,
-    Sifive,
     DwApb,
+    SiFive,
 }
 
 pub(super) fn init() {
@@ -75,7 +77,7 @@ pub(super) fn init() {
                 .or_else(|| {
                     device_tree
                         .all_nodes()
-                        .find(|node| matches(node, &sifive::FDT_COMPATIBLES))
+                        .find(|node| matches(node, SIFIVE_FDT_COMPATIBLES))
                 })
         },
     ) else {
@@ -100,8 +102,8 @@ pub(super) fn init() {
 
     match uart_kind {
         UartKind::Ns16550a => ns16550a::init(uart_node),
-        UartKind::Sifive => sifive::init(uart_node),
         UartKind::DwApb => dw_apb::init(uart_node),
+        UartKind::SiFive => sifive::init(uart_node),
     }
 }
 
@@ -139,13 +141,13 @@ fn classify_compatibles<'a>(compatibles: impl IntoIterator<Item = &'a str>) -> O
             return Some(UartKind::DwApb);
         }
         has_ns16550a_compatible |= compatible == "ns16550a";
-        has_sifive_compatible |= sifive::FDT_COMPATIBLES.contains(&compatible);
+        has_sifive_compatible |= SIFIVE_FDT_COMPATIBLES.contains(&compatible);
     }
 
     if has_ns16550a_compatible {
         Some(UartKind::Ns16550a)
     } else {
-        has_sifive_compatible.then_some(UartKind::Sifive)
+        has_sifive_compatible.then_some(UartKind::SiFive)
     }
 }
 
@@ -333,7 +335,11 @@ mod tests {
         assert_eq!(classify_compatibles(["ns16550a"]), Some(UartKind::Ns16550a));
         assert_eq!(
             classify_compatibles(["sifive,fu540-c000-uart"]),
-            Some(UartKind::Sifive)
+            Some(UartKind::SiFive)
+        );
+        assert_eq!(
+            classify_compatibles(["sifive,uart0"]),
+            Some(UartKind::SiFive)
         );
         assert_eq!(classify_compatibles(["vendor,unknown"]), None);
     }
