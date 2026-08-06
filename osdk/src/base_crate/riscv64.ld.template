@@ -1,7 +1,15 @@
 ENTRY(_start)
 OUTPUT_ARCH(riscv)
 
-KERNEL_LMA = 0x80200000;
+# QEMU `virt` DRAM starts at 0x80000000:
+# <https://github.com/qemu/qemu/blob/master/include/hw/riscv/virt.h>.
+# The text offset and header size follow the Linux RISC-V Image format:
+# <https://docs.kernel.org/arch/riscv/boot-image-header.html>.
+RISCV_DRAM_BASE = 0x80000000;
+RISCV_IMAGE_TEXT_OFFSET_BYTES = 0x200000;
+RISCV_IMAGE_HEADER_SIZE_BYTES = 64;
+
+KERNEL_LMA = RISCV_DRAM_BASE + RISCV_IMAGE_TEXT_OFFSET_BYTES;
 KERNEL_VMA = 0xffffffff80200000;
 KERNEL_VMA_OFFSET = KERNEL_VMA - KERNEL_LMA;
 
@@ -103,3 +111,12 @@ SECTIONS
 
     __kernel_end = .;
 }
+
+KERNEL_IMAGE_SIZE_BYTES = __kernel_end - __kernel_start;
+
+ASSERT(_start == KERNEL_LMA,
+       "RISC-V Image header must start at KERNEL_LMA");
+ASSERT(bsp_boot_entry - _start == RISCV_IMAGE_HEADER_SIZE_BYTES,
+       "RISC-V Image header must be exactly 64 bytes");
+ASSERT(KERNEL_IMAGE_SIZE_BYTES > RISCV_IMAGE_HEADER_SIZE_BYTES,
+       "RISC-V kernel Image must contain a payload");
