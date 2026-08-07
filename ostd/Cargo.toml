@@ -55,10 +55,13 @@ x86_64.workspace = true
 
 [target.riscv64imac-unknown-none-elf.dependencies]
 bit_field.workspace = true
+crab-usb.workspace = true
+dma-api.workspace = true
 fdt.workspace = true
 riscv.workspace = true
 sbi-rt.workspace = true
 unwinding = { workspace = true, features = ["fde-static"] }
+usb-if.workspace = true
 
 [target.loongarch64-unknown-none-softfloat.dependencies]
 fdt.workspace = true

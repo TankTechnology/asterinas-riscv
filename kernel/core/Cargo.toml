@@ -25,6 +25,7 @@ aster-systree.workspace = true
 aster-time.workspace = true
 aster-util.workspace = true
 aster-virtio.workspace = true
+aster-usb.workspace = true
 atomic-integer-wrapper.workspace = true
 bitflags.workspace = true
 bitvec.workspace = true

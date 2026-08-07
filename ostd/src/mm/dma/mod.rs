@@ -22,7 +22,13 @@ mod test;
 
 mod dma_coherent;
 mod dma_stream;
+mod dma_window;
+#[cfg(target_arch = "riscv64")]
+mod usb_kernel_op;
 mod util;
 
 pub use dma_coherent::DmaCoherent;
 pub use dma_stream::{DmaDirection, DmaStream, FromAndToDevice, FromDevice, ToDevice};
+pub use dma_window::DmaWindow;
+#[cfg(target_arch = "riscv64")]
+pub use usb_kernel_op::UsbKernelOp;
