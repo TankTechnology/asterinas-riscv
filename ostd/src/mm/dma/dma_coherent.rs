@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::ManuallyDrop};
+use core::{fmt::Debug, mem::ManuallyDrop, ptr::NonNull};
 
 use super::util::{
     alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
@@ -13,6 +13,7 @@ use crate::{
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
         io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
         kspace::kvirt_area::KVirtArea,
+        paddr_to_vaddr,
     },
 };
 
@@ -89,6 +90,14 @@ impl DmaCoherent {
             map_daddr,
             is_cache_coherent,
         })
+    }
+
+    pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
+        let vaddr = match &self.inner {
+            Inner::Segment(segment) => paddr_to_vaddr(segment.paddr()),
+            Inner::Kva(kva, _) => kva.start(),
+        };
+        NonNull::new(vaddr as *mut u8).unwrap()
     }
 }
 

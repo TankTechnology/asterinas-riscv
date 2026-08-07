@@ -61,6 +61,10 @@ pub(super) fn sync_to_device(range: Range<Paddr>) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn has_uncached_dram_alias() -> bool {
+    L3_FLUSH_REGISTER.get().is_some()
+}
+
 fn checked_cache_line_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
     if range.start >= range.end || range.start < DIE0_DRAM_START || range.end > DIE0_DRAM_END {
         return None;

@@ -299,9 +299,12 @@ pub enum KeyCode {
     RightCtrl = 97,
 
     // Special keys.
-    Grave = 41,     // `
+    Grave = 41,    // `
+    Key102nd = 86, // KEY_102ND (non-US key)
+    SysRq = 99,
     LeftMeta = 125, // Windows/Cmd key
     RightMeta = 126,
+    Compose = 127,
     Menu = 139, // Context menu key
 
     // Arrow keys.
