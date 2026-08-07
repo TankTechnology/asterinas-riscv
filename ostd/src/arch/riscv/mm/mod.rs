@@ -50,6 +50,10 @@ pub(crate) fn sync_io_mem_to_device(
     eic7700_cache::sync_to_device(physical_range)
 }
 
+pub(crate) fn has_uncached_dram_alias() -> bool {
+    eic7700_cache::has_uncached_dram_alias()
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PagingConsts {}
 
