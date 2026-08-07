@@ -1,0 +1,2 @@
+evdev==1.9.3
+hid-tools==0.12
