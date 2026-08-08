@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use aster_framebuffer::{
     framebuffer::FRAMEBUFFER,
@@ -15,6 +16,7 @@ use spin::Once;
 
 use crate::device::tty::{
     Tty,
+    serial::serial0_device,
     vt::{
         driver::VtDriver,
         keyboard::{
@@ -95,7 +97,7 @@ impl VtKeyboardHandler {
         // By detecting modifiers directly from the keycode, we ensure that
         // modifier press/release events are always processed correctly,
         // regardless of the current modifier combination.
-        let key_sym = if let Some(modifier) = self.keycode_to_modifier_key(keycode) {
+        let key_sym = if let Some(modifier) = keycode_to_modifier_key(keycode) {
             KeySym::Modifier(modifier)
         } else {
             get_keysym(MODIFIER_KEYS_STATE.flags(), keycode)
@@ -163,12 +165,7 @@ impl VtKeyboardHandler {
     }
 
     fn keycode_to_modifier_key(&self, keycode: KeyCode) -> Option<ModifierKey> {
-        match keycode {
-            KeyCode::LeftShift | KeyCode::RightShift => Some(ModifierKey::Shift),
-            KeyCode::LeftCtrl | KeyCode::RightCtrl => Some(ModifierKey::Ctrl),
-            KeyCode::LeftAlt | KeyCode::RightAlt => Some(ModifierKey::Alt),
-            _ => None,
-        }
+        keycode_to_modifier_key(keycode)
     }
 
     /// Handles key events in Medium Raw mode.
@@ -445,15 +442,200 @@ impl InputHandler for VtKeyboardHandler {
     }
 }
 
+/// Maps a keycode to a modifier key, or `None` for ordinary keys.
+///
+/// Detecting modifiers from the keycode (rather than the keymap) keeps
+/// modifier press/release events working regardless of the current
+/// modifier combination.
+fn keycode_to_modifier_key(keycode: KeyCode) -> Option<ModifierKey> {
+    match keycode {
+        KeyCode::LeftShift | KeyCode::RightShift => Some(ModifierKey::Shift),
+        KeyCode::LeftCtrl | KeyCode::RightCtrl => Some(ModifierKey::Ctrl),
+        KeyCode::LeftAlt | KeyCode::RightAlt => Some(ModifierKey::Alt),
+        _ => None,
+    }
+}
+
+/// Caps Lock state for the serial keyboard path.
+///
+/// The VT path keeps lock flags per terminal; serial consoles have no
+/// VT, so a single global flag is used.
+static LOCK_KEY_FLAGS: AtomicU8 = AtomicU8::new(0);
+
+fn lock_key_flags() -> LockKeyFlags {
+    LockKeyFlags::from_bits_truncate(LOCK_KEY_FLAGS.load(Ordering::Relaxed))
+}
+
+fn toggle_lock_keys(keys: LockKeyFlags) {
+    LOCK_KEY_FLAGS.fetch_xor(keys.bits(), Ordering::Relaxed);
+}
+
+/// An input handler class that connects keyboards to the serial console.
+///
+/// The VT keyboard path requires a framebuffer, which is never available
+/// on RISC-V yet (`parse_framebuffer_info` is a TODO), so without this
+/// class keyboard events would only reach evdev. It connects the same
+/// keyboard devices the VT path would and pushes decoded characters into
+/// the serial console tty (`ttyS0`).
+#[derive(Debug)]
+struct SerialKeyboardHandlerClass;
+
+impl InputHandlerClass for SerialKeyboardHandlerClass {
+    fn name(&self) -> &str {
+        "serial_keyboard"
+    }
+
+    fn connect(&self, dev: Arc<dyn InputDevice>) -> Result<Arc<dyn InputHandler>, ConnectError> {
+        let capability = dev.capability();
+        if !capability.look_like_keyboard() {
+            return Err(ConnectError::IncompatibleDevice);
+        }
+        ostd::info!(
+            "Serial console keyboard handler connected to device: {}",
+            dev.name()
+        );
+        Ok(Arc::new(SerialKeyboardHandler))
+    }
+
+    fn disconnect(&self, dev: &Arc<dyn InputDevice>) {
+        ostd::info!(
+            "Serial console keyboard handler disconnected from device: {}",
+            dev.name()
+        );
+    }
+}
+
+/// The serial console keyboard handler.
+///
+/// Decodes key events through the shared keysym map and pushes the
+/// resulting characters into `ttyS0`. VT-only actions (terminal switching,
+/// function keys, numpad) are ignored.
+#[derive(Debug)]
+struct SerialKeyboardHandler;
+
+impl SerialKeyboardHandler {
+    fn handle_key_event(&self, keycode: KeyCode, key_status: KeyStatus) {
+        let key_sym = if let Some(modifier) = keycode_to_modifier_key(keycode) {
+            KeySym::Modifier(modifier)
+        } else {
+            get_keysym(MODIFIER_KEYS_STATE.flags(), keycode)
+        };
+
+        // Ignore key release events except for modifier keys, matching the
+        // VT keyboard handler.
+        if key_status == KeyStatus::Released && !matches!(key_sym, KeySym::Modifier(_)) {
+            return;
+        }
+
+        match key_sym {
+            KeySym::Char(ch) => self.push_char(ch),
+            KeySym::Letter(ch) => {
+                let caps_on = lock_key_flags().contains(LockKeyFlags::CAPS_LOCK);
+                let out = if caps_on && ch.is_ascii_alphabetic() {
+                    if ch.is_ascii_lowercase() {
+                        ch.to_ascii_uppercase()
+                    } else {
+                        ch.to_ascii_lowercase()
+                    }
+                } else {
+                    ch
+                };
+                self.push_char(out);
+            }
+            KeySym::Meta(ch) => self.push_bytes(&[0x1b, ch as u8]),
+            KeySym::Modifier(modifier_key) => {
+                let is_pressed = key_status == KeyStatus::Pressed;
+                match modifier_key {
+                    ModifierKey::Shift => {
+                        if is_pressed {
+                            MODIFIER_KEYS_STATE.press(ModifierKeyFlags::SHIFT);
+                        } else {
+                            MODIFIER_KEYS_STATE.release(ModifierKeyFlags::SHIFT);
+                        }
+                    }
+                    ModifierKey::Ctrl => {
+                        if is_pressed {
+                            MODIFIER_KEYS_STATE.press(ModifierKeyFlags::CTRL);
+                        } else {
+                            MODIFIER_KEYS_STATE.release(ModifierKeyFlags::CTRL);
+                        }
+                    }
+                    ModifierKey::Alt => {
+                        if is_pressed {
+                            MODIFIER_KEYS_STATE.press(ModifierKeyFlags::ALT);
+                        } else {
+                            MODIFIER_KEYS_STATE.release(ModifierKeyFlags::ALT);
+                        }
+                    }
+                }
+            }
+            KeySym::Special(SpecialHandler::Enter) => self.push_bytes(b"\r"),
+            KeySym::Special(SpecialHandler::ToggleCapsLock) => {
+                toggle_lock_keys(LockKeyFlags::CAPS_LOCK);
+            }
+            KeySym::Numpad(_)
+            | KeySym::Function(_)
+            | KeySym::AltNumpad(_)
+            | KeySym::Cursor(_)
+            | KeySym::SwitchVt(_)
+            | KeySym::Special(_)
+            | KeySym::NoOp => {
+                // VT-only keys have no serial console effect.
+                ostd::debug!("serial keyboard ignores {:?}", key_sym);
+            }
+        }
+    }
+
+    fn push_char(&self, ch: char) {
+        if ch.is_ascii() {
+            self.push_bytes(&[ch as u8]);
+        }
+    }
+
+    fn push_bytes(&self, bytes: &[u8]) {
+        let Some(tty) = serial0_device() else {
+            ostd::debug!("serial keyboard: ttyS0 not ready, dropping {:02x?}", bytes);
+            return;
+        };
+        ostd::debug!("serial keyboard pushes {:02x?}", bytes);
+        let _ = tty.push_input(bytes);
+    }
+}
+
+impl InputHandler for SerialKeyboardHandler {
+    fn handle_events(&self, events: &[InputEvent]) {
+        for event in events {
+            match event {
+                InputEvent::Key(keycode, key_status) => {
+                    self.handle_key_event(*keycode, *key_status)
+                }
+                InputEvent::Sync(_) => {
+                    // Nothing to do
+                }
+                _ => {
+                    ostd::warn!(
+                        "Serial console keyboard handler received unsupported event: {:?}",
+                        event
+                    );
+                }
+            }
+        }
+    }
+}
+
 static REGISTERED_INPUT_HANDLER_CLASS: Once<RegisteredInputHandlerClass> = Once::new();
 
 pub(super) fn init_in_first_process() {
-    if FRAMEBUFFER.get().is_none() {
-        return;
-    }
-
     REGISTERED_INPUT_HANDLER_CLASS.call_once(|| {
-        let handler_class = Arc::new(VtKeyboardHandlerClass);
+        // The VT keyboard handler needs a framebuffer; serial consoles
+        // (no framebuffer, e.g. RISC-V) get the serial keyboard handler
+        // instead. Exactly one class is registered so events are not
+        // pushed twice.
+        let handler_class: Arc<dyn InputHandlerClass> = if FRAMEBUFFER.get().is_some() {
+            Arc::new(VtKeyboardHandlerClass)
+        } else {
+            Arc::new(SerialKeyboardHandlerClass)
+        };
         aster_input::register_handler_class(handler_class)
     });
 }
