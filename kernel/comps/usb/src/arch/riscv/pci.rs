@@ -12,8 +12,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use aster_pci::{
-    PCI_BUS,
-    PciDeviceId,
+    PCI_BUS, PciDeviceId,
     bus::{PciDevice, PciDriver},
     cfg_space::PciCommonCfgOffset,
     common_device::PciCommonDevice,
@@ -106,9 +105,15 @@ impl PciDriver for PciXhciDriver {
             dma_window,
             interrupt_source,
         });
-        ostd::info!("PCI xHCI host saved: device {:04x}:{:04x}", device_id.vendor_id, device_id.device_id);
+        ostd::info!(
+            "PCI xHCI host saved: device {:04x}:{:04x}",
+            device_id.vendor_id,
+            device_id.device_id
+        );
 
-        self.devices.lock().push(Arc::new(PciXhciDevice::new(device_id)));
+        self.devices
+            .lock()
+            .push(Arc::new(PciXhciDevice::new(device_id)));
         Ok(Arc::new(PciXhciDevice::new(device_id)))
     }
 }
@@ -140,7 +145,10 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
             interrupt: interrupt_line as u32,
         };
     };
-    let Some(map) = pci_node.property("interrupt-map") else {
+    let (Some(map), Some(mask)) = (
+        pci_node.property("interrupt-map"),
+        pci_node.property("interrupt-map-mask"),
+    ) else {
         ostd::warn!("no PCI interrupt-map in DTB; using interrupt_line");
         return InterruptSourceInFdt {
             interrupt_parent: u32::MAX,
@@ -148,24 +156,30 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
         };
     };
 
+    // The pci-address cells encode bus << 16 | dev << 11 | fn << 8. Entries
+    // are matched on (address & interrupt-map-mask, pin), so the device's
+    // slot must be compared, not just the pin: two slots can share a pin
+    // but map to different PLIC lines.
+    let address_mask = u32::from_be_bytes(mask.value[..4].try_into().unwrap());
+    let location = device.location();
+    let device_address = ((location.bus as u32) << 16)
+        | ((location.device as u32) << 11)
+        | ((location.function as u32) << 8);
+    let device_address_masked = device_address & address_mask;
+
     // The map is a flattened list of
     //   (3-cell pci-address, pin, interrupt-parent phandle, interrupt-cell)
-    // entries. QEMU virt uses one-cell interrupt-parents; we match the
-    // device's pin and take the first matching entry. Cells are big-endian
-    // u32 values in the raw property bytes.
+    // entries. QEMU virt uses one-cell interrupt-parents. Cells are
+    // big-endian u32 values in the raw property bytes.
     let value = map.value;
     let mut offset = 0;
     while offset + 24 <= value.len() {
-        let read_u32 = |at: usize| {
-            u32::from_be_bytes(value[at..at + 4].try_into().unwrap())
-        };
-        let _addr0 = read_u32(offset);
-        let _addr1 = read_u32(offset + 4);
-        let _addr2 = read_u32(offset + 8);
+        let read_u32 = |at: usize| u32::from_be_bytes(value[at..at + 4].try_into().unwrap());
+        let addr0 = read_u32(offset) & address_mask;
         let pin = read_u32(offset + 12);
         let parent = read_u32(offset + 16);
         let irq = read_u32(offset + 20);
-        if pin == interrupt_pin as u32 {
+        if addr0 == device_address_masked && pin == interrupt_pin as u32 {
             ostd::info!("PCI xHCI interrupt-map: parent={:#x} irq={}", parent, irq);
             return InterruptSourceInFdt {
                 interrupt_parent: parent,
@@ -175,7 +189,10 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
         offset += 24;
     }
 
-    ostd::warn!("no interrupt-map entry for pin {}; using interrupt_line", interrupt_pin);
+    ostd::warn!(
+        "no interrupt-map entry for pin {}; using interrupt_line",
+        interrupt_pin
+    );
     InterruptSourceInFdt {
         interrupt_parent: u32::MAX,
         interrupt: interrupt_line as u32,
