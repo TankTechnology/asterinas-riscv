@@ -428,6 +428,7 @@ version = "0.1.0"
 dependencies = [
  "aster-input",
  "aster-logger",
+ "aster-softirq",
  "component",
  "fdt",
  "ostd",
