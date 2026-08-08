@@ -93,7 +93,7 @@ impl MemoryRegion {
     pub fn framebuffer(fb: &crate::boot::BootloaderFramebufferArg) -> Self {
         Self {
             base: fb.address,
-            len: (fb.width * fb.height * fb.bpp).div_ceil(8), // round up when divide with 8 (bits/Byte)
+            len: fb.size,
             typ: MemoryRegionType::Framebuffer,
         }
     }
