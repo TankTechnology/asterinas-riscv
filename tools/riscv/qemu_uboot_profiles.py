@@ -128,6 +128,11 @@ class MachineContract:
     required_random_source: str | None
     requires_resource_gate: bool
     provenance: str
+    # Optional override of the generated DTB's root `compatible` list. When
+    # set, the prepared payload DTB claims a different SoC than the QEMU
+    # machine's default (CONTRACT_APPROXIMATION: validate the kernel against
+    # a third board's DTB while still running on a supported machine).
+    root_compatible_override: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.memory or self.memory_bytes <= 0:
@@ -544,6 +549,78 @@ SIFIVE_U_LINUX_REFERENCE = QemuUbootProfile(
     validation=SIFIVE_U_LINUX_CONTROL,
 )
 
+# A third board validated as a CONTRACT_APPROXIMATION: the kernel payload DTB
+# claims a different SoC (e.g. StarFive VisionFive V2) while QEMU still runs
+# the virt machine. This proves the kernel's DTB-driven boot path accepts a
+# new board without any kernel change. See docs/porting/
+# riscv-qemu-board-methodology.md for the methodology.
+THIRD_BOARD = MachineContract(
+    name="third-board",
+    qemu_machine=QemuMachine.VIRT,
+    cpu="rv64,sv57=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+    memory="1G",
+    memory_bytes=0x4000_0000,
+    hart_count=1,
+    mmu_types=("riscv,sv48",),
+    storage_transport=StorageTransport.VIRTIO_EXT4,
+    dtb_provider=DtbProvider.GENERATED_PAYLOAD,
+    dtb_filename="qemu-third-board.dtb",
+    uboot_defconfig="qemu-riscv64_smode_defconfig",
+    uboot_binary="u-boot",
+    uboot_build_mode=UbootBuildMode.STANDARD_SMODE,
+    fidelity=Fidelity.CONTRACT_APPROXIMATION,
+    ad_extension="svade",
+    remove_rng_seed=False,
+    required_random_source=None,
+    requires_resource_gate=False,
+    provenance=(
+        "QEMU virt machine whose payload DTB is rewritten to claim a "
+        "third board (StarFive VisionFive V2 compatible); validates the "
+        "DTB-driven boot path against a new SoC without new kernel code"
+    ),
+    root_compatible_override=("starfive,visionfive-v2", "riscv-virtio"),
+)
+
+THIRD_BOARD_SMOKE = ValidationScenario(
+    name="third-board-asterinas-userspace-smoke",
+    bootargs="console=ttyS0 loglevel=info init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(
+            BootMilestone.ROOTFS_READY,
+            b"[kernel] rootfs is ready",
+        ),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            ASTERINAS_USERSPACE_SMOKE.completion_line,
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=ASTERINAS_USERSPACE_SMOKE.completion_line,
+    forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+    # Registered-milestone audit: the third board is a generic
+    # CONTRACT_APPROXIMATION, not a Megrez board, so the Megrez-specific
+    # STRICT checks (zkr/svpbmt confirmation, AP markers, timer proof) do
+    # not apply.
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=60.0,
+    post_terminal_timeout=0.25,
+)
+
+THIRD_BOARD_ASTERINAS_SMOKE = QemuUbootProfile(
+    name="third-board-asterinas-smoke",
+    machine=THIRD_BOARD,
+    boot_flow=UBOOT_BOOTI,
+    validation=THIRD_BOARD_SMOKE,
+)
+
 _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
     {
         profile.name: profile
@@ -554,6 +631,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             MEGREZ_SV48_SLOW,
             SIFIVE_U_ASTERINAS_SMOKE,
             SIFIVE_U_LINUX_REFERENCE,
+            THIRD_BOARD_ASTERINAS_SMOKE,
         )
     }
 )
