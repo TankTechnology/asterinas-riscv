@@ -57,15 +57,25 @@ def _validate_linux_image(image: bytes) -> None:
     if len(image) < LINUX_IMAGE_HEADER_SIZE:
         raise ValueError("Linux Image is shorter than its 64-byte header")
     image_size = struct.unpack_from("<Q", image, 0x10)[0]
-    if image_size != len(image):
+    # The RISC-V Image header's `image_size` is the size the loader must make
+    # available after loading (the kernel may be smaller on disk: Linux, for
+    # example, declares the uncompressed size including BSS). Requiring exact
+    # equality rejects valid upstream kernels; require the file to fit within
+    # the declared size instead.
+    if image_size < len(image):
         raise ValueError(
             f"Linux Image size is {len(image)} bytes but header declares {image_size}"
         )
-    entry_jump = struct.unpack_from("<I", image, 0x00)[0]
-    if entry_jump != LINUX_IMAGE_ENTRY_JUMP:
-        raise ValueError(f"Linux Image has invalid entry jump: {entry_jump:#x}")
-    if struct.unpack_from("<I", image, 0x04)[0] != 0:
-        raise ValueError("Linux Image second entry instruction must be zero")
+    # Linux 6.x RISC-V Images are EFI/PE binaries: the file begins with the
+    # "MZ" DOS signature and the PE header (with the entry point) lives at
+    # offset 0x40. Older Images start with `jal x0, +64` at offset 0.
+    is_pe = image[:2] == b"MZ"
+    if not is_pe:
+        entry_jump = struct.unpack_from("<I", image, 0x00)[0]
+        if entry_jump != LINUX_IMAGE_ENTRY_JUMP:
+            raise ValueError(f"Linux Image has invalid entry jump: {entry_jump:#x}")
+        if struct.unpack_from("<I", image, 0x04)[0] != 0:
+            raise ValueError("Linux Image second entry instruction must be zero")
     text_offset = struct.unpack_from("<Q", image, 0x08)[0]
     if text_offset != LINUX_IMAGE_TEXT_OFFSET:
         raise ValueError(
@@ -87,8 +97,12 @@ def _validate_linux_image(image: bytes) -> None:
     magic = struct.unpack_from("<I", image, 0x38)[0]
     if magic != RISCV_IMAGE_MAGIC:
         raise ValueError(f"Linux Image has invalid RISC-V magic: {magic:#x}")
-    if struct.unpack_from("<I", image, 0x3C)[0] != 0:
-        raise ValueError("Linux Image final reserved field must be zero")
+    # In the legacy format this field is reserved and must be zero; in the
+    # EFI/PE format it is e_lfanew, the file offset of the PE header (0x40).
+    if struct.unpack_from("<I", image, 0x3C)[0] != (0x40 if is_pe else 0):
+        raise ValueError(
+            "Linux Image final field must be zero (legacy) or the PE offset (EFI/PE)"
+        )
 
 
 def payload_ranges(artifacts: ArtifactExpectations) -> dict[str, range]:
