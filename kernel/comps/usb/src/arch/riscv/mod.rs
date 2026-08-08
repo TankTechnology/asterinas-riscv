@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use core::ops::Range;
 
 use aster_input::input_dev::RegisteredInputDevice;
-use aster_softirq::Taskless;
 use fdt::node::FdtNode;
 use ostd::{
     arch::{
@@ -15,8 +14,7 @@ use ostd::{
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
-    sync::Mutex,
-    task::Task,
+    sync::{Mutex, Waiter, Waker},
 };
 use spin::Once;
 
@@ -298,7 +296,7 @@ pub(super) fn init() {
 }
 
 static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
-static USB_TASKLESS: Once<Arc<Taskless>> = Once::new();
+static KEYBOARD_WAKER: Once<Arc<Waker>> = Once::new();
 static IRQ_LINE: Once<ostd::arch::irq::MappedIrqLine> = Once::new();
 
 /// Persistent state for the deferred keyboard task.
@@ -426,9 +424,10 @@ pub(crate) fn run_keyboard_interrupt_driven(
     };
     KEYBOARD.call_once(|| keyboard);
 
-    USB_TASKLESS.call_once(|| Taskless::new(process_deferred_keyboard));
-
-    // Register the xHCI event-ring interrupt with the PLIC.
+    // Register the xHCI event-ring interrupt with the PLIC. The handler
+    // only wakes the keyboard task; all report processing happens in the
+    // task, which runs in task context (device registration, evdev dispatch
+    // and tty input all require it).
     let mut irq_line = match IrqLine::alloc() {
         Ok(line) => line,
         Err(_) => {
@@ -436,11 +435,10 @@ pub(crate) fn run_keyboard_interrupt_driven(
             return;
         }
     };
-    let taskless = USB_TASKLESS.get().unwrap().clone();
     irq_line.on_active(move |_| {
-        // The event ring is drained under the keyboard lock; the handler only
-        // schedules the deferred task, which does the actual work.
-        taskless.schedule_urgent();
+        if let Some(waker) = KEYBOARD_WAKER.get() {
+            waker.wake_up();
+        }
     });
 
     let irq_chip = match arch_irq::IRQ_CHIP.get() {
@@ -459,17 +457,21 @@ pub(crate) fn run_keyboard_interrupt_driven(
     };
     IRQ_LINE.call_once(|| mapped);
 
+    // This thread becomes the keyboard thread: it drains the report queue
+    // in task context (device registration, evdev dispatch and tty input
+    // all require it) and sleeps until the interrupt wakes it again.
+    let (waiter, waker) = Waiter::new_pair();
+    KEYBOARD_WAKER.call_once(|| waker);
+
     // Diagnostics: report the root-hub port status so a missing keyboard
     // connection or stalled reset is visible before the discovery loop.
     log_port_status(&mmio);
 
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
-    // Drain any report that arrived during setup, then hand over to the
-    // interrupt-driven path. The task stays alive to own the keyboard.
-    USB_TASKLESS.get().unwrap().schedule_urgent();
     loop {
-        Task::yield_now();
+        process_deferred_keyboard();
+        waiter.wait();
     }
 }
 
