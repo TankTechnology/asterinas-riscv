@@ -22,6 +22,7 @@ use spin::Once;
 use crate::keyboard::{HidBootKeyboard, register};
 
 mod capability;
+mod pci;
 
 const EIC7700_DWC3_MMIO_SIZE: usize = 0x1_0000;
 const EIC7700_USB0_MMIO_START: usize = 0x5048_0000;
@@ -267,6 +268,10 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
 }
 
 pub(super) fn init() {
+    // Register the PCI xHCI driver so PCI-host machines (QEMU virt, x86)
+    // can enumerate the controller. The DWC3 MMIO path below is selected
+    // only when the DTB chooses it via /chosen/asterinas,usb-host.
+    pci::init();
     let device_tree = DEVICE_TREE.get().unwrap();
     let selector = device_tree
         .find_node("/chosen")
@@ -370,33 +375,32 @@ fn process_deferred_keyboard() {
     }
 }
 
-/// Interrupt-driven USB boot keyboard loop.
+/// Starts the interrupt-driven keyboard loop for one xHCI host.
 ///
-/// The xHCI event ring interrupt (from the DTB `interrupt-parent`/`interrupt`
-/// properties) drives the keyboard: the handler drains the event ring and
-/// schedules a deferred task that reads the completed report and emits evdev
-/// events. No polling loop runs while the keyboard is idle.
-pub fn run_polling() {
-    let Some(resources) = HOST_RESOURCES.get() else {
-        return;
-    };
-    if prepare_dwc3_host(&resources.mmio).is_err() {
-        ostd::warn!("failed to select the DWC3 host role");
+/// Opens the boot keyboard over the given MMIO window and DMA window, then
+/// wires the xHCI event-ring interrupt (from `interrupt_parent`/`interrupt`)
+/// to a deferred task that reads completed reports and emits evdev events.
+/// Both the DWC3 MMIO host (from `/chosen/asterinas,usb-host`) and the PCI
+/// xHCI adapter call this. No polling loop runs while the keyboard is idle.
+pub(crate) fn run_keyboard_interrupt_driven(
+    mmio: IoMem,
+    dma_window: ostd::mm::dma::DmaWindow,
+    interrupt_source: InterruptSourceInFdt,
+) {
+    if KEYBOARD.get().is_some() {
+        ostd::warn!("USB keyboard already running");
         return;
     }
     ostd::info!(
-        "Starting interrupt-driven xHCI host: mmio={:#x?}, bytes={:#x}, irq={}:{}",
-        resources.config.mmio_range,
-        resources.mmio.size(),
-        resources.config.interrupt_parent,
-        resources.config.interrupt,
+        "Starting interrupt-driven xHCI host: mmio size={:#x}, irq={}:{}",
+        mmio.size(),
+        interrupt_source.interrupt_parent,
+        interrupt_source.interrupt,
     );
 
-    let keyboard = match PollingUsbKeyboard::open(resources.mmio.clone(), resources.config.dma_window)
-    {
+    let keyboard = match PollingUsbKeyboard::open(mmio.clone(), dma_window) {
         Ok(keyboard) => Mutex::new(keyboard),
         Err(error) => {
-            log_xhci_snapshot(&resources.mmio);
             ostd::warn!("xHCI keyboard startup failed: {:?}", error);
             return;
         }
@@ -427,10 +431,6 @@ pub fn run_polling() {
             return;
         }
     };
-    let interrupt_source = InterruptSourceInFdt {
-        interrupt_parent: resources.config.interrupt_parent,
-        interrupt: resources.config.interrupt,
-    };
     let mapped = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
         Ok(mapped) => mapped,
         Err(_) => {
@@ -448,6 +448,38 @@ pub fn run_polling() {
     loop {
         Task::yield_now();
     }
+}
+
+/// Interrupt-driven USB boot keyboard loop.
+///
+/// Prefers the PCI-discovered xHCI host (QEMU virt, x86); falls back to the
+/// DWC3 MMIO host selected by `/chosen/asterinas,usb-host` (Megrez).
+pub fn run_polling() {
+    if let Some(host) = pci::pci_host_config() {
+        ostd::info!("Using PCI xHCI host for USB keyboard");
+        run_keyboard_interrupt_driven(
+            host.mmio.clone(),
+            host.dma_window,
+            host.interrupt_source,
+        );
+        return;
+    }
+
+    let Some(resources) = HOST_RESOURCES.get() else {
+        return;
+    };
+    if prepare_dwc3_host(&resources.mmio).is_err() {
+        ostd::warn!("failed to select the DWC3 host role");
+        return;
+    }
+    run_keyboard_interrupt_driven(
+        resources.mmio.clone(),
+        resources.config.dma_window,
+        InterruptSourceInFdt {
+            interrupt_parent: resources.config.interrupt_parent,
+            interrupt: resources.config.interrupt,
+        },
+    );
 }
 
 #[cfg(ktest)]
