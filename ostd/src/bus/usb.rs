@@ -271,6 +271,12 @@ impl PollingUsbKeyboard {
             }
         }
 
+        // Enable the xHCI global interrupt (USBCMD.INTE). Without it the
+        // controller never asserts the event-ring interrupt, so port/reset
+        // completion events are never delivered and device enumeration
+        // stalls even though the keyboard is connected.
+        host.enable_irq().map_err(|_| UsbKeyboardError::HostInit)?;
+
         let discovery_deadline = Deadline::after(KEYBOARD_DISCOVERY_TIMEOUT);
         let (device_info, interface) = loop {
             let devices = match drive(host.probe_devices(), &events) {

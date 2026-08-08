@@ -3,6 +3,7 @@
 use alloc::sync::Arc;
 use core::ops::Range;
 
+use aster_input::input_dev::RegisteredInputDevice;
 use aster_softirq::Taskless;
 use fdt::node::FdtNode;
 use ostd::{
@@ -32,18 +33,8 @@ const EIC7700_DRAM_SIZE: usize = 0x4_0000_0000;
 const PAGE_SIZE: usize = 0x1000;
 const USB_HOST_SELECTOR: &str = "asterinas,usb-host";
 const XHCI_CAPLENGTH: usize = 0x00;
-const XHCI_RTSOFF: usize = 0x18;
-const XHCI_USBCMD: usize = 0x00;
-const XHCI_USBSTS: usize = 0x04;
-const XHCI_CRCR: usize = 0x18;
-const XHCI_DCBAAP: usize = 0x30;
-const XHCI_CONFIG: usize = 0x38;
+const XHCI_HCSPARAMS1: usize = 0x04;
 const XHCI_PORTSC_1: usize = 0x400;
-const XHCI_INTERRUPTER_0: usize = 0x20;
-const XHCI_IMAN: usize = 0x00;
-const XHCI_ERSTSZ: usize = 0x08;
-const XHCI_ERSTBA: usize = 0x10;
-const XHCI_ERDP: usize = 0x18;
 const DWC3_GCTL: usize = 0xc110;
 const DWC3_GCTL_PRTCAPDIR_MASK: u32 = 0x3 << 12;
 const DWC3_GCTL_PRTCAP_HOST: u32 = 0x1 << 12;
@@ -80,36 +71,6 @@ fn prepare_dwc3_host(mmio: &IoMem) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
-}
-
-fn log_xhci_snapshot(mmio: &IoMem) {
-    let Ok(cap_length) = mmio.read_once::<u8>(XHCI_CAPLENGTH) else {
-        ostd::warn!("failed to read xHCI diagnostic registers");
-        return;
-    };
-    let Ok(runtime_offset) = mmio.read_once::<u32>(XHCI_RTSOFF) else {
-        ostd::warn!("failed to read xHCI runtime offset");
-        return;
-    };
-    let operational = usize::from(cap_length);
-    let interrupter = (runtime_offset as usize & !0x1f) + XHCI_INTERRUPTER_0;
-    let read_u32 = |offset| mmio.read_once::<u32>(offset).ok();
-    let read_u64 = |offset| mmio.read_once::<u64>(offset).ok();
-
-    ostd::warn!(
-        "xHCI timeout snapshot: GCTL={:x?}, USBCMD={:x?}, USBSTS={:x?}, CRCR={:x?}, DCBAAP={:x?}, CONFIG={:x?}, PORTSC1={:x?}, IMAN={:x?}, ERSTSZ={:x?}, ERSTBA={:x?}, ERDP={:x?}",
-        read_u32(DWC3_GCTL),
-        read_u32(operational + XHCI_USBCMD),
-        read_u32(operational + XHCI_USBSTS),
-        read_u64(operational + XHCI_CRCR),
-        read_u64(operational + XHCI_DCBAAP),
-        read_u32(operational + XHCI_CONFIG),
-        read_u32(operational + XHCI_PORTSC_1),
-        read_u32(interrupter + XHCI_IMAN),
-        read_u32(interrupter + XHCI_ERSTSZ),
-        read_u64(interrupter + XHCI_ERSTBA),
-        read_u64(interrupter + XHCI_ERDP),
-    );
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,12 +301,29 @@ static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
 static USB_TASKLESS: Once<Arc<Taskless>> = Once::new();
 static IRQ_LINE: Once<ostd::arch::irq::MappedIrqLine> = Once::new();
 
+/// Persistent state for the deferred keyboard task.
+///
+/// The decoder must remember the previous report (modifiers, usages) so that
+/// a key release arriving in a later interrupt batch still emits a release
+/// event, and the input device is registered exactly once for the lifetime
+/// of the keyboard.
+struct DeferredKeyboardState {
+    decoder: HidBootKeyboard,
+    registered: Option<RegisteredInputDevice>,
+}
+
+static DEFERRED_KEYBOARD: Once<Mutex<DeferredKeyboardState>> = Once::new();
+
 fn process_deferred_keyboard() {
     let Some(keyboard) = KEYBOARD.get() else {
         return;
     };
-    let mut decoder = HidBootKeyboard::new();
-    let mut registered = None;
+    let deferred = DEFERRED_KEYBOARD.call_once(|| {
+        Mutex::new(DeferredKeyboardState {
+            decoder: HidBootKeyboard::new(),
+            registered: None,
+        })
+    });
     loop {
         let mut keyboard_guard = keyboard.lock();
         let report = match keyboard_guard.poll_report() {
@@ -359,9 +337,15 @@ fn process_deferred_keyboard() {
                 return;
             }
         };
-        let events = decoder.decode(report);
+        let mut deferred_guard = deferred.lock();
+        let events = deferred_guard.decoder.decode(report);
+        ostd::debug!(
+            "USB boot keyboard report {:02x?}: {} events",
+            report,
+            events.len()
+        );
         if !events.is_empty() {
-            let device = registered.get_or_insert_with(|| {
+            let device = deferred_guard.registered.get_or_insert_with(|| {
                 let info = keyboard_guard.info();
                 ostd::info!(
                     "USB boot keyboard registered: {:04x}:{:04x}",
@@ -371,6 +355,41 @@ fn process_deferred_keyboard() {
                 register(info.vendor_id, info.product_id)
             });
             device.submit_events(&events);
+        }
+    }
+}
+
+/// Logs the xHCI root-hub PORTSC registers (one per port) for bring-up.
+fn log_port_status(mmio: &IoMem) {
+    // Read the whole 32-bit capability word; bit 0-7 is CAPLENGTH.
+    let Ok(cap_word) = mmio.read_once::<u32>(XHCI_CAPLENGTH) else {
+        ostd::warn!("failed to read xHCI capability");
+        return;
+    };
+    let operational = (cap_word & 0xFF) as usize;
+    // MaxPorts is bits 31:24 of HCSPARAMS1 (offset 0x04), matching the
+    // xHCI spec (Linux's HCS_MAX_PORTS) and QEMU's qemu-xhci.
+    let Ok(hcsparams1) = mmio.read_once::<u32>(XHCI_HCSPARAMS1) else {
+        ostd::warn!("failed to read xHCI HCSPARAMS1");
+        return;
+    };
+    let max_ports = (hcsparams1 >> 24) & 0xFF;
+    for i in 0..max_ports {
+        let offset = operational + XHCI_PORTSC_1 + (i as usize) * 4;
+        match mmio.read_once::<u32>(offset) {
+            Ok(portsc) => {
+                ostd::info!(
+                    "xHCI PORTSC{}: connected={}, enabled={}, reset={}, speed={}",
+                    i + 1,
+                    portsc & 0x1,
+                    (portsc >> 1) & 0x1,
+                    (portsc >> 4) & 0x1,
+                    (portsc >> 10) & 0xF,
+                );
+            }
+            Err(error) => {
+                ostd::warn!("xHCI PORTSC{} read failed at {offset:#x}: {error:?}", i + 1);
+            }
         }
     }
 }
@@ -440,6 +459,10 @@ pub(crate) fn run_keyboard_interrupt_driven(
     };
     IRQ_LINE.call_once(|| mapped);
 
+    // Diagnostics: report the root-hub port status so a missing keyboard
+    // connection or stalled reset is visible before the discovery loop.
+    log_port_status(&mmio);
+
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
     // Drain any report that arrived during setup, then hand over to the
@@ -457,11 +480,7 @@ pub(crate) fn run_keyboard_interrupt_driven(
 pub fn run_polling() {
     if let Some(host) = pci::pci_host_config() {
         ostd::info!("Using PCI xHCI host for USB keyboard");
-        run_keyboard_interrupt_driven(
-            host.mmio.clone(),
-            host.dma_window,
-            host.interrupt_source,
-        );
+        run_keyboard_interrupt_driven(host.mmio.clone(), host.dma_window, host.interrupt_source);
         return;
     }
 
