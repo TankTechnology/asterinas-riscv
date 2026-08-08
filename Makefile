@@ -320,6 +320,38 @@ test_riscv_sifive_u test_riscv_sifive_u_linux_reference: test_riscv_uboot_booti_
 		--marker-event "$(SIFIVE_U_OUT)/marker-event.txt" \
 		--result "$(SIFIVE_U_OUT)/result.json"
 
+RISCV_THIRD_BOARD_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/third-board
+RISCV_THIRD_BOARD_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_THIRD_BOARD_OUT_DIR),$(CURDIR)/target/qemu-uboot/third-board)
+
+.PHONY: test_riscv_third_board
+test_riscv_third_board: THIRD_BOARD_PROFILE := third-board-asterinas-smoke
+test_riscv_third_board: THIRD_BOARD_KERNEL := $(ASTERINAS_RISCV_BOOTI)
+test_riscv_third_board: THIRD_BOARD_INITRAMFS := $(ASTERINAS_INITRAMFS)
+test_riscv_third_board: THIRD_BOARD_KERNEL_LABEL := ASTERINAS_RISCV_BOOTI
+test_riscv_third_board: THIRD_BOARD_INITRAMFS_LABEL := ASTERINAS_INITRAMFS
+test_riscv_third_board: THIRD_BOARD_OUT := $(RISCV_THIRD_BOARD_OUT_DIR_EFFECTIVE)
+
+test_riscv_third_board: test_riscv_uboot_booti_unit
+	@test -s "$(THIRD_BOARD_KERNEL)" || \
+		(echo "$(THIRD_BOARD_KERNEL_LABEL) is required and must be non-empty" >&2; exit 2)
+	@test -s "$(THIRD_BOARD_INITRAMFS)" || \
+		(echo "$(THIRD_BOARD_INITRAMFS_LABEL) is required and must be non-empty" >&2; exit 2)
+	@ASTERINAS_RISCV_BOOTI="$(THIRD_BOARD_KERNEL)" \
+		ASTERINAS_INITRAMFS="$(THIRD_BOARD_INITRAMFS)" \
+		QEMU_UBOOT_PROFILE="$(THIRD_BOARD_PROFILE)" \
+		QEMU_UBOOT_OUT_DIR="$(THIRD_BOARD_OUT)" \
+		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
+		tools/riscv/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu_uboot_booti.py run \
+		--profile "$(THIRD_BOARD_PROFILE)" \
+		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
+		--boot-disk "$(THIRD_BOARD_OUT)/boot.ext4" \
+		--manifest "$(THIRD_BOARD_OUT)/artifacts.json" \
+		--dtb-audit "$(THIRD_BOARD_OUT)/qemu-dtb-audit.json" \
+		--serial-log "$(THIRD_BOARD_OUT)/serial.log" \
+		--marker-event "$(THIRD_BOARD_OUT)/marker-event.txt" \
+		--result "$(THIRD_BOARD_OUT)/result.json"
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable
