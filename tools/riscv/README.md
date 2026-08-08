@@ -36,9 +36,16 @@ Generated U-Boot, DTB, disk, logs, and JSON evidence stay below `target/`.
 
 Use the same Asterinas artifacts to validate the SiFive UART path through U-Boot and userspace.
 
+**The kernel must be built in Sv39 mode** (`FEATURES=riscv_sv39_mode`): the
+QEMU `sifive_u` machine models only Sv39-capable harts (see the contract's
+`mmu_types`), and a default Sv48 image page-faults on the early DTB read.
+This is the single most common cause of a failed sifive_u run.
+
 ```bash
+make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
+python3 tools/riscv/make_qemu_uboot_initramfs.py target/qemu-uboot/marker-initramfs.cpio.gz
 make test_riscv_sifive_u \
-  ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image" \
   ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/marker-initramfs.cpio.gz"
 ```
 
