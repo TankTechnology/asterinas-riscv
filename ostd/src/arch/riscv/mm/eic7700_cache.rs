@@ -24,6 +24,17 @@ const DIE0_L3_FLUSH_REGISTER: usize = 0x0201_0200;
 
 static L3_FLUSH_REGISTER: Once<SpinLock<IoMem<Sensitive>>> = Once::new();
 
+/// Returns whether one device-tree `compatible` string identifies an ESWIN
+/// EIC7700 SoC.
+///
+/// This is the predicate behind the sole gate that decides whether the
+/// EIC7700-specific L3 cache flush register is reserved. It is kept as a pure
+/// function so that the isolation behavior (non-EIC7700 boards must not touch
+/// the register) can be unit-tested without a device tree.
+fn is_eic7700_compatible(compatible: &str) -> bool {
+    compatible == "eswin,eic7700"
+}
+
 pub(super) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
     let is_eic7700 = DEVICE_TREE
         .get()
@@ -31,7 +42,7 @@ pub(super) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
         .root()
         .compatible()
         .all()
-        .any(|compatible| compatible == "eswin,eic7700");
+        .any(is_eic7700_compatible);
     if !is_eic7700 {
         return;
     }
@@ -73,8 +84,25 @@ fn checked_cache_line_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
 
 #[cfg(ktest)]
 mod tests {
-    use super::{DIE0_DRAM_END, DIE0_DRAM_START, checked_cache_line_range};
+    use super::{
+        DIE0_DRAM_END, DIE0_DRAM_START, checked_cache_line_range, is_eic7700_compatible,
+    };
     use crate::prelude::ktest;
+
+    #[ktest]
+    fn detects_eic7700_from_root_compatible() {
+        assert!(is_eic7700_compatible("eswin,eic7700"));
+    }
+
+    #[ktest]
+    fn rejects_non_eic7700_platforms() {
+        // QEMU virt and SiFive board root compatibles must not trigger the
+        // EIC7700 L3 flush register reservation.
+        assert!(!is_eic7700_compatible("riscv-virtio"));
+        assert!(!is_eic7700_compatible("sifive,hifive-unleashed-a00"));
+        assert!(!is_eic7700_compatible("eswin,eic7700-prefix"));
+        assert!(!is_eic7700_compatible("eswin,eic7701"));
+    }
 
     #[ktest]
     fn aligns_flush_range_outward_to_64_bytes() {
