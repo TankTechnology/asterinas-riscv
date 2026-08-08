@@ -101,6 +101,10 @@ pub(crate) fn init() -> Option<RangeInclusive<u8>> {
         Some(0..=255)
     };
 
+    // RISC-V firmware does not initialize PCI BARs; allocate them from the
+    // PCIe node's memory ranges.
+    init_mmio_allocator_from_fdt(&pci);
+
     let addr_start = region.starting_address as usize;
     let addr_end = addr_start.checked_add(region.size.unwrap()).unwrap();
     PCI_ECAM_CFG_SPACE.call_once(|| IoMem::acquire(addr_start..addr_end).unwrap());
@@ -112,4 +116,75 @@ pub(crate) const MSIX_DEFAULT_MSG_ADDR: u32 = 0x2400_0000;
 
 pub(crate) fn construct_remappable_msix_address(_remapping_index: u32) -> u32 {
     unimplemented!()
+}
+
+/// Allocates an MMIO address range using the global allocator.
+///
+/// RISC-V platforms (QEMU virt, SiFive) do not initialize PCI BARs in
+/// firmware; the kernel must assign base addresses from the PCIe node's
+/// memory ranges. Mirrors the LoongArch `alloc_mmio`.
+pub(crate) fn alloc_mmio(layout: core::alloc::Layout) -> Option<ostd::mm::Paddr> {
+    let allocator = MMIO_ALLOCATOR.get()?;
+    allocator.lock().allocate(layout)
+}
+
+/// A simple MMIO allocator managing a linear region.
+///
+/// The starting address of a PCI memory BAR is allocated within the
+/// PCIe node's memory ranges (the `ranges` property entry with PCI space
+/// type 0x02, i.e. memory).
+struct MmioAllocator {
+    base: ostd::mm::Paddr,
+    size: ostd::mm::Paddr,
+    offset: ostd::mm::Paddr,
+}
+
+impl MmioAllocator {
+    /// Creates a new MMIO allocator with a given base and size.
+    fn new(base: ostd::mm::Paddr, size: ostd::mm::Paddr) -> Self {
+        Self {
+            base,
+            size,
+            offset: 0,
+        }
+    }
+
+    /// Allocates a region of the given layout.
+    fn allocate(&mut self, layout: core::alloc::Layout) -> Option<ostd::mm::Paddr> {
+        let aligned_offset = self.offset.next_multiple_of(layout.align());
+        if aligned_offset.checked_add(layout.size())? > self.size {
+            return None;
+        }
+        let result = self.base + aligned_offset;
+        self.offset = aligned_offset + layout.size();
+        Some(result)
+    }
+}
+
+static MMIO_ALLOCATOR: Once<ostd::sync::SpinLock<MmioAllocator>> = Once::new();
+
+/// Initializes the MMIO allocator from the PCIe node's `ranges` property.
+fn init_mmio_allocator_from_fdt(node: &fdt::node::FdtNode) {
+    let Some(ranges) = node.property("ranges") else {
+        warn!("PCIe node has no 'ranges' property; PCI BARs cannot be allocated");
+        return;
+    };
+    let data = ranges.value;
+
+    let entry_size = 7 * 4; // Each entry is 7 x u32 = 28 bytes
+    let mut i = 0;
+    while i + entry_size <= data.len() {
+        let pci_space = u32::from_be_bytes(data[i..i + 4].try_into().unwrap());
+        let _pci_addr = u64::from_be_bytes(data[i + 4..i + 12].try_into().unwrap());
+        let cpu_addr = u64::from_be_bytes(data[i + 12..i + 20].try_into().unwrap());
+        let size = u64::from_be_bytes(data[i + 20..i + 28].try_into().unwrap());
+
+        // Only initialize with memory-type region.
+        if (pci_space >> 24) == 0x2 {
+            MMIO_ALLOCATOR
+                .call_once(|| ostd::sync::SpinLock::new(MmioAllocator::new(cpu_addr as usize, size as usize)));
+            break;
+        }
+        i += entry_size;
+    }
 }
