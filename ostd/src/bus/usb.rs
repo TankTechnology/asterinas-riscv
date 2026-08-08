@@ -199,6 +199,14 @@ fn abandon_open_device(mmio: IoMem, host: USBHost, events: EventHandler, device:
 }
 
 /// A polling USB HID boot keyboard backed by CrabUSB's xHCI driver.
+///
+/// # Safety
+///
+/// `Send` and `Sync` are sound because the keyboard is only ever accessed
+/// through a `Mutex` from a single worker task, the xHCI MMIO is managed by
+/// OSTD's `IoMem`, and CrabUSB's event ring is internally synchronized. The
+/// underlying controller is a single logical device; there is no per-thread
+/// state to race.
 pub struct PollingUsbKeyboard {
     // CrabUSB has no controller shutdown API. Keep DMA-visible state alive even if the polling
     // worker exits after a transfer error.
@@ -236,6 +244,12 @@ impl ReportEndpoint for Endpoint {
         }
     }
 }
+
+// SAFETY: See the `PollingUsbKeyboard` docs: exclusive worker-task access
+// through a `Mutex`, OSTD-managed MMIO, and internally synchronized event
+// ring make the type safe to share.
+unsafe impl Send for PollingUsbKeyboard {}
+unsafe impl Sync for PollingUsbKeyboard {}
 
 impl PollingUsbKeyboard {
     /// Starts the firmware-configured xHCI controller and discovers one boot keyboard.
@@ -373,6 +387,19 @@ impl PollingUsbKeyboard {
         inner.events.handle_event();
         let mut context = Context::from_waker(Waker::noop());
         inner.reports.poll(&mut inner.endpoint, &mut context)
+    }
+
+    /// Drives the xHCI event ring from an interrupt context.
+    ///
+    /// Returns `true` when a transfer activity event was seen, in which case
+    /// the caller should schedule the deferred keyboard task to read the
+    /// completed report. This is safe from interrupt context because
+    /// [`EventHandler::handle_event`] only reads the event ring.
+    pub fn handle_event_irq(&self) -> bool {
+        matches!(
+            self.inner.events.handle_event(),
+            crab_usb::Event::TransferActivity { count } if count > 0
+        )
     }
 }
 
