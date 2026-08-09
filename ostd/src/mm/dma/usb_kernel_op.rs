@@ -185,8 +185,9 @@ impl DmaOp for UsbKernelOp {
         self.alloc(constraints, layout)
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         self.dealloc(handle);
+        Ok(())
     }
 
     unsafe fn map_streaming(
