@@ -16,7 +16,7 @@ serial_path:
 _start:
     li a0, -100
     la a1, serial_path
-    li a2, 1
+    li a2, 2
     li a3, 0
     li a7, 56
     ecall
@@ -38,8 +38,24 @@ _start:
     add a1, a1, a0
     bnez a2, 3b
 
+    /* Echo loop: read one byte from ttyS0 and write it back. */
 2:
+    mv a0, s0
+    la a1, echo_buf
+    li a2, 1
+    li a7, 63
+    ecall
+    blez a0, 2b
+    mv a0, s0
+    la a1, echo_buf
+    li a2, 1
+    li a7, 64
+    ecall
     j 2b
     .size _start, . - _start
+
+    .section .bss
+echo_buf:
+    .skip 1
 
     .section .note.GNU-stack,"",@progbits
