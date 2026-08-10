@@ -41,6 +41,8 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "aarch64", path = "arch/arm/mod.rs")]
 mod arch;
 
+#[cfg(target_arch = "riscv64")]
+mod boot_reboot;
 pub mod context;
 mod cpu;
 pub mod device;
