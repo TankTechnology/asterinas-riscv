@@ -38,6 +38,7 @@
     (import ./overlays/systemd/default.nix)
     (import ./overlays/jtreg/default.nix)
     (import ./overlays/codex/default.nix)
+    (import ./overlays/bison/default.nix)
   ];
 
   # The Asterinas NixOS special options.
