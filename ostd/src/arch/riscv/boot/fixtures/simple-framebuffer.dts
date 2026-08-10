@@ -1,0 +1,52 @@
+/dts-v1/;
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	framebuffer@fd000000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0 0xfd000000 0x0 0x00800000>;
+		width = <1920>;
+		height = <1080>;
+		stride = <7680>;
+		format = "x8r8g8b8";
+		status = "disabled";
+	};
+
+	framebuffer@fd400000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0 0xfd400000 0x0 0x00800000>;
+		width = <1920>;
+		height = <1080>;
+		format = "x8r8g8b8";
+	};
+
+	framebuffer@fd800000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0 0xfd800000 0x0 0x00800000>;
+		width = <1920>;
+		height = <1080>;
+		stride = <7680>;
+		format = "x8r8g8b8";
+		status = "okay";
+	};
+
+	framebuffer@fe000000 {
+		compatible = "vendor,framebuffer";
+		reg = <0x0 0xfe000000 0x0 0x00800000>;
+		width = <1920>;
+		height = <1080>;
+		stride = <7680>;
+		format = "x8r8g8b8";
+	};
+
+	framebuffer@fffffffffffff000 {
+		compatible = "simple-framebuffer";
+		reg = <0xffffffff 0xfffff000 0x0 0x00002000>;
+		width = <1920>;
+		height = <1080>;
+		stride = <7680>;
+		format = "x8r8g8b8";
+	};
+};

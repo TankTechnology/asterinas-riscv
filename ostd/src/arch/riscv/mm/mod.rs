@@ -294,10 +294,12 @@ impl PageTableEntry {
 
         match prop.cache {
             CachePolicy::Writeback => (),
-            CachePolicy::Uncacheable => {
-                // TODO: Currently Asterinas uses `Uncacheable` only for I/O
-                // memory. Normal memory can also be `Noncacheable`, where the
-                // PBMT should be set to `PBMT_NC`.
+            CachePolicy::WriteCombining | CachePolicy::Uncacheable => {
+                // RISC-V has no write-combining attribute; map it as
+                // uncacheable I/O so a display buffer never races with the
+                // scanout without an explicit cache flush. Normal memory
+                // could use PBMT_NC instead, but only I/O memory currently
+                // requests these policies.
                 if has_extensions(IsaExtensions::SVPBMT) {
                     flags |= PteFlags::PBMT_IO.bits()
                 }
