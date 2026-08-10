@@ -125,27 +125,44 @@ impl<D: TtyDriver> Tty<D> {
     /// This method returns the number of bytes pushed or fails with an error if no bytes can be
     /// pushed because the buffer is full.
     pub fn push_input(&self, chs: &[u8]) -> Result<usize> {
-        let mut ldisc = self.ldisc.lock();
-        let mut echo = self.driver.echo_callback();
+        // Echo bytes are collected under the lock but written only after it
+        // is released, so a slow output device never stalls input processing.
+        let mut echoes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
         let mut len = 0;
-        for ch in chs {
-            let res = ldisc.push_char(
-                *ch,
-                |signum| {
+        {
+            let mut ldisc = self.ldisc.lock();
+            for ch in chs {
+                let res = ldisc.push_char(*ch, |signum| {
                     if let Some(foreground) = self.job_control.foreground() {
                         broadcast_signal_async(Arc::downgrade(&foreground), signum);
                     }
-                },
-                &mut echo,
-            );
-            if res.is_err() && len == 0 {
-                return_errno_with_message!(Errno::EAGAIN, "the line discipline is full");
-            } else if res.is_err() {
-                break;
-            } else {
-                len += 1;
+                });
+                match res {
+                    Ok(Some((first, second))) => {
+                        echoes.push(first);
+                        if let Some(second) = second {
+                            echoes.push(second);
+                        }
+                        len += 1;
+                    }
+                    Ok(None) => len += 1,
+                    Err(_) => {
+                        if len == 0 {
+                            return_errno_with_message!(
+                                Errno::EAGAIN,
+                                "the line discipline is full"
+                            );
+                        }
+                        break;
+                    }
+                }
             }
+        }
+
+        if !echoes.is_empty() {
+            let mut echo = self.driver.echo_callback();
+            echo(&echoes);
         }
 
         self.pollee.notify(IoEvents::IN | IoEvents::RDNORM);
