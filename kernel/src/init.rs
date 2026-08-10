@@ -20,6 +20,9 @@ pub(super) fn main() {
     ostd::early_println!("OSTD initialized. Preparing components.");
     component::init_all(InitStage::Bootstrap, component::parse_metadata!()).unwrap();
 
+    #[cfg(target_arch = "riscv64")]
+    crate::boot_reboot::arm_if_requested();
+
     init();
 
     // Initialize the per-CPU states for BSP.
