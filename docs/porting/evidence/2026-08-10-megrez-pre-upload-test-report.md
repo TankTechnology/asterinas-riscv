@@ -54,6 +54,21 @@
 模拟边界内全部通过：**构建 ✓、Megrez Sv48 启动链 ✓、键盘全覆盖 ✓、DWC3 失败安全 ✓、ktest ✓**。
 唯一无法模拟的 DWC3 硬件交互由 `reboot_after=400` + 外部 reset 兜底。**具备上板条件。**
 
+## 8. 阶段 A 补充（恢复能力移植后的新基线，2026-08-10 晚）
+
+移植 `boot_reboot`（`c4ae2212c`）后在新基线重验：
+
+| 项 | 结果 |
+|---|---|
+| A1 boot_reboot ktest | ✅ 7/7 ok（deadline 计算/饱和/armed 状态） |
+| A1 aster-kernel ktest | ⚠️ 133/134（1 个已知失败：`tty_echo_runs_without_the_line_discipline_lock`——8/3 自加测试与锁内 echo 实现不一致，**运行时无影响**，上板后修） |
+| A2 Megrez 模拟 | ✅ PASS（kernel `5e6c2295...`） |
+| A3 键盘回归 | ✅ 回显 `aA1^M ^Caaa`、零 panic、注册 1 次 |
+| A4 恢复复验 | ✅ `reboot_after=20` → SBI ColdReboot 二次启动 |
+| A5 冻结产物 | kernel `5e6c2295...`/crc `652863c5`；initrd `766d70e2...`/crc `6ffe932d`；dtb `22a33eae...`/crc `c5715b0f` |
+
+**流程教训**：ktest 与正常构建/键盘测试**必须串行**（osdk test 会覆盖 `aster-kernel-osdk-bin.qemu_elf` 为测试内核）。
+
 ## 7. 上板时（当天）必做
 
 1. 重新构建 → 跑 `verify_megrez_sim.sh` 复验（记录当次身份）
