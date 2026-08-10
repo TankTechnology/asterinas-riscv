@@ -93,12 +93,11 @@ impl LineDiscipline {
     }
 
     /// Pushes a character to the line discipline.
-    pub fn push_char<F1: FnMut(SigNum), F2: FnMut(&[u8])>(
+    pub fn push_char<F: FnMut(SigNum)>(
         &mut self,
         ch: u8,
-        mut signal_callback: F1,
-        echo_callback: F2,
-    ) -> Result<()> {
+        mut signal_callback: F,
+    ) -> Result<Option<(u8, Option<u8>)>> {
         let ch = if self.termios.input_flags().contains(CInputFlags::ICRNL) && ch == b'\r' {
             b'\n'
         } else {
@@ -109,18 +108,13 @@ impl LineDiscipline {
             if !self.termios.local_flags().contains(CLocalFlags::NOFLSH) {
                 self.drain_input();
             }
-            if self.termios.local_flags().contains(CLocalFlags::ECHO) {
-                self.output_char(ch, echo_callback);
-            }
             signal_callback(signum);
-            return Ok(());
+            return Ok(self.echo_bytes(ch));
         }
 
         // Typically, a TTY in raw mode does not echo. But the TTY can also be in a CBREAK mode,
         // with ICANON closed and ECHO opened.
-        if self.termios.local_flags().contains(CLocalFlags::ECHO) {
-            self.output_char(ch, echo_callback);
-        }
+        let echo = self.echo_bytes(ch);
 
         if self.is_full() {
             // If the buffer is full, we should not push the character into the buffer. The caller
@@ -133,7 +127,7 @@ impl LineDiscipline {
         if !self.termios.is_canonical_mode() {
             // Note that `unwrap()` below won't fail because we checked `is_full()` above.
             self.read_buffer.push(ch).unwrap();
-            return Ok(());
+            return Ok(echo);
         }
 
         // Canonical mode
@@ -160,23 +154,31 @@ impl LineDiscipline {
             self.current_line.push_char(ch);
         }
 
-        Ok(())
+        Ok(echo)
     }
 
-    // TODO: respect output flags
-    fn output_char<F: FnMut(&[u8])>(&self, ch: u8, mut echo_callback: F) {
+    /// Returns the bytes (at most two) to echo for a pushed character.
+    ///
+    /// The echo is computed under the line-discipline lock but must be
+    /// written by the caller after the lock is released, so that a slow
+    /// output device never stalls input processing.
+    fn echo_bytes(&self, ch: u8) -> Option<(u8, Option<u8>)> {
+        // TODO: respect output flags
+        if !self.termios.local_flags().contains(CLocalFlags::ECHO) {
+            return None;
+        }
         match ch {
-            b'\n' => echo_callback(b"\n"),
-            b'\r' => echo_callback(b"\r\n"),
+            b'\n' => Some((b'\n', None)),
+            b'\r' => Some((b'\r', Some(b'\n'))),
             ch if ch == self.termios.special_char(CCtrlCharId::VERASE) => {
                 // The driver should erase the current character
-                echo_callback(b"\x08");
+                Some((0x08, None))
             }
-            ch if is_printable_char(ch) => echo_callback(&[ch]),
+            ch if is_printable_char(ch) => Some((ch, None)),
             ch if is_ctrl_char(ch) && self.termios.local_flags().contains(CLocalFlags::ECHOCTL) => {
-                echo_callback(&[b'^', ctrl_char_to_printable(ch)]);
+                Some((b'^', Some(ctrl_char_to_printable(ch))))
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -340,15 +342,11 @@ mod tests {
         line_discipline.set_termios(termios);
         let mut received_signal = None;
 
+        assert_eq!(line_discipline.push_char(b'x', |_| {}).unwrap(), Some((b'x', None)));
         line_discipline
-            .push_char(b'x', |_| {}, |_| {})
-            .unwrap();
-        line_discipline
-            .push_char(
-                CCtrlCharId::VINTR.default_char(),
-                |signal| received_signal = Some(signal),
-                |_| {},
-            )
+            .push_char(CCtrlCharId::VINTR.default_char(), |signal| {
+                received_signal = Some(signal)
+            })
             .unwrap();
 
         assert_eq!(received_signal, Some(SIGINT));
