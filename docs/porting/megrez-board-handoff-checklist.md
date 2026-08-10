@@ -16,10 +16,11 @@
 
 ## 2. 防卡死/恢复机制（上板前必须确认）
 
-1. **软件定时重启**：内核参数 `asterinas.reboot_after=400`（400 秒自动重启回 U-Boot）——最近的运行都带它。
-2. **外部恢复**：物理 reset / 断电重启——**操作员必须确认可用后才开始**（板载 WDT0 未证明能从卡死内核复位——guide 明确）。
-3. **安全结束状态**：不 `saveenv`、不留串口 owner/bridge/传输服务、退出后板子回到 U-Boot `=>`。
-4. 卡死后不慌：等 `reboot_after` 到期自动恢复；若连 U-Boot 都死，外部断电。
+1. **软件定时重启（已验证）**：内核参数 `asterinas.reboot_after=<秒>`——**本分支已移植**（`kernel/src/boot_reboot.rs`）——QEMU 实测：20 秒定时 → SBI ColdReboot 重启成功；panic 场景 → 立即重启成功（`kernel/src/thread/oops.rs` + emergency_restart → SBI ColdReboot）。
+2. **软件 panic 重启（已验证）**：armed 状态下 panic → `panic::abort()` → SBI ColdReboot——无需外部干预。
+3. **无物理重启时的策略**：`reboot_after` 是唯一自动恢复手段——**上板 bootargs 必须带**（建议 `asterinas.reboot_after=120`，短于人工观察周期）。
+4. **安全结束状态**：不 `saveenv`、不留串口 owner/bridge/传输服务、退出后板子回到 U-Boot `=>`。
+5. 卡死后不慌：等 `reboot_after` 到期自动恢复；U-Boot 阶段卡住只能等 U-Boot 自身超时（WDT0 未验证——尽量避免 U-Boot 交互失误，命令逐字符节流 + 核对回显）。
 
 ## 3. 一次成功流程（顺序执行）
 
