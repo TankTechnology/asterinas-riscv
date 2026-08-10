@@ -5,19 +5,15 @@ use ostd::sync::LocalIrqDisabled;
 
 use self::{line_discipline::LineDiscipline, termio::CFontOp};
 use crate::{
-    device::{Device, DeviceType},
-    dispatch_ioctl,
+    device::{Device, DeviceType, DevtmpfsInodeMeta},
     events::IoEvents,
-    fs::{
-        devtmpfs::DevtmpfsNodeMeta,
-        file::{PerOpenFileOps, StatusFlags},
-    },
+    fs::file::{PerOpenFileOps, StatusFlags},
     prelude::*,
     process::{
         JobControl, Terminal, broadcast_signal_async,
         signal::{PollHandle, Pollable, Pollee},
     },
-    util::ioctl::RawIoctl,
+    util::ioctl::{RawIoctl, dispatch_ioctl},
 };
 
 mod device;
@@ -31,7 +27,6 @@ mod serial;
 pub(super) mod termio;
 mod vt;
 
-pub(crate) use device::CONSOLE_DEVICE_ID;
 pub(super) use driver::TtyDriver;
 pub(super) use flags::TtyFlags;
 
@@ -66,7 +61,7 @@ const IO_CAPACITY: usize = 4096;
 ///             +-------+
 /// Tty::push_input   D::push_output
 /// ```
-pub(crate) struct Tty<D> {
+pub struct Tty<D> {
     index: u32,
     driver: D,
     ldisc: SpinLock<LineDiscipline, LocalIrqDisabled>,
@@ -89,7 +84,7 @@ impl<D> Tty<D> {
         })
     }
 
-    pub(crate) fn index(&self) -> u32 {
+    pub fn index(&self) -> u32 {
         self.index
     }
 
@@ -129,28 +124,45 @@ impl<D: TtyDriver> Tty<D> {
     ///
     /// This method returns the number of bytes pushed or fails with an error if no bytes can be
     /// pushed because the buffer is full.
-    pub(crate) fn push_input(&self, chs: &[u8]) -> Result<usize> {
-        let mut ldisc = self.ldisc.lock();
-        let mut echo = self.driver.echo_callback();
+    pub fn push_input(&self, chs: &[u8]) -> Result<usize> {
+        // Echo bytes are collected under the lock but written only after it
+        // is released, so a slow output device never stalls input processing.
+        let mut echoes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
         let mut len = 0;
-        for ch in chs {
-            let res = ldisc.push_char(
-                *ch,
-                |signum| {
+        {
+            let mut ldisc = self.ldisc.lock();
+            for ch in chs {
+                let res = ldisc.push_char(*ch, |signum| {
                     if let Some(foreground) = self.job_control.foreground() {
                         broadcast_signal_async(Arc::downgrade(&foreground), signum);
                     }
-                },
-                &mut echo,
-            );
-            if res.is_err() && len == 0 {
-                return_errno_with_message!(Errno::EAGAIN, "the line discipline is full");
-            } else if res.is_err() {
-                break;
-            } else {
-                len += 1;
+                });
+                match res {
+                    Ok(Some((first, second))) => {
+                        echoes.push(first);
+                        if let Some(second) = second {
+                            echoes.push(second);
+                        }
+                        len += 1;
+                    }
+                    Ok(None) => len += 1,
+                    Err(_) => {
+                        if len == 0 {
+                            return_errno_with_message!(
+                                Errno::EAGAIN,
+                                "the line discipline is full"
+                            );
+                        }
+                        break;
+                    }
+                }
             }
+        }
+
+        if !echoes.is_empty() {
+            let mut echo = self.driver.echo_callback();
+            echo(&echoes);
         }
 
         self.pollee.notify(IoEvents::IN | IoEvents::RDNORM);
@@ -186,7 +198,7 @@ impl<D: TtyDriver> Pollable for Tty<D> {
 }
 
 impl<D: TtyDriver> Tty<D> {
-    pub(crate) fn read(&self, writer: &mut VmWriter, status_flags: StatusFlags) -> Result<usize> {
+    pub fn read(&self, writer: &mut VmWriter, status_flags: StatusFlags) -> Result<usize> {
         if self.tty_flags.is_other_closed() {
             return Ok(0);
         }
@@ -209,7 +221,7 @@ impl<D: TtyDriver> Tty<D> {
         Ok(read_len)
     }
 
-    pub(crate) fn write(&self, reader: &mut VmReader, status_flags: StatusFlags) -> Result<usize> {
+    pub fn write(&self, reader: &mut VmReader, status_flags: StatusFlags) -> Result<usize> {
         if self.tty_flags.is_other_closed() {
             return_errno_with_message!(Errno::EIO, "the TTY is closed");
         }
@@ -258,21 +270,23 @@ impl<D: TtyDriver> Tty<D> {
         Ok(accepted_len)
     }
 
-    pub(crate) fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+    pub fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
         use crate::util::ioctl::common_defs::GetNumBytesToRead;
 
         dispatch_ioctl!(match raw_ioctl {
             cmd @ GetTermios => {
-                let termios = *self.ldisc.lock().termios();
+                let ldisc = self.ldisc.lock();
+                let termios = ldisc.termios();
 
-                cmd.write(&termios)?;
+                cmd.write(termios)?;
             }
             cmd @ GetTermios2 => {
-                let termios = *self.ldisc.lock().termios();
+                let ldisc = self.ldisc.lock();
+                let termios = ldisc.termios();
 
-                cmd.write(&termios)?;
+                cmd.write(termios)?;
             }
             cmd @ SetTermios => {
                 let termios = cmd.read()?;
@@ -390,7 +404,7 @@ impl<D: TtyDriver> Device for Tty<D> {
         )
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
         self.driver.devtmpfs_meta(self.index)
     }
 

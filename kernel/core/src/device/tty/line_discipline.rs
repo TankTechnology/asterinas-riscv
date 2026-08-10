@@ -7,7 +7,7 @@ use crate::{
     device::tty::termio::{CInputFlags, CLocalFlags},
     prelude::*,
     process::signal::{
-        constants::{SIGINT, SIGQUIT, SIGTSTP},
+        constants::{SIGINT, SIGQUIT},
         sig_num::SigNum,
     },
     util::ring_buffer::RingBuffer,
@@ -24,7 +24,7 @@ const BUFFER_CAPACITY: usize = 8192;
 // be accepted.
 const_assert!(LINE_CAPACITY < BUFFER_CAPACITY);
 
-pub(crate) struct LineDiscipline {
+pub struct LineDiscipline {
     /// Current line
     current_line: CurrentLine,
     /// Read buffer
@@ -83,7 +83,7 @@ impl CurrentLine {
 
 impl LineDiscipline {
     /// Creates a new line discipline.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             current_line: CurrentLine::default(),
             read_buffer: RingBuffer::new(BUFFER_CAPACITY),
@@ -93,12 +93,11 @@ impl LineDiscipline {
     }
 
     /// Pushes a character to the line discipline.
-    pub(crate) fn push_char<F1: FnMut(SigNum), F2: FnMut(&[u8])>(
+    pub fn push_char<F: FnMut(SigNum)>(
         &mut self,
         ch: u8,
-        mut signal_callback: F1,
-        echo_callback: F2,
-    ) -> Result<()> {
+        mut signal_callback: F,
+    ) -> Result<Option<(u8, Option<u8>)>> {
         let ch = if self.termios.input_flags().contains(CInputFlags::ICRNL) && ch == b'\r' {
             b'\n'
         } else {
@@ -109,33 +108,13 @@ impl LineDiscipline {
             if !self.termios.local_flags().contains(CLocalFlags::NOFLSH) {
                 self.drain_input();
             }
-            if self.termios.local_flags().contains(CLocalFlags::ECHO) {
-                self.output_char(ch, echo_callback);
-            }
             signal_callback(signum);
-
-            // Unless `NOFLSH` is set, pending input is discarded.
-            //
-            // TODO: Linux discards pending output here as well. The driver's output buffer is
-            // locked by the echo callback for the whole duration of the caller's character loop,
-            // so draining it needs an operation on the callback itself.
-            if !self.termios.local_flags().contains(CLocalFlags::NOFLSH) {
-                self.drain_input();
-            }
-
-            if self.termios.local_flags().contains(CLocalFlags::ECHO) {
-                self.output_char(ch, echo_callback);
-            }
-
-            // The signal character itself is consumed, not delivered to readers.
-            return Ok(());
+            return Ok(self.echo_bytes(ch));
         }
 
         // Typically, a TTY in raw mode does not echo. But the TTY can also be in a CBREAK mode,
         // with ICANON closed and ECHO opened.
-        if self.termios.local_flags().contains(CLocalFlags::ECHO) {
-            self.output_char(ch, echo_callback);
-        }
+        let echo = self.echo_bytes(ch);
 
         if self.is_full() {
             // If the buffer is full, we should not push the character into the buffer. The caller
@@ -148,7 +127,7 @@ impl LineDiscipline {
         if !self.termios.is_canonical_mode() {
             // Note that `unwrap()` below won't fail because we checked `is_full()` above.
             self.read_buffer.push(ch).unwrap();
-            return Ok(());
+            return Ok(echo);
         }
 
         // Canonical mode
@@ -175,23 +154,31 @@ impl LineDiscipline {
             self.current_line.push_char(ch);
         }
 
-        Ok(())
+        Ok(echo)
     }
 
-    // TODO: respect output flags
-    fn output_char<F: FnMut(&[u8])>(&self, ch: u8, mut echo_callback: F) {
+    /// Returns the bytes (at most two) to echo for a pushed character.
+    ///
+    /// The echo is computed under the line-discipline lock but must be
+    /// written by the caller after the lock is released, so that a slow
+    /// output device never stalls input processing.
+    fn echo_bytes(&self, ch: u8) -> Option<(u8, Option<u8>)> {
+        // TODO: respect output flags
+        if !self.termios.local_flags().contains(CLocalFlags::ECHO) {
+            return None;
+        }
         match ch {
-            b'\n' => echo_callback(b"\n"),
-            b'\r' => echo_callback(b"\r\n"),
+            b'\n' => Some((b'\n', None)),
+            b'\r' => Some((b'\r', Some(b'\n'))),
             ch if ch == self.termios.special_char(CCtrlCharId::VERASE) => {
                 // The driver should erase the current character
-                echo_callback(b"\x08");
+                Some((0x08, None))
             }
-            ch if is_printable_char(ch) => echo_callback(&[ch]),
+            ch if is_printable_char(ch) => Some((ch, None)),
             ch if is_ctrl_char(ch) && self.termios.local_flags().contains(CLocalFlags::ECHOCTL) => {
-                echo_callback(&[b'^', ctrl_char_to_printable(ch)]);
+                Some((b'^', Some(ctrl_char_to_printable(ch))))
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -201,7 +188,7 @@ impl LineDiscipline {
     ///
     /// If no bytes are available or the available bytes are fewer than `min(dst.len(), vmin)`,
     /// this method returns [`Errno::EAGAIN`].
-    pub(crate) fn try_read(&mut self, dst: &mut [u8]) -> Result<usize> {
+    pub fn try_read(&mut self, dst: &mut [u8]) -> Result<usize> {
         let vmin = self.termios.special_char(CCtrlCharId::VMIN);
         let vtime = self.termios.special_char(CCtrlCharId::VTIME);
 
@@ -240,24 +227,24 @@ impl LineDiscipline {
         Ok(dst.len())
     }
 
-    pub(crate) fn drain_input(&mut self) {
+    pub fn drain_input(&mut self) {
         self.current_line.drain();
         self.read_buffer.clear();
     }
 
-    pub(crate) fn buffer_len(&self) -> usize {
+    pub fn buffer_len(&self) -> usize {
         self.read_buffer.len()
     }
 
-    pub(crate) fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> bool {
         self.read_buffer.len() + self.current_line.len() >= self.read_buffer.capacity()
     }
 
-    pub(crate) fn termios(&self) -> &CTermios2 {
+    pub fn termios(&self) -> &CTermios2 {
         &self.termios
     }
 
-    pub(crate) fn set_termios(&mut self, termios: CTermios) {
+    pub fn set_termios(&mut self, termios: CTermios) {
         let termios2 = CTermios2::new(
             termios,
             CTermiosSpeeds::from_termios(&termios, *self.termios.speeds()),
@@ -265,7 +252,7 @@ impl LineDiscipline {
         self.set_termios2(termios2);
     }
 
-    pub(crate) fn set_termios2(&mut self, termios2: CTermios2) {
+    pub fn set_termios2(&mut self, termios2: CTermios2) {
         self.termios = termios2;
 
         // When switching to raw mode, any pending input bytes should become immediately available.
@@ -282,11 +269,11 @@ impl LineDiscipline {
         self.read_buffer.push_slice(bytes)
     }
 
-    pub(crate) fn window_size(&self) -> CWinSize {
+    pub fn window_size(&self) -> CWinSize {
         self.winsize
     }
 
-    pub(crate) fn set_window_size(&mut self, winsize: CWinSize) {
+    pub fn set_window_size(&mut self, winsize: CWinSize) {
         self.winsize = winsize;
     }
 }
@@ -325,18 +312,13 @@ fn is_ctrl_char(ch: u8) -> bool {
 }
 
 fn char_to_signal(ch: u8, termios: &CTermios) -> Option<SigNum> {
-    // A special character whose value is `_POSIX_VDISABLE` is disabled, so NUL input must not
-    // match one.
-    //
-    // Reference: <https://elixir.bootlin.com/linux/v7.1/source/drivers/tty/n_tty.c#L1831>
-    if ch == b'\0' || !termios.local_flags().contains(CLocalFlags::ISIG) {
+    if !termios.local_flags().contains(CLocalFlags::ISIG) {
         return None;
     }
 
     match ch {
         ch if ch == termios.special_char(CCtrlCharId::VINTR) => Some(SIGINT),
         ch if ch == termios.special_char(CCtrlCharId::VQUIT) => Some(SIGQUIT),
-        ch if ch == termios.special_char(CCtrlCharId::VSUSP) => Some(SIGTSTP),
         _ => None,
     }
 }
@@ -360,15 +342,11 @@ mod tests {
         line_discipline.set_termios(termios);
         let mut received_signal = None;
 
+        assert_eq!(line_discipline.push_char(b'x', |_| {}).unwrap(), Some((b'x', None)));
         line_discipline
-            .push_char(b'x', |_| {}, |_| {})
-            .unwrap();
-        line_discipline
-            .push_char(
-                CCtrlCharId::VINTR.default_char(),
-                |signal| received_signal = Some(signal),
-                |_| {},
-            )
+            .push_char(CCtrlCharId::VINTR.default_char(), |signal| {
+                received_signal = Some(signal)
+            })
             .unwrap();
 
         assert_eq!(received_signal, Some(SIGINT));
