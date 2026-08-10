@@ -36,10 +36,15 @@
 
 **U-Boot 命令必须逐字符节流发送**（bridge 已实现 paced TX），提交前核对完整回显。
 
-## 4. 当前已知阻塞点（下次上板要攻克的）
+## 4. 状态与下一步（更新至 2026-08-10）
 
-1. **UART 可见性**：`serial0` 是 `snps,dw-apb-uart`（reg-shift=2, reg-io-width=4），而 Asterinas 驱动只认 `ns16550a` —— PID 1 的 `write(2)` 已成功但串口看不到 hello。**先修这个**（`kernel/comps/uart/src/arch/riscv/` 支持 dw-apb-uart）。
-2. **代码分支**：真机验证在 `codex/megrez-porting-handoff` 分支；当前 `codex/megrez-usb-keyboard` 分支（键盘工作）未做真机验证链——切分支后需按第 3 节重新构建 + QEMU 门禁。
+**已解决**：
+- **UART 可见性** ✅：dw-apb-uart 驱动（TX/RX/中断/Busy Detect）已实现并在 7/21 真机验证（`docs/porting/evidence/2026-07-21-megrez-dw-apb-uart-rx.md`）——下次上板串口应能看到 PID 1 hello。
+
+**待验证（下次上板内容）**：
+1. **USB 键盘真机验证**：`codex/megrez-usb-keyboard` 分支（键盘链路）QEMU 验证完整（Megrez Sv48 契约模拟 PASS + virt 键盘回归 + DWC3 选择失败安全验证）；**Megrez 的 DWC3 硬件交互**只能在真机验证——这是上板的主要价值。
+2. **DTB 修补（上板前必须做）**：真机 RockOS DTB **没有** `/chosen/asterinas,usb-host` 属性（Asterinas 专用选择机制）——上板传输时需 `fdtput` 加该属性，指向 Megrez 的 DWC3 节点（从板端 DTB audit 确认路径，MMIO 为 `0x5048_0000`/`0x5049_0000`），并更新 DTB 的 CRC 门禁值。
+3. **构建基线**：键盘分支未做真机链——上板前按第 3 节构建 + QEMU 门禁 + 产物身份校验。
 
 ## 5. 板子信息速查
 
