@@ -740,5 +740,50 @@ class ContractCompositionTests(unittest.TestCase):
                             )
 
 
+class ThirdBoardContractTests(unittest.TestCase):
+    """The third board is a CONTRACT_APPROXIMATION: the payload DTB claims a
+    different SoC while QEMU runs the virt machine."""
+
+    def test_third_board_profile_is_registered(self) -> None:
+        profile = profile_by_name("third-board-asterinas-smoke")
+
+        self.assertEqual(profile.name, "third-board-asterinas-smoke")
+        self.assertEqual(profile.machine.name, "third-board")
+        self.assertEqual(profile.machine.qemu_machine, QemuMachine.VIRT)
+        self.assertEqual(profile.machine.fidelity, Fidelity.CONTRACT_APPROXIMATION)
+        self.assertEqual(
+            profile.machine.root_compatible_override,
+            ("starfive,visionfive-v2", "riscv-virtio"),
+        )
+
+    def test_third_board_uses_generated_payload_dtb(self) -> None:
+        profile = profile_by_name("third-board-asterinas-smoke")
+
+        self.assertEqual(profile.machine.dtb_provider, DtbProvider.GENERATED_PAYLOAD)
+        self.assertEqual(profile.machine.dtb_filename, "qemu-third-board.dtb")
+        self.assertEqual(
+            profile.machine.storage_transport,
+            StorageTransport.VIRTIO_EXT4,
+        )
+        # A non-override machine must keep its default DTB untouched.
+        self.assertIsNone(profile_by_name("sifive-u-asterinas-smoke").machine.root_compatible_override)
+
+    def test_third_board_scenario_completes_in_userspace(self) -> None:
+        scenario = profile_by_name("third-board-asterinas-smoke").validation
+
+        self.assertEqual(scenario.name, "third-board-asterinas-userspace-smoke")
+        self.assertEqual(scenario.scope, ResultScope.COMPLETE_BOOT)
+        self.assertEqual(scenario.terminal, BootMilestone.USERSPACE_READY)
+        self.assertEqual(
+            tuple(stage.line for stage in scenario.milestones[-3:]),
+            (
+                b"OSTD initialized. Preparing components.",
+                b"[kernel] rootfs is ready",
+                ASTERINAS_USERSPACE_SMOKE.completion_line,
+            ),
+        )
+        self.assertNotIn(scenario.completion_line, scenario.forbidden_markers)
+
+
 if __name__ == "__main__":
     unittest.main()
