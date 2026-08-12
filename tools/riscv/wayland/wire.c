@@ -50,7 +50,8 @@ void wl_put_fd_placeholder(WlWriter *w) {
 
 void wl_put_header(WlWriter *w, uint32_t object_id, uint16_t opcode) {
     uint32_t head = object_id;
-    uint32_t sz_op = ((uint32_t)opcode << 16u) | ((uint32_t)w->len & 0xffffu);
+    /* Wire format: size in the high 16 bits, opcode in the low 16 bits. */
+    uint32_t sz_op = (((uint32_t)w->len & 0xffffu) << 16u) | (uint32_t)opcode;
     memcpy(w->data, &head, sizeof(head));
     memcpy(w->data + 4, &sz_op, sizeof(sz_op));
 }
