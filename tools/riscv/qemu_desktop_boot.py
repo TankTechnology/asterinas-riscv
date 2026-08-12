@@ -108,8 +108,7 @@ def main() -> int:
         "-display", display_mode,
         "-serial", "stdio",
     ]
-    if display_mode == "none":
-        argv += ["-monitor", f"unix:{MON_SOCK},server,nowait"]
+    argv += ["-monitor", f"unix:{MON_SOCK},server,nowait"]
 
     log_file = open(SERIAL_LOG, "wb")
     proc = subprocess.Popen(
