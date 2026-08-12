@@ -60,6 +60,45 @@ make test_riscv_sifive_u_linux_reference \
 The Asterinas run is accepted only after its userspace marker appears.
 Firmware output alone is not sufficient.
 
+## QEMU framebuffer display boot
+
+Boot the kernel through U-Boot with a bochs display, inject a
+`simple-framebuffer` DTB node, and watch the VT console render on the QEMU
+display. This validates the firmware-framebuffer handoff software chain
+(bochs -> U-Boot -> simple-framebuffer -> Asterinas VT) without hardware.
+See `docs/porting/riscv-qemu-desktop.md` for the full setup and pitfalls.
+
+The kernel must be Sv39 (`FEATURES=riscv_sv39_mode`) and the initramfs must
+be the real marker initramfs (not the nix-build stub). Then run the driver:
+
+```bash
+make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
+python3 tools/riscv/make_qemu_uboot_initramfs.py target/qemu-uboot/initramfs.cpio.gz
+# ... prepare_qemu_uboot_booti.sh prepare (see the doc for env vars)
+python3 tools/riscv/qemu_desktop_boot.py             # headless + screendump
+python3 tools/riscv/qemu_desktop_boot.py --display-gtk  # open a window
+```
+
+## LVGL desktop GUI (framebuffer interactive demo)
+
+Build a static riscv64 `/init` that renders an interactive keyboard-navigable
+desktop through LVGL on `/dev/fb0` (Home screen with three app cards, arrow
+keys move focus, Enter opens, ESC returns), then packs it into the marker
+initramfs. Verified on the QEMU virt display chain (bochs ->
+simple-framebuffer -> VT -> userspace fbdev).
+
+```bash
+python3 tools/riscv/lvgl/build_lvgl_initramfs.sh   # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
+```
+
+Then rebuild the boot disk with that initramfs and run the display boot
+(see the "QEMU framebuffer display boot" section). The build clones LVGL
+`v8.3.9` + lv_drivers `v8.3.0` into `target/lvgl` and applies the needed
+patches (32-bit colors, resolution caps, fonts, enabled fbdev/evdev,
+non-fatal FBIOBLANK). Compile in one gcc invocation to avoid
+stale-object-color-depth mismatches. See `docs/porting/riscv-qemu-desktop.md`
+for the interactive-GUI input verification status.
+
 ## Dependencies
 
 Use the repository development container.
