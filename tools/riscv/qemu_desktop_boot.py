@@ -105,6 +105,7 @@ def main() -> int:
         "-device", "virtio-blk-device,drive=bootdisk",
         "-device", "bochs-display",
         "-device", "virtio-keyboard-device",
+        "-device", "virtio-tablet-device",
         "-display", display_mode,
         "-serial", "stdio",
     ]
