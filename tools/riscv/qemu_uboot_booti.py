@@ -93,7 +93,13 @@ def run_prepared(
 def _validate_runnable_profile(profile: QemuUbootProfile) -> None:
     validate_registered_profile(profile)
     if profile.fidelity is Fidelity.CONTRACT_APPROXIMATION:
-        validate_profile_policy(load_contract(), profile)
+        # Megrez contract approximations are validated against the reviewed
+        # board policy; generic approximations (e.g. the third-board profile,
+        # which only overrides the payload DTB's root compatible) are not
+        # part of the Megrez contract and must not be rejected by it.
+        contract = load_contract()
+        if profile.name in contract.raw.get("profiles", {}):
+            validate_profile_policy(contract, profile)
 
 
 def _profile_argument(value: str) -> QemuUbootProfile:

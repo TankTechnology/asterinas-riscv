@@ -2,7 +2,7 @@
 
 use fdt::{Fdt, node::FdtNode};
 
-use crate::boot::BootloaderFramebufferArg;
+use crate::boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat};
 
 pub(super) fn parse(fdt: &Fdt<'_>) -> Option<BootloaderFramebufferArg> {
     fdt.all_nodes().find_map(parse_node)
@@ -28,25 +28,13 @@ fn parse_node(node: FdtNode<'_, '_>) -> Option<BootloaderFramebufferArg> {
     let size = region.size?;
     let width = node.property("width")?.as_usize()?;
     let height = node.property("height")?.as_usize()?;
-    // Require the stride so a node without complete scanout metadata is
-    // not taken over. x8r8g8b8 is the only format handed off by the
-    // Megrez firmware; the line stride is width * 4 with no padding.
-    node.property("stride")?.as_usize()?;
-    let bpp = match node.property("format")?.as_str()? {
-        "x8r8g8b8" => 32,
+    let line_size = node.property("stride")?.as_usize()?;
+    let pixel_format = match node.property("format")?.as_str()? {
+        "x8r8g8b8" => BootloaderFramebufferFormat::BgrReserved8888,
         _ => return None,
     };
-    if address == 0 || size == 0 || width == 0 || height == 0 {
-        return None;
-    }
-    address.checked_add(size)?;
 
-    Some(BootloaderFramebufferArg {
-        address,
-        width,
-        height,
-        bpp,
-    })
+    BootloaderFramebufferArg::new(address, size, width, height, line_size, pixel_format)
 }
 
 #[cfg(ktest)]
@@ -54,7 +42,7 @@ mod tests {
     use fdt::Fdt;
 
     use super::{parse, parse_node};
-    use crate::prelude::ktest;
+    use crate::{boot::BootloaderFramebufferFormat, prelude::ktest};
 
     const FIXTURE: &[u8] = include_bytes!("fixtures/simple-framebuffer.dtb");
 
@@ -67,9 +55,14 @@ mod tests {
         let framebuffer = parse(&fixture()).unwrap();
 
         assert_eq!(framebuffer.address, 0xfd80_0000);
+        assert_eq!(framebuffer.size, 0x0080_0000);
         assert_eq!(framebuffer.width, 1920);
         assert_eq!(framebuffer.height, 1080);
-        assert_eq!(framebuffer.bpp, 32);
+        assert_eq!(framebuffer.line_size, 7680);
+        assert_eq!(
+            framebuffer.pixel_format,
+            BootloaderFramebufferFormat::BgrReserved8888
+        );
     }
 
     #[ktest]

@@ -164,10 +164,6 @@ impl VtKeyboardHandler {
         }
     }
 
-    fn keycode_to_modifier_key(&self, keycode: KeyCode) -> Option<ModifierKey> {
-        keycode_to_modifier_key(keycode)
-    }
-
     /// Handles key events in Medium Raw mode.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/drivers/tty/vt/keyboard.c#L1436-L1454>
@@ -472,11 +468,10 @@ fn toggle_lock_keys(keys: LockKeyFlags) {
 
 /// An input handler class that connects keyboards to the serial console.
 ///
-/// The VT keyboard path requires a framebuffer, which is never available
-/// on RISC-V yet (`parse_framebuffer_info` is a TODO), so without this
-/// class keyboard events would only reach evdev. It connects the same
-/// keyboard devices the VT path would and pushes decoded characters into
-/// the serial console tty (`ttyS0`).
+/// The VT keyboard path only connects keyboards to the virtual consoles,
+/// so without this class keyboard events would not reach the serial
+/// console. It connects the same keyboard devices the VT path would and
+/// pushes decoded characters into the serial console tty (`ttyS0`).
 #[derive(Debug)]
 struct SerialKeyboardHandlerClass;
 

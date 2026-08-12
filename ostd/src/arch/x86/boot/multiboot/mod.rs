@@ -70,12 +70,13 @@ fn parse_framebuffer_info(mb1_info: &MultibootLegacyInfo) -> Option<BootloaderFr
         return None;
     }
 
-    Some(BootloaderFramebufferArg {
-        address: mb1_info.framebuffer_table.addr as usize,
-        width: mb1_info.framebuffer_table.width as usize,
-        height: mb1_info.framebuffer_table.height as usize,
-        bpp: mb1_info.framebuffer_table.bpp as usize,
-    })
+    BootloaderFramebufferArg::from_legacy_bpp(
+        mb1_info.framebuffer_table.addr as usize,
+        mb1_info.framebuffer_table.width as usize,
+        mb1_info.framebuffer_table.height as usize,
+        mb1_info.framebuffer_table.pitch as usize,
+        mb1_info.framebuffer_table.bpp as usize,
+    )
 }
 
 fn parse_memory_regions(mb1_info: &MultibootLegacyInfo) -> MemoryRegionArray {

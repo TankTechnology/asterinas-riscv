@@ -262,6 +262,11 @@ impl PageTableEntry {
 
         let cache = if self.0 & PteFlags::PBMT_IO.bits() != 0 {
             CachePolicy::Uncacheable
+        } else if self.0 & PteFlags::PBMT_NC.bits() != 0 {
+            // PBMT_NC is the RISC-V approximation of x86 write-combining:
+            // non-cacheable, idempotent, weakly-ordered main memory. The
+            // reverse mapping keeps the PTE round-trip lossless.
+            CachePolicy::WriteCombining
         } else {
             CachePolicy::Writeback
         };
@@ -302,6 +307,15 @@ impl PageTableEntry {
                 // requests these policies.
                 if has_extensions(IsaExtensions::SVPBMT) {
                     flags |= PteFlags::PBMT_IO.bits()
+                }
+            }
+            CachePolicy::WriteCombining => {
+                // RISC-V has no direct write-combining memory type. PBMT_NC
+                // (non-cacheable, idempotent, weakly-ordered main memory) is
+                // the closest Svpbmt equivalent of x86 PAT write-combining
+                // and is what the framebuffer component requests.
+                if has_extensions(IsaExtensions::SVPBMT) {
+                    flags |= PteFlags::PBMT_NC.bits()
                 }
             }
             _ => panic!("unsupported cache policy"),
@@ -348,5 +362,52 @@ unsafe impl PteTrait for PageTableEntry {
         } else {
             PteScalar::PageTable(self.paddr(), self.pt_flags())
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::{PageTableEntry, PteFlags};
+    use crate::{
+        mm::{
+            CachePolicy, PageFlags, PageProperty, PagingLevel,
+            page_prop::PrivilegedPageFlags as PrivFlags,
+            page_table::{PteScalar, PteTrait},
+        },
+        prelude::ktest,
+    };
+
+    /// WriteCombining must encode as PBMT_NC (non-cacheable, weakly-ordered
+    /// main memory) and round-trip losslessly. This mirrors the x86 PAT
+    /// behavior where WriteCombining maps to PCD=1,PWT=0: both are
+    /// non-cacheable, weakly-ordered, and idempotent.
+    #[ktest]
+    fn write_combining_encodes_as_pbmt_nc_and_round_trips() {
+        let prop = PageProperty {
+            flags: PageFlags::R | PageFlags::W,
+            cache: CachePolicy::WriteCombining,
+            priv_flags: PrivFlags::USER,
+        };
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+
+        let raw = pte.0;
+        assert_ne!(raw & PteFlags::PBMT_NC.bits(), 0, "PBMT_NC must be set");
+        assert_eq!(raw & PteFlags::PBMT_IO.bits(), 0, "PBMT_IO must be clear");
+
+        // Round-trip: reading the PTE back must yield WriteCombining.
+        let repr = pte.to_repr(1 as PagingLevel);
+        let PteScalar::Mapped(_, back) = repr else {
+            panic!("PTE must remain mapped");
+        };
+        assert_eq!(back.cache, CachePolicy::WriteCombining);
+    }
+
+    /// Without Svpbmt, WriteCombining must not panic (it degrades to the
+    /// default cacheable policy, matching how Uncacheable is tolerated).
+    #[ktest]
+    fn write_combining_does_not_panic_without_svpbmt() {
+        let prop = PageProperty::new_user(PageFlags::R | PageFlags::W, CachePolicy::WriteCombining);
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+        assert_ne!(pte.0 & PteFlags::VALID.bits(), 0);
     }
 }

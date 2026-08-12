@@ -402,7 +402,13 @@ def _profile_cpu_selectors(profile: QemuUbootProfile) -> dict[str, bool]:
 def _validate_registered_profile(profile: QemuUbootProfile) -> None:
     validate_registered_profile(profile)
     if profile.fidelity is Fidelity.CONTRACT_APPROXIMATION:
-        validate_profile_policy(load_contract(), profile)
+        # Megrez contract approximations are validated against the reviewed
+        # board policy; generic approximations (e.g. the third-board profile,
+        # which only overrides the payload DTB's root compatible) are not
+        # part of the Megrez contract and must not be rejected by it.
+        contract = load_contract()
+        if profile.name in contract.raw.get("profiles", {}):
+            validate_profile_policy(contract, profile)
 
 
 def _validate_registered_variant_selection(
@@ -1247,6 +1253,9 @@ def generate_sanitized_dtb(
         raise ValueError("QEMU did not produce a non-empty DTB")
     if profile.remove_rng_seed:
         remove_rng_seed_if_present(dtb)
+    override = profile.machine.root_compatible_override
+    if override is not None:
+        _apply_root_compatible_override(dtb, override)
     subprocess.run(
         ["dtc", "-I", "dtb", "-O", "dts", "-o", str(dts), str(dtb)],
         check=True,
@@ -1255,6 +1264,25 @@ def generate_sanitized_dtb(
         timeout=10.0,
     )
     return audit_generated_dtb(profile=profile, dtb=dtb)
+
+
+def _apply_root_compatible_override(dtb: Path, compatibles: tuple[str, ...]) -> None:
+    """Rewrite the DTB root `compatible` list in place (CONTRACT_APPROXIMATION).
+
+    Uses `fdtput` so every other node (memory, UART, chosen) is preserved;
+    a `dtc` round-trip would renumber phandles and break the payload.
+    """
+
+    args = ["fdtput", "-ts", str(dtb), "/", "compatible", *compatibles]
+    subprocess.run(
+        args,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+    if _string_list_property(_semantic_dtb_snapshot(dtb), "/", "compatible") != compatibles:
+        raise ValueError("root compatible override did not take effect")
 
 
 def generated_dtb_qemu_argv(
