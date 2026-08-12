@@ -79,25 +79,25 @@ python3 tools/riscv/qemu_desktop_boot.py             # headless + screendump
 python3 tools/riscv/qemu_desktop_boot.py --display-gtk  # open a window
 ```
 
-## LVGL image display (framebuffer GUI demo)
+## LVGL desktop GUI (framebuffer interactive demo)
 
-Build a static riscv64 `/init` that renders a full-screen image through LVGL on
-`/dev/fb0`, then packs it into the marker initramfs. Verified to reproduce the
-source image 1:1 on the QEMU virt display chain (bochs -> simple-framebuffer
--> VT -> userspace fbdev).
+Build a static riscv64 `/init` that renders an interactive keyboard-navigable
+desktop through LVGL on `/dev/fb0` (Home screen with three app cards, arrow
+keys move focus, Enter opens, ESC returns), then packs it into the marker
+initramfs. Verified on the QEMU virt display chain (bochs ->
+simple-framebuffer -> VT -> userspace fbdev).
 
 ```bash
-# default Asterinas title-card image, or pass your own 1280x1024 PNG
-python3 tools/riscv/lvgl/build_lvgl_initramfs.sh            # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
-python3 tools/riscv/lvgl/build_lvgl_initramfs.sh my-image.png
+python3 tools/riscv/lvgl/build_lvgl_initramfs.sh   # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
 ```
 
 Then rebuild the boot disk with that initramfs and run the display boot
 (see the "QEMU framebuffer display boot" section). The build clones LVGL
 `v8.3.9` + lv_drivers `v8.3.0` into `target/lvgl` and applies the needed
-patches (32-bit colors, resolution caps, enabled fbdev/evdev, non-fatal
-FBIOBLANK). Compile in one gcc invocation to avoid stale-object-color-depth
-mismatches.
+patches (32-bit colors, resolution caps, fonts, enabled fbdev/evdev,
+non-fatal FBIOBLANK). Compile in one gcc invocation to avoid
+stale-object-color-depth mismatches. See `docs/porting/riscv-qemu-desktop.md`
+for the interactive-GUI input verification status.
 
 ## Dependencies
 
