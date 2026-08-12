@@ -60,6 +60,25 @@ make test_riscv_sifive_u_linux_reference \
 The Asterinas run is accepted only after its userspace marker appears.
 Firmware output alone is not sufficient.
 
+## QEMU framebuffer display boot
+
+Boot the kernel through U-Boot with a bochs display, inject a
+`simple-framebuffer` DTB node, and watch the VT console render on the QEMU
+display. This validates the firmware-framebuffer handoff software chain
+(bochs -> U-Boot -> simple-framebuffer -> Asterinas VT) without hardware.
+See `docs/porting/riscv-qemu-desktop.md` for the full setup and pitfalls.
+
+The kernel must be Sv39 (`FEATURES=riscv_sv39_mode`) and the initramfs must
+be the real marker initramfs (not the nix-build stub). Then run the driver:
+
+```bash
+make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
+python3 tools/riscv/make_qemu_uboot_initramfs.py target/qemu-uboot/initramfs.cpio.gz
+# ... prepare_qemu_uboot_booti.sh prepare (see the doc for env vars)
+python3 tools/riscv/qemu_desktop_boot.py             # headless + screendump
+python3 tools/riscv/qemu_desktop_boot.py --display-gtk  # open a window
+```
+
 ## Dependencies
 
 Use the repository development container.

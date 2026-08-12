@@ -20,6 +20,7 @@ evidence, or implementation support under an agreed scope.
 | Sv39/Sv48 with Svadu/Svade | currently verified | downstream boot matrix on the reconstructed `main` |
 | QEMU SiFive U boot (Asterinas) | currently verified | `make test_riscv_sifive_u` (Sv39 kernel, userspace marker) on the reconstructed `main` |
 | QEMU SiFive U boot (Linux 6.12 reference) | currently verified | `make test_riscv_sifive_u_linux_reference` (Linux boots to `ASTERINAS_LINUX_REFERENCE_READY`) on the reconstructed `main` |
+| QEMU virt display (simple-framebuffer -> VT console) | currently verified | `tools/riscv/qemu_desktop_boot.py` (bochs-display, framebuffer registered, VT renders 1280x1024) on the reconstructed `main` |
 | EIC7700 L3 cache isolation | currently verified | `tools/riscv/eic7700_isolation.sh` (negative=0 / positive=1 registrations, pure QEMU) |
 | Milk-V Megrez | previously verified | `docs/porting/evidence/` |
 
