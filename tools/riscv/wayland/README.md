@@ -49,3 +49,29 @@ python3 tools/riscv/qemu_desktop_boot.py --display-gtk   # or headless + screend
 Replace the hand-written client/compositor with the real `libwayland`/`Weston`
 once riscv64 cross-libraries (or a riscv64 rootfs) are available; the kernel
 path verified here needs no change.
+
+## libwayland client variant
+
+`client_libwayland.c` + `build_wayland_libwayland.sh` replace the hand-written
+wire client with a real `libwayland-client` client. This required:
+
+- Cross-compiling the dependency chain into `target/riscv-cross/usr`:
+  - libffi 3.5.2 (autotools: `./autogen.sh && ./configure --host=riscv64-linux-gnu`)
+  - expat 2.7.1 (autotools: `./buildconf.sh && ./configure --host=riscv64-linux-gnu`)
+  - libwayland 1.26.0 (meson: `--cross-file` + `-Ddtd_validation=false`, matching
+    the host wayland-scanner version)
+- Fixing the wire byte order to match the real Wayland format: the message
+  header is `size << 16 | opcode`, not `opcode << 16 | size` (the hand-written
+  demo had it reversed and only worked because both sides agreed).
+- Making the compositor handle the dynamic object ids libwayland allocates
+  (registry/compositor/shm/surface/pool ids from the wire), and parse the
+  coalesced SOCK_STREAM byte stream instead of one-message-per-recv.
+
+The libwayland client completes the full handshake against the demo compositor
+on the host (bound globals, SCM_RIGHTS fd, surface commit, `rendered buffer`).
+On the Asterinas kernel it stalls inside `wl_display_roundtrip` because the
+kernel does not yet support `MSG_DONTWAIT`/`MSG_NOSIGNAL` on UNIX stream
+sockets — libwayland's non-blocking `prepare_read`/poll loop depends on
+`MSG_DONTWAIT`, which Asterinas currently warns about and ignores (see
+`kernel/src/net/socket/util/message_flags.rs`, `RecvFlags::SUPPORTED`). That is
+a kernel socket-flag gap, not a demo-code issue.
