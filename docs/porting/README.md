@@ -40,8 +40,13 @@ rootfs 和 PID 1，并完成第一次用户态 `write`。这仍是集成与调�
 - `70734c14e` 的 direct QEMU 已在 16 GiB、4 hart、Sv48/Svade 下到达
   用户态 marker 并完成进程清理；它没有经过 U-Boot，也不是 EIC7700
   真机证据。见[证据索引](evidence/megrez-history-index.md)。
+- 重构后 `main` 的 Sv39 内核已在 QEMU `virt` + bochs-display 上跑通完整
+  framebuffer 显示链：U-Boot 注入 `simple-framebuffer` 节点，内核登记
+  framebuffer 且 VT 控制台渲染到 1280x1024 画面。见
+  [riscv-qemu-desktop.md](riscv-qemu-desktop.md)。这验证的是软件链，
+  不代表 EIC7700/Megrez 的显示硬件行为。
 
-这两条 QEMU 结果与 `3ef99e6bd` 真机候选属于不同产物和环境，不得拼成同一
+这三条 QEMU 结果与 `3ef99e6bd` 真机候选属于不同产物和环境，不得拼成同一
 Image 的连续运行。
 
 ## 第一缺失边界
@@ -58,9 +63,16 @@ framebuffer 后端可把 `tty0` 内容显示到 HDMI。
 这一假设要求同时明确 framebuffer 的地址、大小、格式、stride、物理内存
 保留和 RISC-V 可用的 cache 策略；它不等于移植完整 Eswin 显示驱动。
 
+> **更新（2026-08-12）**：该假设的软件链已在 QEMU `virt` 上通过——
+> 显式 handoff 后 framebuffer 不再返回 `None`，`tty0` 内容由 VT 渲染到
+> 画面（见 [riscv-qemu-desktop.md](riscv-qemu-desktop.md)）。真实 EIC7700
+> 的 HDMI scanout、cache/coherency 与厂商固件行为仍需板卡验证。
+
 ## 尚未解决的问题
 
-1. RISC-V framebuffer handoff 当前返回 `None`。
+1. RISC-V framebuffer handoff 在 QEMU `virt` 已通过（不再是 `None`，见
+   [riscv-qemu-desktop.md](riscv-qemu-desktop.md)）；真实 EIC7700 的
+   framebuffer 交接仍待板卡验证。
 2. framebuffer 物理内存保留和 cache 策略尚未实现；当前 WC 路径会在
    RISC-V 上 panic。
 3. Megrez DTB 描述的是 DesignWare APB UART；当前组件不支持这一路径。
@@ -101,6 +113,7 @@ shell I/O 和进程清理。QEMU `virt` 只能验证软件链路，不能证明 
 ## 文档地图与历史归档
 
 - [唯一可执行命令来源](../../tools/riscv/README.md)
+- [QEMU framebuffer 显示链（已验证）](riscv-qemu-desktop.md)
 - [追加式证据索引](evidence/megrez-history-index.md)
 - [最新 PID 1 与恢复证据](evidence/2026-07-20-megrez-pid1-recovery.md)
 - [历史启动指南快照](megrez-asterinas-boot-guide.md)
