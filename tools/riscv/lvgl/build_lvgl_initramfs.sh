@@ -60,6 +60,12 @@ patch_lvgl() {
         sed -i '0,/^#define LV_COLOR_DEPTH 32/a #define LV_HOR_RES_MAX 1280\n#define LV_VER_RES_MAX 1024' "${lv_conf}"
     fi
 
+    # Enable the fonts the GUI uses (symbols live in montserrat_48).
+    for size in 48 32 24 20 16; do
+        sed -i "s|^#define LV_FONT_MONTSERRAT_${size} 0|#define LV_FONT_MONTSERRAT_${size} 1|" "${lv_conf}"
+    done
+    sed -i 's|^#define LV_FONT_DEFAULT .*|#define LV_FONT_DEFAULT \&lv_font_montserrat_20|' "${lv_conf}"
+
     # Enable the fbdev display and evdev input drivers.
     sed -i 's|^#  define USE_FBDEV           0|#  define USE_FBDEV           1|' "${drv_conf}"
     sed -i 's|^#  define USE_EVDEV           0|#  define USE_EVDEV           1|' "${drv_conf}"
