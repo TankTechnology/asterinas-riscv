@@ -125,6 +125,7 @@ mod dma_window {
     }
 
     #[ktest]
+    #[expect(clippy::reversed_empty_ranges)]
     fn rejects_ranges_outside_dma_window() {
         let window = DmaWindow::new(0, 0xc000_0000, 0x2000).unwrap();
 
