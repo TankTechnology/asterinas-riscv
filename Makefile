@@ -515,6 +515,7 @@ format:
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
 	@git --git-dir=$$PWD/.git ls-files --no-directory | \
 		grep -v '[.]patch$$' | \
+		grep -v '[.]dtb$$' `# Binary device tree blobs are not text` | \
 		grep -v '^.claude/skills/aster-code-review$$' `# This is a symbolic link` | \
 		xargs sed -i 's/ *$$//'
 	@
@@ -530,7 +531,7 @@ check: private WORKSPACE_MEMBER_DIRS = \
 check: $(CARGO_OSDK)
 	@# Check if any git-tracked, non-patch files contain trailing whitespace
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
-	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | xargs grep -d skip ' $$' ; then \
+	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | grep -v '[.]dtb$$' | xargs grep -d skip ' $$' ; then \
 		echo "Error: Files (as listed above) contain trailing whitespaces"; \
 		exit 1; \
 	fi
