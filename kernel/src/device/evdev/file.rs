@@ -31,7 +31,7 @@ use crate::{
 pub(super) const EVDEV_BUFFER_SIZE: usize = 64;
 
 mod ioctl_defs {
-    use aster_input::input_dev::InputId;
+    use aster_input::input_dev::{InputAbsInfo, InputId};
 
     use crate::util::ioctl::{InData, IoctlEnum, OutData, ioc};
 
@@ -49,6 +49,9 @@ mod ioctl_defs {
 
     /// The `EVIOCGBIT` ioctl enum.
     pub(super) type GetEventBits = IoctlEnum<b'E', 0x20, 0x1F, OutData<[u8]>>;
+
+    /// The `EVIOCGABS` ioctl enum (get absolute axis information).
+    pub(super) type GetAbsInfo = IoctlEnum<b'E', 0x40, 0x3F, OutData<InputAbsInfo>>;
 }
 
 // Reference: <https://elixir.bootlin.com/linux/v6.17.9/source/include/uapi/linux/input.h#L28>
@@ -328,8 +331,11 @@ fn handle_get_bit(evdev: &Arc<EvdevDevice>, event_type: u8, writer: &mut VmWrite
             let bitmap = capability.supported_relative_axes_bitmap();
             write_bytes_and_zeros_to_userspace(writer, bitmap)?;
         }
-        t if t == EventTypes::ABS.as_index()
-            || t == EventTypes::LED.as_index()
+        t if t == EventTypes::ABS.as_index() => {
+            let bitmap = capability.supported_absolute_axes_bitmap();
+            write_bytes_and_zeros_to_userspace(writer, bitmap)?;
+        }
+        t if t == EventTypes::LED.as_index()
             || t == EventTypes::SW.as_index()
             || t == EventTypes::MSC.as_index()
             || t == EventTypes::FF.as_index()
@@ -456,6 +462,12 @@ impl PerOpenFileOps for EvdevFile {
                 let event_type = cmd.discriminant();
                 cmd.base_ioctl()
                     .with_writer(|mut writer| handle_get_bit(&evdev, event_type, &mut writer))?;
+            }
+            cmd @ GetAbsInfo => {
+                let evdev = self.upgrade_device()?;
+                let axis_index = cmd.discriminant() as usize;
+                let info = *evdev.device.capability().absolute_axis_info(axis_index);
+                cmd.base_ioctl().write(&info)?;
             }
             cmd @ GetKeyState => {
                 // TODO: We need to track whether the key is currently pressed and report that state
