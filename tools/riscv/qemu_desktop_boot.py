@@ -65,7 +65,7 @@ COMMANDS = [
     ("fb-format", 'fdt set /framebuffer@40000000 format "x8r8g8b8"', "=> "),
     ("fb-status", 'fdt set /framebuffer@40000000 status "okay"', "=> "),
     ("fb-verify", "fdt print /framebuffer@40000000", "simple-framebuffer"),
-    ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=info init=/init"', "=> "),
+    ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=warn init=/init"', "=> "),
     ("initrd-load", f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz", "bytes read"),
     ("initrd-size-save", "setenv initrd_size ${filesize}", "=> "),
     ("initrd-size", "echo ASTER_INITRD_SIZE=${initrd_size}", "ASTER_INITRD_SIZE="),
@@ -175,7 +175,14 @@ def main() -> int:
                     print("[ok] userspace marker reached", flush=True)
                 except TimeoutError:
                     print("[warn] userspace marker not reached", flush=True)
-                time.sleep(3)
+                # Early dump to catch the diagnostic rects (drawn ~1s after marker).
+                if display_mode == "none" and MON_SOCK.exists():
+                    time.sleep(1)
+                    screendump(MON_SOCK, SCREENSHOT.with_name("early.ppm"))
+                    print("[ok] early screenshot written", flush=True)
+                    time.sleep(7)
+                else:
+                    time.sleep(8)
                 break
             advance_to(expected.encode(), time.monotonic() + 25)
             if expected != "=> ":
