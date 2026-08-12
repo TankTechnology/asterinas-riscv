@@ -127,7 +127,7 @@ impl<D: TtyDriver> Tty<D> {
     pub fn push_input(&self, chs: &[u8]) -> Result<usize> {
         // Echo bytes are collected under the lock but written only after it
         // is released, so a slow output device never stalls input processing.
-        let mut echoes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut echoes: Vec<u8> = Vec::new();
 
         let mut len = 0;
         {

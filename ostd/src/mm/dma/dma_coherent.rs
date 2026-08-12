@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::ManuallyDrop, ptr::NonNull};
+#[cfg(target_arch = "riscv64")]
+use core::ptr::NonNull;
+use core::{fmt::Debug, mem::ManuallyDrop};
 
 use super::util::{
     alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
 };
+#[cfg(target_arch = "riscv64")]
+use crate::mm::kspace::paddr_to_vaddr;
 use crate::{
     arch::irq,
     error::Error,
@@ -13,7 +17,6 @@ use crate::{
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
         io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
         kspace::kvirt_area::KVirtArea,
-        paddr_to_vaddr,
     },
 };
 
@@ -92,6 +95,8 @@ impl DmaCoherent {
         })
     }
 
+    // Currently only the RISC-V USB kernel op uses the raw DMA pointer.
+    #[cfg(target_arch = "riscv64")]
     pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
         let vaddr = match &self.inner {
             Inner::Segment(segment) => paddr_to_vaddr(segment.paddr()),
