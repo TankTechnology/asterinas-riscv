@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# SPDX-License-Identifier: MPL-2.0
+
 # verify_megrez_sim.sh — 上板前在模拟环境复验 Megrez 启动链（一键）
 #
 # 在 asterinas-env:uboot-sim 容器内运行（含 qemu、riscv 交叉工具链、
