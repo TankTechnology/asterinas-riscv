@@ -7,8 +7,8 @@ use ostd::sync::{RwLock, WriteIrqDisabled};
 
 use crate::{
     event_type_codes::{
-        AbsCode, AbsCodeSet, EventTypes, KeyCode, KeyCodeSet, KeyStatus, RelCode, RelCodeSet,
-        SynEvent, ABS_COUNT,
+        ABS_COUNT, AbsCode, AbsCodeSet, EventTypes, KeyCode, KeyCodeSet, KeyStatus, RelCode,
+        RelCodeSet, SynEvent,
     },
     input_handler::BoundInputHandler,
     unregister_device,
@@ -60,9 +60,7 @@ impl InputEvent {
                 (EventTypes::KEY.as_index(), *key as u16, *status as i32)
             }
             InputEvent::Relative(axis, value) => (EventTypes::REL.as_index(), *axis as u16, *value),
-            InputEvent::Absolute(axis, value) => {
-                (EventTypes::ABS.as_index(), *axis as u16, *value)
-            }
+            InputEvent::Absolute(axis, value) => (EventTypes::ABS.as_index(), *axis as u16, *value),
         }
     }
 
