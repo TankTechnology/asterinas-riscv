@@ -62,7 +62,6 @@ enum InputConfigSelect {
     EvBits = 0x11,
     /// subsel specifies the absolute axis using ABS_* constants in the underlying
     /// evdev implementation. Information about the axis will be returned.
-    #[expect(dead_code)]
     AbsInfo = 0x12,
 }
 
@@ -87,7 +86,6 @@ impl VirtioInputConfig {
     }
 }
 
-#[expect(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
 struct AbsInfo {
