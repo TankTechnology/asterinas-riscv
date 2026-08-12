@@ -77,14 +77,14 @@ pub fn register(device: Arc<dyn Device>) -> Result<()> {
     let node = insertion
         .map_err(|_| Error::with_message(Errno::EEXIST, "the char device already exists"))?;
 
-    if let Some((device, path_resolver)) = node {
-        if let Err(error) = add_device_node(&device, &path_resolver) {
-            let _removed = {
-                let mut registry = DEVICE_REGISTRY.lock();
-                registry.remove_if(id, |registered| Arc::ptr_eq(registered, &device))
-            };
-            return Err(error);
-        }
+    if let Some((device, path_resolver)) = node
+        && let Err(error) = add_device_node(&device, &path_resolver)
+    {
+        let _removed = {
+            let mut registry = DEVICE_REGISTRY.lock();
+            registry.remove_if(id, |registered| Arc::ptr_eq(registered, &device))
+        };
+        return Err(error);
     }
 
     Ok(())

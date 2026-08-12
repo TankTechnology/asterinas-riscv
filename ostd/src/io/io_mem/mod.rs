@@ -5,10 +5,11 @@
 mod allocator;
 pub(crate) mod util;
 
+#[cfg(target_arch = "riscv64")]
+use core::ptr::NonNull;
 use core::{
     marker::PhantomData,
     ops::{Deref, Range},
-    ptr::NonNull,
 };
 
 use align_ext::AlignExt;
@@ -162,6 +163,8 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
     }
 
     /// Returns the base virtual address for an in-kernel MMIO driver.
+    // Currently only the RISC-V USB bus uses raw pointers into MMIO.
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn as_non_null_ptr(&self) -> NonNull<u8> {
         NonNull::new(self.base() as *mut u8).expect("an I/O mapping has a non-null base")
     }
