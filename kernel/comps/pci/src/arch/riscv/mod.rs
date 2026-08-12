@@ -181,8 +181,9 @@ fn init_mmio_allocator_from_fdt(node: &fdt::node::FdtNode) {
 
         // Only initialize with memory-type region.
         if (pci_space >> 24) == 0x2 {
-            MMIO_ALLOCATOR
-                .call_once(|| ostd::sync::SpinLock::new(MmioAllocator::new(cpu_addr as usize, size as usize)));
+            MMIO_ALLOCATOR.call_once(|| {
+                ostd::sync::SpinLock::new(MmioAllocator::new(cpu_addr as usize, size as usize))
+            });
             break;
         }
         i += entry_size;
