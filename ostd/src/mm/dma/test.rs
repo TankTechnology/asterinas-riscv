@@ -205,7 +205,9 @@ mod usb_kernel_op {
         assert_eq!(handle.dma_addr().as_u64() as usize % 64, 0);
         assert_eq!(op.allocation_count(), 1);
 
-        unsafe { let _ = op.dealloc_coherent(handle); };
+        unsafe {
+            let _ = op.dealloc_coherent(handle);
+        };
         assert_eq!(op.allocation_count(), 0);
     }
 

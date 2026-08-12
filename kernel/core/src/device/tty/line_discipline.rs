@@ -342,7 +342,10 @@ mod tests {
         line_discipline.set_termios(termios);
         let mut received_signal = None;
 
-        assert_eq!(line_discipline.push_char(b'x', |_| {}).unwrap(), Some((b'x', None)));
+        assert_eq!(
+            line_discipline.push_char(b'x', |_| {}).unwrap(),
+            Some((b'x', None))
+        );
         line_discipline
             .push_char(CCtrlCharId::VINTR.default_char(), |signal| {
                 received_signal = Some(signal)
