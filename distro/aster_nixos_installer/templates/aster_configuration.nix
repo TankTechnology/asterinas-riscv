@@ -46,6 +46,8 @@
     (import ./overlays/systemd/default.nix)
     (import ./overlays/jtreg/default.nix)
     (import ./overlays/bison/default.nix)
+    (import ./overlays/coreutils/default.nix)
+    (import ./overlays/findutils/default.nix)
   ];
 
   # The Asterinas NixOS special options.
