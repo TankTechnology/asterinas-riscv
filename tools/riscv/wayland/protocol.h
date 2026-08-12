@@ -37,7 +37,7 @@
 #define REQ_SHM_CREATE_POOL 0
 #define REQ_SHM_POOL_CREATE_BUFFER 0
 #define REQ_SURFACE_ATTACH 1
-#define REQ_SURFACE_COMMIT 4
+#define REQ_SURFACE_COMMIT 6
 
 /* Event opcodes. */
 #define EVT_CALLBACK_DONE 0
