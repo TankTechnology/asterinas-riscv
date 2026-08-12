@@ -6,7 +6,10 @@ use core::{any::Any, fmt::Debug};
 use ostd::sync::{RwLock, WriteIrqDisabled};
 
 use crate::{
-    event_type_codes::{EventTypes, KeyCode, KeyCodeSet, KeyStatus, RelCode, RelCodeSet, SynEvent},
+    event_type_codes::{
+        AbsCode, AbsCodeSet, EventTypes, KeyCode, KeyCodeSet, KeyStatus, RelCode, RelCodeSet,
+        SynEvent, ABS_COUNT,
+    },
     input_handler::BoundInputHandler,
     unregister_device,
 };
@@ -20,7 +23,8 @@ pub enum InputEvent {
     Key(KeyCode, KeyStatus),
     /// Relative movement events (EV_REL)
     Relative(RelCode, i32),
-    // TODO: Add EV_ABS, EV_MSC, EV_SW, EV_LED, EV_SND, ... as needed
+    /// Absolute position events (EV_ABS)
+    Absolute(AbsCode, i32),
 }
 
 impl InputEvent {
@@ -39,6 +43,11 @@ impl InputEvent {
         Self::Relative(axis, value)
     }
 
+    /// Creates an absolute movement event.
+    pub fn from_absolute_move(axis: AbsCode, value: i32) -> Self {
+        Self::Absolute(axis, value)
+    }
+
     /// Converts enum to raw Linux input event triplet (type, code, value).
     pub fn to_raw(&self) -> (u16, u16, i32) {
         match self {
@@ -51,6 +60,9 @@ impl InputEvent {
                 (EventTypes::KEY.as_index(), *key as u16, *status as i32)
             }
             InputEvent::Relative(axis, value) => (EventTypes::REL.as_index(), *axis as u16, *value),
+            InputEvent::Absolute(axis, value) => {
+                (EventTypes::ABS.as_index(), *axis as u16, *value)
+            }
         }
     }
 
@@ -60,6 +72,7 @@ impl InputEvent {
             InputEvent::Sync(_) => EventTypes::SYN,
             InputEvent::Key(_, _) => EventTypes::KEY,
             InputEvent::Relative(_, _) => EventTypes::REL,
+            InputEvent::Absolute(_, _) => EventTypes::ABS,
         }
     }
 }
@@ -134,6 +147,27 @@ impl InputId {
     pub const BUS_INTEL_ISHTP: u16 = 0x1F;
 }
 
+/// Absolute axis information.
+///
+/// This mirrors Linux's `struct input_absinfo`, which user space reads via
+/// `EVIOCGABS` to learn each axis's current value and calibration limits.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct InputAbsInfo {
+    /// Latest reported value for the axis.
+    pub value: i32,
+    /// Minimum value for the axis.
+    pub minimum: i32,
+    /// Maximum value for the axis.
+    pub maximum: i32,
+    /// Noise filter applied to the axis.
+    pub fuzz: i32,
+    /// Discard zone around the center position.
+    pub flat: i32,
+    /// Resolution in units per mm (or units per radian for rotational axes).
+    pub resolution: i32,
+}
+
 /// Input device capability bitmaps.
 #[derive(Clone, Debug)]
 pub struct InputCapability {
@@ -143,7 +177,10 @@ pub struct InputCapability {
     supported_keys: KeyCodeSet,
     /// Supported relative axis codes.
     supported_relative_axes: RelCodeSet,
-    // TODO: Add supported_absolute_axes, supported_misc, etc.
+    /// Supported absolute axis codes.
+    supported_absolute_axes: AbsCodeSet,
+    /// Per-axis absolute axis information (value and calibration limits).
+    absolute_axes_info: [InputAbsInfo; ABS_COUNT],
 }
 
 impl Default for InputCapability {
@@ -159,6 +196,8 @@ impl InputCapability {
             supported_event_types: EventTypes::new(),
             supported_keys: KeyCodeSet::new(),
             supported_relative_axes: RelCodeSet::new(),
+            supported_absolute_axes: AbsCodeSet::new(),
+            absolute_axes_info: [InputAbsInfo::default(); ABS_COUNT],
         }
     }
 
@@ -236,6 +275,37 @@ impl InputCapability {
     /// Returns the supported relative axes bitmap as bytes.
     pub fn supported_relative_axes_bitmap(&self) -> &[u8] {
         self.supported_relative_axes.as_raw_slice()
+    }
+
+    /// Sets absolute axis capability.
+    pub fn set_supported_absolute_axis(&mut self, abs_code: AbsCode) {
+        self.supported_absolute_axes.set(abs_code);
+        self.set_supported_event_type(EventTypes::ABS);
+    }
+
+    /// Checks if an absolute code is supported.
+    pub fn support_absolute_axis(&self, abs_code: AbsCode) -> bool {
+        self.supported_absolute_axes.contain(abs_code)
+    }
+
+    /// Removes support for an absolute code.
+    pub fn clear_supported_absolute_axis(&mut self, abs_code: AbsCode) {
+        self.supported_absolute_axes.clear(abs_code);
+    }
+
+    /// Returns the supported absolute axes bitmap as bytes.
+    pub fn supported_absolute_axes_bitmap(&self) -> &[u8] {
+        self.supported_absolute_axes.as_raw_slice()
+    }
+
+    /// Returns the axis information for an absolute axis index (an `ABS_*` code).
+    pub fn absolute_axis_info(&self, axis_index: usize) -> &InputAbsInfo {
+        &self.absolute_axes_info[axis_index]
+    }
+
+    /// Sets the axis information for an absolute axis index (an `ABS_*` code).
+    pub fn set_absolute_axis_info(&mut self, axis_index: usize, info: InputAbsInfo) {
+        self.absolute_axes_info[axis_index] = info;
     }
 }
 
@@ -334,6 +404,10 @@ impl RegisteredInputDevice {
             InputEvent::Relative(rel_event, _) => {
                 capability.support_event_type(EventTypes::REL)
                     && capability.support_relative_axis(*rel_event)
+            }
+            InputEvent::Absolute(abs_event, _) => {
+                capability.support_event_type(EventTypes::ABS)
+                    && capability.support_absolute_axis(*abs_event)
             }
         }
     }
