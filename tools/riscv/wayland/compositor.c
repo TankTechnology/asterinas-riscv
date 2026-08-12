@@ -37,6 +37,16 @@ static uint32_t buffer_stride;
 static uint32_t buffer_width;
 static uint32_t buffer_height;
 
+/* Object ids the client allocated (dynamic, unlike the hand-written demo). */
+static uint32_t registry_id;
+static uint32_t compositor_id;
+static uint32_t shm_id;
+static uint32_t surface_id;
+static uint32_t pool_id;
+
+/* fd received via SCM_RIGHTS, consumed by the next create_pool request. */
+static int pending_fd = -1;
+
 int client_main(void); /* defined in client.c */
 
 static void die(const char *msg) {
@@ -79,7 +89,7 @@ static void send_global(int fd, uint32_t name, const char *iface, uint32_t versi
     wl_put_u32(&w, name);      /* name */
     wl_put_str(&w, iface);     /* interface */
     wl_put_u32(&w, version);   /* version */
-    wl_put_header(&w, OBJ_REGISTRY, EVT_REGISTRY_GLOBAL);
+    wl_put_header(&w, registry_id, EVT_REGISTRY_GLOBAL);
     wl_send_msg(fd, wl_writer_data(&w), wl_writer_len(&w), -1);
 }
 
@@ -108,33 +118,38 @@ static void render_buffer(void) {
     tty_log("compositor: rendered buffer to /dev/fb0");
 }
 
-static void handle_msg(int fd, WlReader *r, int rcv_fd) {
+static void handle_msg(int fd, WlReader *r) {
     uint32_t object_id = wl_get_u32(r);
     uint32_t sz_op = wl_get_u32(r);
-    uint16_t opcode = (uint16_t)(sz_op >> 16);
+    uint16_t opcode = (uint16_t)(sz_op & 0xffffu);
 
     if (object_id == WL_DISPLAY_ID) {
         if (opcode == REQ_DISPLAY_GET_REGISTRY) {
-            /* new_id wl_registry — client allocated OBJ_REGISTRY. */
-            (void)wl_get_u32(r);
-            send_global(fd, OBJ_COMPOSITOR, WL_IFACE_COMPOSITOR, 1);
-            send_global(fd, OBJ_SHM, WL_IFACE_SHM, 1);
+            registry_id = wl_get_u32(r);
+            send_global(fd, 0, WL_IFACE_COMPOSITOR, 1);
+            send_global(fd, 1, WL_IFACE_SHM, 1);
         } else if (opcode == REQ_DISPLAY_SYNC) {
-            /* new_id wl_callback */
             uint32_t callback_id = wl_get_u32(r);
             send_callback_done(fd, callback_id);
         }
-    } else if (object_id == OBJ_REGISTRY && opcode == REQ_REGISTRY_BIND) {
-        /* name, interface, version, new_id — ignore, we announce fixed ids. */
-        (void)wl_get_u32(r);
-        (void)wl_get_str(r);
-        (void)wl_get_u32(r);
-        (void)wl_get_u32(r);
-    } else if (object_id == OBJ_SHM && opcode == REQ_SHM_CREATE_POOL) {
+    } else if (object_id == registry_id && opcode == REQ_REGISTRY_BIND) {
+        /* name, interface, version, new_id */
+        (void)wl_get_u32(r); /* name */
+        const char *iface = wl_get_str(r);
+        (void)wl_get_u32(r); /* version */
+        uint32_t new_id = wl_get_u32(r);
+        if (strcmp(iface, WL_IFACE_COMPOSITOR) == 0) {
+            compositor_id = new_id;
+        } else if (strcmp(iface, WL_IFACE_SHM) == 0) {
+            shm_id = new_id;
+        }
+    } else if (object_id == shm_id && opcode == REQ_SHM_CREATE_POOL) {
         /* new_id wl_shm_pool, size, fd */
-        (void)wl_get_u32(r);
+        pool_id = wl_get_u32(r);
         uint32_t size = wl_get_u32(r);
         (void)wl_get_u32(r); /* fd placeholder */
+        int rcv_fd = pending_fd;
+        pending_fd = -1;
         if (rcv_fd >= 0) {
             shm_fd = rcv_fd;
             shm_size = size;
@@ -148,7 +163,7 @@ static void handle_msg(int fd, WlReader *r, int rcv_fd) {
         } else {
             tty_log("compositor: create_pool without fd");
         }
-    } else if (object_id == OBJ_SHM_POOL && opcode == REQ_SHM_POOL_CREATE_BUFFER) {
+    } else if (object_id == pool_id && opcode == REQ_SHM_POOL_CREATE_BUFFER) {
         /* new_id wl_buffer, offset, width, height, stride, format */
         (void)wl_get_u32(r);
         buffer_offset = wl_get_u32(r);
@@ -157,15 +172,63 @@ static void handle_msg(int fd, WlReader *r, int rcv_fd) {
         buffer_stride = wl_get_u32(r);
         (void)wl_get_u32(r); /* format */
         surface_has_buffer = 1;
-    } else if (object_id == OBJ_SURFACE && opcode == REQ_SURFACE_ATTACH) {
+    } else if (object_id == compositor_id && opcode == REQ_COMPOSITOR_CREATE_SURFACE) {
+        surface_id = wl_get_u32(r);
+    } else if (object_id == surface_id && opcode == REQ_SURFACE_ATTACH) {
         /* buffer (object or null), x, y */
         (void)wl_get_u32(r);
         (void)wl_get_u32(r);
         (void)wl_get_u32(r);
-    } else if (object_id == OBJ_SURFACE && opcode == REQ_SURFACE_COMMIT) {
+    } else if (object_id == surface_id && opcode == REQ_SURFACE_COMMIT) {
         if (surface_has_buffer && shm_map) {
             render_buffer();
         }
+    }
+}
+
+/* Stream receiver: libwayland coalesces messages on SOCK_STREAM, so parse
+ * message boundaries from the header size and carry any SCM_RIGHTS fd. */
+static int stream_recv(int fd, WlReader *r) {
+    static unsigned char buf[WL_MSG_MAX * 4];
+    static size_t len = 0, pos = 0;
+
+    for (;;) {
+        if (len - pos >= WL_HEADER_SIZE) {
+            uint32_t sz_op;
+            memcpy(&sz_op, buf + pos + 4, sizeof(sz_op));
+            uint16_t size = (uint16_t)(sz_op >> 16);
+            if (size >= WL_HEADER_SIZE && len - pos >= size) {
+                wl_reader_init(r, buf + pos, size);
+                pos += size;
+                return 0;
+            }
+        }
+
+        unsigned char tmp[WL_MSG_MAX];
+        struct iovec iov = {tmp, sizeof(tmp)};
+        char cbuf[CMSG_SPACE(sizeof(int))];
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf;
+        msg.msg_controllen = sizeof(cbuf);
+        ssize_t n = recvmsg(fd, &msg, 0);
+        if (n <= 0) {
+            return -1;
+        }
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+                pending_fd = ((int *)CMSG_DATA(c))[0];
+            }
+        }
+        if (pos > 0) {
+            memmove(buf, buf + pos, len - pos);
+            len -= pos;
+            pos = 0;
+        }
+        memcpy(buf + len, tmp, (size_t)n);
+        len += (size_t)n;
     }
 }
 
@@ -178,11 +241,10 @@ static void compositor_loop(int listen_fd) {
 
     for (;;) {
         WlReader r;
-        int rcv_fd;
-        if (wl_recv_msg(client_fd, &r, &rcv_fd) < 0) {
+        if (stream_recv(client_fd, &r) < 0) {
             break;
         }
-        handle_msg(client_fd, &r, rcv_fd);
+        handle_msg(client_fd, &r);
     }
 }
 
