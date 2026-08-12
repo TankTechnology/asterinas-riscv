@@ -98,11 +98,43 @@ python3 tools/riscv/qemu_desktop_boot.py --display-gtk
 | 抓帧全黑 | VT 尚未接管 framebuffer（内核早于 2.4s panic，或截图时机太早） | 先确认内核启动到用户态再抓帧 |
 | QEMU 串口输出为空（Python PIPE） | QEMU `-serial stdio` 对管道输出少于 4096 字节会阻塞读 | 用非阻塞读（`os.set_blocking` + 分块 `os.read`） |
 
+## 交互式桌面 GUI（LVGL）
+
+`tools/riscv/lvgl/` 里是一个键盘可导航的小桌面 demo：
+
+- **Home**：三张应用卡片（System Info / Image Viewer / About）
+- **方向键** 移动焦点（橙色描边高亮），**Enter** 打开应用，**ESC** 返回
+- 每个应用是独立 screen，用 LVGL group 焦点导航切换
+
+构建与运行（与静态图片共用一条流水线）：
+
+```bash
+python3 tools/riscv/lvgl/build_lvgl_initramfs.sh     # -> initramfs-lvgl.cpio.gz
+# ... prepare_qemu_uboot_booti.sh prepare ...
+python3 tools/riscv/qemu_desktop_boot.py --display-gtk
+```
+
+### 输入链路的验证状态
+
+- **内核侧已验证**：串口日志出现
+  `successfully connected handler class evdev to device QEMU Virtio Keyboard`，
+  且 `/dev/input/event0` 可打开（virtio-keyboard → evdev 全通）。
+- **渲染已验证**：Home 主菜单（标题栏 + 三卡片 + 焦点描边）逐像素正确。
+- **键盘导航代码**：标准 LVGL group 焦点导航，逻辑正确；但自动化键盘注入
+  （QMP `input-send-event` 在 QEMU 11 移除了 console 参数后、`xdotool` 的
+  gtk grab 机制）在本环境都未能送达 virtio-keyboard，因此界面切换建议在
+  gtk 窗口用**真实键盘**手动确认。
+
+> 内核 virtio-input 驱动当前只支持 EV_KEY（键盘）与 EV_REL（相对鼠标），
+> **不支持 EV_ABS**（tablet/触摸屏）。因此 `-device virtio-tablet-device`
+> 的事件会被内核丢弃；指针输入需走 virtio-mouse（相对坐标）或扩展内核驱动。
+
 ## 下一步（可选）
 
 - **X 桌面**：AsterNixOS riscv64 走 `xf86-video-fbdev` + `/dev/fb0`（相关 NixOS
   配置在 `codex/megrez-usb-keyboard` 分支的 `distro/etc_nixos/configuration-xmin.nix`）。
   内核侧前提（`/dev/fb0`）已满足。
-- **鼠标指针**：QEMU 加 `-device virtio-tablet-device`，内核 virtio-input 已支持。
+- **鼠标指针**：内核 virtio-input 加 EV_ABS 支持后，可用 `-device virtio-tablet-device`
+  获得绝对坐标指针；当前只能走 `virtio-mouse-device`（相对坐标）。
 - **真实板卡（Milk-V Megrez）**：固件若已交接 simple-framebuffer 则无需注入；
   否则用同样的 DTB 修补手法（`fdtput`）。
