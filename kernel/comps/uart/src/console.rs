@@ -28,6 +28,7 @@ const INPUT_BATCH_SIZE: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DiagnosticSendError {
+    #[expect(dead_code)]
     Io,
 }
 
