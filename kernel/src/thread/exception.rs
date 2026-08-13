@@ -8,7 +8,10 @@ use ostd::{arch::cpu::context::UserContext, task::Task};
 
 use crate::{
     prelude::*,
-    process::signal::signals::fault::FaultSignal,
+    process::{
+        posix_thread::ContextPthreadAdminApi,
+        signal::signals::{Signal, fault::FaultSignal},
+    },
     vm::vmar::{PageFaultInfo, Vmar},
 };
 
@@ -60,10 +63,36 @@ pub trait ToFaultSignal {
 }
 
 /// Generates a fault signal for the current thread.
+///
+/// Fault signals are synchronous: they are produced by an instruction the
+/// thread just executed, so simply leaving them pending (e.g., because the
+/// thread blocks them) would make the faulting instruction re-execute forever.
+/// Mirror Linux's `force_sig_fault_to_task`: if the signal is blocked or
+/// ignored, unblock it and reset its disposition to the default action so it
+/// terminates the thread rather than looping.
 fn generate_fault_signal(exception: CpuException, ctx: &Context, user_ctx: &UserContext) {
     let Some(signal) = exception.to_fault_signal(user_ctx) else {
         panic!("`{:?}` cannot be handled via signals", exception);
     };
+    let sig_num = signal.num();
+
+    let blocked = ctx.posix_thread.sig_mask().contains(sig_num);
+    let ignored = {
+        let dispositions = ctx.process.sig_dispositions().lock();
+        let dispositions = dispositions.lock();
+        dispositions.get(sig_num).will_ignore(sig_num)
+    };
+    if blocked || ignored {
+        if blocked {
+            let mut mask = ctx.posix_thread.sig_mask();
+            mask -= sig_num;
+            ctx.set_sig_mask(mask);
+        }
+        let dispositions = ctx.process.sig_dispositions().lock();
+        let mut dispositions = dispositions.lock();
+        dispositions.set_default(sig_num);
+    }
+
     ctx.posix_thread.enqueue_signal(Box::new(signal));
 }
 
