@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 /* Asterinas RISC-V interactive desktop demo.
  *
  * Runs as /init in the marker initramfs: initializes LVGL on /dev/fb0 and

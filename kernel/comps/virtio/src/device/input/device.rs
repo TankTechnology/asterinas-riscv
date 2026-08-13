@@ -573,7 +573,7 @@ impl InputDevice {
     /// Queries the calibration information for a specific absolute axis.
     fn query_abs_info(&self, axis_code: u16) -> Option<AbsInfo> {
         let size = self.select_config(InputConfigSelect::AbsInfo, axis_code as u8);
-        if size as usize != size_of::<AbsInfo>() {
+        if size != size_of::<AbsInfo>() {
             return None;
         }
 
