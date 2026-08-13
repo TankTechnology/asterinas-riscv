@@ -35,11 +35,14 @@ static volatile int g_child_done = 0;   // 0=not done, 1=fail, 2=wrote+readback 
 
 static long raw_clone(unsigned long flags, void *stack, int *ptid, int *ctid,
                       void *tls) {
+    // RISC-V selects CONFIG_CLONE_BACKWARDS in Linux: the raw clone syscall
+    // argument order is `clone(flags, stack, ptid, tls, ctid)` — the `tls` and
+    // `ctid` arguments are swapped relative to x86_64. Place them accordingly.
     register long a0 asm("a0") = (long)flags;
     register long a1 asm("a1") = (long)stack;
     register long a2 asm("a2") = (long)ptid;
-    register long a3 asm("a3") = (long)ctid;
-    register long a4 asm("a4") = (long)tls;
+    register long a3 asm("a3") = (long)tls;
+    register long a4 asm("a4") = (long)ctid;
     register long a7 asm("a7") = SYS_clone;
     asm volatile("ecall"
                  : "+r"(a0)
@@ -164,5 +167,12 @@ int main(void) {
     printf("__M4_DONE__ tls=%s segv=%s\n",
            tls_rc == 0 ? "ok" : "fail",
            segv_rc == 0 ? "ok" : "fail");
-    return (tls_rc == 0 && segv_rc == 0) ? 0 : 1;
+
+    // Hand off to the dynamic musl shared-TLS repro (general-dynamic TLS via
+    // the DTV). This is the actual nix/Boole-GC blocker from M4; it needs the
+    // musl loader + libtls.so present in the rootfs (see build_m4.sh).
+    char *const argv[] = { "/bin/tls_shared", NULL };
+    execv("/bin/tls_shared", argv);
+    printf("__M4_SHARED_TLS_FAIL__ exec /bin/tls_shared failed\n");
+    return 1;
 }
