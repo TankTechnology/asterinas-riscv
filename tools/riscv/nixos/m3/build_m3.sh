@@ -120,11 +120,13 @@ mkdir -p "${ROOTFS}/nix/store" "${ROOTFS}/nix/var/nix" "${ROOTFS}/root"
 # kernel's first-process stdio setup opens /dev/console, so /dev must exist).
 mkdir -p "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp"
 
-# Nix config for an unprivileged, sandbox-less smoke test.
+# Nix config for an unprivileged, sandbox-less smoke test. `nix eval` requires
+# the `nix-command` experimental feature (the `nix` CLI is gated behind it).
 cat > "${ROOTFS}/etc/nix/nix.conf" <<'EOF'
 sandbox = false
 build-users-group =
 trusted-users = root
+experimental-features = nix-command flakes
 EOF
 
 # 6. /init launcher (static glibc, same pattern as M1/M2).

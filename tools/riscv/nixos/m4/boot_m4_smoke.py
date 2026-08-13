@@ -31,11 +31,12 @@ INITRD_LOAD = 0x8300_0000
 DTB_LOAD = 0x8800_0000
 
 INIT_MARKER = b">>> M4 init: clone CLONE_SETTLS + SIGSEGV repro <<<"
-DONE_MARKER = b"__M4_DONE__"
+DONE_MARKER = b"__M4_SHARED_TLS_DONE__"
 
 CHECKS = [
     ("clone CLONE_SETTLS -> tp", b"__M4_TLS_OK__"),
     ("user fault -> SIGSEGV", b"__M4_SEGV_OK__"),
+    ("shared-lib general-dynamic TLS", b"__M4_SHARED_TLS_DONE__"),
 ]
 
 UBOOT_COMMANDS = [

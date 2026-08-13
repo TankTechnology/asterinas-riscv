@@ -35,14 +35,14 @@ INIT_MARKER = b">>> M3 init: Nix on Asterinas RISC-V <<<"
 VERSION_MARKER = b"nix (Nix) 2.31.5"
 
 # Each entry: (name, needle that proves the step produced correct output).
-# `nix --version` is the M3 success signal; the remaining checks document the
-# known gaps (thread creation faults at TCB offset 8, blocking `nix eval`).
+# The `eval_result=[...]` / `hello_result=[...]` markers are emitted by
+# init_m3.c's smoke script; they make the eval output unambiguous even though
+# the kernel's syscall logging (loglevel=info) interleaves with user output.
 CHECKS = [
     ("nix --version", VERSION_MARKER),
     ("nix --version exits cleanly", b"__M3_VERSION_DONE__"),
-    ("thread gap (page fault @0x8)", b"page fault handler failed"),
-    ("membarrier gap (syscall 283)", b"Unimplemented syscall number: 283"),
-    ("nix eval -> 2", b"\n2\n"),
+    ("nix eval -> 2", b"eval_result=[2]"),
+    ("nix eval --raw -> hello", b"hello_result=[hello]"),
 ]
 
 UBOOT_COMMANDS = [
@@ -164,29 +164,24 @@ def main() -> int:
         boot.read_until(INIT_MARKER, 120)
         print("[ok] init reached", flush=True)
 
-        # The M3 success signal is the `nix --version` banner. `nix` then
-        # creates a thread which faults at TCB offset 8 (a kernel gap), so it
-        # never exits; we do not block on the eval markers.
-        print("[smoke] waiting for nix --version", flush=True)
+        # The full smoke script runs `nix --version`, `nix eval`, and
+        # `nix eval --raw` in sequence, bracketed by markers. Wait for the last
+        # marker so the eval results are captured, then score every check.
+        print("[smoke] waiting for smoke script to finish", flush=True)
         try:
-            boot.read_until(VERSION_MARKER, args.command_timeout)
-            print("[ok] nix --version printed", flush=True)
+            boot.read_until(b"__M3_HELLO_DONE__", args.command_timeout)
+            print("[ok] smoke script finished", flush=True)
         except TimeoutError:
             final_tail = bytes(boot.transcript[-3000:])
-            print("[smoke] nix --version did not print (crash/hang)", flush=True)
-            results.append({"command": "nix --version", "status": "MISSING"})
+            print("[smoke] smoke script did not finish (crash/hang)", flush=True)
 
-        # Give the thread-fault gap a moment to surface, then score the rest.
-        time.sleep(3)
+        time.sleep(1)
         transcript = bytes(boot.transcript)
         for name, needle in CHECKS:
-            if any(r["command"] == name for r in results):
-                continue  # already scored above
             ok = needle in transcript
             results.append({"command": name, "status": "OK" if ok else "MISSING"})
             print(f"[smoke] {name}: {'OK' if ok else 'MISSING'}", flush=True)
 
-        time.sleep(1)
         final_tail = bytes(boot.transcript[-4000:])
     finally:
         boot.close()
@@ -198,12 +193,9 @@ def main() -> int:
         print("\n--- serial tail ---", flush=True)
         print(final_tail.decode(errors="replace")[-2500:], flush=True)
 
-    # M3 passes when the nix binary runs and reports its version; the eval
-    # checks and clean-exit check are documented gaps, not hard failures.
-    passed = any(
-        r["command"] == "nix --version" and r["status"] == "OK" for r in results
-    )
-    return 0 if passed else 1
+    # M3 passes when nix runs, exits cleanly, and both eval commands produce
+    # their expected output.
+    return 0 if results and all(r["status"] == "OK" for r in results) else 1
 
 
 if __name__ == "__main__":
