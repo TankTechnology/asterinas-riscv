@@ -56,7 +56,7 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 
 # Desktop session clients (statically-linked riscv64 X11 apps).
-for cli in xwm xclient gtk-hello matchbox-window-manager; do
+for cli in xwm xclient gtk-hello matchbox-window-manager xterm; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
@@ -102,6 +102,13 @@ else
     echo "WARNING: ${HOST_FONT} not found; GTK2 text will be empty" >&2
 fi
 cp "${SRC_DIR}/fonts.conf" "${ROOTFS}/etc/fonts/fonts.conf"
+
+# terminfo database for xterm (the xterm entry + fallbacks are compiled into
+# libtinfo, but ship the DB for TERMINFO lookups).
+if [ -d "${CROSS_USR}/share/terminfo" ]; then
+    mkdir -p "${ROOTFS}/usr/share/terminfo"
+    cp -r "${CROSS_USR}/share/terminfo/." "${ROOTFS}/usr/share/terminfo/"
+fi
 
 # Pack as newc cpio + gzip.
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )

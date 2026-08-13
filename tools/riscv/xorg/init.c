@@ -44,10 +44,10 @@ static void spawn_client(char *const argv[]) {
     }
 }
 
-/* matchbox-window-manager exits immediately if the X server isn't up yet
- * (unlike our own xwm/xclient/gtk-hello, which retry internally). Wrap it in
- * a respawn loop. */
-static void spawn_wm(void) {
+/* Some clients (matchbox-window-manager, xterm) exit immediately if the X
+ * server isn't up yet (unlike our own xwm/xclient/gtk-hello, which retry
+ * internally). Wrap them in a respawn loop. */
+static void spawn_retrying(const char *path) {
     pid_t pid = fork();
     if (pid == 0) {
         setenv("DISPLAY", ":0", 1);
@@ -56,14 +56,14 @@ static void spawn_wm(void) {
         for (;;) {
             pid_t p = fork();
             if (p == 0) {
-                char *argv[] = { "/usr/bin/matchbox-window-manager", NULL };
+                char *argv[] = { (char *)path, NULL };
                 execv(argv[0], argv);
-                tty_log("xorg: exec matchbox-window-manager failed");
+                tty_log("xorg: exec client failed");
                 _exit(1);
             }
             int st;
             waitpid(p, &st, 0);
-            tty_log("xorg: matchbox-window-manager exited, retrying");
+            tty_log("xorg: client exited, retrying");
             sleep(1);
         }
     }
@@ -102,11 +102,12 @@ int main(void) {
     pid_t xorg = launch_xorg();
 
     tty_log("xorg: launching session clients");
-    spawn_wm();
+    spawn_retrying("/usr/bin/matchbox-window-manager");
     {
         char *gtk_hello_argv[] = { "/usr/bin/gtk-hello", NULL };
         spawn_client(gtk_hello_argv);
     }
+    spawn_retrying("/usr/bin/xterm");
 
     for (;;) {
         int status;
