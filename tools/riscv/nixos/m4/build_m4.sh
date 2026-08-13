@@ -27,14 +27,35 @@ fi
 
 mkdir -p "${BUILD_ROOT}"
 
-# 1. Static /init (glibc static, same pattern as M1/M2/M3).
+# 1. Static /init (glibc static, same pattern as M1/M2/M3). It runs the raw
+#    clone CLONE_SETTLS + SIGSEGV checks, then execs /bin/tls_shared.
 "${CC_STATIC}" -O2 -static -no-pie -fno-stack-protector \
     -o "${BUILD_ROOT}/init" "${SRC_DIR}/tls_repro.c"
 
+# 1b. Dynamic musl shared-TLS repro (general-dynamic TLS via the DTV). This is
+#     the actual nix/Boole-GC blocker from M4. Needs the musl cross toolchain.
+CC_MUSL="riscv64-linux-musl-gcc"
+MUSL_LIBC="/usr/riscv64-linux-musl/lib/musl/lib/libc.so"
+if ! command -v "${CC_MUSL}" >/dev/null 2>&1; then
+    echo "warning: ${CC_MUSL} missing; skipping shared-TLS repro" >&2
+else
+    "${CC_MUSL}" -fPIC -shared -O2 \
+        -o "${BUILD_ROOT}/libtls.so" "${SRC_DIR}/libtls.c"
+    "${CC_MUSL}" -O2 -L"${BUILD_ROOT}" -ltls -Wl,-rpath,/lib \
+        -o "${BUILD_ROOT}/tls_shared" "${SRC_DIR}/tls_shared.c"
+fi
+
 # 2. Assemble the rootfs. /dev must exist for the kernel's first-process stdio.
 rm -rf "${ROOTFS}"
-mkdir -p "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp"
+mkdir -p "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp" \
+    "${ROOTFS}/bin" "${ROOTFS}/lib"
 cp "${BUILD_ROOT}/init" "${ROOTFS}/init"
+if [[ -x "${BUILD_ROOT}/tls_shared" ]]; then
+    cp "${BUILD_ROOT}/tls_shared" "${ROOTFS}/bin/tls_shared"
+    cp "${BUILD_ROOT}/libtls.so" "${ROOTFS}/lib/libtls.so"
+    # musl convention: the dynamic loader IS libc (one shared object).
+    cp "${MUSL_LIBC}" "${ROOTFS}/lib/ld-musl-riscv64.so.1"
+fi
 
 # 3. Pack as newc cpio (uncompressed, like M3).
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null > "${OUTPUT}" )

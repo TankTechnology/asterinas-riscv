@@ -26,10 +26,10 @@ static const char SMOKE_SCRIPT[] =
     "nix --version 2>&1\n"
     "echo __M3_VERSION_DONE__\n"
     "echo __M3_EVAL_START__\n"
-    "nix eval --expr '1 + 1' 2>&1\n"
+    "r=$(nix eval --expr '1 + 1' 2>/dev/null); echo eval_result=[$r]\n"
     "echo __M3_EVAL_DONE__\n"
     "echo __M3_HELLO_START__\n"
-    "nix eval --raw --expr '\"hello\"' 2>&1\n"
+    "r=$(nix eval --raw --expr '\"hello\"' 2>/dev/null); echo hello_result=[$r]\n"
     "echo __M3_HELLO_DONE__\n";
 
 int main(void) {
