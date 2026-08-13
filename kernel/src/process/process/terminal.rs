@@ -118,7 +118,7 @@ impl dyn Terminal {
     }
 
     /// Sets the terminal to be the controlling terminal of the process.
-    pub(super) fn set_control(self: Arc<Self>, process: &Process) -> Result<()> {
+    pub(crate) fn set_control(self: Arc<Self>, process: &Process) -> Result<()> {
         // Lock order: group of process -> session inner -> job control
         let process_group_mut = process.process_group.lock();
 
