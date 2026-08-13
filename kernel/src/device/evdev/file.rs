@@ -403,11 +403,30 @@ impl FileOps for EvdevFile {
     fn write_at(
         &self,
         _offset: usize,
-        _reader: &mut VmReader,
+        reader: &mut VmReader,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        // TODO: In Linux, writing to evdev files is permitted and will inject input events.
-        return_errno_with_message!(Errno::ENOSYS, "writing to evdev files is not supported yet");
+        // Linux permits writing `struct input_event`s to an evdev file to inject
+        // events; Xorg's evdev driver uses this to set the keyboard LEDs (a burst
+        // of `EV_LED` events followed by a `SYN_REPORT`). We accept and discard the
+        // events — LED injection is a no-op for our virtual keyboards, but returning
+        // success keeps Xorg's keyboard-control path from erroring out.
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/drivers/input/evdev.c#L586>
+        const EVENT_SIZE: usize = size_of::<EvdevEvent>();
+
+        let total = reader.remain();
+        if total % EVENT_SIZE != 0 {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the write buffer is not a multiple of `input_event` size"
+            );
+        }
+
+        while reader.has_remain() {
+            let _event = reader.read_val::<EvdevEvent>()?;
+        }
+
+        Ok(total)
     }
 }
 
