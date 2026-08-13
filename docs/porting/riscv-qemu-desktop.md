@@ -129,12 +129,44 @@ python3 tools/riscv/qemu_desktop_boot.py --display-gtk
 > **不支持 EV_ABS**（tablet/触摸屏）。因此 `-device virtio-tablet-device`
 > 的事件会被内核丢弃；指针输入需走 virtio-mouse（相对坐标）或扩展内核驱动。
 
-## 下一步（可选）
+## Xorg 桌面（已打通，2026-08-13）
 
-- **X 桌面**：AsterNixOS riscv64 走 `xf86-video-fbdev` + `/dev/fb0`（相关 NixOS
-  配置在 `codex/megrez-usb-keyboard` 分支的 `distro/etc_nixos/configuration-xmin.nix`）。
-  内核侧前提（`/dev/fb0`）已满足。
-- **鼠标指针**：内核 virtio-input 加 EV_ABS 支持后，可用 `-device virtio-tablet-device`
-  获得绝对坐标指针；当前只能走 `virtio-mouse-device`（相对坐标）。
-- **真实板卡（Milk-V Megrez）**：固件若已交接 simple-framebuffer 则无需注入；
-  否则用同样的 DTB 修补手法（`fdtput`）。
+在 `/dev/fb0` 上跑起了 Xorg (fbdev 驱动) + 极简窗口管理器 + X11 客户端，完整链路：
+
+```
+bochs → U-Boot → simple-framebuffer → VT → /dev/fb0
+  → Xorg (fbdev + evdev) → xwm (WM) + xclient → 渲染回 framebuffer
+```
+
+验证画面：深灰根背景 + 3 个带蓝色边框的窗口（RGB 色条 / 橙 / 青）+ 屏幕中央的箭头光标。
+键盘（virtio-keyboard=event1）和指针（virtio-tablet=event0，绝对坐标）都正常工作。
+
+**构建与运行**（详见 `tools/riscv/xorg/` 和 memory `riscv-xorg-fbdev-bringup`）：
+
+```bash
+# 1. 内核（含 evdev write 的 LED 注入修复 + virtio-input 的 BTN_* 按键映射）
+VDSO_LIBRARY_DIR=$HOME/.local/share/linux_vdso \
+  make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
+
+# 2. 构建 xorg initramfs（含 Xorg + xkb + xkbcomp + busybox + xwm + xclient）
+bash tools/riscv/xorg/build_xorg_initramfs.sh   # -> target/qemu-uboot/initramfs-xorg.cpio.gz
+
+# 3. prepare + 运行（prepare 的 ASTERINAS_INITRAMFS 指向上面的 cpio）
+python3 tools/riscv/qemu_desktop_boot.py --display-gtk   # 弹窗看桌面
+```
+
+**关键前置**（否则启动失败或没画面，坑都已固化成工具/脚本）：
+
+1. initramfs 必须带 **xkeyboard-config + xkbcomp + busybox(/bin/sh)**，Xorg 编译 keymap
+   靠 `popen("/bin/sh -c xkbcomp …")`，且 xkbcomp 的 `XKB_BIN_DIRECTORY` 烘焙成 host 绝对路径。
+2. 内核 `evdev` 的 `write` 必须支持（返回字节数），否则 EV_LED 写入 ENOSYS 导致键盘二次初始化。
+3. `xorg.conf` 显式 `CorePointer`，否则 evdev 键盘被当"第一鼠标"重复添加。
+4. 鼠标绝对坐标：内核 `virtio-input` 的 `map_to_key_code` 需映射 `BTN_LEFT..BTN_BACK`。
+5. 光标：xwm 里 `XDefineCursor`（XFixes 默认隐藏光标）+ xserver `shadow` 全屏刷新（软光标不走 damage）。
+
+**当前限制**：这是"渲染链路技术验证"，不是完整桌面环境——无面板/图标/标题栏/真实应用。
+上成熟桌面环境（XFCE/LXDE/Matchbox）需交叉编译 GTK/Qt 等一整套依赖，见后续计划。
+
+## 真实板卡（Milk-V Megrez）
+
+固件若已交接 simple-framebuffer 则无需注入 DTB 节点；否则用同样的 DTB 修补手法（`fdtput`）。
