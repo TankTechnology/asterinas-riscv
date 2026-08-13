@@ -25,10 +25,13 @@ impl PtySlaveFile {
         let mut opened_slaves = slave.driver().opened_slaves().lock();
 
         let master_flags = slave.driver().tty_flags();
-        if master_flags.is_pty_locked() || slave.tty_flags().is_other_closed() {
+        // On Linux the slave may still be opened after the master is closed
+        // (it just sees a hangup), so only reject when the master has it
+        // explicitly locked via TIOCSPTLCK.
+        if master_flags.is_pty_locked() {
             return_errno_with_message!(
                 Errno::EIO,
-                "a pty slave cannot be opened when the pty master is locked or closed"
+                "a pty slave cannot be opened when the pty master is locked"
             );
         }
         master_flags.clear_other_closed();
