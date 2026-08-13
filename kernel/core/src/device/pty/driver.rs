@@ -38,7 +38,6 @@ pub(crate) type PtySlave = Tty<PtyDriver>;
 impl PtyDriver {
     pub(super) fn new() -> Self {
         let tty_flags = TtyFlags::new();
-        tty_flags.set_pty_locked();
         Self {
             output: SpinLock::new(RingBuffer::new(BUFFER_CAPACITY)),
             pollee: Pollee::new(),
