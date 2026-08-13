@@ -84,9 +84,7 @@ fn checked_cache_line_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
 
 #[cfg(ktest)]
 mod tests {
-    use super::{
-        DIE0_DRAM_END, DIE0_DRAM_START, checked_cache_line_range, is_eic7700_compatible,
-    };
+    use super::{DIE0_DRAM_END, DIE0_DRAM_START, checked_cache_line_range, is_eic7700_compatible};
     use crate::prelude::ktest;
 
     #[ktest]
