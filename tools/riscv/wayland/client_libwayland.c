@@ -85,11 +85,8 @@ int client_main(void) {
     }
     tty_log("client: connected via libwayland");
 
-    tty_log("client: before get_registry");
     struct wl_registry *registry = wl_display_get_registry(display);
-    tty_log("client: after get_registry");
     wl_registry_add_listener(registry, &registry_listener, NULL);
-    tty_log("client: before roundtrip");
     wl_display_roundtrip(display);
     tty_log("client: registry roundtrip done");
 
