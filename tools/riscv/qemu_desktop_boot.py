@@ -180,7 +180,7 @@ def main() -> int:
                     time.sleep(1)
                     screendump(MON_SOCK, SCREENSHOT.with_name("early.ppm"))
                     print("[ok] early screenshot written", flush=True)
-                    time.sleep(7)
+                    time.sleep(250)
                 else:
                     time.sleep(8)
                 break
