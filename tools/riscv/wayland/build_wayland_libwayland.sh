@@ -20,6 +20,11 @@ BUILD_DIR="${REPO_ROOT}/target/wayland"
 CC="riscv64-linux-gnu-gcc"
 CFLAGS="-O2 -static -no-pie -fno-stack-protector -I${CROSS_USR}/include"
 
+# Cross-compile the dependency chain on first use.
+if [[ ! -f "${CROSS_USR}/lib/libwayland-client.a" ]]; then
+    bash "${SRC_DIR}/build_wayland_deps.sh"
+fi
+
 mkdir -p "${BUILD_DIR}"
 "${CC}" ${CFLAGS} -o "${BUILD_DIR}/init" \
     "${SRC_DIR}/wire.c" \
