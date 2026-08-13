@@ -7,12 +7,15 @@
 // redrawn each tick (dirty rectangle), so the 2D CPU rendering stays fast.
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <linux/kd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -195,6 +198,25 @@ int main(void) {
 
     srand((unsigned)time(NULL));
 
+    /* Put the VT console into graphics mode so it stops rendering text over
+     * our framebuffer. */
+    int vtfd = open("/dev/tty0", O_RDWR);
+    if (vtfd < 0) {
+        vtfd = open("/dev/console", O_RDWR);
+    }
+    if (vtfd >= 0) {
+        if (ioctl(vtfd, KDSETMODE, KD_GRAPHICS) != 0) {
+            char b[64];
+            snprintf(b, sizeof b, "snake: KDSETMODE errno=%d", errno);
+            tty_log(b);
+        } else {
+            tty_log("snake: KD_GRAPHICS set");
+        }
+        close(vtfd);
+    } else {
+        tty_log("snake: cannot open tty0/console");
+    }
+
     /* The keyboard is /dev/input/event1 (tablet is event0). */
     int kbd = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
     if (kbd < 0) {
@@ -214,8 +236,26 @@ int main(void) {
         }
         if (!step()) {
             tty_log("snake: game over");
-            /* Keep the frame visible and stop. */
-            sleep(300);
+            /* Signal game over, then wait for R to restart. */
+            for (int y = 0; y < GRID_H; y++) {
+                for (int x = 0; x < GRID_W; x++) {
+                    fill_cell(x, y, 0x00002080u); /* dim red */
+                }
+            }
+            int restart = 0;
+            while (!restart) {
+                if (kbd >= 0) {
+                    struct input_event ev;
+                    ssize_t n = read(kbd, &ev, sizeof(ev));
+                    if (n == (ssize_t)sizeof(ev) && ev.type == EV_KEY &&
+                        ev.value == 1 && ev.code == KEY_R) {
+                        restart = 1;
+                    }
+                }
+                usleep(50000);
+            }
+            init_game();
+            tty_log("snake: restart");
         }
         usleep(120000); /* ~8 ticks/second */
     }
