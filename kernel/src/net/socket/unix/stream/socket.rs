@@ -521,9 +521,13 @@ impl Socket for UnixStreamSocket {
         }
         let mut auxiliary_data = AuxiliaryData::from_control(control_messages)?;
 
-        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+        if flags.contains(SendFlags::MSG_DONTWAIT) {
             self.try_send(reader, &mut auxiliary_data, flags)
-        })
+        } else {
+            self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+                self.try_send(reader, &mut auxiliary_data, flags)
+            })
+        }
     }
 
     fn recvmsg(
@@ -536,10 +540,13 @@ impl Socket for UnixStreamSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (output, control_messages) =
+        let (output, control_messages) = if flags.contains(RecvFlags::MSG_DONTWAIT) {
+            self.try_recv(writer, flags)?
+        } else {
             self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
                 self.try_recv(writer, flags)
-            })?;
+            })?
+        };
 
         let message_header = MessageHeader::new(None, control_messages);
 
