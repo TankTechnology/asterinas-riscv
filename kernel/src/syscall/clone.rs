@@ -11,8 +11,20 @@ use crate::{
     vm::vmar::is_userspace_vaddr,
 };
 
-// The order of arguments for clone differs in different architecture.
-// This order we use here is the order for x86_64. See https://man7.org/linux/man-pages/man2/clone.2.html.
+// The order of arguments for clone differs in different architectures.
+// The order we use here is the one for x86_64 (and most architectures):
+// `clone(flags, stack, ptid, ctid, tls)`.
+// See https://man7.org/linux/man-pages/man2/clone.2.html.
+//
+// RISC-V and LoongArch select `CONFIG_CLONE_BACKWARDS` in Linux, so their raw
+// `clone` syscall swaps the last two arguments:
+// `clone(flags, stack, ptid, tls, ctid)`.
+// Reference: <https://elixir.bootlin.com/linux/v6.18/source/arch/riscv/kernel/process.c>.
+//
+// The dispatcher passes the raw registers in program order, so on those
+// architectures the fourth argument is `tls` and the fifth is `child_tidptr`.
+// Swap them back below before building the architecture-independent
+// `CloneArgs`.
 pub fn sys_clone(
     clone_flags: u64,
     new_sp: u64,
@@ -22,6 +34,9 @@ pub fn sys_clone(
     ctx: &Context,
     parent_context: &UserContext,
 ) -> Result<SyscallReturn> {
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    let (child_tidptr, tls) = (tls as Vaddr, child_tidptr as u64);
+
     let args = CloneArgs::for_clone(clone_flags, parent_tidptr, child_tidptr, tls, new_sp)?;
     debug!("clone args = {:x?}", args);
 
