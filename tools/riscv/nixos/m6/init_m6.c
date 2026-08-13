@@ -4,13 +4,13 @@
 //
 // Static glibc (same pattern as M1-M5): mount the pseudo filesystems, prepare
 // the /nix store layout, seed the environment Nix expects, then hand off to
-// busybox `sh -c` which runs the build steps with fixed markers so the QEMU
-// driver can attribute a crash to the exact command. Interactive shell is
-// deliberately avoided (termios gap, see M1-report.md).
+// busybox `sh -c` which runs two builds with fixed markers so the QEMU driver
+// can attribute a crash to the exact command:
+//   1. trivial — a builtins.derivation whose builder writes a fixed string to
+//      $out; proves the /nix/store write path end-to-end.
+//   2. hello — installs a prebuilt riscv64 hello and runs it (path B).
 //
-// Step 1 (this file): the trivial derivation (`nix build` a
-// `builtins.derivation` whose builder is /bin/sh writing to $out). Step 2 adds
-// the hello-from-source build (see hello.nix / hello.c).
+// Interactive shell is deliberately avoided (termios gap, see M1-report.md).
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -31,7 +31,14 @@ static const char SMOKE_SCRIPT[] =
     "echo out_path=[$out]\n"
     "val=$(cat \"$out\" 2>/dev/null)\n"
     "echo trivial_result=[$val]\n"
-    "echo __M6_TRIVIAL_DONE__\n";
+    "echo __M6_TRIVIAL_DONE__\n"
+    "echo __M6_HELLO_START__\n"
+    "hout=$(nix build --no-link --print-out-paths --impure "
+        "--expr 'import /m6/hello.nix')\n"
+    "echo hello_out_path=[$hout]\n"
+    "hr=$($hout/bin/hello 2>&1)\n"
+    "echo hello_result=[$hr]\n"
+    "echo __M6_HELLO_DONE__\n";
 
 int main(void) {
     int fd = open("/dev/console", O_RDWR);
@@ -63,7 +70,6 @@ int main(void) {
     (void)setenv("LOGNAME", "root", 1);
     (void)setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
     (void)setenv("TERM", "vt100", 1);
-    (void)setenv("NIX_REMOTE", "", 1);
 
     say(">>> M6 init: running nix build smoke script <<<\n");
 
