@@ -127,6 +127,7 @@ sandbox = false
 build-users-group =
 trusted-users = root
 experimental-features = nix-command flakes
+filter-syscalls = false
 EOF
 
 # 6. /init launcher (static glibc, same pattern as M1/M2).
