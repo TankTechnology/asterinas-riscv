@@ -9,6 +9,7 @@
 
 pub use clock_gettime::ClockId;
 use ostd::arch::cpu::context::UserContext;
+use ostd::user::UserContextApi;
 pub use timer_create::create_timer;
 
 use crate::{cpu::LinuxAbi, prelude::*};
@@ -146,6 +147,7 @@ mod sched_setparam;
 mod sched_setscheduler;
 mod sched_yield;
 mod seccomp;
+pub use seccomp::SockFilter;
 mod select;
 mod semctl;
 mod semget;
@@ -390,16 +392,30 @@ impl SyscallArgument {
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
 
-    // seccomp strict mode: reject any syscall outside the allowlist before it
-    // executes, and deliver SIGSYS. If the signal is ignored/blocked, the
-    // syscall returns ENOSYS (matching Linux's `secure_computing` behaviour).
-    if seccomp::should_block(ctx, syscall_frame.syscall_number) {
-        ctx.posix_thread
-            .enqueue_signal(Box::new(seccomp::SigsysSignal::new(
-                syscall_frame.syscall_number as u32,
-            )));
-        user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
-        return;
+    // seccomp: consult the thread's policy (strict allowlist or BPF filter)
+    // before the syscall executes. On a block, deliver SIGSYS and return ENOSYS;
+    // an ERRNO action returns the error directly without a signal. If the signal
+    // is ignored/blocked, the syscall returns ENOSYS (matching Linux's
+    // `secure_computing` behaviour).
+    match seccomp::check(
+        ctx,
+        syscall_frame.syscall_number,
+        &syscall_frame.args,
+        user_ctx.instruction_pointer(),
+    ) {
+        seccomp::SeccompDecision::Allow => {}
+        seccomp::SeccompDecision::Kill => {
+            ctx.posix_thread
+                .enqueue_signal(Box::new(seccomp::SigsysSignal::new(
+                    syscall_frame.syscall_number as u32,
+                )));
+            user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+            return;
+        }
+        seccomp::SeccompDecision::Errno(errno) => {
+            user_ctx.set_syscall_ret(-(errno as i32) as usize);
+            return;
+        }
     }
 
     let syscall_return = arch::syscall_dispatch(
