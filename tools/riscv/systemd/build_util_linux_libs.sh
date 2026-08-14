@@ -56,6 +56,31 @@ fi
 make -j"$JOBS"
 make install
 
+# ---------------------------------------------------------------------------
+# Clean fix for the systemd static-link collision.
+#
+# systemd's src/basic/parse-util.c and util-linux's lib/strutils.c both define
+# GLOBAL `parse_size` / `parse_range`. In a distro this never collides because
+# libmount is SHARED and its version script (libmount.sym `local: *`) hides the
+# internal helpers. Here util-linux is built --disable-shared, so libcommon's
+# strutils.o is archived into libmount.a/libblkid.a/libsmartcols.a with the two
+# symbols still GLOBAL, and they clash with systemd's own copies at link time
+# (previously papered over with -Wl,--allow-multiple-definition).
+#
+# Neither libmount nor libblkid nor libsmartcols *calls* parse_size/parse_range
+# across objects (verified by grep over their src/), so the symbols are just
+# passengers carried by strutils.o. Demoting them to LOCAL (lowercase 't')
+# removes the collision without changing any semantics. libfdisk.a is left
+# alone: its script.o/gpt.o DO call parse_size across objects (U parse_size),
+# so localizing there would break the archive; systemd never links libfdisk.
+for lib in mount blkid smartcols; do
+  a="$PREFIX/lib/lib$lib.a"
+  [ -f "$a" ] || continue
+  tmp="$a.tmp"
+  "$HOST-objcopy" --localize-symbol=parse_size --localize-symbol=parse_range \
+    "$a" "$tmp" && mv -f "$tmp" "$a"
+done
+
 echo "=== verify ==="
 rc=0
 for name in uuid blkid mount fdisk smartcols; do
