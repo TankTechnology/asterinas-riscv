@@ -145,6 +145,7 @@ mod sched_setattr;
 mod sched_setparam;
 mod sched_setscheduler;
 mod sched_yield;
+mod seccomp;
 mod select;
 mod semctl;
 mod semget;
@@ -388,6 +389,19 @@ impl SyscallArgument {
 
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+
+    // seccomp strict mode: reject any syscall outside the allowlist before it
+    // executes, and deliver SIGSYS. If the signal is ignored/blocked, the
+    // syscall returns ENOSYS (matching Linux's `secure_computing` behaviour).
+    if seccomp::should_block(ctx, syscall_frame.syscall_number) {
+        ctx.posix_thread
+            .enqueue_signal(Box::new(seccomp::SigsysSignal::new(
+                syscall_frame.syscall_number as u32,
+            )));
+        user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+        return;
+    }
+
     let syscall_return = arch::syscall_dispatch(
         syscall_frame.syscall_number,
         syscall_frame.args,
