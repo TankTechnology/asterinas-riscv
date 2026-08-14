@@ -11,7 +11,7 @@ Status summary:
 |---|------|--------|
 | 1 | System V shm (`shmget`/`shmat`/`shmdt`/`shmctl`) | **Done** — implemented, verified, committed |
 | 2 | `ET_EXEC` + `PT_INTERP` ELF loader bug (M6/M8) | **Already fixed** — verified, no code change needed |
-| 3 | `mlock`/`munlock` (issue #11) | Not started (time) |
+| 3 | `mlock`/`munlock` (issue #11) | **Done** — implemented, verified, committed |
 
 ---
 
@@ -125,4 +125,22 @@ APKs and extracts `cc1`/`gcc`).
 
 ## 3. `mlock`/`munlock` (issue #11)
 
-Not started — lower priority than the two items above. Left for a follow-up.
+Commit: `2f304af04` (`feat(mm): mlock/munlock (issue #11)`).
+
+### What changed
+
+Asterinas does not implement swapping, so `mlock`/`munlock` are **validated
+no-ops**: the syscalls page-round the address/length, check the range is in
+userspace, and (for `mlock`) require the range to be fully mapped (`ENOMEM` on
+gaps), then return success. This mirrors Linux's `do_mlock`/`do_munlock`
+semantics modulo the actual pinning, which a swap-less kernel does not need.
+
+- `kernel/src/syscall/mlock.rs` — `sys_mlock` + `sys_munlock`.
+- Registered in the x86_64 (149/150) and generic riscv64/loongarch64 (228/229)
+  syscall tables.
+
+### Verification
+
+riscv64 QEMU smoke test (`tools/riscv/nixos/mlock/`): `mlock`/`munlock` of a
+mapped page return 0 with clean errno, and `mlock` of an unmapped address
+returns `ENOMEM`.
