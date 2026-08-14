@@ -56,7 +56,12 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 
 # Desktop session clients (statically-linked riscv64 X11 apps).
-for cli in xwm xclient gtk-hello matchbox-window-manager xterm xpanel; do
+# NOTE: pcmanfm (build_pcmanfm.sh) and xterm cross-compile, but their binaries
+# push the initramfs past the kernel's ~20 MB early-memory limit (the kernel
+# stalls at "Spawn the first kernel thread"), so they are intentionally not
+# bundled in the default session (see GTK-M2-report.md). xwm/xclient are the
+# superseded pre-matchbox demos and are no longer spawned by init.c.
+for cli in gtk-hello matchbox-window-manager xpanel; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
@@ -103,11 +108,15 @@ else
 fi
 cp "${SRC_DIR}/fonts.conf" "${ROOTFS}/etc/fonts/fonts.conf"
 
-# terminfo database for xterm (the xterm entry + fallbacks are compiled into
-# libtinfo, but ship the DB for TERMINFO lookups).
-if [ -d "${CROSS_USR}/share/terminfo" ]; then
-    mkdir -p "${ROOTFS}/usr/share/terminfo"
-    cp -r "${CROSS_USR}/share/terminfo/." "${ROOTFS}/usr/share/terminfo/"
+# terminfo database for xterm. The full ncurses DB is ~12 MB of entries we
+# never use (xterm, linux, vt100 fallbacks are compiled into libtinfo via
+# --with-fallbacks). Shipping only the `x`/ directory keeps TERMINFO lookups
+# working for xterm while keeping the initramfs under the kernel's
+# early-memory limit (the full DB pushed it over and stalled the boot at
+# "Spawn the first kernel thread").
+if [ -d "${CROSS_USR}/share/terminfo/x" ]; then
+    mkdir -p "${ROOTFS}/usr/share/terminfo/x"
+    cp -r "${CROSS_USR}/share/terminfo/x/." "${ROOTFS}/usr/share/terminfo/x/"
 fi
 
 # Pack as newc cpio + gzip.
