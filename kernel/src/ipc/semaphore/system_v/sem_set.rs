@@ -8,7 +8,7 @@ use super::sem::{
     PendingBlocker, PendingOp, Semaphore, Status, update_pending_alter, wake_const_ops,
 };
 use crate::{
-    ipc::{IpcKey, IpcPermission},
+    ipc::{IpcKey, IpcPerm, IpcPermission},
     prelude::*,
     process::{Credentials, Pid},
     time::clocks::RealTimeCoarseClock,
@@ -43,24 +43,6 @@ pub struct SemaphoreSet {
     sem_ctime: AtomicU64,
     /// Last `semop` time
     sem_otime: AtomicU64,
-}
-
-// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ipcbuf.h#L22>.
-#[padding_struct]
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-struct IpcPerm {
-    key: u32,
-    uid: u32,
-    gid: u32,
-    cuid: u32,
-    cgid: u32,
-    mode: u16,
-    _pad1: u16,
-    seq: u16,
-    _pad2: u16,
-    _unused1: u64,
-    _unused2: u64,
 }
 
 // In Linux, most popular 64-bit architectures except x86_64 adopt the same
