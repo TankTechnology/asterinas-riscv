@@ -1,0 +1,17 @@
+[Unit]
+Description=PCManFM file manager
+After=xorg.service
+Requires=xorg.service
+PartOf=graphical.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+ExecStart=/usr/bin/pcmanfm /
+Restart=always
+RestartSec=2s
+StartLimitIntervalSec=0
+StandardOutput=null
+StandardError=null
