@@ -231,13 +231,17 @@ def main() -> int:
         print(f"[boot] collecting systemd+Xorg output (timeout={args.collect_timeout}s)", flush=True)
         deadline = time.monotonic() + args.collect_timeout
         while time.monotonic() < deadline:
-            if GRAPHICAL_TARGET in boot.pending and XORG_INPUT in boot.pending:
+            # systemd colorizes unit names in its status lines (e.g. the target
+            # name inside "Reached target …"), so match against ANSI-stripped
+            # bytes — the raw pending buffer has escapes in the middle.
+            clean_pending = ANSI_RE.sub(b"", bytes(boot.pending))
+            if GRAPHICAL_TARGET in clean_pending and XORG_INPUT in clean_pending:
                 reached = "desktop-up"
                 break
-            if EMERGENCY in boot.pending:
+            if EMERGENCY in clean_pending:
                 reached = "emergency"
                 break
-            if any(m in boot.pending for m in PANIC_MARKERS):
+            if any(m in clean_pending for m in PANIC_MARKERS):
                 reached = "panic"
                 break
             try:
