@@ -52,7 +52,9 @@ int main(void) {
     say(">>> M9 init: lightweight NixOS (busybox-init + nix profile) <<<\n");
 
     /* 1. Pseudo filesystems. devtmpfs is intentionally skipped (not a
-     *    registered fstype; the device registry already created /dev nodes). */
+     *    registered fstype; the device registry already created /dev nodes).
+     *    /run may not exist in the unpacked rootfs, so create it first. */
+    mkdirp("/run");
     if (mount("proc", "/proc", "proc", 0, NULL) != 0)
         say("__M9_INIT__ mount /proc failed\n");
     if (mount("sysfs", "/sys", "sysfs", 0, NULL) != 0)
@@ -65,12 +67,26 @@ int main(void) {
     /* /dev: the device registry already created console/ttyS0/null/zero at
      * boot (M8-report.md §3.1); no devtmpfs mount and no mknod needed. */
 
-    /* 2. Runtime + nix directory layout. */
+    /* 2. Runtime + nix directory layout. /nix is prepared first so that, if a
+     * second virtio-blk ext2 disk (vdb) is present, it can be mounted over
+     * /nix to persist the store across reboots (optional bonus). */
+    mkdirp("/nix");
+    /* Optional: persist /nix on a second virtio-blk ext2 disk (vdb). */
+    {
+        struct stat vdb;
+        if (stat("/dev/vdb", &vdb) == 0) {
+            if (mount("/dev/vdb", "/nix", "ext2", 0, NULL) == 0)
+                say(">>> M9 init: persistent /nix on /dev/vdb (ext2) <<<\n");
+            else
+                printf("__M9_INIT__ mount /dev/vdb ext2 failed: errno=%d (%s) "
+                       "(continuing on initramfs)\n", errno, strerror(errno));
+        }
+    }
+
     mkdirp("/run");
     mkdirp("/var");
     mkdirp("/var/log");
     mkdirp("/root");
-    mkdirp("/nix");
     mkdirp("/nix/store");
     mkdirp("/nix/var");
     mkdirp("/nix/var/nix");

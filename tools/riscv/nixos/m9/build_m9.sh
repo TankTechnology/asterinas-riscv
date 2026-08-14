@@ -134,7 +134,7 @@ EOF
 # 6. busybox applets the init system needs (getty/login/init/services/…).
 for applet in getty login init hostname syslogd crond killall kill reboot halt \
               poweroff tail grep wc head clear passwd adduser addgroup setsid \
-              nohup which pidof; do
+              nohup which pidof sync; do
     [[ -e "${M9_ROOTFS}/bin/${applet}" ]] || ln -sf busybox "${M9_ROOTFS}/bin/${applet}"
 done
 mkdir -p "${M9_ROOTFS}/sbin"
