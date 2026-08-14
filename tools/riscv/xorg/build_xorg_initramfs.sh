@@ -56,7 +56,7 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 
 # Desktop session clients (statically-linked riscv64 X11 apps).
-for cli in xwm xclient gtk-hello matchbox-window-manager xterm; do
+for cli in xwm xclient gtk-hello matchbox-window-manager xterm xpanel; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
