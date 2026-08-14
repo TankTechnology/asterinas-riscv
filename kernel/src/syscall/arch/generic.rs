@@ -67,6 +67,7 @@ macro_rules! import_generic_syscall_entries {
             getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
             inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
             ioctl::sys_ioctl,
+            keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
             link::sys_linkat,
             listen::sys_listen,
@@ -394,6 +395,9 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_BRK = 214                    => sys_brk(args[..1]);
             SYS_MUNMAP = 215                 => sys_munmap(args[..2]);
             SYS_MREMAP = 216                 => sys_mremap(args[..5]);
+            SYS_ADD_KEY = 217                => sys_add_key(args[..5]);
+            SYS_REQUEST_KEY = 218            => sys_request_key(args[..4]);
+            SYS_KEYCTL = 219                 => sys_keyctl(args[..5]);
             SYS_CLONE = 220                  => sys_clone(args[..5], &user_ctx);
             SYS_EXECVE = 221                 => sys_execve(args[..3], &mut user_ctx);
             SYS_MMAP = 222                   => sys_mmap(args[..6]);
