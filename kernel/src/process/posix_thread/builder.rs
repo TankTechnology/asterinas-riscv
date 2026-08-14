@@ -207,6 +207,7 @@ impl PosixThreadBuilder {
                     exit_code: AtomicU32::new(0),
                     personality: AtomicU32::new(0),
                     seccomp_mode: AtomicU32::new(0),
+                    seccomp_filter: Mutex::new(None),
                 }
             };
 
