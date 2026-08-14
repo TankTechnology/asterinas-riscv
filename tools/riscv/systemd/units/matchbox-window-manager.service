@@ -3,6 +3,7 @@ Description=Matchbox window manager
 After=xorg.service
 Requires=xorg.service
 PartOf=graphical.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -12,6 +13,5 @@ Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
 ExecStart=/usr/bin/matchbox-window-manager
 Restart=always
 RestartSec=2s
-StartLimitIntervalSec=0
 StandardOutput=null
 StandardError=null
