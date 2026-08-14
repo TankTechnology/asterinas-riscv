@@ -22,6 +22,7 @@ use crate::{
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
+    syscall::SockFilter,
     thread::{Thread, Tid, task},
     time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,
@@ -49,6 +50,8 @@ pub struct PosixThreadBuilder {
     user_ns: Option<Arc<UserNamespace>>,
     ns_proxy: Option<Arc<NsProxy>>,
     default_timer_slack_ns: u64,
+    seccomp_mode: u32,
+    seccomp_filter: Option<Arc<[SockFilter]>>,
 }
 
 impl PosixThreadBuilder {
@@ -77,6 +80,8 @@ impl PosixThreadBuilder {
             user_ns: None,
             ns_proxy: None,
             default_timer_slack_ns: 50_000, // 50 usec default slack
+            seccomp_mode: 0,
+            seccomp_filter: None,
         }
     }
 
@@ -148,6 +153,16 @@ impl PosixThreadBuilder {
         self
     }
 
+    pub fn seccomp_mode(mut self, seccomp_mode: u32) -> Self {
+        self.seccomp_mode = seccomp_mode;
+        self
+    }
+
+    pub fn seccomp_filter(mut self, seccomp_filter: Option<Arc<[SockFilter]>>) -> Self {
+        self.seccomp_filter = seccomp_filter;
+        self
+    }
+
     pub fn build(self) -> Arc<Task> {
         let Self {
             tid,
@@ -167,6 +182,8 @@ impl PosixThreadBuilder {
             user_ns,
             ns_proxy,
             default_timer_slack_ns,
+            seccomp_mode,
+            seccomp_filter,
         } = self;
 
         let file_table = file_table.unwrap_or_else(FileTable::new);
@@ -206,8 +223,8 @@ impl PosixThreadBuilder {
                     tracees: Once::new(),
                     exit_code: AtomicU32::new(0),
                     personality: AtomicU32::new(0),
-                    seccomp_mode: AtomicU32::new(0),
-                    seccomp_filter: Mutex::new(None),
+                    seccomp_mode: AtomicU32::new(seccomp_mode),
+                    seccomp_filter: Mutex::new(seccomp_filter),
                 }
             };
 
