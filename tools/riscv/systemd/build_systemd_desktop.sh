@@ -24,7 +24,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_ROOT="${REPO_ROOT}/target/systemd-desktop"
 ROOTFS="${BUILD_ROOT}/rootfs"
-OUTPUT="${1:-${REPO_ROOT}/target/qemu-uboot/systemd-desktop-initramfs.cpio}"
+OUTPUT="${REPO_ROOT}/target/qemu-uboot/systemd-desktop-initramfs.cpio"
+
+NO_PACK=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-pack) NO_PACK=1 ;;
+        *) OUTPUT="$1" ;;
+    esac
+    shift
+done
 
 # systemd was cross-compiled into this tree (878/878 targets, see
 # tools/riscv/systemd/SYSTEMD-M2-report.md). The desktop binaries and their
@@ -210,11 +219,15 @@ if [ -d "${CROSS_USR}/share/terminfo/x" ]; then
 fi
 
 # 15. Pack as raw newc cpio (no gzip — see header comment).
-( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null > "${OUTPUT}" )
-
-echo "built ${OUTPUT}"
-echo "  systemd: $(file -b "${ROOTFS}/usr/lib/systemd/systemd" | cut -c1-70)"
-echo "  Xorg:    $(file -b "${ROOTFS}/usr/bin/Xorg" | cut -c1-70)"
-echo "  init:    $(file -b "${ROOTFS}/init" | cut -c1-70)"
-du -sh "${ROOTFS}"
-echo "  initramfs: $(du -h "${OUTPUT}" | cut -f1)"
+if [[ "${NO_PACK}" -eq 1 ]]; then
+    echo "assembled rootfs (--no-pack): ${ROOTFS}"
+    du -sh "${ROOTFS}"
+else
+    ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null > "${OUTPUT}" )
+    echo "built ${OUTPUT}"
+    echo "  systemd: $(file -b "${ROOTFS}/usr/lib/systemd/systemd" | cut -c1-70)"
+    echo "  Xorg:    $(file -b "${ROOTFS}/usr/bin/Xorg" | cut -c1-70)"
+    echo "  init:    $(file -b "${ROOTFS}/init" | cut -c1-70)"
+    du -sh "${ROOTFS}"
+    echo "  initramfs: $(du -h "${OUTPUT}" | cut -f1)"
+fi
