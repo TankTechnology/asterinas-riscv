@@ -73,6 +73,7 @@ macro_rules! import_generic_syscall_entries {
             listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
             lseek::sys_lseek,
             madvise::sys_madvise,
+            membarrier::sys_membarrier,
             memfd_create::sys_memfd_create,
             mkdir::sys_mkdirat,
             mknod::sys_mknodat,
@@ -86,6 +87,7 @@ macro_rules! import_generic_syscall_entries {
             munmap::sys_munmap,
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
+            openat2::sys_openat2,
             personality::sys_personality,
             pidfd_getfd::sys_pidfd_getfd,
             pidfd_open::sys_pidfd_open,
@@ -411,6 +413,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_GETRANDOM = 278              => sys_getrandom(args[..3]);
             SYS_MEMFD_CREATE = 279           => sys_memfd_create(args[..2]);
             SYS_EXECVEAT = 281               => sys_execveat(args[..5], &mut user_ctx);
+            SYS_MEMBARRIER = 283             => sys_membarrier(args[..3]);
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
@@ -422,6 +425,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PIDFD_OPEN = 434             => sys_pidfd_open(args[..2]);
             SYS_CLONE3 = 435                 => sys_clone3(args[..2], &user_ctx);
             SYS_CLOSE_RANGE = 436            => sys_close_range(args[..3]);
+            SYS_OPENAT2 = 437                => sys_openat2(args[..4]);
             SYS_PIDFD_GETFD = 438            => sys_pidfd_getfd(args[..3]);
             SYS_FACCESSAT2 = 439             => sys_faccessat2(args[..4]);
             SYS_EPOLL_PWAIT2 = 441           => sys_epoll_pwait2(args[..6]);

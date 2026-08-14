@@ -73,6 +73,7 @@ use super::{
     listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
     lseek::sys_lseek,
     madvise::sys_madvise,
+    membarrier::sys_membarrier,
     memfd_create::sys_memfd_create,
     mkdir::{sys_mkdir, sys_mkdirat},
     mknod::{sys_mknod, sys_mknodat},
@@ -86,6 +87,7 @@ use super::{
     munmap::sys_munmap,
     nanosleep::{sys_clock_nanosleep, sys_nanosleep},
     open::{sys_creat, sys_open, sys_openat},
+    openat2::sys_openat2,
     pause::sys_pause,
     personality::sys_personality,
     pidfd_getfd::sys_pidfd_getfd,
@@ -426,6 +428,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_GETRANDOM = 318        => sys_getrandom(args[..3]);
     SYS_MEMFD_CREATE = 319     => sys_memfd_create(args[..2]);
     SYS_EXECVEAT = 322         => sys_execveat(args[..5], &mut user_ctx);
+    SYS_MEMBARRIER = 324       => sys_membarrier(args[..3]);
     SYS_PREADV2 = 327          => sys_preadv2(args[..6]);
     SYS_PWRITEV2 = 328         => sys_pwritev2(args[..6]);
     SYS_STATX = 332            => sys_statx(args[..5]);
@@ -437,6 +440,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_PIDFD_OPEN = 434       => sys_pidfd_open(args[..2]);
     SYS_CLONE3 = 435           => sys_clone3(args[..2], &user_ctx);
     SYS_CLOSE_RANGE = 436      => sys_close_range(args[..3]);
+    SYS_OPENAT2 = 437          => sys_openat2(args[..4]);
     SYS_PIDFD_GETFD = 438      => sys_pidfd_getfd(args[..3]);
     SYS_FACCESSAT2 = 439       => sys_faccessat2(args[..4]);
     SYS_EPOLL_PWAIT2 = 441     => sys_epoll_pwait2(args[..6]);
