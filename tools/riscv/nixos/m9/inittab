@@ -1,0 +1,12 @@
+# /etc/inittab — busybox init (PID 1 after /init hands off).
+# Format: <id>:<runlevels>:<action>:<process>
+#
+#   sysinit   — run once at boot, synchronously, before anything else:
+#               /etc/rc installs the nix profile and starts services.
+#   respawn   — the getty/login loop on ttyS0: when the user logs out and the
+#               shell exits, getty is restarted by init.
+::sysinit:/etc/rc
+ttyS0::respawn:/sbin/getty -L 38400 ttyS0 vt100
+::ctrlaltdel:/sbin/reboot
+::shutdown:/etc/rc.shutdown
+::restart:/sbin/init
