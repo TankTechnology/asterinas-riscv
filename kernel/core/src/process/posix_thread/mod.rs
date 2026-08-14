@@ -108,6 +108,10 @@ pub struct PosixThread {
 
     /// The personality value for this thread.
     personality: AtomicU32,
+
+    /// The seccomp mode of this thread (`0` = disabled, `1` = strict,
+    /// `2` = filter; see `crate::syscall::seccomp`).
+    seccomp_mode: AtomicU32,
 }
 
 impl PosixThread {
@@ -343,6 +347,19 @@ impl PosixThread {
     /// Returns the exit code of this thread.
     pub(crate) fn exit_code(&self) -> ExitCode {
         self.exit_code.load(Ordering::Relaxed)
+    }
+
+    /// Returns the seccomp mode of this thread.
+    pub fn seccomp_mode(&self) -> u32 {
+        self.seccomp_mode.load(Ordering::Relaxed)
+    }
+
+    /// Sets the seccomp mode of this thread.
+    ///
+    /// As on Linux, entering seccomp mode is irreversible for the lifetime of
+    /// the thread; this method is only called from `seccomp(2)`.
+    pub fn set_seccomp_mode(&self, mode: u32) {
+        self.seccomp_mode.store(mode, Ordering::Relaxed);
     }
 }
 
