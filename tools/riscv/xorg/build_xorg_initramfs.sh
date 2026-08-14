@@ -22,7 +22,8 @@ mkdir -p "${ROOTFS}/lib" "${ROOTFS}/usr/lib" "${ROOTFS}/usr/bin" \
     "${ROOTFS}/usr/lib/xorg/modules/drivers" \
     "${ROOTFS}/usr/lib/xorg/modules/input" "${ROOTFS}/etc" \
     "${ROOTFS}/usr/share/X11/xkb" "${ROOTFS}/etc/fonts" "${ROOTFS}/usr/share/fonts" \
-    "${ROOTFS}/bin" "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp"
+    "${ROOTFS}/bin" "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp" \
+    "${ROOTFS}/root"
 
 # /init launcher (static).
 "${CC}" -O2 -static -no-pie -o "${ROOTFS}/init" "${SRC_DIR}/init.c"
@@ -56,16 +57,25 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 
 # Desktop session clients (statically-linked riscv64 X11 apps).
-# NOTE: pcmanfm (build_pcmanfm.sh) and xterm cross-compile, but their binaries
-# push the initramfs past the kernel's ~20 MB early-memory limit (the kernel
-# stalls at "Spawn the first kernel thread"), so they are intentionally not
-# bundled in the default session (see GTK-M2-report.md). xwm/xclient are the
-# superseded pre-matchbox demos and are no longer spawned by init.c.
-for cli in gtk-hello matchbox-window-manager xpanel; do
+# pcmanfm (file manager) and xterm (terminal) are bundled as well; they cross
+# compile but previously pushed the initramfs past the kernel's ~20 MB
+# early-memory limit (fixed in the OSTD RISC-V boot path, see GTK-M3-report.md).
+for cli in gtk-hello matchbox-window-manager xpanel pcmanfm xterm; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
         echo "WARNING: ${CROSS_USR}/bin/${cli} not found; skipping" >&2
+    fi
+done
+
+# pcmanfm / libfm runtime data: GTK builder .ui files (dialogs), the file-type
+# icons (folder.png / unknown.png) the file list uses, and the .desktop menu
+# entries. These are architecture-independent text/png files. pcmanfm still
+# browses without them, but the file list shows generic (blank) icons.
+for d in pcmanfm libfm applications; do
+    if [ -d "${CROSS_USR}/share/${d}" ]; then
+        mkdir -p "${ROOTFS}/usr/share/${d}"
+        cp -rL "${CROSS_USR}/share/${d}/." "${ROOTFS}/usr/share/${d}/"
     fi
 done
 
