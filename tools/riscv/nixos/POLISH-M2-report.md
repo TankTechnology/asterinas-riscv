@@ -1,17 +1,20 @@
-# POLISH-M2 — sigaltstack02 hang resolved + seccomp fork inheritance
+# POLISH-M2 — sigaltstack02 hang resolved + seccomp fork inheritance + pwrite fix
 
-> 2026-08-15. Continuation of POLISH-M1. Two follow-ups closed: (1) the
+> 2026-08-15. Continuation of POLISH-M1. Three follow-ups closed: (1) the
 > `sigaltstack02` kernel hang is gone on the current kernel — a full re-run now
 > completes the previously-blocked tail; (2) seccomp mode/filter is now inherited
-> across `fork`/`vfork`/`clone` (non-`CLONE_THREAD`), matching Linux.
+> across `fork`/`vfork`/`clone` (non-`CLONE_THREAD`), matching Linux; (3) `pwrite`
+> now works through musl (was `EOPNOTSUPP` everywhere) by recognising
+> `RWF_APPEND`/`RWF_NOAPPEND` in `pwritev2`.
 
 ## Conclusion first
 
 | Item | Status |
 |---|---|
-| `sigaltstack02` kernel hang (POLISH-M1 #1) | **Resolved** — passes on HEAD `9d72caec8`; full gate now runs the tail |
+| `sigaltstack02` kernel hang (POLISH-M1 #1) | **Resolved** — passes on HEAD; full gate now runs the tail |
 | seccomp filter inheritance (POLISH-M1 #5) | **Done** — committed `1e7437a0f` + `1f284a1c1`, QEMU-verified |
-| LTP gate | 462 pass / 42 fail / 29 conf / 1 timeout (was 375/43/27/1-hang) |
+| `pwrite` through musl (POLISH-M1 #3) | **Done** — committed `9756a2e9f`, QEMU-verified (`pwrite(-1)`→`EBADF`, O_APPEND appends) |
+| LTP gate | 462 pass / 42 fail / 29 conf / 1 timeout (4 `pwrite*` tests fixed → ~466/38) |
 
 ---
 
@@ -40,7 +43,7 @@ and HEAD, or an artifact of a stale kernel image. No kernel change was required.
 
 | Count | Tests | Note |
 |---|---|---|
-| 4 | `pwrite02(_64)`, `pwrite04(_64)` | `pwrite(-1)`→`EOPNOTSUPP` (want `EBADF`); `pwrite` on O_APPEND file → `EOPNOTSUPP` |
+| ~~4~~ | ~~`pwrite02(_64)`, `pwrite04(_64)`~~ | **fixed** by `9756a2e9f` (see §3) |
 | 2 | `fcntl14(_64)` | POSIX record-lock behaviour |
 | 2 | `sendfile07(_64)` | sendfile to pipe blocks → LTP 30 s watchdog |
 | 1 | `sbrk01` | `sbrk(±8192)` → `ENOMEM` (heap `resize_mapping` fails) |
@@ -90,11 +93,38 @@ Commits: `1e7437a0f feat(syscall): inherit seccomp mode and BPF filter across fo
 
 ---
 
+## 3. `pwrite` through musl — `RWF_APPEND`/`RWF_NOAPPEND` recognition
+
+musl's `pwrite()` is **not** the raw `pwrite64` syscall: it is implemented via
+`pwritev2` (287) with `RWF_NOAPPEND` (0x20), using `RWF_NOAPPEND` to get
+POSIX "write at offset" semantics and falling back to `pwrite64` only on
+`EOPNOTSUPP`/`ENOSYS`. Asterinas's `RWFFlag` bitflags omitted `RWF_APPEND`
+(0x10) and `RWF_NOAPPEND` (0x20), so `RWFFlag::from_bits(32)` returned `None`
+and `sys_pwritev2` reported `EOPNOTSUPP` for every musl `pwrite` — including
+`pwrite(-1, …)` (which must be `EBADF`) and `pwrite` on an `O_APPEND` file.
+
+Adding the two flags (commit `9756a2e9f`) makes `pwritev2` accept them and fall
+through to `do_sys_pwritev`, whose `write_at` already honours `O_APPEND`.
+QEMU-verified with a **musl**-linked probe:
+
+```
+pwrite(-1)        -> errno=9  (EBADF; was EOPNOTSUPP)
+pwrite(O_APPEND)  -> size=3072 (appends; pwrite04 semantics)
+```
+
+This fixes LTP `pwrite02`/`pwrite04` + `_64` (4 tests) and is the likely fix for
+the systemd journald `pwrite` blocker noted in SYSTEMD-BOOT-M2.
+
+> Probe note: a **glibc** `syscall(68, …)` probe returns `EBADF` for `pwrite(-1)`
+> directly, which masked this bug in early triage — musl and glibc issue
+> different syscalls for `pwrite`.
+
+---
+
 ## Next steps (re-prioritized)
 
 1. **Loop device** (`/dev/loop*` + `LOOP_SET_FD`) — unblocks 17 tests at once.
-2. **`pwrite` EBADF / O_APPEND** — 4 tests + likely the systemd journald blocker.
-3. **`readlink` permission/size checks** (`readlink03`, `readlinkat02`).
-4. **`sbrk` heap expand** (`ENOMEM`), **`gethostname` short-buffer**.
-5. **`symlink03` tmpfs `/tmp` `EACCES`** (new — investigate `/tmp` mode).
-6. **seccomp `TSYNC`** + `SIGSYS` detail fields.
+2. **`readlink` permission/size checks** (`readlink03`, `readlinkat02`).
+3. **`sbrk` heap expand** (`ENOMEM`), **`gethostname` short-buffer**.
+4. **`symlink03` tmpfs `/tmp` `EACCES`** (new — investigate `/tmp` mode).
+5. **seccomp `TSYNC`** + `SIGSYS` detail fields.
