@@ -76,6 +76,7 @@ macro_rules! import_generic_syscall_entries {
             memfd_create::sys_memfd_create,
             mkdir::sys_mkdirat,
             mknod::sys_mknodat,
+            mlock::{sys_mlock, sys_munlock},
             mmap::sys_mmap,
             mount::sys_mount,
             move_mount::sys_move_mount,
@@ -395,6 +396,8 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_FADVISE64 = 223              => sys_fadvise64(args[..4]);
             SYS_MPROTECT = 226               => sys_mprotect(args[..3]);
             SYS_MSYNC = 227                  => sys_msync(args[..3]);
+            SYS_MLOCK = 228                  => sys_mlock(args[..2]);
+            SYS_MUNLOCK = 229                => sys_munlock(args[..2]);
             SYS_MADVISE = 233                => sys_madvise(args[..3]);
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);
