@@ -80,6 +80,7 @@ use super::{
     mlock::{sys_mlock, sys_munlock},
     mmap::sys_mmap,
     mount::sys_mount,
+    mount_setattr::sys_mount_setattr,
     move_mount::sys_move_mount,
     mprotect::sys_mprotect,
     mremap::sys_mremap,
@@ -444,6 +445,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_PIDFD_GETFD = 438      => sys_pidfd_getfd(args[..3]);
     SYS_FACCESSAT2 = 439       => sys_faccessat2(args[..4]);
     SYS_EPOLL_PWAIT2 = 441     => sys_epoll_pwait2(args[..6]);
+    SYS_MOUNT_SETATTR = 442    => sys_mount_setattr(args[..5]);
     SYS_FCHMODAT2 = 452        => sys_fchmodat2(args[..4]);
     SYS_LISTMOUNT = 458        => sys_listmount(args[..4]);
 }
