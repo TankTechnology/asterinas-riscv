@@ -1,0 +1,9 @@
+[Unit]
+Description=Emergency Shell
+DefaultDependencies=no
+
+[Service]
+ExecStart=-/bin/sh
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
