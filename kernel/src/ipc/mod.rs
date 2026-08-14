@@ -8,6 +8,7 @@ use crate::{
 mod ipc_ids;
 mod ipc_ns;
 pub mod semaphore;
+pub mod shared_memory;
 
 pub use ipc_ids::IpcId;
 pub use ipc_ns::IpcNamespace;
@@ -52,6 +53,27 @@ pub enum IpcControlCmd {
     SEM_GETZCNT = 15,
     SEM_SETVAL = 16,
     // SEM_SETALL = 17,
+}
+
+/// The on-disk/userspace representation of an IPC permission, matching Linux's
+/// `struct ipc64_perm`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ipcbuf.h#L22>.
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub(crate) struct IpcPerm {
+    key: u32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u16,
+    _pad1: u16,
+    seq: u16,
+    _pad2: u16,
+    _unused1: u64,
+    _unused2: u64,
 }
 
 #[derive(Debug)]
@@ -100,6 +122,17 @@ impl IpcPermission {
     }
 
     pub(self) fn new_sem_perm(key: IpcKey, uid: Uid, gid: Gid, mode: u16) -> Self {
+        Self {
+            key,
+            uid,
+            gid,
+            cuid: uid,
+            cguid: gid,
+            mode,
+        }
+    }
+
+    pub(self) fn new_shm_perm(key: IpcKey, uid: Uid, gid: Gid, mode: u16) -> Self {
         Self {
             key,
             uid,
