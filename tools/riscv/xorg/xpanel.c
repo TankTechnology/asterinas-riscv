@@ -15,6 +15,7 @@
 // or fontconfig/pango in the initramfs.
 
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,6 +154,15 @@ int main(void) {
 
     panel = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, w, PANEL_H,
                                 0, 0, bg);
+    /* Tell EWMH window managers (matchbox) that this is a dock/panel, not a
+     * normal app window, so it is kept as a full-width top bar instead of
+     * being maximized/tiled like the desktop apps. */
+    {
+        Atom wm_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+        Atom wm_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+        XChangeProperty(dpy, panel, wm_type, XA_ATOM, 32, PropModeReplace,
+                        (unsigned char *)&wm_dock, 1);
+    }
     XSelectInput(dpy, panel, ExposureMask | ButtonPressMask);
     XMapWindow(dpy, panel);
     gc = XCreateGC(dpy, panel, 0, NULL);
