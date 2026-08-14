@@ -47,6 +47,9 @@ def main() -> int:
     parser.add_argument("--collect-timeout", type=float, default=300.0)
     parser.add_argument("--screenshot", type=Path,
                         default=Path("/tmp/asterinas-sd-nixos.ppm"))
+    parser.add_argument("--settle-seconds", type=float, default=0.0,
+                        help="extra seconds to wait before the final screendump "
+                             "so the desktop finishes rendering")
     args = parser.parse_args()
 
     if not desktop.UBOOT.exists():
@@ -117,6 +120,10 @@ def main() -> int:
         reached = "timeout"
         print(f"[boot] {e}", flush=True)
     finally:
+        if args.settle_seconds:
+            print(f"[demo] settling {args.settle_seconds}s for full desktop render",
+                  flush=True)
+            time.sleep(args.settle_seconds)
         desktop.screendump(desktop.MON_SOCK, args.screenshot)
         boot.close()
 
