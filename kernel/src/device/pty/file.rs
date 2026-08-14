@@ -10,7 +10,7 @@ use crate::{
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
+    process::{Terminal, signal::{PollHandle, Pollable}},
     util::ioctl::RawIoctl,
 };
 
@@ -25,10 +25,13 @@ impl PtySlaveFile {
         let mut opened_slaves = slave.driver().opened_slaves().lock();
 
         let master_flags = slave.driver().tty_flags();
-        if master_flags.is_pty_locked() || slave.tty_flags().is_other_closed() {
+        // On Linux the slave may still be opened after the master is closed
+        // (it just sees a hangup), so only reject when the master has it
+        // explicitly locked via TIOCSPTLCK.
+        if master_flags.is_pty_locked() {
             return_errno_with_message!(
                 Errno::EIO,
-                "a pty slave cannot be opened when the pty master is locked or closed"
+                "a pty slave cannot be opened when the pty master is locked"
             );
         }
         master_flags.clear_other_closed();
@@ -37,6 +40,14 @@ impl PtySlaveFile {
         drop(opened_slaves);
 
         slave.driver().pollee().invalidate();
+
+        // Linux assigns the controlling terminal automatically on the first
+        // open of a slave by a session leader without a controlling terminal
+        // (and without O_NOCTTY). Mimic that: ignore EPERM (not a session
+        // leader, or the session already has a terminal).
+        let terminal: Arc<dyn Terminal> = slave.clone() as Arc<dyn Terminal>;
+        let _ = terminal.set_control(&current!());
+
         Ok(PtySlaveFile(slave))
     }
 }

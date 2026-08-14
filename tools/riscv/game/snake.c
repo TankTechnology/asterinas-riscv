@@ -226,13 +226,19 @@ int main(void) {
     init_game();
 
     for (;;) {
-        /* Drain pending keyboard input. */
-        if (kbd >= 0) {
-            for (int i = 0; i < 16; i++) {
-                if (!read_keyboard(kbd)) {
-                    break;
+        /* Poll the keyboard every 10ms so a key press takes effect within
+         * ~10ms, instead of waiting out one whole 120ms tick. */
+        int waited = 0;
+        while (waited < 120000) {
+            if (kbd >= 0) {
+                for (int i = 0; i < 8; i++) {
+                    if (!read_keyboard(kbd)) {
+                        break;
+                    }
                 }
             }
+            usleep(10000);
+            waited += 10000;
         }
         if (!step()) {
             tty_log("snake: game over");
