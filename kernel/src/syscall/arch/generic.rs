@@ -33,6 +33,7 @@ macro_rules! import_generic_syscall_entries {
             exit_group::sys_exit_group,
             fadvise64::sys_fadvise64,
             fallocate::sys_fallocate,
+            fanotify::{sys_fanotify_init, sys_fanotify_mark},
             fcntl::sys_fcntl,
             flock::sys_flock,
             fsconfig::sys_fsconfig,
@@ -66,6 +67,7 @@ macro_rules! import_generic_syscall_entries {
             getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
             inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
             ioctl::sys_ioctl,
+            keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
             link::sys_linkat,
             listen::sys_listen,
@@ -127,6 +129,7 @@ macro_rules! import_generic_syscall_entries {
             sched_setparam::sys_sched_setparam,
             sched_setscheduler::sys_sched_setscheduler,
             sched_yield::sys_sched_yield,
+            seccomp::sys_seccomp,
             semctl::sys_semctl,
             semget::sys_semget,
             semop::{sys_semop, sys_semtimedop},
@@ -393,6 +396,9 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_BRK = 214                    => sys_brk(args[..1]);
             SYS_MUNMAP = 215                 => sys_munmap(args[..2]);
             SYS_MREMAP = 216                 => sys_mremap(args[..5]);
+            SYS_ADD_KEY = 217                => sys_add_key(args[..5]);
+            SYS_REQUEST_KEY = 218            => sys_request_key(args[..4]);
+            SYS_KEYCTL = 219                 => sys_keyctl(args[..5]);
             SYS_CLONE = 220                  => sys_clone(args[..5], &user_ctx);
             SYS_EXECVE = 221                 => sys_execve(args[..3], &mut user_ctx);
             SYS_MMAP = 222                   => sys_mmap(args[..6]);
@@ -405,12 +411,15 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
+            SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
+            SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
             SYS_SCHED_SETATTR = 274          => sys_sched_setattr(args[..3]);
             SYS_SCHED_GETATTR = 275          => sys_sched_getattr(args[..4]);
             SYS_RENAMEAT2 = 276              => sys_renameat2(args[..5]);
+            SYS_SECCOMP = 277                => sys_seccomp(args[..3]);
             SYS_GETRANDOM = 278              => sys_getrandom(args[..3]);
             SYS_MEMFD_CREATE = 279           => sys_memfd_create(args[..2]);
             SYS_EXECVEAT = 281               => sys_execveat(args[..5], &mut user_ctx);
