@@ -171,7 +171,7 @@ def main() -> int:
             if name == "booti":
                 advance_to(b"Starting kernel ...", time.monotonic() + 60)
                 try:
-                    advance_to(b">>> Hello from RISC-V userspace on Asterinas! <<<", time.monotonic() + 120)
+                    advance_to(b">>> Hello from RISC-V userspace on Asterinas! <<<", time.monotonic() + 300)
                     print("[ok] userspace marker reached", flush=True)
                 except TimeoutError:
                     print("[warn] userspace marker not reached", flush=True)
@@ -180,7 +180,9 @@ def main() -> int:
                     time.sleep(1)
                     screendump(MON_SOCK, SCREENSHOT.with_name("early.ppm"))
                     print("[ok] early screenshot written", flush=True)
-                    time.sleep(250)
+                    # Xorg takes ~170 s to fully init on the emulated RISC-V
+                    # guest; wait for it plus the desktop clients to render.
+                    time.sleep(150)
                 else:
                     time.sleep(8)
                 break

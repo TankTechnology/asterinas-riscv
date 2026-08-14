@@ -47,7 +47,7 @@ static void spawn_client(char *const argv[]) {
 /* Some clients (matchbox-window-manager, xterm) exit immediately if the X
  * server isn't up yet (unlike our own xwm/xclient/gtk-hello, which retry
  * internally). Wrap them in a respawn loop. */
-static void spawn_retrying(const char *path) {
+static void spawn_retrying_argv(char *const argv[]) {
     pid_t pid = fork();
     if (pid == 0) {
         setenv("DISPLAY", ":0", 1);
@@ -56,7 +56,6 @@ static void spawn_retrying(const char *path) {
         for (;;) {
             pid_t p = fork();
             if (p == 0) {
-                char *argv[] = { (char *)path, NULL };
                 execv(argv[0], argv);
                 tty_log("xorg: exec client failed");
                 _exit(1);
@@ -67,6 +66,11 @@ static void spawn_retrying(const char *path) {
             sleep(1);
         }
     }
+}
+
+static void spawn_retrying(const char *path) {
+    char *argv[] = { (char *)path, NULL };
+    spawn_retrying_argv(argv);
 }
 
 static pid_t launch_xorg(void) {
@@ -120,11 +124,14 @@ int main(void) {
         char *gtk_hello2_argv[] = { "/usr/bin/gtk-hello", NULL };
         spawn_client(gtk_hello2_argv);
     }
-    /* pcmanfm and xterm are omitted from the default session: pcmanfm is a
-     * monolithic GTK2 file manager that cross-compiles cleanly (see
-     * build_pcmanfm.sh) but its 15 MB binary, and xterm's 4.2 MB, push the
-     * initramfs past the kernel's ~20 MB early-memory limit (the kernel stalls
-     * at "Spawn the first kernel thread"). See GTK-M2-report.md. */
+    /* The file manager (pcmanfm, browsing the root filesystem) and a terminal
+     * (xterm). Both are statically-linked GTK2/X11 apps; xterm exits immediately
+     * if X is not up yet, so both go through the respawn loop. */
+    {
+        char *pcmanfm_argv[] = { "/usr/bin/pcmanfm", "/", NULL };
+        spawn_retrying_argv(pcmanfm_argv);
+    }
+    spawn_retrying("/usr/bin/xterm");
 
     for (;;) {
         int status;
