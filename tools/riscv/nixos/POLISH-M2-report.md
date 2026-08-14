@@ -48,7 +48,7 @@ and HEAD, or an artifact of a stale kernel image. No kernel change was required.
 | 2 | `sendfile07(_64)` | sendfile to pipe blocks → LTP 30 s watchdog |
 | 1 | `sbrk01` | `sbrk(±8192)` → `ENOMEM` (heap `resize_mapping` fails) |
 | 1 | `readlink03` | succeeds where `EACCES` expected |
-| 1 | `readlinkat02` | `readlinkat(..., 0)` succeeds where `EINVAL` expected |
+| 1 | `readlinkat02` | **musl behaviour, not a kernel bug** — musl's `readlinkat` short-circuits `bufsize==0` (returns 0 with a 1-byte dummy buffer) instead of issuing syscall 78, so the kernel's `EINVAL` check is never reached |
 | 1 | `gethostname02` | `gethostname` short-buffer succeeds where `ENAMETOOLONG` expected |
 | 1 | `epoll_wait04` | zero-timeout `epoll_wait` slept ~2.5 ms |
 | 1 | `fork06` | 1000 forks exceed 30 s test timeout (slow fork) |
