@@ -44,6 +44,7 @@ mod exit;
 mod exit_group;
 mod fadvise64;
 mod fallocate;
+mod fanotify;
 mod fcntl;
 mod flock;
 mod fork;
