@@ -37,7 +37,15 @@ fn session_keyring_serial() -> u32 {
 // --- `keyctl` command numbers (`linux/keyctl.h`) ---
 const KEYCTL_GET_KEYRING_ID: i32 = 0;
 const KEYCTL_JOIN_SESSION_KEYRING: i32 = 1;
+const KEYCTL_UPDATE: i32 = 2;
 const KEYCTL_REVOKE: i32 = 3;
+const KEYCTL_CHOWN: i32 = 4;
+const KEYCTL_SETPERM: i32 = 5;
+const KEYCTL_CLEAR: i32 = 7;
+const KEYCTL_LINK: i32 = 8;
+const KEYCTL_UNLINK: i32 = 9;
+const KEYCTL_SEARCH: i32 = 10;
+const KEYCTL_SESSION_TO_PARENT: i32 = 18;
 
 pub fn sys_add_key(
     type_addr: Vaddr,
@@ -102,6 +110,16 @@ pub fn sys_keyctl(
         KEYCTL_REVOKE => {
             // Keys are never retained, so there is nothing to revoke.
             Ok(SyscallReturn::Return(0))
+        }
+        // systemd's service-exec path (setup_keyring) walks the session keyring
+        // for every spawned service. Since no keys are retained, these
+        // operations are no-ops that report success: they must NOT return
+        // EOPNOTSUPP or the service is aborted at the KEYRING exec step.
+        KEYCTL_UPDATE | KEYCTL_CHOWN | KEYCTL_SETPERM | KEYCTL_CLEAR | KEYCTL_LINK
+        | KEYCTL_UNLINK | KEYCTL_SESSION_TO_PARENT => Ok(SyscallReturn::Return(0)),
+        KEYCTL_SEARCH => {
+            // No keys are ever retained, so a search can never succeed.
+            return_errno_with_message!(Errno::ENOKEY, "no matching key");
         }
         _ => return_errno_with_message!(Errno::EOPNOTSUPP, "keyctl command is not supported"),
     }
