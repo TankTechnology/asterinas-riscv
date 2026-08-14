@@ -33,6 +33,7 @@ macro_rules! import_generic_syscall_entries {
             exit_group::sys_exit_group,
             fadvise64::sys_fadvise64,
             fallocate::sys_fallocate,
+            fanotify::{sys_fanotify_init, sys_fanotify_mark},
             fcntl::sys_fcntl,
             flock::sys_flock,
             fsconfig::sys_fsconfig,
@@ -405,6 +406,8 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
+            SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
+            SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
