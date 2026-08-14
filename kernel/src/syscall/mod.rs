@@ -80,6 +80,7 @@ mod getuid;
 mod getxattr;
 mod inotify;
 mod ioctl;
+mod keyctl;
 mod kill;
 mod link;
 mod listen;
