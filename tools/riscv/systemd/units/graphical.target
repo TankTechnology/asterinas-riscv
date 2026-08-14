@@ -2,6 +2,6 @@
 Description=Graphical Interface
 Documentation=man:systemd.special(7)
 Requires=multi-user.target
-Wants=xorg.service matchbox-window-manager.service xpanel.service pcmanfm.service xterm.service
+Wants=nix-activation.service nix-smoke.service xorg.service matchbox-window-manager.service xpanel.service pcmanfm.service xterm.service
 After=multi-user.target
 AllowIsolate=yes
