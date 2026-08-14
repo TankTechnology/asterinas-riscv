@@ -102,15 +102,12 @@ int main(void) {
     pid_t xorg = launch_xorg();
 
     tty_log("xorg: launching session clients");
-    /* xwm is our minimal window manager: it reparents nothing (just adds a
-     * border), so client window content actually reaches the shadow
-     * framebuffer. matchbox-window-manager runs fine but its frame
-     * reparenting leaves client content unrendered under the shadow driver
-     * (see GTK-M1-report.md), so we keep xwm as the session WM. */
-    {
-        char *xwm_argv[] = { "/usr/bin/xwm", NULL };
-        spawn_client(xwm_argv);
-    }
+    /* matchbox-window-manager is the session WM (reparenting + window
+     * switching). Its frame reparenting previously left client content
+     * unrendered under the shadow driver; that was fixed with a defensive
+     * clip-region fallback in the xserver mi layer (see GTK-M2-report.md).
+     * It exits if X is not up yet, so wrap it in a respawn loop. */
+    spawn_retrying("/usr/bin/matchbox-window-manager");
     {
         char *xpanel_argv[] = { "/usr/bin/xpanel", NULL };
         spawn_client(xpanel_argv);
@@ -119,7 +116,15 @@ int main(void) {
         char *gtk_hello_argv[] = { "/usr/bin/gtk-hello", NULL };
         spawn_client(gtk_hello_argv);
     }
-    spawn_retrying("/usr/bin/xterm");
+    {
+        char *gtk_hello2_argv[] = { "/usr/bin/gtk-hello", NULL };
+        spawn_client(gtk_hello2_argv);
+    }
+    /* pcmanfm and xterm are omitted from the default session: pcmanfm is a
+     * monolithic GTK2 file manager that cross-compiles cleanly (see
+     * build_pcmanfm.sh) but its 15 MB binary, and xterm's 4.2 MB, push the
+     * initramfs past the kernel's ~20 MB early-memory limit (the kernel stalls
+     * at "Spawn the first kernel thread"). See GTK-M2-report.md. */
 
     for (;;) {
         int status;
