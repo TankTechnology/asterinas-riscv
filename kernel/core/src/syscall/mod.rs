@@ -4,6 +4,7 @@
 
 #![cfg_attr(
     any(
+        target_arch = "x86_64",
         target_arch = "riscv64",
         target_arch = "loongarch64",
         target_arch = "aarch64"
@@ -418,7 +419,7 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
             return;
         }
         seccomp::SeccompDecision::Errno(errno) => {
-            user_ctx.set_syscall_ret(-(errno as i32) as usize);
+            user_ctx.set_syscall_ret((-errno) as usize);
             return;
         }
     }
