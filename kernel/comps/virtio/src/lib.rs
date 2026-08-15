@@ -18,6 +18,7 @@ use device::{
     VirtioDeviceType, block::device::BlockDevice, console::device::ConsoleDevice,
     entropy::device::EntropyDevice, filesystem::device::FileSystemDevice, gpu::device::GpuDevice,
     input::device::InputDevice, network::device::NetworkDevice, socket::device::SocketDevice,
+    sound::device::SoundDevice,
 };
 use ostd::{error, warn};
 use spin::Once;
@@ -51,6 +52,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
     device::gpu::init();
     device::network::init();
     device::socket::init();
+    device::sound::init();
 
     while let Some(mut transport) = pop_device_transport() {
         let device_type = transport.device_type();
@@ -107,6 +109,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
             VirtioDeviceType::Input => InputDevice::init(device_transport),
             VirtioDeviceType::Network => NetworkDevice::init(device_transport),
             VirtioDeviceType::Socket => SocketDevice::init(device_transport),
+            VirtioDeviceType::Sound => SoundDevice::init(device_transport),
             VirtioDeviceType::FileSystem => FileSystemDevice::init(device_transport),
             VirtioDeviceType::Gpu => GpuDevice::init(device_transport),
             _ => {
@@ -144,6 +147,7 @@ fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) {
         VirtioDeviceType::Input => InputDevice::negotiate_features(device_specified_features),
         VirtioDeviceType::Console => ConsoleDevice::negotiate_features(device_specified_features),
         VirtioDeviceType::Socket => SocketDevice::negotiate_features(device_specified_features),
+        VirtioDeviceType::Sound => SoundDevice::negotiate_features(device_specified_features),
         VirtioDeviceType::FileSystem => {
             FileSystemDevice::negotiate_features(device_specified_features)
         }
