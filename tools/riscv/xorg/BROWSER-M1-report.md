@@ -397,6 +397,25 @@ routing / queue-notify on the virtio-MMIO transport), orthogonal to the browser.
 - **Blocker: kernel networking.** Actual `https://` fetch requires the
   virtio-net MMIO path to move packets; that is a kernel milestone, not a
   browser one.
-- **Next:** full webpage *rendering* verification can proceed on a local
-  `file://` page (unaffected by the network gap) — a richer HTML/CSS page than
-  the M1 test, exercised with a longer settle and a pixel-histogram check.
+
+### 11.6 Full-page *rendering* verification (local HTML)
+
+A richer `file://` test page (headings/paragraphs/lists/table/blockquote/CSS
+colours + an `<img>` of the 308×86 `netsurf.png` logo) was bundled and booted on
+an independent disk with a 180 s settle. Two results:
+
+1. **Text/CSS layout renders.** `browser_window_navigate: Loading
+   'file:///usr/share/netsurf/netsurf-test.html'` → `html_box_convert_done: Done
+   XML to box` (the full HTML→box pipeline), and the screenshot histogram is the
+   known-good M2 desktop pattern (white window area 88 %, `#202028` xpanel,
+   `#dcdad5` GTK chrome, `#496179` titlebars, ~13 k black text pixels).
+2. **The in-page image does not render.** The `<img>` is fetched and its content
+   created (`content__init: url file:///usr/share/netsurf/netsurf.png`), but
+   `image_cache_add` records the logo with `bitmap (nil)` — NetSurf defers the
+   PNG decode (`image_cache_speculate` returns false for larger images) — and
+   the deferred decode never runs: the logo's blue (`#3F6EFF`) is absent from
+   the histogram and there is no redraw log after `html_box_convert_done`. The
+   17×17 toolbar icons *do* decode (`info_callback: size 17 * 17`, non-nil
+   bitmap). So text/CSS is proven; **in-page image rendering is not yet working**
+   and is the next browser item to diagnose (likely the deferred image redraw
+   path).
