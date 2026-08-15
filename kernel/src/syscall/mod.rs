@@ -105,6 +105,7 @@ mod mprotect;
 mod mremap;
 mod msync;
 mod munmap;
+mod name_to_handle_at;
 mod nanosleep;
 mod open;
 mod openat2;

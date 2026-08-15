@@ -29,6 +29,19 @@ pub trait FileSystem: Any + Sync + Send {
     /// context that performs the syscall.
     fn root_inode(&self) -> Arc<dyn Inode>;
 
+    /// Looks up an inode from a file handle previously produced by
+    /// [`Inode::encode_file_handle`], for `open_by_handle_at`.
+    ///
+    /// The default implementation rejects all handles with `EOPNOTSUPP`.
+    /// Filesystems whose inode numbers uniquely identify a file may implement
+    /// this by decoding the inode number and reconstructing the inode (see
+    /// cgroupfs for an example).
+    ///
+    /// [`Inode::encode_file_handle`]: super::inode::Inode::encode_file_handle
+    fn fh_to_inode(&self, _fh: &[u8]) -> Result<Arc<dyn Inode>> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "file handles are not supported");
+    }
+
     /// Returns the super block of this file system.
     fn sb(&self) -> SuperBlock;
 
