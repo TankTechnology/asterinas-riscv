@@ -42,6 +42,9 @@ fn session_keyring_serial() -> u32 {
 const KEYCTL_GET_KEYRING_ID: i32 = 0;
 const KEYCTL_JOIN_SESSION_KEYRING: i32 = 1;
 const KEYCTL_REVOKE: i32 = 3;
+const KEYCTL_SETPERM: i32 = 5;
+const KEYCTL_LINK: i32 = 8;
+const KEYCTL_UNLINK: i32 = 9;
 
 pub fn sys_add_key(
     type_addr: Vaddr,
@@ -105,6 +108,12 @@ pub fn sys_keyctl(
             // Keys are never retained, so there is nothing to revoke.
             Ok(SyscallReturn::Return(0))
         }
+        // Key storage is a stub: linking keys into a keyring, unlinking them, and
+        // setting permission bits are all no-ops that always succeed. systemd's
+        // service-spawn keyring setup (setup_keyring in exec-invoke.c) hard-fails
+        // on any error from these, so they must return success rather than
+        // EOPNOTSUPP for a systemd desktop to start.
+        KEYCTL_SETPERM | KEYCTL_LINK | KEYCTL_UNLINK => Ok(SyscallReturn::Return(0)),
         _ => return_errno_with_message!(Errno::EOPNOTSUPP, "keyctl command is not supported"),
     }
 }
