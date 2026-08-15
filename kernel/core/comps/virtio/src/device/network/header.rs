@@ -4,6 +4,13 @@ use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
 
 /// VirtioNet header precedes each packet
+///
+/// The `num_buffers` field is present only when `VIRTIO_NET_F_MRG_RXBUF` is
+/// negotiated. This driver does not negotiate that feature (see
+/// [`NetworkFeatures::supported_features`]), so the header is the plain
+/// 10-byte `virtio_net_hdr`. Including `num_buffers` here would shift every
+/// packet by two bytes and corrupt TX (the device would read the trailing two
+/// zero bytes as the start of the frame) and truncate RX.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct VirtioNetHdr {
@@ -13,10 +20,6 @@ pub(super) struct VirtioNetHdr {
     gso_size: u16,
     csum_start: u16,
     csum_offset: u16,
-    num_buffers: u16, // Only if PCI is modern or VIRTIO_NET_F_MRG_RXBUF negotiated
-                      // hash_value: u32,        // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // hash_report: u16,       // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // padding_reserved: u16,  // Only if VIRTIO_NET_F_HASH_REPORT negotiated
 }
 
 bitflags! {
