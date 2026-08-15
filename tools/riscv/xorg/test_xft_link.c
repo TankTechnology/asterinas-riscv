@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 /*
  * Static-link sanity test for the Phase-1 libX* extension libraries.
  * Exercises libXft (-> libXrender/freetype/fontconfig), libXcursor,
