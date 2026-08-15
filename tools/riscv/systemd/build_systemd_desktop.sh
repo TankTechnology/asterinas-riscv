@@ -162,9 +162,9 @@ cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/mo
 cp "${CROSS_USR}/lib/libxcvt.so.0.1.3" "${ROOTFS}/usr/lib/libxcvt.so.0.1.3"
 ln -sf libxcvt.so.0.1.3 "${ROOTFS}/usr/lib/libxcvt.so.0"
 
-# 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm are dynamic or
-#    static; all resolve against the glibc runtime in /lib).
-for cli in matchbox-window-manager xpanel pcmanfm xterm; do
+# 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm/netsurf-gtk are
+#    dynamic or static; all resolve against the glibc runtime in /lib).
+for cli in matchbox-window-manager xpanel pcmanfm xterm netsurf-gtk; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
@@ -209,6 +209,17 @@ for d in pcmanfm libfm applications; do
         cp -rL "${CROSS_USR}/share/${d}/." "${ROOTFS}/usr/share/${d}/"
     fi
 done
+
+# 13b. NetSurf GTK resources (default.css/quirks.css/internal.css, icons,
+#      throbber, UI strings, translation Messages) + the local HTML test page.
+#      The nsgtk binary's baked GTK_RESPATH is the *host* cross prefix, which the
+#      baked-host-path symlink bridge from step 3 maps to /usr/share/netsurf; the
+#      NETSURFRES env var in netsurf.service points at the same place.
+if [ -d "${CROSS_USR}/share/netsurf" ]; then
+    mkdir -p "${ROOTFS}/usr/share/netsurf"
+    cp -rL "${CROSS_USR}/share/netsurf/." "${ROOTFS}/usr/share/netsurf/"
+fi
+cp "${SRC_DIR}/../xorg/netsurf-test.html" "${ROOTFS}/usr/share/netsurf/netsurf-test.html"
 
 # 14. terminfo database for xterm (the `x`/ directory only; the full ncurses DB
 #     is ~12 MB and unnecessary — xterm/linux/vt100 fallbacks are compiled into
