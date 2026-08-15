@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile the GTK2 pcmanfm file manager (+ its libfm core) for riscv64.
 #
 # pcmanfm 1.3.2 is the last GTK2 release of the LXDE file manager. Unlike
