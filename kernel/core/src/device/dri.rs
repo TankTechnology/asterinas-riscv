@@ -34,7 +34,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::{NoData, RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
 
@@ -293,18 +293,64 @@ struct DrmModeDestroyDumb {
     handle: u32,
 }
 
+/// `struct drm_mode_obj_get_properties`.
+///
+/// The three `__u32` fields after two `__u64`s leave 4 bytes of implicit
+/// trailing padding (the C `sizeof` is 32, not 28); model that explicitly so the
+/// struct stays `Pod`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1069>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeObjGetProperties {
+    props_ptr: u64,
+    prop_values_ptr: u64,
+    count_props: u32,
+    obj_id: u32,
+    obj_type: u32,
+    pad: u32,
+}
+
+/// `struct drm_mode_crtc_page_flip`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1424>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeCrtcPageFlip {
+    crtc_id: u32,
+    fb_id: u32,
+    flags: u32,
+    reserved: u32,
+    user_data: u64,
+}
+
+/// `struct drm_mode_fb_dirty_cmd`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1439>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeFbDirtyCmd {
+    fb_id: u32,
+    flags: u32,
+    color: u32,
+    num_clips: u32,
+    clips_ptr: u64,
+}
+
 mod ioctl_defs {
     use super::{
-        DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeDestroyDumb,
-        DrmModeFbCmd, DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb, DrmSetClientCap,
-        DrmVersion,
+        DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
+        DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
+        DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
-    use crate::util::ioctl::{InData, InOutData, ioc};
+    use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
     pub(super) type GetCap = ioc!(DRM_IOCTL_GET_CAP, b'd', 0x0c, InOutData<DrmGetCap>);
     pub(super) type SetClientCap = ioc!(DRM_IOCTL_SET_CLIENT_CAP, b'd', 0x0d, InData<DrmSetClientCap>);
+    pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
+    pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h>.
     pub(super) type ModeGetResources = ioc!(DRM_IOCTL_MODE_GETRESOURCES, b'd', 0xa0, InOutData<DrmModeCardRes>);
@@ -313,9 +359,12 @@ mod ioctl_defs {
     pub(super) type ModeGetEncoder = ioc!(DRM_IOCTL_MODE_GETENCODER, b'd', 0xa6, InOutData<DrmModeGetEncoder>);
     pub(super) type ModeGetConnector = ioc!(DRM_IOCTL_MODE_GETCONNECTOR, b'd', 0xa7, InOutData<DrmModeGetConnector>);
     pub(super) type ModeAddFb = ioc!(DRM_IOCTL_MODE_ADDFB, b'd', 0xae, InOutData<DrmModeFbCmd>);
+    pub(super) type ModePageFlip = ioc!(DRM_IOCTL_MODE_PAGE_FLIP, b'd', 0xb0, InOutData<DrmModeCrtcPageFlip>);
+    pub(super) type ModeDirtyFb = ioc!(DRM_IOCTL_MODE_DIRTYFB, b'd', 0xb1, InOutData<DrmModeFbDirtyCmd>);
     pub(super) type ModeCreateDumb = ioc!(DRM_IOCTL_MODE_CREATE_DUMB, b'd', 0xb2, InOutData<DrmModeCreateDumb>);
     pub(super) type ModeMapDumb = ioc!(DRM_IOCTL_MODE_MAP_DUMB, b'd', 0xb3, InOutData<DrmModeMapDumb>);
     pub(super) type ModeDestroyDumb = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB, b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
+    pub(super) type ModeObjGetProperties = ioc!(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, b'd', 0xb9, InOutData<DrmModeObjGetProperties>);
 }
 
 /// `DRM_IOCTL_MODE_RMFB` (`_IOWR('d', 0xaf, unsigned int)`).
@@ -505,11 +554,22 @@ impl DriHandle {
             return Ok(());
         }
 
+        self.present_fb(req.fb_id)
+    }
+
+    /// Presents a framebuffer on the scanout, copying its pixels to the host.
+    ///
+    /// Shared by `MODE_SETCRTC`, `MODE_PAGE_FLIP`, and `MODE_DIRTYFB`: all three
+    /// ultimately make a framebuffer visible, and virtio-gpu only pulls fresh
+    /// pixels during `TRANSFER_TO_HOST_2D` + `FLUSH`, so every present must
+    /// re-run that transfer (a guest-side mmap write alone is never seen by the
+    /// host display).
+    fn present_fb(&self, fb_id: u32) -> Result<()> {
         let (addr, size, width, height) = {
             let inner = self.inner.lock();
             let fb = inner
                 .framebuffers
-                .get(&req.fb_id)
+                .get(&fb_id)
                 .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
             let dumb = inner
                 .dumb_buffers
@@ -524,7 +584,7 @@ impl DriHandle {
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
 
         let mut inner = self.inner.lock();
-        inner.current_fb_id = Some(req.fb_id);
+        inner.current_fb_id = Some(fb_id);
         inner.current_width = width;
         inner.current_height = height;
         Ok(())
@@ -729,6 +789,53 @@ impl PerOpenFileOps for DriHandle {
                 let mut req = cmd.read()?;
                 req.fb_id = self.add_fb(&req)?;
                 cmd.write(&req)?;
+                Ok(0)
+            }
+            _cmd @ SetMaster => {
+                // We always grant DRM master to the first opener. There is no
+                // legacy DRI authentication to gate, so the only observable
+                // effect of master is that `SET_MASTER` succeeds, which the
+                // modesetting driver requires at startup.
+                Ok(0)
+            }
+            _cmd @ DropMaster => {
+                Ok(0)
+            }
+            cmd @ ModeObjGetProperties => {
+                let mut props = cmd.read()?;
+                // We advertise no KMS properties. The modesetting driver probes
+                // them to decide whether to use atomic/gamma/CTM paths; an empty
+                // set is valid and keeps it on the plain `SETCRTC`/`DIRTYFB`
+                // path. Return the count, leaving the (zero-length) arrays alone.
+                props.count_props = 0;
+                cmd.write(&props)?;
+                Ok(0)
+            }
+            cmd @ ModePageFlip => {
+                let req = cmd.read()?;
+                if req.crtc_id != CRTC_ID {
+                    return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
+                }
+                if req.fb_id == 0 {
+                    return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
+                }
+                self.present_fb(req.fb_id)?;
+                Ok(0)
+            }
+            cmd @ ModeDirtyFb => {
+                let req = cmd.read()?;
+                // The dirty clip rects are ignored: the framebuffer's pixels are
+                // already in guest memory, so we re-present the whole buffer to
+                // push the latest content to the host.
+                //
+                // `fb_id == 0` is the modesetting driver's *capability probe*
+                // (it calls `drmModeDirtyFB(fd, fb_id, NULL, 0)` before the first
+                // framebuffer exists). Returning success there keeps it on the
+                // dirty-update path; the real presents carry a valid id.
+                if req.fb_id == 0 {
+                    return Ok(0);
+                }
+                self.present_fb(req.fb_id)?;
                 Ok(0)
             }
             _ => {
