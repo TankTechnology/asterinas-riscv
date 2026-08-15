@@ -70,7 +70,7 @@ pub struct SoundDevice {
     /// Keeps the virtio transport alive for the device's lifetime. The control
     /// and TX queues borrow it during `init` and hold their own handles after
     /// `finish_init`, so this field is never read directly.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     transport: SpinLock<DeviceTransport>,
     control_queue: SpinLock<VirtQueue>,
     tx_queue: SpinLock<VirtQueue>,
