@@ -192,6 +192,8 @@ def main() -> int:
                         help="attach a virtio-net NIC via QEMU slirp user networking (guest 10.0.2.15/24, gw 10.0.2.2, dns 10.0.2.3)")
     parser.add_argument("--settle-seconds", type=float, default=0.0,
                         help="after the desktop is up, keep draining serial this long before the screendump (captures late-start units like NetSurf's network fetch)")
+    parser.add_argument("--init-timeout", type=float, default=300.0,
+                        help="max seconds to wait for the /init launcher marker; the kernel's 91 MB raw-cpio unpack + first-process spawn is non-deterministically slow under host contention (M5 §3.2 / M6 §3), so this must be generous")
     parser.add_argument("--loglevel", type=str, default="warn",
                         help="kernel log level passed via bootargs (e.g. warn|info|debug)")
     parser.add_argument("--mon-sock", type=Path, default=MON_SOCK,
@@ -249,7 +251,7 @@ def main() -> int:
                     boot.read_until(b"=> ", 30)
 
         print("[boot] waiting for /init launcher", flush=True)
-        boot.read_until(INIT_MARKER, 120)
+        boot.read_until(INIT_MARKER, args.init_timeout)
         print("[ok] /init reached (exec'ing systemd)", flush=True)
 
         # systemd runs forever; collect until the desktop is up or timeout.
@@ -277,6 +279,12 @@ def main() -> int:
     except TimeoutError as e:
         reached = "timeout"
         print(f"[boot] {e}", flush=True)
+    except RuntimeError as e:
+        # QEMU exited before we reached userspace (e.g. it crashed on launch or
+        # the kernel panicked and -no-reboot tore the machine down). Report and
+        # carry on to the screenshot/transcript tail instead of crashing.
+        reached = "serial-closed"
+        print(f"[boot] serial closed early: {e}", flush=True)
     finally:
         if args.settle_seconds > 0:
             print(f"[boot] settling {args.settle_seconds}s (draining serial)", flush=True)
