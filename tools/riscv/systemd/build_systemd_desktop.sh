@@ -192,11 +192,24 @@ else
 fi
 
 # 12. Fonts + fontconfig config for GTK2/pango text rendering.
+#     Bundle the Liberation families (Sans/Serif/Mono, each Regular/Bold/Italic/
+#     BoldItalic) so pango/GTK2 can resolve real serif + monospace faces and
+#     bold/italic variants, rather than collapsing every generic family onto a
+#     single Adwaita Sans Regular (the M5 state). Liberation is metrically
+#     compatible with Arial/Times/Courier. Keep Adwaita Sans as an extra face.
+FONT_SRC="/usr/share/fonts/liberation"
+FONT_DST="${ROOTFS}/usr/share/fonts/liberation"
+if [ -d "${FONT_SRC}" ]; then
+    mkdir -p "${FONT_DST}"
+    cp "${FONT_SRC}"/LiberationSans-*.ttf   "${FONT_DST}/" 2>/dev/null
+    cp "${FONT_SRC}"/LiberationSerif-*.ttf  "${FONT_DST}/" 2>/dev/null
+    cp "${FONT_SRC}"/LiberationMono-*.ttf   "${FONT_DST}/" 2>/dev/null
+else
+    echo "WARNING: ${FONT_SRC} not found; GTK2 text will be empty" >&2
+fi
 HOST_FONT="/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf"
 if [ -f "${HOST_FONT}" ]; then
     cp "${HOST_FONT}" "${ROOTFS}/usr/share/fonts/AdwaitaSans-Regular.ttf"
-else
-    echo "WARNING: ${HOST_FONT} not found; GTK2 text will be empty" >&2
 fi
 cp "${SRC_DIR}/../xorg/fonts.conf" "${ROOTFS}/etc/fonts/fonts.conf"
 
@@ -268,6 +281,15 @@ mkdir -p "${ROOTFS}/root/.netsurf"
 cp "${SRC_DIR}/../xorg/netsurf-home.html"   "${ROOTFS}/usr/share/netsurf/netsurf-home.html"
 cp "${SRC_DIR}/../xorg/netsurf-hotlist.html" "${ROOTFS}/root/.netsurf/Hotlist"
 cp "${SRC_DIR}/../xorg/netsurf-choices"      "${ROOTFS}/root/.netsurf/Choices"
+
+# 13f. Local image-render test page + its in-page images (PNG/JPEG/GIF at sizes
+#      straddling the 4 KiB speculative-decode threshold). file:// only — no
+#      network — so it exercises the in-page <img> decode path deterministically.
+if [ -f "${SRC_DIR}/../xorg/netsurf-imagetest.html" ]; then
+    cp "${SRC_DIR}/../xorg/netsurf-imagetest.html" "${ROOTFS}/usr/share/netsurf/netsurf-imagetest.html"
+    mkdir -p "${ROOTFS}/usr/share/netsurf/imgtest"
+    cp "${SRC_DIR}/../xorg/imgtest/"img-* "${ROOTFS}/usr/share/netsurf/imgtest/" 2>/dev/null || true
+fi
 
 # Optional per-site start URL (render-matrix testing): if NETSURF_URL is set in
 # the environment, bake it into /etc/netsurf.conf so the unit's EnvironmentFile
