@@ -8,6 +8,7 @@ pub mod block;
 pub mod console;
 pub mod entropy;
 pub mod filesystem;
+pub mod gpu;
 pub mod input;
 pub mod network;
 pub mod socket;
