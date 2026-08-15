@@ -194,22 +194,27 @@ def main() -> int:
                         help="after the desktop is up, keep draining serial this long before the screendump (captures late-start units like NetSurf's network fetch)")
     parser.add_argument("--loglevel", type=str, default="warn",
                         help="kernel log level passed via bootargs (e.g. warn|info|debug)")
+    parser.add_argument("--mon-sock", type=Path, default=MON_SOCK,
+                        help="QEMU monitor socket path (override to boot several guests in parallel)")
+    parser.add_argument("--smp", type=int, default=1,
+                        help="guest vCPU count (bump to 4 for faster guest execution)")
     args = parser.parse_args()
 
     boot_disk = args.boot_disk
+    mon_sock = args.mon_sock
     if not UBOOT.exists():
         raise SystemExit(f"missing U-Boot: {UBOOT}")
     if not boot_disk.exists():
         raise SystemExit(f"missing boot disk: {boot_disk}")
-    if MON_SOCK.exists():
-        MON_SOCK.unlink()
+    if mon_sock.exists():
+        mon_sock.unlink()
 
     argv = [
         "qemu-system-riscv64",
         "-machine", "virt",
         "-cpu", "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
         "-m", "2G",
-        "-smp", "1",
+        "-smp", str(args.smp),
         "-display", "none",
         "-no-reboot",
         "-kernel", str(UBOOT),
@@ -219,7 +224,7 @@ def main() -> int:
         "-device", "virtio-keyboard-device",
         "-device", "virtio-tablet-device",
         "-serial", "stdio",
-        "-monitor", f"unix:{MON_SOCK},server,nowait",
+        "-monitor", f"unix:{mon_sock},server,nowait",
     ]
     if args.net:
         argv.extend([
@@ -281,7 +286,7 @@ def main() -> int:
                     boot._drain(1.0)
                 except RuntimeError:
                     break
-        screendump(MON_SOCK, args.screenshot)
+        screendump(mon_sock, args.screenshot)
         boot.close()
 
     raw = bytes(boot.transcript)
