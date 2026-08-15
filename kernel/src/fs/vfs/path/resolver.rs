@@ -418,10 +418,7 @@ impl PathResolver {
         // be the namespace root mount: pivoting off the initramfs rootfs is
         // the canonical use case.
         if new_root_path.mount.parent().is_none() {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "`new_root` is on the rootfs mount"
-            );
+            return_errno_with_message!(Errno::EINVAL, "`new_root` is on the rootfs mount");
         }
         let mut topology_guard = MountTopology::write_lock();
 
@@ -440,11 +437,7 @@ impl PathResolver {
 
         // Capture the old root's parent and mountpoint before grafting, since
         // `graft_mount_tree` mutates the parent link.
-        let old_root_parent = self
-            .root
-            .mount
-            .parent()
-            .and_then(|parent| parent.upgrade());
+        let old_root_parent = self.root.mount.parent().and_then(|parent| parent.upgrade());
         let old_root_mountpoint = self.root.mount.mountpoint();
 
         self.root
@@ -461,9 +454,7 @@ impl PathResolver {
             // The old root is the namespace root mount (e.g. the initramfs
             // rootfs), which has no parent. `new_root` simply becomes the new
             // root mount.
-            new_root_path
-                .mount
-                .detach_from_parent(&mut topology_guard);
+            new_root_path.mount.detach_from_parent(&mut topology_guard);
         }
 
         // Release the mount topology lock before taking other threads' resolver locks.

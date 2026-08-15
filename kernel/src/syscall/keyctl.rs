@@ -27,8 +27,12 @@ fn session_keyring_serial() -> u32 {
         return serial;
     }
     let candidate = alloc_serial();
-    match SESSION_KEYRING_SERIAL.compare_exchange(0, candidate, Ordering::Relaxed, Ordering::Relaxed)
-    {
+    match SESSION_KEYRING_SERIAL.compare_exchange(
+        0,
+        candidate,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    ) {
         Ok(_) => candidate,
         Err(existing) => existing,
     }
@@ -96,9 +100,7 @@ pub fn sys_keyctl(
 
     match option {
         KEYCTL_GET_KEYRING_ID => Ok(SyscallReturn::Return(session_keyring_serial() as isize)),
-        KEYCTL_JOIN_SESSION_KEYRING => {
-            Ok(SyscallReturn::Return(session_keyring_serial() as isize))
-        }
+        KEYCTL_JOIN_SESSION_KEYRING => Ok(SyscallReturn::Return(session_keyring_serial() as isize)),
         KEYCTL_REVOKE => {
             // Keys are never retained, so there is nothing to revoke.
             Ok(SyscallReturn::Return(0))
