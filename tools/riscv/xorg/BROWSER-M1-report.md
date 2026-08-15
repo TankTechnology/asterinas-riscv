@@ -1,7 +1,7 @@
 # BROWSER M1 — NetSurf 3.9 (GTK2) cross-compiled for the Asterinas RISC-V desktop
 
 **Status:** milestone reached — `netsurf-gtk` renders a local HTML page on the
-systemd desktop
+systemd desktop, **with CSS colour styling confirmed** (M2 follow-up, see §9)
 **Date:** 2026-08-15
 **Scope:** evaluate the lightweight browser NetSurf's build dependencies against
 the existing `riscv64` cross prefix, cross-compile the feasible subset, and run the
@@ -182,13 +182,12 @@ the desktop with its four windows: a large white region (88%), the `#202028`
 xpanel bar, `#DCDAD5` GTK chrome, `#496179` matchbox titlebars, and ~12.5 k black
 pixels of rendered text.
 
-**Status: NetSurf runs and renders the local HTML's text content.** The one thing
-not confirmed visually is the CSS *colour* styling — the test page's `body
-{ background: #f4e8d0 }` and `h1 { color: #1a4f8b }` do not appear in the
-histogram (the page background reads white). This is either a libcss 0.9.0 gap on
-those declarations or the UA `default.css` overriding them; `netsurf.service` now
-routes `StandardOutput/Error=tty` so NetSurf's own fetch/render log is captured on
-the next boot to pin it down (see §8).
+**Status: NetSurf was actually crash-looping here, not rendering.** This section's
+original conclusion ("renders the local HTML's text content") was wrong — the
+~12.5 k black pixels were xterm/pcmanfm text, not NetSurf. With `Restart=always`
+and `StandardOutput=null` at the time, the respawn loop was invisible in the
+serial log. The M2 follow-up (§9) routed NetSurf's log to serial and found two
+startup crashes; both are fixed and CSS colour styling now renders.
 
 ---
 
@@ -198,10 +197,10 @@ the next boot to pin it down (see §8).
   fetch is unavailable (only `file://`, `about:`, `data:`, `resource:`). Enabling
   it needs an OpenSSL static cross-build (and `NETSURF_USE_CURL := YES`), plus a CA
   bundle in the rootfs.
-- **CSS colour styling unconfirmed.** Text renders but the `<style>` block's
-  colours do not appear in the screenshot; investigate whether libcss 0.9.0 drops
-  those declarations or `default.css` overrides them (next boot now logs NetSurf's
-  render output to the serial console for diagnosis).
+- **CSS colour styling — RESOLVED (M2).** The absent colours were not a libcss
+  gap: NetSurf was crash-looping and never drew a window. Once the two startup
+  crashes (§9) were fixed, the screenshot shows `body` cream (`#f4e8d0`), the
+  `h1`/`.banner` blue (`#1a4f8b`), and the `th` grey (`#dcdad5`) all render.
 - **No JavaScript.** `NETSURF_USE_DUKTAPE := NO` avoids the `nsgenbind` host tool.
 - **No SVG via librsvg** (libsvgtiny covers a small SVG subset instead) and no
   WEBP.
@@ -210,7 +209,80 @@ the next boot to pin it down (see §8).
 
 ---
 
-## 9. Artifacts
+## 9. M2 follow-up: two startup crashes (and the fix)
+
+M1 shipped believing NetSurf "rendered the text" (§7.2). Routing NetSurf's log to
+serial (075bc5552) plus a `-v` flag in `netsurf.service` revealed the truth:
+`nsgtk` was exiting with status 1 on startup and systemd's `Restart=always` was
+respawn-looping it (`restart counter is at 11`). It never opened a window — the
+screenshot's text was xterm/pcmanfm. Two independent causes:
+
+### 9.1 Missing `accelerators` resource
+
+With `NETSURF_USE_GRESOURCE := NO`, every resource must exist as a *file* on the
+resource path. `nsgtk_init_resources()` iterates the `direct_resource[]` table and
+fails hard on the first miss:
+
+```
+(…) frontends/gtk/resources.c:251 init_resource: Unable to find resource accelerators on resource path
+GTK resources failed to initialise (NotFound)
+netsurf.service: Main process exited, code=exited, status=1/FAILURE
+```
+
+`accelerators` is in the source (`frontends/gtk/res/accelerators`) and in the
+gresource XML, but the upstream `install-gtk` target's `GTK_RESOURCES_LIST` omits
+it — upstream never notices because gresource builds embed it. Fix:
+`build_netsurf.sh` now installs the file explicitly.
+
+### 9.2 Static GTK + GtkBuilder lazy type resolution
+
+After §9.1, NetSurf got further but died on the first `.ui` file:
+
+```
+(…) nsgtk_builder_new_from_resname: Unable to add UI builder … tabcontents.gtk2.ui "Invalid object type `GtkStatusbar'"
+(…) gui_window_create: Tab contents UI builder init failed
+NetSurf gtk initialise failed (BadParameter)
+```
+
+`GtkBuilder` resolves widget types lazily: `g_type_from_name("GtkStatusbar")`
+misses (never registered), then `_gtk_builder_resolve_type_lazily()` does
+`g_module_symbol("gtk_statusbar_get_type")` (dlsym). NetSurf never calls
+`GtkStatusbar` directly (it's only in the `.ui`), so the static linker dropped
+`gtkstatusbar.o` from the binary — verified: the `"GtkStatusbar"` type-name string
+was absent from `nsgtk` while `"GtkHPaned"`/`"GtkLayout"` (which NetSurf *does*
+touch) were present. Fix: link the frontend with
+
+```
+-Wl,--export-dynamic -Wl,--whole-archive -lgtk-x11-2.0 -Wl,--no-whole-archive
+```
+
+`--whole-archive` force-includes every libgtk object (adding only ~0.8 MB — the
+previously-dropped widget objects), and `--export-dynamic` exposes their
+`*_get_type` symbols to `dlsym`. All `.ui`-only types (`GtkStatusbar`,
+`GtkHPaned`, `GtkLayout`, …) now resolve. (Note: the `LDFLAGS` change does not
+invalidate make's dependency graph, so the stale binary must be deleted before
+relinking.)
+
+### 9.3 Result
+
+After both fixes the boot log shows the full fetch/render pipeline completing
+without a restart:
+
+```
+content__init: url file:///usr/share/netsurf/netsurf-test.html
+html_css_new_stylesheets: 3 fetches active
+content__init: url x-ns-css:0            ← the inline <style> block
+html_convert_css_callback: done stylesheet slot 4 'x-ns-css:0'
+html_box_convert_done: Done XML to box
+content_scaled_redraw: Content … 272x234
+```
+
+and the screenshot histogram now contains the author CSS colours (vs. M1's all
+white/black): cream `#f4e8d0` (180 k px), blue `#1a4f8b` (34 k px), grey
+`#dcdad5` (84 k px). libcss 0.9.0 parses and applies the `<style>` block
+correctly; the M1 "CSS colour" mystery was entirely the crash-loop.
+
+## 10. Artifacts
 
 | file | what it is |
 |---|---|
