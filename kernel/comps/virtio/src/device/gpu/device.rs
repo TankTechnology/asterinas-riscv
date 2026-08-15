@@ -5,8 +5,9 @@
 //! This MVP targets the 2D control-queue path: create a single 2D resource,
 //! attach guest memory as its backing store, present it as scanout 0, then push
 //! a test pattern to the host via `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH`.
-//! The cursor queue, EDID, and the virgl 3D path are deliberately left dormant,
-//! mirroring the scope of the initial DRM bring-up.
+//! The cursor queue drives the hardware cursor (`UPDATE_CURSOR`/`MOVE_CURSOR`),
+//! while EDID and the virgl 3D path are deliberately left dormant, mirroring the
+//! scope of the initial DRM bring-up.
 
 use alloc::{format, sync::Arc, vec::Vec};
 use core::{
@@ -21,13 +22,15 @@ use ostd::{
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
-    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
-    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
+    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
+    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+    VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
+    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR,
+    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+    VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
+    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d,
+    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
 };
 use crate::{
@@ -60,10 +63,13 @@ pub struct GpuDevice {
     #[expect(dead_code)]
     transport: SpinLock<DeviceTransport>,
     control_queue: SpinLock<VirtQueue>,
-    /// The cursor queue is set up for spec compliance but unused by the 2D MVP.
-    #[expect(dead_code)]
+    /// The cursor queue carries the hardware-cursor commands
+    /// (`UPDATE_CURSOR`/`MOVE_CURSOR`).
     cursor_queue: SpinLock<VirtQueue>,
     control_buf: Arc<DmaStream>,
+    /// Cursor-queue buffer, mirroring the control buffer's request/response
+    /// layout (the cursor request/response are both smaller than one page).
+    cursor_buf: Arc<DmaStream>,
     /// Backing memory of the scanout resource, in B8G8R8X8.
     framebuffer: Arc<DmaStream>,
     scanout_width: u32,
@@ -71,7 +77,9 @@ pub struct GpuDevice {
     /// Resource id of the most recent framebuffer presented via
     /// [`present_framebuffer`], tracked so it can be unref'd before the next one.
     present_resource: SpinLock<Option<u32>>,
-    /// Next resource id handed out by [`present_framebuffer`].
+    /// Resource id of the most recent cursor presented via [`present_cursor`].
+    cursor_resource: SpinLock<Option<u32>>,
+    /// Next resource id handed out by [`present_framebuffer`] / [`present_cursor`].
     next_resource_id: AtomicU32,
 }
 
@@ -90,6 +98,8 @@ impl GpuDevice {
         let mut control_queue = VirtQueue::new(VQ_CONTROL, QUEUE_SIZE, device_transport.as_mut())?;
         let cursor_queue = VirtQueue::new(VQ_CURSOR, QUEUE_SIZE, device_transport.as_mut())?;
         let control_buf =
+            Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+        let cursor_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
 
         // Mark the device ready before issuing the first control request.
@@ -116,10 +126,12 @@ impl GpuDevice {
             control_queue: SpinLock::new(control_queue),
             cursor_queue: SpinLock::new(cursor_queue),
             control_buf,
+            cursor_buf,
             framebuffer,
             scanout_width,
             scanout_height,
             present_resource: SpinLock::new(None),
+            cursor_resource: SpinLock::new(None),
             // Resource id 1 is reserved for the boot-time test pattern.
             next_resource_id: AtomicU32::new(2),
         });
@@ -166,7 +178,7 @@ impl GpuDevice {
         }
 
         let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
-        self.resource_create_2d(resource_id, width, height)?;
+        self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
         self.attach_backing(resource_id, addr, size)?;
 
         let r = VirtioGpuRect {
@@ -183,6 +195,85 @@ impl GpuDevice {
         Ok(())
     }
 
+    /// Presents an externally-owned guest buffer as the hardware cursor.
+    ///
+    /// Creates an ARGB 2D resource of `width`x`height`, attaches `addr`/`size`
+    /// of guest memory as its backing store, and shows it at the origin via
+    /// `UPDATE_CURSOR`. Unlike the scanout path there is no
+    /// `TRANSFER_TO_HOST_2D`: the host reads the cursor pixels straight out of
+    /// the attached backing memory, so a guest-side mmap write is visible
+    /// immediately. Any previously presented cursor resource is unref'd first.
+    pub fn present_cursor(
+        &self,
+        addr: u64,
+        size: u32,
+        width: u32,
+        height: u32,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        if let Some(prev) = *self.cursor_resource.lock() {
+            let _ = self.resource_unref(prev);
+        }
+
+        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
+        self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, width, height)?;
+        self.attach_backing(resource_id, addr, size)?;
+        self.update_cursor(resource_id, 0, 0, hot_x, hot_y)?;
+
+        *self.cursor_resource.lock() = Some(resource_id);
+        Ok(())
+    }
+
+    /// Repositions the hardware cursor to (`x`, `y`).
+    pub fn move_cursor(&self, x: u32, y: u32) -> Result<(), VirtioDeviceError> {
+        self.send_cursor(VIRTIO_GPU_CMD_MOVE_CURSOR, 0, x, y, 0, 0)
+    }
+
+    /// Hides the hardware cursor (resource id 0 disables the cursor overlay).
+    pub fn hide_cursor(&self) -> Result<(), VirtioDeviceError> {
+        self.send_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, 0, 0)
+    }
+
+    /// Shows the cursor resource at the origin with the given hotspot.
+    fn update_cursor(
+        &self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        self.send_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, resource_id, x, y, hot_x, hot_y)
+    }
+
+    /// Sends a cursor-queue command (`UPDATE_CURSOR` or `MOVE_CURSOR`).
+    fn send_cursor(
+        &self,
+        type_: u32,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = VirtioGpuUpdateCursor {
+            hdr: ctrl_hdr(type_),
+            pos: VirtioGpuCursorPos {
+                scanout_id: SCANOUT_ID,
+                x,
+                y,
+                padding: 0,
+            },
+            resource_id,
+            hot_x,
+            hot_y,
+            padding: 0,
+        };
+        let mut queue = self.cursor_queue.lock();
+        cursor_cmd(&mut queue, &self.cursor_buf, &req)
+    }
+
     /// Renders the test pattern and presents it on scanout 0.
     ///
     /// This is the full 2D pipeline: create the resource, attach backing
@@ -196,7 +287,12 @@ impl GpuDevice {
     }
 
     fn do_render_test_pattern(&self) -> Result<(), VirtioDeviceError> {
-        self.resource_create_2d(RESOURCE_ID, self.scanout_width, self.scanout_height)?;
+        self.resource_create_2d(
+            RESOURCE_ID,
+            VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+            self.scanout_width,
+            self.scanout_height,
+        )?;
         ostd::info!("virtio-gpu: RESOURCE_CREATE_2D ok");
 
         let backing_len = self.scanout_width as usize * self.scanout_height as usize * BPP;
@@ -238,13 +334,14 @@ impl GpuDevice {
     fn resource_create_2d(
         &self,
         resource_id: u32,
+        format: u32,
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
         let req = VirtioGpuResourceCreate2d {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
             resource_id,
-            format: VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+            format,
             width,
             height,
         };
@@ -457,6 +554,50 @@ fn control_cmd<T: ostd_pod::Pod>(
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.write_val(0, req).unwrap();
     submit_control(queue, buf, req_len, resp_len)
+}
+
+/// Submits a cursor-queue request and waits for the device to return the buffer.
+///
+/// Unlike [`submit_control`], this does not require a response body: QEMU
+/// recycles cursor-queue buffers with a zero-length used entry (Linux's
+/// `virtio_gpu_dequeue_cursor_func` likewise ignores the cursor response
+/// length), so the buffer coming back is the only completion signal.
+fn submit_cursor(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+) -> Result<(), VirtioDeviceError> {
+    let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
+    req_slice.sync_to_device().unwrap();
+
+    let resp_len = size_of::<VirtioGpuCtrlHdr>();
+    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
+    queue
+        .add_dma_bufs(&[&req_slice], &[&resp_slice])
+        .expect("add cursor queue buffers");
+    if queue.should_notify() {
+        queue.notify();
+    }
+
+    loop {
+        if queue.pop_used().is_ok() {
+            break;
+        }
+        spin_loop();
+    }
+    Ok(())
+}
+
+/// Sends a fixed-size cursor request and waits for its completion.
+fn cursor_cmd<T: ostd_pod::Pod>(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req: &T,
+) -> Result<(), VirtioDeviceError> {
+    let req_len = size_of::<T>();
+    let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
+    req_slice.write_val(0, req).unwrap();
+    submit_cursor(queue, buf, req_len)
 }
 
 /// Queries the display info and returns the first enabled scanout's dimensions.

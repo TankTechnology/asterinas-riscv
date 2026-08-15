@@ -169,6 +169,32 @@ pub struct VirtioGpuResourceUnref {
     pub padding: u32,
 }
 
+/// Cursor position for `UPDATE_CURSOR` / `MOVE_CURSOR` (5.7.6.7.1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCursorPos {
+    pub scanout_id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub padding: u32,
+}
+
+/// `UPDATE_CURSOR` / `MOVE_CURSOR` request (5.7.6.7).
+///
+/// `MOVE_CURSOR` only reads the `hdr` + `pos` prefix; the trailing fields are
+/// ignored by the device but always sent (matching Linux's cursor ping, which
+/// queues the full struct for both commands).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuUpdateCursor {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub pos: VirtioGpuCursorPos,
+    pub resource_id: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub padding: u32,
+}
+
 /// One scanout entry of a display-info response (5.7.6.6.1).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
