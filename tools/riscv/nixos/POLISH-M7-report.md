@@ -1,13 +1,14 @@
 # POLISH-M7 — ALSA in the full systemd system, LTP re-baseline, PR flow
 
-Date: 2026-08-15
+Date: 2026-08-16
 Branch: `track/nixos`
 Status: **`aplay` plays a tone inside the full systemd system (getty → login →
-shell), not just the minimal busybox initramfs.** The LTP failure set was
-re-baselined against the current kernel and re-classified: 4 of the M5 "genuine
-bugs" are already fixed, 3 more are musl-libc semantics (not kernel bugs), and
-only 4 genuine kernel bugs remain. The ALSA PCM ioctl ABI was flowed to `main`
-as a stacked PR.
+shell).** The LTP failure set is now fully triaged: the last "genuine kernel
+bug" (`sendfile07`) turned out to be a slow-fill timeout under QEMU TCG, not a
+bug — **zero genuine kernel bugs remain**. The remaining failures are musl-libc
+semantics (5), missing kernel features (loop device, new mount API), DNS, and
+slow-fork/slow-fill perf timeouts. ALSA PCM ioctl ABI + the `iovec`/`sched`
+kernel fixes were flowed to `main` as PRs.
 
 ---
 
@@ -110,14 +111,19 @@ This is confirmed by disassembly: musl's `sbrk` is literally
 |---|---|---|
 | `pwrite02` / `pwrite02_64` | **FIXED** (`89216fa1e`) | `pwrite(fd, NULL, n, off)` returned 0 not `EFAULT`. Root cause was **not** the page-cache write path (that already propagates the fallible read's `PageFault`): musl's `pwrite()` is `pwritev2` (SYS 287), and `IoVec::is_empty()` treated a `NULL` `iov_base` (`base == 0`) as an empty buffer and silently *dropped* the iovec, so the `{NULL, n}` buffer became a zero-length write. Fixed by making `is_empty()` only check `len == 0`. |
 | `sched_setscheduler04` | **re-classified: musl semantics** (not a kernel bug) | `SCHED_FIFO`/`SCHED_RR` were already implemented, and `SCHED_RESET_ON_FORK` is now implemented too (`538ed5168`). But the test's final check uses musl's **library** `sched_getscheduler()`/`sched_getparam()`, and on riscv64 musl ships these as `ENOSYS` stubs (disassembly: `li a0,-38; jal __syscall_ret` — they make no syscall). So the assertion `sched_getscheduler(pid) == SCHED_NORMAL` can never pass, independent of kernel behaviour. Same class as `readlink03`/`sbrk01`. |
-| `sendfile07` / `sendfile07_64` | **TIMEOUT (both variants)** | Both hang; the M7 "32-bit `sendfile07` passes" was stale. The test fills a non-blocking `SOCK_DGRAM` UNIX socketpair until `write()` returns `EAGAIN`, then expects `sendfile(out_fd, …)` to return `EAGAIN`. Root cause still open (UNIX datagram socket `write`/`sendfile` interaction). |
+| `sendfile07` / `sendfile07_64` | **re-classified: slow-fill timeout (perf, not a bug)** — see §2.7 | Not a hang and not a correctness bug. A focused probe proves the kernel returns `EAGAIN` correctly: the fill loop reaches `EAGAIN` at write #65536 and `sendfile(out_fd, …)` returns `-1/EAGAIN`. The "TIMEOUT" is the test's own 30 s watchdog killing it because the fill loop (65536 one-byte `write()`s into a 64 KiB `SOCK_DGRAM` buffer, ~1.2 ms per write under QEMU TCG) takes ~80–100 s. Fixed in the runner by honouring `LTP_TIMEOUT_MUL`. |
 
-### 2.5 Re-classified: `access02` is an env gap, not a kernel bug
+### 2.5 Re-classified: `access02` is an env gap, not a kernel bug — and is now fixed
 
 `access(file, X_OK)` returns **0** (correct — verified in the repro). The test's
 `X_OK` case then *shells out* via `system("./file_x")` (the target is a
-`#!/bin/sh` script), and the LTP initramfs has no `/bin/sh`. Same class as
+`#!/bin/sh` script), and the LTP initramfs had no `/bin/sh`. Same class as
 `posix_fadvise03` (no `/bin/cat`) and `setrlimit04` (no `/bin/true`).
+
+**Fixed this session**: `build_ltp.sh` now layers a static busybox
+(`tools/riscv/nixos/build_busybox.sh` output) plus `/bin/{sh,cat,true,echo,test}`
+symlinks into the LTP rootfs. Verified: `access02`, `posix_fadvise03`,
+`posix_fadvise03_64`, `setrlimit04` all **PASS**.
 
 ### 2.6 Corrected tally of the 41 (post-fix)
 
@@ -125,14 +131,36 @@ This is confirmed by disassembly: musl's `sbrk` is literally
 |---|---|---|
 | Already fixed (stale log + this session) | 6 | timerfd01, pipe13, fork09, **pwrite02, pwrite02_64** |
 | musl semantics (not kernel) | 5 | readlink03, readlinkat02, sbrk01, gethostname02, **sched_setscheduler04** |
-| Env gaps (no `/dev/loop*`, `/bin/cat`, `/bin/true`, `/bin/sh`, DNS) | 22 | rename01/03/04/05/06/07/08/10/12/13/15, fsopen01/02, fsconfig01/02, fsmount01/02, posix_fadvise03(_64), setrlimit04, gethostbyname_r01, access02 |
-| **Genuine kernel bugs remaining** | **2** | sendfile07, sendfile07_64 |
-| Slow-fork timeouts (perf, not correctness) | 7 | fork06/07/11, chdir02, fcntl14(_64), epoll01 |
+| Env gaps (no `/dev/loop*`, DNS) | 15 | rename01/03/04/05/06/07/08/10/12/13/15, fsopen01/02, fsconfig01/02, fsmount01/02, gethostbyname_r01 |
+| Env gaps (missing shell-out helper) — **fixed this session** | 4 | posix_fadvise03(_64), setrlimit04, access02 |
+| Slow timeouts (perf, not correctness) — **`sendfile07` now passes** | 9 | sendfile07(_64), fork06/07/11, chdir02, fcntl14(_64), epoll01 |
+| **Genuine kernel bugs remaining** | **0** | — |
 
-The "genuine bug" list therefore shrank from ~10 (M5) to **1 distinct bug**:
-the `sendfile07` family (UNIX datagram socket `write`/`sendfile` interaction).
+After this session the "genuine bug" list is **empty**. The `sendfile07` family
+was the last holdout and turned out to be a slow-fill timeout, not a bug (§2.7).
 `pwrite` `EFAULT` is fixed; the scheduler gap was both implemented and shown to
 be musl-libc-stub on the test's assertion side.
+
+### 2.7 `sendfile07` root cause (resolved this session)
+
+The "both-hang" was a red herring — nothing hangs. A static-musl probe
+(`tools/riscv/nixos/ltp/sendfile_probe.c`) times the exact LTP path:
+
+- **fill loop**: `write(p[1], "a", 1)` × 65536 into a non-blocking
+  `SOCK_DGRAM` UNIX socketpair returns `EAGAIN` at write **#65536** (the 64 KiB
+  receive buffer fills exactly). ✅
+- **sendfile**: `sendfile(out_fd, in_fd, NULL, 1)` returns `-1/EAGAIN`
+  immediately. ✅ The kernel is correct end-to-end.
+
+The "TIMEOUT" is LTP's own 30 s watchdog (`tst_test.c:1944: Test killed!
+(timeout?)`). Each one-byte write is ~1.2 ms (vs a ~166 µs `getpid` syscall
+floor in this QEMU TCG), so the fill loop alone takes ~80 s (static) / >100 s
+(dynamic test binary + libltp.so). That is 3× LTP's default timeout.
+
+Fix (test-harness, no kernel change): `ltp_runner.c` now honours the
+`LTP_TIMEOUT_MUL` env var (default 8 → 4 min per test, matching LTP's own
+"slow machine" guidance) and raises its per-test watchdog to 300 s. Verified:
+`sendfile07` and `sendfile07_64` both **PASS**.
 
 ---
 
@@ -159,6 +187,10 @@ This session also flowed two new kernel fixes to `main`:
 
 Both were cherry-picked cleanly onto `origin/main` and build-verified.
 
+The `sendfile07` + shell-out-helper fixes this session are **test-harness
+changes** (in `tools/riscv/nixos/ltp/`), not kernel changes, so they do not need
+a PR to `main` — they live on `track/nixos` with the rest of the LTP tooling.
+
 ---
 
 ## 4. Files / commits
@@ -171,17 +203,20 @@ Both were cherry-picked cleanly onto `origin/main` and build-verified.
 - `89216fa1e` `fix(iovec)` — NULL `iov_base` with nonzero len faults `EFAULT`
   (fixes `pwrite02`/`pwrite02_64`).
 - `538ed5168` `feat(sched)` — `SCHED_RESET_ON_FORK` + fork policy inheritance.
+- (this session) `test(riscv): POLISH-M7 sendfile07 slow-fill + env-gap fixes` —
+  `ltp_runner.c` honours `LTP_TIMEOUT_MUL` (default 8) + 300 s watchdog;
+  `build_ltp.sh` layers busybox `/bin/{sh,cat,true}`; adds `sendfile_probe.c`
+  + `run_sendfile_probe.sh` (the root-cause probe).
 
 ---
 
 ## 5. Next steps
 
-1. **`sendfile07` hang** — the only remaining genuine bug. Both `sendfile07`
-   and `sendfile07_64` hang in the `SOCK_DGRAM` socketpair fill loop / `sendfile`
-   EAGAIN path; needs a focused probe of UNIX datagram `write` on a full
-   non-blocking socket.
-2. **slow-fork perf** — the fork06/07/11 + chdir02 + fcntl14 + epoll01 timeouts
+1. **slow-fork perf** — the fork06/07/11 + chdir02 + fcntl14 + epoll01 timeouts
    remain the same root as the SMP=4 fork hang (fork address-space cloning cost).
-3. Flow the two new kernel fixes (`iovec`, `sched`) to `main` as PRs; then
-   AUDIO-M3 (mmap/streaming) and AUDIO-M4 (mixer) build on the same `/dev/snd`
-   model.
+   `LTP_TIMEOUT_MUL=8` may now let some of these complete; re-baseline them.
+2. **loop-device + new mount API** — the rename* (`.mount_device=1`) and
+   fsopen/fsconfig/fsmount tests are the remaining "missing kernel feature"
+   failures; both are large features, low priority for the NixOS track.
+3. AUDIO-M3 (mmap/streaming) and AUDIO-M4 (mixer) build on the same `/dev/snd`
+   model already flowed to `main`.
