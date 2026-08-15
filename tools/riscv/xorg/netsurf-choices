@@ -1,1 +1,2 @@
 homepage_url:file:///usr/share/netsurf/netsurf-home.html
+curl_fetch_timeout:120
