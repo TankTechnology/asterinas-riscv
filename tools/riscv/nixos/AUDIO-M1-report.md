@@ -77,6 +77,11 @@ virtio-sound device was discovered at boot.
    audio driver)` for the capture stream — non-fatal, expected for a playback-only
    MVP. Capture verification will need an input-capable backend (e.g. `pa`/`alsa`
    or a `wav`-like input source).
+4. **QEMU's `wav` backend leaves the RIFF and `data` chunk sizes at 0.** It
+   streams and never finalizes them on teardown, so Python's `wave` (3.14)
+   rejects the file (`not a WAVE file`) and some players truncate it. The harness
+   rewrites those two size fields (`_riff_header_fix`) into a `.playable.wav`
+   copy so the output is actually playable; byte-count checks are unaffected.
 
 ## Verification
 
@@ -95,6 +100,38 @@ __AUDIO_DONE__ __AUDIO_PASS__
 ```
 
 Run: `bash tools/riscv/nixos/audio/audio-gate.sh [--rebuild-kernel]`.
+
+## 出声 (audible-tone) verification
+
+Byte count alone only proves bytes *left* the guest — a stream of 192 000 zero
+bytes would pass. To prove *sound actually came out*, `boot_audio.py` now runs a
+second pass (`verify_tone`) that decodes the host WAV and asserts both amplitude
+and pitch:
+
+```
+=== AUDIO-M1 audible-tone verification ===
+  fmt          : 2 ch, 48000 Hz, 16-bit, 48000 frames
+  amplitude    : RMS=11584.1  peak=16383 (min RMS 2000)
+  pitch        : 439.5 Hz (expect 440 ± 12)
+  playable copy: target/nixos/audio/audio-out.wav.playable.wav
+  audible tone : OK
+```
+
+- **Amplitude** — RMS 11584 / peak 16383, matching the guest's `16383*sin(...)`
+  synthesis (0.5 full-scale). The `min RMS 2000` floor rejects silence/zero-fill.
+- **Pitch** — dominant frequency estimated via zero crossings (deterministic for
+  a pure tone): 439.5 Hz against an expected 440 ± 12 Hz.
+- **Playable copy** — `_riff_header_fix` fills in the left-at-zero chunk sizes so
+  the WAV opens in `ffprobe`/`aplay`/`ffplay` (`ffprobe` reports
+  `pcm_s16le, 48000 Hz, 2 ch, 1.000 s`). `--play` additionally plays it on the
+  host via `aplay`/`paplay`.
+
+The gate now requires `audible tone: OK` (not just byte count) to report PASS.
+
+### SMP note
+
+`smp=4` boots but hangs during the first virtio-block read (the known SMP=4
+issue — see `nixos-ltp-status`), unrelated to audio. Verification uses `smp=1`.
 
 ## Next steps (AUDIO-M2+)
 
@@ -122,3 +159,14 @@ now fixed:
    resolver, keyctl, seccomp, syscall mod), and `fanotify.rs` had an unresolved
    `FsEventPublisher` intra-doc link. Fixed in a separate chore PR (#36,
    branch `chore/fmt-nightly`) so the sound PR stays focused.
+3. **Still red, still pre-existing on `main`** (not fixed by #35/#36, tolerated
+   by the maintainer — e.g. #34 merged with identical failures):
+   - `check-license-lines` — eight `tools/riscv/{systemd,xorg}` build scripts
+     lack the MPL-2.0 SPDX header. Fixed in chore PR **#37**
+     (`chore/license-headers`).
+   - `basic-test (lint)` / clippy — new lints (`is_multiple_of`, field order,
+     unnecessary cast, collapsible if) on the loongarch64 target, in code my PRs
+     don't touch.
+   - `basic-test (ktest)` / `integration-test` (release) — `ostd` inline-asm
+     `RISC-V Image header must be exactly 64 bytes` (the known `--release` +
+     `riscv_sv39_mode` issue, see `riscv-boot-build-config`).
