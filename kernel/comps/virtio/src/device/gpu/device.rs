@@ -11,7 +11,7 @@
 use alloc::{format, sync::Arc, vec::Vec};
 use core::{
     hint::spin_loop,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
 use aster_util::mem_obj_slice::Slice;
@@ -22,12 +22,13 @@ use ostd::{
 
 use super::{
     MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
-    VirtioGpuCtrlHdr, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
+    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuSetScanout, VirtioGpuTransferToHost2d, config::VirtioGpuConfig,
+    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d,
+    config::VirtioGpuConfig,
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
@@ -67,6 +68,11 @@ pub struct GpuDevice {
     framebuffer: Arc<DmaStream>,
     scanout_width: u32,
     scanout_height: u32,
+    /// Resource id of the most recent framebuffer presented via
+    /// [`present_framebuffer`], tracked so it can be unref'd before the next one.
+    present_resource: SpinLock<Option<u32>>,
+    /// Next resource id handed out by [`present_framebuffer`].
+    next_resource_id: AtomicU32,
 }
 
 impl GpuDevice {
@@ -113,6 +119,9 @@ impl GpuDevice {
             framebuffer,
             scanout_width,
             scanout_height,
+            present_resource: SpinLock::new(None),
+            // Resource id 1 is reserved for the boot-time test pattern.
+            next_resource_id: AtomicU32::new(2),
         });
 
         register_device(
@@ -135,6 +144,43 @@ impl GpuDevice {
     /// Returns the scanout height in pixels.
     pub fn height(&self) -> u32 {
         self.scanout_height
+    }
+
+    /// Presents an externally-owned guest buffer as scanout 0.
+    ///
+    /// Runs the full 2D pipeline for a caller-provided framebuffer: create a
+    /// resource, attach `addr`/`size` of guest memory as its backing store, set
+    /// it as scanout 0, transfer the pixels to the host, and flush. Any
+    /// previously presented resource is unref'd first so repeated present calls
+    /// (e.g. page flips or mode switches) do not leak resources.
+    pub fn present_framebuffer(
+        &self,
+        addr: u64,
+        size: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        if let Some(prev) = *self.present_resource.lock() {
+            // Best-effort cleanup: a stale resource id must not wedge a later present.
+            let _ = self.resource_unref(prev);
+        }
+
+        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
+        self.resource_create_2d(resource_id, width, height)?;
+        self.attach_backing(resource_id, addr, size)?;
+
+        let r = VirtioGpuRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        self.set_scanout(SCANOUT_ID, resource_id, r)?;
+        self.transfer_to_host_2d(resource_id, r, 0)?;
+        self.flush(resource_id, r)?;
+
+        *self.present_resource.lock() = Some(resource_id);
+        Ok(())
     }
 
     /// Renders the test pattern and presents it on scanout 0.
@@ -299,6 +345,22 @@ impl GpuDevice {
         let req = VirtioGpuResourceFlush {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
             r,
+            resource_id,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    fn resource_unref(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
+        let req = VirtioGpuResourceUnref {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_UNREF),
             resource_id,
             padding: 0,
         };
