@@ -8,6 +8,7 @@ pub mod misc;
 mod pty;
 mod registry;
 mod shm;
+mod snd;
 pub mod tty;
 
 use alloc::borrow::Cow;
