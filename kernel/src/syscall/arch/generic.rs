@@ -88,6 +88,7 @@ macro_rules! import_generic_syscall_entries {
             mremap::sys_mremap,
             msync::sys_msync,
             munmap::sys_munmap,
+            name_to_handle_at::{sys_name_to_handle_at, sys_open_by_handle_at},
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
             openat2::sys_openat2,
@@ -173,7 +174,6 @@ macro_rules! import_generic_syscall_entries {
             statx::sys_statx,
             symlink::sys_symlinkat,
             sync::{sys_sync, sys_syncfs},
-            sync_file_range::sys_sync_file_range2,
             sysinfo::sys_sysinfo,
             tgkill::{sys_tgkill, sys_tkill},
             timer_create::{sys_timer_create, sys_timer_delete},
@@ -416,7 +416,8 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
             SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
             SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
-            SYS_SYNC_FILE_RANGE2 = 264       => sys_sync_file_range2(args[..4]);
+            SYS_NAME_TO_HANDLE_AT = 264      => sys_name_to_handle_at(args[..5]);
+            SYS_OPEN_BY_HANDLE_AT = 265      => sys_open_by_handle_at(args[..3]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
