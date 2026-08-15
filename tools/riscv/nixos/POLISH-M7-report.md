@@ -104,13 +104,13 @@ The raw-syscall probes prove the kernel is correct and musl's wrapper differs:
 This is confirmed by disassembly: musl's `sbrk` is literally
 `if (inc) return -ENOMEM; return brk(0);`.
 
-### 2.4 Genuine kernel bugs remaining — 4 tests (3 distinct)
+### 2.4 Genuine kernel bugs — status after this session
 
-| Test | Root cause |
-|---|---|
-| `pwrite02` / `pwrite02_64` | `pwrite(fd, NULL, n, off)` **returns 0** instead of `EFAULT`. `user_space.reader(NULL, n)` does not validate the mapping; the page-cache write path swallows the fallible read's `PageFault` and reports a 0-byte write. |
-| `sendfile07_64` | TIMEOUT — the 64-bit-offset variant hangs (the 32-bit `sendfile07` passes). |
-| `sched_setscheduler04` | `sched_setscheduler(SCHED_FIFO \| SCHED_RESET_ON_FORK)` not implemented (the `sched_*` policies are stubs). |
+| Test | Status | Root cause / resolution |
+|---|---|---|
+| `pwrite02` / `pwrite02_64` | **FIXED** (`89216fa1e`) | `pwrite(fd, NULL, n, off)` returned 0 not `EFAULT`. Root cause was **not** the page-cache write path (that already propagates the fallible read's `PageFault`): musl's `pwrite()` is `pwritev2` (SYS 287), and `IoVec::is_empty()` treated a `NULL` `iov_base` (`base == 0`) as an empty buffer and silently *dropped* the iovec, so the `{NULL, n}` buffer became a zero-length write. Fixed by making `is_empty()` only check `len == 0`. |
+| `sched_setscheduler04` | **re-classified: musl semantics** (not a kernel bug) | `SCHED_FIFO`/`SCHED_RR` were already implemented, and `SCHED_RESET_ON_FORK` is now implemented too (`538ed5168`). But the test's final check uses musl's **library** `sched_getscheduler()`/`sched_getparam()`, and on riscv64 musl ships these as `ENOSYS` stubs (disassembly: `li a0,-38; jal __syscall_ret` — they make no syscall). So the assertion `sched_getscheduler(pid) == SCHED_NORMAL` can never pass, independent of kernel behaviour. Same class as `readlink03`/`sbrk01`. |
+| `sendfile07` / `sendfile07_64` | **TIMEOUT (both variants)** | Both hang; the M7 "32-bit `sendfile07` passes" was stale. The test fills a non-blocking `SOCK_DGRAM` UNIX socketpair until `write()` returns `EAGAIN`, then expects `sendfile(out_fd, …)` to return `EAGAIN`. Root cause still open (UNIX datagram socket `write`/`sendfile` interaction). |
 
 ### 2.5 Re-classified: `access02` is an env gap, not a kernel bug
 
@@ -119,19 +119,20 @@ This is confirmed by disassembly: musl's `sbrk` is literally
 `#!/bin/sh` script), and the LTP initramfs has no `/bin/sh`. Same class as
 `posix_fadvise03` (no `/bin/cat`) and `setrlimit04` (no `/bin/true`).
 
-### 2.6 Corrected tally of the 41
+### 2.6 Corrected tally of the 41 (post-fix)
 
 | Class | Count | Tests |
 |---|---|---|
-| Already fixed (stale log) | 4 | timerfd01, pipe13, sendfile07, fork09 |
-| musl semantics (not kernel) | 4 | readlink03, readlinkat02, sbrk01, gethostname02 |
+| Already fixed (stale log + this session) | 6 | timerfd01, pipe13, fork09, **pwrite02, pwrite02_64** |
+| musl semantics (not kernel) | 5 | readlink03, readlinkat02, sbrk01, gethostname02, **sched_setscheduler04** |
 | Env gaps (no `/dev/loop*`, `/bin/cat`, `/bin/true`, `/bin/sh`, DNS) | 22 | rename01/03/04/05/06/07/08/10/12/13/15, fsopen01/02, fsconfig01/02, fsmount01/02, posix_fadvise03(_64), setrlimit04, gethostbyname_r01, access02 |
-| **Genuine kernel bugs** | **4** | pwrite02(_64), sendfile07_64, sched_setscheduler04 |
+| **Genuine kernel bugs remaining** | **2** | sendfile07, sendfile07_64 |
 | Slow-fork timeouts (perf, not correctness) | 7 | fork06/07/11, chdir02, fcntl14(_64), epoll01 |
 
-The "genuine bug" list therefore shrank from ~10 (M5) to **3 distinct bugs**:
-pwrite `EFAULT`, sendfile64, and the scheduler policy gap. The first two are
-targeted for the next milestone; the scheduler one needs SCHED_FIFO/RR support.
+The "genuine bug" list therefore shrank from ~10 (M5) to **1 distinct bug**:
+the `sendfile07` family (UNIX datagram socket `write`/`sendfile` interaction).
+`pwrite` `EFAULT` is fixed; the scheduler gap was both implemented and shown to
+be musl-libc-stub on the test's assertion side.
 
 ---
 
@@ -161,20 +162,20 @@ Remaining open PRs from this track: #35 (virtio-sound driver), #39 (tmpfs
 - `f88a75414` `test(riscv): POLISH-M7 LTP tooling` —
   `tools/riscv/nixos/ltp/{run_ltp_subset.sh,run_repro.sh,repro.c,boot_ltp_gate.py}`.
 - PR #42 `alsa-pcm-abi` — ALSA PCM ioctl ABI (stacked on #35).
+- `89216fa1e` `fix(iovec)` — NULL `iov_base` with nonzero len faults `EFAULT`
+  (fixes `pwrite02`/`pwrite02_64`).
+- `538ed5168` `feat(sched)` — `SCHED_RESET_ON_FORK` + fork policy inheritance.
 
 ---
 
 ## 5. Next steps
 
-1. **`pwrite` EFAULT** — make `user_space.reader/writer` (or the syscall
-   wrappers) validate that the buffer range is mapped before the page-cache
-   write, so `pwrite(fd, NULL, n, off)` → `EFAULT` (fixes `pwrite02` +
-   `pwrite02_64`).
-2. **`sendfile64`** — investigate the `_64`-variant hang (likely a 64-bit-offset
-   code path distinct from `sendfile`).
-3. **scheduler** — implement `SCHED_FIFO`/`SCHED_RR` + `SCHED_RESET_ON_FORK` to
-   clear `sched_setscheduler04`.
-4. **slow-fork perf** — the fork06/07/11 + chdir02 + fcntl14 + epoll01 timeouts
+1. **`sendfile07` hang** — the only remaining genuine bug. Both `sendfile07`
+   and `sendfile07_64` hang in the `SOCK_DGRAM` socketpair fill loop / `sendfile`
+   EAGAIN path; needs a focused probe of UNIX datagram `write` on a full
+   non-blocking socket.
+2. **slow-fork perf** — the fork06/07/11 + chdir02 + fcntl14 + epoll01 timeouts
    remain the same root as the SMP=4 fork hang (fork address-space cloning cost).
-5. Merge #35 → #42 into `main`; then AUDIO-M3 (mmap/streaming) and AUDIO-M4
-   (mixer) build on the same `/dev/snd` model.
+3. Flow the two new kernel fixes (`iovec`, `sched`) to `main` as PRs; then
+   AUDIO-M3 (mmap/streaming) and AUDIO-M4 (mixer) build on the same `/dev/snd`
+   model.
