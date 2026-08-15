@@ -172,6 +172,18 @@ for cli in matchbox-window-manager xpanel pcmanfm xterm netsurf-gtk; do
     fi
 done
 
+# 9b. Standalone curl (riscv64, dynamically linked against glibc only — libcurl
+#     + libssl/libcrypto are statically linked in). Useful for TLS/certificate
+#     behavior tests independent of NetSurf's UI; the curl fetcher in netsurf-gtk
+#     is the same libcurl. Compiled with --with-ca-bundle=/etc/ssl/certs/
+#     ca-certificates.crt, matching NetSurf's --ca_bundle (BROWSER-M12).
+if [ -f "${CROSS_USR}/bin/curl" ]; then
+    cp "${CROSS_USR}/bin/curl" "${ROOTFS}/usr/bin/curl"
+    "${STRIP}" --strip-unneeded "${ROOTFS}/usr/bin/curl" 2>/dev/null || true
+else
+    echo "WARNING: ${CROSS_USR}/bin/curl not found; TLS cert tests unavailable" >&2
+fi
+
 # 10. xkbcomp (static riscv64). Xorg compiles keymaps by shelling out to xkbcomp
 #     at its configure-time XKB_BIN_DIRECTORY (the host cross prefix). The
 #     baked-host-path bridge from step 3 maps that to /usr/bin, so we place it
