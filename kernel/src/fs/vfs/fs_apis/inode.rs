@@ -378,6 +378,19 @@ pub trait Inode: Any + FileOps + Send + Sync {
 
     fn ino(&self) -> u64;
 
+    /// Encodes an opaque file handle for `name_to_handle_at`.
+    ///
+    /// The returned bytes are opaque to user space and are later decoded by
+    /// [`FileSystem::fh_to_inode`] in `open_by_handle_at`. The default
+    /// implementation encodes the inode number, which suffices for filesystems
+    /// whose inode numbers uniquely identify a file (e.g. cgroupfs, procfs,
+    /// sysfs, ramfs). A filesystem may override this to emit a richer handle.
+    ///
+    /// [`FileSystem::fh_to_inode`]: super::file_system::FileSystem::fh_to_inode
+    fn encode_file_handle(&self) -> Result<Vec<u8>> {
+        Ok(self.ino().to_le_bytes().to_vec())
+    }
+
     fn type_(&self) -> InodeType;
 
     fn mode(&self) -> Result<InodeMode>;
