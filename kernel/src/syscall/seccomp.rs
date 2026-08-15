@@ -5,7 +5,7 @@ use ostd::mm::VmIo;
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::signal::{constants::SIGSYS, c_types::siginfo_t, sig_num::SigNum, signals::Signal},
+    process::signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
 };
 
 /// Seccomp modes (values of the per-thread `seccomp_mode` field).
@@ -25,7 +25,12 @@ const SYS_SECCOMP: i32 = 1;
 /// `seccomp(2)` man page, deliberately *not* permitted.
 ///
 /// Reference: <https://man7.org/linux/man-pages/man2/seccomp.2.html>
-const STRICT_ALLOWED: &[u64] = &[63 /* read */, 64 /* write */, 93 /* exit */, 139 /* rt_sigreturn */];
+const STRICT_ALLOWED: &[u64] = &[
+    63,  /* read */
+    64,  /* write */
+    93,  /* exit */
+    139, /* rt_sigreturn */
+];
 
 /// The maximum number of instructions in a seccomp BPF filter (`BPF_MAXINSNS`).
 const BPF_MAXINSNS: usize = 4096;
@@ -104,7 +109,11 @@ pub fn check(
 
 /// Builds the `seccomp_data` structure (64 bytes on riscv64) that a filter's
 /// `BPF_LD | BPF_W | BPF_ABS` instructions read from.
-fn build_seccomp_data(syscall_number: u64, args: &[u64; 6], instruction_pointer: usize) -> [u8; 64] {
+fn build_seccomp_data(
+    syscall_number: u64,
+    args: &[u64; 6],
+    instruction_pointer: usize,
+) -> [u8; 64] {
     let mut data = [0u8; 64];
     data[0..4].copy_from_slice(&(syscall_number as i32).to_ne_bytes());
     data[4..8].copy_from_slice(&AUDIT_ARCH_RISCV64.to_ne_bytes());
@@ -166,17 +175,17 @@ fn run_filter(prog: &[SockFilter], data: &[u8; 64]) -> u32 {
                 // bit 3 selects the source: K (immediate) or X (index register).
                 let src = if code & 0x08 != 0 { x } else { k };
                 a = match code & 0xf0 {
-                    0x00 => a.wrapping_add(src),                    // ADD
-                    0x10 => a.wrapping_sub(src),                    // SUB
-                    0x20 => a.wrapping_mul(src),                    // MUL
-                    0x30 if src != 0 => a / src,                    // DIV
-                    0x40 => a | src,                                // OR
-                    0x50 => a & src,                                // AND
-                    0x60 => a.wrapping_shl(src),                    // LSH
-                    0x70 => a.wrapping_shr(src),                    // RSH
-                    0x80 => a.wrapping_neg(),                       // NEG
-                    0x90 if src != 0 => a % src,                    // MOD
-                    0xa0 => a ^ src,                                // XOR
+                    0x00 => a.wrapping_add(src), // ADD
+                    0x10 => a.wrapping_sub(src), // SUB
+                    0x20 => a.wrapping_mul(src), // MUL
+                    0x30 if src != 0 => a / src, // DIV
+                    0x40 => a | src,             // OR
+                    0x50 => a & src,             // AND
+                    0x60 => a.wrapping_shl(src), // LSH
+                    0x70 => a.wrapping_shr(src), // RSH
+                    0x80 => a.wrapping_neg(),    // NEG
+                    0x90 if src != 0 => a % src, // MOD
+                    0xa0 => a ^ src,             // XOR
                     _ => return SECCOMP_RET_KILL_THREAD,
                 };
             }
@@ -189,10 +198,10 @@ fn run_filter(prog: &[SockFilter], data: &[u8; 64]) -> u32 {
                 }
                 let src = if code & 0x08 != 0 { x } else { k };
                 let taken = match jmp_op {
-                    0x10 => a == src,          // JEQ
-                    0x20 => a > src,           // JGT
-                    0x30 => a >= src,          // JGE
-                    0x40 => (a & src) != 0,    // JSET
+                    0x10 => a == src,       // JEQ
+                    0x20 => a > src,        // JGT
+                    0x30 => a >= src,       // JGE
+                    0x40 => (a & src) != 0, // JSET
                     _ => return SECCOMP_RET_KILL_THREAD,
                 };
                 let offset = if taken { ins.jt } else { ins.jf } as usize;
@@ -258,7 +267,12 @@ impl Signal for SigsysSignal {
     }
 }
 
-pub fn sys_seccomp(operation: u32, flags: u32, args: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub fn sys_seccomp(
+    operation: u32,
+    flags: u32,
+    args: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     debug!(
         "seccomp operation = {}, flags = {:#x}, args = {:#x}",
         operation, flags, args
@@ -292,10 +306,11 @@ pub fn sys_seccomp(operation: u32, flags: u32, args: Vaddr, ctx: &Context) -> Re
             // offset 8. Read the two fields separately to avoid reading the
             // struct's implicit padding.
             let len = user_space.read_val::<u16>(args)? as usize;
-            let filter_addr = user_space.read_val::<Vaddr>(
-                args.checked_add(8)
-                    .ok_or_else(|| Error::with_message(Errno::EFAULT, "sock_fprog overflow"))?,
-            )?;
+            let filter_addr =
+                user_space
+                    .read_val::<Vaddr>(args.checked_add(8).ok_or_else(|| {
+                        Error::with_message(Errno::EFAULT, "sock_fprog overflow")
+                    })?)?;
             if len == 0 || len > BPF_MAXINSNS {
                 return_errno_with_message!(Errno::EINVAL, "invalid filter length");
             }

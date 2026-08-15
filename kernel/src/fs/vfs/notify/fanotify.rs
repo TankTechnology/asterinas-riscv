@@ -8,7 +8,9 @@ use core::{
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileCommon, FileLike, SettableStatusFlags, StatusFlags, file_table::FdFlags},
+        file::{
+            AccessMode, FileCommon, FileLike, SettableStatusFlags, StatusFlags, file_table::FdFlags,
+        },
         pseudofs::AnonInodeFs,
         vfs::{
             inode::Inode,
@@ -62,7 +64,8 @@ impl FanotifyEventMetadata {
 
 /// A fanotify mark on a single inode.
 ///
-/// A mark is a subscriber registered on an inode's [`FsEventPublisher`]. Unlike
+/// A mark is a subscriber registered on an inode's
+/// [`FsEventPublisher`](crate::fs::vfs::notify::FsEventPublisher). Unlike
 /// inotify (which assigns watch descriptors), fanotify addresses marks by mask
 /// directly, so the subscriber stores just the event mask it is interested in.
 struct FanotifySubscriber {
@@ -404,7 +407,13 @@ impl FileLike for FanotifyFile {
                     };
                     let mask = subscriber.interesting_events().bits();
                     let sdev = inode.fs().sb().fsid;
-                    writeln!(f, "fanotify ino:{:x} sdev:{:x} mflags:0 mask:{:x} ignored_mask:0", inode.ino(), sdev, mask)?;
+                    writeln!(
+                        f,
+                        "fanotify ino:{:x} sdev:{:x} mflags:0 mask:{:x} ignored_mask:0",
+                        inode.ino(),
+                        sdev,
+                        mask
+                    )?;
                 }
 
                 Ok(())
