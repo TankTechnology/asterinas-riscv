@@ -160,6 +160,15 @@ pub struct VirtioGpuResourceFlush {
     pub padding: u32,
 }
 
+/// `RESOURCE_UNREF` request (5.7.6.5.7).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuResourceUnref {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub resource_id: u32,
+    pub padding: u32,
+}
+
 /// One scanout entry of a display-info response (5.7.6.6.1).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
