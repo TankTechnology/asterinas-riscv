@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile libcap (+ libpsx) for riscv64 glibc into target/riscv-cross/usr.
 # systemd needs libcap for capability handling (pid1 + journald).
 set -euo pipefail

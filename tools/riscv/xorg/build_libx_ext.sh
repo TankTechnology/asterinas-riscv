@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile the libX* extension libraries for the RISC-V desktop (static .a).
 # Builds, in dependency order:
 #   libXext libXrender libXfixes libXdamage libXcomposite
