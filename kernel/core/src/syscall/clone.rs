@@ -101,12 +101,9 @@ impl TryFrom<Clone3Args> for CloneArgs {
     type Error = Error;
 
     fn try_from(value: Clone3Args) -> Result<Self> {
-        // TODO: Deal with set_tid, set_tid_size, cgroup
+        // TODO: Deal with set_tid, set_tid_size
         if value.set_tid != 0 || value.set_tid_size != 0 {
             warn!("set_tid is not supported");
-        }
-        if value.cgroup != 0 {
-            warn!("cgroup is not supported");
         }
 
         // This checks arguments only for the `clone3()` system call.
@@ -165,7 +162,8 @@ impl TryFrom<Clone3Args> for CloneArgs {
             tls: value.tls,
             _set_tid: Some(value.set_tid),
             _set_tid_size: Some(value.set_tid_size),
-            _cgroup: Some(value.cgroup),
+            // `cgroup == 0` means "no CLONE_INTO_CGROUP"; store `None` in that case.
+            cgroup: (value.cgroup != 0).then_some(value.cgroup),
         })
     }
 }
