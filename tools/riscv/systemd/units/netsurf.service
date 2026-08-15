@@ -14,5 +14,5 @@ Environment=NETSURFRES=/usr/share/netsurf
 ExecStart=/usr/bin/netsurf-gtk file:///usr/share/netsurf/netsurf-test.html
 Restart=always
 RestartSec=3s
-StandardOutput=null
-StandardError=null
+StandardOutput=tty
+StandardError=tty
