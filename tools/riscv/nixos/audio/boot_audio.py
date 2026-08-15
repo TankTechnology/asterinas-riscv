@@ -18,10 +18,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import selectors
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -41,6 +43,111 @@ FAIL_MARKER = b"__AUDIO_FAIL__"
 BYTES_RE = re.compile(rb"__AUDIO_WRITE_BYTES=(\d+)__")
 
 WAV_HDR_LEN = 44  # standard RIFF/WAVE header written by QEMU's wav backend
+
+TONE_FREQ = 440.0       # the sine wave synthesized by the guest /init
+TONE_TOL_HZ = 12.0      # dominant-frequency tolerance (resample/rounding drift)
+MIN_RMS = 2000.0        # silence/zero-padded output stays well below this
+
+
+def _chunks(raw: bytes):
+    """Yield (chunk_id, size, data_offset) for a RIFF/WAVE byte string."""
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        raise ValueError("not a RIFF/WAVE file")
+    off = 12
+    while off + 8 <= len(raw):
+        cid = raw[off:off + 4]
+        size = struct.unpack("<I", raw[off + 4:off + 8])[0]
+        yield cid, size, off + 8
+        off += 8 + size + (size & 1)
+        if cid == b"data":
+            break
+
+
+def _riff_header_fix(raw: bytes) -> bytes:
+    """Rewrite the RIFF and data chunk sizes so the WAV is playable.
+
+    QEMU's ``wav`` backend streams and leaves the ``RIFF`` and ``data`` chunk
+    sizes at 0 (it only knows the totals on a clean teardown). ``wave`` (3.14)
+    rejects that, and some players truncate it, so we fill in the real sizes.
+    """
+    if len(raw) < WAV_HDR_LEN or raw[:4] != b"RIFF":
+        return raw
+    out = bytearray(raw)
+    struct.pack_into("<I", out, 4, len(raw) - 8)        # RIFF size
+    struct.pack_into("<I", out, 40, len(raw) - WAV_HDR_LEN)  # data size
+    return bytes(out)
+
+
+def verify_tone(wav_path: Path) -> dict:
+    """Decode ``wav_path`` and verify it is a real, non-silent 440 Hz sine.
+
+    Returns a dict with ``ok`` plus the metrics used to decide. This is the
+    "did sound actually come out" check on top of the raw byte-count check:
+    the guest could deliver exactly 192 000 bytes of zeros and still pass the
+    byte-count comparison, so we additionally assert amplitude and pitch.
+    """
+    raw = wav_path.read_bytes()
+    metrics: dict = {"file": str(wav_path), "size": len(raw)}
+
+    # Normalize the header so the file is playable, then save a copy alongside.
+    fixed = _riff_header_fix(raw)
+    playable = wav_path.with_suffix(".playable.wav")
+    playable.write_bytes(fixed)
+    metrics["playable"] = str(playable)
+
+    # Walk chunks to find the fmt and data sections (QEMU sizes may be 0).
+    fmt_off = data_off = None
+    rate = channels = bits = None
+    for cid, _size, doff in _chunks(raw):
+        if cid == b"fmt " and fmt_off is None:
+            _audio_fmt, channels, rate, _byterate, _block, bits = struct.unpack(
+                "<HHIIHH", raw[doff:doff + 16]
+            )
+            fmt_off = doff
+        elif cid == b"data":
+            data_off = doff
+            break
+    if fmt_off is None or data_off is None or rate is None or channels is None:
+        metrics["ok"] = False
+        metrics["error"] = "missing fmt/data chunk"
+        return metrics
+    metrics["rate"] = rate
+    metrics["channels"] = channels
+    metrics["bits"] = bits
+
+    pcm = raw[data_off:]
+    # QEMU writes interleaved S16LE; grab channel 0 for the pitch estimate.
+    sample_count = len(pcm) // 2
+    ch0 = [struct.unpack_from("<h", pcm, i * 2 * channels)[0]
+           for i in range(sample_count // channels)]
+    metrics["frames"] = len(ch0)
+    if not ch0:
+        metrics["ok"] = False
+        metrics["error"] = "no PCM data"
+        return metrics
+
+    # Amplitude: RMS and peak (full scale 32767).
+    sumsq = sum(s * s for s in ch0)
+    rms = math.sqrt(sumsq / len(ch0))
+    peak = max(abs(s) for s in ch0)
+    metrics["rms"] = round(rms, 1)
+    metrics["peak"] = peak
+
+    # Dominant frequency via zero crossings (deterministic for a pure tone).
+    crossings = sum(
+        1 for a, b in zip(ch0, ch0[1:]) if (a < 0) != (b < 0)
+    )
+    duration = len(ch0) / rate
+    freq = (crossings / 2.0) / duration if duration else 0.0
+    metrics["freq_hz"] = round(freq, 1)
+
+    ok = (
+        rms >= MIN_RMS
+        and peak > 0
+        and abs(freq - TONE_FREQ) <= TONE_TOL_HZ
+    )
+    metrics["ok"] = ok
+    return metrics
 
 
 def uboot_commands() -> list[tuple[str, str, str]]:
@@ -143,6 +250,8 @@ def main() -> int:
                         default=Path("/tmp/asterinas-audio-out.wav"))
     parser.add_argument("--command-timeout", type=float, default=120.0)
     parser.add_argument("--smp", type=int, default=1)
+    parser.add_argument("--play", action="store_true",
+                        help="additionally play the normalized WAV on the host")
     args = parser.parse_args()
 
     if not UBOOT.exists():
@@ -223,7 +332,34 @@ def main() -> int:
     print(f"  received/written ratio: {ratio:.3f}", flush=True)
     print(f"  host received: {'OK' if host_ok else 'FAIL'}", flush=True)
 
-    result = passed and host_ok and written > 0
+    # The "did sound come out" check: amplitude + pitch, not just byte count.
+    print("\n=== AUDIO-M1 audible-tone verification ===", flush=True)
+    try:
+        tone = verify_tone(args.wav)
+        tone_ok = bool(tone.get("ok"))
+    except (OSError, ValueError, struct.error) as exc:
+        tone = {"ok": False, "error": str(exc)}
+        tone_ok = False
+    if "error" in tone:
+        print(f"  decode error: {tone['error']}", flush=True)
+    else:
+        print(f"  fmt          : {tone.get('channels')} ch, {tone.get('rate')} Hz, "
+              f"{tone.get('bits')}-bit, {tone.get('frames')} frames", flush=True)
+        print(f"  amplitude    : RMS={tone.get('rms')}  peak={tone.get('peak')} "
+              f"(min RMS {MIN_RMS:.0f})", flush=True)
+        print(f"  pitch        : {tone.get('freq_hz')} Hz "
+              f"(expect {TONE_FREQ:.0f} ± {TONE_TOL_HZ:.0f})", flush=True)
+        print(f"  playable copy: {tone.get('playable')}", flush=True)
+    print(f"  audible tone : {'OK' if tone_ok else 'FAIL'}", flush=True)
+
+    if args.play and tone_ok:
+        for player in ("aplay", "paplay"):
+            if subprocess.run(["command", "-v", player], capture_output=True).returncode == 0:
+                print(f"[play] {player} {tone['playable']}", flush=True)
+                subprocess.run([player, tone["playable"]], check=False)
+                break
+
+    result = passed and host_ok and written > 0 and tone_ok
     print(f"\n=== AUDIO-M1: {'PASS' if result else 'FAIL'} (smp={args.smp}) ===", flush=True)
     return 0 if result else 1
 
