@@ -34,7 +34,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{NoData, RawIoctl, dispatch_ioctl},
+    util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
 
@@ -59,10 +59,21 @@ const DRM_MODE_CONNECTED: u32 = 1;
 /// `DRM_MODE_TYPE_PREFERRED`.
 const DRM_MODE_TYPE_PREFERRED: u32 = 8;
 
+/// `DRM_MODE_CURSOR_BO` — set the cursor buffer (a GEM/dumb-buffer handle).
+const DRM_MODE_CURSOR_BO: u32 = 0x01;
+/// `DRM_MODE_CURSOR_MOVE` — reposition the cursor to (`x`, `y`).
+const DRM_MODE_CURSOR_MOVE: u32 = 0x02;
+
 /// `DRM_CAP_DUMB_BUFFER` etc. (include/uapi/drm/drm.h).
 const DRM_CAP_DUMB_BUFFER: u64 = 1;
 const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 3;
 const DRM_CAP_DUMB_PREFER_SHADOW: u64 = 4;
+const DRM_CAP_CURSOR_WIDTH: u64 = 8;
+const DRM_CAP_CURSOR_HEIGHT: u64 = 9;
+
+/// Hardware cursor dimensions reported via `DRM_CAP_CURSOR_WIDTH`/`HEIGHT`.
+/// 64x64 matches virtio-gpu's cursor resource limit and the X server default.
+const CURSOR_SIZE: u64 = 64;
 
 /// `DRM_CLIENT_CAP_*` values accepted by `SET_CLIENT_CAP`.
 const DRM_CLIENT_CAP_STEREO_3D: u64 = 1;
@@ -337,11 +348,44 @@ struct DrmModeFbDirtyCmd {
     clips_ptr: u64,
 }
 
+/// `struct drm_mode_cursor` (the legacy cursor ioctl).
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1193>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeCursor {
+    flags: u32,
+    crtc_id: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    handle: u32,
+}
+
+/// `struct drm_mode_cursor2` (adds a hotspot to the legacy cursor ioctl).
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1205>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeCursor2 {
+    flags: u32,
+    crtc_id: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    handle: u32,
+    hot_x: i32,
+    hot_y: i32,
+}
+
 mod ioctl_defs {
     use super::{
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
-        DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
-        DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
+        DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
+        DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties,
+        DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
@@ -356,6 +400,7 @@ mod ioctl_defs {
     pub(super) type ModeGetResources = ioc!(DRM_IOCTL_MODE_GETRESOURCES, b'd', 0xa0, InOutData<DrmModeCardRes>);
     pub(super) type ModeGetCrtc = ioc!(DRM_IOCTL_MODE_GETCRTC, b'd', 0xa1, InOutData<DrmModeCrtc>);
     pub(super) type ModeSetCrtc = ioc!(DRM_IOCTL_MODE_SETCRTC, b'd', 0xa2, InOutData<DrmModeCrtc>);
+    pub(super) type ModeCursor = ioc!(DRM_IOCTL_MODE_CURSOR, b'd', 0xa3, InOutData<DrmModeCursor>);
     pub(super) type ModeGetEncoder = ioc!(DRM_IOCTL_MODE_GETENCODER, b'd', 0xa6, InOutData<DrmModeGetEncoder>);
     pub(super) type ModeGetConnector = ioc!(DRM_IOCTL_MODE_GETCONNECTOR, b'd', 0xa7, InOutData<DrmModeGetConnector>);
     pub(super) type ModeAddFb = ioc!(DRM_IOCTL_MODE_ADDFB, b'd', 0xae, InOutData<DrmModeFbCmd>);
@@ -365,6 +410,7 @@ mod ioctl_defs {
     pub(super) type ModeMapDumb = ioc!(DRM_IOCTL_MODE_MAP_DUMB, b'd', 0xb3, InOutData<DrmModeMapDumb>);
     pub(super) type ModeDestroyDumb = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB, b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
     pub(super) type ModeObjGetProperties = ioc!(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, b'd', 0xb9, InOutData<DrmModeObjGetProperties>);
+    pub(super) type ModeCursor2 = ioc!(DRM_IOCTL_MODE_CURSOR2, b'd', 0xbb, InOutData<DrmModeCursor2>);
 }
 
 /// `DRM_IOCTL_MODE_RMFB` (`_IOWR('d', 0xaf, unsigned int)`).
@@ -603,6 +649,63 @@ impl DriHandle {
             ..Default::default()
         })
     }
+
+    /// Handles `MODE_CURSOR` / `MODE_CURSOR2` (the legacy hardware-cursor path).
+    ///
+    /// `DRM_MODE_CURSOR_BO` sets the cursor buffer: `handle` is a dumb-buffer
+    /// handle whose guest memory backs a new virtio-gpu ARGB cursor resource
+    /// (`handle == 0` hides the cursor). `DRM_MODE_CURSOR_MOVE` repositions it.
+    /// Both flags may be set in a single call.
+    fn set_cursor(
+        &self,
+        flags: u32,
+        crtc_id: u32,
+        x: i32,
+        y: i32,
+        handle: u32,
+        hot_x: i32,
+        hot_y: i32,
+    ) -> Result<()> {
+        if crtc_id != CRTC_ID {
+            return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
+        }
+
+        if flags & DRM_MODE_CURSOR_BO != 0 {
+            if handle == 0 {
+                self.gpu
+                    .hide_cursor()
+                    .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed"))?;
+            } else {
+                let (addr, size, width, height) = {
+                    let inner = self.inner.lock();
+                    let dumb = inner.dumb_buffers.get(&handle).ok_or_else(|| {
+                        Error::with_message(Errno::EINVAL, "unknown dumb buffer handle")
+                    })?;
+                    let base = self.pool_paddr(&inner)?;
+                    (base + dumb.offset, dumb.size, dumb.width, dumb.height)
+                };
+                self.gpu
+                    .present_cursor(
+                        addr as u64,
+                        size as u32,
+                        width,
+                        height,
+                        hot_x as u32,
+                        hot_y as u32,
+                    )
+                    .map_err(|_| {
+                        Error::with_message(Errno::EIO, "virtio-gpu cursor present failed")
+                    })?;
+            }
+        }
+
+        if flags & DRM_MODE_CURSOR_MOVE != 0 {
+            self.gpu
+                .move_cursor(x as u32, y as u32)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor move failed"))?;
+        }
+        Ok(())
+    }
 }
 
 impl Pollable for DriHandle {
@@ -676,6 +779,8 @@ impl PerOpenFileOps for DriHandle {
                     DRM_CAP_DUMB_BUFFER => 1,
                     DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
                     DRM_CAP_DUMB_PREFER_SHADOW => 0,
+                    DRM_CAP_CURSOR_WIDTH => CURSOR_SIZE,
+                    DRM_CAP_CURSOR_HEIGHT => CURSOR_SIZE,
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
                     }
@@ -768,6 +873,24 @@ impl PerOpenFileOps for DriHandle {
             cmd @ ModeSetCrtc => {
                 let req = cmd.read()?;
                 self.set_crtc(&req)?;
+                Ok(0)
+            }
+            cmd @ ModeCursor => {
+                let req = cmd.read()?;
+                self.set_cursor(req.flags, req.crtc_id, req.x, req.y, req.handle, 0, 0)?;
+                Ok(0)
+            }
+            cmd @ ModeCursor2 => {
+                let req = cmd.read()?;
+                self.set_cursor(
+                    req.flags,
+                    req.crtc_id,
+                    req.x,
+                    req.y,
+                    req.handle,
+                    req.hot_x,
+                    req.hot_y,
+                )?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
