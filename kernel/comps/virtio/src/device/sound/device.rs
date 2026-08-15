@@ -24,10 +24,10 @@ use ostd::{
 };
 
 use super::{
+    D_OUTPUT, FMT_S16, R_PCM_INFO, R_PCM_PREPARE, R_PCM_SET_PARAMS, R_PCM_START, RATE_48000, S_OK,
+    VQ_CONTROL, VQ_TX, VirtioSndHdr, VirtioSndPcmHdr, VirtioSndPcmInfo, VirtioSndPcmSetParams,
+    VirtioSndPcmStatus, VirtioSndPcmXfer, VirtioSndQueryInfo,
     config::{SoundFeatures, VirtioSoundConfig},
-    D_OUTPUT, FMT_S16, RATE_48000, R_PCM_INFO, R_PCM_PREPARE, R_PCM_SET_PARAMS, R_PCM_START,
-    S_OK, VQ_CONTROL, VQ_TX, VirtioSndHdr, VirtioSndPcmHdr, VirtioSndPcmInfo,
-    VirtioSndPcmSetParams, VirtioSndPcmStatus, VirtioSndPcmXfer, VirtioSndQueryInfo,
 };
 use crate::{
     device::{VirtioDeviceError, sound::register_device},
@@ -67,6 +67,10 @@ pub struct StreamInfo {
 
 /// A virtio-sound device.
 pub struct SoundDevice {
+    /// Keeps the virtio transport alive for the device's lifetime. The control
+    /// and TX queues borrow it during `init` and hold their own handles after
+    /// `finish_init`, so this field is never read directly.
+    #[allow(dead_code)]
     transport: SpinLock<DeviceTransport>,
     control_queue: SpinLock<VirtQueue>,
     tx_queue: SpinLock<VirtQueue>,
@@ -128,7 +132,10 @@ impl SoundDevice {
         });
 
         register_device(
-            format!("virtio_snd.{}", SOUND_DEVICE_ID.fetch_add(1, Ordering::Relaxed)),
+            format!(
+                "virtio_snd.{}",
+                SOUND_DEVICE_ID.fetch_add(1, Ordering::Relaxed)
+            ),
             device,
         );
 
@@ -230,7 +237,9 @@ impl SoundDevice {
     fn set_params(&self, stream_id: u32) -> Result<(), VirtioDeviceError> {
         let req = VirtioSndPcmSetParams {
             hdr: VirtioSndPcmHdr {
-                hdr: VirtioSndHdr { code: R_PCM_SET_PARAMS },
+                hdr: VirtioSndHdr {
+                    code: R_PCM_SET_PARAMS,
+                },
                 stream_id,
             },
             buffer_bytes: BUFFER_BYTES,
@@ -348,8 +357,9 @@ fn query_streams(
 
     let mut streams = Vec::with_capacity(count);
     for i in 0..count {
-        let info: VirtioSndPcmInfo =
-            resp_slice.read_val(size_of::<u32>() + i * info_size).unwrap();
+        let info: VirtioSndPcmInfo = resp_slice
+            .read_val(size_of::<u32>() + i * info_size)
+            .unwrap();
         streams.push(StreamInfo {
             direction: info.direction,
             features: info.features,
