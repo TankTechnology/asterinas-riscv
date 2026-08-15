@@ -1,0 +1,18 @@
+[Unit]
+Description=NetSurf web browser (local HTML render)
+After=xorg.service matchbox-window-manager.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+Environment=NETSURFRES=/usr/share/netsurf
+ExecStart=/usr/bin/netsurf-gtk file:///usr/share/netsurf/netsurf-test.html
+Restart=on-failure
+RestartSec=3s
+StandardOutput=null
+StandardError=null

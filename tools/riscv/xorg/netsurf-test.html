@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NetSurf on Asterinas RISC-V</title>
+<style>
+  body { background: #f4e8d0; color: #202028; font-family: sans-serif; margin: 2em; }
+  h1 { color: #1a4f8b; border-bottom: 4px solid #1a4f8b; }
+  h2 { color: #2e6b4f; }
+  .banner { background: #1a4f8b; color: #ffffff; padding: 1em; font-weight: bold; }
+  ul { line-height: 1.8; }
+  table { border-collapse: collapse; }
+  td, th { border: 2px solid #202028; padding: 0.4em 1em; }
+  th { background: #dcdad5; }
+  .foot { font-style: italic; color: #7a4b12; }
+</style>
+</head>
+<body>
+<h1>NetSurf on Asterinas RISC-V</h1>
+
+<p class="banner">BROWSER-M1: the last piece of the desktop puzzle.</p>
+
+<h2>Milestone</h2>
+<p>
+This page is being rendered by <b>NetSurf 3.9</b>, a lightweight HTML/CSS web
+browser, cross-compiled for <code>riscv64</code> and running on the Asterinas
+RISC-V framebuffer desktop (Xorg + matchbox-wm + GTK2).
+</p>
+
+<h2>What is being exercised</h2>
+<ul>
+  <li>HTML parsing (libhubbub) and the DOM (libdom)</li>
+  <li>CSS selection &amp; layout (libcss)</li>
+  <li>UTF-8 text and the built-in fonts via Pango/Cairo</li>
+  <li>GTK2 frontend (nsgtk) over the X11 /dev/fb0 chain</li>
+</ul>
+
+<h2>Component table</h2>
+<table>
+  <tr><th>Library</th><th>Role</th></tr>
+  <tr><td>libcss</td><td>CSS parser / selector engine</td></tr>
+  <tr><td>libdom</td><td>Document Object Model</td></tr>
+  <tr><td>libhubbub</td><td>HTML5 tokeniser / tree builder</td></tr>
+  <tr><td>libparserutils</td><td>charset conversion</td></tr>
+  <tr><td>libnsbmp / libnsgif</td><td>BMP / GIF image decoders</td></tr>
+</table>
+
+<p class="foot">file:// local render &mdash; no network fetcher required for this milestone.</p>
+</body>
+</html>
