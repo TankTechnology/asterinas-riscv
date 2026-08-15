@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod dri;
 mod evdev;
 mod fb;
 mod mem;
@@ -61,6 +62,7 @@ pub(crate) fn init_in_first_kthread() {
     // TODO: Transfer ownership of the boot framebuffer to DRM and skip registering the
     // legacy framebuffer device once DRM has initialized successfully.
     fb::init_in_first_kthread();
+    dri::init_in_first_kthread();
 }
 
 /// Initializes device state after mounting rootfs.
