@@ -221,6 +221,21 @@ if [ -d "${CROSS_USR}/share/netsurf" ]; then
 fi
 cp "${SRC_DIR}/../xorg/netsurf-test.html" "${ROOTFS}/usr/share/netsurf/netsurf-test.html"
 
+# 13c. CA certificate bundle for NetSurf's curl fetcher (TLS verification).
+#      The host's ca-certificates store (Mozilla bundle, ~200KB) is
+#      architecture-independent; NetSurf is pointed at it via --ca_bundle in
+#      netsurf.service, and libcurl's compiled-in default
+#      (/etc/ssl/certs/ca-certificates.crt) matches. Actual http(s):// fetch
+#      additionally needs a guest network device, which the boot driver does not
+#      yet attach (future milestone).
+HOST_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
+if [ -f "${HOST_CA_BUNDLE}" ]; then
+    mkdir -p "${ROOTFS}/etc/ssl/certs"
+    cp -L "${HOST_CA_BUNDLE}" "${ROOTFS}/etc/ssl/certs/ca-certificates.crt"
+else
+    echo "WARNING: ${HOST_CA_BUNDLE} not found; HTTPS cert verification will fail" >&2
+fi
+
 # 14. terminfo database for xterm (the `x`/ directory only; the full ncurses DB
 #     is ~12 MB and unnecessary — xterm/linux/vt100 fallbacks are compiled into
 #     libtinfo).
