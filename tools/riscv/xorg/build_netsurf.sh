@@ -43,7 +43,15 @@ export PKG_CONFIG_SYSROOT_DIR="$ROOT/target/riscv-cross"
 # NetSurf's library buildsystem uses PKGCONFIG (not PKG_CONFIG).
 export PKGCONFIG="$ROOT/target/riscv-cross/pkg-config-static"
 # GCC 15 turns legacy-C warnings into errors; -fcommon for the old codebase.
-export CFLAGS="-O2 -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-return-mismatch -fcommon"
+# -DWITHOUT_ICONV_FILTER switches libparserutils's input filter off glibc iconv
+# and onto NetSurf's own codec tables (codec_8859/codec_ext8/utf8/utf16/ascii).
+# The riscv64 guest ships a glibc dynamic runtime WITHOUT the gconv modules, so
+# iconv_open("UTF-8", "Windows-1252") fails at runtime and every charset-less
+# page (info.cern.ch, example.com, rfc-editor) dies with "BadEncoding". The
+# internal codec needs no runtime modules and covers Windows-1250..1258 +
+# ISO-8859-1..16 + UTF-8/16/ASCII. The macro is only read by libparserutils
+# (filter.c), so defining it globally is harmless to the other components.
+export CFLAGS="-O2 -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-return-mismatch -fcommon -DWITHOUT_ICONV_FILTER"
 export LDFLAGS="-L$PREFIX/lib"
 
 # NetSurf core libraries in dependency order (the gtk target set from the
