@@ -67,6 +67,7 @@ WM_STARTED = b"Started Matchbox window manager"
 PANEL_STARTED = b"Started Xpanel"
 PCMANFM_STARTED = b"Started PCManFM file manager"
 XTERM_STARTED = b"Started XTerm terminal emulator"
+NETSURF_STARTED = b"Started NetSurf web browser"
 
 PANIC_MARKERS = [
     b"kernel panic", b"Kernel panic", b"page fault handler failed",
@@ -185,12 +186,19 @@ def main() -> int:
     parser.add_argument("--serial-log", type=Path, default=Path("/tmp/asterinas-sd-desktop.log"))
     parser.add_argument("--collect-timeout", type=float, default=300.0)
     parser.add_argument("--screenshot", type=Path, default=Path("/tmp/asterinas-sd-desktop.ppm"))
+    parser.add_argument("--boot-disk", type=Path, default=BOOT_DISK,
+                        help="override the U-Boot boot disk (e.g. an independent /tmp copy)")
+    parser.add_argument("--net", action="store_true",
+                        help="attach a virtio-net NIC via QEMU slirp user networking (guest 10.0.2.15/24, gw 10.0.2.2, dns 10.0.2.3)")
+    parser.add_argument("--settle-seconds", type=float, default=0.0,
+                        help="after the desktop is up, keep draining serial this long before the screendump (captures late-start units like NetSurf's network fetch)")
     args = parser.parse_args()
 
+    boot_disk = args.boot_disk
     if not UBOOT.exists():
         raise SystemExit(f"missing U-Boot: {UBOOT}")
-    if not BOOT_DISK.exists():
-        raise SystemExit(f"missing boot disk: {BOOT_DISK}")
+    if not boot_disk.exists():
+        raise SystemExit(f"missing boot disk: {boot_disk}")
     if MON_SOCK.exists():
         MON_SOCK.unlink()
 
@@ -203,7 +211,7 @@ def main() -> int:
         "-display", "none",
         "-no-reboot",
         "-kernel", str(UBOOT),
-        "-drive", f"if=none,format=raw,file={BOOT_DISK},id=bootdisk",
+        "-drive", f"if=none,format=raw,file={boot_disk},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
         "-device", "bochs-display",
         "-device", "virtio-keyboard-device",
@@ -211,6 +219,11 @@ def main() -> int:
         "-serial", "stdio",
         "-monitor", f"unix:{MON_SOCK},server,nowait",
     ]
+    if args.net:
+        argv.extend([
+            "-netdev", "user,id=net0",
+            "-device", "virtio-net-device,netdev=net0",
+        ])
 
     boot = Boot(argv, args.serial_log)
     reached = "timeout"
@@ -258,6 +271,14 @@ def main() -> int:
         reached = "timeout"
         print(f"[boot] {e}", flush=True)
     finally:
+        if args.settle_seconds > 0:
+            print(f"[boot] settling {args.settle_seconds}s (draining serial)", flush=True)
+            settle_deadline = time.monotonic() + args.settle_seconds
+            while time.monotonic() < settle_deadline:
+                try:
+                    boot._drain(1.0)
+                except RuntimeError:
+                    break
         screendump(MON_SOCK, args.screenshot)
         boot.close()
 
@@ -278,6 +299,7 @@ def main() -> int:
         "xpanel-started": PANEL_STARTED in clean,
         "pcmanfm-started": PCMANFM_STARTED in clean,
         "xterm-started": XTERM_STARTED in clean,
+        "netsurf-started": NETSURF_STARTED in clean,
         "emergency": EMERGENCY in clean,
     }
     panics = [m.decode() for m in PANIC_MARKERS if m in clean]
