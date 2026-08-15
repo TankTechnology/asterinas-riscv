@@ -75,7 +75,7 @@ PANIC_MARKERS = [
 ]
 
 
-def uboot_commands() -> list[tuple[str, str, str]]:
+def uboot_commands(loglevel: str = "warn") -> list[tuple[str, str, str]]:
     """U-Boot command sequence: booti handoff + bochs framebuffer DTB injection."""
     return [
         ("version", "version", "U-Boot 2026"),
@@ -95,7 +95,7 @@ def uboot_commands() -> list[tuple[str, str, str]]:
         ("fb-format", 'fdt set /framebuffer@40000000 format "x8r8g8b8"', "=>"),
         ("fb-status", 'fdt set /framebuffer@40000000 status "okay"', "=>"),
         ("fb-verify", "fdt print /framebuffer@40000000", "simple-framebuffer"),
-        ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=warn init=/init"', "=>"),
+        ("bootargs", f'setenv bootargs "console=ttyS0 loglevel={loglevel} init=/init"', "=>"),
         ("initrd-load", f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz", "bytes read"),
         ("initrd-size-save", "setenv initrd_size ${filesize}", "=>"),
         ("booti", f"booti {KERNEL_LOAD:#x} {INITRD_LOAD:#x}:${{initrd_size}} {DTB_LOAD:#x}",
@@ -192,6 +192,8 @@ def main() -> int:
                         help="attach a virtio-net NIC via QEMU slirp user networking (guest 10.0.2.15/24, gw 10.0.2.2, dns 10.0.2.3)")
     parser.add_argument("--settle-seconds", type=float, default=0.0,
                         help="after the desktop is up, keep draining serial this long before the screendump (captures late-start units like NetSurf's network fetch)")
+    parser.add_argument("--loglevel", type=str, default="warn",
+                        help="kernel log level passed via bootargs (e.g. warn|info|debug)")
     args = parser.parse_args()
 
     boot_disk = args.boot_disk
@@ -231,7 +233,7 @@ def main() -> int:
         print("[boot] waiting for U-Boot prompt", flush=True)
         boot.read_until(b"=> ", 60)
 
-        for name, text, expected in uboot_commands():
+        for name, text, expected in uboot_commands(args.loglevel):
             print(f"[uboot] {name}", flush=True)
             boot.send(text)
             if name == "booti":
