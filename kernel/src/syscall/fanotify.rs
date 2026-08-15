@@ -3,7 +3,10 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file::{InodeType, Permission, file_table::{RawFileDesc, get_file_fast}},
+        file::{
+            InodeType, Permission,
+            file_table::{RawFileDesc, get_file_fast},
+        },
         vfs::{
             notify::fanotify::FanotifyFile,
             path::{EmptyPathStr, FsPath},
@@ -42,14 +45,15 @@ const FAN_MARK_IGNORED_SURV_MODIFY: u32 = 0x00000040;
 const FAN_MARK_FLUSH: u32 = 0x00000080;
 const FAN_MARK_FILESYSTEM: u32 = 0x00000100;
 
-const MARK_UNSUPPORTED: u32 = FAN_MARK_MOUNT
-    | FAN_MARK_FILESYSTEM
-    | FAN_MARK_IGNORED_MASK
-    | FAN_MARK_IGNORED_SURV_MODIFY;
+const MARK_UNSUPPORTED: u32 =
+    FAN_MARK_MOUNT | FAN_MARK_FILESYSTEM | FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORED_SURV_MODIFY;
 const MARK_ACTION_BITS: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK_FLUSH;
 
 pub fn sys_fanotify_init(flags: u32, event_f_flags: u32, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fanotify_init flags = {:#x}, event_f_flags = {:#x}", flags, event_f_flags);
+    debug!(
+        "fanotify_init flags = {:#x}, event_f_flags = {:#x}",
+        flags, event_f_flags
+    );
 
     if flags & !INIT_SUPPORTED != 0 {
         return_errno_with_message!(Errno::EINVAL, "fanotify_init flags are not yet supported");

@@ -8,8 +8,7 @@
 )]
 
 pub use clock_gettime::ClockId;
-use ostd::arch::cpu::context::UserContext;
-use ostd::user::UserContextApi;
+use ostd::{arch::cpu::context::UserContext, user::UserContextApi};
 pub use timer_create::create_timer;
 
 use crate::{cpu::LinuxAbi, prelude::*};
