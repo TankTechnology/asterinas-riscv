@@ -14,16 +14,28 @@ pub struct PollScheduler {
 }
 
 impl PollScheduler {
+    /// Sentinel stored in [`Self::next_poll_at_ms`] to mean "no poll scheduled".
+    ///
+    /// It must not collide with `0`, which `aster-bigtcp` uses as
+    /// `PollKey::IMMEDIATE_VAL` ("poll now"). Using `0` for "no poll" here would
+    /// silently drop an immediate-poll request and leave a socket that needs a
+    /// `PollAt::Now` poll stranded until some unrelated event wakes the thread.
+    const NO_POLL: u64 = u64::MAX;
+
     pub(super) fn new() -> Self {
         Self {
-            next_poll_at_ms: AtomicU64::new(0),
+            next_poll_at_ms: AtomicU64::new(Self::NO_POLL),
             polling_wait_queue: WaitQueue::new(),
         }
     }
 
     pub(super) fn next_poll_at_ms(&self) -> Option<u64> {
         let millis = self.next_poll_at_ms.load(Ordering::Relaxed);
-        if millis == 0 { None } else { Some(millis) }
+        if millis == Self::NO_POLL {
+            None
+        } else {
+            Some(millis)
+        }
     }
 
     pub(super) fn polling_wait_queue(&self) -> &WaitQueue {
@@ -33,15 +45,12 @@ impl PollScheduler {
 
 impl ScheduleNextPoll for PollScheduler {
     fn schedule_next_poll(&self, poll_at: Option<u64>) {
-        let Some(new_instant) = poll_at else {
-            self.next_poll_at_ms.store(0, Ordering::Relaxed);
-            return;
-        };
+        let new_instant = poll_at.unwrap_or(Self::NO_POLL);
 
         let old_instant = self.next_poll_at_ms.load(Ordering::Relaxed);
         self.next_poll_at_ms.store(new_instant, Ordering::Relaxed);
 
-        if old_instant == 0 || new_instant < old_instant {
+        if old_instant == Self::NO_POLL || new_instant < old_instant {
             self.polling_wait_queue.wake_all();
         }
     }
