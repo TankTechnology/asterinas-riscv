@@ -151,10 +151,11 @@ On `track/nixos`:
 - `docs(nixos)` `b95fe9745` — snd device model design.
 - `feat(syscall)` `7775689cc` — implement `clock_getres`.
 
-Kernel-fix PR branches (cherry-picked onto `origin/main`, PRs pending runtime
-verification):
-- `fix/tmpfs-root-mode` — tmpfs root mode.
-- `fix/clock-getres` — clock_getres.
+Kernel-fix PRs (cherry-picked onto `origin/main`):
+- **PR #39** `fix/tmpfs-root-mode` — tmpfs root mode 01777.
+- **PR #40** `fix/clock-getres` — implement clock_getres.
+
+(Runtime verification of both is the in-flight gate re-run, §5.)
 
 ---
 
