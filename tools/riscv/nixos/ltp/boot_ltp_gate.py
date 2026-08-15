@@ -35,7 +35,7 @@ PASS_MARKER = b"__LTP_GATE_PASS__"
 FAIL_MARKER = b"__LTP_GATE_FAIL__"
 
 
-def uboot_commands() -> list[tuple[str, str, str]]:
+def uboot_commands(loglevel: str = "error") -> list[tuple[str, str, str]]:
     return [
         ("version", "version", "U-Boot 2026"),
         ("virtio-scan", "virtio scan", "=>"),
@@ -43,7 +43,7 @@ def uboot_commands() -> list[tuple[str, str, str]]:
         ("kernel-load", f"ext4load virtio 0:0 {KERNEL_LOAD:#x} /asterinas.booti", "bytes read"),
         ("dtb-load", f"ext4load virtio 0:0 {DTB_LOAD:#x} /qemu-virt.dtb", "bytes read"),
         ("dtb-select", f"fdt addr {DTB_LOAD:#x}", "Working FDT set"),
-        ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=error init=/init"', "=>"),
+        ("bootargs", f'setenv bootargs "console=ttyS0 loglevel={loglevel} init=/init"', "=>"),
         ("initrd-load", f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz", "bytes read"),
         ("initrd-size-save", "setenv initrd_size ${filesize}", "=>"),
         ("booti", f"booti {KERNEL_LOAD:#x} {INITRD_LOAD:#x}:${{initrd_size}} {DTB_LOAD:#x}",
@@ -132,6 +132,7 @@ def main() -> int:
     parser.add_argument("--serial-log", type=Path, default=Path("/tmp/asterinas-ltp-serial.log"))
     parser.add_argument("--command-timeout", type=float, default=1200.0)
     parser.add_argument("--smp", type=int, default=1)
+    parser.add_argument("--loglevel", type=str, default="error")
     args = parser.parse_args()
 
     if not UBOOT.exists():
@@ -159,7 +160,7 @@ def main() -> int:
         print("[boot] waiting for U-Boot prompt", flush=True)
         boot.read_until(b"=> ", 60)
 
-        for name, text, expected in uboot_commands():
+        for name, text, expected in uboot_commands(args.loglevel):
             print(f"[uboot] {name}", flush=True)
             boot.send(text)
             if name == "booti":
