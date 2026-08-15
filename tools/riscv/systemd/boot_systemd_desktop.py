@@ -41,7 +41,12 @@ MON_SOCK = Path("/tmp/systemd-desktop-mon.sock")
 
 KERNEL_LOAD = 0x8020_0000
 INITRD_LOAD = 0x8300_0000
-DTB_LOAD = 0x8800_0000
+# The initramfs grew past 80 MB (systemd + desktop + NetSurf + nix), which put
+# its upper bound (INITRD_LOAD + size) past the old 0x8800_0000 DTB slot and the
+# ext4load of /initramfs.cpio.gz clobbered the FDT ("Could not find a valid
+# device tree"). Relocate the DTB above the load ceiling. RAM is 2 GiB
+# (0x8000_0000 .. 0x1_0000_0000), so 0x9000_0000 is comfortably clear.
+DTB_LOAD = 0x9000_0000
 
 INIT_MARKER = b">>> systemd init: launching systemd (PID 1) <<<"
 
