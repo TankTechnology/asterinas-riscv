@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::vec::Vec;
+
 pub(super) use ostd::arch::irq::MappedIrqLine;
 use ostd::arch::{
     boot::DEVICE_TREE,
@@ -18,7 +20,16 @@ pub(super) fn probe_for_device() {
                 .any(|compatible| compatible == "virtio,mmio")
         })
     });
-    mmio_nodes.for_each(|node| {
+
+    // QEMU assigns virtio-mmio devices to the fixed slots in ascending MMIO
+    // address order (the first `-device` gets the lowest address), but it emits
+    // the `virtio,mmio` nodes in the device tree in *descending* address order.
+    // Registering the devices in tree order would therefore reverse the guest
+    // device numbering: the second `-device virtio-blk` would show up as `vda`
+    // and the first (boot) disk as `vdb`. Sort the slots by MMIO address so the
+    // kernel enumerates them in the same order QEMU assigns them.
+    let mut mmio_slots = Vec::new();
+    for node in mmio_nodes {
         let mmio_region = node.reg().unwrap().next().unwrap();
         let mmio_start = mmio_region.starting_address as usize;
         let mmio_end = mmio_start + mmio_region.size.unwrap();
@@ -31,11 +42,16 @@ pub(super) fn probe_for_device() {
                 .unwrap() as u32,
         };
 
+        mmio_slots.push((mmio_start, mmio_end, interrupt_source_in_fdt));
+    }
+    mmio_slots.sort_by_key(|(mmio_start, _, _)| *mmio_start);
+
+    for (mmio_start, mmio_end, interrupt_source_in_fdt) in mmio_slots {
         let _ = super::try_register_mmio_device(mmio_start..mmio_end, |irq_line| {
             IRQ_CHIP
                 .get()
                 .unwrap()
                 .map_fdt_pin_to(interrupt_source_in_fdt, irq_line)
         });
-    });
+    }
 }
