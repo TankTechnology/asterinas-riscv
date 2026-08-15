@@ -26,9 +26,13 @@
 #define MAX_ARGS 32
 #define BIN_DIR "/opt/ltp/testcases/bin"
 #define LOG_DIR "/tmp/ltp_logs"
-#define DEFAULT_TIMEOUT_SEC 60
+// QEMU TCG is ~100x slower than native; LTP's own guidance for slow machines is
+// to raise LTP_TIMEOUT_MUL. We default the per-test watchdog generously so slow
+// but correct tests (e.g. sendfile07's 65536-write fill loop) are not mis-killed.
+#define DEFAULT_TIMEOUT_SEC 300
 
 static int timeout_sec = DEFAULT_TIMEOUT_SEC;
+static char timeout_mul_buf[16] = "8";
 
 enum { R_PASS, R_FAIL, R_CONF, R_CRASH, R_TIMEOUT };
 
@@ -86,6 +90,10 @@ int main(int argc, char **argv) {
     const char *t = getenv("LTP_PER_TEST_TIMEOUT");
     if (t && *t)
         timeout_sec = atoi(t);
+    const char *mul = getenv("LTP_TIMEOUT_MUL");
+    if (mul && *mul) {
+        snprintf(timeout_mul_buf, sizeof(timeout_mul_buf), "%s", mul);
+    }
 
     (void)mkdir(LOG_DIR, 0777);
 
@@ -140,7 +148,7 @@ int main(int argc, char **argv) {
             setenv("PATH", env_path, 1);
             setenv("TMPDIR", "/tmp", 1);
             setenv("LTPROOT", "/opt/ltp", 1);
-            setenv("LTP_TIMEOUT_MUL", "1", 1);
+            setenv("LTP_TIMEOUT_MUL", timeout_mul_buf, 1);
             setenv("LTP_COLORIZE_OUTPUT", "0", 1);
             setenv("KCONFIG_SKIP_CHECK", "1", 1);
             // Dynamic test binaries resolve libltp.so / libc.so here.

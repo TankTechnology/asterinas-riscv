@@ -133,6 +133,22 @@ cp -f "${MUSL_LIBC}" "${ROOTFS}/lib/ld-musl-riscv64.so.1"
 cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/lib/libltp.so"
 cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/opt/ltp/lib/libltp.so"
 
+# Several tests shell out to /bin/sh, /bin/cat, /bin/true (access02,
+# posix_fadvise03, setrlimit04); without them the tests TBROK on a missing
+# helper rather than exercising the kernel. Layer a static busybox (built by
+# tools/riscv/nixos/build_busybox.sh) and the applet symlinks those tests use.
+BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
+if [ -x "${BUSYBOX}" ]; then
+    mkdir -p "${ROOTFS}/bin"
+    cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
+    for a in sh cat true echo test; do
+        ln -sf busybox "${ROOTFS}/bin/${a}"
+    done
+    echo "busybox applets: $(ls "${ROOTFS}/bin")"
+else
+    echo "WARN: no busybox at ${BUSYBOX} — shell-out tests will TBROK" >&2
+fi
+
 # Strip everything.
 find "${ROOTFS}/opt/ltp/testcases/bin" -type f -executable \
     -exec "${STRIP}" {} \; 2>/dev/null || true
