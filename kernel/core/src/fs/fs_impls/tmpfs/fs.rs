@@ -2,6 +2,7 @@
 
 use crate::{
     fs::{
+        file::{InodeMode, mkmod},
         fs_impls::ramfs::{self, RamFs},
         pseudofs::AnonDeviceId,
         vfs::{
@@ -52,7 +53,15 @@ impl TmpFs {
             super_block.ffree = max_inodes;
             super_block
         };
-        Self::new_with_sb(name, anon_device_id, sb, revalidation_policy)
+        // tmpfs defaults to a world-writable sticky root (Linux: 01777), so
+        // unprivileged users can create entries under it (e.g. `/tmp`).
+        Self::new_with_sb(
+            name,
+            anon_device_id,
+            sb,
+            revalidation_policy,
+            mkmod!(a+rwx) | InodeMode::S_ISVTX,
+        )
     }
 }
 
