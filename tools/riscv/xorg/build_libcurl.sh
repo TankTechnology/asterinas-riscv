@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Cross-compile libcurl (static .a, no TLS) for the riscv64 desktop.
+# Cross-compile libcurl (static .a, TLS via OpenSSL) for the riscv64 desktop.
 #
 # NetSurf's GTK frontend includes <curl/curl.h> unconditionally (content/fetch.c),
-# so the header is required even when the curl fetcher is compiled out. Build a
-# minimal static libcurl WITHOUT OpenSSL — HTTP works, HTTPS is deferred to a
-# later milestone (OpenSSL is not yet in the cross prefix). Installs curl/curl.h,
-# libcurl.a and libcurl.pc into target/riscv-cross/usr.
+# and its curl fetcher (content/fetchers/curl.c) includes <openssl/ssl.h> and
+# calls SSL_CTX_* directly — so the fetcher needs BOTH libcurl and OpenSSL. M1
+# built libcurl --without-ssl to satisfy the header-only dependency; M2 rebuilds
+# it --with-openssl so the curl fetcher can be enabled and http(s):// works.
+# Installs curl/curl.h, libcurl.a and libcurl.pc into target/riscv-cross/usr.
 #
-#   deps present: zlib (compression), glibc (threaded resolver via pthread)
-#   deps omitted: openssl, libpsl, libidn2, libssh2, nghttp2, brotli, zstd,
-#                 ldap, rtmp, gssapi
+#   deps present: zlib (compression), openssl 3.0 (TLS), glibc (pthread resolver)
+#   deps omitted: libpsl, libidn2, libssh2, nghttp2, brotli, zstd, ldap, rtmp,
+#                 gssapi
 set -euo pipefail
 
 ROOT=/home/arch-anjie/Program/asterinas-riscv
@@ -31,7 +32,8 @@ cd "$SRC/curl-$VER"
 if [ ! -f Makefile ]; then
     ./configure --host="$HOST" --prefix="$PREFIX" \
         --disable-shared --enable-static \
-        --without-ssl \
+        --with-openssl="$PREFIX" \
+        --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
         --without-libpsl --without-libidn2 --without-libssh2 \
         --without-nghttp2 --without-brotli --without-zstd --without-librtmp \
         --without-gssapi --without-libgsasl \
