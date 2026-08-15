@@ -210,7 +210,10 @@ Two layers had to change:
 2. **Source**: raise the clamp to 300 s in `nsoption.c` (`> 300 → 300`, total
    cap `≤ 300`) and rebuild the NetSurf frontend. This is the actual fix; the
    60 s cap was a deliberate but now-too-tight upstream limit for a
-   software-crypto RISC-V guest under contention.
+   software-crypto RISC-V guest under contention. Re-testing with the rebuilt
+   frontend, the `code 28` timeout is gone — the connect now fails `code 7`
+   (`CURLE_COULDNT_CONNECT`) instead, i.e. the flaky guest virtio-net stack
+   (kernel-side) is the next limit, not the browser timeout.
 
 ### 7.4 Static feature ceiling (unchanged from M5)
 
@@ -224,11 +227,12 @@ libcss 2.1-level layout — no flexbox, CSS grid, transforms, or
 ## 8. Remaining items
 
 - **Re-test the timeout sites** (wikipedia, hackernews, csszengarden, cnnlite)
-  with the raised 300 s connect cap. Verification is still open: with the slow,
-  contended guest the TLS handshake + fetch can outlive the harness's
-  `--settle-seconds` host-clock window, so the screenshot is taken while the
-  fetch is still in flight — the connect-timeout fix removes one limit, but the
-  slow guest network (kernel-side, out of scope) is the remaining bound.
+  with the raised 300 s connect cap. The re-test changed the failure mode: the
+  old `code 28` (connect timeout at the 60 s cap) is gone, but the fetch now
+  fails `code 7` (`CURLE_COULDNT_CONNECT`) — the TCP connect to the host fails
+  outright on the contended guest rather than merely being slow. That confirms
+  the remaining bound is the flaky guest virtio-net stack (kernel-side, out of
+  M6 scope), not the browser connect timeout.
 - **GIF** (`nsgif_redraw` single-frame bug) — minor; PNG/JPEG/ICO/SVG cover the
   image archetype.
 - **Charset fallback** — unchanged from M4/M5 (NetSurf default-charset/iconv).
