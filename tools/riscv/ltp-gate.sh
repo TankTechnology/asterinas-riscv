@@ -30,6 +30,7 @@ SERIAL_LOG="${REPO_ROOT}/target/ltp/ltp-gate-serial.log"
 SKIP_BUILD=0
 SMP_TIERS="1 4"
 REBUILD_KERNEL=0
+COMMAND_TIMEOUT=1200
 
 usage() {
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -42,6 +43,7 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD=1; shift ;;
         --rebuild-kernel) REBUILD_KERNEL=1; shift ;;
         --kernel) KERNEL_IMAGE="$2"; shift 2 ;;
+        --command-timeout) COMMAND_TIMEOUT="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -84,7 +86,8 @@ OVERALL=0
 for smp in ${SMP_TIERS}; do
     echo ""
     echo "===== LTP gate: SMP=${smp} ====="
-    if python3 "${BOOT_DRIVER}" --smp "${smp}" --serial-log "${SERIAL_LOG}.smp${smp}"; then
+    if python3 "${BOOT_DRIVER}" --smp "${smp}" --serial-log "${SERIAL_LOG}.smp${smp}" \
+        --command-timeout "${COMMAND_TIMEOUT}"; then
         echo "===== SMP=${smp}: PASS ====="
     else
         echo "===== SMP=${smp}: FAIL ====="
