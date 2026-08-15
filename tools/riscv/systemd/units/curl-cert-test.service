@@ -1,0 +1,31 @@
+[Unit]
+Description=TLS certificate behavior test (standalone curl)
+Documentation=man:curl(1)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+# The desktop busybox ships only the `sh` applet with no echo/[/test builtins,
+# so the curl matrix is run as 13 plain ExecStart= lines (each prefixed `-` to
+# survive a non-zero exit) rather than a shell script. curl's `-w` write-out
+# prints a self-describing one-liner; the OpenSSL error goes to stderr -> tty.
+# `rc=%{exitcode}` is the verdict (0 = fetched, 60 = cert rejected, 7 = connect
+# refused). Each line lands on the serial console via StandardOutput=tty.
+ExecStart=-/usr/bin/curl -sS --max-time 30 -o /dev/null -w 'TLS_TEST valid_default rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8443/
+ExecStart=-/usr/bin/curl -sS --max-time 30 -o /dev/null -w 'TLS_TEST expired_default rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8444/
+ExecStart=-/usr/bin/curl -sS --max-time 30 -o /dev/null -w 'TLS_TEST wronghost_default rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8445/
+ExecStart=-/usr/bin/curl -sS --max-time 30 -o /dev/null -w 'TLS_TEST selfsigned_default rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8446/
+ExecStart=-/usr/bin/curl -ksS --max-time 30 -o /dev/null -w 'TLS_TEST valid_k rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8443/
+ExecStart=-/usr/bin/curl -ksS --max-time 30 -o /dev/null -w 'TLS_TEST expired_k rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8444/
+ExecStart=-/usr/bin/curl -ksS --max-time 30 -o /dev/null -w 'TLS_TEST wronghost_k rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8445/
+ExecStart=-/usr/bin/curl -ksS --max-time 30 -o /dev/null -w 'TLS_TEST selfsigned_k rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8446/
+ExecStart=-/usr/bin/curl -sS --max-time 30 --cacert /etc/ssl/certs/ca-certificates.crt -o /dev/null -w 'TLS_TEST valid_cacert rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8443/
+ExecStart=-/usr/bin/curl -sS --max-time 30 --cacert /etc/ssl/certs/test-ca.crt -o /dev/null -w 'TLS_TEST valid_testca rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8443/
+ExecStart=-/usr/bin/curl -sS --max-time 30 --cacert /etc/ssl/certs/test-ca.crt -o /dev/null -w 'TLS_TEST expired_testca rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8444/
+ExecStart=-/usr/bin/curl -sS --max-time 30 --cacert /etc/ssl/certs/test-ca.crt -o /dev/null -w 'TLS_TEST wronghost_testca rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8445/
+ExecStart=-/usr/bin/curl -sS --max-time 30 --cacert /etc/ssl/certs/test-ca.crt -o /dev/null -w 'TLS_TEST selfsigned_testca rc=%{exitcode} http=%{http_code}\n' https://10.0.2.2:8446/
+StandardOutput=tty
+StandardError=tty
+
+[Install]
+WantedBy=graphical.target
