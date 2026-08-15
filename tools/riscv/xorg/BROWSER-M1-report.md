@@ -288,11 +288,115 @@ correctly; the M1 "CSS colour" mystery was entirely the crash-loop.
 |---|---|
 | `tools/riscv/xorg/BROWSER-M1-report.md` | this report |
 | `tools/riscv/xorg/build_netsurf.sh` | builds 13 core libs + `nsgtk` GTK2 frontend |
-| `tools/riscv/xorg/build_libcurl.sh` | static libcurl (no TLS) cross-build |
+| `tools/riscv/xorg/build_libcurl.sh` | static libcurl (with OpenSSL) cross-build |
 | `tools/riscv/xorg/netsurf-test.html` | the local render test page |
-| `tools/riscv/systemd/units/netsurf.service` | launches `netsurf-gtk` on the test page |
+| `tools/riscv/systemd/units/netsurf.service` | launches `netsurf-gtk` (URL via `/etc/netsurf.conf`) |
 | `tools/riscv/systemd/units/graphical.target` | now `Wants=` netsurf.service |
 | `tools/riscv/systemd/build_systemd_desktop.sh` | bundles netsurf-gtk + resources |
-| `target/riscv-cross/usr/bin/netsurf-gtk` | the built browser (18.2 MB) |
+| `target/riscv-cross/usr/bin/netsurf-gtk` | the built browser (23.5 MB after curl+OpenSSL) |
 | `target/riscv-cross/usr/lib/libcss.a` `libdom.a` … | the 13 static core libs |
 | `target/demo/asterinas-desktop.png` | the milestone screenshot |
+
+---
+
+## 11. M3 follow-up: HTTPS fetch — browser side verified, blocked by kernel networking
+
+**Status:** the curl+OpenSSL browser stack is verified *active at runtime* and the
+HTTPS fetch *reaches the curl fetcher*; the actual TLS handshake is blocked by a
+**kernel network-stack gap on RISC-V** (not a NetSurf/curl/OpenSSL issue).
+**Date:** 2026-08-15
+
+### 11.1 Runtime proof that the curl+OpenSSL build is active
+
+The rebuild (§5 now has `NETSURF_USE_CURL/OPENSSL := YES`) is not just linked —
+it registers and initialises at startup, logged to serial via the `-v` flag
+(commit 075bc5552's tty routing):
+
+```
+content/fetchers/curl.c:1493 fetch_curl_register: curl_version libcurl/8.14.1 OpenSSL/3.0.15 zlib/1.3.1
+content/fetchers/curl.c:1583 fetch_curl_register: cURL linked against openssl
+content/fetchers/curl.c:176  fetch_curl_initialise: Initialise cURL fetcher for http
+content/fetchers/curl.c:176  fetch_curl_initialise: Initialise cURL fetcher for https
+utils/nsoption.c:806 nsoption_commandline: ca_bundle = /etc/ssl/certs/ca-certificates.crt
+```
+
+Four facts confirmed: (1) `libcurl 8.14.1` compiled **with OpenSSL 3.0.15**; (2)
+explicit `cURL linked against openssl`; (3) **both** the `http` and `https`
+fetchers initialise; (4) the CA bundle path resolves. The binary is 23.5 MB
+(was 18.2 MB) — the ~5 MB delta is static libcurl + libssl + libcrypto. `nm`
+shows no curl/SSL symbols because `NETSURF_STRIP_BINARY := YES`; `strings`
+confirms them (`fetch_curl_multi`, `SSL_CTX_set_max_early_data`, …).
+
+### 11.2 Boot-verify infrastructure (independent /tmp disk)
+
+The shared `target/qemu-uboot/current/boot.ext4` is in use by the VNC QEMU, so
+all of this boots from an independent copy. `boot_systemd_desktop.py` gained
+`--boot-disk` (override path), `--net` (attach `virtio-net-device` via QEMU
+slirp user networking), and `--settle-seconds` (drain serial after desktop-up —
+NetSurf starts *after* the Xorg-input milestone that ends normal collection, so
+without this its fetch log is never captured). The rootfs gained glibc
+name-resolution (libnss_files/libnss_dns/libresolv + nsswitch.conf +
+resolv.conf → `nameserver 10.0.2.3`) and `netsurf.service` takes its start URL
+from `/etc/netsurf.conf` (`NETSURF_URL`).
+
+### 11.3 The fetch reaches curl, then dies in the kernel
+
+With `--net` and `NETSURF_URL=https://example.com/`, the browser navigates and
+the curl fetcher attempts the request:
+
+```
+content/fetchers/curl.c:842 fetch_curl_stop: fetch 0x…, url 'https://example.com/'
+content/fetchers/curl.c:1128 fetch_curl_done: Unknown cURL response code 6
+frontends/gtk/gui.c:513 nsgtk_warning: Could not resolve hostname
+```
+
+`code 6` = `CURLE_COULDNT_RESOLVE_HOST`. The DNS query (a UDP send to the
+slirp resolver at 10.0.2.3) never returns. To isolate DNS from TCP, a second
+run pinned `example.com` in `/etc/hosts` (so libnss_files resolves it without
+any UDP), which changed the failure to:
+
+```
+content/fetchers/curl.c:1128 fetch_curl_done: Unknown cURL response code 28
+frontends/gtk/gui.c:513 nsgtk_warning: Timeout was reached
+```
+
+`code 28` = `CURLE_OPERATION_TIMEDOUT` — the TCP connect to `104.20.23.154:443`
+never completed. So **neither UDP (DNS) nor TCP moves packets**: the kernel's
+network stack is not forwarding on RISC-V.
+
+### 11.4 Root cause is kernel-side, not browser-side
+
+The evidence that the *hardware + slirp* path is fine while the *kernel driver*
+is not: U-Boot — using its own virtio-net driver over the **same** device —
+already ran DHCP successfully before handing off:
+
+```
+Net:   eth0: virtio-net#3
+DHCP client bound to address 10.0.2.15 (2 ms)
+```
+
+and the kernel discovers the device (negotiating features, dropping the ones it
+doesn't support) but warns:
+
+```
+virtio: Network: `single_interrupt` ignored: no support for virtio-mmio devices
+```
+
+The kernel's `aster-virtio` network device has a full TX/RX + smoltcp
+(`aster_bigtcp`) poll implementation and registers `Virtio-Net`/`eth0`
+(10.0.2.15/24, gw 10.0.2.2 — exactly the slirp defaults), but no packet reaches
+the wire. This is a **pre-existing RISC-V kernel-networking gap** (interrupt
+routing / queue-notify on the virtio-MMIO transport), orthogonal to the browser.
+
+### 11.5 Conclusion and next step
+
+- **Browser side: done.** curl+OpenSSL is compiled in, registered, and attempts
+  HTTPS with the CA bundle in place. Enabling the curl fetcher did not
+  destabilise startup — no crash-loop (the `Restart=always` respawn that hid the
+  M2 bugs is absent).
+- **Blocker: kernel networking.** Actual `https://` fetch requires the
+  virtio-net MMIO path to move packets; that is a kernel milestone, not a
+  browser one.
+- **Next:** full webpage *rendering* verification can proceed on a local
+  `file://` page (unaffected by the network gap) — a richer HTML/CSS page than
+  the M1 test, exercised with a longer settle and a pixel-histogram check.
