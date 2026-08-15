@@ -595,6 +595,7 @@ fn clone_child_process(
             .default_timer_slack_ns(default_timer_slack_ns)
             .seccomp_mode(posix_thread.seccomp_mode())
             .seccomp_filter(posix_thread.seccomp_filter())
+            .sched_policy(ctx.thread.sched_attr().fork_child_policy())
         };
         #[cfg(target_arch = "x86_64")]
         {
