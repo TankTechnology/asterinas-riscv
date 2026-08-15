@@ -12,9 +12,10 @@
 #   * libraries:  HOST=<target ABI>  (e.g. riscv64-linux-gnu), NSSHARED=<buildsystem>
 #   * frontend:   HOST is `uname -s` (build platform), cross is via CC/PKG_CONFIG
 #
-# Network (libcurl/openssl) is DISABLED: the milestone renders a local HTML
-# file via file://, so no HTTP/HTTPS fetch is needed. SVG (libsvgtiny) and
-# RISC OS sprites (librosprite) are enabled; WEBP/RSVG/JS/GRESOURCE are off.
+# Network (libcurl/openssl) is ENABLED: the curl fetcher provides http(s)://
+# via a static libcurl (built with OpenSSL) + a static OpenSSL 3.0. SVG
+# (libsvgtiny) and RISC OS sprites (librosprite) are enabled; WEBP/RSVG/JS/
+# GRESOURCE are off. The runtime CA bundle path is /etc/ssl/certs/ca-certificates.crt.
 set -uo pipefail
 
 ROOT=/home/arch-anjie/Program/asterinas-riscv
@@ -72,8 +73,8 @@ build_libs() {
 write_frontend_config() {
     cat > "$BUNDLE/netsurf/Makefile.config" <<'EOF'
 # Downstream riscv64 static GTK2 build (NOT upstream).
-override NETSURF_USE_CURL := NO
-override NETSURF_USE_OPENSSL := NO
+override NETSURF_USE_CURL := YES
+override NETSURF_USE_OPENSSL := YES
 override NETSURF_USE_RSVG := NO
 override NETSURF_USE_NSSVG := YES
 override NETSURF_USE_ROSPRITE := YES
