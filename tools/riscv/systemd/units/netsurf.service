@@ -12,7 +12,7 @@ Environment=HOME=/root
 Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
 Environment=NETSURFRES=/usr/share/netsurf
 ExecStart=/usr/bin/netsurf-gtk file:///usr/share/netsurf/netsurf-test.html
-Restart=on-failure
+Restart=always
 RestartSec=3s
 StandardOutput=null
 StandardError=null
