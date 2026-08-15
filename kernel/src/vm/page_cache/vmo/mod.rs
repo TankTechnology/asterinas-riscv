@@ -24,7 +24,7 @@ use core::{
 use align_ext::AlignExt;
 use io_util::batch::IoBatch;
 use ostd::{
-    mm::{HasPaddr, io::util::HasVmReaderWriter},
+    mm::{HasPaddr, Paddr, io::util::HasVmReaderWriter},
     task::disable_preempt,
 };
 use xarray::{Cursor, LockedXArray, XArray};
@@ -334,6 +334,23 @@ impl Vmo {
     /// Higher layers may keep a smaller logical EOF alongside this capacity.
     pub fn size(&self) -> usize {
         self.size.load(Ordering::Acquire)
+    }
+
+    /// Returns the base physical address of a contiguous VMO.
+    ///
+    /// Only [`VmoFlags::CONTIGUOUS`] VMOs have a well-defined base address:
+    /// their pages are committed up front as one physically contiguous segment,
+    /// so the physical address of page 0 identifies the whole span. This is
+    /// what device drivers need to hand a guest physical address to a device.
+    ///
+    /// Returns `None` if the VMO is not contiguous or its first page has not
+    /// been committed yet.
+    pub fn paddr(&self) -> Option<Paddr> {
+        if !self.flags.contains(VmoFlags::CONTIGUOUS) {
+            return None;
+        }
+        let pages = self.pages.lock();
+        pages.cursor(0).load().map(|page| page.paddr())
     }
 
     /// Returns the status of writable mappings of the VMO.

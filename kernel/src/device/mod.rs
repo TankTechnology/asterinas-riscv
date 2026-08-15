@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod dri;
 mod evdev;
 mod fb;
 mod mem;
@@ -168,6 +169,7 @@ pub fn init_in_first_kthread() {
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();
     fb::init_in_first_kthread();
+    dri::init_in_first_kthread();
 }
 
 /// Initializes the device nodes in devtmpfs after mounting rootfs.
