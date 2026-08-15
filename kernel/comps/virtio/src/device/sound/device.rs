@@ -24,9 +24,9 @@ use ostd::{
 };
 
 use super::{
-    D_OUTPUT, FMT_S16, R_PCM_INFO, R_PCM_PREPARE, R_PCM_SET_PARAMS, R_PCM_START, RATE_48000, S_OK,
-    VQ_CONTROL, VQ_TX, VirtioSndHdr, VirtioSndPcmHdr, VirtioSndPcmInfo, VirtioSndPcmSetParams,
-    VirtioSndPcmStatus, VirtioSndPcmXfer, VirtioSndQueryInfo,
+    D_OUTPUT, FMT_S16, R_PCM_INFO, R_PCM_PREPARE, R_PCM_SET_PARAMS, R_PCM_START, R_PCM_STOP,
+    RATE_48000, S_OK, VQ_CONTROL, VQ_TX, VirtioSndHdr, VirtioSndPcmHdr, VirtioSndPcmInfo,
+    VirtioSndPcmSetParams, VirtioSndPcmStatus, VirtioSndPcmXfer, VirtioSndQueryInfo,
     config::{SoundFeatures, VirtioSoundConfig},
 };
 use crate::{
@@ -147,28 +147,47 @@ impl SoundDevice {
         self.streams.len()
     }
 
-    /// Runs the playback handshake (`SET_PARAMS`/`PREPARE`/`START`) exactly once.
+    /// Returns the playback stream id, or `None` when the device exposes no
+    /// output stream.
+    pub fn playback_stream(&self) -> Option<u32> {
+        if self.playback_stream == u32::MAX {
+            None
+        } else {
+            Some(self.playback_stream)
+        }
+    }
+
+    /// Runs the playback handshake (`SET_PARAMS`/`PREPARE`/`START`) exactly once
+    /// with the driver's default parameters (the raw-PCM path).
     pub fn prepare_playback(&self) -> Result<(), Error> {
         if self.playback_started.load(Ordering::Acquire) {
             return Ok(());
         }
-        let stream_id = self.playback_stream;
-        if stream_id == u32::MAX {
-            return Err(Error::IoError);
-        }
-
-        self.set_params(stream_id).map_err(virtio_err)?;
-        self.prepare(stream_id).map_err(virtio_err)?;
-        self.start(stream_id).map_err(virtio_err)?;
+        self.set_params(CHANNELS, FMT_S16, RATE_48000, BUFFER_BYTES, PERIOD_BYTES)?;
+        self.prepare()?;
+        self.start()?;
         self.playback_started.store(true, Ordering::Release);
         Ok(())
     }
 
     /// Writes up to one TX message worth of PCM frames and waits for the device
-    /// to consume them. Returns the number of bytes consumed from `reader`.
+    /// to consume them (raw-PCM path: auto-negotiates then streams).
     pub fn play(&self, reader: &mut VmReader<'_, Fallible>) -> Result<usize, Error> {
         self.prepare_playback()?;
-        let stream_id = self.playback_stream;
+        self.write_frames(reader)
+    }
+
+    /// Writes up to one TX message worth of PCM frames and waits for the device
+    /// to consume them. Returns the number of bytes consumed from `reader`.
+    ///
+    /// Unlike [`Self::play`], this does not negotiate or start the stream; the
+    /// caller is expected to have driven `SET_PARAMS`/`PREPARE`/`START` already
+    /// (the ALSA ioctl path).
+    pub fn write_frames(&self, reader: &mut VmReader<'_, Fallible>) -> Result<usize, Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
 
         // Copy PCM frames into the DMA buffer, bounded so the data never
         // overwrites the status area at the end of the page.
@@ -177,6 +196,31 @@ impl SoundDevice {
             writer.skip(TX_DATA_OFFSET).limit(TX_DATA_CAP);
             writer.write_fallible(reader).map_err(|(err, _)| err)?
         };
+        self.submit(stream_id, len)
+    }
+
+    /// Writes up to one TX message worth of PCM bytes from a kernel slice and
+    /// waits for the device to consume them (the ALSA `writei` path, which has
+    /// already copied the frames out of user space).
+    pub fn write_bytes(&self, data: &[u8]) -> Result<usize, Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
+        let data = &data[..data.len().min(TX_DATA_CAP)];
+        let len = data.len();
+        {
+            let mut writer = self.tx_buf.writer().unwrap();
+            writer.skip(TX_DATA_OFFSET).limit(TX_DATA_CAP);
+            let mut reader = VmReader::from(data);
+            writer.write(&mut reader);
+        }
+        self.submit(stream_id, len)
+    }
+
+    /// Submits `len` bytes (already staged in the TX DMA buffer at
+    /// `TX_DATA_OFFSET`) to the playback stream and waits for completion.
+    fn submit(&self, stream_id: u32, len: usize) -> Result<usize, Error> {
         if len == 0 {
             return Ok(0);
         }
@@ -234,7 +278,19 @@ impl SoundDevice {
         Ok(len)
     }
 
-    fn set_params(&self, stream_id: u32) -> Result<(), VirtioDeviceError> {
+    /// Parameterizes the playback stream (`VIRTIO_SND_R_PCM_SET_PARAMS`).
+    pub fn set_params(
+        &self,
+        channels: u8,
+        format: u8,
+        rate: u8,
+        buffer_bytes: u32,
+        period_bytes: u32,
+    ) -> Result<(), Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
         let req = VirtioSndPcmSetParams {
             hdr: VirtioSndPcmHdr {
                 hdr: VirtioSndHdr {
@@ -242,31 +298,57 @@ impl SoundDevice {
                 },
                 stream_id,
             },
-            buffer_bytes: BUFFER_BYTES,
-            period_bytes: PERIOD_BYTES,
+            buffer_bytes,
+            period_bytes,
             features: 0,
-            channels: CHANNELS,
-            format: FMT_S16,
-            rate: RATE_48000,
+            channels,
+            format,
+            rate,
             padding: 0,
         };
         let mut queue = self.control_queue.lock();
-        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())?;
-        check_ok(code)
+        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())
+            .map_err(virtio_err)?;
+        check_ok(code).map_err(virtio_err)
     }
 
-    fn prepare(&self, stream_id: u32) -> Result<(), VirtioDeviceError> {
+    /// Prepares the playback stream (`VIRTIO_SND_R_PCM_PREPARE`).
+    pub fn prepare(&self) -> Result<(), Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
         let req = pcm_hdr(R_PCM_PREPARE, stream_id);
         let mut queue = self.control_queue.lock();
-        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())?;
-        check_ok(code)
+        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())
+            .map_err(virtio_err)?;
+        check_ok(code).map_err(virtio_err)
     }
 
-    fn start(&self, stream_id: u32) -> Result<(), VirtioDeviceError> {
+    /// Starts the playback stream (`VIRTIO_SND_R_PCM_START`).
+    pub fn start(&self) -> Result<(), Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
         let req = pcm_hdr(R_PCM_START, stream_id);
         let mut queue = self.control_queue.lock();
-        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())?;
-        check_ok(code)
+        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())
+            .map_err(virtio_err)?;
+        check_ok(code).map_err(virtio_err)
+    }
+
+    /// Stops the playback stream (`VIRTIO_SND_R_PCM_STOP`).
+    pub fn stop(&self) -> Result<(), Error> {
+        let stream_id = match self.playback_stream() {
+            Some(id) => id,
+            None => return Err(Error::IoError),
+        };
+        let req = pcm_hdr(R_PCM_STOP, stream_id);
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(&mut queue, &self.control_buf, &req, size_of::<u32>())
+            .map_err(virtio_err)?;
+        check_ok(code).map_err(virtio_err)
     }
 }
 

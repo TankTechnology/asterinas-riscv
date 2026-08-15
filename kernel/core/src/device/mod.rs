@@ -8,6 +8,7 @@ pub(crate) mod misc;
 mod model;
 mod pty;
 pub mod registry;
+mod snd;
 pub(crate) mod tty;
 
 use device_id::DeviceId;
