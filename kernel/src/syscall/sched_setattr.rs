@@ -21,9 +21,17 @@ pub fn sys_sched_setattr(
     }
 
     let attr = read_linux_sched_attr_from_user(addr, ctx)?;
+
+    // `SCHED_FLAG_RESET_ON_FORK` is carried in `sched_flags` (see
+    // `<linux/sched/types.h>`), unlike the legacy `sched_setscheduler` API
+    // which folds it into the `policy` argument.
+    const SCHED_FLAG_RESET_ON_FORK: u64 = 0x01;
+    let reset_on_fork = (attr.sched_flags & SCHED_FLAG_RESET_ON_FORK) != 0;
+
     let policy = SchedPolicy::try_from(attr)?;
     access_sched_attr_with(tid, ctx, |attr| {
         attr.set_policy(policy);
+        attr.set_reset_on_fork(reset_on_fork);
         Ok(())
     })?;
 
