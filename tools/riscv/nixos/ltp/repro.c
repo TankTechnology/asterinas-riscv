@@ -7,11 +7,14 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int nfail = 0;
@@ -98,6 +101,87 @@ int main(void) {
     errno = 0;
     long ac = access(file, X_OK);
     printf("[raw] access(%s, X_OK) = %ld errno=%d %s\n", file, ac, errno, strerror(errno));
+
+    // sched_setscheduler(SCHED_FIFO | SCHED_RESET_ON_FORK) then fork: the child
+    // must be reset to SCHED_NORMAL (0) with priority 0. SCHED_RESET_ON_FORK =
+    // 0x40000000 (musl does not export it). Exercises the raw sched_* syscalls.
+    {
+        struct sched_param p = { .sched_priority = 10 };
+        errno = 0;
+        long s = syscall(SYS_sched_setscheduler, getpid(),
+                         SCHED_FIFO | 0x40000000u, &p);
+        printf("[raw] sched_setscheduler(FIFO|RESET_ON_FORK,prio=10) ret=%ld errno=%d %s\n",
+               s, errno, strerror(errno));
+
+        int pfd[2];
+        if (pipe(pfd) != 0) {
+            printf("[FAIL] sched pipe setup\n");
+            nfail++;
+        } else {
+            pid_t c = fork();
+            if (c == 0) {
+                char ch;
+                (void)read(pfd[0], &ch, 1);   // block until parent has queried
+                _exit(0);
+            }
+            close(pfd[0]);
+            int pol = sched_getscheduler(c);
+            int perr = errno;
+            struct sched_param gp = { .sched_priority = -1 };
+            (void)sched_getparam(c, &gp);
+            int ppol = sched_getscheduler(getpid());
+            printf("[sched] child policy=%d (want %d=SCHED_NORMAL) prio=%d (want 0) parent policy=%d (want %d=SCHED_FIFO)\n",
+                   pol, SCHED_OTHER, gp.sched_priority, ppol, SCHED_FIFO);
+            check("sched: child policy reset to SCHED_NORMAL",
+                  pol == SCHED_OTHER, pol, perr);
+            check("sched: child prio reset to 0",
+                  gp.sched_priority == 0, gp.sched_priority, errno);
+            check("sched: parent policy remains SCHED_FIFO",
+                  ppol == SCHED_FIFO, ppol, errno);
+
+            // Raw sched_getscheduler(120) / sched_getparam(121) bypass musl's
+            // wrappers, to isolate a kernel bug from a musl-wrapper bug.
+            errno = 0;
+            long rg = syscall(120, c);   // SYS_sched_getscheduler
+            int rge = errno;
+            printf("[raw] SYS_sched_getscheduler(%d) = %ld errno=%d %s\n",
+                   c, rg, rge, strerror(rge));
+            errno = 0;
+            long rp = syscall(121, c, &gp);   // SYS_sched_getparam
+            int rpe = errno;
+            printf("[raw] SYS_sched_getparam(%d) ret=%ld errno=%d prio=%d\n",
+                   c, rp, rpe, gp.sched_priority);
+            errno = 0;
+            long rgs = syscall(120, getpid());   // parent raw getscheduler
+            printf("[raw] SYS_sched_getscheduler(parent) = %ld errno=%d\n",
+                   rgs, errno);
+            (void)write(pfd[1], "x", 1);
+            close(pfd[1]);
+            int st = 0;
+            (void)waitpid(c, &st, 0);
+        }
+    }
+
+    // Fork latency under TCG: fork06 (1000 forks), fcntl14(_64) (5000 forks) and
+    // epoll01 (fork-per-test in epoll_ctl) all timeout because a single fork is
+    // ~O(address-space) under QEMU TCG. Measure it to quantify the 3 TIMEOUTs.
+    {
+        int NF = 20;
+        struct timespec t0, t1;
+        (void)clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < NF; i++) {
+            pid_t c = fork();
+            if (c == 0)
+                _exit(0);
+            int st;
+            (void)waitpid(c, &st, 0);
+        }
+        (void)clock_gettime(CLOCK_MONOTONIC, &t1);
+        long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
+                  (t1.tv_nsec - t0.tv_nsec) / 1000;
+        printf("[fork] %d fork+wait cycles = %ld us (%.1f ms/fork)\n",
+               NF, us, (double)us / NF / 1000.0);
+    }
 
     printf("__LTP_GATE_DONE__\n");
     if (nfail == 0)
