@@ -26,20 +26,26 @@ BOOT_DRIVER="${SRC_DIR}/boot_systemd_desktop.py"
 KERNEL_IMAGE="${ASTERINAS_RISCV_BOOTI:-${REPO_ROOT}/target/osdk/aster-kernel-osdk-bin.Image}"
 DTB="${REPO_ROOT}/target/qemu-uboot/current/qemu-virt.dtb"
 UBOOT="${REPO_ROOT}/target/qemu-uboot/cache/u-boot-build/u-boot"
-OUT_DIR="${OUT_DIR:-/tmp/browser-m5}"
+OUT_DIR="${OUT_DIR:-/tmp/browser-m6}"
 PARALLEL="${PARALLEL:-3}"
-SETTLE="${SETTLE:-180}"
+SETTLE="${SETTLE:-300}"
 COLLECT="${COLLECT:-300}"
+RETRY="${RETRY:-1}"
 
-# name|url  — one entry per page archetype.
+# name|url  — one entry per page archetype. M6 adds the image-test page (local,
+# deterministic) plus doc and news archetypes on top of the M5 set.
 ALL_SITES=(
   "home|file:///usr/share/netsurf/netsurf-home.html"
+  "imagetest|file:///usr/share/netsurf/netsurf-imagetest.html"
   "iana|https://www.iana.org/"
   "infocern|https://info.cern.ch/"
   "hackernews|https://news.ycombinator.com/"
   "wikipedia|https://en.wikipedia.org/wiki/RISC-V"
   "example|https://example.com/"
   "csszengarden|https://www.csszengarden.com/"
+  "man7|https://man7.org/linux/man-pages/man2/open.2.html"
+  "rfc|https://www.rfc-editor.org/rfc/rfc768.html"
+  "cnnlite|https://lite.cnn.com/"
 )
 
 die() { echo "render_matrix: $*" >&2; exit 2; }
@@ -95,14 +101,26 @@ boot_site() {
     local disk="$dir/boot.ext4" sock="$dir/mon.sock" log="$dir/serial.log"
     local ppm="$dir/shot.ppm" png="$dir/shot.png"
     echo "[boot] $name starting"
-    python3 "$BOOT_DRIVER" \
-        --boot-disk "$disk" --net \
-        --mon-sock "$sock" \
-        --serial-log "$log" \
-        --screenshot "$ppm" \
-        --settle-seconds "$SETTLE" \
-        --collect-timeout "$COLLECT" \
-        > "$dir/boot.out" 2>&1
+    # The 91 MB raw-cpio initramfs unpack in the kernel can be non-deterministically
+    # slow (M5 §3.2), and NetSurf's own startup can stall (M1). Retry a boot that
+    # never reached userspace or never navigated NetSurf to a page.
+    for attempt in $(seq 1 $((RETRY + 1))); do
+        rm -f "$sock" "$ppm" "$log" "$png"
+        python3 "$BOOT_DRIVER" \
+            --boot-disk "$disk" --net \
+            --mon-sock "$sock" \
+            --serial-log "$log" \
+            --screenshot "$ppm" \
+            --settle-seconds "$SETTLE" \
+            --collect-timeout "$COLLECT" \
+            > "$dir/boot.out" 2>&1
+        if grep -qa 'rootfs is ready' "$log" 2>/dev/null \
+           && grep -qa 'browser_window_navigate' "$log" 2>/dev/null; then
+            echo "[boot] $name: reached userspace + navigated (attempt $attempt)"
+            break
+        fi
+        echo "[boot] $name: attempt $attempt did not navigate; retrying"
+    done
     if [ -s "$ppm" ]; then
         if command -v magick >/dev/null 2>&1; then magick "$ppm" "$png"
         elif command -v convert >/dev/null 2>&1; then convert "$ppm" "$png"; fi
@@ -110,7 +128,7 @@ boot_site() {
     echo "[boot] $name done"
 }
 
-echo "=== BROWSER-M5 render matrix: ${#SITES[@]} site(s) ==="
+echo "=== BROWSER-M6 render matrix: ${#SITES[@]} site(s) ==="
 
 # Prepare all sites sequentially (fast; the build script shares one rootfs dir).
 for entry in "${SITES[@]}"; do
