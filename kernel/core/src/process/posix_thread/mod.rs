@@ -38,6 +38,7 @@ mod personality;
 mod posix_thread_ext;
 pub(crate) mod ptrace;
 mod robust_list;
+mod rseq;
 mod thread_local;
 
 pub(crate) use builder::PosixThreadBuilder;
@@ -46,6 +47,10 @@ pub(crate) use exit::{do_exit, do_exit_group};
 pub(crate) use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub(crate) use robust_list::RobustListHead;
+pub(crate) use rseq::{
+    Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
+    RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+};
 #[cfg(target_arch = "x86_64")]
 pub(crate) use thread_local::SuppUserContext;
 pub(crate) use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
