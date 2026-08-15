@@ -43,6 +43,12 @@ impl TryFrom<UserIoVec> for IoVec {
 
 impl IoVec {
     /// Returns whether the `IoVec` points to an empty user buffer.
+    ///
+    /// Only a zero length makes a buffer empty. A `NULL` `iov_base` with a
+    /// non-zero `iov_len` is an *invalid* buffer, not an empty one: it must be
+    /// passed through so the subsequent copy faults and returns `EFAULT`
+    /// (matching Linux's `readv`/`writev` semantics), rather than being silently
+    /// dropped as if it had zero length.
     const fn is_empty(&self) -> bool {
         self.len == 0
     }
