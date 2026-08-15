@@ -236,6 +236,30 @@ else
     echo "WARNING: ${HOST_CA_BUNDLE} not found; HTTPS cert verification will fail" >&2
 fi
 
+# 13d. glibc name-resolution runtime: the resolver (libresolv) + the NSS
+#      modules libnss_files (for /etc/hosts) and libnss_dns (for DNS queries),
+#      plus nsswitch.conf / resolv.conf. The desktop rootfs only ships the base
+#      glibc closure (libc/libm/...); without these, getaddrinfo(3) cannot map a
+#      hostname to an address and every networked client (NetSurf's curl
+#      fetcher) fails DNS. The nameserver is QEMU slirp's built-in resolver,
+#      which the kernel's hardcoded eth0 (10.0.2.15/24, gw 10.0.2.2) reaches
+#      through `-netdev user` in the boot driver.
+for nss_lib in libnss_files.so.2 libnss_dns.so.2 libresolv.so.2; do
+    if [ -f "${SYSROOT_LIB}/${nss_lib}" ]; then
+        cp -L "${SYSROOT_LIB}/${nss_lib}" "${ROOTFS}/lib/"
+    else
+        echo "WARNING: ${SYSROOT_LIB}/${nss_lib} not found; guest DNS will fail" >&2
+    fi
+done
+cat > "${ROOTFS}/etc/nsswitch.conf" <<'EOF'
+passwd: files
+group:  files
+hosts:  files dns
+EOF
+cat > "${ROOTFS}/etc/resolv.conf" <<'EOF'
+nameserver 10.0.2.3
+EOF
+
 # 14. terminfo database for xterm (the `x`/ directory only; the full ncurses DB
 #     is ~12 MB and unnecessary — xterm/linux/vt100 fallbacks are compiled into
 #     libtinfo).
