@@ -27,6 +27,11 @@
 #define MENU_Y 8
 #define MENU_W 24
 #define MENU_H (PANEL_H - 16)
+/* Second launcher (NetSurf) sits to the right of the start button. */
+#define WEB_X (MENU_X + MENU_W + 8)
+#define WEB_Y MENU_Y
+#define WEB_W 24
+#define WEB_H (PANEL_H - 16)
 
 /* 7-segment digit geometry (in pixels). */
 #define SEG_T 3
@@ -93,6 +98,14 @@ static void draw_menu_button(void) {
     rect(MENU_X + 4, MENU_Y + 16, MENU_W - 8, 2, fg);
 }
 
+static void draw_web_button(void) {
+    /* Raised button body + a small "web page" glyph (outline + dot). */
+    rect(WEB_X, WEB_Y, WEB_W, WEB_H, accent);
+    rect(WEB_X + 6, WEB_Y + 5, WEB_W - 12, WEB_H - 10, fg); /* page outline */
+    rect(WEB_X + 4, WEB_Y + 4, 3, 3, bg);                   /* fold corner */
+    rect(WEB_X + 10, WEB_Y + WEB_H - 9, 3, 3, bg);          /* content dot */
+}
+
 static void draw_clock(void) {
     time_t now = time(NULL);
     struct tm tm;
@@ -115,6 +128,7 @@ static void draw_panel(void) {
     int w = DisplayWidth(dpy, screen);
     rect(0, 0, w, PANEL_H, bg);
     draw_menu_button();
+    draw_web_button();
     draw_clock();
 }
 
@@ -122,6 +136,15 @@ static void spawn_xterm(void) {
     pid_t pid = fork();
     if (pid == 0) {
         char *argv[] = { "/usr/bin/xterm", NULL };
+        execv(argv[0], argv);
+        _exit(1);
+    }
+}
+
+static void spawn_netsurf(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *argv[] = { "/usr/bin/netsurf-gtk", NULL };
         execv(argv[0], argv);
         _exit(1);
     }
@@ -183,6 +206,9 @@ int main(void) {
                 if (b->x >= MENU_X && b->x <= MENU_X + MENU_W &&
                     b->y >= MENU_Y && b->y <= MENU_Y + MENU_H) {
                     spawn_xterm();
+                } else if (b->x >= WEB_X && b->x <= WEB_X + WEB_W &&
+                           b->y >= WEB_Y && b->y <= WEB_Y + WEB_H) {
+                    spawn_netsurf();
                 }
             }
         }

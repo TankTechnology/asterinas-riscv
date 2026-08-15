@@ -260,6 +260,22 @@ cat > "${ROOTFS}/etc/resolv.conf" <<'EOF'
 nameserver 10.0.2.3
 EOF
 
+# 13e. Default-browser experience: a local start/home page, a pre-populated
+#      hotlist (bookmarks), and a Choices file pinning the homepage so NetSurf's
+#      Home button returns to the bundled start page. These are plain text/HTML,
+#      architecture-independent, versioned in tools/riscv/xorg/.
+mkdir -p "${ROOTFS}/root/.netsurf"
+cp "${SRC_DIR}/../xorg/netsurf-home.html"   "${ROOTFS}/usr/share/netsurf/netsurf-home.html"
+cp "${SRC_DIR}/../xorg/netsurf-hotlist.html" "${ROOTFS}/root/.netsurf/Hotlist"
+cp "${SRC_DIR}/../xorg/netsurf-choices"      "${ROOTFS}/root/.netsurf/Choices"
+
+# Optional per-site start URL (render-matrix testing): if NETSURF_URL is set in
+# the environment, bake it into /etc/netsurf.conf so the unit's EnvironmentFile
+# overrides the bundled local home page for network fetch/render tests.
+if [ -n "${NETSURF_URL:-}" ]; then
+    printf 'NETSURF_URL=%s\n' "${NETSURF_URL}" > "${ROOTFS}/etc/netsurf.conf"
+fi
+
 # 14. terminfo database for xterm (the `x`/ directory only; the full ncurses DB
 #     is ~12 MB and unnecessary — xterm/linux/vt100 fallbacks are compiled into
 #     libtinfo).
