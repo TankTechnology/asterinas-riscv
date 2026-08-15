@@ -17,10 +17,10 @@ fn parse_node(node: FdtNode<'_, '_>) -> Option<BootloaderFramebufferArg> {
         return None;
     }
 
-    if let Some(status) = node.property("status") {
-        if !matches!(status.as_str()?, "ok" | "okay") {
-            return None;
-        }
+    if let Some(status) = node.property("status")
+        && !matches!(status.as_str()?, "ok" | "okay")
+    {
+        return None;
     }
 
     let region = node.reg()?.next()?;
