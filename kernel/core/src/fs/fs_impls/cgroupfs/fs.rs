@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
+use alloc::{sync::{Arc, Weak}, vec::Vec};
 
-use aster_systree::EmptyNode;
+use aster_systree::{EmptyNode, SysBranchNode, SysObj};
 use ostd::task::Task;
 use spin::Once;
 
-use super::inode::CgroupInode;
+use super::{inode::CgroupInode, systree_node::CgroupSystem};
 use crate::{
+    error::{Errno, Error},
     fs::{
         Result,
         pseudofs::AnonDeviceId,
-        utils::systree_inode::SysTreeInodeTy,
+        utils::systree_inode::{SysTreeInodeTy, SysTreeNodeKind},
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::Inode,
@@ -77,9 +78,58 @@ impl FileSystem for CgroupFs {
         self.sb.clone()
     }
 
+    fn fh_to_inode(&self, fh: &[u8]) -> Result<Arc<dyn Inode>> {
+        // The default `encode_file_handle` emits a little-endian `u64` inode
+        // number. cgroupfs encodes a branch node's inode number as `node_id << 8`
+        // (see `fs::utils::systree_inode::ino`), so recovering the node only
+        // requires shifting the ID back out and walking the tree for a match.
+        let ino = <[u8; 8]>::try_from(fh)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cgroup file handle"))?;
+        let ino = u64::from_le_bytes(ino);
+        let node_id = ino >> 8;
+
+        let root: Arc<dyn SysBranchNode> = CgroupSystem::singleton().clone();
+        let node = find_branch_node_by_id(root, node_id)
+            .ok_or_else(|| Error::with_message(Errno::ESTALE, "stale cgroup file handle"))?;
+
+        let sb = self.sb();
+        let inode: Arc<dyn Inode> = CgroupInode::new_branch_dir(
+            SysTreeNodeKind::Branch(node),
+            None,
+            Weak::new(),
+            &sb,
+        );
+        Ok(inode)
+    }
+
     fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
         &self.fs_event_subscriber_stats
     }
+}
+
+/// Searches the cgroup `SysTree` for a branch node with the given `SysNodeId`.
+///
+/// Node IDs are assigned monotonically and are never reused, so a matching ID
+/// is globally unique. cgroup trees are small in practice, making a simple
+/// depth-first walk adequate.
+fn find_branch_node_by_id(
+    root: Arc<dyn SysBranchNode>,
+    id: u64,
+) -> Option<Arc<dyn SysBranchNode>> {
+    if root.id().as_u64() == id {
+        return Some(root);
+    }
+
+    let mut stack: Vec<Arc<dyn SysObj>> = root.children();
+    while let Some(obj) = stack.pop() {
+        if obj.id().as_u64() == id {
+            return obj.cast_to_branch();
+        }
+        if let Some(branch) = obj.cast_to_branch() {
+            stack.extend(branch.children());
+        }
+    }
+    None
 }
 
 pub(super) struct CgroupFsType;
