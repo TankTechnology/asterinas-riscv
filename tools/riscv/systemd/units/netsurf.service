@@ -1,5 +1,5 @@
 [Unit]
-Description=NetSurf web browser (local HTML render)
+Description=NetSurf web browser (curl+OpenSSL build, local HTML render)
 After=xorg.service matchbox-window-manager.service
 Requires=xorg.service
 PartOf=graphical.target
@@ -11,7 +11,10 @@ Environment=DISPLAY=:0
 Environment=HOME=/root
 Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
 Environment=NETSURFRES=/usr/share/netsurf
-ExecStart=/usr/bin/netsurf-gtk -v file:///usr/share/netsurf/netsurf-test.html
+# curl fetcher is now compiled in (NETSURF_USE_CURL/OPENSSL := YES); point it at
+# the bundled CA store. Actual http(s):// fetch also needs a guest network
+# device, which the boot driver does not yet attach (future milestone).
+ExecStart=/usr/bin/netsurf-gtk -v --ca_bundle /etc/ssl/certs/ca-certificates.crt file:///usr/share/netsurf/netsurf-test.html
 Restart=always
 RestartSec=3s
 StandardOutput=tty
