@@ -37,6 +37,7 @@ RETRY="${RETRY:-1}"
 ALL_SITES=(
   "home|file:///usr/share/netsurf/netsurf-home.html"
   "imagetest|file:///usr/share/netsurf/netsurf-imagetest.html"
+  "giftest|file:///usr/share/netsurf/netsurf-giftest.html"
   "iana|https://www.iana.org/"
   "infocern|https://info.cern.ch/"
   "hackernews|https://news.ycombinator.com/"

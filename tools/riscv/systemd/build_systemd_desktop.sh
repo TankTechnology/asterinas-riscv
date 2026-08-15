@@ -291,6 +291,14 @@ if [ -f "${SRC_DIR}/../xorg/netsurf-imagetest.html" ]; then
     cp "${SRC_DIR}/../xorg/imgtest/"img-* "${ROOTFS}/usr/share/netsurf/imgtest/" 2>/dev/null || true
 fi
 
+# 13g. GIF render test: the same GIF as imagetest but placed at the top of the
+#      page so it is above the window fold — the M6 imagetest page's GIF row
+#      sits below the JPEG row and is clipped off the bottom of the window, which
+#      made "GIF absent" unreadable as a decode signal. Deterministic, no network.
+if [ -f "${SRC_DIR}/../xorg/netsurf-giftest.html" ]; then
+    cp "${SRC_DIR}/../xorg/netsurf-giftest.html" "${ROOTFS}/usr/share/netsurf/netsurf-giftest.html"
+fi
+
 # Optional per-site start URL (render-matrix testing): if NETSURF_URL is set in
 # the environment, bake it into /etc/netsurf.conf so the unit's EnvironmentFile
 # overrides the bundled local home page for network fetch/render tests.
