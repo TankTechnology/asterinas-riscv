@@ -6,17 +6,26 @@
 <style>
   body { background: #f4e8d0; color: #202028; font-family: sans-serif; margin: 2em; }
   h1 { color: #1a4f8b; border-bottom: 4px solid #1a4f8b; }
+  h2 { color: #1a4f8b; }
   .banner { background: #1a4f8b; color: #ffffff; padding: 1em; font-weight: bold; }
   table { border-collapse: collapse; }
   td, th { border: 2px solid #202028; padding: 0.4em 1em; }
   th { background: #dcdad5; }
   .foot { font-style: italic; color: #7a4b12; }
+  ul.features li { margin: 0.3em 0; }
+  blockquote { border-left: 4px solid #1a4f8b; background: #ffffff; padding: 0.5em 1em; }
+  .imgbox { float: right; background: #ffffff; border: 2px solid #202028; padding: 0.5em; margin: 0 0 1em 1em; }
 </style>
 </head>
 <body bgcolor="#f4e8d0">
 <h1>NetSurf on Asterinas RISC-V</h1>
 
 <p class="banner">BROWSER-M1: the last piece of the desktop puzzle.</p>
+
+<div class="imgbox">
+  <img src="file:///usr/share/netsurf/netsurf.png" width="308" height="86" alt="NetSurf logo">
+  <br><small>The NetSurf logo, decoded by libpng.</small>
+</div>
 
 <h2>Milestone</h2>
 <p>
@@ -25,6 +34,16 @@ cross-compiled for <code>riscv64</code> and running on the Asterinas RISC-V
 framebuffer desktop (Xorg + matchbox-wm + GTK2).
 </p>
 
+<h2>What this page exercises</h2>
+<ul class="features">
+  <li><b>CSS colour styling</b> &mdash; author stylesheet colours (cream body,
+      blue headings, grey table headers).</li>
+  <li><b>HTML tables</b> &mdash; collapsed borders, header shading.</li>
+  <li><b>Block-level layout</b> &mdash; headings, paragraphs, lists, quotes.</li>
+  <li><b>Image decoding</b> &mdash; the PNG logo at right, fetched by
+      <code>&lt;img&gt;</code> and decoded via libpng.</li>
+</ul>
+
 <h2>Component table</h2>
 <table border="2">
   <tr><th>Library</th><th>Role</th></tr>
@@ -32,8 +51,15 @@ framebuffer desktop (Xorg + matchbox-wm + GTK2).
   <tr><td>libdom</td><td>Document Object Model</td></tr>
   <tr><td>libhubbub</td><td>HTML5 tokeniser / tree builder</td></tr>
   <tr><td>libnsbmp / libnsgif</td><td>BMP / GIF image decoders</td></tr>
+  <tr><td>libpng</td><td>PNG image decoder</td></tr>
 </table>
 
-<p class="foot">file:// local render &mdash; no network fetcher required for this milestone.</p>
+<blockquote>
+  NetSurf is a small, fast web browser. On Asterinas it is a mostly-static
+  binary &mdash; GTK2, Pango, Cairo, libcss/libdom/libhubbub and libcurl are all
+  linked statically; only glibc is dynamic.
+</blockquote>
+
+<p class="foot">file:// local render &mdash; full page: CSS, tables, lists and an image.</p>
 </body>
 </html>
