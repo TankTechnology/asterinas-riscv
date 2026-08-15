@@ -17,7 +17,7 @@ use bitflags::bitflags;
 use component::{ComponentInitError, init_component};
 use device::{
     VirtioDeviceType, block::device::BlockDevice, console::device::ConsoleDevice,
-    entropy::device::EntropyDevice, filesystem::device::FileSystemDevice,
+    entropy::device::EntropyDevice, filesystem::device::FileSystemDevice, gpu::device::GpuDevice,
     input::device::InputDevice, network::device::NetworkDevice, socket::device::SocketDevice,
 };
 use ostd::{error, warn};
@@ -49,6 +49,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
     transport::init();
 
     device::entropy::init();
+    device::gpu::init();
     device::network::init();
     device::socket::init();
 
@@ -108,6 +109,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
             VirtioDeviceType::Network => NetworkDevice::init(device_transport),
             VirtioDeviceType::Socket => SocketDevice::init(device_transport),
             VirtioDeviceType::FileSystem => FileSystemDevice::init(device_transport),
+            VirtioDeviceType::Gpu => GpuDevice::init(device_transport),
             _ => {
                 warn!("Found unimplemented device: {:?}", device_type);
                 Ok(())
@@ -146,6 +148,7 @@ fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) {
         VirtioDeviceType::FileSystem => {
             FileSystemDevice::negotiate_features(device_specified_features)
         }
+        VirtioDeviceType::Gpu => GpuDevice::negotiate_features(device_specified_features),
         _ => device_specified_features,
     };
     let mut support_feature = Feature::from_bits_truncate(features);
