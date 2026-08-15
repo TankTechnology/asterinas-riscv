@@ -96,6 +96,13 @@ build_frontend() {
     # $(OBJROOT) without depending on the $(OBJROOT)/created dir, so under -j it
     # can run before any object file has made the directory. Pre-create it.
     mkdir -p "$BUNDLE/netsurf/build/Linux-gtk" "$BUNDLE/netsurf/build/Linux-gtk/deps"
+    # Static GTK + GtkBuilder: the .ui files reference widget types (GtkStatusbar,
+    # GtkHPaned, GtkLayout, …) that NetSurf never calls directly, so the static
+    # linker drops their objects (e.g. gtkstatusbar.o) and GtkBuilder's lazy type
+    # resolution (g_module_symbol("gtk_statusbar_get_type")) fails at runtime with
+    # "Invalid object type `GtkStatusbar'". --whole-archive forces every libgtk
+    # object in; --export-dynamic exposes the *_get_type symbols to dlsym.
+    export LDFLAGS="-L$PREFIX/lib -Wl,--export-dynamic -Wl,--whole-archive -lgtk-x11-2.0 -Wl,--no-whole-archive"
     make -C "$BUNDLE/netsurf" \
         TARGET=gtk \
         CC="$HOST-gcc" \
@@ -113,6 +120,15 @@ build_frontend() {
         PREFIX="$PREFIX" \
         install \
         || { echo "FAILED: netsurf install"; return 1; }
+    # The upstream install-gtk target omits the `accelerators` resource from
+    # GTK_RESOURCES_LIST. It is only needed as a *file* when the gresource is
+    # disabled (NETSURF_USE_GRESOURCE := NO) — otherwise it lives inside the
+    # compiled gresource. With it missing, nsgtk_init_resources() fails with
+    # "Unable to find resource accelerators", nsgtk exits status 1, and the
+    # systemd Restart=always loop keeps respawning it before it ever renders a
+    # page. Install it explicitly so the file-based resource path is complete.
+    install -m 0644 "$BUNDLE/netsurf/frontends/gtk/res/accelerators" \
+        "$PREFIX/share/netsurf/accelerators"
 }
 
 verify() {
