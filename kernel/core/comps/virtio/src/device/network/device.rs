@@ -10,7 +10,7 @@ use aster_bigtcp::{
     },
 };
 use aster_util::slot_vec::SlotVec;
-use ostd::{arch::trap::TrapFrame, debug, sync::SpinLock, warn};
+use ostd::{arch::trap::TrapFrame, debug, info, sync::SpinLock, warn};
 
 use super::{config::VirtioNetConfig, header::VirtioNetHdr};
 use crate::{
@@ -123,9 +123,11 @@ impl NetworkDevice {
 
         /// Interrupt handlers if network device receives/sends some packet
         fn handle_send_event(_: &TrapFrame) {
+            info!("virtio-net: send queue interrupt");
             aster_network::raise_send_softirq();
         }
         fn handle_recv_event(_: &TrapFrame) {
+            info!("virtio-net: recv queue interrupt");
             aster_network::raise_receive_softirq();
         }
 
