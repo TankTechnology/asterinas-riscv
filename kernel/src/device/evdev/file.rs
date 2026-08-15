@@ -415,7 +415,7 @@ impl FileOps for EvdevFile {
         const EVENT_SIZE: usize = size_of::<EvdevEvent>();
 
         let total = reader.remain();
-        if total % EVENT_SIZE != 0 {
+        if !total.is_multiple_of(EVENT_SIZE) {
             return_errno_with_message!(
                 Errno::EINVAL,
                 "the write buffer is not a multiple of `input_event` size"
