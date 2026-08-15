@@ -119,6 +119,7 @@ macro_rules! import_generic_syscall_entries {
             rt_sigreturn::sys_rt_sigreturn,
             rt_sigsuspend::sys_rt_sigsuspend,
             rt_sigtimedwait::sys_rt_sigtimedwait,
+            rseq::sys_rseq,
             sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
             sched_get_priority_max::sys_sched_get_priority_max,
             sched_get_priority_min::sys_sched_get_priority_min,
@@ -172,6 +173,7 @@ macro_rules! import_generic_syscall_entries {
             statx::sys_statx,
             symlink::sys_symlinkat,
             sync::{sys_sync, sys_syncfs},
+            sync_file_range::sys_sync_file_range2,
             sysinfo::sys_sysinfo,
             tgkill::{sys_tgkill, sys_tkill},
             timer_create::{sys_timer_create, sys_timer_delete},
@@ -414,6 +416,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
             SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
             SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
+            SYS_SYNC_FILE_RANGE2 = 264       => sys_sync_file_range2(args[..4]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
@@ -428,6 +431,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
+            SYS_RSEQ = 293                   => sys_rseq(args[..4]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
             SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
             SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);

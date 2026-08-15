@@ -38,6 +38,7 @@ mod personality;
 mod posix_thread_ext;
 pub mod ptrace;
 mod robust_list;
+mod rseq;
 mod thread_local;
 
 pub use builder::PosixThreadBuilder;
@@ -47,6 +48,10 @@ pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
 pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
+pub use rseq::{
+    Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
+    RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+};
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 
 pub struct PosixThread {
