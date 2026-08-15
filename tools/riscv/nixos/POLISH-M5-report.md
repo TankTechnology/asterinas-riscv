@@ -69,50 +69,36 @@ Written to `docs/porting/snd-device-model.md`. Summary of the model:
 
 ---
 
-## 3. LTP re-baseline (fresh `ltp-gate.sh --skip-build --smp 1`)
+## 3. LTP re-baseline + fixes (full run, `--command-timeout 3600`)
 
-**Baseline (partial — through the `p` range, 293/534 tests).** The gate hit
-`boot_ltp_gate.py`'s default 1200 s `--command-timeout` before finishing, so the
-tail (`r`–`w`: `readlink*`, `sbrk`, `sendfile`, `symlink03`, …) was not reached.
-Tally at truncation: **254 pass / 21 fail / 17 conf / 1 timeout**. A full re-run
-with `--command-timeout 3600` (added in `4ccf07554`) is in flight for §5.
+**Final tally: 463 pass / 41 fail / 29 conf / 1 timeout (total 533).** The
+partial baseline hit the 1200 s `--command-timeout` at ~55% (`pipe10`); adding
+`--command-timeout` passthrough (`4ccf07554`) let the full run complete.
 
-The 21 FAIL + 1 TIMEOUT observed so far, classified:
+### 3.1 Corrected taxonomy (40 FAIL + 1 TIMEOUT, classified)
 
-### 3.1 Corrected taxonomy
-
-The POLISH-M2 "kernel bug" list conflated three distinct classes. The fresh run
-separates them:
-
-**A. Slow-fork perf (timeouts, NOT correctness bugs).** Quantified: `fork06`
+**A. Slow-fork perf (timeouts, NOT correctness bugs) — ~8.** `fork06`
 ("Forking 1000 processes") and `fork11` ("Forking 100 processes") exceed LTP's
-30 s internal timeout — fork latency is **> 30 ms** on this kernel. The
-following fail with `Test timeouted, sending SIGKILL!` / `TBROK: Test killed!
-(timeout?)`:
+30 s internal timeout — fork latency is **> 30 ms**. Failing with
+`Test timeouted, sending SIGKILL!`: `fork06`, `fork07`, `fork11`, `chdir02`,
+`fcntl14`, `fcntl14_64`; plus `epoll01` (TIMEOUT). Root cause is fork
+address-space cloning cost (the same root as the SMP=4 fork hang), not
+correctness. `link05`/`epoll_wait04` time out only intermittently (they passed
+this run, failed the partial one).
 
-- `fork06`, `fork07`, `fork09`, `fork11` (fork loops)
-- `chdir02`, `fcntl14`, `fcntl14_64` (fork per testcase), `link05` (1000 links)
-- `epoll01` (TIMEOUT)
+**B. musl-libc semantics (NOT kernel bugs) — 1.** `gethostname02` expects
+`gethostname(len < strlen)` → `ENAMETOOLONG`, but musl implements `gethostname()`
+over `uname()` and **silently truncates**. Unfixable in the kernel.
 
-Root cause is fork address-space cloning cost, not a correctness defect.
-Mitigation (harness-level): `ltp_runner.c` already exports `LTP_TIMEOUT_MUL`
-(set to `1` at line 143); the LTP timeout message itself suggests `LTP_TIMEOUT_MUL > 1`.
-The *real* fix is fork perf (a tracked subtask, related to the SMP=4 fork hang).
-
-**B. musl-libc semantics (NOT kernel bugs).** `gethostname02` expects
-`gethostname(len < strlen)` to return `ENAMETOOLONG`, but musl implements
-`gethostname()` in libc over `uname()` and **silently truncates** — it never
-returns `ENAMETOOLONG`. Unfixable in the kernel; the test is glibc-assuming.
-
-**C. Env gaps.** 17 loop-device tests (`fsopen`/`fsconfig`/`fsmount`/`rename*`,
+**C. Env gaps — 21.** 17 loop-device (`fsopen*`/`fsconfig*`/`fsmount*`/`rename*`,
 no `/dev/loop*`); `posix_fadvise03(_64)` (no `/bin/cat`); `setrlimit04` (no
 `/bin/true`); `gethostbyname_r01` (no DNS).
 
-**D. Genuine correctness bugs (open).** Observed in the reached range: `access02`
-(truncated output; `access()` real-vs-effective-uid or `system()`/`/bin/sh`),
-`epoll_wait04`. The `r`–`w` range (`readlink03`, `readlinkat02`, `sendfile07`,
-`sbrk01`, `symlink03`) was not reached in this partial run — still to be
-confirmed by the full re-run.
+**D. Genuine correctness bugs (open) — ~10.** `access02` (access() real-vs-eff
+uid or `system()`/`/bin/sh`), `pipe13`, `pwrite02(_64)` (was fixed by `9756a2e9f`
+per POLISH-M2 — **possible regression**, needs investigation), `readlink03`,
+`readlinkat02`, `sbrk01`, `sched_setscheduler04` (SCHED_FIFO policy), `sendfile07(_64)`,
+`timerfd01`, `fork09` (fd inheritance).
 
 ### 3.2 tmpfs root mode — root cause + fix (landed this session)
 
@@ -124,9 +110,8 @@ with `EACCES`. `symlink03` is exactly this shape (`setuid` at line 226, then
 `tst_tmpdir()` at line 229) — hence its `mkdtemp EACCES`.
 
 **Fix (committed `e96c2722d`):** give `new_tmpfs()` a `mkmod!(a+rwx) |
-InodeMode::S_ISVTX` root while keeping `ramfs`/`rootfs` at `0755`. Compiles
-clean (`cargo osdk build --scheme riscv --features riscv_sv39_mode`); runtime
-verification = re-run of the gate (see §4).
+InodeMode::S_ISVTX` root while keeping `ramfs`/`rootfs` at `0755`. **Verified:**
+full gate re-run shows `symlink03` **PASS** (was FAIL).
 
 This clears the **setuid-before-tmpdir** class (`symlink03`). `readlink03` and
 `access02` use `needs_tmpdir = 1` (tmpdir is created as *root* first), so their
@@ -140,7 +125,8 @@ mode — still open.
 (committed `7775689cc`):** implement `sys_clock_getres`, returning 1 ns for
 nanosecond clocks and 1 ms for the coarse clocks (updated once per the 1000 Hz
 timer tick), and wire `SYS_CLOCK_GETRES` into the riscv/loongarch generic table
-(114) and x86 (229). Compiles clean.
+(114) and x86 (229). **Verified:** full gate re-run shows `getitimer01` **PASS**
+(was FAIL).
 
 ---
 
@@ -151,11 +137,9 @@ On `track/nixos`:
 - `docs(nixos)` `b95fe9745` — snd device model design.
 - `feat(syscall)` `7775689cc` — implement `clock_getres`.
 
-Kernel-fix PRs (cherry-picked onto `origin/main`):
-- **PR #39** `fix/tmpfs-root-mode` — tmpfs root mode 01777.
-- **PR #40** `fix/clock-getres` — implement clock_getres.
-
-(Runtime verification of both is the in-flight gate re-run, §5.)
+Kernel-fix PRs (cherry-picked onto `origin/main`, both runtime-verified):
+- **PR #39** `fix/tmpfs-root-mode` — tmpfs root mode 01777 (clears `symlink03`).
+- **PR #40** `fix/clock-getres` — implement clock_getres (clears `getitimer01`).
 
 ---
 
@@ -164,9 +148,9 @@ Kernel-fix PRs (cherry-picked onto `origin/main`):
 1. **AUDIO-M2 (now much smaller):** parameterize `SET_PARAMS` + implement the
    ALSA PCM ioctl ABI per `docs/porting/snd-device-model.md`; copy the three
    Alpine packages into `build_audio.sh`; verify `aplay -D hw:0,0` in QEMU.
-2. **Verify the two landed fixes** by re-running the gate (expect `symlink03`
-   and `getitimer01` to clear); then `gh pr create` the two branches.
-3. **Remaining genuine bugs** — `access02`, `readlink03`, `readlinkat02`,
-   `sendfile07`, `sbrk01`, `epoll_wait04` (errno-subcase bugs); **fork perf**
-   (`fork06/07/09/11`, `chdir02`, `fcntl14`, `link05`, `epoll01` timeouts — the
-   same root as the SMP=4 fork hang).
+2. **Investigate `pwrite02(_64)`** — memory says it was fixed by `9756a2e9f`
+   (RWF_APPEND/RWF_NOAPPEND); a possible regression from a later commit.
+3. **Remaining genuine bugs** — `access02`, `pipe13`, `readlink03`, `readlinkat02`,
+   `sbrk01`, `sched_setscheduler04`, `sendfile07(_64)`, `timerfd01`, `fork09`
+   (errno/fd-inheritance bugs); **fork perf** (`fork06/07/11`, `chdir02`,
+   `fcntl14`, `epoll01` timeouts — the same root as the SMP=4 fork hang).
