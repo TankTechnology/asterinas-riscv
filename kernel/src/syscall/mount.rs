@@ -153,13 +153,25 @@ fn do_change_type(target_path: Path, flags: MountFlags, ctx: &Context) -> Result
         );
     }
 
-    if flags.contains(MountFlags::MS_PRIVATE) {
-        let recursive = flags.contains(MountFlags::MS_REC);
-        target_path.set_mount_propagation(MountPropType::Private, recursive, ctx)?;
-        Ok(())
+    // Record the requested propagation type on the mount (and, if `MS_REC`, on
+    // its children). Event propagation between peer groups is not yet
+    // implemented, so this is the type bookkeeping without the cross-mount
+    // mirroring that Linux performs.
+    let prop_type = if flags.contains(MountFlags::MS_PRIVATE) {
+        MountPropType::Private
+    } else if flags.contains(MountFlags::MS_SHARED) {
+        MountPropType::Shared
+    } else if flags.contains(MountFlags::MS_SLAVE) {
+        MountPropType::Slave
+    } else if flags.contains(MountFlags::MS_UNBINDABLE) {
+        MountPropType::Unbindable
     } else {
         return_errno_with_message!(Errno::EINVAL, "the mount propagation type is unsupported");
-    }
+    };
+
+    let recursive = flags.contains(MountFlags::MS_REC);
+    target_path.set_mount_propagation(prop_type, recursive, ctx)?;
+    Ok(())
 }
 
 /// Moves a mount from src location to dst location.

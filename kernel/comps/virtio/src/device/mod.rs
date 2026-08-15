@@ -8,9 +8,11 @@ pub mod block;
 pub mod console;
 pub mod entropy;
 pub mod filesystem;
+pub mod gpu;
 pub mod input;
 pub mod network;
 pub mod socket;
+pub mod sound;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
@@ -38,6 +40,7 @@ pub(crate) enum VirtioDeviceType {
     Pstore = 22,
     Iommu = 23,
     Memory = 24,
+    Sound = 25,
     FileSystem = 26,
 }
 
