@@ -106,5 +106,19 @@ Run: `bash tools/riscv/nixos/audio/audio-gate.sh [--rebuild-kernel]`.
   reporting.
 - **ALSA**: a `snd-virtio`-style user-space library or minimal ALSA stack over the
   node (out of scope here by design).
-- Minor: silence the `transport` field dead-code warning (keep-for-lifetime, like
-  the block/console devices).
+
+## CI follow-up (post-landing)
+
+The initial PR #35 CI was red on `make check`/`make docs` for two reasons, both
+now fixed:
+
+1. **My code** — `cargo fmt --check` flagged the `sound/device.rs` import
+   ordering and line wrapping, and `make docs` (`cargo doc -D warnings`) reported
+   the `transport` field as never read. Fixed by re-running `cargo fmt` and
+   marking the keep-for-lifetime `transport` field `#[allow(dead_code)]`
+   (commits `a894ccc94` on `track/nixos`, `8b048b72e` on `virtio-sound-driver`).
+2. **Pre-existing on `main`** — the `nightly-2026-07-21` toolchain bump
+   reformats several files merged under an earlier toolchain (pty, fanotify,
+   resolver, keyctl, seccomp, syscall mod), and `fanotify.rs` had an unresolved
+   `FsEventPublisher` intra-doc link. Fixed in a separate chore PR (#36,
+   branch `chore/fmt-nightly`) so the sound PR stays focused.
