@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile the GTK2 matchbox-panel against the static glib+GTK2 stack.
 #
 # RESULT OF THIS ATTEMPT (2026-08-14): the panel *core* binary builds and

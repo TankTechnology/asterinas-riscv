@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Attempt a MINIMAL cross-compile of systemd for riscv64 glibc: pid1 + journald
 # + the core management tools (systemctl/journalctl), with almost every
 # optional subsystem disabled. This is a feasibility probe — the goal is to

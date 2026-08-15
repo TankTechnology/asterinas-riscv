@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile the util-linux libraries systemd depends on, for riscv64 glibc:
 #   libuuid libblkid libmount (and, opportunistically, libfdisk libsmartcols).
 # Installs static .a + headers + .pc into target/riscv-cross/usr (prefix).

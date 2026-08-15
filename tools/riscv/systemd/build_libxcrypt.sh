@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile libxcrypt for riscv64 glibc into target/riscv-cross/usr.
 # systemd links crypt() unconditionally; glibc 2.41 (Debian) removed libcrypt
 # into libxcrypt, and the cross sysroot ships neither — so systemd's
