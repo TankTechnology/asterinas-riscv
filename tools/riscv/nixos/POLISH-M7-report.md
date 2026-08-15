@@ -153,6 +153,12 @@ memory `osdk-binary-bakes-repo-path`).
 Remaining open PRs from this track: #35 (virtio-sound driver), #39 (tmpfs
 01777), #40 (clock_getres), #42 (ALSA ABI).
 
+This session also flowed two new kernel fixes to `main`:
+- **PR #44** `fix(iovec)` — NULL `iov_base` EFAULT (fixes `pwrite02`/`pwrite02_64`).
+- **PR #45** `feat(sched)` — `SCHED_RESET_ON_FORK` + fork policy inheritance.
+
+Both were cherry-picked cleanly onto `origin/main` and build-verified.
+
 ---
 
 ## 4. Files / commits
