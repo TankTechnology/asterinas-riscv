@@ -13,6 +13,7 @@ use crate::{
     prelude::*,
 };
 
+pub mod fanotify;
 pub mod inotify;
 
 use crate::fs::vfs::{inode::Inode, inode_ext::InodeExt};

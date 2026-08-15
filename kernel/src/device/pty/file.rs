@@ -10,7 +10,10 @@ use crate::{
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::{Terminal, signal::{PollHandle, Pollable}},
+    process::{
+        Terminal,
+        signal::{PollHandle, Pollable},
+    },
     util::ioctl::RawIoctl,
 };
 

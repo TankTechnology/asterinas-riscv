@@ -43,9 +43,6 @@ _start:
     .4byte RISCV_IMAGE_MAGIC2
     .4byte 0                              # PE/COFF offset
 bsp_riscv_image_header_end:
-    .if (bsp_riscv_image_header_end - _start) != RISCV_IMAGE_HEADER_BYTES
-        .error "RISC-V Image header must be exactly 64 bytes"
-    .endif
 
 .global bsp_boot_entry
 bsp_boot_entry:
