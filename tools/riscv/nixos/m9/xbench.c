@@ -137,13 +137,17 @@ int main(void) {
         report("point-1000", n * per, dt);
     }
 
-    // ---- 6. 1x1 PutImage (pixel write path) ----
+    // ---- 6. 64x64 PutImage (unbatched image transfer) ----
+    //
+    // NOTE: XPutImage is pathological on BOTH drivers (no 2D accel): 8000 ops
+    // never finished in the 7-minute boot-harness window (M10). Bound the count
+    // so xbench still emits "XBENCH done" and lets graphical.target come up.
     {
         XImage *img = XCreateImage(dpy, DefaultVisual(dpy, screen), DefaultDepth(dpy, screen),
                                    ZPixmap, 0, NULL, 64, 64, 32, 0);
         img->data = malloc(img->bytes_per_line * img->height);
         memset(img->data, 0xff, img->bytes_per_line * img->height);
-        int n = 40, per = 200;
+        int n = 4, per = 50;
         double t0 = now_ms();
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < per; j++) {
