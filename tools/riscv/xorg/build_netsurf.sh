@@ -104,6 +104,14 @@ build_frontend() {
     # "Invalid object type `GtkStatusbar'". --whole-archive forces every libgtk
     # object in; --export-dynamic exposes the *_get_type symbols to dlsym.
     export LDFLAGS="-L$PREFIX/lib -Wl,--export-dynamic -Wl,--whole-archive -lgtk-x11-2.0 -Wl,--no-whole-archive"
+    # The upstream nsoption clamp caps curl_fetch_timeout at 60 s. That is too
+    # tight for the software-crypto RISC-V guest, where a TLS handshake to a
+    # large host can exceed a minute (M6 §7.3). Raise the clamp to 300 s.
+    sed -i \
+        -e 's/curl_fetch_timeout].value.u > 60)/curl_fetch_timeout].value.u > 300)/' \
+        -e 's/curl_fetch_timeout].value.u = 60;/curl_fetch_timeout].value.u = 300;/' \
+        -e 's/max_retried_fetches].value.u) > 60)/max_retried_fetches].value.u) > 300)/' \
+        "$BUNDLE/netsurf/utils/nsoption.c"
     make -C "$BUNDLE/netsurf" \
         TARGET=gtk \
         CC="$HOST-gcc" \
