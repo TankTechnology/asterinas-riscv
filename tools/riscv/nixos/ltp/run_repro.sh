@@ -22,7 +22,11 @@ SERIAL_LOG="${BUILD_ROOT}/repro-serial.log"
 
 rm -rf "${BUILD_ROOT}"
 mkdir -p "${BUILD_ROOT}/rootfs/dev" "${BUILD_ROOT}/rootfs/proc" \
-         "${BUILD_ROOT}/rootfs/sys" "${BUILD_ROOT}/rootfs/tmp"
+         "${BUILD_ROOT}/rootfs/sys" "${BUILD_ROOT}/rootfs/tmp" \
+         "${BUILD_ROOT}/rootfs/etc"
+
+cp "${SRC_DIR}/etc-passwd" "${BUILD_ROOT}/rootfs/etc/passwd"
+cp "${SRC_DIR}/etc-group" "${BUILD_ROOT}/rootfs/etc/group"
 
 "${CC}" -O2 -static -no-pie -fno-stack-protector \
     -o "${BUILD_ROOT}/rootfs/init" "${SRC_DIR}/repro.c"
