@@ -54,6 +54,11 @@ fn handle_dupfd(fd: FileDesc, arg: u64, flags: FdFlags, ctx: &Context) -> Result
         .try_into()
         .map_err(|_| Error::with_message(Errno::EINVAL, "invalid fd"))?;
 
+    // Linux returns EINVAL when the target fd equals the source fd in F_DUPFD.
+    if fd == ceil_fd {
+        return_errno_with_message!(Errno::EINVAL, "F_DUPFD arg must not equal fd");
+    }
+
     let new_fd = match file_table.insert_ceil(file, Some(ceil_fd), flags) {
         Ok(fd) => fd,
         Err((err, file)) => {
