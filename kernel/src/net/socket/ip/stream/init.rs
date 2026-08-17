@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use aster_bigtcp::{socket::RawTcpOption, wire::IpEndpoint};
+use aster_bigtcp::{socket::RawTcpOption, wire::{IpAddress, IpEndpoint}};
 
 use super::{connecting::ConnectingStream, listen::ListenStream, observer::StreamObserver};
 use crate::{
@@ -201,14 +201,20 @@ impl InitStream {
             ));
         }
 
-        let Some(bound_port) = self.bound_port else {
-            // FIXME: The socket should be bound to INADDR_ANY (i.e., 0.0.0.0) with an ephemeral
-            // port. However, INADDR_ANY is not yet supported, so we need to return an error first.
-            warn!("listen() without bind() is not implemented");
-            return Err((
-                Error::with_message(Errno::EINVAL, "listen() without bind() is not implemented"),
-                self,
-            ));
+        let bound_port = match self.bound_port.as_ref() {
+            Some(bound_port) => bound_port,
+            None => {
+                // Auto-bind to INADDR_ANY (0.0.0.0) with an ephemeral port when
+                // listen() is called without a prior bind().
+                let endpoint = IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0);
+                match bind_port(&endpoint, false) {
+                    Ok(bound_port) => {
+                        self.bound_port = Some(bound_port);
+                        self.bound_port.as_ref().unwrap()
+                    }
+                    Err(err) => return Err((err, self)),
+                }
+            }
         };
 
         match ListenStream::new(bound_port, backlog, option, observer) {
