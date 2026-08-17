@@ -68,9 +68,6 @@ pub(super) fn sys_prctl(
             let mut reader = user_space.reader(read_addr, ThreadName::MAX_BYTES)?;
             let (name, _) = reader.read_cstring_until_end(ThreadName::MAX_BYTES)?;
             *ctx.posix_thread.thread_name().lock() = ThreadName::from_cstr_truncated(&name);
-            let mut thread_name = ctx.posix_thread.thread_name().lock();
-            thread_name.set_name(&new_thread_name);
->>>>>>> 6f17eb77e (feat(syscall): fix 4 LTP kernel-boundary bugs (capget/capset V1/V2, F_DUPFD, PR_SET_NAME)):kernel/src/syscall/prctl.rs
         }
         PrctlCmd::PR_GET_NAME(write_to_addr) => {
             let thread_name = ctx.posix_thread.thread_name().lock();
