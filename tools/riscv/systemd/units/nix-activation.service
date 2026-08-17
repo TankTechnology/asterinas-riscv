@@ -5,6 +5,7 @@ After=local-fs.target
 Before=multi-user.target graphical.target
 
 [Service]
+KeyringMode=inherit
 Type=oneshot
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/sbin
 ExecStart=/bin/busybox sh /etc/activate

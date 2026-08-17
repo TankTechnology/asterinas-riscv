@@ -113,7 +113,8 @@ if [[ -f "${BUSYBOX}" ]]; then
     cp "${BUSYBOX}" "${ROOTFS}/bin/busybox"
     ln -sf busybox "${ROOTFS}/bin/sh"
     for applet in ls cat echo mount umount mkdir rm ln mknod ps mountpoint \
-                  head tail grep find test true false sleep kill sync df free; do
+                  head tail grep find test true false sleep kill sync df free \
+                  stty; do
         ln -sf busybox "${ROOTFS}/bin/${applet}"
     done
 else
@@ -187,11 +188,24 @@ fi
 # 10. xkbcomp (static riscv64). Xorg compiles keymaps by shelling out to xkbcomp
 #     at its configure-time XKB_BIN_DIRECTORY (the host cross prefix). The
 #     baked-host-path bridge from step 3 maps that to /usr/bin, so we place it
-#     there.
-if [ -f "${CROSS_USR}/bin/xkbcomp" ]; then
+#     there. We ship the xkbcomp-stub (which emits a pre-compiled keymap) as
+#     /usr/bin/xkbcomp to avoid the real xkbcomp's shell/pipe overhead.
+if [ -f "${SRC_DIR}/xkbcomp-stub" ]; then
+    cp "${SRC_DIR}/xkbcomp-stub" "${ROOTFS}/usr/bin/xkbcomp"
+elif [ -f "${CROSS_USR}/bin/xkbcomp" ]; then
     cp "${CROSS_USR}/bin/xkbcomp" "${ROOTFS}/usr/bin/xkbcomp"
 else
-    echo "WARNING: ${CROSS_USR}/bin/xkbcomp not found; Xorg keyboard init will fail" >&2
+    echo "WARNING: xkbcomp/xkbcomp-stub not found; Xorg keyboard init will fail" >&2
+fi
+
+# 10b. Pre-compiled keymap for Xorg's XkbCompiledKeymap option. This lets Xorg
+#      load the keymap directly from /etc/xkb/default.xkm without shelling out
+#      to xkbcomp at all, avoiding the busybox sh fork overhead.
+if [ -f "${SRC_DIR}/default.xkm" ]; then
+    mkdir -p "${ROOTFS}/etc/xkb"
+    cp "${SRC_DIR}/default.xkm" "${ROOTFS}/etc/xkb/default.xkm"
+else
+    echo "WARNING: default.xkm not found; Xorg will fall back to xkbcomp" >&2
 fi
 
 # 11. xorg.conf (fbdev + evdev) and the XKB rules/symbols/keycodes data.
@@ -324,6 +338,15 @@ fi
 if [ -d "${CROSS_USR}/share/terminfo/x" ]; then
     mkdir -p "${ROOTFS}/usr/share/terminfo/x"
     cp -r "${CROSS_USR}/share/terminfo/x/." "${ROOTFS}/usr/share/terminfo/x/"
+fi
+
+# 14b. XTerm app-defaults: backarrowKey=false so xterm sends DEL (0x7f) for
+#      backspace, matching the kernel tty's default VERASE (termio.rs: b'\x7f').
+#      Without this, xterm defaults to backarrowKey=true → sends ^H, which the
+#      line discipline doesn't recognise as erase, so bash sees literal ^H chars.
+if [ -f "${CROSS_USR}/lib/X11/app-defaults/XTerm" ]; then
+    mkdir -p "${ROOTFS}/usr/lib/X11/app-defaults"
+    cp "${CROSS_USR}/lib/X11/app-defaults/XTerm" "${ROOTFS}/usr/lib/X11/app-defaults/XTerm"
 fi
 
 # 15. Pack as raw newc cpio (no gzip — see header comment).
