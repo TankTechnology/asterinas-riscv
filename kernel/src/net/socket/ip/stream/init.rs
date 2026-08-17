@@ -184,7 +184,7 @@ impl InitStream {
     }
 
     pub(super) fn listen(
-        self,
+        mut self,
         backlog: usize,
         option: &RawTcpOption,
         observer: StreamObserver,
@@ -201,17 +201,14 @@ impl InitStream {
             ));
         }
 
-        let bound_port = match self.bound_port.as_ref() {
+        let bound_port = match self.bound_port.take() {
             Some(bound_port) => bound_port,
             None => {
                 // Auto-bind to INADDR_ANY (0.0.0.0) with an ephemeral port when
                 // listen() is called without a prior bind().
                 let endpoint = IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0);
                 match bind_port(&endpoint, false) {
-                    Ok(bound_port) => {
-                        self.bound_port = Some(bound_port);
-                        self.bound_port.as_ref().unwrap()
-                    }
+                    Ok(bound_port) => bound_port,
                     Err(err) => return Err((err, self)),
                 }
             }
