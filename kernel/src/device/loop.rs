@@ -507,14 +507,9 @@ pub(super) fn init_in_first_kthread() {
 }
 
 pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {
-    let devices = LOOP_DEVICES.lock();
-    for device in devices.iter() {
-        let file = Arc::new(LoopFile::new(device.clone()));
-        if let Some(meta) = file.devtmpfs_meta() {
-            let dev_id = file.id().as_encoded_u64();
-            add_node(DeviceType::Block, dev_id, &meta, path_resolver)?;
-        }
-    }
+    // /dev/loopN nodes are created automatically by the block registry
+    // (block::init_in_first_process) which iterates all registered block
+    // devices. We only need to create /dev/loop-control manually.
 
     let ctl_major = char::allocate_major().expect("failed to allocate loop-control major");
     *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
