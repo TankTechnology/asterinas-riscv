@@ -10,6 +10,7 @@ mod pty;
 pub mod registry;
 mod snd;
 pub(crate) mod tty;
+mod r#loop;
 
 use device_id::DeviceId;
 pub(crate) use mem::{getrandom, geturandom};
@@ -64,12 +65,14 @@ pub(crate) fn init_in_first_kthread() {
     // legacy framebuffer device once DRM has initialized successfully.
     fb::init_in_first_kthread();
     dri::init_in_first_kthread();
+    r#loop::init_in_first_kthread();
 }
 
 /// Initializes device state after mounting rootfs.
 pub(crate) fn init_in_first_process() -> Result<()> {
     tty::init_in_first_process()?;
     registry::init_in_first_process()?;
+    r#loop::init_in_first_process()?;
 
     Ok(())
 }
