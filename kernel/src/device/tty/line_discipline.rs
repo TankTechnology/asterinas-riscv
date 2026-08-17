@@ -79,6 +79,26 @@ impl CurrentLine {
     fn len(&self) -> usize {
         self.len
     }
+
+    /// Returns the number of characters that `word_backspace` would erase.
+    fn word_backspace_len(&self) -> usize {
+        let mut pos = self.len;
+        // Skip trailing whitespace
+        while pos > 0 && self.buffer[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+        // Skip the word
+        while pos > 0 && !self.buffer[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+        self.len - pos
+    }
+
+    /// Removes the last word (for WERASE).
+    fn word_backspace(&mut self) {
+        let count = self.word_backspace_len();
+        self.len = self.len.saturating_sub(count);
+    }
 }
 
 impl LineDiscipline {
@@ -142,6 +162,13 @@ impl LineDiscipline {
             self.current_line.backspace();
         }
 
+        if ch == self.termios.special_char(CCtrlCharId::VWERASE)
+            && self.termios.local_flags().contains(CLocalFlags::IEXTEN)
+        {
+            // Erase the last word (WERASE; only meaningful when IEXTEN is set).
+            self.current_line.word_backspace();
+        }
+
         if is_line_terminator(ch, &self.termios) {
             // A new line is met. Move all bytes in `current_line` to `read_buffer`.
             // Note that `unwrap()` below won't fail because we checked `is_full()` above.
@@ -159,15 +186,46 @@ impl LineDiscipline {
 
     // TODO: respect output flags
     fn output_char<F: FnMut(&[u8])>(&self, ch: u8, mut echo_callback: F) {
+        let local_flags = self.termios.local_flags();
+        let canonical = self.termios.is_canonical_mode();
         match ch {
             b'\n' => echo_callback(b"\n"),
             b'\r' => echo_callback(b"\r\n"),
-            ch if ch == self.termios.special_char(CCtrlCharId::VERASE) => {
-                // The driver should erase the current character
-                echo_callback(b"\x08");
+            ch if canonical && ch == self.termios.special_char(CCtrlCharId::VERASE) => {
+                if local_flags.contains(CLocalFlags::ECHOE) {
+                    echo_callback(b"\x08 \x08");
+                } else {
+                    echo_callback(b"\x08");
+                }
+            }
+            ch if canonical
+                && local_flags.contains(CLocalFlags::IEXTEN)
+                && ch == self.termios.special_char(CCtrlCharId::VWERASE) =>
+            {
+                // WERASE erases the last word; echo BS-SP-BS for each erased
+                // character when ECHOE is set, else a single BS.
+                if local_flags.contains(CLocalFlags::ECHOE) {
+                    let count = self.current_line.word_backspace_len();
+                    for _ in 0..count {
+                        echo_callback(b"\x08 \x08");
+                    }
+                } else {
+                    echo_callback(b"\x08");
+                }
+            }
+            ch if canonical && ch == self.termios.special_char(CCtrlCharId::VKILL) => {
+                if local_flags.contains(CLocalFlags::ECHOKE) {
+                    // Erase each character on screen with BS-SP-BS
+                    for _ in 0..self.current_line.len() {
+                        echo_callback(b"\x08 \x08");
+                    }
+                }
+                if local_flags.contains(CLocalFlags::ECHOK) {
+                    echo_callback(b"\n");
+                }
             }
             ch if is_printable_char(ch) => echo_callback(&[ch]),
-            ch if is_ctrl_char(ch) && self.termios.local_flags().contains(CLocalFlags::ECHOCTL) => {
+            ch if is_ctrl_char(ch) && local_flags.contains(CLocalFlags::ECHOCTL) => {
                 echo_callback(&[b'^', ctrl_char_to_printable(ch)]);
             }
             _ => {}
