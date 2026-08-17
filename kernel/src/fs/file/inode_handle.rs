@@ -22,7 +22,10 @@ use crate::{
         },
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
+    process::{
+        posix_thread::FileTableRefMut,
+        signal::{PollHandle, Pollable},
+    },
     util::ioctl::RawIoctl,
 };
 
@@ -353,6 +356,23 @@ impl FileLike for InodeHandle {
         return_errno_with_message!(Errno::ENOTTY, "ioctl is not supported");
     }
 
+    fn ioctl_with_table(
+        &self,
+        raw_ioctl: RawIoctl,
+        file_table: &mut FileTableRefMut,
+    ) -> Option<Result<i32>> {
+        if self.rights.is_empty() {
+            return Some(Err(Error::with_message(
+                Errno::EBADF,
+                "the file is opened as a path",
+            )));
+        }
+        if let Some(ref open_file) = self.open_file {
+            return open_file.ioctl_with_table(self.common.path(), raw_ioctl, file_table);
+        }
+        None
+    }
+
     fn mappable(&self) -> Result<Mappable> {
         if self.rights.is_empty() {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
@@ -567,6 +587,20 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
 
     fn ioctl(&self, _path: &Path, _raw_ioctl: RawIoctl) -> Result<i32> {
         return_errno_with_message!(Errno::ENOTTY, "ioctl is not supported");
+    }
+
+    /// Handles an ioctl command that needs access to the file table.
+    ///
+    /// This is an extension point for devices (like loop devices) whose ioctl
+    /// commands need to look up other file descriptors. The default implementation
+    /// returns `None`, which means the caller should fall back to [`ioctl`].
+    fn ioctl_with_table(
+        &self,
+        _path: &Path,
+        _raw_ioctl: RawIoctl,
+        _file_table: &mut FileTableRefMut,
+    ) -> Option<Result<i32>> {
+        None
     }
 
     /// Returns the status flags that can be set for this opened file.
