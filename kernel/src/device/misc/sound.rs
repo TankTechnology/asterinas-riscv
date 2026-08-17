@@ -18,7 +18,7 @@ use crate::{
         snd::control,
         snd::pcm::{
             PcmStream, SndPcmChannelInfo, SndXferi, ioctl_defs,
-            SNDRV_PCM_VERSION, DEV_BUFFER_BYTES, DEV_CHANNELS, DEV_PERIOD_BYTES,
+            SNDRV_PCM_VERSION, DEV_BUFFER_BYTES, DEV_BUFFER_FRAMES, DEV_CHANNELS, DEV_PERIOD_BYTES,
         },
         Device, DeviceType, DevtmpfsInodeMeta, registry::char,
     },
@@ -130,13 +130,19 @@ impl SoundPcmFile {
         if self.pcm.lock().params().is_some() {
             self.start_device()?;
         }
-        let frame_bytes = {
+        let (frame_bytes, buffer_frames) = {
             let pcm = self.pcm.lock();
-            pcm.params()
+            let params = pcm.params();
+            let fb = params
                 .map(|p| (p.channels * 2) as usize) // S16 = 2 bytes/sample
-                .unwrap_or((DEV_CHANNELS * 2) as usize)
+                .unwrap_or((DEV_CHANNELS * 2) as usize);
+            let bf = params
+                .map(|p| p.buffer_frames as usize)
+                .unwrap_or(DEV_BUFFER_FRAMES as usize);
+            (fb, bf)
         };
-        let len = (xferi.frames as usize).checked_mul(frame_bytes).ok_or_else(|| {
+        let effective_frames = (xferi.frames as usize).min(buffer_frames);
+        let len = effective_frames.checked_mul(frame_bytes).ok_or_else(|| {
             Error::with_message(Errno::EINVAL, "writei frame size overflows")
         })?;
         if len == 0 {
