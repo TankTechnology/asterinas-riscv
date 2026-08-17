@@ -84,10 +84,10 @@ pub struct GpuDevice {
 }
 
 impl GpuDevice {
-    pub(crate) fn negotiate_features(_features: u64) -> u64 {
-        // The MVP drives only the plain 2D path, so clear every device-specific
-        // feature (virgl, EDID, resource UUID, blob, context init).
-        0
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        // Enable virgl 3D if the device offers it; clear everything else
+        // (EDID, resource UUID, blob, context init) for now.
+        features & super::VIRTIO_GPU_F_VIRGL
     }
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {

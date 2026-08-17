@@ -56,6 +56,16 @@ pub const VIRTIO_GPU_CMD_GET_CAPSET_INFO: u32 = 0x0108;
 pub const VIRTIO_GPU_CMD_GET_CAPSET: u32 = 0x0109;
 pub const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x010a;
 
+/// 3D/virgl control commands (5.7.6.2).
+pub const VIRTIO_GPU_CMD_CTX_CREATE: u32 = 0x0200;
+pub const VIRTIO_GPU_CMD_CTX_DESTROY: u32 = 0x0201;
+pub const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: u32 = 0x0202;
+pub const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32 = 0x0203;
+pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x0204;
+pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x0205;
+pub const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
+pub const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x0207;
+
 pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
@@ -202,4 +212,131 @@ pub struct VirtioGpuDisplayOne {
     pub r: VirtioGpuRect,
     pub enabled: u32,
     pub flags: u32,
+}
+
+/// Feature flags — bit positions (5.7.4.1).
+pub const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+pub const VIRTIO_GPU_F_EDID: u64 = 1 << 1;
+pub const VIRTIO_GPU_F_RESOURCE_UUID: u64 = 1 << 2;
+pub const VIRTIO_GPU_F_RESOURCE_BLOB: u64 = 1 << 3;
+pub const VIRTIO_GPU_F_CONTEXT_INIT: u64 = 1 << 4;
+
+/// Capset IDs.
+pub const VIRTIO_GPU_CAPSET_VIRGL: u32 = 1;
+pub const VIRTIO_GPU_CAPSET_VIRGL2: u32 = 2;
+
+/// 3D resource target values (GL enums).
+pub const VIRTIO_GPU_RESOURCE_TARGET_TEXTURE_2D: u32 = 0x0DE1;
+pub const VIRTIO_GPU_RESOURCE_BIND_BUFFER: u32 = 1 << 0;
+pub const VIRTIO_GPU_RESOURCE_BIND_RENDER_TARGET: u32 = 1 << 1;
+pub const VIRTIO_GPU_RESOURCE_BIND_SAMPLER: u32 = 1 << 2;
+
+pub const VIRTIO_GPU_RESP_OK_CAPSET_INFO: u32 = 0x1102;
+pub const VIRTIO_GPU_RESP_OK_CAPSET: u32 = 0x1103;
+
+/// `GET_CAPSET_INFO` request / response (5.7.6.2).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuGetCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_index: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuRespCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_max_version: u32,
+    pub capset_max_size: u32,
+    pub padding: u32,
+}
+
+/// `GET_CAPSET` request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuGetCapset {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_version: u32,
+}
+
+/// `CTX_CREATE` request (5.7.6.2).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCtxCreate {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub nlen: u32,
+    pub context_init: u32,
+    pub debug_name: [u8; 64],
+}
+
+/// `CTX_DESTROY` request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCtxDestroy {
+    pub hdr: VirtioGpuCtrlHdr,
+}
+
+/// `CTX_ATTACH_RESOURCE` / `CTX_DETACH_RESOURCE` request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCtxResource {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub resource_id: u32,
+    pub padding: u32,
+}
+
+/// `RESOURCE_CREATE_3D` request (5.7.6.2).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuResourceCreate3d {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub resource_id: u32,
+    pub target: u32,
+    pub format: u32,
+    pub bind: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub array_size: u32,
+    pub last_level: u32,
+    pub nr_samples: u32,
+    pub flags: u32,
+    pub padding: u32,
+}
+
+/// A 3D box volume used by `TRANSFER_TO_HOST_3D` / `TRANSFER_FROM_HOST_3D`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuBox {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+    pub w: u32,
+    pub h: u32,
+    pub d: u32,
+}
+
+/// `TRANSFER_TO_HOST_3D` / `TRANSFER_FROM_HOST_3D` request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuTransferHost3d {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub box_: VirtioGpuBox,
+    pub offset: u64,
+    pub resource_id: u32,
+    pub level: u32,
+    pub stride: u32,
+    pub layer_stride: u32,
+}
+
+/// `SUBMIT_3D` request — the virgl command stream follows on the wire.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCmdSubmit {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub size: u32,
+    pub padding: u32,
 }
