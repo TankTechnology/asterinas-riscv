@@ -2,6 +2,7 @@
 
 mod evdev;
 mod fb;
+mod r#loop;
 mod mem;
 pub mod misc;
 mod pty;
@@ -169,6 +170,7 @@ pub fn init_in_first_kthread() {
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();
     fb::init_in_first_kthread();
+    r#loop::init_in_first_kthread();
 }
 
 /// Initializes the device nodes in devtmpfs after mounting rootfs.
@@ -189,6 +191,7 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     pty::init_in_first_process(&path_resolver, ctx)?;
     shm::init_in_first_process(&path_resolver, ctx)?;
     registry::init_in_first_process(&path_resolver)?;
+    r#loop::init_in_first_process(&path_resolver)?;
 
     Ok(())
 }
