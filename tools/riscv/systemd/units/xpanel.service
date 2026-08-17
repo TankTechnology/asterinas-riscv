@@ -5,6 +5,7 @@ Requires=xorg.service
 PartOf=graphical.target
 
 [Service]
+KeyringMode=inherit
 Type=simple
 Environment=DISPLAY=:0
 Environment=HOME=/root

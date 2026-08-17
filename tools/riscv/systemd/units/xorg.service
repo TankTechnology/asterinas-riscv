@@ -10,6 +10,7 @@ Type=simple
 ExecStart=/usr/bin/Xorg -config /etc/xorg.conf -modulepath /usr/lib/xorg/modules -xkbdir /usr/share/X11/xkb -logfile /dev/ttyS0 -noreset
 Restart=on-failure
 RestartSec=2s
+KeyringMode=inherit
 StandardInput=null
 StandardOutput=null
 StandardError=null
