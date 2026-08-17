@@ -133,20 +133,17 @@ impl<D: TtyDriver> Tty<D> {
         {
             let mut ldisc = self.ldisc.lock();
             for ch in chs {
-                let res = ldisc.push_char(*ch, |signum| {
-                    if let Some(foreground) = self.job_control.foreground() {
-                        broadcast_signal_async(Arc::downgrade(&foreground), signum);
-                    }
-                });
-                match res {
-                    Ok(Some((first, second))) => {
-                        echoes.push(first);
-                        if let Some(second) = second {
-                            echoes.push(second);
+                let res = ldisc.push_char(
+                    *ch,
+                    |signum| {
+                        if let Some(foreground) = self.job_control.foreground() {
+                            broadcast_signal_async(Arc::downgrade(&foreground), signum);
                         }
-                        len += 1;
-                    }
-                    Ok(None) => len += 1,
+                    },
+                    &mut echoes,
+                );
+                match res {
+                    Ok(()) => len += 1,
                     Err(_) => {
                         if len == 0 {
                             return_errno_with_message!(

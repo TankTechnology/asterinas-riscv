@@ -4,6 +4,7 @@ Documentation=man:curl(1)
 After=multi-user.target
 
 [Service]
+KeyringMode=inherit
 Type=oneshot
 # The desktop busybox ships only the `sh` applet with no echo/[/test builtins,
 # so the curl matrix is run as 13 plain ExecStart= lines (each prefixed `-` to

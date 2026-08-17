@@ -1,0 +1,9 @@
+[package]
+name = "vnc-capture"
+version = "0.1.0"
+edition = "2024"
+description = "Connect to QEMU monitor via Unix socket, start VNC, capture framebuffer as PNG"
+
+[dependencies]
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }

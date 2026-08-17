@@ -973,9 +973,9 @@ dependencies = [
 
 [[package]]
 name = "dma-api"
-version = "0.9.3"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec395cf0e7656300359a5fa1becee97e7e908bacf46e34c8566aaa3f8664b99f"
+checksum = "1600c91119a931da7c9b5ad5da178f87ef4895638c145c48f6b7e17a53c6a4d2"
 dependencies = [
  "aarch64-cpu-ext",
  "ax-kspin",
