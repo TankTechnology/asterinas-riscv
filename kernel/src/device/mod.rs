@@ -2,7 +2,7 @@
 
 mod evdev;
 mod fb;
-mod r#loop;
+pub(crate) mod r#loop;
 mod mem;
 pub mod misc;
 mod pty;

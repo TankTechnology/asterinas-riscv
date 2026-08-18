@@ -44,13 +44,13 @@ use crate::{
 const NUM_LOOP_DEVICES: u32 = 8;
 
 /// Linux magic byte for loop ioctls is 'L' = 0x4C.
-const LOOP_MAGIC: u8 = 0x4C;
+pub(crate) const LOOP_MAGIC: u8 = 0x4C;
 
 /// ioctl command numbers (from linux/loop.h).
-const LOOP_SET_FD: u32 = 0x4C00;
-const LOOP_CLR_FD: u32 = 0x4C01;
-const LOOP_SET_STATUS: u32 = 0x4C02;
-const LOOP_GET_STATUS: u32 = 0x4C03;
+pub(crate) const LOOP_SET_FD: u32 = 0x4C00;
+pub(crate) const LOOP_CLR_FD: u32 = 0x4C01;
+pub(crate) const LOOP_SET_STATUS: u32 = 0x4C02;
+pub(crate) const LOOP_GET_STATUS: u32 = 0x4C03;
 const LOOP_CTL_GET_FREE: u32 = 0x4C82;
 
 /// Size of the `lo_name` field in `struct loop_info`.
@@ -197,10 +197,10 @@ impl BlockDevice for LoopDevice {
 // /dev/loopN — Device + PerOpenFileOps
 // ---------------------------------------------------------------------------
 
-struct LoopFile(Arc<LoopDevice>);
+pub(crate) struct LoopFile(Arc<LoopDevice>);
 
 impl LoopFile {
-    fn new(device: Arc<LoopDevice>) -> Self {
+    pub(crate) fn new(device: Arc<LoopDevice>) -> Self {
         Self(device)
     }
 }
