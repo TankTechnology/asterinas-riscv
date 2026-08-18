@@ -80,7 +80,7 @@ pub struct GpuDevice {
     /// Resource id of the most recent cursor presented via [`present_cursor`].
     cursor_resource: SpinLock<Option<u32>>,
     /// Next resource id handed out by [`present_framebuffer`] / [`present_cursor`].
-    next_resource_id: AtomicU32,
+    pub next_resource_id: AtomicU32,
 }
 
 impl GpuDevice {
@@ -331,7 +331,7 @@ impl GpuDevice {
         Ok(())
     }
 
-    fn resource_create_2d(
+    pub fn resource_create_2d(
         &self,
         resource_id: u32,
         format: u32,
@@ -355,7 +355,7 @@ impl GpuDevice {
         check_ok(code)
     }
 
-    fn attach_backing(
+    pub fn attach_backing(
         &self,
         resource_id: u32,
         addr: u64,
@@ -460,6 +460,257 @@ impl GpuDevice {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_UNREF),
             resource_id,
             padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: create a 3D resource (texture, render target, or buffer).
+    pub fn resource_create_3d(
+        &self,
+        resource_id: u32,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        use super::VirtioGpuResourceCreate3d;
+        let req = VirtioGpuResourceCreate3d {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: create a virgl rendering context.
+    pub fn ctx_create(
+        &self,
+        capset_id: u32,
+        debug_name: &[u8; 64],
+    ) -> Result<(), VirtioDeviceError> {
+        let mut name = [0u8; 64];
+        let copy_len = debug_name.len().min(64);
+        name[..copy_len].copy_from_slice(&debug_name[..copy_len]);
+        let req = super::VirtioGpuCtxCreate {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_CREATE),
+            nlen: copy_len as u32,
+            context_init: capset_id & 0xff,
+            debug_name: name,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: destroy a virgl rendering context.
+    pub fn ctx_destroy(&self) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuCtxDestroy {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_DESTROY),
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: attach a resource to the virgl context.
+    pub fn ctx_attach_resource(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuCtxResource {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE),
+            resource_id,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: submit a virgl command buffer to the host.
+    pub fn submit_3d(
+        &self,
+        size: u32,
+        data: &[u8],
+    ) -> Result<(), VirtioDeviceError> {
+        use super::VirtioGpuCmdSubmit;
+        let req = VirtioGpuCmdSubmit {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_SUBMIT_3D),
+            size,
+            padding: 0,
+        };
+        let req_len = size_of::<VirtioGpuCmdSubmit>();
+        let total_len = req_len + size as usize;
+
+        let req_slice = aster_util::mem_obj_slice::Slice::new(
+            self.control_buf.clone(),
+            CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
+        );
+        req_slice.write_val(0, &req).unwrap();
+        req_slice.write_bytes(req_len, data).unwrap();
+
+        let mut queue = self.control_queue.lock();
+        let code = submit_control(
+            &mut queue,
+            &self.control_buf,
+            total_len,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: query capset info from the device.
+    pub fn get_capset_info(
+        &self,
+        capset_id: u32,
+    ) -> Result<super::VirtioGpuRespCapsetInfo, VirtioDeviceError> {
+        let req = super::VirtioGpuGetCapsetInfo {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_GET_CAPSET_INFO),
+            capset_index: capset_id,
+            padding: 0,
+        };
+        let resp_len = size_of::<super::VirtioGpuRespCapsetInfo>();
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(&mut queue, &self.control_buf, &req, resp_len)?;
+        if code != super::VIRTIO_GPU_RESP_OK_CAPSET_INFO {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        let resp_slice = aster_util::mem_obj_slice::Slice::new(
+            self.control_buf.clone(),
+            CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
+        );
+        resp_slice.sync_from_device().unwrap();
+        let resp: super::VirtioGpuRespCapsetInfo = resp_slice.read_val(0).unwrap();
+        Ok(resp)
+    }
+
+    /// 3D: fetch the capset data blob from the device.
+    pub fn get_capset(
+        &self,
+        capset_id: u32,
+        version: u32,
+    ) -> Result<alloc::vec::Vec<u8>, VirtioDeviceError> {
+        let req = super::VirtioGpuGetCapset {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_GET_CAPSET),
+            capset_id,
+            capset_version: version,
+        };
+
+        // First, query the capset info to know the size
+        let info = self.get_capset_info(capset_id)?;
+        let capset_size = info.capset_max_size as usize;
+        if capset_size == 0 {
+            return Ok(alloc::vec::Vec::new());
+        }
+
+        let resp_len = size_of::<VirtioGpuCtrlHdr>() + capset_size;
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(&mut queue, &self.control_buf, &req, resp_len)?;
+        if code != super::VIRTIO_GPU_RESP_OK_CAPSET {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+
+        let resp_slice = aster_util::mem_obj_slice::Slice::new(
+            self.control_buf.clone(),
+            CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
+        );
+        resp_slice.sync_from_device().unwrap();
+        let mut data = alloc::vec![0u8; capset_size];
+        resp_slice.read_bytes(size_of::<VirtioGpuCtrlHdr>(), &mut data).unwrap();
+        Ok(data)
+    }
+
+    /// 3D: transfer data from guest to host for a 3D resource.
+    pub fn transfer_to_host_3d(
+        &self,
+        resource_id: u32,
+        x: u32, y: u32, z: u32,
+        w: u32, h: u32, d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D),
+            box_: super::VirtioGpuBox { x, y, z, w, h, d },
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: transfer data from host to guest for a 3D resource.
+    pub fn transfer_from_host_3d(
+        &self,
+        resource_id: u32,
+        x: u32, y: u32, z: u32,
+        w: u32, h: u32, d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D),
+            box_: super::VirtioGpuBox { x, y, z, w, h, d },
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
         };
         let mut queue = self.control_queue.lock();
         let code = control_cmd(
