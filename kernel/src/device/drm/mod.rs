@@ -18,6 +18,7 @@ mod dumb;
 mod gem;
 mod ioctl;
 mod kms;
+mod virtio_gpu;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -587,6 +588,36 @@ impl PerOpenFileOps for DriHandle {
                 }
                 kms::present_fb(self, req.fb_id)?;
                 Ok(0)
+            }
+            cmd @ VirtgpuExecbuffer => {
+                virtio_gpu::virtgpu_execbuffer(self, cmd)
+            }
+            cmd @ VirtgpuGetparam => {
+                virtio_gpu::virtgpu_getparam(self, cmd)
+            }
+            cmd @ VirtgpuResourceCreate => {
+                virtio_gpu::virtgpu_resource_create(self, cmd)
+            }
+            cmd @ VirtgpuResourceInfo => {
+                virtio_gpu::virtgpu_resource_info(self, cmd)
+            }
+            cmd @ VirtgpuGetCaps => {
+                virtio_gpu::virtgpu_get_caps(self, cmd)
+            }
+            cmd @ VirtgpuContextInit => {
+                virtio_gpu::virtgpu_context_init(self, cmd)
+            }
+            cmd @ VirtgpuTransferToHost => {
+                virtio_gpu::virtgpu_transfer_to_host(self, cmd)
+            }
+            cmd @ VirtgpuTransferFromHost => {
+                virtio_gpu::virtgpu_transfer_from_host(self, cmd)
+            }
+            cmd @ VirtgpuMap => {
+                virtio_gpu::virtgpu_map(self, cmd)
+            }
+            cmd @ VirtgpuWait => {
+                virtio_gpu::virtgpu_wait(self, cmd)
             }
             _ => {
                 ostd::debug!(
