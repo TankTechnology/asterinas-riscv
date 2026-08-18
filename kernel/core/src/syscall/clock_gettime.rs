@@ -41,6 +41,11 @@ pub fn sys_clock_getres(
 ) -> Result<SyscallReturn> {
     debug!("clockid = {:?}", clockid);
 
+    // Linux returns EFAULT if the timespec pointer is NULL.
+    if timespec_addr == 0 {
+        return_errno_with_message!(Errno::EFAULT, "timespec pointer is NULL");
+    }
+
     let resolution = read_clock_resolution(clockid)?;
 
     let timespec = timespec_t::from(resolution);
