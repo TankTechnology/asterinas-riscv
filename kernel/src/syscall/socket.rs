@@ -47,7 +47,7 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
                     };
                     StreamSocket::new(is_nonblocking, family) as Arc<dyn FileLike>
                 }
-                _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported protocol"),
+                _ => return_errno_with_message!(Errno::EPROTONOSUPPORT, "unsupported protocol"),
             }
         }
         (CSocketAddrFamily::AF_INET, SockType::SOCK_DGRAM) => {
@@ -57,7 +57,7 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
                 Protocol::IPPROTO_IP | Protocol::IPPROTO_UDP => {
                     DatagramSocket::new(is_nonblocking) as Arc<dyn FileLike>
                 }
-                _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported protocol"),
+                _ => return_errno_with_message!(Errno::EPROTONOSUPPORT, "unsupported protocol"),
             }
         }
         (CSocketAddrFamily::AF_NETLINK, SockType::SOCK_RAW | SockType::SOCK_DGRAM) => {
