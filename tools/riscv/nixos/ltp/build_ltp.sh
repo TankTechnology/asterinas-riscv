@@ -149,6 +149,18 @@ else
     echo "WARN: no busybox at ${BUSYBOX} — shell-out tests will TBROK" >&2
 fi
 
+# Copy LTP resource files (helper binaries) that the Makefile install
+# target doesn't include but tests need at runtime.
+for pair in \
+    "execve/execve_child" \
+    "execveat/execveat_child" \
+    "execveat/execveat_errno"; do
+    src="${LTP_SRC}/testcases/kernel/syscalls/${pair}"
+    if [ -f "${src}" ]; then
+        cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/"
+    fi
+done
+
 # Strip everything.
 find "${ROOTFS}/opt/ltp/testcases/bin" -type f -executable \
     -exec "${STRIP}" {} \; 2>/dev/null || true
