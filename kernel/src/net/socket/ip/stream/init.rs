@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use aster_bigtcp::{socket::RawTcpOption, wire::{IpAddress, IpEndpoint}};
+use aster_bigtcp::{socket::RawTcpOption, wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address}};
 
 use super::{connecting::ConnectingStream, listen::ListenStream, observer::StreamObserver};
 use crate::{
@@ -132,10 +132,23 @@ impl InitStream {
             ));
         }
 
+        // On Linux, connecting to the unspecified address (0.0.0.0 or ::)
+        // resolves to localhost. Do the same here so that LTP tests which
+        // bind to INADDR_ANY and then connect back to the same address work.
+        let resolved_remote = match remote_endpoint.addr {
+            IpAddress::Ipv4(addr) if addr.is_unspecified() => {
+                IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1)), remote_endpoint.port)
+            }
+            IpAddress::Ipv6(addr) if addr.is_unspecified() => {
+                IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 1)), remote_endpoint.port)
+            }
+            _ => *remote_endpoint,
+        };
+
         let bound_port = if let Some(bound_port) = self.bound_port {
             bound_port
         } else {
-            let endpoint = match get_ephemeral_endpoint(remote_endpoint) {
+            let endpoint = match get_ephemeral_endpoint(&resolved_remote) {
                 Some(ep) => ep,
                 None => {
                     return Err((
@@ -153,7 +166,7 @@ impl InitStream {
             }
         };
 
-        ConnectingStream::new(bound_port, *remote_endpoint, option, observer).map_err(
+        ConnectingStream::new(bound_port, resolved_remote, option, observer).map_err(
             |(err, bound_port)| {
                 if err.error() == Errno::ECONNREFUSED {
                     (err, InitStream::new_refused(bound_port, self.family))
