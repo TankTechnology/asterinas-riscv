@@ -21,7 +21,7 @@ macro_rules! import_generic_syscall_entries {
             chmod::{sys_fchmod, sys_fchmodat, sys_fchmodat2},
             chown::{sys_fchown, sys_fchownat},
             chroot::sys_chroot,
-            clock_gettime::sys_clock_gettime,
+            clock_gettime::{sys_clock_getres, sys_clock_gettime},
             clone::{sys_clone, sys_clone3},
             close::{sys_close, sys_close_range},
             connect::sys_connect,
@@ -33,6 +33,7 @@ macro_rules! import_generic_syscall_entries {
             exit_group::sys_exit_group,
             fadvise64::sys_fadvise64,
             fallocate::sys_fallocate,
+            fanotify::{sys_fanotify_init, sys_fanotify_mark},
             fcntl::sys_fcntl,
             flock::sys_flock,
             fsconfig::sys_fsconfig,
@@ -66,6 +67,7 @@ macro_rules! import_generic_syscall_entries {
             getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
             inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
             ioctl::sys_ioctl,
+            keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
             link::sys_linkat,
             listen::sys_listen,
@@ -73,11 +75,14 @@ macro_rules! import_generic_syscall_entries {
             listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
             lseek::sys_lseek,
             madvise::sys_madvise,
+            membarrier::sys_membarrier,
             memfd_create::sys_memfd_create,
             mkdir::sys_mkdirat,
             mknod::sys_mknodat,
+            mlock::{sys_mlock, sys_munlock},
             mmap::sys_mmap,
             mount::sys_mount,
+            mount_setattr::sys_mount_setattr,
             move_mount::sys_move_mount,
             mprotect::sys_mprotect,
             mremap::sys_mremap,
@@ -85,6 +90,7 @@ macro_rules! import_generic_syscall_entries {
             munmap::sys_munmap,
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
+            openat2::sys_openat2,
             personality::sys_personality,
             pidfd_getfd::sys_pidfd_getfd,
             pidfd_open::sys_pidfd_open,
@@ -123,6 +129,7 @@ macro_rules! import_generic_syscall_entries {
             sched_setparam::sys_sched_setparam,
             sched_setscheduler::sys_sched_setscheduler,
             sched_yield::sys_sched_yield,
+            seccomp::sys_seccomp,
             semctl::sys_semctl,
             semget::sys_semget,
             semop::{sys_semop, sys_semtimedop},
@@ -151,6 +158,10 @@ macro_rules! import_generic_syscall_entries {
             setsockopt::sys_setsockopt,
             setuid::sys_setuid,
             setxattr::{sys_fsetxattr, sys_lsetxattr, sys_setxattr},
+            shmat::sys_shmat,
+            shmctl::sys_shmctl,
+            shmdt::sys_shmdt,
+            shmget::sys_shmget,
             shutdown::sys_shutdown,
             sigaltstack::sys_sigaltstack,
             signalfd::sys_signalfd4,
@@ -301,6 +312,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_TIMER_SETTIME = 110          => sys_timer_settime(args[..4]);
             SYS_TIMER_DELETE = 111           => sys_timer_delete(args[..1]);
             SYS_CLOCK_GETTIME = 113          => sys_clock_gettime(args[..2]);
+            SYS_CLOCK_GETRES = 114           => sys_clock_getres(args[..2]);
             SYS_CLOCK_NANOSLEEP = 115        => sys_clock_nanosleep(args[..4]);
             SYS_PTRACE = 117                 => sys_ptrace(args[..4]);
             SYS_SCHED_SETPARAM = 118         => sys_sched_setparam(args[..2]);
@@ -363,6 +375,10 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SEMCTL = 191                 => sys_semctl(args[..4]);
             SYS_SEMTIMEDOP = 192             => sys_semtimedop(args[..4]);
             SYS_SEMOP = 193                  => sys_semop(args[..3]);
+            SYS_SHMGET = 194                 => sys_shmget(args[..3]);
+            SYS_SHMCTL = 195                 => sys_shmctl(args[..3]);
+            SYS_SHMAT = 196                  => sys_shmat(args[..3]);
+            SYS_SHMDT = 197                  => sys_shmdt(args[..1]);
             SYS_SOCKET = 198                 => sys_socket(args[..3]);
             SYS_SOCKETPAIR = 199             => sys_socketpair(args[..4]);
             SYS_BIND = 200                   => sys_bind(args[..3]);
@@ -381,25 +397,34 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_BRK = 214                    => sys_brk(args[..1]);
             SYS_MUNMAP = 215                 => sys_munmap(args[..2]);
             SYS_MREMAP = 216                 => sys_mremap(args[..5]);
+            SYS_ADD_KEY = 217                => sys_add_key(args[..5]);
+            SYS_REQUEST_KEY = 218            => sys_request_key(args[..4]);
+            SYS_KEYCTL = 219                 => sys_keyctl(args[..5]);
             SYS_CLONE = 220                  => sys_clone(args[..5], &user_ctx);
             SYS_EXECVE = 221                 => sys_execve(args[..3], &mut user_ctx);
             SYS_MMAP = 222                   => sys_mmap(args[..6]);
             SYS_FADVISE64 = 223              => sys_fadvise64(args[..4]);
             SYS_MPROTECT = 226               => sys_mprotect(args[..3]);
             SYS_MSYNC = 227                  => sys_msync(args[..3]);
+            SYS_MLOCK = 228                  => sys_mlock(args[..2]);
+            SYS_MUNLOCK = 229                => sys_munlock(args[..2]);
             SYS_MADVISE = 233                => sys_madvise(args[..3]);
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
+            SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
+            SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
             SYS_SCHED_SETATTR = 274          => sys_sched_setattr(args[..3]);
             SYS_SCHED_GETATTR = 275          => sys_sched_getattr(args[..4]);
             SYS_RENAMEAT2 = 276              => sys_renameat2(args[..5]);
+            SYS_SECCOMP = 277                => sys_seccomp(args[..3]);
             SYS_GETRANDOM = 278              => sys_getrandom(args[..3]);
             SYS_MEMFD_CREATE = 279           => sys_memfd_create(args[..2]);
             SYS_EXECVEAT = 281               => sys_execveat(args[..5], &mut user_ctx);
+            SYS_MEMBARRIER = 283             => sys_membarrier(args[..3]);
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
@@ -411,9 +436,11 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PIDFD_OPEN = 434             => sys_pidfd_open(args[..2]);
             SYS_CLONE3 = 435                 => sys_clone3(args[..2], &user_ctx);
             SYS_CLOSE_RANGE = 436            => sys_close_range(args[..3]);
+            SYS_OPENAT2 = 437                => sys_openat2(args[..4]);
             SYS_PIDFD_GETFD = 438            => sys_pidfd_getfd(args[..3]);
             SYS_FACCESSAT2 = 439             => sys_faccessat2(args[..4]);
             SYS_EPOLL_PWAIT2 = 441           => sys_epoll_pwait2(args[..6]);
+            SYS_MOUNT_SETATTR = 442          => sys_mount_setattr(args[..5]);
             SYS_FCHMODAT2 = 452              => sys_fchmodat2(args[..4]);
             SYS_LISTMOUNT = 458              => sys_listmount(args[..4]);
             // Architecture-specific syscalls

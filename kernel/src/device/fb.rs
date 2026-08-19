@@ -307,6 +307,10 @@ impl FbHandle {
         FbFixScreenInfo {
             smem_start: self.framebuffer.io_mem().paddr() as u64,
             smem_len: self.framebuffer.io_mem().size() as u32,
+            // Report true-color (FB_VISUAL_TRUECOLOR = 2) so Xorg's fbdev
+            // driver derives the color depth from the RGB bitfields instead
+            // of bits_per_pixel.
+            visual: 2,
             line_length: self.framebuffer.line_size() as u32,
             ..Default::default()
         }

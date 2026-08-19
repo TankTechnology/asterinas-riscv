@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-
 # SPDX-License-Identifier: MPL-2.0
-
 # EIC7700 isolation verification: pure QEMU, no physical board required.
 # Proves the L3 flush register is reserved only for eswin,eic7700 DTBs.
 #

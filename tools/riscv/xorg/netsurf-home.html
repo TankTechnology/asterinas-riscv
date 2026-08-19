@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Asterinas RISC-V — Web</title>
+<style>
+  body { background: #f4e8d0; color: #202028; font-family: sans-serif; margin: 1.5em; }
+  h1 { color: #1a4f8b; border-bottom: 4px solid #1a4f8b; margin: 0 0 0.5em 0; }
+  h2 { color: #1a4f8b; }
+  .banner { background: #1a4f8b; color: #ffffff; padding: 0.75em 1em; font-weight: bold; }
+  .grid { overflow: hidden; }
+  .col { float: left; width: 48%; margin-right: 2%; }
+  .card { background: #ffffff; border: 2px solid #dcdad5; padding: 0.75em 1em; margin: 0 0 1em 0; }
+  .card h3 { margin: 0 0 0.4em 0; color: #1a4f8b; }
+  a { color: #1a4f8b; }
+  ul.links li { margin: 0.35em 0; }
+  .foot { font-style: italic; color: #7a4b12; clear: both; }
+</style>
+</head>
+<body>
+<h1>Asterinas RISC-V — Web Browser</h1>
+
+<p class="banner">NetSurf 3.9 running on the Asterinas RISC-V framebuffer desktop.</p>
+
+<div class="grid">
+
+  <div class="col">
+    <div class="card">
+      <h3>Quick links</h3>
+      <ul class="links">
+        <li><a href="https://www.iana.org/">IANA</a> — domain &amp; protocol registry</li>
+        <li><a href="https://www.netsurf-browser.org/">NetSurf</a> — this browser's project</li>
+        <li><a href="https://info.cern.ch/">info.cern.ch</a> — the first website</li>
+        <li><a href="https://news.ycombinator.com/">Hacker News</a> — text links</li>
+        <li><a href="https://en.wikipedia.org/wiki/RISC-V">RISC-V (Wikipedia)</a> — image+text article</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>About this desktop</h3>
+      <p>This page is rendered by <b>NetSurf</b>, cross-compiled for
+      <code>riscv64</code>, on the Asterinas RISC-V systemd desktop
+      (Xorg + matchbox-wm).</p>
+      <p>Bookmarks are in the <b>Hotlist</b> menu; the <b>Home</b> button
+      returns here.</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <h3>Stack</h3>
+      <table border="1" width="100%">
+        <tr><th>Layer</th><th>Component</th></tr>
+        <tr><td>Kernel</td><td>Asterinas (Rust microkernel)</td></tr>
+        <tr><td>Userspace</td><td>systemd PID 1</td></tr>
+        <tr><td>Display</td><td>Xorg (fbdev) + matchbox-wm</td></tr>
+        <tr><td>Browser</td><td>NetSurf 3.9 (GTK2)</td></tr>
+        <tr><td>Network</td><td>virtio-net + slirp</td></tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<p class="foot">Asterinas RISC-V — default browser home page.</p>
+</body>
+</html>

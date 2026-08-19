@@ -188,8 +188,21 @@ def build_initramfs(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="output .cpio.gz path")
+    parser.add_argument(
+        "--init-elf",
+        type=Path,
+        default=None,
+        help="pack a prebuilt /init ELF instead of compiling qemu_uboot_init.S",
+    )
     args = parser.parse_args()
-    build_initramfs(args.output)
+    if args.init_elf is not None:
+        init_elf = args.init_elf.read_bytes()
+        _validate_riscv_elf(init_elf)
+        archive = make_newc_archive(init_elf)
+        compressed = gzip.compress(archive, mtime=0)
+        _write_output_atomic(args.output, compressed)
+    else:
+        build_initramfs(args.output)
     return 0
 
 

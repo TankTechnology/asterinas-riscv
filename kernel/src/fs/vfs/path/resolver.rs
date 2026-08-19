@@ -413,11 +413,12 @@ impl PathResolver {
                 "`new_root` or the current root is not a mount point"
             );
         }
-        if new_root_path.mount.parent().is_none() || self.root.mount.parent().is_none() {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "`new_root` or the current root is on the rootfs mount"
-            );
+        // `new_root` must not be the namespace root mount itself (it has no
+        // parent mount to be grafted onto). The *current* root, however, may
+        // be the namespace root mount: pivoting off the initramfs rootfs is
+        // the canonical use case.
+        if new_root_path.mount.parent().is_none() {
+            return_errno_with_message!(Errno::EINVAL, "`new_root` is on the rootfs mount");
         }
         let mut topology_guard = MountTopology::write_lock();
 
@@ -434,18 +435,27 @@ impl PathResolver {
             );
         }
 
-        let parent_path = {
-            let parent_mount = self.root.mount.parent().unwrap().upgrade().unwrap();
-            let mountpoint = self.root.mount.mountpoint().unwrap();
-            Path::new(parent_mount, mountpoint)
-        };
+        // Capture the old root's parent and mountpoint before grafting, since
+        // `graft_mount_tree` mutates the parent link.
+        let old_root_parent = self.root.mount.parent().and_then(|parent| parent.upgrade());
+        let old_root_mountpoint = self.root.mount.mountpoint();
 
         self.root
             .mount
             .graft_mount_tree(&put_old_path, &mut topology_guard);
-        new_root_path
-            .mount
-            .graft_mount_tree(&parent_path, &mut topology_guard);
+
+        if let (Some(parent_mount), Some(mountpoint)) = (old_root_parent, old_root_mountpoint) {
+            // Normal case: move `new_root` to where the old root used to be.
+            let parent_path = Path::new(parent_mount, mountpoint);
+            new_root_path
+                .mount
+                .graft_mount_tree(&parent_path, &mut topology_guard);
+        } else {
+            // The old root is the namespace root mount (e.g. the initramfs
+            // rootfs), which has no parent. `new_root` simply becomes the new
+            // root mount.
+            new_root_path.mount.detach_from_parent(&mut topology_guard);
+        }
 
         // Release the mount topology lock before taking other threads' resolver locks.
         drop(topology_guard);

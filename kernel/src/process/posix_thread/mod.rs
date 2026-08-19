@@ -23,6 +23,7 @@ use crate::{
         posix_thread::ptrace::TraceeStatus,
         signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
+    syscall::SockFilter,
     thread::{Thread, Tid},
     time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
@@ -107,6 +108,14 @@ pub struct PosixThread {
 
     /// The personality value for this thread.
     personality: AtomicU32,
+
+    /// The seccomp mode of this thread (`0` = disabled, `1` = strict,
+    /// `2` = filter; see `crate::syscall::seccomp`).
+    seccomp_mode: AtomicU32,
+
+    /// The seccomp BPF filter program, set by `seccomp(SECCOMP_SET_MODE_FILTER)`.
+    /// Only meaningful when `seccomp_mode == SECCOMP_MODE_FILTER`.
+    seccomp_filter: Mutex<Option<Arc<[SockFilter]>>>,
 }
 
 impl PosixThread {
@@ -342,6 +351,32 @@ impl PosixThread {
     /// Returns the exit code of this thread.
     pub fn exit_code(&self) -> ExitCode {
         self.exit_code.load(Ordering::Relaxed)
+    }
+
+    /// Returns the seccomp mode of this thread.
+    pub fn seccomp_mode(&self) -> u32 {
+        self.seccomp_mode.load(Ordering::Relaxed)
+    }
+
+    /// Sets the seccomp mode of this thread.
+    ///
+    /// As on Linux, entering seccomp mode is irreversible for the lifetime of
+    /// the thread; this method is only called from `seccomp(2)`.
+    pub fn set_seccomp_mode(&self, mode: u32) {
+        self.seccomp_mode.store(mode, Ordering::Relaxed);
+    }
+
+    /// Returns the seccomp BPF filter program, if one is installed.
+    pub fn seccomp_filter(&self) -> Option<Arc<[SockFilter]>> {
+        self.seccomp_filter.lock().clone()
+    }
+
+    /// Installs the seccomp BPF filter program.
+    ///
+    /// As with [`Self::set_seccomp_mode`], this is only called from `seccomp(2)`
+    /// and is irreversible for the lifetime of the thread.
+    pub fn set_seccomp_filter(&self, filter: Arc<[SockFilter]>) {
+        *self.seccomp_filter.lock() = Some(filter);
     }
 }
 
