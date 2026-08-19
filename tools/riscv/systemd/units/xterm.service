@@ -1,0 +1,17 @@
+[Unit]
+Description=XTerm terminal emulator
+After=xorg.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+ExecStart=/usr/bin/xterm
+Restart=always
+RestartSec=2s
+StandardOutput=null
+StandardError=null

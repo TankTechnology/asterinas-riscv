@@ -9,9 +9,9 @@ use alloc::{
 use core::fmt::Debug;
 
 use aster_input::{
-    event_type_codes::{EventTypes, KeyCode, KeyStatus, RelCode, SynEvent},
+    event_type_codes::{AbsCode, EventTypes, KeyCode, KeyStatus, RelCode, SynEvent},
     input_dev::{
-        InputCapability, InputDevice as InputDeviceTrait, InputEvent, InputId,
+        InputAbsInfo, InputCapability, InputDevice as InputDeviceTrait, InputEvent, InputId,
         RegisteredInputDevice,
     },
 };
@@ -24,9 +24,11 @@ use ostd::{
     mm::{HasDaddr, PAGE_SIZE, dma::DmaStream},
     sync::SpinLock,
 };
-use ostd_pod::IntoBytes;
+use ostd_pod::{IntoBytes, Pod};
 
-use super::{InputConfigSelect, QUEUE_EVENT, QUEUE_STATUS, VirtioInputConfig, VirtioInputEvent};
+use super::{
+    AbsInfo, InputConfigSelect, QUEUE_EVENT, QUEUE_STATUS, VirtioInputConfig, VirtioInputEvent,
+};
 use crate::{
     device::VirtioDeviceError, dma_buf::DmaBuf, queue::VirtQueue, transport::DeviceTransport,
 };
@@ -269,6 +271,19 @@ impl InputDevice {
                     );
                 }
             }
+            // Absolute movement events (EV_ABS)
+            3 => {
+                if let Some(abs_code) = map_to_abs_code(virtio_event.code) {
+                    let abs_value = virtio_event.value as i32;
+                    let abs_event = InputEvent::from_absolute_move(abs_code, abs_value);
+                    registered_device.submit_events(&[abs_event]);
+                } else {
+                    debug!(
+                        "unmapped absolute event code {}, dropped",
+                        virtio_event.code
+                    );
+                }
+            }
 
             // Other event types
             _ => {
@@ -398,6 +413,15 @@ fn map_to_key_code(virtio_code: u16) -> Option<KeyCode> {
         125 => KeyCode::LeftMeta,
         126 => KeyCode::RightMeta,
         139 => KeyCode::Menu,
+        // Mouse / pointer buttons (BTN_*). Without these, a tablet reports no
+        // buttons and evdev mis-configures it as a relative mouse.
+        0x110 => KeyCode::BtnLeft,
+        0x111 => KeyCode::BtnRight,
+        0x112 => KeyCode::BtnMiddle,
+        0x113 => KeyCode::BtnSide,
+        0x114 => KeyCode::BtnExtra,
+        0x115 => KeyCode::BtnForward,
+        0x116 => KeyCode::BtnBack,
         _ => return None,
     })
 }
@@ -418,6 +442,31 @@ fn map_to_rel_code(virtio_code: u16) -> Option<RelCode> {
         0x0a => RelCode::Reserved,
         0x0b => RelCode::WheelHiRes,
         0x0c => RelCode::HWheelHiRes,
+        _ => return None,
+    })
+}
+
+/// Maps a VirtIO absolute axis code to an [`AbsCode`].
+fn map_to_abs_code(virtio_code: u16) -> Option<AbsCode> {
+    Some(match virtio_code {
+        0x00 => AbsCode::X,
+        0x01 => AbsCode::Y,
+        0x02 => AbsCode::Z,
+        0x03 => AbsCode::Rx,
+        0x04 => AbsCode::Ry,
+        0x05 => AbsCode::Rz,
+        0x18 => AbsCode::Pressure,
+        0x19 => AbsCode::Distance,
+        0x1a => AbsCode::TiltX,
+        0x1b => AbsCode::TiltY,
+        0x2f => AbsCode::MtSlot,
+        0x30 => AbsCode::MtTouchMajor,
+        0x31 => AbsCode::MtTouchMinor,
+        0x35 => AbsCode::MtPositionX,
+        0x36 => AbsCode::MtPositionY,
+        0x37 => AbsCode::MtToolType,
+        0x39 => AbsCode::MtTrackingId,
+        0x3a => AbsCode::MtPressure,
         _ => return None,
     })
 }
@@ -450,6 +499,32 @@ impl InputDevice {
         // Query supported event types.
         let ev_key = self.query_ev_bits(EventTypes::KEY.as_index());
         let ev_rel = self.query_ev_bits(EventTypes::REL.as_index());
+        let ev_abs = self.query_ev_bits(EventTypes::ABS.as_index());
+
+        // Collect absolute axis capabilities and their calibration info. This is
+        // done before taking the mutable borrow on `self.capability` below, since
+        // `query_abs_info` borrows `self` immutably.
+        let mut abs_axes: Vec<(AbsCode, InputAbsInfo)> = Vec::new();
+        if let Some(abs_bits) = &ev_abs {
+            for bit in 0..abs_bits.len() * 8 {
+                if abs_bits[bit / 8] & (1 << (bit % 8)) != 0
+                    && let Some(abs_code) = map_to_abs_code(bit as u16)
+                {
+                    let info = self
+                        .query_abs_info(bit as u16)
+                        .map(|abs_info| InputAbsInfo {
+                            value: 0,
+                            minimum: abs_info.min as i32,
+                            maximum: abs_info.max as i32,
+                            fuzz: abs_info.fuzz as i32,
+                            flat: abs_info.flat as i32,
+                            resolution: abs_info.res as i32,
+                        })
+                        .unwrap_or_default();
+                    abs_axes.push((abs_code, info));
+                }
+            }
+        }
 
         let capability = &mut self.capability;
         capability.set_supported_event_type(EventTypes::SYN);
@@ -459,6 +534,9 @@ impl InputDevice {
         }
         if ev_rel.is_some() {
             capability.set_supported_event_type(EventTypes::REL);
+        }
+        if ev_abs.is_some() {
+            capability.set_supported_event_type(EventTypes::ABS);
         }
 
         // Set key capabilities.
@@ -483,11 +561,39 @@ impl InputDevice {
             }
         }
 
+        // Set absolute axis capabilities and their calibration info.
+        for (abs_code, info) in abs_axes {
+            info!(
+                "absolute axis {:?}: min={}, max={}, fuzz={}, flat={}, res={}",
+                abs_code, info.minimum, info.maximum, info.fuzz, info.flat, info.resolution
+            );
+            capability.set_supported_absolute_axis(abs_code);
+            capability.set_absolute_axis_info(abs_code as usize, info);
+        }
+
         info!(
-            "input device capabilities set: KEY={}, REL={}",
+            "input device capabilities set: KEY={}, REL={}, ABS={}",
             ev_key.is_some(),
-            ev_rel.is_some()
+            ev_rel.is_some(),
+            ev_abs.is_some()
         );
+    }
+
+    /// Queries the calibration information for a specific absolute axis.
+    fn query_abs_info(&self, axis_code: u16) -> Option<AbsInfo> {
+        let size = self.select_config(InputConfigSelect::AbsInfo, axis_code as u8);
+        if size != size_of::<AbsInfo>() {
+            return None;
+        }
+
+        let data_ptr = field_ptr!(&self.config, VirtioInputConfig, data).cast::<u8>();
+        let mut bytes = [0u8; size_of::<AbsInfo>()];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            let mut ptr = data_ptr.clone();
+            ptr.byte_add(i);
+            *byte = ptr.read_once().unwrap();
+        }
+        Some(AbsInfo::from_bytes(&bytes))
     }
 
     /// Queries event bits for a specific event type.

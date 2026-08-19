@@ -3,12 +3,16 @@
 //! System call handlers.
 
 #![cfg_attr(
-    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "loongarch64"
+    ),
     expect(dead_code)
 )]
 
 pub use clock_gettime::ClockId;
-use ostd::arch::cpu::context::UserContext;
+use ostd::{arch::cpu::context::UserContext, user::UserContextApi};
 pub use timer_create::create_timer;
 
 use crate::{cpu::LinuxAbi, prelude::*};
@@ -44,6 +48,7 @@ mod exit;
 mod exit_group;
 mod fadvise64;
 mod fallocate;
+mod fanotify;
 mod fcntl;
 mod flock;
 mod fork;
@@ -79,6 +84,7 @@ mod getuid;
 mod getxattr;
 mod inotify;
 mod ioctl;
+mod keyctl;
 mod kill;
 mod link;
 mod listen;
@@ -86,11 +92,14 @@ mod listmount;
 mod listxattr;
 mod lseek;
 mod madvise;
+mod membarrier;
 mod memfd_create;
 mod mkdir;
 mod mknod;
+mod mlock;
 mod mmap;
 mod mount;
+mod mount_setattr;
 mod move_mount;
 mod mprotect;
 mod mremap;
@@ -98,6 +107,7 @@ mod msync;
 mod munmap;
 mod nanosleep;
 mod open;
+mod openat2;
 mod pause;
 mod personality;
 mod pidfd_getfd;
@@ -139,6 +149,8 @@ mod sched_setattr;
 mod sched_setparam;
 mod sched_setscheduler;
 mod sched_yield;
+mod seccomp;
+pub use seccomp::SockFilter;
 mod select;
 mod semctl;
 mod semget;
@@ -168,6 +180,10 @@ mod setsid;
 mod setsockopt;
 mod setuid;
 mod setxattr;
+mod shmat;
+mod shmctl;
+mod shmdt;
+mod shmget;
 mod shutdown;
 mod sigaltstack;
 mod signalfd;
@@ -378,6 +394,33 @@ impl SyscallArgument {
 
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+
+    // seccomp: consult the thread's policy (strict allowlist or BPF filter)
+    // before the syscall executes. On a block, deliver SIGSYS and return ENOSYS;
+    // an ERRNO action returns the error directly without a signal. If the signal
+    // is ignored/blocked, the syscall returns ENOSYS (matching Linux's
+    // `secure_computing` behaviour).
+    match seccomp::check(
+        ctx,
+        syscall_frame.syscall_number,
+        &syscall_frame.args,
+        user_ctx.instruction_pointer(),
+    ) {
+        seccomp::SeccompDecision::Allow => {}
+        seccomp::SeccompDecision::Kill => {
+            ctx.posix_thread
+                .enqueue_signal(Box::new(seccomp::SigsysSignal::new(
+                    syscall_frame.syscall_number as u32,
+                )));
+            user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+            return;
+        }
+        seccomp::SeccompDecision::Errno(errno) => {
+            user_ctx.set_syscall_ret((-errno) as usize);
+            return;
+        }
+    }
+
     let syscall_return = arch::syscall_dispatch(
         syscall_frame.syscall_number,
         syscall_frame.args,
@@ -401,7 +444,7 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
 
 macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
-        if ostd::log_enabled!(ostd::log::Level::Info) {
+        if ostd::log_enabled!(ostd::log::Level::Debug) {
             let syscall_name_str = stringify!($syscall_name);
             let pid = $crate::context::current!().pid();
             let tid = {
@@ -411,7 +454,7 @@ macro_rules! log_syscall_entry {
                     .unwrap()
                     .tid()
             };
-            ostd::info!(
+            ostd::debug!(
                 "[pid={}][tid={}][id={}][{}]",
                 pid,
                 tid,

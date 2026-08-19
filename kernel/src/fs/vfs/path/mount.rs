@@ -72,7 +72,15 @@ pub enum MountPropType {
     /// do not propagate to or from the private mounts.
     #[default]
     Private,
-    // TODO: Implement other propagation types.
+    /// Mount and unmount events propagate to all mounts in the same peer
+    /// group.
+    Shared,
+    /// Mount and unmount events propagate *from* the master peer group *to*
+    /// this mount, but not the other way around.
+    Slave,
+    /// This mount is a private mount that cannot be bind-mounted; bind
+    /// attempts return `EINVAL`.
+    Unbindable,
 }
 
 /// 32-bit recyclable mount IDs.

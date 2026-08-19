@@ -34,6 +34,44 @@ pub fn sys_clock_gettime(
     Ok(SyscallReturn::Return(0))
 }
 
+pub fn sys_clock_getres(
+    clockid: clockid_t,
+    timespec_addr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!("clockid = {:?}", clockid);
+
+    let resolution = read_clock_resolution(clockid)?;
+
+    let timespec = timespec_t::from(resolution);
+    ctx.user_space().write_val(timespec_addr, &timespec)?;
+
+    Ok(SyscallReturn::Return(0))
+}
+
+/// Returns the resolution (precision) of the clock specified by `clockid`.
+///
+/// The coarse clocks (`CLOCK_REALTIME_COARSE`/`CLOCK_MONOTONIC_COARSE`) are
+/// updated once per system timer tick (see `ostd::timer::TIMER_FREQ`, 1000 Hz),
+/// so their resolution is one tick (1 ms). Every other supported clock reads a
+/// nanosecond-granular clocksource.
+fn read_clock_resolution(clockid: clockid_t) -> Result<Duration> {
+    if clockid >= 0 {
+        let clock_id = ClockId::try_from(clockid)?;
+        let resolution = match clock_id {
+            ClockId::CLOCK_REALTIME_COARSE | ClockId::CLOCK_MONOTONIC_COARSE => {
+                Duration::from_millis(1)
+            }
+            _ => Duration::from_nanos(1),
+        };
+        Ok(resolution)
+    } else {
+        // Dynamic (process/thread/fd) clocks are nanosecond-granular.
+        let _ = DynamicClockIdInfo::try_from(clockid)?;
+        Ok(Duration::from_nanos(1))
+    }
+}
+
 // The hard-coded clock IDs.
 #[expect(non_camel_case_types)]
 #[repr(i32)]

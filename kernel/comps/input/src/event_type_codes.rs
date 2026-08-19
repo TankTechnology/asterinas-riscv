@@ -158,6 +158,74 @@ impl RelCodeSet {
     }
 }
 
+/// Absolute axes.
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbsCode {
+    X = 0x00,
+    Y = 0x01,
+    Z = 0x02,
+    Rx = 0x03,
+    Ry = 0x04,
+    Rz = 0x05,
+    Pressure = 0x18,
+    Distance = 0x19,
+    TiltX = 0x1a,
+    TiltY = 0x1b,
+    MtSlot = 0x2f,
+    MtTouchMajor = 0x30,
+    MtTouchMinor = 0x31,
+    MtPositionX = 0x35,
+    MtPositionY = 0x36,
+    MtToolType = 0x37,
+    MtTrackingId = 0x39,
+    MtPressure = 0x3a,
+}
+/// The maximum value for absolute axes.
+const ABS_MAX: usize = 0x3f;
+/// The number of absolute axes.
+pub const ABS_COUNT: usize = ABS_MAX + 1;
+
+/// A set of [`AbsCode`] represented as a bitmap.
+#[derive(Clone, Debug)]
+pub struct AbsCodeSet(BitVec<u8>);
+
+impl Default for AbsCodeSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AbsCodeSet {
+    /// Creates an empty set.
+    pub fn new() -> Self {
+        Self(BitVec::repeat(false, ABS_COUNT))
+    }
+
+    /// Sets an absolute code in the set.
+    pub fn set(&mut self, abs_code: AbsCode) {
+        let index = abs_code as usize;
+        self.0.set(index, true);
+    }
+
+    /// Clears an absolute code from the set.
+    pub fn clear(&mut self, abs_code: AbsCode) {
+        let index = abs_code as usize;
+        self.0.set(index, false);
+    }
+
+    /// Checks if the set contains an absolute code.
+    pub fn contain(&self, abs_code: AbsCode) -> bool {
+        let index = abs_code as usize;
+        self.0.get(index).map(|b| *b).unwrap()
+    }
+
+    /// Returns the bitmap as a byte slice.
+    pub fn as_raw_slice(&self) -> &[u8] {
+        self.0.as_raw_slice()
+    }
+}
+
 /// A set of [`KeyCode`] represented as a bitmap.
 #[derive(Clone, Debug)]
 pub struct KeyCodeSet(BitVec<u8>);

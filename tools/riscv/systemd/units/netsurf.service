@@ -1,0 +1,25 @@
+[Unit]
+Description=NetSurf web browser (curl+OpenSSL build)
+After=xorg.service matchbox-window-manager.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+Environment=NETSURFRES=/usr/share/netsurf
+# Start URL: default to the bundled local home page; override via a drop-in
+# /etc/netsurf.conf (NETSURF_URL=https://...) for network fetch tests.
+Environment=NETSURF_URL=file:///usr/share/netsurf/netsurf-home.html
+EnvironmentFile=-/etc/netsurf.conf
+# curl fetcher is compiled in (NETSURF_USE_CURL/OPENSSL := YES); point it at the
+# bundled CA store. http(s):// fetch needs a guest network device, which the
+# boot driver attaches under --net (QEMU slirp user networking).
+ExecStart=/usr/bin/netsurf-gtk -v --ca_bundle /etc/ssl/certs/ca-certificates.crt ${NETSURF_URL}
+Restart=always
+RestartSec=3s
+StandardOutput=tty
+StandardError=tty

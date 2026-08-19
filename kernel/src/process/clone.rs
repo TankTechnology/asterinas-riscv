@@ -593,6 +593,8 @@ fn clone_child_process(
             .user_ns(child_user_ns.clone())
             .ns_proxy(child_ns_proxy)
             .default_timer_slack_ns(default_timer_slack_ns)
+            .seccomp_mode(posix_thread.seccomp_mode())
+            .seccomp_filter(posix_thread.seccomp_filter())
         };
         #[cfg(target_arch = "x86_64")]
         {

@@ -31,7 +31,7 @@ use crate::{
 pub(super) const EVDEV_BUFFER_SIZE: usize = 64;
 
 mod ioctl_defs {
-    use aster_input::input_dev::InputId;
+    use aster_input::input_dev::{InputAbsInfo, InputId};
 
     use crate::util::ioctl::{InData, IoctlEnum, OutData, ioc};
 
@@ -49,6 +49,9 @@ mod ioctl_defs {
 
     /// The `EVIOCGBIT` ioctl enum.
     pub(super) type GetEventBits = IoctlEnum<b'E', 0x20, 0x1F, OutData<[u8]>>;
+
+    /// The `EVIOCGABS` ioctl enum (get absolute axis information).
+    pub(super) type GetAbsInfo = IoctlEnum<b'E', 0x40, 0x3F, OutData<InputAbsInfo>>;
 }
 
 // Reference: <https://elixir.bootlin.com/linux/v6.17.9/source/include/uapi/linux/input.h#L28>
@@ -328,8 +331,11 @@ fn handle_get_bit(evdev: &Arc<EvdevDevice>, event_type: u8, writer: &mut VmWrite
             let bitmap = capability.supported_relative_axes_bitmap();
             write_bytes_and_zeros_to_userspace(writer, bitmap)?;
         }
-        t if t == EventTypes::ABS.as_index()
-            || t == EventTypes::LED.as_index()
+        t if t == EventTypes::ABS.as_index() => {
+            let bitmap = capability.supported_absolute_axes_bitmap();
+            write_bytes_and_zeros_to_userspace(writer, bitmap)?;
+        }
+        t if t == EventTypes::LED.as_index()
             || t == EventTypes::SW.as_index()
             || t == EventTypes::MSC.as_index()
             || t == EventTypes::FF.as_index()
@@ -397,11 +403,30 @@ impl FileOps for EvdevFile {
     fn write_at(
         &self,
         _offset: usize,
-        _reader: &mut VmReader,
+        reader: &mut VmReader,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        // TODO: In Linux, writing to evdev files is permitted and will inject input events.
-        return_errno_with_message!(Errno::ENOSYS, "writing to evdev files is not supported yet");
+        // Linux permits writing `struct input_event`s to an evdev file to inject
+        // events; Xorg's evdev driver uses this to set the keyboard LEDs (a burst
+        // of `EV_LED` events followed by a `SYN_REPORT`). We accept and discard the
+        // events — LED injection is a no-op for our virtual keyboards, but returning
+        // success keeps Xorg's keyboard-control path from erroring out.
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/drivers/input/evdev.c#L586>
+        const EVENT_SIZE: usize = size_of::<EvdevEvent>();
+
+        let total = reader.remain();
+        if !total.is_multiple_of(EVENT_SIZE) {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the write buffer is not a multiple of `input_event` size"
+            );
+        }
+
+        while reader.has_remain() {
+            let _event = reader.read_val::<EvdevEvent>()?;
+        }
+
+        Ok(total)
     }
 }
 
@@ -456,6 +481,12 @@ impl PerOpenFileOps for EvdevFile {
                 let event_type = cmd.discriminant();
                 cmd.base_ioctl()
                     .with_writer(|mut writer| handle_get_bit(&evdev, event_type, &mut writer))?;
+            }
+            cmd @ GetAbsInfo => {
+                let evdev = self.upgrade_device()?;
+                let axis_index = cmd.discriminant() as usize;
+                let info = *evdev.device.capability().absolute_axis_info(axis_index);
+                cmd.base_ioctl().write(&info)?;
             }
             cmd @ GetKeyState => {
                 // TODO: We need to track whether the key is currently pressed and report that state
