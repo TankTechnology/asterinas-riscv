@@ -5,9 +5,10 @@
 pub(crate) use core::{Clock, timer};
 
 use ::core::time::Duration;
-pub use system_time::{START_TIME, SystemTime};
+pub use system_time::SystemTime;
 pub(crate) use system_time::wall_clock_adjust_nanos;
-pub use timer::{Timer, TimerManager};
+pub(crate) use system_time::START_TIME_AS_DURATION;
+pub(crate) use timer::{Timer, TimerManager};
 
 use crate::prelude::*;
 

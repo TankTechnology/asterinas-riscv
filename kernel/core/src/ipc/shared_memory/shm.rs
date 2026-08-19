@@ -6,10 +6,14 @@ use super::PermissionMode;
 use crate::{
     ipc::{IpcId, IpcNamespace},
     prelude::*,
-    vm::{perms::VmPerms, vmar::VmarMapOffset},
+    vm::{
+        perms::VmPerms,
+        vmar::{MmapMode, VmarMapOffset},
+    },
 };
 
 bitflags! {
+    #[derive(Clone, Copy, Debug)]
     pub struct ShmFlags: u32 {
         /// Attach read-only.
         const SHM_RDONLY = 0x1000;
@@ -51,8 +55,10 @@ pub fn shm_attach(
 
     let user_space = ctx.user_space();
     let vmar = user_space.vmar();
-    let mut options = vmar.new_map(size, vm_perms)?;
-    options = options.is_shared(true).vmo(vmo);
+    let mut options = vmar
+        .new_map(size, vm_perms)
+        .map_mode(MmapMode::Shared)
+        .vmo(vmo);
 
     if shmaddr != 0 {
         let addr = if shmflg.contains(ShmFlags::SHM_RND) {
@@ -106,7 +112,7 @@ pub fn shm_detach(shmaddr: Vaddr, ipc_ns: &Arc<IpcNamespace>, ctx: &Context) -> 
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "the address is not mapped"))?;
         mapping.map_to_addr()..mapping.map_end()
     };
-    vmar.remove_mapping(range)?;
+    vmar.remove_mapping(range);
 
     ipc_ns.with_shm_set(shmid, PermissionMode::empty(), |shm_set| {
         shm_set.detach(pid);

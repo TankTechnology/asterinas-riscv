@@ -1309,7 +1309,7 @@ mod tests {
             map_range.start,
             MappedMemory::Anonymous,
             None,
-            false,
+            MmapMode::Private,
             false,
             VmPerms::READ | VmPerms::EXEC,
         );
@@ -1359,7 +1359,7 @@ mod tests {
             map_range.start,
             MappedMemory::Anonymous,
             None,
-            false,
+            MmapMode::Private,
             false,
             VmPerms::READ | VmPerms::WRITE,
         );
@@ -1391,13 +1391,13 @@ mod tests {
         let map_range = PAGE_SIZE..PAGE_SIZE * 2;
         let vmo = VmoOptions::new_anon(PAGE_SIZE).alloc().unwrap();
         let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
-        let frame = mapped_vmo.get_committed_frame(0).unwrap();
+        let (frame, _) = mapped_vmo.get_committed_frame(0, VmoMapMode::Private).unwrap();
         let preempt_guard = disable_preempt();
         vm_space
             .cursor_mut(&preempt_guard, &map_range)
             .unwrap()
             .map(
-                frame,
+                frame.into(),
                 PageProperty::new_user(PageFlags::R | PageFlags::AVAIL2, CachePolicy::Writeback),
             );
         vm_space.activate();
@@ -1407,7 +1407,7 @@ mod tests {
             map_range.start,
             MappedMemory::Vmo(mapped_vmo),
             None,
-            false,
+            MmapMode::Private,
             true,
             VmPerms::READ,
         );
@@ -1454,7 +1454,7 @@ mod tests {
             mapping_start,
             MappedMemory::Vmo(mapped_vmo),
             None,
-            false,
+            MmapMode::Private,
             true,
             VmPerms::READ,
         );

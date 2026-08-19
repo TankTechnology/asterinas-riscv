@@ -18,10 +18,7 @@ use ostd::{
 use spin::Once;
 
 use super::ExplicitInterruptSourceError;
-use crate::{
-    CONSOLE_NAME,
-    console::{DiagnosticSendError, Uart, UartConsole},
-};
+use crate::console::{DiagnosticSendError, Uart, UartConsole};
 
 const REGISTER_SHIFT: usize = 2;
 const REGISTER_IO_WIDTH: usize = size_of::<u32>();
@@ -369,7 +366,10 @@ pub(super) fn init(fdt_node: FdtNode) {
     };
 
     let uart_console = UartConsole::new(uart);
-    aster_console::register_device(CONSOLE_NAME.to_string(), uart_console.clone());
+    aster_console::register_device(
+        aster_console::UART_CONSOLE_NAME.to_string(),
+        uart_console.clone(),
+    );
 
     ostd::info!("Registered DW APB UART as a console");
 

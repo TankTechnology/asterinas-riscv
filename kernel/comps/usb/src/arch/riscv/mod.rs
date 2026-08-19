@@ -412,7 +412,7 @@ pub(crate) fn run_keyboard_interrupt_driven(
         "Starting interrupt-driven xHCI host: mmio size={:#x}, irq={}:{}",
         mmio.size(),
         interrupt_source.interrupt_parent,
-        interrupt_source.interrupt,
+        interrupt_source.arguments[0],
     );
 
     let keyboard = match PollingUsbKeyboard::open(mmio.clone(), dma_window) {
@@ -498,7 +498,7 @@ pub fn run_polling() {
         resources.config.dma_window,
         InterruptSourceInFdt {
             interrupt_parent: resources.config.interrupt_parent,
-            interrupt: resources.config.interrupt,
+            arguments: [resources.config.interrupt],
         },
     );
 }

@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::dispatch_ioctl;
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::sync::LocalIrqDisabled;
 
 use self::{line_discipline::LineDiscipline, termio::CFontOp};
 use crate::{
-    device::{Device, DeviceType, DevtmpfsInodeMeta},
+    device::{Device, DeviceType},
+    fs::devtmpfs::DevtmpfsNodeMeta,
     events::IoEvents,
     fs::file::{PerOpenFileOps, StatusFlags},
     prelude::*,
@@ -13,7 +15,7 @@ use crate::{
         JobControl, Terminal, broadcast_signal_async,
         signal::{PollHandle, Pollable, Pollee},
     },
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 mod device;
@@ -29,6 +31,7 @@ mod vt;
 
 pub(super) use driver::TtyDriver;
 pub(super) use flags::TtyFlags;
+pub(crate) use device::CONSOLE_DEVICE_ID;
 
 pub(super) fn init_in_first_process() -> Result<()> {
     hvc::init_in_first_process()?;
@@ -401,7 +404,7 @@ impl<D: TtyDriver> Device for Tty<D> {
         )
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
         self.driver.devtmpfs_meta(self.index)
     }
 
@@ -444,7 +447,7 @@ mod tests {
     impl TtyDriver for LockCheckingDriver {
         const DEVICE_MAJOR_ID: u32 = 0;
 
-        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsNodeMeta> {
             None
         }
 
@@ -476,7 +479,7 @@ mod tests {
     impl TtyDriver for ShortWriteDriver {
         const DEVICE_MAJOR_ID: u32 = 0;
 
-        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsNodeMeta> {
             None
         }
 
@@ -504,7 +507,7 @@ mod tests {
     impl TtyDriver for ReadinessErrorDriver {
         const DEVICE_MAJOR_ID: u32 = 0;
 
-        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+        fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsNodeMeta> {
             None
         }
 

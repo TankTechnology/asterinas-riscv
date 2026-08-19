@@ -404,14 +404,14 @@ mod tests {
         line_discipline.set_termios(termios);
         let mut received_signal = None;
 
-        assert_eq!(
-            line_discipline.push_char(b'x', |_| {}).unwrap(),
-            Some((b'x', None))
-        );
+        let mut echo = Vec::new();
+        line_discipline
+            .push_char(b'x', |_| {}, &mut echo)
+            .unwrap();
         line_discipline
             .push_char(CCtrlCharId::VINTR.default_char(), |signal| {
                 received_signal = Some(signal)
-            })
+            }, &mut echo)
             .unwrap();
 
         assert_eq!(received_signal, Some(SIGINT));

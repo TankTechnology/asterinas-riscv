@@ -411,7 +411,7 @@ impl FileLike for InodeHandle {
         raw_ioctl: RawIoctl,
         file_table: &mut FileTableRefMut,
     ) -> Option<Result<i32>> {
-        if self.rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return Some(Err(Error::with_message(
                 Errno::EBADF,
                 "the file is opened as a path",

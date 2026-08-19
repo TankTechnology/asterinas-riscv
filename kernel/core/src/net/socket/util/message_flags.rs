@@ -22,7 +22,7 @@ bitflags! {
         const MSG_ZEROCOPY  = 0x4000000;
         const MSG_FASTOPEN  = 0x20000000;
 
-        const SUPPORTED     = Self::MSG_DONTWAIT.bits | Self::MSG_NOSIGNAL.bits;
+        const SUPPORTED     = Self::MSG_DONTWAIT.bits() | Self::MSG_NOSIGNAL.bits();
     }
 }
 

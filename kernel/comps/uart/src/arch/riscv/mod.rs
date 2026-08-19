@@ -243,7 +243,7 @@ fn validate_explicit_interrupt_source(
 
     Ok(InterruptSourceInFdt {
         interrupt_parent,
-        interrupt,
+        arguments: [interrupt],
     })
 }
 
@@ -259,7 +259,7 @@ mod tests {
     fn explicit_interrupt_source_validates_cells() {
         let source = validate_explicit_interrupt_source(Some(9), Some(1), Some(4)).unwrap();
         assert_eq!(source.interrupt_parent, 9);
-        assert_eq!(source.interrupt, 4);
+        assert_eq!(source.arguments[0], 4);
         assert!(matches!(
             validate_explicit_interrupt_source(None, Some(1), Some(4)),
             Err(ExplicitInterruptSourceError::MissingInterruptParent)

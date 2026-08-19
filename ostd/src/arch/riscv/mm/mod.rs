@@ -15,7 +15,6 @@ use crate::{
     },
     mm::{
         PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
-        dma::{DmaDirection, ToDevice},
         page_prop::{
             CachePolicy, PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags,
         },
@@ -43,7 +42,7 @@ pub(crate) fn sync_io_mem_to_device(
     if has_extensions(IsaExtensions::ZICBOM) {
         // SAFETY: The caller supplies the mapped virtual range corresponding to
         // the I/O memory being synchronized, and Zicbom was detected above.
-        unsafe { sync_dma_range::<ToDevice>(virtual_range) };
+        unsafe { sync_dma_range(virtual_range, false) };
         return Ok(());
     }
 

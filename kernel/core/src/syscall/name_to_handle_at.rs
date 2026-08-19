@@ -26,7 +26,7 @@ use crate::{
     fs::{
         file::{
             CreationFlags, FileLike, InodeMode, OpenArgs,
-            file_table::{FdFlags, RawFileDesc, get_file_fast},
+            file_table::{FdFlags, FileTableInsert, RawFileDesc, get_file_fast},
         },
         vfs::path::{EmptyPathStr, FsPath, Path},
     },
@@ -134,14 +134,13 @@ pub fn sys_open_by_handle_at(
 
     let fd = {
         let file_table = ctx.thread_local.borrow_file_table();
-        let mut file_table_locked = file_table.unwrap().write();
         let fd_flags =
             if CreationFlags::from_bits_truncate(flags).contains(CreationFlags::O_CLOEXEC) {
                 FdFlags::CLOEXEC
             } else {
                 FdFlags::empty()
             };
-        file_table_locked.insert(file_handle.clone(), fd_flags)
+        file_table.unwrap().lock_and_insert(file_handle.clone(), fd_flags)?
     };
 
     Ok(SyscallReturn::Return(fd.into()))

@@ -71,7 +71,7 @@ pub(super) fn init(fdt_node: FdtNode) {
         ostd::error!("SiFive UART interrupt initialization failed: {:?}", error);
         return;
     }
-    aster_console::register_device(crate::CONSOLE_NAME.to_string(), uart_console);
+    aster_console::register_device(aster_console::UART_CONSOLE_NAME.to_string(), uart_console);
     ostd::info!("Registered SiFive UART as a console");
 }
 

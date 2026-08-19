@@ -130,7 +130,7 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
         ostd::warn!("xHCI has no interrupt pin; using interrupt_line");
         return InterruptSourceInFdt {
             interrupt_parent: u32::MAX,
-            interrupt: interrupt_line as u32,
+            arguments: [interrupt_line as u32],
         };
     }
 
@@ -142,7 +142,7 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
         ostd::warn!("no PCI host node in DTB; using interrupt_line");
         return InterruptSourceInFdt {
             interrupt_parent: u32::MAX,
-            interrupt: interrupt_line as u32,
+            arguments: [interrupt_line as u32],
         };
     };
     let (Some(map), Some(mask)) = (
@@ -152,7 +152,7 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
         ostd::warn!("no PCI interrupt-map in DTB; using interrupt_line");
         return InterruptSourceInFdt {
             interrupt_parent: u32::MAX,
-            interrupt: interrupt_line as u32,
+            arguments: [interrupt_line as u32],
         };
     };
 
@@ -183,7 +183,7 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
             ostd::info!("PCI xHCI interrupt-map: parent={:#x} irq={}", parent, irq);
             return InterruptSourceInFdt {
                 interrupt_parent: parent,
-                interrupt: irq,
+                arguments: [irq],
             };
         }
         offset += 24;
@@ -195,7 +195,7 @@ fn resolve_pci_interrupt(device: &PciCommonDevice, interrupt_line: u8) -> Interr
     );
     InterruptSourceInFdt {
         interrupt_parent: u32::MAX,
-        interrupt: interrupt_line as u32,
+        arguments: [interrupt_line as u32],
     }
 }
 

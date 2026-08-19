@@ -8,14 +8,16 @@
 //! against it, and additionally accepts raw PCM `write()`s (the original
 //! direct-node path kept for the AUDIO-M1 smoke test).
 
+use crate::dispatch_ioctl;
 use aster_virtio::device::sound::{self, device::SoundDevice};
 use device_id::{DeviceId, MinorId};
 use ostd::mm::VmIo;
 
 use crate::{
     context::current_userspace,
+    fs::devtmpfs::DevtmpfsNodeMeta,
     device::{
-        Device, DeviceType, DevtmpfsInodeMeta,
+        Device, DeviceType,
         registry::char,
         snd::{
             control,
@@ -32,7 +34,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 const PCM_PLAYBACK_MINOR: u32 = 116;
@@ -62,8 +64,8 @@ impl Device for SoundPcmDevice {
         self.id
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("snd/pcmC0D0p"))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        DevtmpfsNodeMeta::new("snd/pcmC0D0p").ok()
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -343,8 +345,8 @@ impl Device for SoundControlDevice {
         self.id
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("snd/controlC0"))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        DevtmpfsNodeMeta::new("snd/controlC0").ok()
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {

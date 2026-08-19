@@ -46,6 +46,7 @@ pub fn sys_faccessat2(
 }
 
 bitflags! {
+    #[derive(Clone, Copy, Debug)]
     struct FaccessatFlags: u32 {
         const AT_EACCESS = 0x200;
         const AT_SYMLINK_NOFOLLOW = 0x100;

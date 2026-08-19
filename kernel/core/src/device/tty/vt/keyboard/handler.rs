@@ -3,7 +3,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use aster_framebuffer::mode::{KeyboardMode, KeyboardModeFlags};
+use aster_framebuffer::{
+    framebuffer::FRAMEBUFFER,
+    mode::{KeyboardMode, KeyboardModeFlags},
+};
 use aster_input::{
     event_type_codes::{KeyCode, KeyStatus},
     input_dev::{InputDevice, InputEvent},

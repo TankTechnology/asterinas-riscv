@@ -19,6 +19,7 @@
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+use crate::dispatch_ioctl;
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
@@ -26,16 +27,20 @@ use ostd::mm::{Paddr, VmIo};
 
 use crate::{
     context::current_userspace,
-    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
+    device::{Device, DeviceType, registry::char},
+    fs::devtmpfs::DevtmpfsNodeMeta,
     events::IoEvents,
     fs::{
-        file::{Mappable, PerOpenFileOps, StatusFlags},
+        file::{MappableObject, PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{RawIoctl, dispatch_ioctl},
-    vm::page_cache::{Vmo, VmoFlags, VmoOptions},
+    util::ioctl::RawIoctl,
+    vm::{
+        page_cache::{Vmo, VmoFlags, VmoOptions},
+        vmar::FileMmapRequest,
+    },
 };
 
 /// Linux DRM character-device major number.
@@ -343,7 +348,8 @@ mod ioctl_defs {
         DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
         DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
-    use crate::util::ioctl::{InData, InOutData, NoData, ioc};
+    use crate::ioc;
+    use crate::util::ioctl::{InData, InOutData, NoData};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
@@ -383,8 +389,8 @@ impl Device for Dri {
         DeviceId::new(MajorId::new(DRM_MAJOR), MinorId::new(0))
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("dri/card0"))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        DevtmpfsNodeMeta::new("dri/card0").ok()
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -640,12 +646,12 @@ impl PerOpenFileOps for DriHandle {
         false
     }
 
-    fn mappable(&self) -> Result<Mappable> {
+    fn mappable(&self, _request: FileMmapRequest) -> Result<MappableObject<'_>> {
         let inner = self.inner.lock();
-        let pool = inner.pool.as_ref().ok_or_else(|| {
+        let pool = inner.pool.as_ref().cloned().ok_or_else(|| {
             Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
         })?;
-        Ok(Mappable::Vmo(pool.clone()))
+        Ok(MappableObject::Vmo(pool))
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {

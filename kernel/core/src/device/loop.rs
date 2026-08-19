@@ -8,6 +8,7 @@
 //! `/sys/block/loopN/loop/` (`backing_file`, `partscan`, `autoclear`,
 //! `sizelimit`), as LTP's `ioctl_loop*` tests read them.
 
+use crate::dispatch_ioctl;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use aster_block::{
@@ -26,9 +27,10 @@ use ostd::mm::VmIo;
 use spin::Once;
 
 use crate::{
+    fs::devtmpfs::DevtmpfsNodeMeta,
     context::current_userspace,
     device::{
-        Device, DeviceType, DevtmpfsInodeMeta,
+        Device, DeviceType,
         registry::char::{self, MajorIdOwner as CharMajorIdOwner},
     },
     events::IoEvents,
@@ -48,7 +50,7 @@ use crate::{
         posix_thread::FileTableRefMut,
         signal::{PollHandle, Pollable},
     },
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 /// Number of loop devices to pre-create.
@@ -340,7 +342,7 @@ impl BlockDevice for LoopDevice {
         for segment in bio.segments() {
             let start_offset = (sid_range.start + current_sid).to_raw() as usize * SECTOR_SIZE;
             let byte_len = segment.nbytes();
-            let slice = segment.inner_dma_slice();
+            let slice = segment.dma_slice();
 
             let result = match type_ {
                 BioType::Read => {
@@ -417,8 +419,8 @@ impl Device for LoopFile {
         self.0.id()
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new(self.0.name()))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        DevtmpfsNodeMeta::new(String::from(self.0.name())).ok()
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -429,7 +431,8 @@ impl Device for LoopFile {
 }
 
 mod ioctl_defs {
-    use crate::util::ioctl::{NoData, OutData, ioc};
+    use crate::ioc;
+    use crate::util::ioctl::{NoData, OutData};
 
     pub(super) type BlkGetSize64 = ioc!(BLKGETSIZE64, 0x12, 114, OutData<u64>);
     pub(super) type BlkGetSectorSize = ioc!(BLKSSZGET, 0x12, 104, NoData);
@@ -918,8 +921,8 @@ impl Device for LoopControlDevice {
         self.id
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("loop-control"))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        DevtmpfsNodeMeta::new("loop-control").ok()
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -1033,7 +1036,8 @@ pub(super) fn init_in_first_process() -> Result<()> {
     );
     let ctl_device = LoopControlDevice::new(ctl_id);
     char::register(ctl_device).expect("failed to register loop-control");
-    let ctl_meta = DevtmpfsInodeMeta::new("loop-control");
+    let ctl_meta = DevtmpfsNodeMeta::new("loop-control")
+        .expect("the loop-control node path is valid");
     devtmpfs::create_node(DevtmpfsNode::new(DeviceType::Char, ctl_id, ctl_meta))?;
 
     Ok(())

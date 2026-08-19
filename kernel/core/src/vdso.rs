@@ -165,7 +165,9 @@ impl VdsoData {
     fn wall_clock_basetime(instant: Instant) -> (u64, u64) {
         const NANOS_PER_SEC: i128 = 1_000_000_000;
 
-        let start = START_DURATION.get().unwrap();
+        let start = crate::time::START_TIME_AS_DURATION
+            .get()
+            .unwrap();
         let adjust_nanos = crate::time::wall_clock_adjust_nanos() as i128;
         let total_nanos = instant.secs() as i128 * NANOS_PER_SEC
             + start.as_secs() as i128 * NANOS_PER_SEC

@@ -7,7 +7,7 @@ use core::{
 
 use aster_time::{read_monotonic_time, read_start_time};
 use spin::Once;
-use time::{Date, Month, PrimitiveDateTime, Time};
+use time::{Date, PrimitiveDateTime, Time};
 
 use crate::prelude::*;
 
@@ -16,7 +16,7 @@ use crate::prelude::*;
 pub struct SystemTime(PrimitiveDateTime);
 
 pub static START_TIME: Once<SystemTime> = Once::new();
-pub(super) static START_TIME_AS_DURATION: Once<Duration> = Once::new();
+pub(crate) static START_TIME_AS_DURATION: Once<Duration> = Once::new();
 
 /// The wall-clock adjustment in nanoseconds, applied on top of
 /// `START_TIME + monotonic time`. It is changed by `clock_settime` and is
@@ -126,24 +126,15 @@ pub(crate) fn wall_clock_adjust_nanos() -> i64 {
 
 /// convert ostd::time::Time to System time
 fn convert_system_time(system_time: aster_time::SystemTime) -> Result<SystemTime> {
-    let month = match Month::try_from(system_time.month) {
-        Ok(month) => month,
-        Err(_) => return_errno_with_message!(Errno::EINVAL, "unknown month in system time"),
-    };
-    let date = match Date::from_calendar_date(system_time.year as _, month, system_time.day) {
-        Ok(date) => date,
-        Err(_) => return_errno_with_message!(Errno::EINVAL, "Invalid system date"),
-    };
-    let time_ = match Time::from_hms_nano(
-        system_time.hour,
-        system_time.minute,
-        system_time.second,
-        system_time.nanos.try_into().unwrap(),
-    ) {
-        Ok(time_) => time_,
+    let since_epoch = system_time.since_epoch();
+    let seconds = match i64::try_from(since_epoch.as_secs()) {
+        Ok(seconds) => seconds,
         Err(_) => return_errno_with_message!(Errno::EINVAL, "Invalid system time"),
     };
-    Ok(SystemTime(PrimitiveDateTime::new(date, time_)))
+    let nanoseconds = since_epoch.subsec_nanos() as i32;
+    Ok(SystemTime(
+        SystemTime::UNIX_EPOCH.0 + time::Duration::new(seconds, nanoseconds),
+    ))
 }
 
 /// FIXME: need to further check precision loss

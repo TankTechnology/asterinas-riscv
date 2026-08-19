@@ -180,7 +180,7 @@ impl FanotifyFile {
             event_queue: SpinLock::new(VecDeque::new()),
             queue_capacity: DEFAULT_MAX_QUEUED_EVENTS,
             pollee: Pollee::new(),
-            common: FileCommon::new(pseudo_path, status_flags),
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDONLY, status_flags),
             this: weak_self.clone(),
         }))
     }
@@ -382,10 +382,6 @@ impl FileLike for FanotifyFile {
         SettableStatusFlags::minimal().with_o_async()
     }
 
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDONLY
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -399,7 +395,7 @@ impl FileLike for FanotifyFile {
         impl Display for FdInfo {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 let mut flags =
-                    self.inner.common.status_flags().bits() | self.inner.access_mode() as u32;
+                    self.inner.common.status_flags().bits() | self.inner.common.access_mode() as u32;
                 if self.fd_flags.contains(FdFlags::CLOEXEC) {
                     flags |= crate::fs::file::CreationFlags::O_CLOEXEC.bits();
                 }

@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file::{InodeType, Permission, file_table::{RawFileDesc, get_file_fast}},
+        file::{InodeType, Permission, file_table::{FileTableInsert, RawFileDesc, get_file_fast}},
         vfs::{
             notify::fanotify::FanotifyFile,
             path::{EmptyPathStr, FsPath},
@@ -70,7 +70,7 @@ pub fn sys_fanotify_init(flags: u32, event_f_flags: u32, ctx: &Context) -> Resul
 
     let file = FanotifyFile::new(is_nonblocking)?;
     let file_table = ctx.thread_local.borrow_file_table();
-    let fd = file_table.unwrap().write().insert(file, fd_flags);
+    let fd = file_table.unwrap().lock_and_insert(file, fd_flags)?;
     Ok(SyscallReturn::Return(fd.into()))
 }
 

@@ -13,7 +13,6 @@ use ostd::{
 use super::process_vm::activate_vmar;
 use crate::{
     fs::vfs::{
-        inode::Inode,
         inode_ext::WriteAccessDenyGuard,
         path::{Path, PerMountFlags},
     },
