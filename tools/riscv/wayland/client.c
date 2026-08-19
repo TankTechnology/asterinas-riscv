@@ -115,7 +115,7 @@ int client_main(void) {
             }
             uint32_t sz_op;
             memcpy(&sz_op, buf + buf_pos + 4, sizeof(sz_op));
-            uint16_t size = (uint16_t)(sz_op & 0xffffu);
+            uint16_t size = (uint16_t)(sz_op >> 16);
             if (size == 0 || buf_pos + size > buf_len) {
                 die("bad global size");
             }
