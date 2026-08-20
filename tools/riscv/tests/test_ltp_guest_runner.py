@@ -132,6 +132,7 @@ class LtpBuildScriptContractTests(unittest.TestCase):
         self.assertIn("--expected-count 767", source)
         for tool in ("aclocal", "autoconf", "automake"):
             self.assertIn(tool, source)
+        self.assertIn("linux/limits.h", source)
         self.assertNotIn("target/qemu-uboot/current", source)
         self.assertNotIn("boot.ext4", source)
 

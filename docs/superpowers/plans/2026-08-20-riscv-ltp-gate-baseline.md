@@ -928,7 +928,8 @@ docker run --rm --network=host \
 /usr/riscv64-linux-musl:ro" \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc \
   bash -lc 'apt-get update -qq; \
-    apt-get install -y --no-install-recommends autoconf automake; \
+    apt-get install -y --no-install-recommends \
+      autoconf automake linux-libc-dev-riscv64-cross; \
     restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \

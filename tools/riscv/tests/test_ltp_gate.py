@@ -178,6 +178,7 @@ class LtpGateDocumentationTests(unittest.TestCase):
                     source,
                 )
                 self.assertIn("autoconf automake", source)
+                self.assertIn("linux-libc-dev-riscv64-cross", source)
 
 
 class LtpSubsetPackagingTests(unittest.TestCase):
