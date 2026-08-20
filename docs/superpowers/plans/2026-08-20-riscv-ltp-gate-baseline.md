@@ -689,6 +689,7 @@ ltp_gate.py run --kernel IMAGE [--smp {1,4}] [--run-id ID]
                 [--skip-build] [--baseline] [--boot-timeout SECONDS]
                 [--tag NAME ...] [--source-commit FULL_OBJECT_ID]
 ltp_gate.py build [--skip-compile]
+ltp_gate.py status --run-id ID
 ```
 
 For `run`, create the result directory with `mkdir(exist_ok=False)`, then run
@@ -705,8 +706,9 @@ these exact stages:
    `QEMU_UBOOT_PROFILE`, `QEMU_UBOOT_OUT_DIR`,
    `ASTERINAS_RISCV_BOOTI`, and `ASTERINAS_INITRAMFS` set explicitly.
 3. `qemu_uboot_booti.py run` using the private prepared inputs and writing
-   `serial.log`, `marker-event.txt`, and `boot-result.json` under the new result
-   directory.
+   a readable live `progress.log` under the new result directory. The live log
+   records a `[RUN]` line before each syscall. At the terminal marker, publish
+   the authoritative `serial.log`, `marker-event.txt`, and `boot-result.json`.
 4. `ltp_result.py write` to publish `result.json` and `summary.txt`.
 5. Write `SHA256SUMS` using repository-relative names only.
 

@@ -75,6 +75,7 @@ def run_prepared(
     variant_audit: Path | None = None,
     bootargs_override: str | None = None,
     serial_interaction: SerialInteraction | None = None,
+    progress_log: Path | None = None,
 ) -> PreparedRunResult:
     """Run and audit one prepared U-Boot boot using immutable evidence."""
     run_arguments = dict(locals())
@@ -165,6 +166,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         run_parser.add_argument(f"--{name}", type=Path, required=True)
     for name in ("dtb-audit", "source-dtb", "variant-audit"):
         run_parser.add_argument(f"--{name}", type=Path)
+    run_parser.add_argument("--progress-log", type=Path)
     run_parser.add_argument("--variant", type=variant_by_name)
     run_parser.add_argument("--profile", type=_profile_argument, default=GENERIC_SV39)
     run_parser.add_argument(

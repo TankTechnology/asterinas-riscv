@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
@@ -24,6 +25,7 @@ static void say(const char *s) {
 }
 
 int main(void) {
+#ifndef SKIP_CONSOLE_ATTACH
     int fd = open("/dev/console", O_RDWR);
     if (fd < 0)
         fd = open("/dev/ttyS0", O_RDWR);
@@ -34,6 +36,7 @@ int main(void) {
         if (fd > 2)
             (void)close(fd);
     }
+#endif
 
     say(">>> LTP init: mounting pseudo-filesystems <<<\n");
     (void)mount("proc", "/proc", "proc", 0, NULL);
@@ -52,7 +55,20 @@ int main(void) {
         say("init: fork for " RUNNER_PATH " failed\n");
     } else {
         int status;
-        while (waitpid(runner, &status, 0) < 0 && errno == EINTR) {
+        pid_t waited;
+        do {
+            waited = waitpid(runner, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited < 0) {
+            dprintf(1, "[BROK] waitpid for LTP runner failed: %d\n", errno);
+        } else if (WIFSIGNALED(status)) {
+            dprintf(1, "[BROK] LTP runner terminated by signal %d\n",
+                    WTERMSIG(status));
+        } else if (!WIFEXITED(status)) {
+            say("[BROK] LTP runner ended with an unknown status\n");
+        } else if (WEXITSTATUS(status) != 0) {
+            dprintf(1, "[BROK] LTP runner exited with status %d\n",
+                    WEXITSTATUS(status));
         }
         say(">>> LTP init: runner finished; holding PID 1 <<<\n");
     }
