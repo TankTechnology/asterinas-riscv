@@ -243,11 +243,11 @@ panic, no `CRASH`, and `5/5 PASS`. During QEMU runs, inspect gate status,
 `progress.log`, current verdict counts, and serial output rather than waiting
 without observing progress.
 
-After the focused gate passes, run one SMP=1 767-test regression. It must retain
+After the focused gate passes, run one SMP=4 767-test regression. It must retain
 infrastructure PASS, introduce no new failures outside the five-test group, and
-replace the five historical crash outcomes with passes. A second full SMP=4 run
-is not required for this IPv4/TCP-only change; the existing short SMP=4 smoke
-gate remains sufficient unless the focused evidence exposes an SMP dependency.
+replace the five historical crash outcomes with passes. SMP=1 is not a routine
+paired gate; add it only when the focused evidence exposes a CPU-count or SMP
+dependency that needs a control run.
 
 ## Required next milestone: RISC-V architecture LTP
 
@@ -277,8 +277,10 @@ The next milestone must therefore:
 2. Generalize the gate's evidence names away from the hard-coded
    `selected-syscalls` label so named suites retain exact manifest order,
    verdicts, run IDs, and run-owned artifact hashes.
-3. Run the architecture manifest on both SMP=1 and SMP=4 for every milestone;
-   an SMP=1-only pass cannot close an architecture-sensitive issue.
+3. Run the architecture manifest on SMP=4 by default. Do not require a paired
+   SMP=1 run for every milestone. Add SMP=1 only as a targeted control for
+   CPU-count-sensitive failures such as affinity, CPU ID, scheduler migration,
+   or an observed SMP differential.
 4. Expand the cross-build in a second layer to selected `sched`, `nptl`, and
    `mm` tests. CPU-hotplug tests remain explicitly classified until Asterinas
    exposes the required CPU online/offline interface.
@@ -300,7 +302,7 @@ overall RISC-V objective.
    add focused unit tests alongside each new internal state transition.
 3. Enable IPv4/TCP wildcard bind and exact-then-any lookup.
 4. Preserve ingress iface and concrete accepted endpoint.
-5. Run host/unit, kernel regression, focused RISC-V LTP, and SMP=1 full gates.
+5. Run host/unit, kernel regression, focused RISC-V LTP, and SMP=4 full gates.
 6. Update the RISC-V LTP report with immutable run IDs and artifact hashes.
 7. Stop network feature expansion and begin the RISC-V architecture LTP gate
    plus the NixOS graphical/browser readiness audit as explicit workstreams.
@@ -311,7 +313,7 @@ This batch is complete only when all of the following are true:
 
 - the unit and network regression tests pass;
 - the five focused RISC-V LTP cases are `5/5 PASS` with infrastructure PASS;
-- the SMP=1 full manifest completes without new regressions;
+- the SMP=4 full manifest completes without new regressions;
 - run-owned kernel, initramfs, DTB, and boot-disk hashes verify;
 - the baseline report records the new evidence; and
 - no UDP, IPv6, `SO_REUSEPORT`, or unrelated network feature has been folded
