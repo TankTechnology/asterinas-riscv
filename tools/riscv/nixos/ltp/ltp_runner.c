@@ -11,6 +11,7 @@
 // __LTP_GATE_FAIL__ lets the QEMU driver decide pass/fail.
 
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -48,17 +49,28 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int log_has_token(const char *path, const char *tok) {
+static int log_has_result(const char *path, const char *token) {
     FILE *f = fopen(path, "r");
     if (!f)
         return 0;
     char buf[1024];
     int found = 0;
     while (fgets(buf, sizeof(buf), f)) {
-        if (strstr(buf, tok)) {
-            found = 1;
-            break;
+        char *cursor = buf;
+        while ((cursor = strstr(cursor, token))) {
+            char *after = cursor + strlen(token);
+            if ((cursor == buf || isspace((unsigned char)cursor[-1]))) {
+                while (isspace((unsigned char)*after))
+                    after++;
+                if (*after == ':') {
+                    found = 1;
+                    break;
+                }
+            }
+            cursor++;
         }
+        if (found)
+            break;
     }
     fclose(f);
     return found;
@@ -69,13 +81,17 @@ static int classify(const char *log_path, int status, int timed_out) {
         return R_TIMEOUT;
     if (WIFSIGNALED(status))
         return R_CRASH;
-    if (log_has_token(log_path, "TFAIL") || log_has_token(log_path, "TBROK"))
+    if (log_has_result(log_path, "TFAIL") ||
+        log_has_result(log_path, "TBROK") ||
+        log_has_result(log_path, "TWARN"))
         return R_FAIL;
-    if (log_has_token(log_path, "TCONF"))
-        return R_CONF;
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    if (!WIFEXITED(status))
         return R_FAIL;
-    return R_PASS;
+    if (WEXITSTATUS(status) != 0)
+        return WEXITSTATUS(status) == 32 && log_has_result(log_path, "TCONF")
+                   ? R_CONF
+                   : R_FAIL;
+    return log_has_result(log_path, "TPASS") ? R_PASS : R_FAIL;
 }
 
 static const char *verdict_name(int r) {
@@ -174,8 +190,9 @@ int main(int argc, char **argv) {
                 // Dynamic test binaries resolve libltp.so / libc.so here.
                 setenv("LD_LIBRARY_PATH", "/opt/ltp/lib", 1);
                 execv(binpath, args);
-                dprintf(2, "TCONF: cannot exec %s\n", binpath);
-                _exit(32);
+                dprintf(2, "TBROK: cannot exec %s: %s\n", binpath,
+                        strerror(errno));
+                _exit(126);
             }
             if (test < 0)
                 _exit(125);
