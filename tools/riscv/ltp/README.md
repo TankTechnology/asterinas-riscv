@@ -99,8 +99,13 @@ host does not provide the required RISC-V U-Boot toolchain:
 ```bash
 docker run --rm -it --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
+  --env ASTERINAS_SOURCE_COMMIT="$(git rev-parse HEAD)" \
   asterinas-env:uboot-sim bash
 ```
+
+Passing the source commit explicitly also supports an isolated Git worktree,
+whose administrative `.git/worktrees` directory is normally outside the bind
+mount. The gate validates this value before starting QEMU.
 
 The remaining commands in this guide run inside that shell or on an equivalent
 host environment.
