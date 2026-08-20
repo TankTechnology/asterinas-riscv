@@ -489,6 +489,30 @@ def _prepared_artifact_paths(
     return tuple(path for path, _ in candidates)
 
 
+def _run_evidence_candidates(
+    paths: LtpRunPaths,
+    manifest_evidence: Path,
+) -> tuple[Path, ...]:
+    """Return every run-owned evidence path that may exist after execution."""
+
+    return (
+        paths.prepared_dir / "fs-root/asterinas.booti",
+        paths.prepared_dir / "fs-root/initramfs.cpio.gz",
+        paths.prepared_dir / "fs-root/qemu-virt.dtb",
+        paths.prepared_dir / "boot.ext4",
+        manifest_evidence,
+        paths.prepared_dir / "artifacts.json",
+        paths.prepared_dir / "qemu-dtb-audit.json",
+        paths.result_dir / "ltp-initramfs.cpio.gz",
+        paths.result_dir / "serial.log",
+        paths.result_dir / "progress.log",
+        paths.result_dir / "marker-event.txt",
+        paths.result_dir / "boot-result.json",
+        paths.result_dir / "result.json",
+        paths.result_dir / "summary.txt",
+    )
+
+
 def _validate_run_paths(repo: Path, paths: LtpRunPaths) -> None:
     owned = repo / "target/ltp"
     _require_within(owned, repo, "LTP target root")
@@ -613,26 +637,20 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
         )
 
         result_path = paths.result_dir / "result.json"
+        checksum_inputs = _run_evidence_candidates(paths, manifest_evidence)
         if (
             qemu.returncode != 0
             or normalized.returncode != 0
             or not result_path.is_file()
         ):
+            _write_sha256s(
+                repo,
+                paths.result_dir / "SHA256SUMS",
+                checksum_inputs,
+            )
             return 1
         document = json.loads(result_path.read_text())
-        prepared_artifacts = _prepared_artifact_paths(paths.prepared_dir, document)
-        checksum_inputs = (
-            *prepared_artifacts,
-            manifest_evidence,
-            paths.prepared_dir / "artifacts.json",
-            paths.prepared_dir / "qemu-dtb-audit.json",
-            paths.result_dir / "serial.log",
-            paths.result_dir / "progress.log",
-            paths.result_dir / "marker-event.txt",
-            paths.result_dir / "boot-result.json",
-            result_path,
-            paths.result_dir / "summary.txt",
-        )
+        _prepared_artifact_paths(paths.prepared_dir, document)
         _write_sha256s(repo, paths.result_dir / "SHA256SUMS", checksum_inputs)
         infrastructure_passed = document.get("infrastructure_passed") is True
         ltp_passed = document.get("ltp_passed") is True

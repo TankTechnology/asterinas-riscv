@@ -79,6 +79,82 @@ class LtpGatePolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "initrd_sha256"):
                 _prepared_artifact_paths(prepared, {"artifacts": artifacts})
 
+    def test_failed_run_still_publishes_checksums_for_available_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            kernel = repo / "target/osdk/kernel.Image"
+            initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+            manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            kernel.parent.mkdir(parents=True)
+            initramfs.parent.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            kernel.write_bytes(b"kernel")
+            initramfs.write_bytes(b"initramfs")
+            manifest.write_text("getpid01 getpid01\n")
+            paths = run_paths(
+                repo,
+                run_id="failed-run",
+                smp=4,
+                kernel=kernel,
+            )
+            call_count = 0
+
+            def failed_commands(command: list[str], **kwargs: object) -> Mock:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    fs_root = paths.prepared_dir / "fs-root"
+                    fs_root.mkdir(parents=True)
+                    for path, payload in (
+                        (fs_root / "asterinas.booti", b"kernel"),
+                        (fs_root / "initramfs.cpio.gz", b"initramfs"),
+                        (fs_root / "qemu-virt.dtb", b"dtb"),
+                        (paths.prepared_dir / "boot.ext4", b"boot"),
+                        (paths.prepared_dir / "artifacts.json", b"{}"),
+                        (paths.prepared_dir / "qemu-dtb-audit.json", b"{}"),
+                        (paths.result_dir / "serial.log", b"serial failure\n"),
+                        (paths.result_dir / "progress.log", b"[RUN] getpid01\n"),
+                        (paths.result_dir / "marker-event.txt", b""),
+                        (paths.result_dir / "boot-result.json", b"{}"),
+                    ):
+                        path.write_bytes(payload)
+                return Mock(returncode=0 if call_count == 1 else 1)
+
+            with patch("ltp_gate.subprocess.run", side_effect=failed_commands):
+                status = main(
+                    [
+                        "run",
+                        "--kernel",
+                        str(kernel),
+                        "--run-id",
+                        "failed-run",
+                        "--skip-build",
+                        "--source-commit",
+                        "a" * 40,
+                    ],
+                    repo=repo,
+                )
+
+            checksum_path = paths.result_dir / "SHA256SUMS"
+            self.assertEqual(status, 1)
+            self.assertEqual(call_count, 3)
+            self.assertTrue(checksum_path.is_file())
+            checksums = checksum_path.read_text()
+            self.assertIn(
+                "target/ltp/qemu/smp4/failed-run/fs-root/asterinas.booti",
+                checksums,
+            )
+            self.assertIn(
+                "target/ltp/results/failed-run/selected-syscalls",
+                checksums,
+            )
+            self.assertIn(
+                "target/ltp/results/failed-run/serial.log",
+                checksums,
+            )
+
     def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
