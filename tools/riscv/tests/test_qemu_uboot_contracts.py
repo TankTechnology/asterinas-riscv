@@ -120,6 +120,10 @@ class ContractCompositionTests(unittest.TestCase):
                 QemuDeviceSet("bad-framebuffer", (), BOCHS_XRGB8888),
                 "framebuffer requires bochs-display",
             ),
+            (
+                QemuDeviceSet("bochs-without-framebuffer", (DeviceKind.BOCHS_DISPLAY,)),
+                "bochs-display requires framebuffer",
+            ),
         ):
             with self.subTest(device_set=device_set):
                 with self.assertRaisesRegex(ValueError, message):
@@ -266,6 +270,18 @@ class ContractCompositionTests(unittest.TestCase):
                 )
 
     def test_contract_vocabulary_is_closed(self) -> None:
+        self.assertEqual(
+            tuple((kind.name, kind.value) for kind in DeviceKind),
+            (
+                ("BOCHS_DISPLAY", "bochs-display"),
+                ("VIRTIO_KEYBOARD", "virtio-keyboard"),
+                ("VIRTIO_RNG", "virtio-rng"),
+                ("VIRTIO_NET", "virtio-net"),
+                ("VIRTIO_GPU", "virtio-gpu"),
+                ("SCRATCH_VIRTIO_BLOCK", "scratch-virtio-block"),
+                ("NVME", "nvme"),
+            ),
+        )
         self.assertEqual(tuple(QemuMachine), (QemuMachine.VIRT, QemuMachine.SIFIVE_U))
         self.assertEqual(
             tuple(StorageTransport),
