@@ -78,6 +78,8 @@ def _validate_device_set_shape(device_set: QemuDeviceSet) -> None:
         raise ValueError("device set contains duplicate devices")
     if device_set.framebuffer is not None and DeviceKind.BOCHS_DISPLAY not in device_set.devices:
         raise ValueError("framebuffer requires bochs-display")
+    if DeviceKind.BOCHS_DISPLAY in device_set.devices and device_set.framebuffer is None:
+        raise ValueError("bochs-display requires framebuffer")
 
 
 def validate_registered_device_set(device_set: QemuDeviceSet) -> None:
@@ -149,7 +151,15 @@ def render_device_argv(
     argv: list[str] = []
     for device in device_set.devices:
         if device is DeviceKind.BOCHS_DISPLAY:
-            argv.extend(("-device", "bochs-display,xres=1280,yres=1024"))
+            framebuffer = device_set.framebuffer
+            if framebuffer is None:
+                raise AssertionError("validated bochs-display must have a framebuffer")
+            argv.extend(
+                (
+                    "-device",
+                    f"bochs-display,xres={framebuffer.width},yres={framebuffer.height}",
+                )
+            )
         elif device is DeviceKind.VIRTIO_KEYBOARD:
             argv.extend(("-device", "virtio-keyboard-device"))
         else:
