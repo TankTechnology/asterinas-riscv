@@ -122,65 +122,68 @@ class ContractCompositionTests(unittest.TestCase):
             device_set=MEGREZ_BASIC,
         )
         names = [command.name for command in commands]
-        framebuffer_commands = tuple(
-            command for command in commands if command.name.startswith("framebuffer-")
-        )
-
-        self.assertEqual(
-            framebuffer_commands,
-            (
-                BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
-                BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
-                BootCommand(
-                    "framebuffer-node",
-                    "fdt mknode / framebuffer@40000000",
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-compatible",
-                    'fdt set /framebuffer@40000000 compatible "simple-framebuffer"',
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-reg",
-                    "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>",
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-width",
-                    "fdt set /framebuffer@40000000 width <0x500>",
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-height",
-                    "fdt set /framebuffer@40000000 height <0x400>",
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-stride",
-                    "fdt set /framebuffer@40000000 stride <0x1400>",
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-format",
-                    'fdt set /framebuffer@40000000 format "x8r8g8b8"',
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-status",
-                    'fdt set /framebuffer@40000000 status "okay"',
-                    "=>",
-                ),
-                BootCommand(
-                    "framebuffer-verify",
-                    "fdt print /framebuffer@40000000",
-                    "simple-framebuffer",
-                ),
+        expected_framebuffer_plan = (
+            BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
+            BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+            BootCommand(
+                "framebuffer-node",
+                "fdt mknode / framebuffer@40000000",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-compatible",
+                'fdt set /framebuffer@40000000 compatible "simple-framebuffer"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reg",
+                "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-width",
+                "fdt set /framebuffer@40000000 width <0x500>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-height",
+                "fdt set /framebuffer@40000000 height <0x400>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-stride",
+                "fdt set /framebuffer@40000000 stride <0x1400>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-format",
+                'fdt set /framebuffer@40000000 format "x8r8g8b8"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-status",
+                'fdt set /framebuffer@40000000 status "okay"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-verify",
+                "fdt print /framebuffer@40000000",
+                "simple-framebuffer",
             ),
         )
-        self.assertLess(names.index("dtb-select"), names.index("framebuffer-resize"))
-        self.assertLess(names.index("framebuffer-verify"), names.index("bootargs-env"))
-        self.assertLess(names.index("framebuffer-pci-probe"), names.index("framebuffer-node"))
+        self.assertEqual(names.count("dtb-resize"), 1)
+        dtb_resize_index = names.index("dtb-resize")
+        framebuffer_start = dtb_resize_index + 1
+        framebuffer_end = framebuffer_start + len(expected_framebuffer_plan)
+        self.assertEqual(
+            commands[framebuffer_start:framebuffer_end],
+            expected_framebuffer_plan,
+        )
+        self.assertEqual(names.count("bootargs-env"), 1)
+        self.assertEqual(commands[framebuffer_end].name, "bootargs-env")
+        for command in expected_framebuffer_plan:
+            with self.subTest(command=command.name):
+                self.assertEqual(names.count(command.name), 1)
         self.assertLess(names.index("framebuffer-verify"), names.index("booti"))
         self.assertEqual(names.count("booti"), 1)
 
