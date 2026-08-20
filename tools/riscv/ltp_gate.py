@@ -359,7 +359,13 @@ def _publish_copy(source: Path, destination: Path) -> None:
 
 def _git_commit(repo: Path) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        [
+            "git",
+            "-c",
+            f"safe.directory={repo.resolve()}",
+            "rev-parse",
+            "HEAD",
+        ],
         cwd=repo,
         check=True,
         capture_output=True,
