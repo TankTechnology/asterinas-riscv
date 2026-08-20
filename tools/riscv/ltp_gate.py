@@ -84,7 +84,7 @@ def run_paths(
     resolved_repo = repo.resolve()
     target = resolved_repo / "target" / "ltp"
     return LtpRunPaths(
-        prepared_dir=target / "qemu" / f"smp{smp}",
+        prepared_dir=target / "qemu" / f"smp{smp}" / run_id,
         result_dir=target / "results" / run_id,
         initramfs=target / "ltp-initramfs.cpio.gz",
         kernel=(
