@@ -55,7 +55,10 @@ class ParsedLtpResult:
     ltp_passed: bool
 
 
-def parse_ltp_serial(serial_text: str) -> ParsedLtpResult:
+def parse_ltp_serial(
+    serial_text: str,
+    expected_names: Sequence[str] | None = None,
+) -> ParsedLtpResult:
     """Parse one complete legacy LTP serial summary into exclusive counters."""
 
     lines = serial_text.replace("\r", "").splitlines()
@@ -100,6 +103,10 @@ def parse_ltp_serial(serial_text: str) -> ParsedLtpResult:
         raise ValueError("verdict lines do not match summary")
     if len({item.name for item in verdicts}) != len(verdicts):
         raise ValueError("duplicate LTP verdict name")
+    if expected_names is not None and tuple(item.name for item in verdicts) != tuple(
+        expected_names
+    ):
+        raise ValueError("verdict sequence does not match selected manifest")
 
     ltp_passed = aggregate_fail == 0
     if ltp_passed != ("__LTP_GATE_PASS__" in lines):
@@ -117,6 +124,23 @@ def parse_ltp_serial(serial_text: str) -> ParsedLtpResult:
         verdicts=verdicts,
         ltp_passed=ltp_passed,
     )
+
+
+def selected_manifest_names(manifest_text: str) -> tuple[str, ...]:
+    """Return the ordered tags from a validated LTP runtest manifest."""
+
+    names: list[str] = []
+    for line_number, line in enumerate(manifest_text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) < 2:
+            raise ValueError(f"malformed selected manifest line {line_number}")
+        names.append(fields[0])
+    if len(set(names)) != len(names):
+        raise ValueError("duplicate selected manifest tag")
+    return tuple(names)
 
 
 def _require_mapping(value: object, name: str) -> Mapping[str, object]:
@@ -233,6 +257,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     write = subparsers.add_parser("write")
     write.add_argument("--serial", type=Path, required=True)
     write.add_argument("--boot-result", type=Path, required=True)
+    write.add_argument("--manifest", type=Path, required=True)
     write.add_argument("--result", type=Path, required=True)
     write.add_argument("--summary", type=Path, required=True)
     write.add_argument("--git-commit", required=True)
@@ -248,7 +273,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     loaded_boot_result = json.loads(args.boot_result.read_text())
     boot_result = _require_mapping(loaded_boot_result, "boot result")
     document = build_result_document(
-        parse_ltp_serial(serial_text),
+        parse_ltp_serial(
+            serial_text,
+            selected_manifest_names(args.manifest.read_text()),
+        ),
         boot_result=boot_result,
         git_commit=args.git_commit,
         smp=args.smp,

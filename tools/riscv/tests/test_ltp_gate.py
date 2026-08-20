@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ltp_gate import (
+    _prepared_artifact_paths,
     _git_commit,
     _source_commit,
     exit_code,
@@ -30,6 +32,31 @@ IMPLEMENTATION_PLAN = (
 
 
 class LtpGatePolicyTests(unittest.TestCase):
+    def test_prepared_artifacts_must_match_normalized_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = Path(temporary)
+            fs_root = prepared / "fs-root"
+            fs_root.mkdir()
+            artifacts = {
+                "kernel_sha256": hashlib.sha256(b"kernel").hexdigest(),
+                "initrd_sha256": hashlib.sha256(b"initrd").hexdigest(),
+                "dtb_sha256": hashlib.sha256(b"dtb").hexdigest(),
+                "boot_disk_sha256": hashlib.sha256(b"boot").hexdigest(),
+            }
+            for path, payload in (
+                (fs_root / "asterinas.booti", b"kernel"),
+                (fs_root / "initramfs.cpio.gz", b"initrd"),
+                (fs_root / "qemu-virt.dtb", b"dtb"),
+                (prepared / "boot.ext4", b"boot"),
+            ):
+                path.write_bytes(payload)
+
+            paths = _prepared_artifact_paths(prepared, {"artifacts": artifacts})
+            self.assertEqual(len(paths), 4)
+            (fs_root / "initramfs.cpio.gz").write_bytes(b"replaced")
+            with self.assertRaisesRegex(ValueError, "initrd_sha256"):
+                _prepared_artifact_paths(prepared, {"artifacts": artifacts})
+
     def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)

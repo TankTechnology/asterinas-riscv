@@ -79,6 +79,19 @@ class LtpSerialParserTests(unittest.TestCase):
 
         self.assertEqual(result.counts.total, 5)
 
+    def test_parse_requires_exact_selected_manifest_order(self) -> None:
+        expected = ("read01", "open01", "bind04", "connect01", "fcntl14")
+
+        self.assertEqual(parse_ltp_serial(SERIAL, expected).counts.total, 5)
+        for names in (
+            expected[:-1],
+            (*expected, "write01"),
+            (expected[1], expected[0], *expected[2:]),
+        ):
+            with self.subTest(names=names):
+                with self.assertRaisesRegex(ValueError, "selected manifest"):
+                    parse_ltp_serial(SERIAL, names)
+
 
 class LtpResultDocumentTests(unittest.TestCase):
     def test_document_separates_infrastructure_and_ltp_status(self) -> None:
@@ -125,16 +138,26 @@ class LtpResultDocumentTests(unittest.TestCase):
             directory = Path(temporary)
             serial = directory / "serial.log"
             boot = directory / "boot-result.json"
+            manifest = directory / "selected-syscalls"
             result = directory / "result.json"
             summary = directory / "summary.txt"
             serial.write_text(SERIAL)
             boot.write_text(json.dumps(boot_result()) + "\n")
+            manifest.write_text(
+                "read01 read01\n"
+                "open01 open01\n"
+                "bind04 bind04\n"
+                "connect01 connect01\n"
+                "fcntl14 fcntl14\n"
+            )
             arguments = [
                 "write",
                 "--serial",
                 str(serial),
                 "--boot-result",
                 str(boot),
+                "--manifest",
+                str(manifest),
                 "--result",
                 str(result),
                 "--summary",
