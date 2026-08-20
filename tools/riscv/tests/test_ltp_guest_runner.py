@@ -133,6 +133,83 @@ class LtpGuestRunnerTests(unittest.TestCase):
         self.assertIn("[PASS] after01", result.stdout)
         self.assertIn("__LTP_GATE_DONE__", result.stdout)
 
+    def test_runner_cleans_descendants_after_a_normal_test_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binaries = directory / "bin"
+            logs = directory / "logs"
+            manifest = directory / "syscalls"
+            marker = directory / "leaked"
+            runner = directory / "ltp-runner"
+            binaries.mkdir()
+            leaker_source = directory / "leaker.c"
+            leaker_source.write_text(
+                "#include <fcntl.h>\n"
+                "#include <stdio.h>\n"
+                "#include <unistd.h>\n"
+                "int main(void) {\n"
+                "    pid_t child = fork();\n"
+                "    if (child < 0) return 1;\n"
+                "    if (child == 0) {\n"
+                "        sleep(1);\n"
+                f'        int fd = open("{marker.as_posix()}", '
+                "O_WRONLY | O_CREAT | O_TRUNC, 0600);\n"
+                "        if (fd >= 0) {\n"
+                '            (void)write(fd, "leaked\\n", 7);\n'
+                "            (void)close(fd);\n"
+                "        }\n"
+                "        _exit(0);\n"
+                "    }\n"
+                '    puts("TPASS:");\n'
+                "    return 0;\n"
+                "}\n"
+            )
+            subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-o",
+                    str(binaries / "leaker"),
+                    str(leaker_source),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest.write_text("leaker01 leaker\n")
+            subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f'-DBIN_DIR="{binaries}"',
+                    f'-DLOG_DIR="{logs}"',
+                    "-o",
+                    str(runner),
+                    str(RUNNER_SOURCE),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = subprocess.run(
+                [str(runner), str(manifest)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            time.sleep(1.2)
+
+            self.assertIn("[PASS] leaker01", result.stdout)
+            self.assertFalse(marker.exists(), "background descendant survived")
+
     def test_runner_classifies_all_mutually_exclusive_verdicts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
