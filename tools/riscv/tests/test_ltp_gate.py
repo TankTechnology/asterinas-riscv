@@ -21,6 +21,10 @@ from ltp_gate import (
 
 
 REPO = Path(__file__).resolve().parents[3]
+OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
+IMPLEMENTATION_PLAN = (
+    REPO / "docs/superpowers/plans/2026-08-20-riscv-ltp-gate-baseline.md"
+)
 
 
 class LtpGatePolicyTests(unittest.TestCase):
@@ -152,6 +156,16 @@ class LtpGatePolicyTests(unittest.TestCase):
                         "--dry-run",
                     ],
                     repo=repo,
+                )
+
+
+class LtpGateDocumentationTests(unittest.TestCase):
+    def test_container_commands_do_not_override_the_image_vdso_directory(self) -> None:
+        for document in (OPERATOR_GUIDE, IMPLEMENTATION_PLAN):
+            with self.subTest(document=document):
+                self.assertNotIn(
+                    "/root/.local/share/linux_vdso",
+                    document.read_text(),
                 )
 
 
