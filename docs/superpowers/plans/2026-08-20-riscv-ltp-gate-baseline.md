@@ -888,7 +888,7 @@ docker run --rm --privileged --network=host -v /dev:/dev \
   bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/osdk 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
-    export VDSO_LIBRARY_DIR=/root/.local/share/linux_vdso; \
+    test -s "${VDSO_LIBRARY_DIR}/vdso_riscv64.so"; \
     make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode'
 ```
 
