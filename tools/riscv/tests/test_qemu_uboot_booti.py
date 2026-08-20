@@ -5495,6 +5495,64 @@ class PreparationContractTests(unittest.TestCase):
         self.assertEqual(build.returncode, 0, build.stderr)
         self.assertEqual(build.stdout.strip(), str(expected))
 
+    def test_accepts_only_nested_private_ltp_qemu_output_paths(self) -> None:
+        accepted = REPO_ROOT / "target/ltp/qemu/smp1"
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(PREPARE_SCRIPT),
+                "--canonical-output-dir",
+                str(accepted),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), accepted)
+
+    def test_rejects_ltp_output_paths_outside_private_qemu_children(self) -> None:
+        rejected_paths = (
+            REPO_ROOT / "target/ltp",
+            REPO_ROOT / "target/ltp/qemu",
+            REPO_ROOT / "target/ltp/not-qemu",
+            REPO_ROOT / "target/qemu-uboot/../ltp/escape",
+        )
+
+        for rejected in rejected_paths:
+            with self.subTest(rejected=rejected):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        str(PREPARE_SCRIPT),
+                        "--canonical-output-dir",
+                        str(rejected),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("must resolve below", result.stderr)
+
+    def test_shared_qemu_current_output_path_remains_accepted(self) -> None:
+        current = REPO_ROOT / "target/qemu-uboot/current"
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(PREPARE_SCRIPT),
+                "--canonical-output-dir",
+                str(current),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), current)
+
     def test_rejects_an_output_directory_with_parent_traversal(self) -> None:
         candidate = REPO_ROOT / "target/qemu-uboot/../../../outside"
 
