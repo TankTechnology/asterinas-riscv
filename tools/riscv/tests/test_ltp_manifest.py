@@ -11,6 +11,32 @@ from pathlib import Path
 from ltp_manifest import main, select_manifest
 
 
+REPO = Path(__file__).resolve().parents[3]
+REPOSITORY_MANIFEST = REPO / "test/initramfs/src/conformance/ltp/testcases/all.txt"
+
+
+class RepositoryManifestContractTests(unittest.TestCase):
+    def test_reviewed_m27_manifest_has_779_unique_enabled_names(self) -> None:
+        enabled = tuple(
+            stripped.split()[0]
+            for line in REPOSITORY_MANIFEST.read_text().splitlines()
+            if (stripped := line.strip()) and not stripped.startswith("#")
+        )
+
+        self.assertEqual(len(enabled), 779)
+        self.assertEqual(len(set(enabled)), 779)
+        self.assertTrue(
+            {
+                "accept01",  # Network bind bucket.
+                "mount01",  # Requires loop-device acquisition.
+                "clock_gettime03",  # Requires procfs namespace files.
+                "execve02",  # Requires a packaged exec helper.
+                "sched_getattr01",  # Scheduling boundary semantics.
+                "mmap04",  # Memory-map and procfs semantics.
+            }.issubset(enabled)
+        )
+
+
 class ManifestSelectionTests(unittest.TestCase):
     def test_select_reports_every_unavailable_enabled_test(self) -> None:
         enabled = "# comment\nread01\nopen01\nmissing01\n"

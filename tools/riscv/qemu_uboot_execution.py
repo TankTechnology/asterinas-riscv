@@ -270,6 +270,7 @@ def execute_prepared(
     variant_audit: Path | None,
     bootargs_override: str | None = None,
     serial_interaction: SerialInteraction | None = None,
+    progress_log: Path | None = None,
 ) -> PreparedRunResult:
     """Execute and serialize one profile-validated prepared run."""
 
@@ -306,6 +307,7 @@ def execute_prepared(
             serial_log=serial_log,
             marker_event=marker_event,
             result_path=result_path,
+            progress_log=progress_log,
         ) as workspace:
             staged = workspace.staged
             artifacts = dependencies.load_artifact_manifest(staged.manifest)
@@ -345,12 +347,16 @@ def execute_prepared(
                 variant=variant,
                 bootargs_override=bootargs_override,
             )
-            with workspace.capture_serial() as (serial_capture_path, serial_capture):
+            with workspace.capture_serial() as (
+                serial_capture_path,
+                serial_capture,
+                serial_sink,
+            ):
                 session = dependencies.run_serial_session(
                     qemu_arguments,
                     commands=commands,
                     raw_log_path=serial_capture_path,
-                    raw_log_file=serial_capture,
+                    raw_log_file=serial_sink,
                     startup_timeout=startup_timeout,
                     command_timeout=command_timeout,
                     boot_timeout=boot_timeout,

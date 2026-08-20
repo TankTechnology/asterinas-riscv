@@ -44,6 +44,7 @@ class _RunPaths:
     serial_log: Path
     marker_event: Path
     result_path: Path
+    progress_log: Path | None
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ def _resolve_run_paths(
     serial_log: Path,
     marker_event: Path,
     result_path: Path,
+    progress_log: Path | None = None,
 ) -> _RunPaths:
     inputs = {
         "uboot": uboot,
@@ -99,6 +101,7 @@ def _resolve_run_paths(
         "serial_log": serial_log,
         "marker_event": marker_event,
         "result_path": result_path,
+        **({"progress_log": progress_log} if progress_log is not None else {}),
     }
     resolved = {
         name: Path(os.path.abspath(path)) for name, path in (inputs | outputs).items()
@@ -123,6 +126,7 @@ def _resolve_run_paths(
         serial_log=resolved["serial_log"],
         marker_event=resolved["marker_event"],
         result_path=resolved["result_path"],
+        progress_log=resolved.get("progress_log"),
     )
 
 
@@ -158,7 +162,10 @@ def _pin_run_outputs(
     directories: dict[Path, PinnedOutputDirectory] = {}
     outputs: dict[str, _PinnedOutput] = {}
     existing_identities: set[tuple[int, int]] = set()
-    for name in ("serial_log", "marker_event", "result_path"):
+    names = ("serial_log", "marker_event", "result_path")
+    if paths.progress_log is not None:
+        names = (*names, "progress_log")
+    for name in names:
         path = getattr(paths, name)
         directory = directories.get(path.parent)
         if directory is None:
@@ -212,6 +219,31 @@ def _staged_hashes(staged: StagedExecutionInputs) -> dict[str, str]:
     return hashes
 
 
+class _MirroredSerialStream:
+    """Write authoritative capture bytes to a live, non-authoritative mirror."""
+
+    def __init__(self, capture: BinaryIO, progress: BinaryIO) -> None:
+        self._capture = capture
+        self._progress = progress
+
+    def write(self, payload: bytes) -> int:
+        captured = self._capture.write(payload)
+        if captured is None:
+            captured = len(payload)
+        if captured != len(payload):
+            raise OSError("short write to serial evidence capture")
+        mirrored = self._progress.write(payload)
+        if mirrored is None:
+            mirrored = len(payload)
+        if mirrored != len(payload):
+            raise OSError("short write to live serial progress log")
+        return captured
+
+    def flush(self) -> None:
+        self._capture.flush()
+        self._progress.flush()
+
+
 @dataclass
 class ExecutionWorkspace:
     """Held execution inputs, output directories, and publications."""
@@ -226,11 +258,25 @@ class ExecutionWorkspace:
     _is_staging_cleaned: bool = False
 
     @contextmanager
-    def capture_serial(self) -> Iterator[tuple[Path, BinaryIO]]:
+    def capture_serial(self) -> Iterator[tuple[Path, BinaryIO, BinaryIO]]:
         path = self._staging_directory / "serial.capture"
         with path.open("x+b") as stream:
             os.chmod(path, 0o600)
-            yield path, stream
+            progress = self._outputs.get("progress_log")
+            if progress is None:
+                yield path, stream, stream
+                return
+            progress.directory.remove_entry(progress.name)
+            with progress.directory.create_exclusive(progress.name) as live:
+                os.fchmod(live.fileno(), 0o644)
+                mirrored = _MirroredSerialStream(stream, live)
+                try:
+                    yield path, stream, mirrored
+                finally:
+                    mirrored.flush()
+                    os.fsync(live.fileno())
+                    progress.directory.verify_open_file(progress.name, live)
+                    progress.directory.verify_current()
 
     def publish_evidence(self, name: str, payload: bytes) -> tuple[int, int]:
         if name not in ("serial_log", "marker_event"):
@@ -324,6 +370,7 @@ def open_execution_workspace(
     serial_log: Path,
     marker_event: Path,
     result_path: Path,
+    progress_log: Path | None = None,
 ) -> Iterator[ExecutionWorkspace]:
     """Hold immutable materials and output parents for one execution."""
 
@@ -337,6 +384,7 @@ def open_execution_workspace(
         serial_log=serial_log,
         marker_event=marker_event,
         result_path=result_path,
+        progress_log=progress_log,
     )
     with ExitStack() as stack:
         pinned_inputs = _pin_run_inputs(paths, stack)
