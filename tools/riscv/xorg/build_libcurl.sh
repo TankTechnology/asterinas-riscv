@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile libcurl (static .a, TLS via OpenSSL) for the riscv64 desktop.
 #
 # NetSurf's GTK frontend includes <curl/curl.h> unconditionally (content/fetch.c),

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile util-linux's agetty (login terminal) for riscv64 glibc.
 #
 # agetty is the one "login component" that ships with util-linux (the same tree

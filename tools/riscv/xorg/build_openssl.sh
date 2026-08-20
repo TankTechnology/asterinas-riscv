@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile OpenSSL 3.0 (static libssl.a + libcrypto.a) for the riscv64 desktop.
 #
 # This is the missing dependency for NetSurf's HTTPS fetch: NetSurf's curl
