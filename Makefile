@@ -261,6 +261,21 @@ RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_D
 RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
 RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
 
+.PHONY: test_riscv_ltp_unit
+test_riscv_ltp_unit:
+	@PYTHONPATH=tools/riscv python3 -m unittest \
+		tools.riscv.tests.test_ltp_result \
+		tools.riscv.tests.test_ltp_manifest \
+		tools.riscv.tests.test_ltp_gate \
+		tools.riscv.tests.test_ltp_guest_runner -v
+
+.PHONY: test_riscv_ltp
+test_riscv_ltp: test_riscv_ltp_unit
+	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
+		{ echo "ASTERINAS_RISCV_BOOTI is required" >&2; exit 2; }
+	@python3 tools/riscv/ltp_gate.py run \
+		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(SMP)"
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
