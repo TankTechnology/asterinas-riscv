@@ -99,6 +99,10 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertTrue(
             paths.prepared_dir.is_relative_to(REPO / "target" / "ltp" / "qemu")
         )
+        self.assertEqual(
+            paths.prepared_dir,
+            REPO / "target" / "ltp" / "qemu" / "smp1" / "m1",
+        )
         self.assertTrue(
             paths.result_dir.is_relative_to(REPO / "target" / "ltp" / "results")
         )
@@ -165,7 +169,7 @@ class LtpGatePolicyTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         run.assert_not_called()
-        self.assertIn("target/ltp/qemu/smp1", output.getvalue())
+        self.assertIn("target/ltp/qemu/smp1/dry-run", output.getvalue())
         self.assertIn("target/ltp/results/dry-run/progress.log", output.getvalue())
         self.assertNotIn("target/qemu-uboot/current", output.getvalue())
 
