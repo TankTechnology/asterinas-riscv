@@ -109,7 +109,6 @@ static void kill_test_group(pid_t supervisor) {
     if (supervisor <= 0)
         return;
     (void)kill(-supervisor, SIGKILL);
-    (void)kill(supervisor, SIGKILL);
 }
 
 int main(int argc, char **argv) {
@@ -235,8 +234,10 @@ int main(int argc, char **argv) {
                 usleep(10000);
             }
         }
-        if (WIFSIGNALED(status))
-            kill_test_group(pid);
+        // A normally exiting test may leave background descendants behind.
+        // They remain in the supervisor's process group, so close that group
+        // on every completion path before the next manifest entry starts.
+        kill_test_group(pid);
         if (logfd >= 0)
             close(logfd);
 
