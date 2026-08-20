@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from megrez_contract import artifact_identity
 from qemu_uboot_artifacts import ArtifactExpectations, verify_boot_disk_artifacts
 from qemu_uboot_audit import BootAudit, memory_layout_observer
-from qemu_uboot_commands import (
-    USERSPACE_MARKER,
-    BootScenario,
-    boot_commands,
+from qemu_uboot_commands import BootScenario, boot_commands
+from qemu_uboot_devices import (
+    FramebufferContract,
+    HEADLESS,
+    QemuDeviceSet,
+    validate_registered_device_set,
 )
-from qemu_uboot_execution_io import open_execution_workspace
+from qemu_uboot_execution_io import DisplayCaptureWorkspace, ExecutionWorkspace, open_execution_workspace
 from qemu_uboot_profiles import (
     GENERIC_SV39,
     AuditPolicy,
@@ -26,6 +30,7 @@ from qemu_uboot_profiles import (
     QemuUbootProfile,
     ResultScope,
 )
+from qemu_ppm import PpmAudit
 from qemu_uboot_secure_io import PinnedPublication
 from qemu_uboot_session import SerialInteraction, SessionResult
 from qemu_uboot_variants import (
@@ -33,6 +38,9 @@ from qemu_uboot_variants import (
     QemuUbootVariant,
     effective_bootargs as variant_effective_bootargs,
 )
+
+
+CAPTURE_ERROR_MAX_CHARS = 160
 
 
 class RunStatus(str, Enum):
@@ -61,6 +69,7 @@ def _run_status(passed: bool, session: SessionResult) -> RunStatus:
     if not session.cleanup_complete or (session.failure or "").startswith(
         (
             "process-error:",
+            "capture-error:",
             "cleanup-error:",
             "serial-log-cleanup:",
             "selector-cleanup:",
@@ -100,6 +109,8 @@ class ExecutionDependencies:
     qemu_version: Callable[..., str]
     run_serial_session: Callable[..., SessionResult]
     audit_serial_log: Callable[..., BootAudit]
+    capture_screendump: Callable[..., bytes]
+    audit_ppm: Callable[..., PpmAudit]
 
 
 @dataclass(frozen=True)
@@ -139,6 +150,58 @@ class PreparedRunResult:
     status: str
     terminal_classification: str
     passed: bool
+    device_set: str
+    screenshot_sha256: str | None
+    display_audit: dict[str, object] | None
+
+
+@dataclass
+class _FramebufferEvidenceCapture:
+    """Own framebuffer capture, audit, and evidence publication for one run."""
+
+    workspace: DisplayCaptureWorkspace
+    framebuffer: FramebufferContract
+    capture_screendump: Callable[..., bytes]
+    audit_ppm: Callable[..., PpmAudit]
+    payload: bytes | None = None
+    audit: PpmAudit | None = None
+    failure: str | None = None
+
+    @property
+    def terminal_action(self) -> Callable[[], None]:
+        return self._capture
+
+    def _capture(self) -> None:
+        try:
+            self.payload = self.workspace.capture(self.capture_screendump)
+            self.audit = self.audit_ppm(self.payload, expected_width=self.framebuffer.width, expected_height=self.framebuffer.height)
+        except (OSError, TimeoutError, ValueError, RuntimeError) as error:
+            self.payload = None
+            self.audit = None
+            self.failure = f"capture-error:{str(error)[:CAPTURE_ERROR_MAX_CHARS]}"
+
+    def publish(
+        self,
+        workspace: ExecutionWorkspace,
+    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+        if self.payload is None or self.audit is None:
+            return workspace.publish_display_evidence(None, None)
+        return workspace.publish_display_evidence(
+            self.payload,
+            (json.dumps(asdict(self.audit), indent=2, sort_keys=True) + "\n").encode(),
+        )
+
+    @property
+    def passed(self) -> bool:
+        return self.audit is not None and self.audit.passed
+
+    @property
+    def sha256(self) -> str | None:
+        return hashlib.sha256(self.payload).hexdigest() if self.payload is not None else None
+
+    @property
+    def audit_dict(self) -> dict[str, object] | None:
+        return asdict(self.audit) if self.audit is not None else None
 
 
 def _execution_contract(
@@ -271,9 +334,21 @@ def execute_prepared(
     bootargs_override: str | None = None,
     serial_interaction: SerialInteraction | None = None,
     progress_log: Path | None = None,
+    device_set: QemuDeviceSet = HEADLESS,
+    screenshot: Path | None = None,
+    display_audit: Path | None = None,
 ) -> PreparedRunResult:
     """Execute and serialize one profile-validated prepared run."""
 
+    validate_registered_device_set(device_set)
+    if (screenshot is None) != (display_audit is None):
+        raise ValueError("screenshot and display audit must be provided together")
+    if device_set.framebuffer is None and screenshot is not None:
+        raise ValueError("non-framebuffer device set forbids display outputs")
+    if device_set.framebuffer is not None and (
+        screenshot is None or scenario is not BootScenario.POSITIVE
+    ):
+        raise ValueError("framebuffer device set requires positive display outputs")
     if profile.validation.audit_policy is AuditPolicy.REGISTERED_MILESTONES and (
         scenario is not BootScenario.POSITIVE
         or variant is not None
@@ -308,6 +383,8 @@ def execute_prepared(
             marker_event=marker_event,
             result_path=result_path,
             progress_log=progress_log,
+            screenshot=screenshot,
+            display_audit=display_audit,
         ) as workspace:
             staged = workspace.staged
             artifacts = dependencies.load_artifact_manifest(staged.manifest)
@@ -333,11 +410,19 @@ def execute_prepared(
                 "variant_audit": staged.variant_audit,
             }
             before = _prepared_identities(**identity_arguments)
+            display_capture = workspace.display_capture
+            device_paths = (
+                display_capture.runtime_paths()
+                if display_capture is not None
+                else None
+            )
             qemu_arguments = dependencies.qemu_argv(
                 uboot=staged.uboot,
                 boot_disk=staged.boot_disk,
                 profile=profile,
                 snapshot_disk=snapshot_disk,
+                device_set=device_set,
+                device_paths=device_paths,
             )
             version = dependencies.qemu_version(qemu_arguments[0])
             commands = boot_commands(
@@ -346,6 +431,17 @@ def execute_prepared(
                 scenario=scenario,
                 variant=variant,
                 bootargs_override=bootargs_override,
+                device_set=device_set,
+            )
+            framebuffer_evidence = (
+                _FramebufferEvidenceCapture(
+                    workspace=display_capture,
+                    framebuffer=device_set.framebuffer,
+                    capture_screendump=dependencies.capture_screendump,
+                    audit_ppm=dependencies.audit_ppm,
+                )
+                if display_capture is not None and device_set.framebuffer is not None
+                else None
             )
             with workspace.capture_serial() as (
                 serial_capture_path,
@@ -373,6 +469,7 @@ def execute_prepared(
                         else ()
                     ),
                     serial_interaction=serial_interaction,
+                    terminal_action=(framebuffer_evidence.terminal_action if framebuffer_evidence else None),
                 )
                 serial_capture.flush()
                 os.fsync(serial_capture.fileno())
@@ -381,11 +478,21 @@ def execute_prepared(
 
             serial_identity = workspace.publish_evidence("serial_log", serial_payload)
             serial_text = serial_payload.decode(errors="replace")
+            if (
+                framebuffer_evidence is not None
+                and framebuffer_evidence.failure is not None
+                and session.failure is None
+            ):
+                session = replace(session, failure=framebuffer_evidence.failure)
             marker_text = _marker_event_text(session)
             marker_identity = workspace.publish_evidence(
                 "marker_event",
                 marker_text.encode(),
             )
+            if framebuffer_evidence is not None:
+                screenshot_identity, display_audit_identity = framebuffer_evidence.publish(workspace)
+            else:
+                screenshot_identity, display_audit_identity = None, None
             userspace_marker = (
                 completion_line
                 if serial_interaction is None
@@ -413,12 +520,18 @@ def execute_prepared(
             workspace.verify_and_cleanup_staging(
                 serial_identity=serial_identity,
                 marker_identity=marker_identity,
+                screenshot_identity=screenshot_identity,
+                display_audit_identity=display_audit_identity,
             )
 
             passed = (
                 session.booti_sent_count == 1
                 and session.cleanup_complete
                 and audit.passed
+                and (
+                    device_set.framebuffer is None
+                    or (framebuffer_evidence is not None and framebuffer_evidence.passed)
+                )
             )
             if scenario is BootScenario.STALE_BOOTARGS:
                 passed = passed and not session.marker_seen and session.timed_out
@@ -473,6 +586,9 @@ def execute_prepared(
                 status=_run_status(passed, session).value,
                 terminal_classification=terminal_classification.value,
                 passed=passed,
+                device_set=device_set.name,
+                screenshot_sha256=(framebuffer_evidence.sha256 if framebuffer_evidence else None),
+                display_audit=(framebuffer_evidence.audit_dict if framebuffer_evidence else None),
             )
             result_payload = (
                 json.dumps(asdict(result), indent=2, sort_keys=True) + "\n"
@@ -499,12 +615,14 @@ def execute_prepared(
                 # after exposing passed=true; never reopen an attacker-swapped path.
                 result_publication = prepared_result.retain()
                 revocation_publication = result_publication.duplicate()
-                workspace.publish_result(prepared_result)
+                workspace.publish_result(prepared_result, result_payload)
                 workspace.sync_result()
                 workspace.verify_after_result(
                     serial_identity=serial_identity,
                     marker_identity=marker_identity,
                     result_identity=result_publication.identity,
+                    screenshot_identity=screenshot_identity,
+                    display_audit_identity=display_audit_identity,
                 )
     except BaseException:
         if result_publication is not None:
