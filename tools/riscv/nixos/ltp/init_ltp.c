@@ -38,10 +38,12 @@ int main(void) {
     }
 #endif
 
+#ifndef SKIP_PSEUDO_FS_MOUNTS
     say(">>> LTP init: mounting pseudo-filesystems <<<\n");
     (void)mount("proc", "/proc", "proc", 0, NULL);
     (void)mount("sysfs", "/sys", "sysfs", 0, NULL);
     (void)mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
+#endif
 
     say(">>> LTP init: running " RUNNER_PATH " <<<\n");
     pid_t runner = fork();
