@@ -273,6 +273,77 @@ class CommandLineTests(unittest.TestCase):
             failures=(),
         )
 
+    def test_progress_log_is_visible_while_serial_evidence_is_staged(
+        self,
+    ) -> None:
+        profile = qemu_uboot_booti.profile_by_name("megrez-sv48-svade-fast")
+        scenario = qemu_uboot_booti.BootScenario.FIRST_PROCESS_CONSOLE_LOSS
+        artifacts = self._run_artifacts()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            inputs = self._materialize_run_inputs(directory)
+            progress = directory / "progress.log"
+            serial = directory / "serial.log"
+
+            def run_session(_argv: list[str], **kwargs: object) -> object:
+                raw_log = kwargs["raw_log_file"]
+                raw_log.write(b"live serial progress\n")
+                raw_log.flush()
+                self.assertEqual(progress.read_bytes(), b"live serial progress\n")
+                self.assertFalse(serial.exists())
+                return self._successful_session()
+
+            with (
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "load_artifact_manifest",
+                    return_value=artifacts,
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "verify_prepared_dtb",
+                    return_value=mock.Mock(sha256="a" * 64),
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "qemu_argv",
+                    return_value=["qemu-system-riscv64"],
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "qemu_version",
+                    return_value="QEMU emulator version test",
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "run_serial_session",
+                    side_effect=run_session,
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "audit_serial_log",
+                    return_value=self._passing_audit(profile, scenario),
+                ),
+            ):
+                result = qemu_uboot_booti.run_prepared(
+                    **inputs,
+                    serial_log=serial,
+                    progress_log=progress,
+                    marker_event=directory / "marker-event.txt",
+                    result_path=directory / "result.json",
+                    startup_timeout=1.0,
+                    command_timeout=1.0,
+                    boot_timeout=1.0,
+                    termination_grace=1.0,
+                    profile=profile,
+                    scenario=scenario,
+                    variant=FIRST_PROCESS_CONSOLE_LOSS,
+                )
+
+            self.assertTrue(result.passed)
+            self.assertEqual(progress.read_bytes(), serial.read_bytes())
+
     def test_console_loss_commands_bind_exact_ram_and_dtb_bootargs(self) -> None:
         profile = qemu_uboot_booti.profile_by_name("megrez-sv48-svade-fast")
         diagnostic_bootargs = (
@@ -906,7 +977,12 @@ class CommandLineTests(unittest.TestCase):
     def test_run_rejects_complete_input_and_output_overlap_matrix(self) -> None:
         profile = qemu_uboot_booti.profile_by_name("megrez-sv48-svade-fast")
         scenario = qemu_uboot_booti.BootScenario.FIRST_PROCESS_CONSOLE_LOSS
-        output_names = ("serial_log", "marker_event", "result_path")
+        output_names = (
+            "serial_log",
+            "marker_event",
+            "result_path",
+            "progress_log",
+        )
 
         def invoke(
             inputs: dict[str, Path],
@@ -953,6 +1029,7 @@ class CommandLineTests(unittest.TestCase):
                                 "serial_log": directory / "serial.log",
                                 "marker_event": directory / "marker-event.txt",
                                 "result_path": directory / "result.json",
+                                "progress_log": directory / "progress.log",
                             }
                             if alias_kind == "path":
                                 outputs[output_name] = inputs[input_name]
@@ -991,6 +1068,7 @@ class CommandLineTests(unittest.TestCase):
                                 "serial_log": directory / "serial.log",
                                 "marker_event": directory / "marker-event.txt",
                                 "result_path": directory / "result.json",
+                                "progress_log": directory / "progress.log",
                             }
                             if alias_kind == "path":
                                 outputs[right_name] = outputs[left_name]

@@ -30,6 +30,33 @@ IMPLEMENTATION_PLAN = (
 
 
 class LtpGatePolicyTests(unittest.TestCase):
+    def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            result = repo / "target/ltp/results/live"
+            result.mkdir(parents=True)
+            (result / "selected-syscalls").write_text(
+                "getpid01 getpid01\nread01 read01\nwrite01 write01\n"
+            )
+            (result / "progress.log").write_text(
+                "[RUN] 1 getpid01\n"
+                "[PASS] getpid01\n"
+                "[RUN] 2 read01\n"
+                "[FAIL] read01\n"
+                "[RUN] 3 write01\n"
+            )
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                status = main(["status", "--run-id", "live"], repo=repo)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            output.getvalue(),
+            "state=RUNNING completed=2/3 current=write01\n"
+            "pass=1 fail=1 conf=0 crash=0 timeout=0\n",
+        )
+
     def test_git_commit_marks_the_bound_repository_as_safe(self) -> None:
         completed = Mock(stdout="a" * 40)
         with patch("ltp_gate.subprocess.run", return_value=completed) as run:
@@ -139,6 +166,7 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertEqual(status, 0)
         run.assert_not_called()
         self.assertIn("target/ltp/qemu/smp1", output.getvalue())
+        self.assertIn("target/ltp/results/dry-run/progress.log", output.getvalue())
         self.assertNotIn("target/qemu-uboot/current", output.getvalue())
 
     def test_dry_run_rejects_an_ltp_target_symlink_outside_the_repo(self) -> None:

@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,10 @@ _PROFILES_BY_SMP = {
     4: "generic-sv39-ltp-smp4",
 }
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+_PROGRESS_RUN_RE = re.compile(r"^\[RUN\] (\d+) ([^\s]+)$")
+_PROGRESS_VERDICT_RE = re.compile(
+    r"^\[(PASS|FAIL|CONF|CRASH|TIMEOUT)\] ([^\s]+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -233,6 +238,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     build = subparsers.add_parser("build")
     build.add_argument("--skip-compile", action="store_true")
+    status = subparsers.add_parser("status")
+    status.add_argument("--run-id", required=True)
 
     run = subparsers.add_parser("run")
     run.add_argument("--kernel", type=Path, required=True)
@@ -249,6 +256,45 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     run.add_argument("--tag", action="append", default=[])
     run.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
+
+
+def _show_status(repo: Path, run_id: str) -> int:
+    if _RUN_ID_RE.fullmatch(run_id) is None:
+        raise ValueError(
+            "run id must contain only letters, digits, dot, underscore, or hyphen"
+        )
+    result_dir = repo / "target/ltp/results" / run_id
+    _require_within(result_dir, repo / "target/ltp", "result directory")
+    manifest = result_dir / "selected-syscalls"
+    progress = result_dir / "progress.log"
+    if not manifest.is_file() or not progress.is_file():
+        raise FileNotFoundError(f"run has no live progress evidence: {run_id}")
+
+    expected = sum(1 for line in manifest.read_text().splitlines() if line.strip())
+    lines = progress.read_text(errors="replace").replace("\r", "").splitlines()
+    runs = [match for line in lines if (match := _PROGRESS_RUN_RE.fullmatch(line))]
+    verdicts = [
+        match for line in lines if (match := _PROGRESS_VERDICT_RE.fullmatch(line))
+    ]
+    counts = Counter(match.group(1).lower() for match in verdicts)
+    completed_names = {match.group(2) for match in verdicts}
+    current = "-"
+    if runs and runs[-1].group(2) not in completed_names:
+        current = runs[-1].group(2)
+    if "__LTP_GATE_DONE__" in lines:
+        state = "COMPLETE"
+    elif any(line.startswith("[BROK] LTP runner") for line in lines):
+        state = "BROKEN"
+    else:
+        state = "RUNNING"
+    print(
+        f"state={state} completed={len(verdicts)}/{expected} current={current}"
+    )
+    print(
+        f"pass={counts['pass']} fail={counts['fail']} conf={counts['conf']} "
+        f"crash={counts['crash']} timeout={counts['timeout']}"
+    )
+    return 0
 
 
 def _require_within(path: Path, root: Path, name: str) -> Path:
@@ -306,6 +352,8 @@ def _qemu_command(
         str(paths.prepared_dir / "qemu-dtb-audit.json"),
         "--serial-log",
         str(paths.result_dir / "serial.log"),
+        "--progress-log",
+        str(paths.result_dir / "progress.log"),
         "--marker-event",
         str(paths.result_dir / "marker-event.txt"),
         "--result",
@@ -541,6 +589,7 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
             paths.prepared_dir / "artifacts.json",
             paths.prepared_dir / "qemu-dtb-audit.json",
             paths.result_dir / "serial.log",
+            paths.result_dir / "progress.log",
             paths.result_dir / "marker-event.txt",
             paths.result_dir / "boot-result.json",
             result_path,
@@ -572,6 +621,8 @@ def main(argv: Sequence[str] | None = None, *, repo: Path = REPO_ROOT) -> int:
             command.append("--skip-compile")
         subprocess.run(command, cwd=resolved_repo, check=True)
         return 0
+    if args.command == "status":
+        return _show_status(resolved_repo, args.run_id)
     if args.command == "run":
         return _run_gate(resolved_repo, args)
     raise AssertionError(f"unhandled command: {args.command}")

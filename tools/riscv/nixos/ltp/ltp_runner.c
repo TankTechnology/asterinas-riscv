@@ -136,6 +136,8 @@ int main(int argc, char **argv) {
 
         char log_path[256];
         snprintf(log_path, sizeof(log_path), "%s/%s.log", LOG_DIR, tag);
+        printf("[RUN] %d %s\n", total + 1, tag);
+        fflush(stdout);
         int logfd = open(log_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
         if (logfd < 0)
             logfd = open("/dev/null", O_WRONLY);
