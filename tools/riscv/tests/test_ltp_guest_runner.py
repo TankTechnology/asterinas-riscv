@@ -278,6 +278,16 @@ class LtpGuestRunnerTests(unittest.TestCase):
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
+    def test_builder_requires_busybox_before_replacing_rootfs(self) -> None:
+        source = BUILD_SCRIPT.read_text()
+
+        preflight = 'if [[ ! -x "${BUSYBOX}" ]]; then'
+        destructive_stage = 'rm -rf "${ROOTFS}"'
+        self.assertIn(preflight, source)
+        self.assertLess(source.index(preflight), source.index(destructive_stage))
+        self.assertIn("missing required BusyBox", source)
+        self.assertNotIn("WARN: no busybox", source)
+
     def test_builder_installs_account_databases_world_readable(self) -> None:
         source = BUILD_SCRIPT.read_text()
 
