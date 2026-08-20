@@ -275,11 +275,15 @@ class ContractCompositionTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     profile.validation.completion_line,
-                    b"__LTP_GATE_DONE__",
+                    b"__LTP_GATE_TERMINAL__",
                 )
                 self.assertEqual(
                     profile.validation.milestones[-1].line,
-                    b"__LTP_GATE_DONE__",
+                    b"__LTP_GATE_TERMINAL__",
+                )
+                self.assertIn(
+                    b"[BROK] LTP runner",
+                    profile.validation.forbidden_markers,
                 )
                 argv = qemu_argv(
                     uboot=Path("/u-boot"),

@@ -27,6 +27,51 @@ def write_executable(path: Path, source: str) -> None:
 
 @unittest.skipUnless(CC, "requires a host C compiler")
 class LtpGuestRunnerTests(unittest.TestCase):
+    def test_runner_survives_a_test_that_kills_its_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binaries = directory / "bin"
+            logs = directory / "logs"
+            manifest = directory / "syscalls"
+            runner = directory / "ltp-runner"
+            binaries.mkdir()
+            write_executable(
+                binaries / "killer",
+                "#!/bin/sh\nkill -KILL \"$PPID\"\n",
+            )
+            write_executable(binaries / "after", "#!/bin/sh\necho TPASS\n")
+            manifest.write_text("killer01 killer\nafter01 after\n")
+            subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f'-DBIN_DIR="{binaries}"',
+                    f'-DLOG_DIR="{logs}"',
+                    "-o",
+                    str(runner),
+                    str(RUNNER_SOURCE),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = subprocess.run(
+                [str(runner), str(manifest)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[CRASH] killer01", result.stdout)
+        self.assertIn("[PASS] after01", result.stdout)
+        self.assertIn("__LTP_GATE_DONE__", result.stdout)
+
     def test_runner_classifies_all_mutually_exclusive_verdicts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -167,6 +212,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
                 process.terminate()
                 output, _ = process.communicate(timeout=2)
             self.assertIn("runner exited with status 23", output)
+            self.assertIn("__LTP_GATE_TERMINAL__", output)
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
