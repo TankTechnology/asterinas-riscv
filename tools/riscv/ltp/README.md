@@ -123,8 +123,8 @@ While a gate is running, inspect its current test and mutually exclusive
 counts from another shell:
 
 ```bash
-python3 tools/riscv/ltp_gate.py status --run-id baseline-m1-smp1
-tail -f target/ltp/results/baseline-m1-smp1/progress.log
+python3 tools/riscv/ltp_gate.py status --run-id baseline-m1-smp4
+tail -f target/ltp/results/baseline-m1-smp4/progress.log
 ```
 
 `progress.log` is a readable live mirror, not the authoritative evidence.
@@ -136,12 +136,15 @@ waiting for the global QEMU timeout.
 
 ## Baseline and strict modes
 
-Record the full SMP=1 baseline without rebuilding LTP:
+Use SMP=4 as the normal RISC-V LTP path. Start with the five-test smoke run:
 
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
-  --smp 1 --run-id baseline-m1-smp1 --skip-build --baseline
+  --run-id baseline-m1-smp4-smoke --skip-build --baseline \
+  --boot-timeout 600 \
+  --tag getpid01 --tag read01 --tag write01 \
+  --tag uname01 --tag clock_gettime01
 ```
 
 `--baseline` still requires the complete boot infrastructure to pass,
@@ -156,18 +159,7 @@ It returns nonzero for either an infrastructure failure or any LTP failure:
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
-  --smp 1 --run-id strict-smp1 --skip-build
-```
-
-Run the five-test SMP=4 smoke before a full SMP=4 baseline:
-
-```bash
-python3 tools/riscv/ltp_gate.py run \
-  --kernel target/osdk/aster-kernel-osdk-bin.Image \
-  --smp 4 --run-id baseline-m1-smp4-smoke --skip-build --baseline \
-  --boot-timeout 600 \
-  --tag getpid01 --tag read01 --tag write01 \
-  --tag uname01 --tag clock_gettime01
+  --run-id strict-smp4 --skip-build
 ```
 
 If the smoke completes without a kernel panic or hang,
@@ -176,8 +168,16 @@ record the full SMP=4 baseline:
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
-  --smp 4 --run-id baseline-m1-smp4 --skip-build --baseline \
+  --run-id baseline-m1-smp4 --skip-build --baseline \
   --boot-timeout 7200
+```
+
+Use SMP=1 only as an explicit diagnostic override; it is not a paired
+admission requirement:
+
+```bash
+RISCV_LTP_SMP=1 make test_riscv_ltp \
+  ASTERINAS_RISCV_BOOTI=target/osdk/aster-kernel-osdk-bin.Image
 ```
 
 Every run ID is immutable and may contain only letters, digits, dots,
@@ -196,8 +196,8 @@ Validate one completed result from the repository root:
 
 ```bash
 python3 -m json.tool \
-  target/ltp/results/baseline-m1-smp1/result.json >/dev/null
-sha256sum -c target/ltp/results/baseline-m1-smp1/SHA256SUMS
+  target/ltp/results/baseline-m1-smp4/result.json >/dev/null
+sha256sum -c target/ltp/results/baseline-m1-smp4/SHA256SUMS
 ```
 
 The `result.json` counters are mutually exclusive.

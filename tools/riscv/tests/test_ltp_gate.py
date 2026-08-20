@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ltp_gate import (
+    _parse_args,
     _prepared_artifact_paths,
     _git_commit,
     _source_commit,
@@ -27,12 +28,32 @@ from ltp_gate import (
 REPO = Path(__file__).resolve().parents[3]
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
 BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
+REPO_MAKEFILE = REPO / "Makefile"
 IMPLEMENTATION_PLAN = (
     REPO / "docs/superpowers/plans/2026-08-20-riscv-ltp-gate-baseline.md"
 )
 
 
 class LtpGatePolicyTests(unittest.TestCase):
+    def test_makefile_keeps_smp4_default_local_to_ltp(self) -> None:
+        source = REPO_MAKEFILE.read_text()
+
+        self.assertIn("SMP ?= 1", source)
+        self.assertIn("RISCV_LTP_SMP ?= 4", source)
+        self.assertIn('--smp "$(RISCV_LTP_SMP)"', source)
+
+    def test_run_defaults_to_smp4(self) -> None:
+        args = _parse_args(
+            [
+                "run",
+                "--kernel",
+                "target/osdk/kernel.Image",
+                "--dry-run",
+            ]
+        )
+
+        self.assertEqual(args.smp, 4)
+
     def test_prepared_artifacts_must_match_normalized_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             prepared = Path(temporary)
@@ -197,7 +218,7 @@ class LtpGatePolicyTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         run.assert_not_called()
-        self.assertIn("target/ltp/qemu/smp1/dry-run", output.getvalue())
+        self.assertIn("target/ltp/qemu/smp4/dry-run", output.getvalue())
         self.assertIn("target/ltp/results/dry-run/progress.log", output.getvalue())
         self.assertNotIn("target/qemu-uboot/current", output.getvalue())
 
