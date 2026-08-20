@@ -10,7 +10,12 @@ import socket
 import stat
 import time
 
-from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
+try:
+    from qemu_uboot_devices import BOCHS_XRGB8888
+except ModuleNotFoundError as error:
+    if error.name != "qemu_uboot_devices":
+        raise
+    from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
 
 
 _MAX_LINE = 64 * 1024
@@ -181,12 +186,17 @@ def _read_output(parent_descriptor: int, filename: str) -> bytes:
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError("QMP screendump output is not a regular file")
-        payload = os.read(descriptor, _MAX_CAPTURE_BYTES + 1)
+        payload = bytearray()
+        while len(payload) <= _MAX_CAPTURE_BYTES:
+            chunk = os.read(descriptor, _MAX_CAPTURE_BYTES + 1 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
     finally:
         os.close(descriptor)
     if len(payload) > _MAX_CAPTURE_BYTES:
         raise ValueError("QMP screendump output exceeds the registered display limit")
-    return payload
+    return bytes(payload)
 
 
 def capture_screendump(
