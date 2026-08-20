@@ -19,12 +19,26 @@ that every selected syscall conforms.
   `36c975e2deb7982b240a187aadbc650f704f17d5e39468ab99dba186b7c78249`
 - Runtime: QEMU 10.2.1, OpenSBI 1.7, U-Boot 2026.07
 
-The gate preserved one verdict per runtime-manifest entry, one DONE marker,
-one PID-1 terminal marker, no Asterinas panic, and matching live/final serial
-logs. `SHA256SUMS` passed for every retained full-run artifact. A follow-up
-SMP=4 smoke on gate revision `eed8bd94f1f2a089f7e159dbedf8b0551d58da10`
+The gate preserved one verdict per runtime-manifest entry,
+one DONE marker,
+one PID-1 terminal marker,
+no Asterinas panic,
+and matching live/final serial logs.
+At publication, `SHA256SUMS` passed for both full runs.
+A follow-up SMP=4 smoke on gate revision
+`eed8bd94f1f2a089f7e159dbedf8b0551d58da10`
 also passed all checksums after prepared boot artifacts were isolated by run
 ID.
+
+The two legacy full-run checksum files referenced the shared build
+`target/ltp/ltp-initramfs.cpio.gz`.
+A later fixture rebuild therefore invalidated that one checksum line.
+All four payloads actually retained under each run's prepared directory
+(kernel, initramfs, DTB, and boot disk)
+still match the artifact identities below.
+Gate revision `b69384f496356e61be3515cd180d23a3b2eb235d`
+removes the shared paths from future checksum files
+and verifies only run-owned payloads against `result.json`.
 
 ## Results
 
@@ -109,6 +123,23 @@ Four LTP syscall directories did not build: `rt_sigtimedwait`, `utils`,
 `fmtmsg`, and `timer_create`. The selector recorded 12 unavailable enabled
 names rather than silently dropping them: `fmtmsg01`, `munmap02`,
 `pipeio_1` through `pipeio_8`, `timer_create01`, and `timer_create03`.
+
+## Follow-up validation
+
+The account-database fixture was fixed by installing `/etc/passwd` and
+`/etc/group` as mode `0644` regardless of the checkout umask.
+Run `fixture-account-smp1-r1` at
+`b89aeda413a87d8912895292c70110bc14734f07` completed with infrastructure PASS
+and `2/2` PASS for `setfsgid03` and `setgid02`.
+Its selected-manifest names exactly match the ordered verdicts,
+its live and final serial logs are identical,
+and all run-owned checksums pass.
+The subset artifact identities are:
+
+- kernel: `661ca5e7de2275c5c48d560bc4932df56a5f5faffc4e5a62f745a18901baf3b0`;
+- initramfs: `4689abbf32f69e74620593a82624ad7bac791e767bdf0523a266dd37793d0258`;
+- DTB: `aeb51ddcaaeec1a556d3463b2ac937470987eaa6eb9fb894cbd77124a9de37b1`;
+- boot disk: `07901ce4f664e4a0a12b073ffe187fe549b7c7c834fcfacc0acf34deb8ee30a4`.
 
 ## Recommended next batches
 
