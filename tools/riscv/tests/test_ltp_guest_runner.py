@@ -369,11 +369,27 @@ class LtpBuildScriptContractTests(unittest.TestCase):
         source = BUILD_SCRIPT.read_text()
 
         self.assertIn('SUITE="syscalls"', source)
-        self.assertIn('--suite) SUITE="$2"; shift 2 ;;', source)
-        self.assertIn('arch-riscv64)', source)
-        self.assertIn('EXPECTED_SELECTED=138', source)
-        self.assertIn('EXPECTED_UNAVAILABLE=1', source)
+        self.assertIn("--suite requires a value", source)
+        self.assertIn('SUITE="$2"; shift 2', source)
+        self.assertIn("tools/riscv/ltp_suite.py", source)
+        self.assertIn("tools/riscv/ltp_package.py", source)
+        self.assertIn("describe", source)
+        self.assertIn("flock", source)
+        self.assertIn("publish", source)
+        self.assertNotIn("arch-riscv64)", source)
+        self.assertNotIn("EXPECTED_SELECTED=138", source)
+        self.assertNotIn("EXPECTED_UNAVAILABLE=1", source)
         self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
+
+    def test_build_script_rejects_a_missing_suite_value(self) -> None:
+        completed = subprocess.run(
+            [str(BUILD_SCRIPT), "--suite"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--suite requires a value", completed.stderr)
 
     def test_builder_installs_account_databases_world_readable(self) -> None:
         source = BUILD_SCRIPT.read_text()

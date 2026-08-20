@@ -154,6 +154,15 @@ python3 tools/riscv/ltp_gate.py run \
   --boot-timeout 2400
 ```
 
+Every `--skip-build` run must name the suite currently packaged in
+`target/ltp/ltp-initramfs.cpio.gz`.
+Before switching from the architecture examples below to a `syscalls` run,
+repackage inside the pinned cross container with:
+
+```bash
+tools/riscv/nixos/ltp/build_ltp.sh --skip-compile --suite syscalls
+```
+
 For the full syscall suite, start with the five-test SMP=4 smoke run:
 
 ```bash
@@ -210,7 +219,8 @@ earlier run's checksums.
 ## Results and count semantics
 
 Each run writes serial output, marker evidence, boot status, normalized LTP
-results, a human summary, `manifest.txt`, `unavailable-tests.json`,
+results, a human summary, a run-owned initramfs, `package.json`,
+`manifest.txt`, `unavailable-tests.json`,
 and repository-relative checksums below `target/ltp/results/<run-id>/`.
 Validate one completed result from the repository root:
 

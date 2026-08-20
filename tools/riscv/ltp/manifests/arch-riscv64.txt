@@ -1,3 +1,9 @@
+# RISC-V architecture-sensitive LTP syscall requests.
+# Derived from LTP 20260529 runtest/syscalls groups that exercise the syscall
+# ABI, trap/signal context, clone, memory mapping, scheduler/affinity, futex,
+# time/vDSO, and uname boundaries described in the 2026-08-20 RISC-V LTP
+# design. Keep an unavailable requested name here so packaging records the
+# omission instead of silently shrinking the reviewed boundary.
 brk01
 brk02
 cacheflush01

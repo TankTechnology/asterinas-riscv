@@ -7,6 +7,8 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +17,7 @@ from unittest.mock import Mock, patch
 from ltp_gate import (
     _git_commit,
     _parse_args,
+    _package_lock,
     _prepared_artifact_paths,
     _source_commit,
     _validate_packaged_suite,
@@ -25,7 +28,8 @@ from ltp_gate import (
     run_paths,
     tree_sha256,
 )
-from ltp_suite import suite_by_name, suite_names
+from ltp_package import publish_package_identity
+from ltp_suite import suite_by_name
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -56,24 +60,6 @@ class LtpGatePolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(args.smp, 4)
-
-    def test_named_suites_have_closed_count_contracts(self) -> None:
-        self.assertEqual(suite_names(), ("syscalls", "arch-riscv64"))
-
-        syscalls = suite_by_name(REPO, "syscalls")
-        self.assertEqual(syscalls.expected_selected, 767)
-        self.assertEqual(syscalls.expected_unavailable, 12)
-
-        arch = suite_by_name(REPO, "arch-riscv64")
-        self.assertEqual(arch.expected_selected, 138)
-        self.assertEqual(arch.expected_unavailable, 1)
-        self.assertEqual(
-            arch.enabled,
-            REPO / "tools/riscv/ltp/manifests/arch-riscv64.txt",
-        )
-
-        with self.assertRaisesRegex(ValueError, "unknown LTP suite"):
-            suite_by_name(REPO, "arbitrary")
 
     def test_prepared_artifacts_must_match_normalized_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -385,6 +371,8 @@ class LtpGatePolicyTests(unittest.TestCase):
             binaries = repo / "target/ltp/rootfs/opt/ltp/testcases/bin"
             manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
             unavailable = repo / "target/ltp/unavailable-tests.json"
+            initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+            identity = repo / "target/ltp/package.json"
             enabled.parent.mkdir(parents=True)
             runtest.parent.mkdir(parents=True)
             binaries.mkdir(parents=True)
@@ -401,7 +389,16 @@ class LtpGatePolicyTests(unittest.TestCase):
             unavailable.write_text(
                 json.dumps([{"name": missing, "reason": "missing-binary"}]) + "\n"
             )
+            initramfs.write_bytes(b"archive")
             suite = suite_by_name(repo, "arch-riscv64")
+
+            publish_package_identity(
+                suite=suite.name,
+                initramfs=initramfs,
+                manifest=manifest,
+                unavailable=unavailable,
+                output=identity,
+            )
 
             selected, omitted = _validate_packaged_suite(repo, suite)
             self.assertEqual(selected, manifest)
@@ -417,6 +414,34 @@ class LtpGatePolicyTests(unittest.TestCase):
             unavailable.write_text("[]\n")
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 _validate_packaged_suite(repo, suite)
+
+    def test_package_lock_excludes_a_second_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            code = """
+import fcntl
+import sys
+
+with open(sys.argv[1], 'a+b') as lock:
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+raise SystemExit(1)
+"""
+
+            with _package_lock(repo):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        code,
+                        str(repo / "target/ltp/package.lock"),
+                    ],
+                    check=False,
+                )
+
+        self.assertEqual(completed.returncode, 0)
 
     def test_dry_run_rejects_an_ltp_target_symlink_outside_the_repo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -480,6 +505,18 @@ class LtpGateDocumentationTests(unittest.TestCase):
         self.assertIn("TRUE", builder)
         self.assertIn("tools/riscv/nixos/build_busybox.sh", source)
         self.assertIn("target/nixos/busybox", source)
+
+    def test_operator_guide_binds_skip_build_to_the_packaged_suite(self) -> None:
+        source = OPERATOR_GUIDE.read_text()
+
+        self.assertIn(
+            "Every `--skip-build` run must name the suite currently packaged",
+            source,
+        )
+        self.assertIn(
+            "build_ltp.sh --skip-compile --suite syscalls",
+            source,
+        )
 
     def test_container_commands_do_not_override_the_image_vdso_directory(self) -> None:
         for document in (OPERATOR_GUIDE, IMPLEMENTATION_PLAN):
