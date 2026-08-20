@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -161,6 +162,8 @@ class ManifestCommandLineTests(unittest.TestCase):
                     {"name": "munmap02", "reason": "not-in-runtest"},
                 ],
             )
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE(unavailable.stat().st_mode), 0o644)
             with self.assertRaises(FileExistsError):
                 main(arguments)
 
