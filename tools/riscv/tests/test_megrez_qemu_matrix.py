@@ -13,6 +13,7 @@ import threading
 import unittest
 
 from tools.riscv.qemu_ppm import PpmAudit, audit_ppm
+import tools.riscv.qemu_qmp as qmp
 from tools.riscv.qemu_qmp import capture_screendump
 
 
@@ -115,10 +116,13 @@ class QmpCaptureTests(unittest.TestCase):
         self.socket_path = self.root / "qmp.sock"
         self.output_path = self.root / "screen.ppm"
         self.threads: list[threading.Thread] = []
+        self.listeners: list[socket.socket] = []
         self.server_errors: list[BaseException] = []
 
     def tearDown(self) -> None:
         try:
+            for listener in self.listeners:
+                listener.close()
             for thread in self.threads:
                 thread.join(2)
                 self.assertFalse(thread.is_alive(), "fake QMP server did not finish")
@@ -132,6 +136,8 @@ class QmpCaptureTests(unittest.TestCase):
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(os.fspath(self.socket_path))
         listener.listen(1)
+        listener.settimeout(2)
+        self.listeners.append(listener)
 
         def serve() -> None:
             try:
@@ -250,6 +256,24 @@ class QmpCaptureTests(unittest.TestCase):
                     capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
                 self.join_last_server()
 
+    def test_reports_distinct_json_decode_failures(self) -> None:
+        cases = (
+            (b"\xff\n", "not UTF-8"),
+            (b'{"QMP":}\n', "invalid JSON"),
+            (b'{"QMP":NaN}\n', "forbidden JSON constant"),
+        )
+        for greeting, message in cases:
+            with self.subTest(greeting=greeting):
+                self.socket_path.unlink(missing_ok=True)
+
+                def handler(connection: socket.socket, greeting=greeting) -> None:
+                    connection.sendall(greeting)
+
+                self.start_server(handler)
+                with self.assertRaisesRegex(ValueError, message):
+                    capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
+                self.join_last_server()
+
     def test_rejects_eof_and_overlong_response(self) -> None:
         for response in (b"", b"{" + b"x" * (64 * 1024) + b"\n"):
             with self.subTest(response_length=len(response)):
@@ -279,6 +303,57 @@ class QmpCaptureTests(unittest.TestCase):
 
         self.start_server(handler)
         self.assertEqual(capture_screendump(self.socket_path, self.output_path, capture_root=self.root), payload)
+
+    def test_safe_reader_enforces_the_registered_capture_limit(self) -> None:
+        directory = self.root / "output"
+        directory.mkdir()
+        exact = directory / "exact"
+        exact.write_bytes(b"x" * qmp._MAX_CAPTURE_BYTES)
+        oversized = directory / "oversized"
+        with oversized.open("wb") as output:
+            output.truncate(qmp._MAX_CAPTURE_BYTES + 1024 * 1024)
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(directory, flags)
+        try:
+            self.assertEqual(qmp._read_output(descriptor, "exact"), b"x" * qmp._MAX_CAPTURE_BYTES)
+            with self.assertRaises(ValueError):
+                qmp._read_output(descriptor, "oversized")
+        finally:
+            os.close(descriptor)
+
+    def test_total_deadline_rejects_a_trickling_greeting(self) -> None:
+        def handler(connection: socket.socket) -> None:
+            try:
+                for byte in b'{"QMP":{}}\n':
+                    connection.sendall(bytes((byte,)))
+                    threading.Event().wait(0.01)
+            except BrokenPipeError:
+                pass
+
+        self.start_server(handler)
+        with self.assertRaisesRegex(TimeoutError, "QMP capture timed out"):
+            capture_screendump(self.socket_path, self.output_path, capture_root=self.root, timeout=0.05)
+
+    def test_capture_uses_retained_parent_descriptor_after_path_replacement(self) -> None:
+        nested = self.root / "nested"
+        nested.mkdir()
+        output_path = nested / "screen.ppm"
+        expected = ppm(1, 1, b"\x01\x02\x03")
+        outside_payload = ppm(1, 1, b"\x09\x08\x07")
+        (self.outside_root / "screen.ppm").write_bytes(outside_payload)
+
+        def handler(connection: socket.socket) -> None:
+            connection.sendall(b'{"QMP":{}}\n')
+            self.receive_line(connection)
+            connection.sendall(b'{"return":{}}\n')
+            self.receive_line(connection)
+            output_path.write_bytes(expected)
+            nested.rename(self.outside_root / "moved")
+            nested.symlink_to(self.outside_root, target_is_directory=True)
+            connection.sendall(b'{"return":{}}\n')
+
+        self.start_server(handler)
+        self.assertEqual(capture_screendump(self.socket_path, output_path, capture_root=self.root), expected)
 
     def test_validates_timeout_and_path_safety_before_connecting(self) -> None:
         for timeout in (0, -1, math.inf, math.nan):
