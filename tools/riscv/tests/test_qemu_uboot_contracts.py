@@ -47,6 +47,17 @@ from qemu_uboot_profiles import (  # noqa: E402
     validate_registered_profile,
 )
 from qemu_uboot_commands import boot_commands, qemu_argv  # noqa: E402
+from qemu_uboot_devices import (  # noqa: E402
+    BOCHS_XRGB8888,
+    HEADLESS,
+    MEGREZ_BASIC,
+    DeviceKind,
+    QemuDeviceSet,
+    RuntimeDevicePaths,
+    device_set_by_name,
+    render_device_argv,
+    validate_registered_device_set,
+)
 from qemu_uboot_dtb import generated_dtb_qemu_argv  # noqa: E402
 from qemu_uboot_dtb import (  # noqa: E402
     GeneratedDtbAudit,
@@ -79,6 +90,169 @@ class ContractCompositionTests(unittest.TestCase):
         image[0x30:0x38] = b"RISCV\0\0\0"
         struct.pack_into("<I", image, 0x38, 0x05435352)
         return bytes(image)
+
+    def test_device_sets_are_registered_and_frozen(self) -> None:
+        self.assertIs(device_set_by_name("headless"), HEADLESS)
+        self.assertIs(device_set_by_name("megrez-basic"), MEGREZ_BASIC)
+        self.assertEqual(
+            MEGREZ_BASIC.devices,
+            (DeviceKind.BOCHS_DISPLAY,),
+        )
+        with self.assertRaises(FrozenInstanceError):
+            MEGREZ_BASIC.name = "changed"
+
+    def test_replaced_device_set_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "registered device set"):
+            validate_registered_device_set(
+                replace(MEGREZ_BASIC, devices=(DeviceKind.BOCHS_DISPLAY,))
+            )
+
+    def test_device_set_validation_rejects_invalid_shapes(self) -> None:
+        for device_set, message in (
+            (
+                QemuDeviceSet(
+                    "duplicate",
+                    (DeviceKind.BOCHS_DISPLAY, DeviceKind.BOCHS_DISPLAY),
+                ),
+                "duplicate devices",
+            ),
+            (
+                QemuDeviceSet("bad-framebuffer", (), BOCHS_XRGB8888),
+                "framebuffer requires bochs-display",
+            ),
+        ):
+            with self.subTest(device_set=device_set):
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_registered_device_set(device_set)
+
+    def test_megrez_basic_renders_its_fixed_devices_and_qmp_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "capture"
+            capture_root.mkdir(mode=0o700)
+            monitor_socket = capture_root / "qmp.sock"
+
+            self.assertEqual(
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=monitor_socket,
+                    ),
+                ),
+                (
+                    "-device",
+                    "bochs-display,xres=1280,yres=1024",
+                    "-qmp",
+                    f"unix:{monitor_socket},server=on,wait=off",
+                ),
+            )
+            self.assertEqual(
+                qemu_argv(
+                    uboot=Path("/tmp/u-boot"),
+                    boot_disk=Path("/tmp/boot.ext4"),
+                    device_set=MEGREZ_BASIC,
+                    device_paths=RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=monitor_socket,
+                    ),
+                )[-4:],
+                [
+                    "-device",
+                    "bochs-display,xres=1280,yres=1024",
+                    "-qmp",
+                    f"unix:{monitor_socket},server=on,wait=off",
+                ],
+            )
+
+    def test_headless_rejects_all_runtime_paths(self) -> None:
+        with self.assertRaisesRegex(ValueError, "headless"):
+            render_device_argv(
+                HEADLESS,
+                RuntimeDevicePaths(capture_root=Path("/tmp/capture")),
+            )
+
+    def test_framebuffer_paths_must_be_present_and_unused_disks_are_rejected(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "requires capture_root"):
+            render_device_argv(MEGREZ_BASIC, None)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "capture"
+            capture_root.mkdir(mode=0o700)
+            with self.assertRaisesRegex(ValueError, "unused"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=capture_root / "qmp.sock",
+                        scratch_disk=Path("/tmp/scratch.img"),
+                    ),
+                )
+
+    def test_framebuffer_paths_are_confined_and_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            capture_root = parent / "capture"
+            capture_root.mkdir(mode=0o700)
+            outside = parent / "outside"
+            outside.mkdir()
+
+            unsafe_paths = (
+                RuntimeDevicePaths(
+                    capture_root=Path("relative"),
+                    monitor_socket=Path("/tmp/qmp.sock"),
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=Path("relative.sock"),
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=outside / "qmp.sock",
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=capture_root / "qmp,sock",
+                ),
+            )
+            for paths in unsafe_paths:
+                with self.subTest(paths=paths):
+                    with self.assertRaises(ValueError):
+                        render_device_argv(MEGREZ_BASIC, paths)
+
+            bad_mode = parent / "bad-mode"
+            bad_mode.mkdir(mode=0o755)
+            with self.assertRaisesRegex(ValueError, "mode 0700"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=bad_mode,
+                        monitor_socket=bad_mode / "qmp.sock",
+                    ),
+                )
+
+            root_link = parent / "capture-link"
+            root_link.symlink_to(capture_root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=root_link,
+                        monitor_socket=root_link / "qmp.sock",
+                    ),
+                )
+
+            socket_link = capture_root / "qmp.sock"
+            socket_link.symlink_to(outside / "socket")
+            with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=socket_link,
+                    ),
+                )
 
     def test_contract_vocabulary_is_closed(self) -> None:
         self.assertEqual(tuple(QemuMachine), (QemuMachine.VIRT, QemuMachine.SIFIVE_U))
