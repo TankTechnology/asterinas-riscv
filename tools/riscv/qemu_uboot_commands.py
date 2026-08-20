@@ -194,6 +194,53 @@ def _filesystem_plan(profile: QemuUbootProfile) -> tuple[list[BootCommand], str]
     raise AssertionError("unhandled registered storage transport")
 
 
+def _framebuffer_plan(device_set: QemuDeviceSet) -> tuple[BootCommand, ...]:
+    """Return the fixed firmware framebuffer update for a device contract."""
+
+    framebuffer = device_set.framebuffer
+    if framebuffer is None:
+        return ()
+    node = f"/framebuffer@{framebuffer.address:x}"
+    return (
+        BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
+        BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+        BootCommand("framebuffer-node", f"fdt mknode / {node[1:]}", "=>"),
+        BootCommand(
+            "framebuffer-compatible",
+            f'fdt set {node} compatible "simple-framebuffer"',
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-reg",
+            f"fdt set {node} reg <0x0 {framebuffer.address:#x} "
+            f"0x0 {framebuffer.size:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-width",
+            f"fdt set {node} width <{framebuffer.width:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-height",
+            f"fdt set {node} height <{framebuffer.height:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-stride",
+            f"fdt set {node} stride <{framebuffer.stride:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-format",
+            f'fdt set {node} format "{framebuffer.pixel_format}"',
+            "=>",
+        ),
+        BootCommand("framebuffer-status", f'fdt set {node} status "okay"', "=>"),
+        BootCommand("framebuffer-verify", f"fdt print {node}", "simple-framebuffer"),
+    )
+
+
 def boot_commands(
     artifacts: ArtifactExpectations = DEFAULT_ARTIFACTS,
     *,
@@ -201,9 +248,11 @@ def boot_commands(
     scenario: BootScenario = BootScenario.POSITIVE,
     bootargs_override: str | None = None,
     variant: QemuUbootVariant | None = None,
+    device_set: QemuDeviceSet = HEADLESS,
 ) -> tuple[BootCommand, ...]:
     """Return the guarded command sequence for a registered U-Boot flow."""
 
+    validate_registered_device_set(device_set)
     validate_registered_profile(profile)
     if profile.boot_flow.actions != tuple(BootActionKind):
         raise ValueError("registered U-Boot flow has an unsupported action order")
@@ -286,6 +335,7 @@ def boot_commands(
         ),
         BootCommand("dtb-select", f"fdt addr {dtb_address}", "Working FDT set"),
         BootCommand("dtb-resize", f"fdt resize {DTB_EXPANSION_SIZE:#x}", "=>"),
+        *_framebuffer_plan(device_set),
         BootCommand(
             "bootargs-env",
             f'setenv bootargs "{environment_bootargs}"',
