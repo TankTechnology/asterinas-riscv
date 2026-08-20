@@ -252,6 +252,46 @@ class ContractCompositionTests(unittest.TestCase):
         self.assertEqual(scenario.audit_policy, AuditPolicy.ASTERINAS_STRICT)
         self.assertEqual(scenario.milestones[-1].stage, scenario.terminal)
 
+    def test_ltp_profiles_are_registered_complete_boots(self) -> None:
+        profiles = tuple(
+            (profile_by_name(name), smp)
+            for name, smp in (
+                ("generic-sv39-ltp-smp1", 1),
+                ("generic-sv39-ltp-smp4", 4),
+            )
+        )
+
+        for profile, smp in profiles:
+            with self.subTest(profile=profile.name):
+                validate_registered_profile(profile)
+                self.assertIs(profile.boot_flow, UBOOT_BOOTI)
+                self.assertEqual(profile.machine.qemu_machine, QemuMachine.VIRT)
+                self.assertEqual(profile.hart_count, smp)
+                self.assertEqual(profile.memory, "2G")
+                self.assertEqual(profile.validation.scope, ResultScope.COMPLETE_BOOT)
+                self.assertEqual(
+                    profile.validation.audit_policy,
+                    AuditPolicy.REGISTERED_MILESTONES,
+                )
+                self.assertEqual(
+                    profile.validation.completion_line,
+                    b"__LTP_GATE_DONE__",
+                )
+                self.assertEqual(
+                    profile.validation.milestones[-1].line,
+                    b"__LTP_GATE_DONE__",
+                )
+                argv = qemu_argv(
+                    uboot=Path("/u-boot"),
+                    boot_disk=Path("/boot.ext4"),
+                    profile=profile,
+                    snapshot_disk=False,
+                )
+                self.assertEqual(argv[argv.index("-smp") + 1], str(smp))
+
+        self.assertIs(profiles[0][0].validation, profiles[1][0].validation)
+        self.assertEqual(profiles[0][0].cpu, profiles[1][0].cpu)
+
     def test_sifive_asterinas_scenario_completes_in_userspace(self) -> None:
         scenario = SIFIVE_U_ASTERINAS_SMOKE.validation
 
