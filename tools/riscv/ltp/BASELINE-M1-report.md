@@ -103,8 +103,8 @@ The four SMP=1 timeouts are:
 
 The 140 ordinary failures cluster into these next-step areas:
 
-1. Guest fixtures: no loopback setup, no block/loop device, and no BusyBox
-   applets for shell-out tests.
+1. Guest fixtures: no `ip`/`ifconfig` helpers for tests that configure
+   loopback, no block/loop device, and no BusyBox applets for shell-out tests.
 2. VFS and metadata: open/access, rename, mount/new mount API, xattr, statfs,
    and statx cases.
 3. Memory management: brk, mmap/mprotect/mincore, mlock, madvise, fallocate,
@@ -143,8 +143,8 @@ The subset artifact identities are:
 
 ## Recommended next batches
 
-1. Fix deterministic guest fixtures first: install passwd/group as `0644` and
-   rerun `setfsgid03` plus `setgid02`.
+1. Keep the validated passwd/group `0644` fixture and its focused
+   `setfsgid03`/`setgid02` regression in the gate.
 2. Add the LTP-required BusyBox helpers and classify block-device-dependent
    failures before introducing the loop subsystem.
 3. Port small, reviewed kernel fixes by failure group, beginning with wildcard
