@@ -31,6 +31,7 @@ CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
 MUSL_ROOT="/usr/riscv64-linux-musl"
 MUSL_LIBC="${MUSL_ROOT}/lib/musl/lib/libc.so"
+GNU_UAPI_ROOT="/usr/riscv64-linux-gnu/include"
 JOBS="${JOBS:-16}"
 SKIP_COMPILE=0
 
@@ -44,6 +45,12 @@ done
 for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
         echo "missing ${tool}" >&2
+        exit 2
+    fi
+done
+for input in "${MUSL_LIBC}" "${GNU_UAPI_ROOT}/linux/limits.h"; do
+    if [ ! -f "${input}" ]; then
+        echo "missing cross-build input ${input}" >&2
         exit 2
     fi
 done
@@ -62,7 +69,7 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     # CC/libc/flag switch does not leave a mixed build.
     [ -f Makefile ] && make clean >/dev/null 2>&1 || true
     CC="${CC}" DEBUG_CFLAGS="" \
-        CFLAGS="-O2 -fno-stack-protector -fPIC -isystem /usr/riscv64-linux-gnu/include" \
+        CFLAGS="-O2 -fno-stack-protector -fPIC -isystem ${GNU_UAPI_ROOT}" \
         LDFLAGS="" \
         ./configure --host=riscv64-linux-gnu --prefix=/opt/ltp \
         >/dev/null 2>&1 || { echo "configure failed" >&2; exit 2; }
