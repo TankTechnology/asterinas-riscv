@@ -8,9 +8,12 @@ import os
 from pathlib import Path
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from tools.riscv.qemu_ppm import PpmAudit, audit_ppm
 import tools.riscv.qemu_qmp as qmp
@@ -320,6 +323,42 @@ class QmpCaptureTests(unittest.TestCase):
                 qmp._read_output(descriptor, "oversized")
         finally:
             os.close(descriptor)
+
+    def test_safe_reader_collects_short_reads_and_rejects_overflow_across_chunks(self) -> None:
+        directory = self.root / "output"
+        directory.mkdir()
+        (directory / "screen").write_bytes(b"placeholder")
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with mock.patch.object(qmp.os, "read", side_effect=(b"first", b"-second", b"")) as read:
+                self.assertEqual(qmp._read_output(descriptor, "screen"), b"first-second")
+                self.assertEqual(
+                    [call.args[1] for call in read.call_args_list],
+                    [qmp._MAX_CAPTURE_BYTES + 1, qmp._MAX_CAPTURE_BYTES - 4, qmp._MAX_CAPTURE_BYTES - 11],
+                )
+            with mock.patch.object(
+                qmp.os,
+                "read",
+                side_effect=(b"x" * qmp._MAX_CAPTURE_BYTES, b"y", b""),
+            ) as read:
+                with self.assertRaises(ValueError):
+                    qmp._read_output(descriptor, "screen")
+                self.assertEqual([call.args[1] for call in read.call_args_list], [qmp._MAX_CAPTURE_BYTES + 1, 1])
+        finally:
+            os.close(descriptor)
+
+    def test_qmp_module_imports_as_a_top_level_riscv_runner_module(self) -> None:
+        riscv_tools = Path(__file__).parents[1]
+        environment = {"PYTHONPATH": os.fspath(riscv_tools)}
+        result = subprocess.run(
+            [sys.executable, "-c", "import qemu_qmp"],
+            cwd="/tmp",
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_total_deadline_rejects_a_trickling_greeting(self) -> None:
         def handler(connection: socket.socket) -> None:
