@@ -365,6 +365,16 @@ class LtpBuildScriptContractTests(unittest.TestCase):
         self.assertIn("missing required BusyBox", source)
         self.assertNotIn("WARN: no busybox", source)
 
+    def test_build_script_selects_only_closed_named_suites(self) -> None:
+        source = BUILD_SCRIPT.read_text()
+
+        self.assertIn('SUITE="syscalls"', source)
+        self.assertIn('--suite) SUITE="$2"; shift 2 ;;', source)
+        self.assertIn('arch-riscv64)', source)
+        self.assertIn('EXPECTED_SELECTED=138', source)
+        self.assertIn('EXPECTED_UNAVAILABLE=1', source)
+        self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
+
     def test_builder_installs_account_databases_world_readable(self) -> None:
         source = BUILD_SCRIPT.read_text()
 
@@ -378,7 +388,7 @@ class LtpBuildScriptContractTests(unittest.TestCase):
 
         self.assertIn("tools/riscv/ltp_manifest.py", source)
         self.assertIn("--unavailable-output", source)
-        self.assertIn("--expected-count 767", source)
+        self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
         for tool in ("aclocal", "autoconf", "automake"):
             self.assertIn(tool, source)
         self.assertIn("linux/limits.h", source)
