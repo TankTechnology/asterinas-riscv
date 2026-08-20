@@ -39,6 +39,11 @@ class RepositoryManifestContractTests(unittest.TestCase):
         )
 
     def test_arch_riscv64_manifest_has_139_unique_requested_names(self) -> None:
+        self.assertTrue(
+            ARCH_RISCV64_MANIFEST.read_text().startswith(
+                "# RISC-V architecture-sensitive LTP syscall requests.\n"
+            )
+        )
         requested = tuple(
             stripped
             for line in ARCH_RISCV64_MANIFEST.read_text().splitlines()

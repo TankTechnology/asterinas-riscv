@@ -27,6 +27,8 @@ ROOTFS="${REPO_ROOT}/target/ltp/rootfs"
 OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
 BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
+PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
+PACKAGE_LOCK="${REPO_ROOT}/target/ltp/package.lock"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -40,27 +42,39 @@ SKIP_COMPILE=0
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --skip-compile) SKIP_COMPILE=1; shift ;;
-        --suite) SUITE="$2"; shift 2 ;;
+        --suite)
+            if [[ "$#" -lt 2 ]]; then
+                echo "--suite requires a value" >&2
+                exit 2
+            fi
+            SUITE="$2"; shift 2
+            ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-case "${SUITE}" in
-    syscalls)
-        ENABLED_TESTS="${REPO_ROOT}/test/initramfs/src/conformance/ltp/testcases/all.txt"
-        EXPECTED_SELECTED=767
-        EXPECTED_UNAVAILABLE=12
-        ;;
-    arch-riscv64)
-        ENABLED_TESTS="${REPO_ROOT}/tools/riscv/ltp/manifests/arch-riscv64.txt"
-        EXPECTED_SELECTED=138
-        EXPECTED_UNAVAILABLE=1
-        ;;
-    *)
-        echo "unknown LTP suite: ${SUITE}" >&2
-        exit 2
-        ;;
-esac
+mapfile -t SUITE_FIELDS < <(
+    python3 "${REPO_ROOT}/tools/riscv/ltp_suite.py" describe \
+        --repo "${REPO_ROOT}" --suite "${SUITE}"
+)
+if [[ "${#SUITE_FIELDS[@]}" -ne 3 ]]; then
+    echo "failed to resolve LTP suite: ${SUITE}" >&2
+    exit 2
+fi
+ENABLED_TESTS="${SUITE_FIELDS[0]}"
+EXPECTED_SELECTED="${SUITE_FIELDS[1]}"
+EXPECTED_UNAVAILABLE="${SUITE_FIELDS[2]}"
+
+if ! command -v flock >/dev/null 2>&1; then
+    echo "missing flock" >&2
+    exit 2
+fi
+mkdir -p "$(dirname "${PACKAGE_LOCK}")"
+exec 9>"${PACKAGE_LOCK}"
+if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
+    flock --exclusive 9
+fi
+rm -f "${PACKAGE_IDENTITY}"
 
 for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -209,4 +223,10 @@ echo "=== build /init and /ltp_runner (static musl) ==="
 
 echo "=== pack initramfs ==="
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )
+python3 "${REPO_ROOT}/tools/riscv/ltp_package.py" publish \
+    --suite "${SUITE}" \
+    --initramfs "${OUTPUT}" \
+    --manifest "${FILTERED}" \
+    --unavailable "${UNAVAILABLE}" \
+    --output "${PACKAGE_IDENTITY}"
 echo "built ${OUTPUT} ($(wc -c < "${OUTPUT}") bytes, ${N_TESTS} tests)"

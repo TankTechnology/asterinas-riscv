@@ -268,6 +268,8 @@ test_riscv_ltp_unit:
 	@PYTHONPATH=tools/riscv python3 -m unittest \
 		tools.riscv.tests.test_ltp_result \
 		tools.riscv.tests.test_ltp_manifest \
+		tools.riscv.tests.test_ltp_suite \
+		tools.riscv.tests.test_ltp_package \
 		tools.riscv.tests.test_ltp_gate \
 		tools.riscv.tests.test_ltp_guest_runner -v
 
