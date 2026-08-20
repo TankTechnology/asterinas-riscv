@@ -46,7 +46,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     profile_by_name,
     validate_registered_profile,
 )
-from qemu_uboot_commands import boot_commands, qemu_argv  # noqa: E402
+from qemu_uboot_commands import BootCommand, boot_commands, qemu_argv  # noqa: E402
 from qemu_uboot_devices import (  # noqa: E402
     BOCHS_XRGB8888,
     HEADLESS,
@@ -106,6 +106,89 @@ class ContractCompositionTests(unittest.TestCase):
             validate_registered_device_set(
                 replace(MEGREZ_BASIC, devices=(DeviceKind.BOCHS_DISPLAY,))
             )
+
+    def test_boot_commands_rejects_replaced_device_set_at_entry(self) -> None:
+        with self.assertRaisesRegex(ValueError, "registered device set"):
+            boot_commands(
+                device_set=replace(
+                    MEGREZ_BASIC,
+                    devices=(DeviceKind.BOCHS_DISPLAY,),
+                )
+            )
+
+    def test_megrez_basic_injects_one_fixed_framebuffer_before_booti(self) -> None:
+        commands = boot_commands(
+            profile=MEGREZ_SV48_SVADE_FAST,
+            device_set=MEGREZ_BASIC,
+        )
+        names = [command.name for command in commands]
+        framebuffer_commands = tuple(
+            command for command in commands if command.name.startswith("framebuffer-")
+        )
+
+        self.assertEqual(
+            framebuffer_commands,
+            (
+                BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
+                BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+                BootCommand(
+                    "framebuffer-node",
+                    "fdt mknode / framebuffer@40000000",
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-compatible",
+                    'fdt set /framebuffer@40000000 compatible "simple-framebuffer"',
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-reg",
+                    "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>",
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-width",
+                    "fdt set /framebuffer@40000000 width <0x500>",
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-height",
+                    "fdt set /framebuffer@40000000 height <0x400>",
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-stride",
+                    "fdt set /framebuffer@40000000 stride <0x1400>",
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-format",
+                    'fdt set /framebuffer@40000000 format "x8r8g8b8"',
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-status",
+                    'fdt set /framebuffer@40000000 status "okay"',
+                    "=>",
+                ),
+                BootCommand(
+                    "framebuffer-verify",
+                    "fdt print /framebuffer@40000000",
+                    "simple-framebuffer",
+                ),
+            ),
+        )
+        self.assertLess(names.index("dtb-select"), names.index("framebuffer-resize"))
+        self.assertLess(names.index("framebuffer-verify"), names.index("bootargs-env"))
+        self.assertLess(names.index("framebuffer-pci-probe"), names.index("framebuffer-node"))
+        self.assertLess(names.index("framebuffer-verify"), names.index("booti"))
+        self.assertEqual(names.count("booti"), 1)
+
+    def test_headless_commands_remain_byte_for_byte_compatible(self) -> None:
+        self.assertEqual(
+            boot_commands(device_set=HEADLESS),
+            boot_commands(),
+        )
 
     def test_device_set_validation_rejects_invalid_shapes(self) -> None:
         for device_set, message in (
