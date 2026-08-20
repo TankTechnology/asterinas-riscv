@@ -491,25 +491,21 @@ def _prepared_artifact_paths(
 
 def _run_evidence_candidates(
     paths: LtpRunPaths,
-    manifest_evidence: Path,
 ) -> tuple[Path, ...]:
     """Return every run-owned evidence path that may exist after execution."""
 
-    return (
-        paths.prepared_dir / "fs-root/asterinas.booti",
-        paths.prepared_dir / "fs-root/initramfs.cpio.gz",
-        paths.prepared_dir / "fs-root/qemu-virt.dtb",
-        paths.prepared_dir / "boot.ext4",
-        manifest_evidence,
-        paths.prepared_dir / "artifacts.json",
-        paths.prepared_dir / "qemu-dtb-audit.json",
-        paths.result_dir / "ltp-initramfs.cpio.gz",
-        paths.result_dir / "serial.log",
-        paths.result_dir / "progress.log",
-        paths.result_dir / "marker-event.txt",
-        paths.result_dir / "boot-result.json",
-        paths.result_dir / "result.json",
-        paths.result_dir / "summary.txt",
+    final_checksums = paths.result_dir / "SHA256SUMS"
+    return tuple(
+        sorted(
+            (
+                candidate
+                for root in (paths.prepared_dir, paths.result_dir)
+                if root.is_dir()
+                for candidate in root.rglob("*")
+                if candidate.is_file() and candidate != final_checksums
+            ),
+            key=lambda path: path.as_posix(),
+        )
     )
 
 
@@ -637,7 +633,7 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
         )
 
         result_path = paths.result_dir / "result.json"
-        checksum_inputs = _run_evidence_candidates(paths, manifest_evidence)
+        checksum_inputs = _run_evidence_candidates(paths)
         if (
             qemu.returncode != 0
             or normalized.returncode != 0
