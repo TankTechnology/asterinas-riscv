@@ -94,12 +94,14 @@ class LtpGatePolicyTests(unittest.TestCase):
             kernel = repo / "target/osdk/kernel.Image"
             initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
             manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
             kernel.parent.mkdir(parents=True)
             initramfs.parent.mkdir(parents=True)
             manifest.parent.mkdir(parents=True)
             kernel.write_bytes(b"kernel")
             initramfs.write_bytes(b"initramfs")
             manifest.write_text("getpid01 getpid01\n")
+            unavailable.write_text("[]\n")
             paths = run_paths(
                 repo,
                 run_id="failed-run",
@@ -137,7 +139,13 @@ class LtpGatePolicyTests(unittest.TestCase):
                         path.write_bytes(payload)
                 return Mock(returncode=0 if call_count == 1 else 1)
 
-            with patch("ltp_gate.subprocess.run", side_effect=failed_commands):
+            with (
+                patch(
+                    "ltp_gate._validate_packaged_suite",
+                    return_value=(manifest, unavailable),
+                ),
+                patch("ltp_gate.subprocess.run", side_effect=failed_commands),
+            ):
                 status = main(
                     [
                         "run",
