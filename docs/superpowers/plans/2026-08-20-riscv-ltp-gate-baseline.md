@@ -927,7 +927,9 @@ docker run --rm --network=host \
   -v "$(pwd)/target/ltp/toolchain/root/usr/riscv64-linux-musl:\
 /usr/riscv64-linux-musl:ro" \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc \
-  bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
+  bash -lc 'apt-get update -qq; \
+    apt-get install -y --no-install-recommends autoconf automake; \
+    restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
     tools/riscv/nixos/ltp/build_ltp.sh'
