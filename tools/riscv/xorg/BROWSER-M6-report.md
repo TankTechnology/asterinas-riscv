@@ -130,7 +130,7 @@ The speculative-decode threshold (`c->size <= 4096`, i.e. decoded
 (deferred), exactly as `image_cache_speculate` intends. On redraw the deferred
 bitmaps are converted by `image_cache_redraw` (`centry->convert`), which is why
 the large PNG and JPEG *do* render — the earlier M3.6/M4 "deferred decode never
-runs" was a mis-diagnosis (the same class as M2's crash-loop / the M3 "CSS gap").
+runs" was a misdiagnosis (the same class as M2's crash-loop / the M3 "CSS gap").
 
 The one genuine image gap remaining is **GIF**: `img-anim.gif` renders no
 `#FF8800` pixels. GIF does not go through `image_cache_redraw` — its handler
@@ -191,7 +191,7 @@ gap "large images are speculatively deferred and never decoded". The imagetest
 page shows the deferral happens (`image_cache_add … bitmap (nil)`) but the decode
 runs on redraw via `image_cache_redraw` → `centry->convert`: the 400×300 PNG
 paints 34 400 `#3F6EFF` pixels and the 640×480 JPEG paints its plasma gradient.
-This is the same mis-diagnosis class as M2's "CSS gap" (actually a crash-loop).
+This is the same misdiagnosis class as M2's "CSS gap" (actually a crash-loop).
 
 ### 7.3 Fix applied — connect timeout
 
