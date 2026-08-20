@@ -243,7 +243,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
     run = subparsers.add_parser("run")
     run.add_argument("--kernel", type=Path, required=True)
-    run.add_argument("--smp", type=int, choices=(1, 4), default=1)
+    run.add_argument("--smp", type=int, choices=(1, 4), default=4)
     run.add_argument("--run-id", default=None)
     run.add_argument("--skip-build", action="store_true")
     run.add_argument("--baseline", action="store_true")
