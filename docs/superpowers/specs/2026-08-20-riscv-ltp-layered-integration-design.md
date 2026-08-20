@@ -2,7 +2,7 @@
 
 Date: 2026-08-20
 Status: Approved design
-Target branch: a new branch based on `codex/megrez-usb-keyboard`
+Target branch: staged `codex/asterinas-main-ltp-*` branches based on `origin/main`
 
 ## Objective
 
@@ -50,6 +50,34 @@ session and artifact-validation infrastructure.
 Each layer has an independent acceptance gate. A failed layer is fixed or
 reverted before the next layer starts, so a regression can be attributed to
 one small group of changes.
+
+### Review-Driven Stage 3 Admission Criteria
+
+The first review of the guest runner and host gate found that the functional
+gate layer was not yet safe to admit to `main`: an `execv` failure could be
+classified as CONF, timed-out descendants could survive their direct parent,
+and checksums could point at mutable shared preparation inputs. These are gate
+correctness defects, not optional follow-up polish, so their already-verified
+hardening moves into Stage 3 before its pull request is opened.
+
+Stage 3 must therefore satisfy all of the following in one reviewable range:
+
+- a missing or unexecutable test binary is TBROK/FAIL and can never make the
+  suite pass;
+- each test runs behind a process-group supervisor and the complete group is
+  killed and reaped on timeout or abnormal termination;
+- boot preparation and every checksummed payload are owned by the immutable
+  run ID rather than a mutable SMP-wide directory;
+- BusyBox is a required, documented build input because enabled tests depend
+  on its shell and helper applets;
+- the normal LTP entry point defaults to SMP=4, while SMP=1 remains an
+  explicit diagnostic override.
+
+Only hardening needed to meet these admission criteria moves forward. Baseline
+reports, later evidence narratives, named architecture suites, kernel point
+fixes, and loop-device work retain their separate stages. Every newly moved
+behavior receives a failing host regression test before its implementation is
+ported, followed by the complete Stage 3 local verification matrix.
 
 ## Architecture
 
@@ -225,15 +253,17 @@ Loop-device work is never combined in the same commit with point fixes.
 
 ### Runtime Checks
 
-1. Run a small smoke subset to validate boot, watchdogs, parsing, and cleanup.
-2. Run the focused tests associated with each fix before and after the patch.
-3. Run the complete 767-test suite at SMP=1 and publish the full result set.
-4. Run an SMP=4 smoke/subset gate. If it completes without a kernel or runner
-   hang, run the complete SMP=4 suite with a larger bounded timeout.
-5. After loop-device integration, rerun its focused subset and both applicable
-   full-suite gates.
+1. Run a small SMP=4 smoke subset to validate boot, watchdogs, parsing, and
+   cleanup.
+2. Run the focused tests associated with each fix before and after the patch,
+   using SMP=4 unless the defect itself is explicitly single-hart-sensitive.
+3. Run the complete 767-test suite at SMP=4 and publish the full result set.
+4. Use SMP=1 only as an explicit diagnostic override when a focused failure
+   needs a single-hart control; do not require paired full-suite validation.
+5. After loop-device integration, rerun its focused subset and the SMP=4 full
+   suite.
 
-The first integration milestone succeeds when the 767-test SMP=1 run completes
+The first integration milestone succeeds when the 767-test SMP=4 run completes
 and produces internally consistent evidence, all expected point-fix movements
 are demonstrated, no prior PASS regresses without classification, and the
 existing RISC-V host test suite remains green. It does not require all 767 LTP
