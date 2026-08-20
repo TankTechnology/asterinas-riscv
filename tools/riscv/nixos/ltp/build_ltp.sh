@@ -26,6 +26,7 @@ ROOTFS="${REPO_ROOT}/target/ltp/rootfs"
 OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
 ALL_TESTS="${REPO_ROOT}/test/initramfs/src/conformance/ltp/testcases/all.txt"
+BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -58,6 +59,11 @@ if [ ! -d "${LTP_SRC}" ]; then
     echo "missing LTP source at ${LTP_SRC}" >&2
     echo "clone it with: git clone --depth 1 --branch 20260529 \\" >&2
     echo "    https://github.com/linux-test-project/ltp.git target/ltp/src" >&2
+    exit 2
+fi
+if [[ ! -x "${BUSYBOX}" ]]; then
+    echo "missing required BusyBox at ${BUSYBOX}" >&2
+    echo "build it with: tools/riscv/nixos/build_busybox.sh" >&2
     exit 2
 fi
 
@@ -144,17 +150,12 @@ cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/opt/ltp/lib/libltp.so"
 # posix_fadvise03, setrlimit04); without them the tests TBROK on a missing
 # helper rather than exercising the kernel. Layer a static busybox (built by
 # tools/riscv/nixos/build_busybox.sh) and the applet symlinks those tests use.
-BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
-if [ -x "${BUSYBOX}" ]; then
-    mkdir -p "${ROOTFS}/bin"
-    cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
-    for a in sh cat true echo test; do
-        ln -sf busybox "${ROOTFS}/bin/${a}"
-    done
-    echo "busybox applets: $(ls "${ROOTFS}/bin")"
-else
-    echo "WARN: no busybox at ${BUSYBOX} — shell-out tests will TBROK" >&2
-fi
+mkdir -p "${ROOTFS}/bin"
+cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
+for applet in sh cat true echo test; do
+    ln -sf busybox "${ROOTFS}/bin/${applet}"
+done
+echo "busybox applets: $(ls "${ROOTFS}/bin")"
 
 # Copy LTP resource files (helper binaries) that the Makefile install
 # target doesn't include but tests need at runtime.

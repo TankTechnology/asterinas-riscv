@@ -59,6 +59,15 @@ docker run --rm --privileged --network=host -v /dev:/dev \
     make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode'
 ```
 
+The LTP image requires static BusyBox helpers for tests that invoke shell
+commands. Build the pinned BusyBox artifact in the same cross image before
+packaging LTP, and verify that it was published at the expected path:
+
+```bash
+tools/riscv/nixos/build_busybox.sh
+test -x target/nixos/busybox
+```
+
 Build LTP in the same cross image,
 mounting only the pinned wrapper and sysroot read-only:
 The command installs the missing Autotools frontend in the ephemeral
