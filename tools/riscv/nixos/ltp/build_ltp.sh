@@ -41,7 +41,7 @@ for arg in "$@"; do
     esac
 done
 
-for tool in "${CC}" "${STRIP}"; do
+for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
         echo "missing ${tool}" >&2
         exit 2

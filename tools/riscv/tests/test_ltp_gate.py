@@ -177,6 +177,7 @@ class LtpGateDocumentationTests(unittest.TestCase):
                     "0797f54b48c415739bb5360739bc8f9dc8b2019e01de86d89c2859810200b589",
                     source,
                 )
+                self.assertIn("autoconf automake", source)
 
 
 class LtpSubsetPackagingTests(unittest.TestCase):
