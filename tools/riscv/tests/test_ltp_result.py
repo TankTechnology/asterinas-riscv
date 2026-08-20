@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -149,6 +150,8 @@ class LtpResultDocumentTests(unittest.TestCase):
             payload = json.loads(result.read_text())
             self.assertEqual(payload["counts"]["legacy_fail_total"], 3)
             self.assertEqual(summary.read_text(), summary_text(payload))
+            self.assertEqual(stat.S_IMODE(result.stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE(summary.stat().st_mode), 0o644)
             with self.assertRaises(FileExistsError):
                 with contextlib.redirect_stdout(io.StringIO()):
                     main(arguments)
