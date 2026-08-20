@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile NetSurf 3.9 (GTK2 frontend) for the riscv64 desktop.
 #
 # NetSurf's GTK frontend is the last piece of the desktop. This script builds

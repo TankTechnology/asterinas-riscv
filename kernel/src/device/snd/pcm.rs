@@ -4,8 +4,9 @@
 //!
 //! The structs below are `#[repr(C)]` `Pod` types whose layout matches the
 //! LP64 (riscv64/x86_64) layout of the corresponding `asound.h` structures
-//! byte-for-byte. The ioctl commands are defined with [`ioc`] using the modern
-//! `_IOR`/`_IOW`/`_IOWR`/`_IO` encoding (magic `'A'`), so [`dispatch_ioctl`]
+//! byte-for-byte. The ioctl commands are defined with
+//! [`ioc`](crate::util::ioctl::ioc) using the modern `_IOR`/`_IOW`/`_IOWR`/`_IO`
+//! encoding (magic `'A'`), so [`dispatch_ioctl`](crate::util::ioctl::dispatch_ioctl)
 //! maps them directly onto the ABI userspace expects.
 //!
 //! Reference: `include/uapi/sound/asound.h` (SNDRV_PCM_VERSION 2.0.17).
@@ -17,7 +18,6 @@ pub const SNDRV_PCM_VERSION: i32 = 0x20011;
 
 // Stream directions (`SNDRV_PCM_STREAM_*`).
 pub const SNDRV_PCM_STREAM_PLAYBACK: i32 = 0;
-pub const SNDRV_PCM_STREAM_CAPTURE: i32 = 1;
 
 // Device classes (`SNDRV_PCM_CLASS_*` / `SNDRV_PCM_SUBCLASS_*`).
 pub const SNDRV_PCM_CLASS_GENERIC: i32 = 0;
@@ -41,8 +41,6 @@ pub const SNDRV_PCM_STATE_OPEN: i32 = 0;
 pub const SNDRV_PCM_STATE_SETUP: i32 = 1;
 pub const SNDRV_PCM_STATE_PREPARED: i32 = 2;
 pub const SNDRV_PCM_STATE_RUNNING: i32 = 3;
-pub const SNDRV_PCM_STATE_XRUN: i32 = 4;
-pub const SNDRV_PCM_STATE_DRAINING: i32 = 5;
 
 // `snd_pcm_hw_param_t` indices for masks (also the `masks` array index).
 pub const HW_PARAM_ACCESS: usize = 0;
@@ -255,12 +253,11 @@ pub struct SndPcmSyncPtr {
 }
 
 pub(crate) mod ioctl_defs {
-    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
-
     use super::{
         SndPcmChannelInfo, SndPcmHwParams, SndPcmInfo, SndPcmStatus, SndPcmSwParams, SndPcmSyncPtr,
         SndXferi,
     };
+    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/sound/asound.h#L666-L695>
     pub(crate) type Pversion = ioc!(SNDRV_PCM_IOCTL_PVERSION, b'A', 0x00, OutData<i32>);
@@ -287,10 +284,7 @@ pub(crate) mod ioctl_defs {
 #[derive(Clone, Copy, Debug)]
 pub struct PcmParams {
     pub channels: u32,
-    pub rate: u32,
-    pub format: u32,
     pub buffer_frames: u32,
-    pub period_frames: u32,
 }
 
 /// Per-open ALSA PCM stream state (mirrors the `SNDRV_PCM_STATE_*` machine).
@@ -310,10 +304,6 @@ impl PcmStream {
             hw_ptr: 0,
             started: false,
         }
-    }
-
-    pub fn state(&self) -> i32 {
-        self.state
     }
 
     pub fn params(&self) -> Option<PcmParams> {
@@ -371,10 +361,7 @@ impl PcmStream {
 
         self.params = Some(PcmParams {
             channels: DEV_CHANNELS,
-            rate: DEV_RATE,
-            format: DEV_FORMAT,
             buffer_frames: DEV_BUFFER_FRAMES,
-            period_frames: DEV_PERIOD_FRAMES,
         });
         self.state = SNDRV_PCM_STATE_SETUP;
         out
@@ -431,10 +418,7 @@ impl PcmStream {
     pub fn build_status(&self) -> SndPcmStatus {
         let params = self.params.unwrap_or(PcmParams {
             channels: DEV_CHANNELS,
-            rate: DEV_RATE,
-            format: DEV_FORMAT,
             buffer_frames: DEV_BUFFER_FRAMES,
-            period_frames: DEV_PERIOD_FRAMES,
         });
         SndPcmStatus {
             state: self.state,
