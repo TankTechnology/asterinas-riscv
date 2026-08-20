@@ -241,6 +241,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     run.add_argument("--skip-build", action="store_true")
     run.add_argument("--baseline", action="store_true")
     run.add_argument("--boot-timeout", type=_positive_float)
+    run.add_argument(
+        "--source-commit",
+        default=os.environ.get("ASTERINAS_SOURCE_COMMIT"),
+        help="full Git object ID (needed when containerized worktree metadata is absent)",
+    )
     run.add_argument("--tag", action="append", default=[])
     run.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -377,6 +382,14 @@ def _git_commit(repo: Path) -> str:
     return commit
 
 
+def _source_commit(repo: Path, explicit: str | None) -> str:
+    if explicit is None:
+        return _git_commit(repo)
+    if re.fullmatch(r"[0-9a-f]{40}", explicit) is None:
+        raise ValueError("source commit must be a full lowercase Git object ID")
+    return explicit
+
+
 def _write_sha256s(repo: Path, output: Path, candidates: Sequence[Path]) -> None:
     lines: list[str] = []
     seen: set[Path] = set()
@@ -455,6 +468,8 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
     if args.dry_run:
         return _dry_run(repo, paths, args, profile)
 
+    commit = _source_commit(repo, args.source_commit)
+
     if paths.result_dir.exists() or paths.result_dir.is_symlink():
         raise FileExistsError(f"result directory already exists: {paths.result_dir}")
     paths.result_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -511,7 +526,6 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
             cwd=repo,
             check=False,
         )
-        commit = _git_commit(repo)
         normalized = subprocess.run(
             _normalizer_command(repo, paths, commit, args.smp),
             cwd=repo,

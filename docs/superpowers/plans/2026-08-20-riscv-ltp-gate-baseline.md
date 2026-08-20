@@ -687,7 +687,7 @@ Supported CLI:
 ```text
 ltp_gate.py run --kernel IMAGE [--smp {1,4}] [--run-id ID]
                 [--skip-build] [--baseline] [--boot-timeout SECONDS]
-                [--tag NAME ...]
+                [--tag NAME ...] [--source-commit FULL_OBJECT_ID]
 ltp_gate.py build [--skip-compile]
 ```
 
@@ -712,8 +712,11 @@ these exact stages:
 
 Reject a symlinked result directory, a run id outside `[A-Za-z0-9._-]+`, a
 kernel outside the repository, non-SMP 1/4, and any resolved path outside
-`target/ltp`. Always allow the guarded QEMU runner to reap its process group
-before parsing evidence.
+`target/ltp`. Resolve and validate the source commit before creating the result
+directory or starting QEMU. `ASTERINAS_SOURCE_COMMIT` (or the equivalent
+`--source-commit`) supports isolated worktrees when their administrative Git
+directory is outside a container bind mount. Always allow the guarded QEMU
+runner to reap its process group before parsing evidence.
 
 - [ ] **Step 4: Run gate unit tests and verify GREEN**
 
