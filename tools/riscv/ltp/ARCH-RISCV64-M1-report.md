@@ -1,9 +1,12 @@
-# RISC-V Architecture LTP M1 Baseline
+# RISC-V Architecture LTP M1 Historical Selection Evidence
 
-## Outcome
+> **Status:** This is historical suite-selection evidence. It does not
+> establish a current baseline for the code in this merge series.
 
-The hardened `arch-riscv64` baseline completed on Asterinas with four virtual
-CPUs.
+## Historical Outcome
+
+At the historical source commit below, the `arch-riscv64` selection run
+completed on Asterinas with four virtual CPUs.
 The boot infrastructure passed, all 138 packaged tests produced one ordered
 verdict, and the run had no guest crash or timeout.
 LTP did not pass as a suite because 37 tests reported FAIL.
@@ -27,10 +30,18 @@ total=138 pass=81 fail=37 conf=20 crash=0 timeout=0 legacy_fail_total=37
 - Result directory: `target/ltp/results/arch-riscv64-m1-smp4-r2/`
 - Prepared boot directory: `target/ltp/qemu/smp4/arch-riscv64-m1-smp4-r2/`
 
+The source commit is not an ancestor of this merge series and is not reachable
+from a current `origin` ref. In accordance with the operator guide, these
+results justify the reviewed suite selection and closed count contract only;
+they must not be reported as verdicts for the merged gate. A current baseline
+must be rerun from a reachable post-merge commit and recorded separately.
+
 The pinned cross-container build emitted a warning that
 `target/nixos/busybox` was absent. The suite still packaged successfully with
 its exact count contract; this environment fact is retained for interpreting
-tests that may invoke shell helpers.
+tests that may invoke shell helpers. The current builder rejects a missing
+BusyBox artifact, which is another material difference from this historical
+run.
 
 ## Non-pass Tests
 
