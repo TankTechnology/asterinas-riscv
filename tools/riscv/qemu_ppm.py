@@ -32,7 +32,7 @@ def audit_ppm(payload: bytes, *, expected_width: int, expected_height: int) -> P
     if (width, height) != (expected_width, expected_height):
         raise ValueError("PPM dimensions differ from the registered display")
 
-    pixel_data = payload[match.end() :]
+    pixel_data = memoryview(payload)[match.end() :]
     expected_size = width * height * 3
     if len(pixel_data) != expected_size:
         raise ValueError("PPM pixel data has an invalid length")
@@ -42,7 +42,7 @@ def audit_ppm(payload: bytes, *, expected_width: int, expected_height: int) -> P
     min_x = min_y = width
     max_x = max_y = -1
     for offset in range(0, expected_size, 3):
-        color = pixel_data[offset : offset + 3]
+        color = bytes(pixel_data[offset : offset + 3])
         if len(colors) < 3:
             colors.add(color)
         if color == b"\0\0\0":
