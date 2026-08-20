@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,3 +55,27 @@ def suite_by_name(repo: Path, name: str) -> LtpSuite:
                 expected_unavailable=unavailable,
             )
     raise ValueError(f"unknown LTP suite: {name}")
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    describe = subparsers.add_parser("describe")
+    describe.add_argument("--repo", type=Path, required=True)
+    describe.add_argument("--suite", choices=suite_names(), required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.command != "describe":
+        raise AssertionError(f"unhandled command: {args.command}")
+    suite = suite_by_name(args.repo, args.suite)
+    print(suite.enabled)
+    print(suite.expected_selected)
+    print(suite.expected_unavailable)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
