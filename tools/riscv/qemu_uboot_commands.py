@@ -12,6 +12,7 @@ from qemu_uboot_artifacts import (
     DEFAULT_ARTIFACTS,
     DTB_LEGACY_COMMAND_EXPANSION_SIZE,
     DTB_LOAD_ADDRESS,
+    DTB_MAX_SUPPORTED_EXPANSION_SIZE,
     INITRD_LOAD_ADDRESS,
     KERNEL_LOAD_ADDRESS,
     ArtifactExpectations,
@@ -202,7 +203,11 @@ def _framebuffer_plan(device_set: QemuDeviceSet) -> tuple[BootCommand, ...]:
         return ()
     node = f"/framebuffer@{framebuffer.address:x}"
     return (
-        BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
+        BootCommand(
+            "framebuffer-resize",
+            f"fdt resize {DTB_MAX_SUPPORTED_EXPANSION_SIZE:#x}",
+            "=>",
+        ),
         BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
         BootCommand("framebuffer-node", f"fdt mknode / {node[1:]}", "=>"),
         BootCommand(
