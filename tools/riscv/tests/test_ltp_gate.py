@@ -23,6 +23,7 @@ from ltp_gate import (
     run_paths,
     tree_sha256,
 )
+from ltp_suite import suite_by_name, suite_names
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -53,6 +54,24 @@ class LtpGatePolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(args.smp, 4)
+
+    def test_named_suites_have_closed_count_contracts(self) -> None:
+        self.assertEqual(suite_names(), ("syscalls", "arch-riscv64"))
+
+        syscalls = suite_by_name(REPO, "syscalls")
+        self.assertEqual(syscalls.expected_selected, 767)
+        self.assertEqual(syscalls.expected_unavailable, 12)
+
+        arch = suite_by_name(REPO, "arch-riscv64")
+        self.assertEqual(arch.expected_selected, 138)
+        self.assertEqual(arch.expected_unavailable, 1)
+        self.assertEqual(
+            arch.enabled,
+            REPO / "tools/riscv/ltp/manifests/arch-riscv64.txt",
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown LTP suite"):
+            suite_by_name(REPO, "arbitrary")
 
     def test_prepared_artifacts_must_match_normalized_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
