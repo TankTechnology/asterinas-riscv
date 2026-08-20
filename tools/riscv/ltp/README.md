@@ -121,6 +121,9 @@ tail -f target/ltp/results/baseline-m1-smp1/progress.log
 `progress.log` is a readable live mirror, not the authoritative evidence.
 After the completion marker, the QEMU driver atomically publishes the protected
 `serial.log`; the gate includes both files in `SHA256SUMS`.
+The PID 1 shim emits `__LTP_GATE_TERMINAL__` after either normal completion or
+an abnormal runner exit, so a broken runner is reported immediately instead of
+waiting for the global QEMU timeout.
 
 ## Baseline and strict modes
 

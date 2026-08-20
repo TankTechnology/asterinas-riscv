@@ -72,6 +72,7 @@ int main(void) {
         }
         say(">>> LTP init: runner finished; holding PID 1 <<<\n");
     }
+    say("__LTP_GATE_TERMINAL__\n");
     for (;;)
         (void)pause();
     return 0;
