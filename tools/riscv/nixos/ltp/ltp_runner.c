@@ -32,7 +32,7 @@
 #endif
 // QEMU TCG is ~100x slower than native; LTP's own guidance for slow machines is
 // to raise LTP_TIMEOUT_MUL. We default the per-test watchdog generously so slow
-// but correct tests (e.g. sendfile07's 65536-write fill loop) are not mis-killed.
+// but correct tests (e.g. sendfile07's 65536-write fill loop) are not killed incorrectly.
 #ifndef DEFAULT_TIMEOUT_SEC
 #define DEFAULT_TIMEOUT_SEC 300
 #endif
