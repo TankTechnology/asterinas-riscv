@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 
@@ -312,6 +312,35 @@ ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+LTP_SYSCALL_GATE = ValidationScenario(
+    name="asterinas-ltp-syscall-gate",
+    bootargs="console=ttyS0 loglevel=error init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(
+            BootMilestone.ROOTFS_READY,
+            b"[kernel] rootfs is ready",
+        ),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            b"__LTP_GATE_DONE__",
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=b"__LTP_GATE_DONE__",
+    forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=120.0,
+    boot_timeout=7200.0,
+    post_terminal_timeout=2.0,
+)
+
 MEGREZ_USERSPACE_SMOKE = ValidationScenario(
     name="megrez-userspace-smoke",
     bootargs="cpu_no_boost_1_6ghz loglevel=info init=/init",
@@ -347,6 +376,13 @@ QEMU_VIRT = MachineContract(
     required_random_source="zkr",
     requires_resource_gate=False,
     provenance="QEMU-generated virt machine and device tree",
+)
+
+QEMU_VIRT_SMP4 = replace(
+    QEMU_VIRT,
+    name="qemu-virt-smp4",
+    hart_count=4,
+    mmu_types=("riscv,sv39",) * 4,
 )
 
 SIFIVE_U = MachineContract(
@@ -514,6 +550,20 @@ GENERIC_SV39 = QemuUbootProfile(
     validation=ASTERINAS_USERSPACE_SMOKE,
 )
 
+GENERIC_SV39_LTP_SMP1 = QemuUbootProfile(
+    name="generic-sv39-ltp-smp1",
+    machine=QEMU_VIRT,
+    boot_flow=UBOOT_BOOTI,
+    validation=LTP_SYSCALL_GATE,
+)
+
+GENERIC_SV39_LTP_SMP4 = QemuUbootProfile(
+    name="generic-sv39-ltp-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=LTP_SYSCALL_GATE,
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -626,6 +676,8 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
         profile.name: profile
         for profile in (
             GENERIC_SV39,
+            GENERIC_SV39_LTP_SMP1,
+            GENERIC_SV39_LTP_SMP4,
             MEGREZ_SV48_SVADE_FAST,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,
