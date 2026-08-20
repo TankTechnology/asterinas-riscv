@@ -8,9 +8,10 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ltp_gate import (
+    _git_commit,
     exit_code,
     main,
     package_subset,
@@ -28,6 +29,23 @@ IMPLEMENTATION_PLAN = (
 
 
 class LtpGatePolicyTests(unittest.TestCase):
+    def test_git_commit_marks_the_bound_repository_as_safe(self) -> None:
+        completed = Mock(stdout="a" * 40)
+        with patch("ltp_gate.subprocess.run", return_value=completed) as run:
+            commit = _git_commit(REPO)
+
+        self.assertEqual(commit, "a" * 40)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "-c",
+                f"safe.directory={REPO.resolve()}",
+                "rev-parse",
+                "HEAD",
+            ],
+        )
+
     def test_profile_for_smp_is_closed(self) -> None:
         self.assertEqual(profile_for_smp(1), "generic-sv39-ltp-smp1")
         self.assertEqual(profile_for_smp(4), "generic-sv39-ltp-smp4")

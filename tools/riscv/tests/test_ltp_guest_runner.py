@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -119,6 +120,48 @@ class LtpGuestRunnerTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_init_runs_the_runner_as_a_child_and_remains_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            marker = directory / "runner-finished"
+            fixture = directory / "runner"
+            init = directory / "init"
+            write_executable(
+                fixture,
+                f"#!/bin/sh\ntouch {marker}\n",
+            )
+            subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f'-DRUNNER_PATH="{fixture}"',
+                    "-o",
+                    str(init),
+                    str(INIT_SOURCE),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            process = subprocess.Popen(
+                [str(init)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 2
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+                self.assertTrue(marker.is_file(), "runner child did not execute")
+                self.assertIsNone(process.poll(), "PID 1 shim exited with the runner")
+            finally:
+                process.terminate()
+                process.wait(timeout=2)
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
