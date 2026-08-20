@@ -16,6 +16,7 @@ RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
 SCHEME ?= ""
 SMP ?= 1
+RISCV_LTP_SMP ?= 4
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -274,7 +275,7 @@ test_riscv_ltp: test_riscv_ltp_unit
 	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
 		{ echo "ASTERINAS_RISCV_BOOTI is required" >&2; exit 2; }
 	@python3 tools/riscv/ltp_gate.py run \
-		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(SMP)"
+		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(RISCV_LTP_SMP)"
 
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
