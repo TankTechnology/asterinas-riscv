@@ -114,11 +114,19 @@ class LtpGatePolicyTests(unittest.TestCase):
                         (paths.prepared_dir / "boot.ext4", b"boot"),
                         (paths.prepared_dir / "artifacts.json", b"{}"),
                         (paths.prepared_dir / "qemu-dtb-audit.json", b"{}"),
+                        (paths.prepared_dir / "qemu-virt.dtb", b"dtb"),
+                        (paths.prepared_dir / "qemu-virt.dts", b"dts"),
+                        (paths.prepared_dir / "u-boot.config", b"config"),
+                        (paths.prepared_dir / "u-boot-commit.txt", b"commit\n"),
+                        (paths.prepared_dir / "qemu-version.txt", b"qemu\n"),
+                        (paths.prepared_dir / "SHA256SUMS", b"prepared sums\n"),
+                        (fs_root.parent / "fs-verify/asterinas.booti", b"kernel"),
                         (paths.result_dir / "serial.log", b"serial failure\n"),
                         (paths.result_dir / "progress.log", b"[RUN] getpid01\n"),
                         (paths.result_dir / "marker-event.txt", b""),
                         (paths.result_dir / "boot-result.json", b"{}"),
                     ):
+                        path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(payload)
                 return Mock(returncode=0 if call_count == 1 else 1)
 
@@ -141,19 +149,17 @@ class LtpGatePolicyTests(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertEqual(call_count, 3)
             self.assertTrue(checksum_path.is_file())
-            checksums = checksum_path.read_text()
-            self.assertIn(
-                "target/ltp/qemu/smp4/failed-run/fs-root/asterinas.booti",
-                checksums,
-            )
-            self.assertIn(
-                "target/ltp/results/failed-run/selected-syscalls",
-                checksums,
-            )
-            self.assertIn(
-                "target/ltp/results/failed-run/serial.log",
-                checksums,
-            )
+            expected = {
+                path.resolve().relative_to(repo.resolve()).as_posix()
+                for root in (paths.prepared_dir, paths.result_dir)
+                for path in root.rglob("*")
+                if path.is_file() and path != checksum_path
+            }
+            actual = {
+                line.split("  ", 1)[1]
+                for line in checksum_path.read_text().splitlines()
+            }
+            self.assertEqual(actual, expected)
 
     def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
