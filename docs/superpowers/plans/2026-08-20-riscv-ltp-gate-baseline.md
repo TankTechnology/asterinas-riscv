@@ -234,7 +234,10 @@ def test_ltp_profiles_are_registered_complete_boots(self) -> None:
         profile = profile_by_name(name)
         validate_registered_profile(profile)
         self.assertEqual(profile.hart_count, smp)
-        self.assertEqual(profile.validation.completion_line, b"__LTP_GATE_DONE__")
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"__LTP_GATE_TERMINAL__",
+        )
         self.assertEqual(profile.validation.audit_policy, AuditPolicy.REGISTERED_MILESTONES)
         self.assertEqual(profile.validation.scope, ResultScope.COMPLETE_BOOT)
         argv = qemu_argv(
@@ -263,11 +266,18 @@ LTP_SYSCALL_GATE = ValidationScenario(
         *_ASTERINAS_COMMON_MILESTONES,
         MilestoneExpectation(BootMilestone.KERNEL_READY, b"OSTD initialized. Preparing components."),
         MilestoneExpectation(BootMilestone.ROOTFS_READY, b"[kernel] rootfs is ready"),
-        MilestoneExpectation(BootMilestone.USERSPACE_READY, b"__LTP_GATE_DONE__"),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            b"__LTP_GATE_TERMINAL__",
+        ),
     ),
     terminal=BootMilestone.USERSPACE_READY,
-    completion_line=b"__LTP_GATE_DONE__",
-    forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+    completion_line=b"__LTP_GATE_TERMINAL__",
+    forbidden_markers=(
+        b"Uncaught panic",
+        b"unexpected exception",
+        b"[BROK] LTP runner",
+    ),
     audit_policy=AuditPolicy.REGISTERED_MILESTONES,
     startup_timeout=30.0,
     command_timeout=120.0,
@@ -687,8 +697,9 @@ Supported CLI:
 ```text
 ltp_gate.py run --kernel IMAGE [--smp {1,4}] [--run-id ID]
                 [--skip-build] [--baseline] [--boot-timeout SECONDS]
-                [--tag NAME ...]
+                [--tag NAME ...] [--source-commit FULL_OBJECT_ID]
 ltp_gate.py build [--skip-compile]
+ltp_gate.py status --run-id ID
 ```
 
 For `run`, create the result directory with `mkdir(exist_ok=False)`, then run
@@ -705,15 +716,19 @@ these exact stages:
    `QEMU_UBOOT_PROFILE`, `QEMU_UBOOT_OUT_DIR`,
    `ASTERINAS_RISCV_BOOTI`, and `ASTERINAS_INITRAMFS` set explicitly.
 3. `qemu_uboot_booti.py run` using the private prepared inputs and writing
-   `serial.log`, `marker-event.txt`, and `boot-result.json` under the new result
-   directory.
+   a readable live `progress.log` under the new result directory. The live log
+   records a `[RUN]` line before each syscall. At the terminal marker, publish
+   the authoritative `serial.log`, `marker-event.txt`, and `boot-result.json`.
 4. `ltp_result.py write` to publish `result.json` and `summary.txt`.
 5. Write `SHA256SUMS` using repository-relative names only.
 
 Reject a symlinked result directory, a run id outside `[A-Za-z0-9._-]+`, a
 kernel outside the repository, non-SMP 1/4, and any resolved path outside
-`target/ltp`. Always allow the guarded QEMU runner to reap its process group
-before parsing evidence.
+`target/ltp`. Resolve and validate the source commit before creating the result
+directory or starting QEMU. `ASTERINAS_SOURCE_COMMIT` (or the equivalent
+`--source-commit`) supports isolated worktrees when their administrative Git
+directory is outside a container bind mount. Always allow the guarded QEMU
+runner to reap its process group before parsing evidence.
 
 - [ ] **Step 4: Run gate unit tests and verify GREEN**
 
@@ -879,7 +894,26 @@ git -C target/ltp/src describe --tags --exact-match
 
 Expected: `20260529`.
 
-- [ ] **Step 2: Build the current Sv39 RISC-V kernel in the project container**
+- [ ] **Step 2: Prepare the pinned RISC-V musl wrapper and sysroot**
+
+```bash
+mkdir -p target/ltp/toolchain/package target/ltp/toolchain/root
+curl --fail --location \
+  --output target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  https://archlinux.org/packages/extra/x86_64/musl-riscv64/download/
+printf '%s  %s\n' \
+  0797f54b48c415739bb5360739bc8f9dc8b2019e01de86d89c2859810200b589 \
+  target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  | sha256sum -c -
+tar --extract \
+  --file target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  --directory target/ltp/toolchain/root
+```
+
+Expected: the checksum passes and the extracted tree contains
+`usr/bin/riscv64-linux-musl-gcc` plus `usr/riscv64-linux-musl/`.
+
+- [ ] **Step 3: Build the current Sv39 RISC-V kernel in the project container**
 
 ```bash
 docker run --rm --privileged --network=host -v /dev:/dev \
@@ -888,22 +922,30 @@ docker run --rm --privileged --network=host -v /dev:/dev \
   bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/osdk 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
-    export VDSO_LIBRARY_DIR=/root/.local/share/linux_vdso; \
+    test -s "${VDSO_LIBRARY_DIR}/vdso_riscv64.so"; \
     make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode'
 ```
 
 Expected: `target/osdk/aster-kernel-osdk-bin.Image` exists and passes the
 repository Linux Image header validator.
 
-- [ ] **Step 3: Build and package the expanded LTP set**
+- [ ] **Step 4: Build and package the expanded LTP set**
 
-Use the local cross-build image:
+Use the same local cross-build image with the pinned musl materials mounted
+read-only:
 
 ```bash
 docker run --rm --network=host \
   -v "$(pwd):/root/asterinas" -w /root/asterinas \
-  asterinas-env:nixos-build \
-  bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
+  -v "$(pwd)/target/ltp/toolchain/root/usr/bin/riscv64-linux-musl-gcc:\
+/usr/bin/riscv64-linux-musl-gcc:ro" \
+  -v "$(pwd)/target/ltp/toolchain/root/usr/riscv64-linux-musl:\
+/usr/riscv64-linux-musl:ro" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc \
+  bash -lc 'apt-get update -qq; \
+    apt-get install -y --no-install-recommends \
+      autoconf automake linux-libc-dev-riscv64-cross; \
+    restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
     tools/riscv/nixos/ltp/build_ltp.sh'
