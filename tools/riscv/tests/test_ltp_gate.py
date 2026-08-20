@@ -34,6 +34,7 @@ from ltp_suite import suite_by_name
 
 REPO = Path(__file__).resolve().parents[3]
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
+ARCH_REPORT = REPO / "tools/riscv/ltp/ARCH-RISCV64-M1-report.md"
 BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
 REPO_MAKEFILE = REPO / "Makefile"
 IMPLEMENTATION_PLAN = (
@@ -304,7 +305,7 @@ class LtpGatePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SMP must be 1 or 4"):
             profile_for_smp(2)
 
-    def test_run_defaults_to_smp4(self) -> None:
+    def test_arch_suite_run_defaults_to_smp4(self) -> None:
         args = _parse_args(
             [
                 "run",
@@ -567,6 +568,14 @@ raise SystemExit(1)
 
 
 class LtpGateDocumentationTests(unittest.TestCase):
+    def test_arch_report_is_explicitly_historical_selection_evidence(self) -> None:
+        source = ARCH_REPORT.read_text()
+        normalized = " ".join(source.replace("\n> ", " ").split())
+
+        self.assertIn("Historical Selection Evidence", source)
+        self.assertIn("does not establish a current baseline", normalized)
+        self.assertIn("not reachable from a current `origin` ref", normalized)
+
     def test_operator_guide_builds_the_required_busybox(self) -> None:
         source = OPERATOR_GUIDE.read_text()
 

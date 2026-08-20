@@ -28,7 +28,6 @@ OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
 BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
-PACKAGE_LOCK="${REPO_ROOT}/target/ltp/package.lock"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -53,6 +52,17 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 
+if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
+    gate=(
+        python3 "${REPO_ROOT}/tools/riscv/ltp_gate.py" build
+        --suite "${SUITE}"
+    )
+    if [[ "${SKIP_COMPILE}" -eq 1 ]]; then
+        gate+=(--skip-compile)
+    fi
+    exec "${gate[@]}"
+fi
+
 mapfile -t SUITE_FIELDS < <(
     python3 "${REPO_ROOT}/tools/riscv/ltp_suite.py" describe \
         --repo "${REPO_ROOT}" --suite "${SUITE}"
@@ -65,15 +75,6 @@ ENABLED_TESTS="${SUITE_FIELDS[0]}"
 EXPECTED_SELECTED="${SUITE_FIELDS[1]}"
 EXPECTED_UNAVAILABLE="${SUITE_FIELDS[2]}"
 
-if ! command -v flock >/dev/null 2>&1; then
-    echo "missing flock" >&2
-    exit 2
-fi
-mkdir -p "$(dirname "${PACKAGE_LOCK}")"
-exec 9>"${PACKAGE_LOCK}"
-if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
-    flock --exclusive 9
-fi
 rm -f "${PACKAGE_IDENTITY}"
 
 for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
