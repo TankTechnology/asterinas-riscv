@@ -234,7 +234,10 @@ def test_ltp_profiles_are_registered_complete_boots(self) -> None:
         profile = profile_by_name(name)
         validate_registered_profile(profile)
         self.assertEqual(profile.hart_count, smp)
-        self.assertEqual(profile.validation.completion_line, b"__LTP_GATE_DONE__")
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"__LTP_GATE_TERMINAL__",
+        )
         self.assertEqual(profile.validation.audit_policy, AuditPolicy.REGISTERED_MILESTONES)
         self.assertEqual(profile.validation.scope, ResultScope.COMPLETE_BOOT)
         argv = qemu_argv(
@@ -263,11 +266,18 @@ LTP_SYSCALL_GATE = ValidationScenario(
         *_ASTERINAS_COMMON_MILESTONES,
         MilestoneExpectation(BootMilestone.KERNEL_READY, b"OSTD initialized. Preparing components."),
         MilestoneExpectation(BootMilestone.ROOTFS_READY, b"[kernel] rootfs is ready"),
-        MilestoneExpectation(BootMilestone.USERSPACE_READY, b"__LTP_GATE_DONE__"),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            b"__LTP_GATE_TERMINAL__",
+        ),
     ),
     terminal=BootMilestone.USERSPACE_READY,
-    completion_line=b"__LTP_GATE_DONE__",
-    forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+    completion_line=b"__LTP_GATE_TERMINAL__",
+    forbidden_markers=(
+        b"Uncaught panic",
+        b"unexpected exception",
+        b"[BROK] LTP runner",
+    ),
     audit_policy=AuditPolicy.REGISTERED_MILESTONES,
     startup_timeout=30.0,
     command_timeout=120.0,

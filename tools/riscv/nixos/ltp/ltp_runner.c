@@ -89,6 +89,13 @@ static const char *verdict_name(int r) {
     return "UNKNOWN";
 }
 
+static void kill_test_group(pid_t supervisor) {
+    if (supervisor <= 0)
+        return;
+    (void)kill(-supervisor, SIGKILL);
+    (void)kill(supervisor, SIGKILL);
+}
+
 int main(int argc, char **argv) {
     const char *manifest = "/opt/ltp/runtest/syscalls";
     if (argc > 1)
@@ -144,46 +151,75 @@ int main(int argc, char **argv) {
 
         pid_t pid = fork();
         if (pid == 0) {
-            if (logfd >= 0) {
-                (void)dup2(logfd, 1);
-                (void)dup2(logfd, 2);
-                if (logfd > 2)
-                    (void)close(logfd);
+            // Keep the persistent runner one process away from tests that
+            // intentionally exercise kill()/process-group behavior.
+            (void)setpgid(0, 0);
+            pid_t test = fork();
+            if (test == 0) {
+                if (logfd >= 0) {
+                    (void)dup2(logfd, 1);
+                    (void)dup2(logfd, 2);
+                    if (logfd > 2)
+                        (void)close(logfd);
+                }
+                char env_path[512];
+                snprintf(env_path, sizeof(env_path), "%s:%s", BIN_DIR,
+                         "/usr/bin:/bin");
+                setenv("PATH", env_path, 1);
+                setenv("TMPDIR", "/tmp", 1);
+                setenv("LTPROOT", "/opt/ltp", 1);
+                setenv("LTP_TIMEOUT_MUL", timeout_mul_buf, 1);
+                setenv("LTP_COLORIZE_OUTPUT", "0", 1);
+                setenv("KCONFIG_SKIP_CHECK", "1", 1);
+                // Dynamic test binaries resolve libltp.so / libc.so here.
+                setenv("LD_LIBRARY_PATH", "/opt/ltp/lib", 1);
+                execv(binpath, args);
+                dprintf(2, "TCONF: cannot exec %s\n", binpath);
+                _exit(32);
             }
-            char env_path[512];
-            snprintf(env_path, sizeof(env_path), "%s:%s", BIN_DIR,
-                     "/usr/bin:/bin");
-            setenv("PATH", env_path, 1);
-            setenv("TMPDIR", "/tmp", 1);
-            setenv("LTPROOT", "/opt/ltp", 1);
-            setenv("LTP_TIMEOUT_MUL", timeout_mul_buf, 1);
-            setenv("LTP_COLORIZE_OUTPUT", "0", 1);
-            setenv("KCONFIG_SKIP_CHECK", "1", 1);
-            // Dynamic test binaries resolve libltp.so / libc.so here.
-            setenv("LD_LIBRARY_PATH", "/opt/ltp/lib", 1);
-            execv(binpath, args);
-            dprintf(2, "TCONF: cannot exec %s\n", binpath);
-            _exit(32);
+            if (test < 0)
+                _exit(125);
+
+            int test_status;
+            pid_t waited;
+            do {
+                waited = waitpid(test, &test_status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (waited < 0)
+                _exit(125);
+            if (WIFEXITED(test_status))
+                _exit(WEXITSTATUS(test_status));
+            if (WIFSIGNALED(test_status)) {
+                int test_signal = WTERMSIG(test_status);
+                (void)signal(test_signal, SIG_DFL);
+                (void)kill(getpid(), test_signal);
+                _exit(128 + test_signal);
+            }
+            _exit(125);
         }
+        if (pid > 0)
+            (void)setpgid(pid, pid);
 
         // Watchdog poll.
         long long start = now_ms();
-        int status = 0;
+        int status = 125 << 8;
         int timed_out = 0;
-        int done = 0;
+        int done = pid < 0;
         while (!done) {
             int w = waitpid(pid, &status, WNOHANG);
             if (w == pid || w < 0) {
                 done = 1;
             } else if (now_ms() - start > (long long)timeout_sec * 1000) {
                 timed_out = 1;
-                kill(pid, SIGKILL);
+                kill_test_group(pid);
                 waitpid(pid, &status, 0);
                 done = 1;
             } else {
                 usleep(10000);
             }
         }
+        if (WIFSIGNALED(status))
+            kill_test_group(pid);
         if (logfd >= 0)
             close(logfd);
 
