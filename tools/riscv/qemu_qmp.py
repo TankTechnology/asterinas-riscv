@@ -36,7 +36,13 @@ def _reject_symlink_components(path: Path, root: Path, *, allow_missing_leaf: bo
             raise ValueError(f"{path} contains a symlink")
 
 
-def _validate_paths(socket_path: Path, output_path: Path, capture_root: Path) -> None:
+def _validate_paths(
+    socket_path: Path,
+    output_path: Path,
+    capture_root: Path,
+    *,
+    validate_socket: bool = True,
+) -> None:
     root = _require_path(capture_root, "capture_root")
     socket_candidate = _require_path(socket_path, "socket_path")
     output_candidate = _require_path(output_path, "output_path")
@@ -57,17 +63,23 @@ def _validate_paths(socket_path: Path, output_path: Path, capture_root: Path) ->
             raise ValueError(f"{name} must be strictly below capture_root") from None
         if resolved_candidate == resolved_root:
             raise ValueError(f"{name} must not equal capture_root")
-    _reject_symlink_components(socket_candidate, root, allow_missing_leaf=False)
+    if validate_socket:
+        _reject_symlink_components(socket_candidate, root, allow_missing_leaf=False)
     _reject_symlink_components(output_candidate, root, allow_missing_leaf=True)
-    socket_info = socket_candidate.lstat()
-    if not stat.S_ISSOCK(socket_info.st_mode):
-        raise ValueError("socket_path must name an existing Unix socket")
+    if validate_socket:
+        socket_info = socket_candidate.lstat()
+        if not stat.S_ISSOCK(socket_info.st_mode):
+            raise ValueError("socket_path must name an existing Unix socket")
     try:
         output_info = output_candidate.lstat()
     except FileNotFoundError:
         return
     if stat.S_ISLNK(output_info.st_mode) or not stat.S_ISREG(output_info.st_mode):
         raise ValueError("output_path must be absent or a regular file")
+
+
+def _reject_json_constant(_: str) -> object:
+    raise ValueError("QMP response contains a non-standard JSON constant")
 
 
 def _read_message(connection: socket.socket) -> dict[str, object]:
@@ -82,8 +94,8 @@ def _read_message(connection: socket.socket) -> dict[str, object]:
         if chunk == b"\n":
             break
     try:
-        message = json.loads(data[:-1].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        message = json.loads(data[:-1].decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, ValueError) as error:
         raise ValueError("QMP response is not UTF-8 JSON") from error
     if not isinstance(message, dict):
         raise ValueError("QMP response must be an object")
@@ -138,5 +150,5 @@ def capture_screendump(
         )
         _require_success(connection)
 
-    _validate_paths(socket_path, output_path, capture_root)
+    _validate_paths(socket_path, output_path, capture_root, validate_socket=False)
     return _read_output(output_path)
