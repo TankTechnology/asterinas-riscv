@@ -8,10 +8,16 @@
 // need a second block device, both blocked — see FOUNDATION-M2-report.md).
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef RUNNER_PATH
+#define RUNNER_PATH "/ltp_runner"
+#endif
 
 static void say(const char *s) {
     (void)write(1, s, strlen(s));
@@ -34,11 +40,22 @@ int main(void) {
     (void)mount("sysfs", "/sys", "sysfs", 0, NULL);
     (void)mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
 
-    say(">>> LTP init: running /ltp_runner <<<\n");
-    char *const argv[] = { "/ltp_runner", NULL };
-    (void)execv("/ltp_runner", argv);
-
-    say("init: exec /ltp_runner failed\n");
+    say(">>> LTP init: running " RUNNER_PATH " <<<\n");
+    pid_t runner = fork();
+    if (runner == 0) {
+        char *const argv[] = { RUNNER_PATH, NULL };
+        (void)execv(RUNNER_PATH, argv);
+        say("init: exec " RUNNER_PATH " failed\n");
+        _exit(127);
+    }
+    if (runner < 0) {
+        say("init: fork for " RUNNER_PATH " failed\n");
+    } else {
+        int status;
+        while (waitpid(runner, &status, 0) < 0 && errno == EINTR) {
+        }
+        say(">>> LTP init: runner finished; holding PID 1 <<<\n");
+    }
     for (;;)
         (void)pause();
     return 0;
