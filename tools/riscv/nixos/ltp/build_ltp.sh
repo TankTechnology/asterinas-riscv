@@ -11,11 +11,12 @@
 # limit or needs a second block device, both blocked kernel bugs — see
 # FOUNDATION-M2-report.md. The musl sysroot lacks the Linux UAPI headers, so we
 # -isystem the glibc cross sysroot's include dir (musl's own headers win). Only
-# the tests enabled in test/initramfs/src/conformance/ltp/testcases/all.txt are
-# packed, crossed against LTP's runtest/syscalls manifest.
+# the tests enabled by the selected closed suite are packed, crossed against
+# LTP's runtest/syscalls manifest.
 #
 # Options:
 #   --skip-compile   reuse already-built LTP binaries (fast re-pack)
+#   --suite NAME     package syscalls (default) or arch-riscv64
 
 set -euo pipefail
 
@@ -25,7 +26,6 @@ LTP_SRC="${REPO_ROOT}/target/ltp/src"
 ROOTFS="${REPO_ROOT}/target/ltp/rootfs"
 OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
-ALL_TESTS="${REPO_ROOT}/test/initramfs/src/conformance/ltp/testcases/all.txt"
 BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 
 CC="riscv64-linux-musl-gcc"
@@ -34,14 +34,33 @@ MUSL_ROOT="/usr/riscv64-linux-musl"
 MUSL_LIBC="${MUSL_ROOT}/lib/musl/lib/libc.so"
 GNU_UAPI_ROOT="/usr/riscv64-linux-gnu/include"
 JOBS="${JOBS:-16}"
+SUITE="syscalls"
 SKIP_COMPILE=0
 
-for arg in "$@"; do
-    case "${arg}" in
-        --skip-compile) SKIP_COMPILE=1 ;;
-        *) echo "unknown arg: ${arg}" >&2; exit 2 ;;
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --skip-compile) SKIP_COMPILE=1; shift ;;
+        --suite) SUITE="$2"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+
+case "${SUITE}" in
+    syscalls)
+        ENABLED_TESTS="${REPO_ROOT}/test/initramfs/src/conformance/ltp/testcases/all.txt"
+        EXPECTED_SELECTED=767
+        EXPECTED_UNAVAILABLE=12
+        ;;
+    arch-riscv64)
+        ENABLED_TESTS="${REPO_ROOT}/tools/riscv/ltp/manifests/arch-riscv64.txt"
+        EXPECTED_SELECTED=138
+        EXPECTED_UNAVAILABLE=1
+        ;;
+    *)
+        echo "unknown LTP suite: ${SUITE}" >&2
+        exit 2
+        ;;
+esac
 
 for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -124,12 +143,18 @@ FILTERED="${ROOTFS}/opt/ltp/runtest/syscalls"
 UNAVAILABLE="${REPO_ROOT}/target/ltp/unavailable-tests.json"
 rm -f "${FILTERED}" "${UNAVAILABLE}"
 python3 "${REPO_ROOT}/tools/riscv/ltp_manifest.py" select \
-    --enabled "${ALL_TESTS}" \
+    --enabled "${ENABLED_TESTS}" \
     --runtest "${LTP_SRC}/runtest/syscalls" \
     --bin-dir "${STAGE}/opt/ltp/testcases/bin" \
     --output "${FILTERED}" \
     --unavailable-output "${UNAVAILABLE}" \
-    --expected-count 767
+    --expected-count "${EXPECTED_SELECTED}"
+
+ACTUAL_UNAVAILABLE="$(grep -c '"name"' "${UNAVAILABLE}")"
+if [[ "${ACTUAL_UNAVAILABLE}" -ne "${EXPECTED_UNAVAILABLE}" ]]; then
+    echo "expected ${EXPECTED_UNAVAILABLE} unavailable tests, got ${ACTUAL_UNAVAILABLE}" >&2
+    exit 2
+fi
 
 # Copy only the binaries referenced by the validated manifest.
 while read -r tag bin params; do
@@ -174,6 +199,7 @@ find "${ROOTFS}/opt/ltp/testcases/bin" -type f -executable \
     -exec "${STRIP}" {} \; 2>/dev/null || true
 "${STRIP}" "${ROOTFS}/opt/ltp/lib/libltp.so" 2>/dev/null || true
 echo "manifest: ${N_TESTS} enabled tests"
+echo "suite: ${SUITE}"
 
 echo "=== build /init and /ltp_runner (static musl) ==="
 "${CC}" -O2 -static -no-pie -fno-stack-protector \
