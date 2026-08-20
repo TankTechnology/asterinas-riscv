@@ -1,11 +1,12 @@
-# RISC-V LTP syscall gate
+# RISC-V LTP gates
 
-This gate runs the Linux Test Project syscall suite on the current Asterinas
-RISC-V kernel through U-Boot and QEMU.
+These gates run reviewed Linux Test Project syscall suites on the current
+Asterinas RISC-V kernel through U-Boot and QEMU.
 The LTP source is pinned to tag `20260529`.
-The reviewed repository manifest contains 779 unique enabled names;
-the build must package exactly 767 runnable tests and report every unavailable
-name in `target/ltp/unavailable-tests.json`.
+The `syscalls` suite requests 779 names and packages exactly 767 tests.
+The focused `arch-riscv64` suite requests 139 names, packages exactly 138
+tests, and records `rt_sigtimedwait01` as unavailable.
+Every suite reports omissions in `target/ltp/unavailable-tests.json`.
 
 The gate owns `target/ltp/qemu/` and `target/ltp/results/`.
 It never prepares or modifies `target/qemu-uboot/current`,
@@ -87,11 +88,18 @@ docker run --rm --network=host \
     restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
-    tools/riscv/nixos/ltp/build_ltp.sh'
+    tools/riscv/nixos/ltp/build_ltp.sh --suite syscalls'
 ```
 
-The build fails unless the selected runtime manifest contains exactly 767
-entries.
+To repackage the reviewed RISC-V architecture suite from existing LTP build
+outputs, change the final command inside the same pinned container to:
+
+```bash
+tools/riscv/nixos/ltp/build_ltp.sh --skip-compile --suite arch-riscv64
+```
+
+The build fails unless the selected runtime manifest and omission evidence
+match the named suite's exact count contract.
 It writes the full rootfs to `target/ltp/rootfs/`,
 the initramfs to `target/ltp/ltp-initramfs.cpio.gz`,
 and explicit omission reasons to `target/ltp/unavailable-tests.json`.
@@ -123,8 +131,8 @@ While a gate is running, inspect its current test and mutually exclusive
 counts from another shell:
 
 ```bash
-python3 tools/riscv/ltp_gate.py status --run-id baseline-m1-smp4
-tail -f target/ltp/results/baseline-m1-smp4/progress.log
+python3 tools/riscv/ltp_gate.py status --run-id arch-riscv64-m1-smp4
+tail -f target/ltp/results/arch-riscv64-m1-smp4/progress.log
 ```
 
 `progress.log` is a readable live mirror, not the authoritative evidence.
@@ -136,11 +144,31 @@ waiting for the global QEMU timeout.
 
 ## Baseline and strict modes
 
-Use SMP=4 as the normal RISC-V LTP path. Start with the five-test smoke run:
+Routine gates default to SMP=4. Record the focused architecture baseline with:
 
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
+  --suite arch-riscv64 --smp 4 \
+  --run-id arch-riscv64-m1-smp4 --skip-build --baseline \
+  --boot-timeout 2400
+```
+
+Every `--skip-build` run must name the suite currently packaged in
+`target/ltp/ltp-initramfs.cpio.gz`.
+Before switching from the architecture examples below to a `syscalls` run,
+repackage inside the pinned cross container with:
+
+```bash
+tools/riscv/nixos/ltp/build_ltp.sh --skip-compile --suite syscalls
+```
+
+For the full syscall suite, start with the five-test SMP=4 smoke run:
+
+```bash
+python3 tools/riscv/ltp_gate.py run \
+  --kernel target/osdk/aster-kernel-osdk-bin.Image \
+  --suite syscalls --smp 4 \
   --run-id baseline-m1-smp4-smoke --skip-build --baseline \
   --boot-timeout 600 \
   --tag getpid01 --tag read01 --tag write01 \
@@ -159,7 +187,7 @@ It returns nonzero for either an infrastructure failure or any LTP failure:
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
-  --run-id strict-smp4 --skip-build
+  --suite syscalls --smp 4 --run-id strict-smp4 --skip-build
 ```
 
 If the smoke completes without a kernel panic or hang,
@@ -168,6 +196,7 @@ record the full SMP=4 baseline:
 ```bash
 python3 tools/riscv/ltp_gate.py run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
+  --suite syscalls --smp 4 \
   --run-id baseline-m1-smp4 --skip-build --baseline \
   --boot-timeout 7200
 ```
@@ -176,7 +205,7 @@ Use SMP=1 only as an explicit diagnostic override; it is not a paired
 admission requirement:
 
 ```bash
-RISCV_LTP_SMP=1 make test_riscv_ltp \
+RISCV_LTP_SMP=1 RISCV_LTP_SUITE=syscalls make test_riscv_ltp \
   ASTERINAS_RISCV_BOOTI=target/osdk/aster-kernel-osdk-bin.Image
 ```
 
@@ -190,7 +219,8 @@ earlier run's checksums.
 ## Results and count semantics
 
 Each run writes serial output, marker evidence, boot status, normalized LTP
-results, a human summary, the selected manifest,
+results, a human summary, a run-owned initramfs, `package.json`,
+`manifest.txt`, `unavailable-tests.json`,
 and repository-relative checksums below `target/ltp/results/<run-id>/`.
 Validate one completed result from the repository root:
 
@@ -218,7 +248,7 @@ Do not commit generated rootfs files, boot disks, serial logs, or result JSON.
 After a real baseline is complete and its checksums have been verified,
 record the source branch and commit, LTP tag, active and packaged counts,
 normalized verdicts, artifact hashes, and result-directory names in
-`tools/riscv/ltp/BASELINE-M1-report.md`.
+the suite-specific report under `tools/riscv/ltp/`.
 
 Historical results from another branch are provenance for the test selection,
 not the current baseline.

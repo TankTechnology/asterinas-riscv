@@ -100,8 +100,11 @@ class LtpResultDocumentTests(unittest.TestCase):
             boot_result=boot_result(passed=True),
             git_commit="a" * 40,
             smp=1,
+            suite="arch-riscv64",
         )
 
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(document["suite"], "arch-riscv64")
         self.assertTrue(document["infrastructure_passed"])
         self.assertFalse(document["ltp_passed"])
         self.assertEqual(document["counts"]["fail"], 1)
@@ -116,6 +119,7 @@ class LtpResultDocumentTests(unittest.TestCase):
                 boot_result=boot_result(),
                 git_commit="a" * 40,
                 smp=4,
+                suite="arch-riscv64",
             )
 
     def test_summary_uses_mutually_exclusive_counts(self) -> None:
@@ -124,11 +128,12 @@ class LtpResultDocumentTests(unittest.TestCase):
             boot_result=boot_result(),
             git_commit="a" * 40,
             smp=1,
+            suite="arch-riscv64",
         )
 
         self.assertEqual(
             summary_text(document),
-            "infrastructure=PASS ltp=FAIL\n"
+            "suite=arch-riscv64 infrastructure=PASS ltp=FAIL\n"
             "total=5 pass=1 fail=1 conf=1 crash=1 timeout=1 "
             "legacy_fail_total=3\n",
         )
@@ -164,6 +169,8 @@ class LtpResultDocumentTests(unittest.TestCase):
                 str(summary),
                 "--git-commit",
                 "a" * 40,
+                "--suite",
+                "arch-riscv64",
                 "--smp",
                 "1",
             ]
@@ -171,6 +178,7 @@ class LtpResultDocumentTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(arguments), 0)
             payload = json.loads(result.read_text())
+            self.assertEqual(payload["suite"], "arch-riscv64")
             self.assertEqual(payload["counts"]["legacy_fail_total"], 3)
             self.assertEqual(summary.read_text(), summary_text(payload))
             self.assertEqual(stat.S_IMODE(result.stat().st_mode), 0o644)
