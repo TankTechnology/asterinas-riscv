@@ -55,8 +55,9 @@ References:
 - Unrelated socket-option and TCP conformance failures.
 
 These are separate future changes. Once this batch passes its gates, work moves
-to NixOS boot integration, QEMU graphical desktop readiness, browser execution,
-and only the DRM/virtio-gpu work required by that path.
+to two explicit workstreams: a RISC-V architecture-focused LTP milestone and
+NixOS/QEMU graphical desktop readiness, including browser execution and only
+the DRM/virtio-gpu work required by that path.
 
 ## Architecture
 
@@ -248,6 +249,50 @@ replace the five historical crash outcomes with passes. A second full SMP=4 run
 is not required for this IPv4/TCP-only change; the existing short SMP=4 smoke
 gate remains sufficient unless the focused evidence exposes an SMP dependency.
 
+## Required next milestone: RISC-V architecture LTP
+
+The general 767-test syscall baseline is not sufficient evidence for the
+RISC-V architecture boundary. The reviewed architecture-sensitive subset of
+the current runtime manifest contains 99 tests covering `brk`, clone/context
+creation, `getcpu`, futexes, membarrier, memory mappings and protection,
+`prctl`, ptrace, scheduler and affinity operations, robust lists, signals,
+time/vDSO calls, and `uname`.
+
+The published results for this subset are:
+
+- SMP=1: 63 PASS, 18 FAIL, and 18 CONF;
+- SMP=4: 62 PASS, 19 FAIL, and 18 CONF.
+
+The only SMP differential is `getcpu01`, which matches the known failure to
+migrate a task after its affinity mask excludes its current CPU.
+
+The same LTP build already contains 39 additional runnable tests from these
+architecture-sensitive syscall groups that the current 767-test policy file
+does not enable. One further entry, `rt_sigtimedwait01`, still lacks a binary.
+The next milestone must therefore:
+
+1. Publish a reviewed `arch-riscv64` manifest containing all 138 currently
+   built architecture-sensitive syscall entries, with the missing entry
+   recorded rather than silently omitted.
+2. Generalize the gate's evidence names away from the hard-coded
+   `selected-syscalls` label so named suites retain exact manifest order,
+   verdicts, run IDs, and run-owned artifact hashes.
+3. Run the architecture manifest on both SMP=1 and SMP=4 for every milestone;
+   an SMP=1-only pass cannot close an architecture-sensitive issue.
+4. Expand the cross-build in a second layer to selected `sched`, `nptl`, and
+   `mm` tests. CPU-hotplug tests remain explicitly classified until Asterinas
+   exposes the required CPU online/offline interface.
+5. Use an Asterinas x86-64 run of the same focused test as a discriminator when
+   a failure may be generic rather than RISC-V-specific.
+6. Record failure ownership by architecture boundary: syscall ABI, trap and
+   signal context, context switch and affinity migration, atomic/futex
+   behavior, page-table and fault handling, or vDSO/time behavior.
+
+This architecture milestone receives its own design, plan, immutable baseline
+report, and focused fixes. It proceeds alongside the NixOS graphical/browser
+readiness work; neither workstream is allowed to erase the other from the
+overall RISC-V objective.
+
 ## Delivery sequence
 
 1. Add a failing kernel regression for observable wildcard-listener behavior.
@@ -257,8 +302,8 @@ gate remains sufficient unless the focused evidence exposes an SMP dependency.
 4. Preserve ingress iface and concrete accepted endpoint.
 5. Run host/unit, kernel regression, focused RISC-V LTP, and SMP=1 full gates.
 6. Update the RISC-V LTP report with immutable run IDs and artifact hashes.
-7. Stop network feature expansion and begin the NixOS graphical/browser
-   readiness audit.
+7. Stop network feature expansion and begin the RISC-V architecture LTP gate
+   plus the NixOS graphical/browser readiness audit as explicit workstreams.
 
 ## Completion criteria
 
