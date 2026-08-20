@@ -168,6 +168,16 @@ class LtpGateDocumentationTests(unittest.TestCase):
                     document.read_text(),
                 )
 
+    def test_ltp_build_uses_the_cross_image_and_pinned_musl_package(self) -> None:
+        for document in (OPERATOR_GUIDE, IMPLEMENTATION_PLAN):
+            with self.subTest(document=document):
+                source = document.read_text()
+                self.assertNotIn("asterinas-env:nixos-build", source)
+                self.assertIn(
+                    "0797f54b48c415739bb5360739bc8f9dc8b2019e01de86d89c2859810200b589",
+                    source,
+                )
+
 
 class LtpSubsetPackagingTests(unittest.TestCase):
     def _make_repo(self, root: Path) -> tuple[Path, tuple[str, ...]]:

@@ -24,6 +24,25 @@ git -C target/ltp/src describe --tags --exact-match
 
 The second command must print `20260529`.
 
+The cross-build image provides the GNU RISC-V compiler but not its musl
+wrapper and sysroot.
+Download the pinned official Arch Linux package into the ignored toolchain
+directory and verify its identity:
+
+```bash
+mkdir -p target/ltp/toolchain/package target/ltp/toolchain/root
+curl --fail --location \
+  --output target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  https://archlinux.org/packages/extra/x86_64/musl-riscv64/download/
+printf '%s  %s\n' \
+  0797f54b48c415739bb5360739bc8f9dc8b2019e01de86d89c2859810200b589 \
+  target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  | sha256sum -c -
+tar --extract \
+  --file target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  --directory target/ltp/toolchain/root
+```
+
 Build the Sv39 RISC-V kernel in the project cross-build container:
 The image sets `VDSO_LIBRARY_DIR=/root/linux_vdso` and provides the matching
 RISC-V binary;
@@ -40,12 +59,17 @@ docker run --rm --privileged --network=host -v /dev:/dev \
     make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode'
 ```
 
-Build LTP and package its initramfs in the musl cross-build container:
+Build LTP in the same cross image,
+mounting only the pinned wrapper and sysroot read-only:
 
 ```bash
 docker run --rm --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
-  asterinas-env:nixos-build \
+  -v "$PWD/target/ltp/toolchain/root/usr/bin/riscv64-linux-musl-gcc:\
+/usr/bin/riscv64-linux-musl-gcc:ro" \
+  -v "$PWD/target/ltp/toolchain/root/usr/riscv64-linux-musl:\
+/usr/riscv64-linux-musl:ro" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc \
   bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
