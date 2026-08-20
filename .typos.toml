@@ -29,6 +29,8 @@ sems = "sems"
 THRE = "THRE"
 THR = "THR"
 TestNG = "TestNG"
+hda = "hda"
+testca = "testca"
 
 # Files with svg suffix are ignored to check.
 [type.svg]
