@@ -15,6 +15,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ltp_suite import suite_names
+
 
 VERDICT_RE = re.compile(r"^\[(PASS|FAIL|CONF|CRASH|TIMEOUT)\] ([^\s]+)$")
 SUMMARY_RE = re.compile(
@@ -161,6 +163,7 @@ def build_result_document(
     boot_result: Mapping[str, object],
     git_commit: str,
     smp: int,
+    suite: str,
 ) -> dict[str, object]:
     """Join LTP verdicts with the immutable prepared-boot evidence."""
 
@@ -168,6 +171,8 @@ def build_result_document(
         raise ValueError("git commit must be a 40-character lowercase object id")
     if smp not in (1, 4):
         raise ValueError("SMP must be 1 or 4")
+    if suite not in suite_names():
+        raise ValueError(f"unknown LTP suite: {suite}")
     infrastructure_passed = boot_result.get("passed")
     if not isinstance(infrastructure_passed, bool):
         raise ValueError("boot result passed field must be boolean")
@@ -200,10 +205,11 @@ def build_result_document(
         "legacy_fail_total": parsed.counts.legacy_fail_total,
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "git_commit": git_commit,
         "profile": profile,
         "smp": smp,
+        "suite": suite,
         "infrastructure_passed": infrastructure_passed,
         "ltp_passed": parsed.ltp_passed,
         "counts": counts,
@@ -219,7 +225,7 @@ def summary_text(document: Mapping[str, object]) -> str:
     infrastructure = "PASS" if document.get("infrastructure_passed") is True else "FAIL"
     ltp = "PASS" if document.get("ltp_passed") is True else "FAIL"
     return (
-        f"infrastructure={infrastructure} ltp={ltp}\n"
+        f"suite={document['suite']} infrastructure={infrastructure} ltp={ltp}\n"
         f"total={counts['total']} pass={counts['pass']} fail={counts['fail']} "
         f"conf={counts['conf']} crash={counts['crash']} "
         f"timeout={counts['timeout']} "
@@ -261,6 +267,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     write.add_argument("--result", type=Path, required=True)
     write.add_argument("--summary", type=Path, required=True)
     write.add_argument("--git-commit", required=True)
+    write.add_argument("--suite", choices=suite_names(), required=True)
     write.add_argument("--smp", type=int, choices=(1, 4), required=True)
     return parser.parse_args(argv)
 
@@ -280,6 +287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         boot_result=boot_result,
         git_commit=args.git_commit,
         smp=args.smp,
+        suite=args.suite,
     )
     _publish_text(args.result, json.dumps(document, indent=2, sort_keys=True) + "\n")
     _publish_text(args.summary, summary_text(document))
