@@ -33,7 +33,10 @@ from make_qemu_uboot_initramfs import (  # noqa: E402
     InitramfsEntry,
     make_newc_archive,
 )
-from qemu_uboot_artifacts import validate_bdinfo_memory_layout  # noqa: E402
+from qemu_uboot_artifacts import (  # noqa: E402
+    payload_ranges,
+    validate_bdinfo_memory_layout,
+)
 from qemu_uboot_gate import _issue_slow_run_permit  # noqa: E402
 from qemu_uboot_variants import (  # noqa: E402
     FIRST_PROCESS_CONSOLE_LOSS,
@@ -3243,6 +3246,40 @@ class CommandLineTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "kernel overlaps initrd"):
             qemu_uboot_booti.validate_fixed_payload_layout(artifacts)
+
+    def test_payload_ranges_reserve_aligned_maximum_dtb_resize_space(self) -> None:
+        for dtb_size in (0x1001, 0x2000):
+            with self.subTest(dtb_size=dtb_size):
+                artifacts = qemu_uboot_booti.ArtifactExpectations(
+                    kernel_size=0x1000,
+                    kernel_crc32="11111111",
+                    dtb_size=dtb_size,
+                    dtb_crc32="22222222",
+                    initrd_size=0x1000,
+                    initrd_crc32="33333333",
+                )
+
+                self.assertEqual(
+                    payload_ranges(artifacts)["dtb"],
+                    range(0x8800_0000, 0x8800_4000),
+                )
+
+    def test_bdinfo_rejects_reserved_dtb_maximum_resize_space(self) -> None:
+        artifacts = qemu_uboot_booti.ArtifactExpectations(
+            kernel_size=0x1000,
+            kernel_crc32="11111111",
+            dtb_size=0x1001,
+            dtb_crc32="22222222",
+            initrd_size=0x1000,
+            initrd_crc32="33333333",
+        )
+        log = """\
+memory[0] [0x80000000-0xffffffff]
+reserved[0] [0x88003000-0x88003fff]
+"""
+
+        with self.assertRaisesRegex(ValueError, "dtb overlaps"):
+            validate_bdinfo_memory_layout(log, artifacts)
 
     def test_rejects_reversed_bdinfo_ranges(self) -> None:
         artifacts = qemu_uboot_booti.ArtifactExpectations(
