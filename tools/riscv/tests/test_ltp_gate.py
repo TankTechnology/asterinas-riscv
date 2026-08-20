@@ -6,16 +6,18 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ltp_gate import (
+    _git_commit,
     _parse_args,
     _prepared_artifact_paths,
-    _git_commit,
     _source_commit,
+    _validate_packaged_suite,
     exit_code,
     main,
     package_subset,
@@ -185,7 +187,7 @@ class LtpGatePolicyTests(unittest.TestCase):
             repo = Path(temporary)
             result = repo / "target/ltp/results/live"
             result.mkdir(parents=True)
-            (result / "selected-syscalls").write_text(
+            (result / "manifest.txt").write_text(
                 "getpid01 getpid01\nread01 read01\nwrite01 write01\n"
             )
             (result / "progress.log").write_text(
@@ -242,6 +244,19 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertEqual(profile_for_smp(4), "generic-sv39-ltp-smp4")
         with self.assertRaisesRegex(ValueError, "SMP must be 1 or 4"):
             profile_for_smp(2)
+
+    def test_run_defaults_to_smp4(self) -> None:
+        args = _parse_args(
+            [
+                "run",
+                "--kernel",
+                "target/osdk/kernel.Image",
+                "--suite",
+                "arch-riscv64",
+            ]
+        )
+
+        self.assertEqual(args.smp, 4)
 
     def test_run_paths_never_overlap_shared_qemu_current(self) -> None:
         paths = run_paths(REPO, run_id="m1", smp=1)
@@ -322,6 +337,86 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertIn("target/ltp/qemu/smp4/dry-run", output.getvalue())
         self.assertIn("target/ltp/results/dry-run/progress.log", output.getvalue())
         self.assertNotIn("target/qemu-uboot/current", output.getvalue())
+
+    def test_arch_suite_dry_run_names_build_and_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            kernel = repo / "target/osdk/kernel.Image"
+            kernel.parent.mkdir(parents=True)
+            kernel.write_bytes(b"kernel")
+            output = io.StringIO()
+
+            with (
+                patch("ltp_gate.subprocess.run") as run,
+                contextlib.redirect_stdout(output),
+            ):
+                status = main(
+                    [
+                        "run",
+                        "--kernel",
+                        str(kernel),
+                        "--suite",
+                        "arch-riscv64",
+                        "--run-id",
+                        "arch-dry",
+                        "--dry-run",
+                    ],
+                    repo=repo,
+                )
+
+        self.assertEqual(status, 0)
+        run.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("build_ltp.sh --suite arch-riscv64", rendered)
+        self.assertIn("ltp_result.py write", rendered)
+        self.assertIn("target/ltp/results/arch-dry/manifest.txt", rendered)
+        self.assertIn("--suite arch-riscv64", rendered)
+        self.assertIn("--smp 4", rendered)
+
+    def test_packaged_arch_suite_requires_exact_manifest_and_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            names = tuple(f"arch_test_{index:03d}" for index in range(138))
+            missing = "rt_sigtimedwait01"
+            enabled = repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"
+            runtest = repo / "target/ltp/src/runtest/syscalls"
+            binaries = repo / "target/ltp/rootfs/opt/ltp/testcases/bin"
+            manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
+            enabled.parent.mkdir(parents=True)
+            runtest.parent.mkdir(parents=True)
+            binaries.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            enabled.write_text("\n".join((*names, missing)) + "\n")
+            runtest.write_text(
+                "\n".join(f"{name} {name}" for name in (*names, missing)) + "\n"
+            )
+            manifest.write_text(
+                "\n".join(f"{name} {name}" for name in names) + "\n"
+            )
+            for name in names:
+                (binaries / name).write_bytes(b"binary")
+            unavailable.write_text(
+                json.dumps([{"name": missing, "reason": "missing-binary"}]) + "\n"
+            )
+            suite = suite_by_name(repo, "arch-riscv64")
+
+            selected, omitted = _validate_packaged_suite(repo, suite)
+            self.assertEqual(selected, manifest)
+            self.assertEqual(omitted, unavailable)
+
+            manifest.write_text(manifest.read_text().splitlines()[0] + "\n")
+            with self.assertRaisesRegex(ValueError, "packaged manifest"):
+                _validate_packaged_suite(repo, suite)
+
+            manifest.write_text(
+                "\n".join(f"{name} {name}" for name in names) + "\n"
+            )
+            unavailable.write_text("[]\n")
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                _validate_packaged_suite(repo, suite)
 
     def test_dry_run_rejects_an_ltp_target_symlink_outside_the_repo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -417,12 +512,16 @@ class LtpSubsetPackagingTests(unittest.TestCase):
         rootfs = root / "target/ltp/rootfs"
         binaries = rootfs / "opt/ltp/testcases/bin"
         runtest = rootfs / "opt/ltp/runtest/syscalls"
+        source_runtest = root / "target/ltp/src/runtest/syscalls"
         binaries.mkdir(parents=True)
         runtest.parent.mkdir(parents=True)
-        runtest.write_text(
+        source_runtest.parent.mkdir(parents=True)
+        runtest_text = (
             "\n".join(f"{tag} {tag} --fixture" for tag in tags)
             + "\nunavailable01 unavailable01\n"
         )
+        runtest.write_text(runtest_text)
+        source_runtest.write_text(runtest_text)
         for tag in tags:
             binary = binaries / tag
             binary.write_text(f"fixture:{tag}\n")
