@@ -186,6 +186,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     "-DSKIP_CONSOLE_ATTACH=1",
+                    "-DSKIP_PSEUDO_FS_MOUNTS=1",
                     f'-DRUNNER_PATH="{fixture}"',
                     "-o",
                     str(init),
