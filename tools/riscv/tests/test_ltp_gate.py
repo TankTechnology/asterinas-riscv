@@ -176,6 +176,71 @@ class LtpGatePolicyTests(unittest.TestCase):
             }
             self.assertEqual(actual, expected)
 
+    def test_prepare_exception_still_publishes_checksums_for_run_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            kernel = repo / "target/osdk/kernel.Image"
+            initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+            manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
+            kernel.parent.mkdir(parents=True)
+            initramfs.parent.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            kernel.write_bytes(b"kernel")
+            initramfs.write_bytes(b"initramfs")
+            manifest.write_text("getpid01 getpid01\n")
+            unavailable.write_text("[]\n")
+            paths = run_paths(
+                repo,
+                run_id="prepare-exception",
+                smp=4,
+                kernel=kernel,
+            )
+
+            def fail_prepare(command: list[str], **kwargs: object) -> Mock:
+                partial = paths.prepared_dir / "partial-prepare.txt"
+                partial.parent.mkdir(parents=True)
+                partial.write_text("prepare failed\n")
+                raise subprocess.CalledProcessError(2, command)
+
+            with (
+                patch(
+                    "ltp_gate._validate_packaged_suite",
+                    return_value=(manifest, unavailable),
+                ),
+                patch("ltp_gate.subprocess.run", side_effect=fail_prepare),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                main(
+                    [
+                        "run",
+                        "--kernel",
+                        str(kernel),
+                        "--run-id",
+                        "prepare-exception",
+                        "--skip-build",
+                        "--source-commit",
+                        "a" * 40,
+                    ],
+                    repo=repo,
+                )
+
+            checksum_path = paths.result_dir / "SHA256SUMS"
+            self.assertTrue(checksum_path.is_file())
+            expected = {
+                path.resolve().relative_to(repo.resolve()).as_posix()
+                for root in (paths.prepared_dir, paths.result_dir)
+                for path in root.rglob("*")
+                if path.is_file() and path != checksum_path
+            }
+            actual = {
+                line.split("  ", 1)[1]
+                for line in checksum_path.read_text().splitlines()
+            }
+            self.assertEqual(actual, expected)
+
     def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)

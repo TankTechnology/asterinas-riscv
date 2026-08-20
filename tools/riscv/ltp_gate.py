@@ -657,23 +657,15 @@ def _dry_run(
     return 0
 
 
-def _run_gate(repo: Path, args: argparse.Namespace) -> int:
-    suite = suite_by_name(repo, args.suite)
-    run_id = _default_run_id() if args.run_id is None else args.run_id
-    paths = run_paths(repo, run_id=run_id, smp=args.smp, kernel=args.kernel)
-    profile = profile_for_smp(args.smp)
-    _validate_run_paths(repo, paths)
-    _require_kernel(paths.kernel, repo, dry_run=args.dry_run)
-    if args.dry_run:
-        return _dry_run(repo, paths, args, profile, suite)
-
-    commit = _source_commit(repo, args.source_commit)
-
-    if paths.result_dir.exists() or paths.result_dir.is_symlink():
-        raise FileExistsError(f"result directory already exists: {paths.result_dir}")
-    paths.result_dir.parent.mkdir(parents=True, exist_ok=True)
-    _require_within(paths.result_dir.parent, repo / "target/ltp", "results root")
-    paths.result_dir.mkdir(exist_ok=False)
+def _execute_run_gate(
+    repo: Path,
+    args: argparse.Namespace,
+    paths: LtpRunPaths,
+    profile: str,
+    suite: LtpSuite,
+    commit: str,
+) -> int:
+    """Execute one run after its immutable result directory is allocated."""
 
     selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
     manifest_evidence = paths.result_dir / "manifest.txt"
@@ -754,21 +746,14 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
     )
 
     result_path = paths.result_dir / "result.json"
-    checksum_inputs = _run_evidence_candidates(paths)
     if (
         qemu.returncode != 0
         or normalized.returncode != 0
         or not result_path.is_file()
     ):
-        _write_sha256s(
-            repo,
-            paths.result_dir / "SHA256SUMS",
-            checksum_inputs,
-        )
         return 1
     document = json.loads(result_path.read_text())
     _prepared_artifact_paths(paths.prepared_dir, document)
-    _write_sha256s(repo, paths.result_dir / "SHA256SUMS", checksum_inputs)
     infrastructure_passed = document.get("infrastructure_passed") is True
     ltp_passed = document.get("ltp_passed") is True
     return exit_code(
@@ -776,6 +761,34 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
         ltp_passed=ltp_passed,
         baseline=args.baseline,
     )
+
+
+def _run_gate(repo: Path, args: argparse.Namespace) -> int:
+    suite = suite_by_name(repo, args.suite)
+    run_id = _default_run_id() if args.run_id is None else args.run_id
+    paths = run_paths(repo, run_id=run_id, smp=args.smp, kernel=args.kernel)
+    profile = profile_for_smp(args.smp)
+    _validate_run_paths(repo, paths)
+    _require_kernel(paths.kernel, repo, dry_run=args.dry_run)
+    if args.dry_run:
+        return _dry_run(repo, paths, args, profile, suite)
+
+    commit = _source_commit(repo, args.source_commit)
+
+    if paths.result_dir.exists() or paths.result_dir.is_symlink():
+        raise FileExistsError(f"result directory already exists: {paths.result_dir}")
+    paths.result_dir.parent.mkdir(parents=True, exist_ok=True)
+    _require_within(paths.result_dir.parent, repo / "target/ltp", "results root")
+    paths.result_dir.mkdir(exist_ok=False)
+
+    try:
+        return _execute_run_gate(repo, args, paths, profile, suite, commit)
+    finally:
+        _write_sha256s(
+            repo,
+            paths.result_dir / "SHA256SUMS",
+            _run_evidence_candidates(paths),
+        )
 
 
 def main(argv: Sequence[str] | None = None, *, repo: Path = REPO_ROOT) -> int:
