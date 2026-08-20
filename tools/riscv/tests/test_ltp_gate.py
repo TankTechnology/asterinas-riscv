@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from ltp_gate import (
     _git_commit,
+    _source_commit,
     exit_code,
     main,
     package_subset,
@@ -45,6 +46,19 @@ class LtpGatePolicyTests(unittest.TestCase):
                 "HEAD",
             ],
         )
+
+    def test_explicit_source_commit_supports_a_containerized_worktree(self) -> None:
+        with patch("ltp_gate._git_commit") as git_commit:
+            commit = _source_commit(REPO, "b" * 40)
+
+        self.assertEqual(commit, "b" * 40)
+        git_commit.assert_not_called()
+
+    def test_explicit_source_commit_must_be_a_full_lowercase_object_id(self) -> None:
+        for commit in ("", "c" * 39, "D" * 40, "not-an-object-id"):
+            with self.subTest(commit=commit):
+                with self.assertRaisesRegex(ValueError, "source commit"):
+                    _source_commit(REPO, commit)
 
     def test_profile_for_smp_is_closed(self) -> None:
         self.assertEqual(profile_for_smp(1), "generic-sv39-ltp-smp1")
