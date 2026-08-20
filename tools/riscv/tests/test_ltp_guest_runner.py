@@ -122,12 +122,16 @@ class LtpGuestRunnerTests(unittest.TestCase):
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
-    def test_builder_uses_validated_manifest_and_never_shared_qemu_artifacts(self) -> None:
+    def test_builder_uses_validated_manifest_and_never_shared_qemu_artifacts(
+        self,
+    ) -> None:
         source = BUILD_SCRIPT.read_text()
 
         self.assertIn("tools/riscv/ltp_manifest.py", source)
         self.assertIn("--unavailable-output", source)
         self.assertIn("--expected-count 767", source)
+        for tool in ("aclocal", "autoconf", "automake"):
+            self.assertIn(tool, source)
         self.assertNotIn("target/qemu-uboot/current", source)
         self.assertNotIn("boot.ext4", source)
 
