@@ -34,7 +34,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{NoData, RawIoctl, dispatch_ioctl},
+    util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
 
@@ -438,7 +438,7 @@ impl DriHandle {
         if req.flags != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported dumb buffer flags");
         }
-        let bytes_per_pixel = (req.bpp + 7) / 8;
+        let bytes_per_pixel = req.bpp.div_ceil(8);
         let pitch = req
             .width
             .checked_mul(bytes_per_pixel)
