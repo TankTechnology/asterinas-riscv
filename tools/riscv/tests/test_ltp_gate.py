@@ -6,16 +6,21 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ltp_gate import (
-    _parse_args,
-    _prepared_artifact_paths,
     _git_commit,
+    _parse_args,
+    _package_lock,
+    _prepared_artifact_paths,
     _source_commit,
+    _validate_packaged_suite,
     exit_code,
     main,
     package_subset,
@@ -23,10 +28,13 @@ from ltp_gate import (
     run_paths,
     tree_sha256,
 )
+from ltp_package import publish_package_identity
+from ltp_suite import suite_by_name
 
 
 REPO = Path(__file__).resolve().parents[3]
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
+ARCH_REPORT = REPO / "tools/riscv/ltp/ARCH-RISCV64-M1-report.md"
 BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
 REPO_MAKEFILE = REPO / "Makefile"
 IMPLEMENTATION_PLAN = (
@@ -87,12 +95,14 @@ class LtpGatePolicyTests(unittest.TestCase):
             kernel = repo / "target/osdk/kernel.Image"
             initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
             manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
             kernel.parent.mkdir(parents=True)
             initramfs.parent.mkdir(parents=True)
             manifest.parent.mkdir(parents=True)
             kernel.write_bytes(b"kernel")
             initramfs.write_bytes(b"initramfs")
             manifest.write_text("getpid01 getpid01\n")
+            unavailable.write_text("[]\n")
             paths = run_paths(
                 repo,
                 run_id="failed-run",
@@ -130,7 +140,13 @@ class LtpGatePolicyTests(unittest.TestCase):
                         path.write_bytes(payload)
                 return Mock(returncode=0 if call_count == 1 else 1)
 
-            with patch("ltp_gate.subprocess.run", side_effect=failed_commands):
+            with (
+                patch(
+                    "ltp_gate._validate_packaged_suite",
+                    return_value=(manifest, unavailable),
+                ),
+                patch("ltp_gate.subprocess.run", side_effect=failed_commands),
+            ):
                 status = main(
                     [
                         "run",
@@ -161,12 +177,77 @@ class LtpGatePolicyTests(unittest.TestCase):
             }
             self.assertEqual(actual, expected)
 
+    def test_prepare_exception_still_publishes_checksums_for_run_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            kernel = repo / "target/osdk/kernel.Image"
+            initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+            manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
+            kernel.parent.mkdir(parents=True)
+            initramfs.parent.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            kernel.write_bytes(b"kernel")
+            initramfs.write_bytes(b"initramfs")
+            manifest.write_text("getpid01 getpid01\n")
+            unavailable.write_text("[]\n")
+            paths = run_paths(
+                repo,
+                run_id="prepare-exception",
+                smp=4,
+                kernel=kernel,
+            )
+
+            def fail_prepare(command: list[str], **kwargs: object) -> Mock:
+                partial = paths.prepared_dir / "partial-prepare.txt"
+                partial.parent.mkdir(parents=True)
+                partial.write_text("prepare failed\n")
+                raise subprocess.CalledProcessError(2, command)
+
+            with (
+                patch(
+                    "ltp_gate._validate_packaged_suite",
+                    return_value=(manifest, unavailable),
+                ),
+                patch("ltp_gate.subprocess.run", side_effect=fail_prepare),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                main(
+                    [
+                        "run",
+                        "--kernel",
+                        str(kernel),
+                        "--run-id",
+                        "prepare-exception",
+                        "--skip-build",
+                        "--source-commit",
+                        "a" * 40,
+                    ],
+                    repo=repo,
+                )
+
+            checksum_path = paths.result_dir / "SHA256SUMS"
+            self.assertTrue(checksum_path.is_file())
+            expected = {
+                path.resolve().relative_to(repo.resolve()).as_posix()
+                for root in (paths.prepared_dir, paths.result_dir)
+                for path in root.rglob("*")
+                if path.is_file() and path != checksum_path
+            }
+            actual = {
+                line.split("  ", 1)[1]
+                for line in checksum_path.read_text().splitlines()
+            }
+            self.assertEqual(actual, expected)
+
     def test_status_reports_current_test_and_mutually_exclusive_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             result = repo / "target/ltp/results/live"
             result.mkdir(parents=True)
-            (result / "selected-syscalls").write_text(
+            (result / "manifest.txt").write_text(
                 "getpid01 getpid01\nread01 read01\nwrite01 write01\n"
             )
             (result / "progress.log").write_text(
@@ -223,6 +304,19 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertEqual(profile_for_smp(4), "generic-sv39-ltp-smp4")
         with self.assertRaisesRegex(ValueError, "SMP must be 1 or 4"):
             profile_for_smp(2)
+
+    def test_arch_suite_run_defaults_to_smp4(self) -> None:
+        args = _parse_args(
+            [
+                "run",
+                "--kernel",
+                "target/osdk/kernel.Image",
+                "--suite",
+                "arch-riscv64",
+            ]
+        )
+
+        self.assertEqual(args.smp, 4)
 
     def test_run_paths_never_overlap_shared_qemu_current(self) -> None:
         paths = run_paths(REPO, run_id="m1", smp=1)
@@ -304,6 +398,125 @@ class LtpGatePolicyTests(unittest.TestCase):
         self.assertIn("target/ltp/results/dry-run/progress.log", output.getvalue())
         self.assertNotIn("target/qemu-uboot/current", output.getvalue())
 
+    def test_arch_suite_dry_run_names_build_and_result_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            kernel = repo / "target/osdk/kernel.Image"
+            kernel.parent.mkdir(parents=True)
+            kernel.write_bytes(b"kernel")
+            output = io.StringIO()
+
+            with (
+                patch("ltp_gate.subprocess.run") as run,
+                contextlib.redirect_stdout(output),
+            ):
+                status = main(
+                    [
+                        "run",
+                        "--kernel",
+                        str(kernel),
+                        "--suite",
+                        "arch-riscv64",
+                        "--run-id",
+                        "arch-dry",
+                        "--dry-run",
+                    ],
+                    repo=repo,
+                )
+
+        self.assertEqual(status, 0)
+        run.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("build_ltp.sh --suite arch-riscv64", rendered)
+        self.assertIn("ltp_result.py write", rendered)
+        self.assertIn("target/ltp/results/arch-dry/manifest.txt", rendered)
+        self.assertIn("--suite arch-riscv64", rendered)
+        self.assertIn("--smp 4", rendered)
+
+    def test_packaged_arch_suite_requires_exact_manifest_and_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            names = tuple(f"arch_test_{index:03d}" for index in range(138))
+            missing = "rt_sigtimedwait01"
+            enabled = repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"
+            runtest = repo / "target/ltp/src/runtest/syscalls"
+            binaries = repo / "target/ltp/rootfs/opt/ltp/testcases/bin"
+            manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+            unavailable = repo / "target/ltp/unavailable-tests.json"
+            initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+            identity = repo / "target/ltp/package.json"
+            enabled.parent.mkdir(parents=True)
+            runtest.parent.mkdir(parents=True)
+            binaries.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            enabled.write_text("\n".join((*names, missing)) + "\n")
+            runtest.write_text(
+                "\n".join(f"{name} {name}" for name in (*names, missing)) + "\n"
+            )
+            manifest.write_text(
+                "\n".join(f"{name} {name}" for name in names) + "\n"
+            )
+            for name in names:
+                (binaries / name).write_bytes(b"binary")
+            unavailable.write_text(
+                json.dumps([{"name": missing, "reason": "missing-binary"}]) + "\n"
+            )
+            initramfs.write_bytes(b"archive")
+            suite = suite_by_name(repo, "arch-riscv64")
+
+            publish_package_identity(
+                suite=suite.name,
+                initramfs=initramfs,
+                manifest=manifest,
+                unavailable=unavailable,
+                output=identity,
+            )
+
+            selected, omitted = _validate_packaged_suite(repo, suite)
+            self.assertEqual(selected, manifest)
+            self.assertEqual(omitted, unavailable)
+
+            manifest.write_text(manifest.read_text().splitlines()[0] + "\n")
+            with self.assertRaisesRegex(ValueError, "packaged manifest"):
+                _validate_packaged_suite(repo, suite)
+
+            manifest.write_text(
+                "\n".join(f"{name} {name}" for name in names) + "\n"
+            )
+            unavailable.write_text("[]\n")
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                _validate_packaged_suite(repo, suite)
+
+    def test_package_lock_excludes_a_second_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            code = """
+import fcntl
+import sys
+
+with open(sys.argv[1], 'a+b') as lock:
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+raise SystemExit(1)
+"""
+
+            with _package_lock(repo):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        code,
+                        str(repo / "target/ltp/package.lock"),
+                    ],
+                    check=False,
+                )
+
+        self.assertEqual(completed.returncode, 0)
+
     def test_dry_run_rejects_an_ltp_target_symlink_outside_the_repo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
@@ -355,6 +568,14 @@ class LtpGatePolicyTests(unittest.TestCase):
 
 
 class LtpGateDocumentationTests(unittest.TestCase):
+    def test_arch_report_is_explicitly_historical_selection_evidence(self) -> None:
+        source = ARCH_REPORT.read_text()
+        normalized = " ".join(source.replace("\n> ", " ").split())
+
+        self.assertIn("Historical Selection Evidence", source)
+        self.assertIn("does not establish a current baseline", normalized)
+        self.assertIn("not reachable from a current `origin` ref", normalized)
+
     def test_operator_guide_builds_the_required_busybox(self) -> None:
         source = OPERATOR_GUIDE.read_text()
 
@@ -366,6 +587,18 @@ class LtpGateDocumentationTests(unittest.TestCase):
         self.assertIn("TRUE", builder)
         self.assertIn("tools/riscv/nixos/build_busybox.sh", source)
         self.assertIn("target/nixos/busybox", source)
+
+    def test_operator_guide_binds_skip_build_to_the_packaged_suite(self) -> None:
+        source = OPERATOR_GUIDE.read_text()
+
+        self.assertIn(
+            "Every `--skip-build` run must name the suite currently packaged",
+            source,
+        )
+        self.assertIn(
+            "build_ltp.sh --skip-compile --suite syscalls",
+            source,
+        )
 
     def test_container_commands_do_not_override_the_image_vdso_directory(self) -> None:
         for document in (OPERATOR_GUIDE, IMPLEMENTATION_PLAN):
@@ -398,12 +631,16 @@ class LtpSubsetPackagingTests(unittest.TestCase):
         rootfs = root / "target/ltp/rootfs"
         binaries = rootfs / "opt/ltp/testcases/bin"
         runtest = rootfs / "opt/ltp/runtest/syscalls"
+        source_runtest = root / "target/ltp/src/runtest/syscalls"
         binaries.mkdir(parents=True)
         runtest.parent.mkdir(parents=True)
-        runtest.write_text(
+        source_runtest.parent.mkdir(parents=True)
+        runtest_text = (
             "\n".join(f"{tag} {tag} --fixture" for tag in tags)
             + "\nunavailable01 unavailable01\n"
         )
+        runtest.write_text(runtest_text)
+        source_runtest.write_text(runtest_text)
         for tag in tags:
             binary = binaries / tag
             binary.write_text(f"fixture:{tag}\n")

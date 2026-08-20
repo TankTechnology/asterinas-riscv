@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import gzip
 import hashlib
 import json
@@ -19,13 +20,15 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 from ltp_manifest import select_manifest
+from ltp_package import publish_package_identity, validate_package_identity
+from ltp_suite import LtpSuite, suite_by_name, suite_names
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +62,7 @@ class SubsetPackage:
 
     rootfs: Path
     manifest: Path
+    unavailable: Path
     initramfs: Path
 
 
@@ -155,15 +159,91 @@ def _pack_initramfs(rootfs: Path, output: Path) -> None:
         archive.write(gzip.compress(completed.stdout, compresslevel=9, mtime=0))
 
 
-def _subset_selection(repo: Path, tags: Sequence[str]):
+@contextmanager
+def _package_lock(repo: Path) -> Iterator[None]:
+    """Serializes publication and snapshotting of shared LTP package files."""
+
+    target = repo.resolve() / "target/ltp"
+    target.mkdir(parents=True, exist_ok=True)
+    lock_path = target / "package.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _validate_packaged_suite(repo: Path, suite: LtpSuite) -> tuple[Path, Path]:
+    """Verifies that packaged runtime inputs exactly match a closed suite."""
+
     rootfs = repo / "target/ltp/rootfs"
-    enabled = repo / "test/initramfs/src/conformance/ltp/testcases/all.txt"
+    runtest = repo / "target/ltp/src/runtest/syscalls"
     manifest = rootfs / "opt/ltp/runtest/syscalls"
+    binaries = rootfs / "opt/ltp/testcases/bin"
+    unavailable = repo / "target/ltp/unavailable-tests.json"
+    initramfs = repo / "target/ltp/ltp-initramfs.cpio.gz"
+    identity = repo / "target/ltp/package.json"
+    for path, name in (
+        (suite.enabled, "suite manifest"),
+        (runtest, "upstream runtest manifest"),
+        (manifest, "packaged manifest"),
+        (unavailable, "unavailable evidence"),
+        (initramfs, "packaged initramfs"),
+        (identity, "package identity"),
+    ):
+        if not path.is_file():
+            raise ValueError(f"{name} is missing: {path}")
+    if not binaries.is_dir():
+        raise ValueError(f"packaged binary directory is missing: {binaries}")
+
+    available = {entry.name for entry in binaries.iterdir() if entry.is_file()}
+    selection = select_manifest(
+        suite.enabled.read_text(),
+        runtest.read_text(),
+        available,
+    )
+    if len(selection.lines) != suite.expected_selected:
+        raise ValueError(
+            f"suite expects {suite.expected_selected} selected tests, "
+            f"got {len(selection.lines)}"
+        )
+    if manifest.read_text().splitlines() != list(selection.lines):
+        raise ValueError("packaged manifest does not match the selected suite")
+    if len(selection.unavailable) != suite.expected_unavailable:
+        raise ValueError(
+            f"suite expects {suite.expected_unavailable} unavailable tests, "
+            f"got {len(selection.unavailable)}"
+        )
+    expected_unavailable = [
+        {"name": item.name, "reason": item.reason}
+        for item in selection.unavailable
+    ]
+    if json.loads(unavailable.read_text()) != expected_unavailable:
+        raise ValueError("unavailable evidence does not match the selected suite")
+    validate_package_identity(
+        suite=suite.name,
+        initramfs=initramfs,
+        manifest=manifest,
+        unavailable=unavailable,
+        identity=identity,
+    )
+    return manifest, unavailable
+
+
+def _subset_selection(repo: Path, tags: Sequence[str], suite: LtpSuite):
+    rootfs = repo / "target/ltp/rootfs"
+    runtest = repo / "target/ltp/src/runtest/syscalls"
     binaries = rootfs / "opt/ltp/testcases/bin"
     available = {entry.name for entry in binaries.iterdir() if entry.is_file()}
     return select_manifest(
-        enabled.read_text(),
-        manifest.read_text(),
+        suite.enabled.read_text(),
+        runtest.read_text(),
         available,
         subset=tags,
     )
@@ -174,15 +254,19 @@ def package_subset(
     *,
     tags: Sequence[str],
     workspace: Path,
+    suite: LtpSuite | None = None,
 ) -> SubsetPackage:
     """Copy the full rootfs, replace only its manifest, and pack a subset."""
 
     if not tags:
         raise ValueError("subset requires at least one tag")
     resolved_repo = repo.resolve()
+    selected_suite = (
+        suite_by_name(resolved_repo, "syscalls") if suite is None else suite
+    )
     rootfs = resolved_repo / "target/ltp/rootfs"
     # Validate all requested tags and binaries before creating staging files.
-    selection = _subset_selection(resolved_repo, tags)
+    selection = _subset_selection(resolved_repo, tags, selected_suite)
     workspace.mkdir(parents=True, exist_ok=True)
     if any(workspace.iterdir()):
         raise FileExistsError(f"subset workspace is not empty: {workspace}")
@@ -200,9 +284,9 @@ def package_subset(
             str(Path(__file__).with_name("ltp_manifest.py")),
             "select",
             "--enabled",
-            str(resolved_repo / "test/initramfs/src/conformance/ltp/testcases/all.txt"),
+            str(selected_suite.enabled),
             "--runtest",
-            str(rootfs / "opt/ltp/runtest/syscalls"),
+            str(resolved_repo / "target/ltp/src/runtest/syscalls"),
             "--bin-dir",
             str(staged_rootfs / "opt/ltp/testcases/bin"),
             "--output",
@@ -219,7 +303,7 @@ def package_subset(
     finally:
         if tree_sha256(rootfs) != before:
             raise RuntimeError("full LTP rootfs changed during subset packaging")
-    return SubsetPackage(staged_rootfs, staged_manifest, initramfs)
+    return SubsetPackage(staged_rootfs, staged_manifest, unavailable, initramfs)
 
 
 def _positive_float(value: str) -> float:
@@ -238,12 +322,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     build = subparsers.add_parser("build")
     build.add_argument("--skip-compile", action="store_true")
+    build.add_argument("--suite", choices=suite_names(), default="syscalls")
     status = subparsers.add_parser("status")
     status.add_argument("--run-id", required=True)
 
     run = subparsers.add_parser("run")
     run.add_argument("--kernel", type=Path, required=True)
     run.add_argument("--smp", type=int, choices=(1, 4), default=4)
+    run.add_argument("--suite", choices=suite_names(), default="syscalls")
     run.add_argument("--run-id", default=None)
     run.add_argument("--skip-build", action="store_true")
     run.add_argument("--baseline", action="store_true")
@@ -265,7 +351,9 @@ def _show_status(repo: Path, run_id: str) -> int:
         )
     result_dir = repo / "target/ltp/results" / run_id
     _require_within(result_dir, repo / "target/ltp", "result directory")
-    manifest = result_dir / "selected-syscalls"
+    manifest = result_dir / "manifest.txt"
+    if not manifest.is_file():
+        manifest = result_dir / "selected-syscalls"
     progress = result_dir / "progress.log"
     if not manifest.is_file() or not progress.is_file():
         raise FileNotFoundError(f"run has no live progress evidence: {run_id}")
@@ -364,7 +452,13 @@ def _qemu_command(
     return command
 
 
-def _normalizer_command(repo: Path, paths: LtpRunPaths, commit: str, smp: int):
+def _normalizer_command(
+    repo: Path,
+    paths: LtpRunPaths,
+    commit: str,
+    smp: int,
+    suite: LtpSuite,
+):
     return [
         sys.executable,
         str(repo / "tools/riscv/ltp_result.py"),
@@ -374,13 +468,15 @@ def _normalizer_command(repo: Path, paths: LtpRunPaths, commit: str, smp: int):
         "--boot-result",
         str(paths.result_dir / "boot-result.json"),
         "--manifest",
-        str(paths.result_dir / "selected-syscalls"),
+        str(paths.result_dir / "manifest.txt"),
         "--result",
         str(paths.result_dir / "result.json"),
         "--summary",
         str(paths.result_dir / "summary.txt"),
         "--git-commit",
         commit,
+        "--suite",
+        suite.name,
         "--smp",
         str(smp),
     ]
@@ -530,17 +626,19 @@ def _dry_run(
     paths: LtpRunPaths,
     args: argparse.Namespace,
     profile: str,
+    suite: LtpSuite,
 ) -> int:
     build_script = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
     if not args.skip_build:
-        _print_command([str(build_script)])
-    selected_initramfs = paths.initramfs
+        _print_command([str(build_script), "--suite", suite.name])
+    selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
     if args.tag:
         print(
             "# validate and package subset: "
             + " ".join(shlex.quote(tag) for tag in args.tag)
         )
-        selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
+    else:
+        print("# validate and snapshot the complete named suite")
     environment = _qemu_environment(repo, paths, profile, selected_initramfs)
     _print_command(
         [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
@@ -554,35 +652,42 @@ def _dry_run(
             boot_timeout=args.boot_timeout,
         )
     )
-    _print_command(_normalizer_command(repo, paths, "0" * 40, args.smp))
+    _print_command(_normalizer_command(repo, paths, "0" * 40, args.smp, suite))
     print(f"# write {paths.result_dir / 'SHA256SUMS'}")
     return 0
 
 
-def _run_gate(repo: Path, args: argparse.Namespace) -> int:
-    run_id = _default_run_id() if args.run_id is None else args.run_id
-    paths = run_paths(repo, run_id=run_id, smp=args.smp, kernel=args.kernel)
-    profile = profile_for_smp(args.smp)
-    _validate_run_paths(repo, paths)
-    _require_kernel(paths.kernel, repo, dry_run=args.dry_run)
-    if args.dry_run:
-        return _dry_run(repo, paths, args, profile)
+def _execute_run_gate(
+    repo: Path,
+    args: argparse.Namespace,
+    paths: LtpRunPaths,
+    profile: str,
+    suite: LtpSuite,
+    commit: str,
+) -> int:
+    """Execute one run after its immutable result directory is allocated."""
 
-    commit = _source_commit(repo, args.source_commit)
-
-    if paths.result_dir.exists() or paths.result_dir.is_symlink():
-        raise FileExistsError(f"result directory already exists: {paths.result_dir}")
-    paths.result_dir.parent.mkdir(parents=True, exist_ok=True)
-    _require_within(paths.result_dir.parent, repo / "target/ltp", "results root")
-    paths.result_dir.mkdir(exist_ok=False)
-
-    build_script = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
-    if not args.skip_build:
-        subprocess.run([str(build_script)], cwd=repo, check=True)
-
-    selected_initramfs = paths.initramfs
-    selected_manifest = repo / "target/ltp/rootfs/opt/ltp/runtest/syscalls"
+    selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
+    manifest_evidence = paths.result_dir / "manifest.txt"
+    unavailable_evidence = paths.result_dir / "unavailable-tests.json"
+    package_identity_evidence = paths.result_dir / "package.json"
     with ExitStack() as stack:
+        stack.enter_context(_package_lock(repo))
+        build_script = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
+        if not args.skip_build:
+            build_environment = os.environ.copy()
+            build_environment["ASTERINAS_LTP_PACKAGE_LOCK_HELD"] = "1"
+            subprocess.run(
+                [str(build_script), "--suite", suite.name],
+                cwd=repo,
+                env=build_environment,
+                check=True,
+            )
+
+        selected_manifest, selected_unavailable = _validate_packaged_suite(
+            repo, suite
+        )
+        package_initramfs = paths.initramfs
         if args.tag:
             build_root = repo / "target/ltp/build"
             build_root.mkdir(parents=True, exist_ok=True)
@@ -593,67 +698,96 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
                 repo,
                 tags=args.tag,
                 workspace=Path(workspace_name),
+                suite=suite,
             )
-            selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
-            _publish_copy(package.initramfs, selected_initramfs)
+            package_initramfs = package.initramfs
             selected_manifest = package.manifest
-        if not selected_initramfs.is_file() or selected_initramfs.stat().st_size == 0:
-            raise ValueError(
-                f"initramfs must be a non-empty file: {selected_initramfs}"
-            )
-        manifest_evidence = paths.result_dir / "selected-syscalls"
+            selected_unavailable = package.unavailable
+        _publish_copy(package_initramfs, selected_initramfs)
         _publish_copy(selected_manifest, manifest_evidence)
+        _publish_copy(selected_unavailable, unavailable_evidence)
+        publish_package_identity(
+            suite=suite.name,
+            initramfs=selected_initramfs,
+            manifest=manifest_evidence,
+            unavailable=unavailable_evidence,
+            output=package_identity_evidence,
+        )
 
-        environment = _qemu_environment(
+    if not selected_initramfs.is_file() or selected_initramfs.stat().st_size == 0:
+        raise ValueError(f"initramfs must be a non-empty file: {selected_initramfs}")
+
+    environment = _qemu_environment(
+        repo,
+        paths,
+        profile,
+        selected_initramfs,
+    )
+    subprocess.run(
+        [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
+        cwd=repo,
+        env=environment,
+        check=True,
+    )
+    qemu = subprocess.run(
+        _qemu_command(
             repo,
             paths,
             profile,
-            selected_initramfs,
-        )
-        subprocess.run(
-            [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
-            cwd=repo,
-            env=environment,
-            check=True,
-        )
-        qemu = subprocess.run(
-            _qemu_command(
-                repo,
-                paths,
-                profile,
-                boot_timeout=args.boot_timeout,
-            ),
-            cwd=repo,
-            check=False,
-        )
-        normalized = subprocess.run(
-            _normalizer_command(repo, paths, commit, args.smp),
-            cwd=repo,
-            check=False,
-        )
+            boot_timeout=args.boot_timeout,
+        ),
+        cwd=repo,
+        check=False,
+    )
+    normalized = subprocess.run(
+        _normalizer_command(repo, paths, commit, args.smp, suite),
+        cwd=repo,
+        check=False,
+    )
 
-        result_path = paths.result_dir / "result.json"
-        checksum_inputs = _run_evidence_candidates(paths)
-        if (
-            qemu.returncode != 0
-            or normalized.returncode != 0
-            or not result_path.is_file()
-        ):
-            _write_sha256s(
-                repo,
-                paths.result_dir / "SHA256SUMS",
-                checksum_inputs,
-            )
-            return 1
-        document = json.loads(result_path.read_text())
-        _prepared_artifact_paths(paths.prepared_dir, document)
-        _write_sha256s(repo, paths.result_dir / "SHA256SUMS", checksum_inputs)
-        infrastructure_passed = document.get("infrastructure_passed") is True
-        ltp_passed = document.get("ltp_passed") is True
-        return exit_code(
-            infrastructure_passed=infrastructure_passed,
-            ltp_passed=ltp_passed,
-            baseline=args.baseline,
+    result_path = paths.result_dir / "result.json"
+    if (
+        qemu.returncode != 0
+        or normalized.returncode != 0
+        or not result_path.is_file()
+    ):
+        return 1
+    document = json.loads(result_path.read_text())
+    _prepared_artifact_paths(paths.prepared_dir, document)
+    infrastructure_passed = document.get("infrastructure_passed") is True
+    ltp_passed = document.get("ltp_passed") is True
+    return exit_code(
+        infrastructure_passed=infrastructure_passed,
+        ltp_passed=ltp_passed,
+        baseline=args.baseline,
+    )
+
+
+def _run_gate(repo: Path, args: argparse.Namespace) -> int:
+    suite = suite_by_name(repo, args.suite)
+    run_id = _default_run_id() if args.run_id is None else args.run_id
+    paths = run_paths(repo, run_id=run_id, smp=args.smp, kernel=args.kernel)
+    profile = profile_for_smp(args.smp)
+    _validate_run_paths(repo, paths)
+    _require_kernel(paths.kernel, repo, dry_run=args.dry_run)
+    if args.dry_run:
+        return _dry_run(repo, paths, args, profile, suite)
+
+    commit = _source_commit(repo, args.source_commit)
+
+    if paths.result_dir.exists() or paths.result_dir.is_symlink():
+        raise FileExistsError(f"result directory already exists: {paths.result_dir}")
+    paths.result_dir.parent.mkdir(parents=True, exist_ok=True)
+    _require_within(paths.result_dir.parent, repo / "target/ltp", "results root")
+    paths.result_dir.mkdir(exist_ok=False)
+
+    try:
+        return _execute_run_gate(repo, args, paths, profile, suite, commit)
+    finally:
+        _write_sha256s(
+            repo,
+            paths.result_dir / "SHA256SUMS",
+            _run_evidence_candidates(paths),
         )
 
 
@@ -661,10 +795,22 @@ def main(argv: Sequence[str] | None = None, *, repo: Path = REPO_ROOT) -> int:
     args = _parse_args(argv)
     resolved_repo = repo.resolve()
     if args.command == "build":
-        command = [str(resolved_repo / "tools/riscv/nixos/ltp/build_ltp.sh")]
+        command = [
+            str(resolved_repo / "tools/riscv/nixos/ltp/build_ltp.sh"),
+            "--suite",
+            args.suite,
+        ]
         if args.skip_compile:
             command.append("--skip-compile")
-        subprocess.run(command, cwd=resolved_repo, check=True)
+        build_environment = os.environ.copy()
+        build_environment["ASTERINAS_LTP_PACKAGE_LOCK_HELD"] = "1"
+        with _package_lock(resolved_repo):
+            subprocess.run(
+                command,
+                cwd=resolved_repo,
+                env=build_environment,
+                check=True,
+            )
         return 0
     if args.command == "status":
         return _show_status(resolved_repo, args.run_id)

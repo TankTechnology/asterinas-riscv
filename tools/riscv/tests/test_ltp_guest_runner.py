@@ -365,6 +365,66 @@ class LtpBuildScriptContractTests(unittest.TestCase):
         self.assertIn("missing required BusyBox", source)
         self.assertNotIn("WARN: no busybox", source)
 
+    def test_build_script_selects_only_closed_named_suites(self) -> None:
+        source = BUILD_SCRIPT.read_text()
+
+        self.assertIn('SUITE="syscalls"', source)
+        self.assertIn("--suite requires a value", source)
+        self.assertIn('SUITE="$2"; shift 2', source)
+        self.assertIn("tools/riscv/ltp_suite.py", source)
+        self.assertIn("tools/riscv/ltp_package.py", source)
+        self.assertIn("tools/riscv/ltp_gate.py", source)
+        self.assertIn("ASTERINAS_LTP_PACKAGE_LOCK_HELD", source)
+        self.assertIn("describe", source)
+        self.assertIn("publish", source)
+        self.assertNotIn('exec 9>', source)
+        self.assertNotIn("arch-riscv64)", source)
+        self.assertNotIn("EXPECTED_SELECTED=138", source)
+        self.assertNotIn("EXPECTED_UNAVAILABLE=1", source)
+        self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
+
+    def test_build_script_rejects_a_missing_suite_value(self) -> None:
+        completed = subprocess.run(
+            [str(BUILD_SCRIPT), "--suite"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--suite requires a value", completed.stderr)
+
+    def test_builder_rejects_package_lock_symlink_without_truncating_target(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            builder = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
+            builder.parent.mkdir(parents=True)
+            shutil.copy2(BUILD_SCRIPT, builder)
+            for module in (
+                "ltp_gate.py",
+                "ltp_manifest.py",
+                "ltp_package.py",
+                "ltp_suite.py",
+            ):
+                shutil.copy2(TOOLS / module, repo / "tools/riscv" / module)
+            target = repo / "target/ltp"
+            target.mkdir(parents=True)
+            victim = repo / "Makefile"
+            payload = "must remain intact\n"
+            victim.write_text(payload)
+            (target / "package.lock").symlink_to("../../Makefile")
+
+            completed = subprocess.run(
+                [str(builder), "--suite", "syscalls"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(victim.read_text(), payload)
+
     def test_builder_installs_account_databases_world_readable(self) -> None:
         source = BUILD_SCRIPT.read_text()
 
@@ -378,7 +438,7 @@ class LtpBuildScriptContractTests(unittest.TestCase):
 
         self.assertIn("tools/riscv/ltp_manifest.py", source)
         self.assertIn("--unavailable-output", source)
-        self.assertIn("--expected-count 767", source)
+        self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
         for tool in ("aclocal", "autoconf", "automake"):
             self.assertIn(tool, source)
         self.assertIn("linux/limits.h", source)
