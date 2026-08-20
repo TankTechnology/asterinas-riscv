@@ -27,6 +27,67 @@ def write_executable(path: Path, source: str) -> None:
 
 @unittest.skipUnless(CC, "requires a host C compiler")
 class LtpGuestRunnerTests(unittest.TestCase):
+    def test_init_reaps_any_child_and_uses_one_brok_prefix(self) -> None:
+        source = INIT_SOURCE.read_text()
+
+        self.assertIn("waitpid(-1, &child_status, 0)", source)
+        self.assertIn("[BROK] LTP runner fork failed", source)
+        self.assertIn("[BROK] LTP runner waitpid failed", source)
+
+    def test_runner_rejects_warning_empty_and_exec_failure_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binaries = directory / "bin"
+            logs = directory / "logs"
+            manifest = directory / "syscalls"
+            runner = directory / "ltp-runner"
+            binaries.mkdir()
+            write_executable(
+                binaries / "mixed",
+                "#!/bin/sh\necho 'TCONF: skipped'\necho 'TWARN: cleanup'\nexit 36\n",
+            )
+            write_executable(binaries / "empty", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                binaries / "broken-exec",
+                "#!/missing/interpreter\n",
+            )
+            manifest.write_text(
+                "mixed01 mixed\nempty01 empty\nbroken_exec01 broken-exec\n"
+            )
+            subprocess.run(
+                [
+                    CC,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f'-DBIN_DIR="{binaries}"',
+                    f'-DLOG_DIR="{logs}"',
+                    "-o",
+                    str(runner),
+                    str(RUNNER_SOURCE),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result = subprocess.run(
+                [str(runner), str(manifest)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+        self.assertIn("[FAIL] mixed01", result.stdout)
+        self.assertIn("[FAIL] empty01", result.stdout)
+        self.assertIn("[FAIL] broken_exec01", result.stdout)
+        self.assertIn(
+            "[summary] total=3 pass=0 fail=3 conf=0 crash=0 timeout=0",
+            result.stdout,
+        )
+
     def test_runner_survives_a_test_that_kills_its_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -39,7 +100,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
                 binaries / "killer",
                 "#!/bin/sh\nkill -KILL \"$PPID\"\n",
             )
-            write_executable(binaries / "after", "#!/bin/sh\necho TPASS\n")
+            write_executable(binaries / "after", "#!/bin/sh\necho 'TPASS:'\n")
             manifest.write_text("killer01 killer\nafter01 after\n")
             subprocess.run(
                 [
@@ -80,14 +141,14 @@ class LtpGuestRunnerTests(unittest.TestCase):
             manifest = directory / "syscalls"
             runner = directory / "ltp-runner"
             binaries.mkdir()
-            write_executable(binaries / "pass", "#!/bin/sh\necho TPASS\n")
+            write_executable(binaries / "pass", "#!/bin/sh\necho 'TPASS:'\n")
             write_executable(
                 binaries / "fail",
-                "#!/bin/sh\necho TFAIL\nexit 1\n",
+                "#!/bin/sh\necho 'TFAIL:'\nexit 1\n",
             )
             write_executable(
                 binaries / "conf",
-                "#!/bin/sh\necho TCONF\nexit 32\n",
+                "#!/bin/sh\necho 'TCONF:'\nexit 32\n",
             )
             write_executable(
                 binaries / "crash",
@@ -217,6 +278,12 @@ class LtpGuestRunnerTests(unittest.TestCase):
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
+    def test_builder_installs_account_databases_world_readable(self) -> None:
+        source = BUILD_SCRIPT.read_text()
+
+        self.assertIn('install -m 0644 "${SRC_DIR}/etc-passwd"', source)
+        self.assertIn('install -m 0644 "${SRC_DIR}/etc-group"', source)
+
     def test_builder_uses_validated_manifest_and_never_shared_qemu_artifacts(
         self,
     ) -> None:

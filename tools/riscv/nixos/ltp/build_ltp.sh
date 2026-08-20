@@ -109,8 +109,8 @@ mkdir -p "${ROOTFS}/opt/ltp/testcases/bin" \
 
 # musl getpwnam/getgrnam read these directly; without them LTP's "nobody"
 # lookups fail with ENOENT and break most tests.
-cp -f "${SRC_DIR}/etc-passwd" "${ROOTFS}/etc/passwd"
-cp -f "${SRC_DIR}/etc-group" "${ROOTFS}/etc/group"
+install -m 0644 "${SRC_DIR}/etc-passwd" "${ROOTFS}/etc/passwd"
+install -m 0644 "${SRC_DIR}/etc-group" "${ROOTFS}/etc/group"
 
 # Select the complete validated manifest first. The selector records every
 # unavailable test instead of silently dropping it from the runtime evidence.
