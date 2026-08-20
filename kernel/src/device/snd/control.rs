@@ -7,10 +7,7 @@
 //! (`snd_card_load2`), so a playback-only card still needs a control node that
 //! answers `CARD_INFO`. This module provides just that.
 
-use crate::{
-    prelude::*,
-    util::ioctl::{OutData, ioc},
-};
+use crate::prelude::*;
 
 /// `struct snd_ctl_card_info` (376 bytes on LP64).
 #[repr(C)]
