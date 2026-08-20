@@ -26,6 +26,7 @@ from ltp_gate import (
 
 REPO = Path(__file__).resolve().parents[3]
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
+BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
 IMPLEMENTATION_PLAN = (
     REPO / "docs/superpowers/plans/2026-08-20-riscv-ltp-gate-baseline.md"
 )
@@ -251,6 +252,18 @@ class LtpGatePolicyTests(unittest.TestCase):
 
 
 class LtpGateDocumentationTests(unittest.TestCase):
+    def test_operator_guide_builds_the_required_busybox(self) -> None:
+        source = OPERATOR_GUIDE.read_text()
+
+        self.assertTrue(BUSYBOX_BUILDER.is_file())
+        builder = BUSYBOX_BUILDER.read_text()
+        self.assertIn('CROSS_PREFIX="riscv64-linux-gnu-"', builder)
+        self.assertIn("ASH", builder)
+        self.assertIn("CAT", builder)
+        self.assertIn("TRUE", builder)
+        self.assertIn("tools/riscv/nixos/build_busybox.sh", source)
+        self.assertIn("target/nixos/busybox", source)
+
     def test_container_commands_do_not_override_the_image_vdso_directory(self) -> None:
         for document in (OPERATOR_GUIDE, IMPLEMENTATION_PLAN):
             with self.subTest(document=document):

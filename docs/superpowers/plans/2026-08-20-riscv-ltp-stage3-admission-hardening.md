@@ -16,6 +16,7 @@
 - `tools/riscv/nixos/ltp/init_ltp.c` — keep PID 1 alive and reap guest children.
 - `tools/riscv/ltp_gate.py` — own preparation inputs and evidence by run ID; default its CLI to SMP=4.
 - `tools/riscv/nixos/ltp/build_ltp.sh` — fail before packaging when the required static BusyBox is absent.
+- `tools/riscv/nixos/build_busybox.sh` — reproducibly build the required static RISC-V BusyBox artifact.
 - `tools/riscv/ltp/README.md` — document the BusyBox prerequisite and SMP=4 normal path.
 - `Makefile` — expose an LTP-specific `RISCV_LTP_SMP ?= 4` without changing the repository-wide `SMP ?= 1` default.
 - `tools/riscv/tests/test_ltp_guest_runner.py` — executable guest-runner lifecycle regressions.
@@ -28,6 +29,7 @@
 - Modify: `tools/riscv/nixos/ltp/init_ltp.c`
 - Modify: `tools/riscv/ltp_gate.py`
 - Modify: `tools/riscv/nixos/ltp/build_ltp.sh`
+- Create: `tools/riscv/nixos/build_busybox.sh`
 - Test: `tools/riscv/tests/test_ltp_guest_runner.py`
 - Test: `tools/riscv/tests/test_ltp_gate.py`
 - Test: `tools/riscv/tests/test_ltp_result.py`
@@ -108,11 +110,18 @@ Add to `LtpGateDocumentationTests`:
 
 ```python
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
+BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
 
 
 def test_operator_guide_builds_the_required_busybox(self) -> None:
     source = OPERATOR_GUIDE.read_text()
 
+    self.assertTrue(BUSYBOX_BUILDER.is_file())
+    builder = BUSYBOX_BUILDER.read_text()
+    self.assertIn('CROSS_PREFIX="riscv64-linux-gnu-"', builder)
+    self.assertIn("ASH", builder)
+    self.assertIn("CAT", builder)
+    self.assertIn("TRUE", builder)
     self.assertIn("tools/riscv/nixos/build_busybox.sh", source)
     self.assertIn("target/nixos/busybox", source)
 ```
@@ -128,9 +137,17 @@ PYTHONPATH=tools/riscv python3 -m unittest \
 ```
 
 Expected: both tests fail because the script still warns after deleting the
-old rootfs and the operator guide does not name the BusyBox builder.
+old rootfs and the BusyBox builder is absent from this branch.
 
-- [ ] **Step 3: Add the fail-closed preflight before rootfs publication**
+- [ ] **Step 3: Port the reproducible BusyBox builder**
+
+Create `tools/riscv/nixos/build_busybox.sh` from the reviewed standalone file
+at `d1d142cae:tools/riscv/nixos/build_busybox.sh`. It must pin BusyBox 1.36.1,
+start from `allnoconfig`, use `riscv64-linux-gnu-` static linking, enable at
+least ASH/CAT/TRUE/ECHO/TEST plus the existing NixOS smoke applets, strip the
+result, and publish to `target/nixos/busybox`.
+
+- [ ] **Step 4: Add the fail-closed preflight before rootfs publication**
 
 Immediately after the existing compiler/LTP-source checks in
 `build_ltp.sh`, add:
@@ -155,7 +172,7 @@ done
 echo "busybox applets: $(ls "${ROOTFS}/bin")"
 ```
 
-- [ ] **Step 4: Document the prerequisite with the actual repository command**
+- [ ] **Step 5: Document the prerequisite with the actual repository command**
 
 Before the LTP build command in `tools/riscv/ltp/README.md`, state that the
 static helper is mandatory and show:
@@ -165,16 +182,17 @@ tools/riscv/nixos/build_busybox.sh
 test -x target/nixos/busybox
 ```
 
-- [ ] **Step 5: Run the focused tests and verify GREEN**
+- [ ] **Step 6: Run the focused tests and verify GREEN**
 
 Run the exact command from Step 2.
 
 Expected: 2 tests pass.
 
-- [ ] **Step 6: Commit the BusyBox contract**
+- [ ] **Step 7: Commit the BusyBox contract**
 
 ```bash
 git add tools/riscv/nixos/ltp/build_ltp.sh \
+  tools/riscv/nixos/build_busybox.sh \
   tools/riscv/ltp/README.md \
   tools/riscv/tests/test_ltp_guest_runner.py \
   tools/riscv/tests/test_ltp_gate.py
