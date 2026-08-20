@@ -80,6 +80,15 @@ class PpmAuditTests(unittest.TestCase):
                 self.assertEqual(audit.non_black_pixels, count)
                 self.assertEqual(audit.passed, passed)
 
+    def test_threshold_requires_three_colors_at_64_foreground_pixels(self) -> None:
+        two_colors = (b"\x01\0\0\x02\0\0") * 32
+        three_colors = (b"\x01\0\0\x02\0\0\x03\0\0") * 21 + b"\x01\0\0"
+        for pixels, passed in ((two_colors, False), (three_colors, True)):
+            with self.subTest(passed=passed):
+                audit = audit_ppm(ppm(64, 1, pixels), expected_width=64, expected_height=1)
+                self.assertEqual(audit.non_black_pixels, 64)
+                self.assertEqual(audit.passed, passed)
+
     def test_color_count_and_bounding_box_are_bounded_and_exact(self) -> None:
         two_colors = b"\0\0\0\x01\0\0"
         self.assertEqual(
@@ -99,7 +108,9 @@ class PpmAuditTests(unittest.TestCase):
 class QmpCaptureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        self.outside_tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
+        self.outside_root = Path(self.outside_tempdir.name)
         self.root.chmod(0o700)
         self.socket_path = self.root / "qmp.sock"
         self.output_path = self.root / "screen.ppm"
@@ -107,12 +118,15 @@ class QmpCaptureTests(unittest.TestCase):
         self.server_errors: list[BaseException] = []
 
     def tearDown(self) -> None:
-        for thread in self.threads:
-            thread.join(2)
-            self.assertFalse(thread.is_alive(), "fake QMP server did not finish")
-        if self.server_errors:
-            raise self.server_errors[0]
-        self.tempdir.cleanup()
+        try:
+            for thread in self.threads:
+                thread.join(2)
+                self.assertFalse(thread.is_alive(), "fake QMP server did not finish")
+            if self.server_errors:
+                raise self.server_errors[0]
+        finally:
+            self.tempdir.cleanup()
+            self.outside_tempdir.cleanup()
 
     def start_server(self, handler) -> None:
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -144,6 +158,13 @@ class QmpCaptureTests(unittest.TestCase):
             data.extend(part)
         return bytes(data)
 
+    def join_last_server(self) -> None:
+        thread = self.threads.pop()
+        thread.join(2)
+        self.assertFalse(thread.is_alive(), "fake QMP server did not finish")
+        if self.server_errors:
+            raise self.server_errors.pop(0)
+
     def test_fixed_two_command_protocol_returns_exact_output(self) -> None:
         payload = ppm(1, 1, b"\x01\x02\x03")
 
@@ -167,6 +188,8 @@ class QmpCaptureTests(unittest.TestCase):
         cases = (
             (b"not json\n", None),
             (b"{}\n", None),
+            (b"[]\n", None),
+            (b'"greeting"\n', None),
             (b'{"QMP":{}}\n', b'{"error":{}}\n'),
             (b'{"QMP":{}}\n', b'{"event":"STOP"}\n'),
             (b'{"QMP":{}}\n', b"{}\n"),
@@ -186,7 +209,46 @@ class QmpCaptureTests(unittest.TestCase):
                 self.start_server(handler)
                 with self.assertRaises(ValueError):
                     capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
-                self.threads.pop().join(2)
+                self.join_last_server()
+
+    def test_rejects_nonstandard_or_invalid_screendump_responses(self) -> None:
+        for response in (b'{"return":NaN}\n', b'{"return":Infinity}\n', b'{"return":-Infinity}\n', b"[]\n", b'"reply"\n', b'{"error":{}}\n', b'{"event":"STOP"}\n', b"{}\n"):
+            with self.subTest(response=response):
+                self.socket_path.unlink(missing_ok=True)
+
+                def handler(connection: socket.socket, response=response) -> None:
+                    connection.sendall(b'{"QMP":{}}\n')
+                    self.assertEqual(self.receive_line(connection), b'{"execute":"qmp_capabilities"}\n')
+                    connection.sendall(b'{"return":{}}\n')
+                    self.receive_line(connection)
+                    self.output_path.write_bytes(ppm(1, 1, b"\x01\x02\x03"))
+                    connection.sendall(response)
+
+                self.start_server(handler)
+                with self.assertRaises(ValueError):
+                    capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
+                self.join_last_server()
+
+    def test_rejects_nonstandard_json_constants_in_greeting(self) -> None:
+        for constant in (b"NaN", b"Infinity", b"-Infinity"):
+            with self.subTest(constant=constant):
+                self.socket_path.unlink(missing_ok=True)
+
+                def handler(connection: socket.socket, constant=constant) -> None:
+                    connection.sendall(b'{"QMP":' + constant + b"}\n")
+                    first_command = connection.recv(1024)
+                    if not first_command:
+                        return
+                    self.assertEqual(first_command, b'{"execute":"qmp_capabilities"}\n')
+                    connection.sendall(b'{"return":{}}\n')
+                    self.receive_line(connection)
+                    self.output_path.write_bytes(ppm(1, 1, b"\x01\x02\x03"))
+                    connection.sendall(b'{"return":{}}\n')
+
+                self.start_server(handler)
+                with self.assertRaises(ValueError):
+                    capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
+                self.join_last_server()
 
     def test_rejects_eof_and_overlong_response(self) -> None:
         for response in (b"", b"{" + b"x" * (64 * 1024) + b"\n"):
@@ -201,7 +263,22 @@ class QmpCaptureTests(unittest.TestCase):
                 self.start_server(handler)
                 with self.assertRaises(ValueError):
                     capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
-                self.threads.pop().join(2)
+                self.join_last_server()
+
+    def test_server_may_unlink_socket_after_accept(self) -> None:
+        payload = ppm(1, 1, b"\x01\x02\x03")
+
+        def handler(connection: socket.socket) -> None:
+            self.socket_path.unlink()
+            connection.sendall(b'{"QMP":{}}\n')
+            self.assertEqual(self.receive_line(connection), b'{"execute":"qmp_capabilities"}\n')
+            connection.sendall(b'{"return":{}}\n')
+            self.receive_line(connection)
+            self.output_path.write_bytes(payload)
+            connection.sendall(b'{"return":{}}\n')
+
+        self.start_server(handler)
+        self.assertEqual(capture_screendump(self.socket_path, self.output_path, capture_root=self.root), payload)
 
     def test_validates_timeout_and_path_safety_before_connecting(self) -> None:
         for timeout in (0, -1, math.inf, math.nan):
@@ -219,12 +296,21 @@ class QmpCaptureTests(unittest.TestCase):
             capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
 
     def test_rejects_symlinks_and_nonregular_or_missing_output(self) -> None:
-        outside = self.root.parent / "outside"
-        outside.mkdir(exist_ok=True)
+        outside = self.outside_root
         link = self.root / "link"
         link.symlink_to(outside, target_is_directory=True)
         with self.assertRaises(ValueError):
             capture_screendump(link / "qmp.sock", self.output_path, capture_root=self.root)
+        socket_link = self.root / "socket-link"
+        socket_link.symlink_to(outside / "qmp.sock")
+        with self.assertRaises(ValueError):
+            capture_screendump(socket_link, self.output_path, capture_root=self.root)
+        outside_output = outside / "screen.ppm"
+        outside_output.write_bytes(b"outside")
+        output_link = self.root / "output-link"
+        output_link.symlink_to(outside_output)
+        with self.assertRaises(ValueError):
+            capture_screendump(self.socket_path, output_link, capture_root=self.root)
         self.output_path.mkdir()
         with self.assertRaises(ValueError):
             capture_screendump(self.socket_path, self.output_path, capture_root=self.root)
