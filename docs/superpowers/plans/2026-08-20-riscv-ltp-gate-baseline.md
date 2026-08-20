@@ -879,7 +879,26 @@ git -C target/ltp/src describe --tags --exact-match
 
 Expected: `20260529`.
 
-- [ ] **Step 2: Build the current Sv39 RISC-V kernel in the project container**
+- [ ] **Step 2: Prepare the pinned RISC-V musl wrapper and sysroot**
+
+```bash
+mkdir -p target/ltp/toolchain/package target/ltp/toolchain/root
+curl --fail --location \
+  --output target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  https://archlinux.org/packages/extra/x86_64/musl-riscv64/download/
+printf '%s  %s\n' \
+  0797f54b48c415739bb5360739bc8f9dc8b2019e01de86d89c2859810200b589 \
+  target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  | sha256sum -c -
+tar --extract \
+  --file target/ltp/toolchain/package/musl-riscv64-1.2.6-1-x86_64.pkg.tar.zst \
+  --directory target/ltp/toolchain/root
+```
+
+Expected: the checksum passes and the extracted tree contains
+`usr/bin/riscv64-linux-musl-gcc` plus `usr/riscv64-linux-musl/`.
+
+- [ ] **Step 3: Build the current Sv39 RISC-V kernel in the project container**
 
 ```bash
 docker run --rm --privileged --network=host -v /dev:/dev \
@@ -895,14 +914,19 @@ docker run --rm --privileged --network=host -v /dev:/dev \
 Expected: `target/osdk/aster-kernel-osdk-bin.Image` exists and passes the
 repository Linux Image header validator.
 
-- [ ] **Step 3: Build and package the expanded LTP set**
+- [ ] **Step 4: Build and package the expanded LTP set**
 
-Use the local cross-build image:
+Use the same local cross-build image with the pinned musl materials mounted
+read-only:
 
 ```bash
 docker run --rm --network=host \
   -v "$(pwd):/root/asterinas" -w /root/asterinas \
-  asterinas-env:nixos-build \
+  -v "$(pwd)/target/ltp/toolchain/root/usr/bin/riscv64-linux-musl-gcc:\
+/usr/bin/riscv64-linux-musl-gcc:ro" \
+  -v "$(pwd)/target/ltp/toolchain/root/usr/riscv64-linux-musl:\
+/usr/riscv64-linux-musl:ro" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc \
   bash -lc 'restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
