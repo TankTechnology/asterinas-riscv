@@ -165,11 +165,15 @@ class ContractCompositionTests(unittest.TestCase):
             )
 
     def test_headless_rejects_all_runtime_paths(self) -> None:
-        with self.assertRaisesRegex(ValueError, "headless"):
-            render_device_argv(
-                HEADLESS,
-                RuntimeDevicePaths(capture_root=Path("/tmp/capture")),
-            )
+        for field, path in (
+            ("capture_root", Path("/tmp/capture")),
+            ("monitor_socket", Path("/tmp/qmp.sock")),
+            ("scratch_disk", Path("/tmp/scratch.img")),
+            ("nvme_disk", Path("/tmp/nvme.img")),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "headless"):
+                    render_device_argv(HEADLESS, RuntimeDevicePaths(**{field: path}))
 
     def test_framebuffer_paths_must_be_present_and_unused_disks_are_rejected(
         self,
@@ -180,15 +184,20 @@ class ContractCompositionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             capture_root = Path(temporary) / "capture"
             capture_root.mkdir(mode=0o700)
-            with self.assertRaisesRegex(ValueError, "unused"):
-                render_device_argv(
-                    MEGREZ_BASIC,
-                    RuntimeDevicePaths(
-                        capture_root=capture_root,
-                        monitor_socket=capture_root / "qmp.sock",
-                        scratch_disk=Path("/tmp/scratch.img"),
-                    ),
-                )
+            for field, path in (
+                ("scratch_disk", Path("/tmp/scratch.img")),
+                ("nvme_disk", Path("/tmp/nvme.img")),
+            ):
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(ValueError, "unused"):
+                        render_device_argv(
+                            MEGREZ_BASIC,
+                            RuntimeDevicePaths(
+                                capture_root=capture_root,
+                                monitor_socket=capture_root / "qmp.sock",
+                                **{field: path},
+                            ),
+                        )
 
     def test_framebuffer_paths_are_confined_and_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -222,7 +231,9 @@ class ContractCompositionTests(unittest.TestCase):
                         render_device_argv(MEGREZ_BASIC, paths)
 
             bad_mode = parent / "bad-mode"
-            bad_mode.mkdir(mode=0o755)
+            bad_mode.mkdir()
+            bad_mode.chmod(0o755)
+            self.assertEqual(bad_mode.stat().st_mode & 0o777, 0o755)
             with self.assertRaisesRegex(ValueError, "mode 0700"):
                 render_device_argv(
                     MEGREZ_BASIC,
