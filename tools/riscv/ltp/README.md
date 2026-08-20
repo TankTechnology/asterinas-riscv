@@ -110,6 +110,18 @@ mount. The gate validates this value before starting QEMU.
 The remaining commands in this guide run inside that shell or on an equivalent
 host environment.
 
+While a gate is running, inspect its current test and mutually exclusive
+counts from another shell:
+
+```bash
+python3 tools/riscv/ltp_gate.py status --run-id baseline-m1-smp1
+tail -f target/ltp/results/baseline-m1-smp1/progress.log
+```
+
+`progress.log` is a readable live mirror, not the authoritative evidence.
+After the completion marker, the QEMU driver atomically publishes the protected
+`serial.log`; the gate includes both files in `SHA256SUMS`.
+
 ## Baseline and strict modes
 
 Record the full SMP=1 baseline without rebuilding LTP:

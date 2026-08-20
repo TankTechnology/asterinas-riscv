@@ -98,6 +98,8 @@ class LtpGuestRunnerTests(unittest.TestCase):
             "[TIMEOUT] timeout01",
         ):
             self.assertIn(verdict, result.stdout)
+        self.assertIn("[RUN] 1 pass01", result.stdout)
+        self.assertIn("[RUN] 5 timeout01", result.stdout)
         self.assertIn("__LTP_GATE_DONE__", result.stdout)
         self.assertIn("__LTP_GATE_FAIL__", result.stdout)
         self.assertIn(
@@ -129,7 +131,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
             init = directory / "init"
             write_executable(
                 fixture,
-                f"#!/bin/sh\ntouch {marker}\n",
+                f"#!/bin/sh\ntouch {marker}\nexit 23\n",
             )
             subprocess.run(
                 [
@@ -138,6 +140,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
                     "-Wall",
                     "-Wextra",
                     "-Werror",
+                    "-DSKIP_CONSOLE_ATTACH=1",
                     f'-DRUNNER_PATH="{fixture}"',
                     "-o",
                     str(init),
@@ -149,8 +152,9 @@ class LtpGuestRunnerTests(unittest.TestCase):
             )
             process = subprocess.Popen(
                 [str(init)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
             try:
                 deadline = time.monotonic() + 2
@@ -161,7 +165,8 @@ class LtpGuestRunnerTests(unittest.TestCase):
                 self.assertIsNone(process.poll(), "PID 1 shim exited with the runner")
             finally:
                 process.terminate()
-                process.wait(timeout=2)
+                output, _ = process.communicate(timeout=2)
+            self.assertIn("runner exited with status 23", output)
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
