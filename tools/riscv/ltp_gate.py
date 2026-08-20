@@ -23,7 +23,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ltp_manifest import select_manifest
 
@@ -373,6 +373,8 @@ def _normalizer_command(repo: Path, paths: LtpRunPaths, commit: str, smp: int):
         str(paths.result_dir / "serial.log"),
         "--boot-result",
         str(paths.result_dir / "boot-result.json"),
+        "--manifest",
+        str(paths.result_dir / "selected-syscalls"),
         "--result",
         str(paths.result_dir / "result.json"),
         "--summary",
@@ -455,6 +457,36 @@ def _write_sha256s(repo: Path, output: Path, candidates: Sequence[Path]) -> None
         checksum_file.writelines(lines)
         checksum_file.flush()
         os.fsync(checksum_file.fileno())
+
+
+def _prepared_artifact_paths(
+    prepared_dir: Path,
+    document: Mapping[str, object],
+) -> tuple[Path, ...]:
+    """Verify and return the run-owned payloads named by a result document."""
+
+    artifacts = document.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        raise ValueError("result artifacts must be an object")
+    candidates = (
+        (prepared_dir / "fs-root/asterinas.booti", "kernel_sha256"),
+        (prepared_dir / "fs-root/initramfs.cpio.gz", "initrd_sha256"),
+        (prepared_dir / "fs-root/qemu-virt.dtb", "dtb_sha256"),
+        (prepared_dir / "boot.ext4", "boot_disk_sha256"),
+    )
+    for path, identity in candidates:
+        expected = artifacts.get(identity)
+        if (
+            not isinstance(expected, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+        ):
+            raise ValueError(f"{identity} must be a lowercase SHA-256")
+        if not path.is_file():
+            raise ValueError(f"prepared artifact is missing: {path}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValueError(f"prepared artifact does not match {identity}: {path}")
+    return tuple(path for path, _ in candidates)
 
 
 def _validate_run_paths(repo: Path, paths: LtpRunPaths) -> None:
@@ -581,11 +613,17 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
         )
 
         result_path = paths.result_dir / "result.json"
+        if (
+            qemu.returncode != 0
+            or normalized.returncode != 0
+            or not result_path.is_file()
+        ):
+            return 1
+        document = json.loads(result_path.read_text())
+        prepared_artifacts = _prepared_artifact_paths(paths.prepared_dir, document)
         checksum_inputs = (
-            paths.kernel,
-            selected_initramfs,
+            *prepared_artifacts,
             manifest_evidence,
-            paths.prepared_dir / "boot.ext4",
             paths.prepared_dir / "artifacts.json",
             paths.prepared_dir / "qemu-dtb-audit.json",
             paths.result_dir / "serial.log",
@@ -596,13 +634,6 @@ def _run_gate(repo: Path, args: argparse.Namespace) -> int:
             paths.result_dir / "summary.txt",
         )
         _write_sha256s(repo, paths.result_dir / "SHA256SUMS", checksum_inputs)
-        if (
-            qemu.returncode != 0
-            or normalized.returncode != 0
-            or not result_path.is_file()
-        ):
-            return 1
-        document = json.loads(result_path.read_text())
         infrastructure_passed = document.get("infrastructure_passed") is True
         ltp_passed = document.get("ltp_passed") is True
         return exit_code(
