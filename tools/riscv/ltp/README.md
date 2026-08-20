@@ -174,6 +174,9 @@ python3 tools/riscv/ltp_gate.py run \
 Every run ID is immutable and may contain only letters, digits, dots,
 underscores, and hyphens.
 Choose a new ID for every rerun.
+The prepared boot artifacts are isolated under
+`target/ltp/qemu/smp<count>/<run-id>/`, so a later run cannot invalidate an
+earlier run's checksums.
 
 ## Results and count semantics
 
