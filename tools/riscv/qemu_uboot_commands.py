@@ -16,6 +16,13 @@ from qemu_uboot_artifacts import (
     KERNEL_LOAD_ADDRESS,
     ArtifactExpectations,
 )
+from qemu_uboot_devices import (
+    HEADLESS,
+    QemuDeviceSet,
+    RuntimeDevicePaths,
+    render_device_argv,
+    validate_registered_device_set,
+)
 from qemu_uboot_profiles import (
     GENERIC_SV39,
     BootActionKind,
@@ -90,8 +97,34 @@ def qemu_argv(
     slow_permit: object | None = None,
     guest_reboot: bool = False,
     snapshot_disk: bool = False,
+    device_set: QemuDeviceSet = HEADLESS,
+    device_paths: RuntimeDevicePaths | None = None,
 ) -> list[str]:
     """Construct the selected guarded QEMU U-Boot command line."""
+
+    validate_registered_device_set(device_set)
+    argv = _base_qemu_argv(
+        uboot=uboot,
+        boot_disk=boot_disk,
+        profile=profile,
+        slow_permit=slow_permit,
+        guest_reboot=guest_reboot,
+        snapshot_disk=snapshot_disk,
+    )
+    argv.extend(render_device_argv(device_set, device_paths))
+    return argv
+
+
+def _base_qemu_argv(
+    *,
+    uboot: Path,
+    boot_disk: Path,
+    profile: QemuUbootProfile = GENERIC_SV39,
+    slow_permit: object | None = None,
+    guest_reboot: bool = False,
+    snapshot_disk: bool = False,
+) -> list[str]:
+    """Construct the pre-device QEMU U-Boot command line."""
 
     if "," in os.fspath(boot_disk):
         raise ValueError("QEMU boot disk path must not contain a comma")
