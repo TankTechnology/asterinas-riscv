@@ -10,7 +10,7 @@ from pathlib import Path
 
 from qemu_uboot_artifacts import (
     DEFAULT_ARTIFACTS,
-    DTB_EXPANSION_SIZE,
+    DTB_LEGACY_COMMAND_EXPANSION_SIZE,
     DTB_LOAD_ADDRESS,
     INITRD_LOAD_ADDRESS,
     KERNEL_LOAD_ADDRESS,
@@ -334,7 +334,11 @@ def boot_commands(
             artifacts.dtb_crc32,
         ),
         BootCommand("dtb-select", f"fdt addr {dtb_address}", "Working FDT set"),
-        BootCommand("dtb-resize", f"fdt resize {DTB_EXPANSION_SIZE:#x}", "=>"),
+        BootCommand(
+            "dtb-resize",
+            f"fdt resize {DTB_LEGACY_COMMAND_EXPANSION_SIZE:#x}",
+            "=>",
+        ),
         *_framebuffer_plan(device_set),
         BootCommand(
             "bootargs-env",
