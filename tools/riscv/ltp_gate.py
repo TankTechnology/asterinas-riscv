@@ -802,7 +802,15 @@ def main(argv: Sequence[str] | None = None, *, repo: Path = REPO_ROOT) -> int:
         ]
         if args.skip_compile:
             command.append("--skip-compile")
-        subprocess.run(command, cwd=resolved_repo, check=True)
+        build_environment = os.environ.copy()
+        build_environment["ASTERINAS_LTP_PACKAGE_LOCK_HELD"] = "1"
+        with _package_lock(resolved_repo):
+            subprocess.run(
+                command,
+                cwd=resolved_repo,
+                env=build_environment,
+                check=True,
+            )
         return 0
     if args.command == "status":
         return _show_status(resolved_repo, args.run_id)
