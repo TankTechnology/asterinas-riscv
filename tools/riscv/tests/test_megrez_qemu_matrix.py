@@ -7,7 +7,6 @@ import math
 import os
 from pathlib import Path
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -15,7 +14,7 @@ import threading
 import unittest
 from unittest import mock
 
-from tools.riscv.qemu_ppm import PpmAudit, audit_ppm
+from tools.riscv.qemu_ppm import audit_ppm
 import tools.riscv.qemu_qmp as qmp
 from tools.riscv.qemu_qmp import capture_screendump
 
