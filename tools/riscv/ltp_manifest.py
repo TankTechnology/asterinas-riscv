@@ -125,6 +125,7 @@ def _publish_text(path: Path, payload: str) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write(payload)
+            os.fchmod(output.fileno(), 0o644)
             output.flush()
             os.fsync(output.fileno())
         os.link(temporary, path)
