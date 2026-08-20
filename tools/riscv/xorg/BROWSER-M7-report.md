@@ -170,7 +170,7 @@ screenshot contains **65 651 `#FF8800` pixels** (`nav=2 box=1 redraw=2`) — the
 orange single-frame GIF decoded and plotted at full 320×240. No decode fix was
 needed.
 
-This is the same mis-diagnosis class as M2's "CSS gap" (a crash-loop) and
+This is the same misdiagnosis class as M2's "CSS gap" (a crash-loop) and
 M3.6/M4's "deferred decode never runs" (it ran on redraw): a screenshot
 observation of a *clipped* page read as a format-specific render bug.
 
