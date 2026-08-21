@@ -149,9 +149,11 @@ EOF
 #     symlinks (ls, cat, sh, ...) live in /bin only, while this systemd build's
 #     compiled-in default service PATH excludes /bin — without this, shells
 #     spawned by services (e.g. xterm) cannot find `ls` ("sh: ls: not found").
+#     DBUS_SYSTEM_BUS_ADDRESS: dbus clients' compiled-in default socket path
+#     is the *host* prefix's var/run/dbus; point every service at the real one.
 cat > "${ROOTFS}/etc/systemd/system.conf" <<'EOF'
 [Manager]
-DefaultEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DefaultEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 EOF
 
 # 7. Unit set: default.target -> graphical.target -> multi-user.target ->
@@ -183,6 +185,58 @@ if ls "${ROOTFS}/usr/lib/systemd"/libudev.so.1.* >/dev/null 2>&1; then
 else
     echo "WARNING: libudev.so.1 not found; evdev input will crash Xorg" >&2
 fi
+
+# 8c. D-Bus system bus (XFCE-M1): the reference dbus-daemon was cross-built
+#     into the prefix by build_dbus.sh (dynamic, glibc-only NEEDED). Xfce's
+#     session/notification/settings stack all talk over the system+session
+#     buses, so this lands before any Xfce package does.
+for tool in dbus-daemon dbus-launch dbus-send dbus-uuidgen dbus-monitor \
+            dbus-run-session dbus-update-activation-environment; do
+    if [ -f "${CROSS_USR}/bin/${tool}" ]; then
+        cp "${CROSS_USR}/bin/${tool}" "${ROOTFS}/usr/bin/${tool}"
+    else
+        echo "WARNING: ${tool} not found in cross prefix; D-Bus incomplete" >&2
+    fi
+done
+# dbus-daemon-launch-helper: setuid helper referenced by system.conf's
+# <servicehelper> directive (system service activation). The bus itself does
+# not need it for XFCE-M1, but shipping it keeps the config reference valid.
+if [ -f "${CROSS_USR}/libexec/dbus-daemon-launch-helper" ]; then
+    mkdir -p "${ROOTFS}/usr/libexec"
+    cp "${CROSS_USR}/libexec/dbus-daemon-launch-helper" "${ROOTFS}/usr/libexec/dbus-daemon-launch-helper"
+else
+    echo "WARNING: dbus-daemon-launch-helper not found; service activation will fail" >&2
+fi
+if [ -f "${CROSS_USR}/etc/dbus-1/system.conf" ]; then
+    mkdir -p "${ROOTFS}/etc/dbus-1"
+    cp "${CROSS_USR}/etc/dbus-1/system.conf" "${ROOTFS}/etc/dbus-1/"
+else
+    echo "WARNING: dbus system.conf not found; system bus will not start" >&2
+fi
+# The daemon's compiled-in default config path is the *host* prefix's
+# share/dbus-1/system.conf; the step-3 bridge maps that to /usr/share/dbus-1,
+# so ship the whole dir (config + system.d + system-services for activation).
+if [ -d "${CROSS_USR}/share/dbus-1" ]; then
+    mkdir -p "${ROOTFS}/usr/share/dbus-1"
+    cp -r "${CROSS_USR}/share/dbus-1/." "${ROOTFS}/usr/share/dbus-1/"
+fi
+# The stock configs carry baked *host* prefix paths (listen socket, pidfile,
+# include dirs, service helper); rewrite them to canonical guest locations.
+# Also strip <fork/> and <syslog/>: systemd Type=simple expects --nofork, and
+# the guest has no syslog daemon (dbus.service passes --nosyslog).
+PFX="${CROSS_USR}"
+for f in "${ROOTFS}/usr/share/dbus-1/system.conf" \
+         "${ROOTFS}/usr/share/dbus-1/session.conf" \
+         "${ROOTFS}/etc/dbus-1/system.conf"; do
+    [ -f "$f" ] || continue
+    sed -i -e "s|${PFX}/etc/dbus-1|/etc/dbus-1|g" \
+           -e "s|${PFX}/var/run/dbus|/run/dbus|g" \
+           -e "s|${PFX}|/usr|g" \
+           -e '/^[[:space:]]*<fork\/>/d' \
+           -e '/^[[:space:]]*<syslog\/>/d' \
+           -e '/^[[:space:]]*<pidfile>/d' "$f"
+done
+mkdir -p "${ROOTFS}/var/lib/dbus"
 
 # 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm/netsurf-gtk are
 #    dynamic or static; all resolve against the glibc runtime in /lib).
