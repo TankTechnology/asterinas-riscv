@@ -75,8 +75,9 @@ PANIC_MARKERS = [
 ]
 
 
-def uboot_commands(loglevel: str = "warn") -> list[tuple[str, str, str]]:
+def uboot_commands(fb_addr: int, loglevel: str = "warn") -> list[tuple[str, str, str]]:
     """U-Boot command sequence: booti handoff + bochs framebuffer DTB injection."""
+    fb_node = f"framebuffer@{fb_addr:x}"
     return [
         ("version", "version", "U-Boot 2026"),
         ("virtio-scan", "virtio scan", "=>"),
@@ -85,16 +86,16 @@ def uboot_commands(loglevel: str = "warn") -> list[tuple[str, str, str]]:
         ("dtb-load", f"ext4load virtio 0:0 {DTB_LOAD:#x} /qemu-virt.dtb", "bytes read"),
         ("dtb-select", f"fdt addr {DTB_LOAD:#x}", "Working FDT set"),
         ("dtb-resize", "fdt resize 0x1000", "=>"),
-        ("pci-probe", "pci display 0.1.0", "=>"),
-        ("fb-mknode", "fdt mknode / framebuffer@40000000", "=>"),
-        ("fb-compatible", 'fdt set /framebuffer@40000000 compatible "simple-framebuffer"', "=>"),
-        ("fb-reg", "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>", "=>"),
-        ("fb-width", "fdt set /framebuffer@40000000 width <0x500>", "=>"),
-        ("fb-height", "fdt set /framebuffer@40000000 height <0x400>", "=>"),
-        ("fb-stride", "fdt set /framebuffer@40000000 stride <0x1400>", "=>"),
-        ("fb-format", 'fdt set /framebuffer@40000000 format "x8r8g8b8"', "=>"),
-        ("fb-status", 'fdt set /framebuffer@40000000 status "okay"', "=>"),
-        ("fb-verify", "fdt print /framebuffer@40000000", "simple-framebuffer"),
+        ("pci-probe", "pci", "=>"),  # full PCI scan to assign BARs
+        ("fb-mknode", f"fdt mknode / {fb_node}", "=>"),
+        ("fb-compatible", f'fdt set /{fb_node} compatible "simple-framebuffer"', "=>"),
+        ("fb-reg", f"fdt set /{fb_node} reg <0x0 {fb_addr:#x} 0x0 0x1000000>", "=>"),
+        ("fb-width", f"fdt set /{fb_node} width <0x500>", "=>"),
+        ("fb-height", f"fdt set /{fb_node} height <0x400>", "=>"),
+        ("fb-stride", f"fdt set /{fb_node} stride <0x1400>", "=>"),
+        ("fb-format", f'fdt set /{fb_node} format "x8r8g8b8"', "=>"),
+        ("fb-status", f'fdt set /{fb_node} status "okay"', "=>"),
+        ("fb-verify", f"fdt print /{fb_node}", "simple-framebuffer"),
         ("bootargs", f'setenv bootargs "console=ttyS0 loglevel={loglevel} init=/init"', "=>"),
         ("initrd-load", f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz", "bytes read"),
         ("initrd-size-save", "setenv initrd_size ${filesize}", "=>"),
@@ -221,8 +222,8 @@ def main() -> int:
         "-no-reboot",
         "-kernel", str(UBOOT),
         "-drive", f"if=none,format=raw,file={boot_disk},id=bootdisk",
-        "-device", "virtio-blk-device,drive=bootdisk",
         "-device", "bochs-display",
+        "-device", "virtio-blk-device,drive=bootdisk",
         "-device", "virtio-keyboard-device",
         "-device", "virtio-tablet-device",
         "-serial", "stdio",
@@ -240,7 +241,36 @@ def main() -> int:
         print("[boot] waiting for U-Boot prompt", flush=True)
         boot.read_until(b"=> ", 60)
 
-        for name, text, expected in uboot_commands(args.loglevel):
+        # --- Dynamic PCI BAR probing ---
+        # The bochs-display framebuffer address is not hardcoded — it depends on
+        # QEMU's PCI BAR assignment order.  We send a bare `pci` to trigger a
+        # PCI bus scan (which assigns BARs), then `pci bar 0.0.0` to read the
+        # BAR0 of the first device (bochs-display when it is placed before the
+        # virtio-blk-device on the QEMU command line).
+        FALLBACK_FB_ADDR = 0x4000_0000
+        fb_addr = FALLBACK_FB_ADDR
+
+        print("[uboot] pci-scan", flush=True)
+        boot.send("pci enum")
+        boot.read_until(b"=> ", 30)
+
+        print("[uboot] pci-bar-probe", flush=True)
+        boot.send("pci bar 0.1.0")
+        # U-Boot output: "BAR0: base=0xNNNNNNNN size=0xNNNNNNNN"
+        bar_output = boot.read_until(b"=> ", 30)
+        bar_text = bytes(boot.transcript[-3000:]).decode("utf-8", "replace")
+        # U-Boot pci bar output format (from pci_bar_show in cmd/pci.c):
+        #   ID   Base                Size                Width  Type
+        #   ----------------------------------------------------------
+        #    0   0x0000000040000000  0x0000000001000000  32     MEM   Prefetchable
+        bar_match = re.search(r"^\s*0\s+(0x[0-9a-fA-F]+)\s+", bar_text, re.MULTILINE)
+        if bar_match:
+            fb_addr = int(bar_match.group(1), 16)
+            print(f"[ok] bochs-display BAR0 = {fb_addr:#x}", flush=True)
+        else:
+            print(f"[warn] could not parse BAR0 from U-Boot; falling back to {FALLBACK_FB_ADDR:#x}", flush=True)
+
+        for name, text, expected in uboot_commands(fb_addr, args.loglevel):
             print(f"[uboot] {name}", flush=True)
             boot.send(text)
             if name == "booti":
