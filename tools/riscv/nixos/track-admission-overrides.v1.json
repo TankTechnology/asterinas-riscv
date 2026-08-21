@@ -73,11 +73,11 @@
   },
   "8a7396a1fae4dfce21b2d0e19794b83dd7771bd8": {
     "disposition": "portable",
-    "reason": "The useful unit in this M7 commit is standalone scm_repro.c exercising SCM_RIGHTS and SO_PEERCRED; carry that file to #67, but do not admit its old boot/rootfs scripts or PASS claim.",
+    "reason": "The standalone SCM_RIGHTS/SO_PEERCRED fixture is admitted at tools/riscv/nixos/m7/scm_repro.c for #67; the source commit's rootfs/boot scripts and historical PASS claim remain excluded.",
     "destination": "#67 (selectively adapt and re-test in generated multi-user NixOS)",
     "subsystem": "NixOS userspace / Unix-domain IPC reproducer",
     "main_equivalent_or_pr": "N/A: standalone scm_repro.c is not on main and is not in an existing PR",
-    "verification": "git diff-tree --stat 8a7396a1fae4dfce21b2d0e19794b83dd7771bd8^ 8a7396a1fae4dfce21b2d0e19794b83dd7771bd8; run the destination's focused local acceptance checks before admission"
+    "verification": "python3 -m unittest tools.riscv.tests.test_nixos_m7_assets -v; cc -Wall -Wextra -Werror -fsyntax-only tools/riscv/nixos/m7/scm_repro.c"
   },
   "300593d43a322dbfbf410794adb672b67c4737e0": {
     "disposition": "portable",
