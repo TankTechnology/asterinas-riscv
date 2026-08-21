@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
 use core::ops::Range;
 
-use aster_softirq::Taskless;
+use aster_input::input_dev::RegisteredInputDevice;
 use fdt::node::FdtNode;
 use ostd::{
     arch::{
@@ -14,7 +13,7 @@ use ostd::{
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
-    sync::{Mutex, SpinLock},
+    sync::{Mutex, SpinLock, Waiter},
 };
 use spin::Once;
 
@@ -291,32 +290,31 @@ pub(super) fn init() {
 }
 
 static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
-static USB_TASKLESS: Once<Arc<Taskless>> = Once::new();
-static IRQ_LINE: Once<ostd::arch::irq::MappedIrqLine> = Once::new();
 
-fn process_deferred_keyboard() {
-    let Some(keyboard) = KEYBOARD.get() else {
-        return;
-    };
-    let mut decoder = HidBootKeyboard::new();
-    let mut registered = None;
+struct DeferredKeyboardState {
+    decoder: HidBootKeyboard,
+    registered: Option<RegisteredInputDevice>,
+}
+
+fn process_deferred_keyboard(
+    keyboard: &Mutex<PollingUsbKeyboard>,
+    state: &mut DeferredKeyboardState,
+) -> bool {
     loop {
-        let mut keyboard_guard = keyboard.lock();
-        let report = match keyboard_guard.poll_report() {
-            Ok(Some(report)) => report,
-            Ok(None) => {
-                // No report ready; the interrupt will schedule us again.
-                return;
-            }
-            Err(error) => {
-                ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
-                return;
+        let (report, info) = {
+            let mut keyboard = keyboard.lock();
+            match keyboard.poll_report() {
+                Ok(Some(report)) => (report, keyboard.info()),
+                Ok(None) => return true,
+                Err(error) => {
+                    ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
+                    return false;
+                }
             }
         };
-        let events = decoder.decode(report);
+        let events = state.decoder.decode(report);
         if !events.is_empty() {
-            let device = registered.get_or_insert_with(|| {
-                let info = keyboard_guard.info();
+            let device = state.registered.get_or_insert_with(|| {
                 ostd::info!(
                     "USB boot keyboard registered: {:04x}:{:04x}",
                     info.vendor_id,
@@ -332,9 +330,9 @@ fn process_deferred_keyboard() {
 /// Interrupt-driven USB boot keyboard loop.
 ///
 /// The xHCI event ring interrupt (from the DTB `interrupt-parent`/`interrupt`
-/// properties) drives the keyboard: the handler drains the event ring and
-/// schedules a deferred task that reads the completed report and emits evdev
-/// events. No polling loop runs while the keyboard is idle.
+/// properties) drives the keyboard: the handler wakes this task, which drains
+/// the event ring and emits evdev events. No polling loop runs while the
+/// keyboard is idle.
 pub fn run_polling() {
     let Some(resources) = HOST_RESOURCES.lock().take() else {
         return;
@@ -359,8 +357,7 @@ pub fn run_polling() {
         }
     };
     KEYBOARD.call_once(|| keyboard);
-
-    USB_TASKLESS.call_once(|| Taskless::new(process_deferred_keyboard));
+    let keyboard = KEYBOARD.get().unwrap();
 
     // Register the xHCI event-ring interrupt with the PLIC.
     let mut irq_line = match IrqLine::alloc() {
@@ -370,11 +367,9 @@ pub fn run_polling() {
             return;
         }
     };
-    let taskless = USB_TASKLESS.get().unwrap().clone();
+    let (waiter, waker) = Waiter::new_pair();
     irq_line.on_active(move |_| {
-        // The event ring is drained under the keyboard lock; the handler only
-        // schedules the deferred task, which does the actual work.
-        taskless.schedule_urgent();
+        waker.wake_up();
     });
 
     let irq_chip = match arch_irq::IRQ_CHIP.get() {
@@ -388,20 +383,26 @@ pub fn run_polling() {
         interrupt_parent: resources.config.interrupt_parent,
         interrupt: resources.config.interrupt,
     };
-    let mapped = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
+    let _mapped_irq = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
         Ok(mapped) => mapped,
         Err(_) => {
             ostd::warn!("failed to map USB interrupt to PLIC");
             return;
         }
     };
-    IRQ_LINE.call_once(|| mapped);
 
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
-    // Drain any report that arrived during setup, then hand over to the
-    // interrupt-driven path. Static storage owns the keyboard and IRQ mapping.
-    USB_TASKLESS.get().unwrap().schedule_urgent();
+    let mut state = DeferredKeyboardState {
+        decoder: HidBootKeyboard::new(),
+        registered: None,
+    };
+    loop {
+        if !process_deferred_keyboard(keyboard, &mut state) {
+            return;
+        }
+        waiter.wait();
+    }
 }
 
 #[cfg(ktest)]
