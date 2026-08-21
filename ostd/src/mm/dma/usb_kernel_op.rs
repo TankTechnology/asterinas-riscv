@@ -143,6 +143,11 @@ impl UsbKernelOp {
         self.allocations.lock().len()
     }
 
+    #[cfg(ktest)]
+    pub(crate) fn translate_for_test(&self, cpu_range: Range<usize>) -> Option<Range<usize>> {
+        self.window.translate(cpu_range)
+    }
+
     pub(crate) fn log_dma_snapshot(&self) {
         let allocations = self.allocations.lock();
         let mappings = self.mappings.lock();
