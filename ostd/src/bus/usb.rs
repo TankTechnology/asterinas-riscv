@@ -57,6 +57,8 @@ pub enum UsbKeyboardError {
     HostCreate,
     /// xHCI initialization failed.
     HostInit,
+    /// Enabling or disabling xHCI interrupts failed.
+    Interrupt,
     /// A controller operation exceeded its deadline.
     Timeout(UsbKeyboardStage),
     /// USB device enumeration failed.
@@ -440,13 +442,6 @@ fn abandon_open_device(xhci: XhciHost, events: EventHandler, device: Device) {
 }
 
 /// A polling USB HID boot keyboard backed by CrabUSB's xHCI driver.
-///
-/// # Safety
-///
-/// `Send` is sound because moving the keyboard transfers exclusive ownership
-/// of the controller state. Event-ring and endpoint operations are exposed
-/// only through methods that require `&mut self`; after the move, the kernel
-/// keeps the keyboard behind a `Mutex` and accesses it from one worker task.
 pub struct PollingUsbKeyboard {
     // CrabUSB has no controller shutdown API. Keep DMA-visible state alive even if the polling
     // worker exits after a transfer error.
@@ -484,11 +479,6 @@ impl ReportEndpoint for Endpoint {
     }
 }
 
-// SAFETY: See the `PollingUsbKeyboard` docs: moving the value transfers the
-// complete controller ownership graph, which is subsequently accessed only
-// through `&mut self` under the worker's `Mutex`.
-unsafe impl Send for PollingUsbKeyboard {}
-
 impl PollingUsbKeyboard {
     /// Starts the firmware-configured xHCI controller and discovers one boot keyboard.
     pub fn open(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
@@ -508,7 +498,9 @@ impl PollingUsbKeyboard {
             }
         }
 
-        if xhci.host.enable_irq().is_err() {
+        // CrabUSB enables the global xHCI interrupt at the end of initialization. Keep it
+        // disabled until the kernel has installed the platform interrupt mapping.
+        if xhci.host.disable_irq().is_err() {
             abandon_host(xhci, events);
             return Err(UsbKeyboardError::HostInit);
         }
@@ -622,6 +614,24 @@ impl PollingUsbKeyboard {
     /// Returns the selected keyboard's USB identity.
     pub fn info(&self) -> UsbKeyboardInfo {
         self.inner.info
+    }
+
+    /// Enables the xHCI global interrupt after the platform IRQ handler is installed.
+    pub fn enable_irq(&mut self) -> Result<(), UsbKeyboardError> {
+        self.inner
+            ._xhci
+            .host
+            .enable_irq()
+            .map_err(|_| UsbKeyboardError::Interrupt)
+    }
+
+    /// Disables the xHCI global interrupt before the platform IRQ handler is removed.
+    pub fn disable_irq(&mut self) -> Result<(), UsbKeyboardError> {
+        self.inner
+            ._xhci
+            .host
+            .disable_irq()
+            .map_err(|_| UsbKeyboardError::Interrupt)
     }
 
     /// Pumps xHCI and returns one completed eight-byte HID boot report, if available.

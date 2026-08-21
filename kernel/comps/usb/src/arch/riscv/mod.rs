@@ -359,7 +359,10 @@ pub fn run_polling() {
     KEYBOARD.call_once(|| keyboard);
     let keyboard = KEYBOARD.get().unwrap();
 
-    // Register the xHCI event-ring interrupt with the PLIC.
+    let (waiter, waker) = Waiter::new_pair();
+
+    // Register the xHCI event-ring interrupt with the PLIC while the controller
+    // IRQ is disabled.
     let mut irq_line = match IrqLine::alloc() {
         Ok(line) => line,
         Err(_) => {
@@ -367,7 +370,6 @@ pub fn run_polling() {
             return;
         }
     };
-    let (waiter, waker) = Waiter::new_pair();
     irq_line.on_active(move |_| {
         waker.wake_up();
     });
@@ -391,6 +393,11 @@ pub fn run_polling() {
         }
     };
 
+    if let Err(error) = keyboard.lock().enable_irq() {
+        ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
+        return;
+    }
+
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
     let mut state = DeferredKeyboardState {
@@ -399,6 +406,9 @@ pub fn run_polling() {
     };
     loop {
         if !process_deferred_keyboard(keyboard, &mut state) {
+            if let Err(error) = keyboard.lock().disable_irq() {
+                ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
+            }
             return;
         }
         waiter.wait();
