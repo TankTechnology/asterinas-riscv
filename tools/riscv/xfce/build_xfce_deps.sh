@@ -384,9 +384,10 @@ build_gdk_pixbuf() {
   cd "$SRC"
   local d; d=$(srcdir gdk-pixbuf-2.42.12.tar.xz \
     https://download.gnome.org/sources/gdk-pixbuf/2.42/gdk-pixbuf-2.42.12.tar.xz)
-  # builtin_loaders=png: avoids the runtime gdk-pixbuf-query-loaders
-  # loaders.cache dance for the one format Xfce icons actually need (the cache
-  # generator is a target binary that cannot run on the build host).
+  # builtin_loaders=png,xpm: avoids the runtime gdk-pixbuf-query-loaders
+  # loaders.cache dance (the generator is a target binary that cannot run on
+  # the build host). png for icons; xpm because xfwm4's bundled window-frame
+  # themes are all .xpm — without the loader xfwm4 draws no decorations.
   # shellcheck disable=SC2046
   MESON_SETUP "$SRC/$d" \
     $(mopt "$SRC/$d/meson_options.txt" png enabled) \
@@ -396,7 +397,7 @@ build_gdk_pixbuf() {
     $(mopt "$SRC/$d/meson_options.txt" man false) \
     $(mopt "$SRC/$d/meson_options.txt" tests false) \
     $(mopt "$SRC/$d/meson_options.txt" installed_tests false) \
-    $(mopt "$SRC/$d/meson_options.txt" builtin_loaders png) \
+    $(mopt "$SRC/$d/meson_options.txt" builtin_loaders png,xpm) \
     $(mopt "$SRC/$d/meson_options.txt" relocatable false) \
     $(mopt "$SRC/$d/meson_options.txt" gtk_doc false)
   NINJA_INSTALL "$SRC/$d/build-riscv"

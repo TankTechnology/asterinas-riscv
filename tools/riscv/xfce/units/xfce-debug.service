@@ -1,0 +1,11 @@
+[Unit]
+Description=XFCE-M3 debug dump (process table + session state to serial)
+After=xfce-session.service
+PartOf=graphical.target
+
+[Service]
+KeyringMode=inherit
+Type=oneshot
+# No journald in this rootfs; write straight to the serial console (the
+# session wrapper does the same and its output is visible).
+ExecStart=/bin/sh -c "sleep 150; echo XFCE-DEBUG-BEGIN > /dev/ttyS0; ps aux > /dev/ttyS0 2>&1; ls -la /run/xfce-root /tmp/.X11-unix > /dev/ttyS0 2>&1; echo XFCE-DEBUG-END > /dev/ttyS0"
