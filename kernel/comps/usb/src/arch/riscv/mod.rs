@@ -9,7 +9,7 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::PollingUsbKeyboard,
+    bus::usb::{PollingUsbKeyboard, UsbKeyboardError},
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -296,6 +296,34 @@ struct DeferredKeyboardState {
     registered: Option<RegisteredInputDevice>,
 }
 
+struct EnabledKeyboardIrq<'a> {
+    keyboard: &'a Mutex<PollingUsbKeyboard>,
+}
+
+impl<'a> EnabledKeyboardIrq<'a> {
+    fn new(keyboard: &'a Mutex<PollingUsbKeyboard>) -> Result<Self, UsbKeyboardError> {
+        let enable_result = keyboard.lock().enable_irq();
+        if let Err(error) = enable_result {
+            if let Err(disable_error) = keyboard.lock().disable_irq() {
+                ostd::warn!(
+                    "failed to restore disabled xHCI interrupts after enable error: {:?}",
+                    disable_error
+                );
+            }
+            return Err(error);
+        }
+        Ok(Self { keyboard })
+    }
+}
+
+impl Drop for EnabledKeyboardIrq<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.keyboard.lock().disable_irq() {
+            ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
+        }
+    }
+}
+
 fn process_deferred_keyboard(
     keyboard: &Mutex<PollingUsbKeyboard>,
     state: &mut DeferredKeyboardState,
@@ -361,18 +389,15 @@ pub fn run_polling() {
 
     let (waiter, waker) = Waiter::new_pair();
 
-    // Register the xHCI event-ring interrupt with the PLIC while the controller
-    // IRQ is disabled.
-    let mut irq_line = match IrqLine::alloc() {
+    // Map the xHCI event-ring interrupt while both the PLIC source and the
+    // controller IRQ are disabled.
+    let irq_line = match IrqLine::alloc() {
         Ok(line) => line,
         Err(_) => {
             ostd::warn!("failed to allocate USB IRQ line");
             return;
         }
     };
-    irq_line.on_active(move |_| {
-        waker.wake_up();
-    });
 
     let irq_chip = match arch_irq::IRQ_CHIP.get() {
         Some(chip) => chip,
@@ -385,18 +410,32 @@ pub fn run_polling() {
         interrupt_parent: resources.config.interrupt_parent,
         interrupt: resources.config.interrupt,
     };
-    let _mapped_irq = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
+    let mut mapped_irq = match irq_chip.map_fdt_pin_to_masked(interrupt_source, irq_line) {
         Ok(mapped) => mapped,
         Err(_) => {
             ostd::warn!("failed to map USB interrupt to PLIC");
             return;
         }
     };
-
-    if let Err(error) = keyboard.lock().enable_irq() {
-        ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
+    if mapped_irq
+        .on_active_and_mask(move |_| {
+            waker.wake_up();
+        })
+        .is_err()
+    {
+        ostd::warn!("failed to register exclusive USB IRQ callback");
         return;
     }
+
+    // Keep this guard declared after `mapped_irq`: reverse drop order disables
+    // the xHCI INTE bit before the PLIC mapping is torn down.
+    let _enabled_keyboard_irq = match EnabledKeyboardIrq::new(keyboard) {
+        Ok(guard) => guard,
+        Err(error) => {
+            ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
+            return;
+        }
+    };
 
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
@@ -406,9 +445,10 @@ pub fn run_polling() {
     };
     loop {
         if !process_deferred_keyboard(keyboard, &mut state) {
-            if let Err(error) = keyboard.lock().disable_irq() {
-                ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
-            }
+            return;
+        }
+        if mapped_irq.rearm().is_err() {
+            ostd::warn!("USB IRQ rearm rejected by mapping state");
             return;
         }
         waiter.wait();
