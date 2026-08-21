@@ -54,7 +54,7 @@ Sv39/module documentation and test diagnostics were corrected.
 
 > ```diff
 >  pub(super) use mapped_item::MappedItem;
->  
+>
 > +mod mapped_item {
 > +    //! Kernel page-table item representation and construction policy.
 > ```
