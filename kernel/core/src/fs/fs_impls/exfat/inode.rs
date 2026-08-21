@@ -641,7 +641,7 @@ impl ExfatInodeInner {
 }
 
 impl ExfatInode {
-    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter, no_atime: bool) -> Result<usize> {
         let inner = self.inner.upread();
         if inner.inode_type.is_directory() {
             return_errno!(Errno::EISDIR)
@@ -654,12 +654,15 @@ impl ExfatInode {
         };
         inner.page_cache.read(read_off, writer)?;
 
-        inner.upgrade().update_atime()?;
+        // O_NOATIME suppresses the access-time update on reads.
+        if !no_atime {
+            inner.upgrade().update_atime()?;
+        }
         Ok(read_len)
     }
 
     // The offset and the length of buffer must be multiples of the block size.
-    fn read_direct_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    fn read_direct_at(&self, offset: usize, writer: &mut VmWriter, no_atime: bool) -> Result<usize> {
         let inner = self.inner.upread();
         if inner.inode_type.is_directory() {
             return_errno!(Errno::EISDIR)
@@ -705,7 +708,10 @@ impl ExfatInode {
             }
         }
 
-        inner.upgrade().update_atime()?;
+        // O_NOATIME suppresses the access-time update on reads.
+        if !no_atime {
+            inner.upgrade().update_atime()?;
+        }
         Ok(read_len)
     }
 
@@ -1355,10 +1361,11 @@ impl FileOps for ExfatInode {
         writer: &mut VmWriter,
         status_flags: StatusFlags,
     ) -> Result<usize> {
+        let no_atime = status_flags.contains(StatusFlags::O_NOATIME);
         if status_flags.contains(StatusFlags::O_DIRECT) {
-            self.read_direct_at(offset, writer)
+            self.read_direct_at(offset, writer, no_atime)
         } else {
-            self.read_at(offset, writer)
+            self.read_at(offset, writer, no_atime)
         }
     }
 

@@ -14,12 +14,18 @@ use ostd::mm::io::util::HasVmReaderWriter;
 use super::{super::Ext2, FileFlags, Inode, InodeInner, io_range::IoRange};
 use crate::fs::{
     ext2::{prelude::*, utils},
+    file::StatusFlags,
     vfs::inode::FallocMode,
 };
 
 impl Inode {
     /// Reads file data at `offset` through the page cache.
-    pub(in ext2) fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    pub(in ext2) fn read_at(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
         if self.type_ == InodeType::Dir {
             return_errno!(Errno::EISDIR);
         }
@@ -29,7 +35,8 @@ impl Inode {
         }
 
         let read_len = self.inner.read().read_at(offset, writer)?;
-        if read_len > 0 {
+        // O_NOATIME suppresses the access-time update on reads.
+        if read_len > 0 && !status_flags.contains(StatusFlags::O_NOATIME) {
             self.inner.write().set_atime(utils::now());
         }
         Ok(read_len)
@@ -52,7 +59,12 @@ impl Inode {
     }
 
     /// Direct-I/O read path.
-    pub(in ext2) fn read_direct_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    pub(in ext2) fn read_direct_at(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
         if self.type_ == InodeType::Dir {
             return_errno!(Errno::EISDIR);
         }
@@ -68,7 +80,8 @@ impl Inode {
 
         let fs = self.fs()?;
         let read_len = self.inner.read().read_direct_at(&fs, offset, writer)?;
-        if read_len > 0 {
+        // O_NOATIME suppresses the access-time update on reads.
+        if read_len > 0 && !status_flags.contains(StatusFlags::O_NOATIME) {
             self.inner.write().set_atime(utils::now());
         }
         Ok(read_len)
@@ -503,7 +516,8 @@ mod test {
 
         let mut readback = vec![0u8; BLOCK_SIZE];
         let mut writer = VmWriter::from(readback.as_mut_slice()).to_fallible();
-        file.read_direct_at(0, &mut writer).unwrap();
+        file.read_direct_at(0, &mut writer, StatusFlags::empty())
+            .unwrap();
         assert_eq!(readback, base_data);
     }
 
