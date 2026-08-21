@@ -1,0 +1,108 @@
++ c3de63d62f49780d141765982fbee9379faf1825 feat(nixos): M2 dynamic musl userspace - cross toolchain, smoke test, report
++ a568fe0a9dc220c5ceb436a14b70cca64fc43d11 feat(nixos): M3 Nix package manager on Asterinas RISC-V
++ eff7514738f1c1fdba9067aaa19f5c159bd7d03c fix(riscv): force-deliver synchronous fault signals when blocked
++ 035bdb3f2a6923a0abce30fdb72ae223eac08783 feat(nixos): M4 clone/CLONE_SETTLS repro + thread-gap root-cause report
++ 3be555c8efe1972c5dcf282378df3f9eb420796c fix(riscv): swap clone tls/ctid args for CLONE_BACKWARDS
++ 344ac065be95ca8e8bd6e8d9d503c372939a08a2 feat(nixos): extend M4/M3 smoke to cover GD-TLS and nix eval
++ 1940e9c46cd098f57059ff41e55b62c0d8c28836 feat(nixos): M6 nix build trivial derivation into /nix/store
++ a7593ac52acc6377084946f689e1b7f7b166bb4b feat(nixos): M6 hello derivation produces a runnable binary in /nix/store
++ fc8b81cdcab889db4cae4893ad0c59fa307c1abc docs(nixos): M6 report — nix build realises derivations into /nix/store
++ 8a7396a1fae4dfce21b2d0e19794b83dd7771bd8 feat(nixos): M7 SCM_RIGHTS + SO_PEERCRED repro passes on RISC-V
++ 300593d43a322dbfbf410794adb672b67c4737e0 feat(nixos): M7 nix-daemon multi-user build succeeds on RISC-V
++ e74c57ef9380de864b0e4b2ac0b847174a4fded5 docs(nixos): M7 report — nix-daemon multi-user build works, no kernel gap
++ a561ecc2d8c5e84169897d63e1cf1e680ce32815 feat(nixos): M8 kernel-capability repro + lightweight nix-profile prototype
++ 87866cd7f31edcd344a779861930ef32b714c4cd docs(nixos): M8 report — stage-2 go/no-go, lightweight route works
++ f7b7e14c991b679df375858708857788127a9be9 feat(nixos): M9 lightweight-NixOS demo system
++ b98fccd4911b6c70f22e7c6e9c307aaf4883babc docs(nixos): M9 README + report — lightweight NixOS demo landed
++ e311ef37af507bc7a79433935e1313e7f0d35ad4 feat(nixos): M9 ext2 persistence scaffolding + init hardening
+- 36915af88e731b5d31b63e58cc2168366b9b8f82 feat(ipc): System V shared memory (shmget/shmat/shmdt/shmctl)
+- df3db08b328393f8dbae39f5f48151007aa97af7 test(riscv): System V shm QEMU smoke harness
++ 4e9550e11cb6983c1780e4ff31b9800fb07e2c35 docs(nixos): FOUNDATION-M1 report — shm landed, ET_EXEC loader already fixed
+- 2f304af049b9de9062b8494cab3a0821fa61e263 feat(mm): mlock/munlock (issue #11)
++ 9e50290e1ad13d98e4c8c26b85622684d18a8b6e docs(nixos): FOUNDATION-M1 report — mlock/munlock done
++ 3662d125443e1e16e5bd2dd566e0e4d26eec349f test(riscv): LTP syscall gate harness (issue #14)
++ 63f63c71380484212ab456feebcd3208a2bdf752 docs(nixos): FOUNDATION-M2 report — LTP gate landed, 43 fails + 1 hang
+- 50f29f4d8d9797f13d13503b14a0ff0322f1c280 feat(syscall): openat2 and membarrier
+- ae4304c1a2c861a0a1a761b4bfdd10920ae7c00f fix(vfs): pivot_root off the initramfs rootfs
++ e3fd90d80f8ea04c9f6d24ca49b51565f028cdef test(riscv): FOUNDATION-M3 smoke gate harness
++ e35769cc088ce54e0096cb4d632d6158377396f2 feat(fs): mount_setattr(2) and MS_SHARED/MS_SLAVE propagation types
++ b5f0cfca638ad99713a3e5df79524f617ba60a23 fix(test): drop --release from fm3 gate
++ c5ab0a70de8b8c097309b2958a76cbaa067177c6 docs(nixos): FOUNDATION-M3 report — openat2/membarrier/mount_setattr + mount semantics
++ 48666769ae3523ebc12ee278bea9db7d2757a83d test(riscv): FOUNDATION-M4 smoke gate harness (fanotify/keyctl/seccomp)
+- 0b0723c7b5ba64ea828b5a90a1956ec364f94dca feat(fs): fanotify_init/fanotify_mark — notification class, no fd delivery
+- f63137307c400772f7140e89cd5ceb3654f999ac feat(syscall): add_key/request_key/keyctl — minimal keyring serial allocator
+- cf7490e5ccea50a890a80b6cc229b59b21bc8cb9 feat(syscall): seccomp SECCOMP_SET_MODE_STRICT with SIGSYS delivery
++ a32ae241385315d77a27c96a4523692be4694417 docs(nixos): FOUNDATION-M4 report — fanotify/keyctl/seccomp strict mode
++ 39dedb0aa4ca1a48814f55bac8c37881813f13cd feat(syscall): keyctl KEYCTL_LINK/SETPERM/etc no-ops for systemd service exec
++ bf51bab24a9bdea48b72dbf14bf77b527ab82f0f feat(net): SO_TIMESTAMP socket option as accepted no-op
++ d1d142cae803656e1a3ed394b957c7f5c967cf86 feat(systemd): M2 — getty login, service lifecycle, socket activation, journald
++ b624dd92f5c9b2e866e0af0da9afdbae78afbc68 feat(fs): cgroup-v2 memory.max read/write for systemd scope accounting
+- 1fd727e3a5785a1923073da1db94aaeefc930f82 feat(syscall): seccomp SECCOMP_SET_MODE_FILTER — classic BPF filter
++ 549b70f52f1b9cf38c91bf621bd7a2cb658e6881 test(riscv): POLISH-M1 seccomp BPF smoke gate harness
++ 9d72caec89158035e9778d3815c08a5b1cb36ae3 docs(nixos): POLISH-M1 report — cgroup memory, LTP triage, seccomp BPF
+- 1e7437a0fd78c9a2da7bafa06e920a6642b8d288 feat(syscall): inherit seccomp mode and BPF filter across fork/vfork
++ 1f284a1c12d716cf2bbab7d43508b054c7d5aba6 test(riscv): pm1 gate seccomp filter inheritance smoke case
++ dcdfc417fd13836affc3fca360036c4494b41222 docs(nixos): POLISH-M2 report — sigaltstack02 hang resolved + seccomp inheritance
++ 9756a2e9ff70b0f4dccc8f52f9c37dbc967ed930 fix(syscall): recognize RWF_APPEND/RWF_NOAPPEND in pwritev2
++ 0986ff4ac701133773e4097e985a6946add56d28 docs(nixos): POLISH-M2 — add pwrite RWF_APPEND/NOAPPEND fix
++ bd4a9ef76d60fe7e95dbecc32284e264de23d873 docs(nixos): POLISH-M2 — reclassify readlinkat02 as musl behaviour
++ 67a6d40ec7daa621c312b9a3f4b86510fc1dd98e docs(nixos): POLISH-M3 report — seccomp BPF filter verified + PR #34 to main
+- a011827a1c10eb0f2a0c77a309af7e8ee37f97f6 feat(virtio): add virtio-sound driver with PCM playback
+- 439c1fbcbb1556487eee5ef85fa95b1dad81e091 feat(device): expose /dev/snd/pcmC0D0p for virtio-sound playback
++ ee05b6db7d23cef6aca7c288905e9a3453f39837 test(riscv): AUDIO-M1 virtio-sound smoke gate + report
+- a894ccc9404dffe079a8d2b3266163356c0809f3 fix(virtio): rustfmt sound device + silence dead transport field
++ f82d151e09a97434f705435f0dc6ea480a55d2a0 chore: cargo fmt (nightly-2026-07-21) + fix broken FsEventPublisher intra-doc link
++ f913e8857c58f02a4461b8e3b97b4d3ce05eeaa8 docs(nixos): AUDIO-M1 report — note CI fmt/transport fixes + PR #36
++ 9ee85742454102a4603b6b3887bdfba7f62c39d9 test(riscv): AUDIO-M1 verify audible 440 Hz tone (not just byte count)
++ 72ed537e64eeaddeb2e0fc57389823f28cabb2b2 docs(nixos): AUDIO-M1 report — 出声 tone verification + license PR #37 + remaining CI blockers
+- 44f2e7da9f98f99f9622706eafd9b0273ab0108c fix(virtio): use #[expect(dead_code)] for sound transport field
+- 6dca092fadc9ed366800f75ef4bed180865f648e chore: fix nightly-2026-07-21 clippy lints across kernel + ostd
+- 6a24cd5b7dedbcc00df8516301c43b2a6bf6d212 fix(ostd): drop LLVM-IAS-incompatible .if from RISC-V Image header
++ 41326346335da7632e9d1e839f96080165efc75b docs(nixos): POLISH-M4 report — CI blockers fixed (PR #38) + ALSA evaluation
+- e96c2722dcf59c79945b23b656762ee076759e23 fix(tmpfs): default root mode to 01777 (world-writable + sticky)
++ b95fe974518fbaf4c0694cf2a50e411c927fb537 docs(nixos): snd device model design — ALSA ABI over virtio-sound
+- 7775689ccc1602cf2f8384dbd2600249c02fbfd5 feat(syscall): implement clock_getres
++ 4ccf0755428efc4f953037ee91d2dc674272f9cf test(riscv): add --command-timeout passthrough to ltp-gate.sh
++ 393cff7a4432eaaa5bad7d36fa34ce07d2ac935a docs(nixos): POLISH-M5 report — ALSA feasibility, snd design, tmpfs+clock_getres fixes
++ 842b8cf0e959a36b84ac1d6194ec8f93e76b581b docs(nixos): POLISH-M5 — note PRs #39 (tmpfs) and #40 (clock_getres)
++ a86c3614680595a4724e2ca2259d77faa8bd7c92 docs(nixos): POLISH-M5 — full LTP re-run (463/41/29/1); both fixes verified
+- b87c09ea37203c45f29ec7ccd438d9fcb58c1c62 feat(device): ALSA PCM ioctl ABI — SYNC_PTR + writei auto-start
++ acfc5c4302de8a8a72b4c384c83ad7ab0f594972 docs(nixos): POLISH-M6 report — aplay → virtio-sound 出声 verified
++ de587fb3aa471196f984e1a93677b0f1a6c56872 test(riscv): POLISH-M7 ALSA-in-systemd gate — aplay tone inside full systemd
++ f88a7541451d6d409ad53b0fecc2c49ea69ed393 test(riscv): POLISH-M7 LTP tooling — subset runner + minimal syscall repro
++ c716a22f3812503131ece23a4e16cfcc433233f4 docs(nixos): POLISH-M7 report — ALSA in systemd, LTP re-baseline, PR #42
++ 89216fa1ef78365174391a96063f847fe0eec8d6 fix(iovec): NULL iov_base with nonzero len must fault EFAULT, not be dropped
++ 538ed5168c9c2e29f24a782a91343096de50d387 feat(sched): implement SCHED_RESET_ON_FORK + fork policy inheritance
++ 9e8586d9a332b1632002357a56c8aa9b03303034 docs(nixos): POLISH-M7 update — pwrite fixed, sched reclassified, sendfile07 both-hang
++ 07e3d78b0c86ba7086fc731fcc3d97f1eb8bf954 docs(nixos): POLISH-M7 — note PRs #44 (iovec) and #45 (sched) flowed to main
++ ebda2cfdce1ed2cc34dc11bf5156deecba674bd8 test(riscv): POLISH-M7 — LTP runner LTP_TIMEOUT_MUL + busybox env-gap helpers
++ fda6052ee94a4a06c34083fa7541c3d6dcf9e988 docs(nixos): POLISH-M7 — sendfile07 reclassified slow-fill; 0 genuine bugs left
++ f2ce0fd101f051bbbe103f93db45d454eef7d8e4 fix(wait): recognize WEXITED wait option
++ c295a4715f436ced7904784d7216c6580d329f92 feat(syscall): implement sync_file_range2 (264) and rseq (293)
++ 6e065bb56f3dc403f19feac55f84063eb85062fb feat(cgroup): clone3 CLONE_INTO_CGROUP
++ 2bf8d217e411bda87012c88bf80a863c5f214e87 docs(nixos): POLISH-M8 report — WEXITED + CLONE_INTO_CGROUP + sync_file_range2/rseq (PRs #49/#50/#51)
++ f6a01a996e84425e31aa07c9e4a26b6a6855f974 feat(syscall): implement name_to_handle_at/open_by_handle_at (264/265)
++ 60fdb67341d2ede439b75e796693eb39723cfb47 test(riscv): cgroup file-handle round-trip probe (fh_repro)
++ a9705727329e063f5186ba1ea301dc7083dcf938 docs(nixos): POLISH-M9 report — name_to_handle_at/open_by_handle_at cgroup file handles (PR #52)
++ 671015e90c0a9952cd3ffe2b2c77073055fd4fff docs(nixos): POLISH-M10 report — full LTP regression: 473/28/29/3, zero genuine kernel bugs
++ 61edb1bcae91b8e12e9a99c652fac9e098e9c3bc test(riscv): extend LTP repro with sched + fork-latency raw-syscall probes
++ 954e4409012cbb7f29f1fdd9a2e4bcffcb1bded6 docs(nixos): POLISH-M11 report — per-item deep-dive of 31 LTP residuals
++ 4474ccb539cddfde2ae93208f401d36240e6ecd4 docs(nixos): POLISH-M25 report — batch 2 LTP expansion: 649 tests, 510/81/58/3, zero new kernel bugs
++ 715b2c541a567453048eb6ae6f092c07603dc390 feat(syscall): fix 4 LTP kernel-boundary bugs (capget/capset V1/V2, F_DUPFD, PR_SET_NAME)
++ a4ef18017fdd688e5d2af48450d7459020fb7596 docs(nixos): POLISH-M27 report — batch 3 LTP expansion: 767 tests, 549/137/81/5/3, zero new kernel bugs
++ 3821b7c5822ba24eba47cf3cbe65c40db0b1a86c fix(kernel): fix sound.rs unbounded allocation + fanotify.rs TOCTOU in remove_mark/add_mark
++ b1d26f0296484a384fa63f649b3d80362a3b0099 docs(nixos): add M1 busybox smoke artifacts + LTP sched probe
++ 9d939c4d8f536891b49afe7f410b1b62c32d95d4 docs(nixos): add acceleration guide, nixos-riscv plan, and review-HEAD
++ 8b28de0ef24d17b1a537ed9363821dd8cb18f0b5 fix(kernel): support INADDR_ANY (0.0.0.0/::) bind in TCP/UDP stack
++ 97d1bfb1710413fa1e60d1caac5c91e802d90ba3 fix(kernel): fix bound_port ownership in init.rs listen() auto-bind
++ c0b7833e76719b0a902ea6e6ee1e2f6cd3804bf4 docs(nixos): POLISH-M28 — INADDR_ANY bind fix verification, 2 PASS, 7 new failure modes, zero kernel bugs
++ 7f081686e89b2db02ccd8f9cd5c6348f3ab6a53b feat(kernel): add loop device subsystem (/dev/loopN + /dev/loop-control)
++ b62561964230974dc7e7e9606509c41c478eec1c fix(kernel): guard partition parse against zero-sector loop devices; simplify loop init
++ f0ecc340a952d5a7a0c13eab5cc4d510472ac2f2 fix(kernel): expose loop device ioctl dispatch through block registry
++ 8fd6a71f995fa0ea6f460bc3af0d0028935faf15 fix(kernel): return EPROTONOSUPPORT instead of EAFNOSUPPORT for unsupported socket protocols
++ 27ea278847e31f4a73780af7a3f1f3723b512429 fix(kernel): validate optval NULL before option-name lookup in getsockopt/setsockopt
++ f3f4c4dfd9ca18cdfab4dadb2afb32ba5b4f06a2 fix(kernel): resolve connect to unspecified addr (0.0.0.0/::) to localhost
++ be13b75a8ae39a817cf17a85b109589a3468a748 fix(ltp): copy execve/execveat helper binaries into initramfs
++ 724b2440aa0aafbf101094c076e1e6b52a8a7cca fix(kernel): return EFAULT for NULL timespec in clock_getres
++ 4519504eede43039ec69e90afe3eb63ee979e79c fix(kernel): return EFBIG instead of EINVAL for fallocate offset overflow
+- 44172c41cb914e510ec45fb8b65441b0fafa4c6b fix(virtio-input): keep draining the event queue past SYN_REPORT

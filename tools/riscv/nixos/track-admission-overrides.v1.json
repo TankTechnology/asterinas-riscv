@@ -1,0 +1,866 @@
+{
+  "c3de63d62f49780d141765982fbee9379faf1825": {
+    "disposition": "portable",
+    "reason": "The M2 diff adds build_m2.sh, a dynamic-musl hello/libgreet payload, and a QEMU smoke driver; those isolated userspace inputs are portable to #64, while its bundled M2 result must be rerun in the real closure.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / dynamic musl",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat c3de63d62f49780d141765982fbee9379faf1825^ c3de63d62f49780d141765982fbee9379faf1825; run the destination's focused local acceptance checks before admission"
+  },
+  "a568fe0a9dc220c5ceb436a14b70cca64fc43d11": {
+    "disposition": "portable",
+    "reason": "The M3 diff packages the Nix client plus resolve_deps.py and its smoke init; these concrete client/dependency tools can seed #64 but do not themselves constitute a generated NixOS closure.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / Nix client",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat a568fe0a9dc220c5ceb436a14b70cca64fc43d11^ a568fe0a9dc220c5ceb436a14b70cca64fc43d11; run the destination's focused local acceptance checks before admission"
+  },
+  "eff7514738f1c1fdba9067aaa19f5c159bd7d03c": {
+    "disposition": "already-main",
+    "reason": "The blocked synchronous-fault signal fix in exception.rs was rewritten as commit 7e197038 in merged PR #28, so replaying eff75147 would duplicate the current-main implementation.",
+    "destination": "main via merged PR #28",
+    "subsystem": "kernel / RISC-V signals",
+    "main_equivalent_or_pr": "7e197038fe6a38c0dd09456a35f639b1099dd1e9 via merged PR #28 (merge de8b4ee5613e1e34447ef65c9ae4054640436fe1)",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 7e197038fe6a38c0dd09456a35f639b1099dd1e9"
+  },
+  "035bdb3f2a6923a0abce30fdb72ae223eac08783": {
+    "disposition": "portable",
+    "reason": "The M4 diff contributes tls_repro.c, libtls.c, tls_shared.c, and their CLONE_SETTLS smoke scripts; these focused TLS artifacts are portable to #64 after current-main rerun, but the root-cause report remains historical.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / TLS and clone reproducer",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 035bdb3f2a6923a0abce30fdb72ae223eac08783^ 035bdb3f2a6923a0abce30fdb72ae223eac08783; run the destination's focused local acceptance checks before admission"
+  },
+  "3be555c8efe1972c5dcf282378df3f9eb420796c": {
+    "disposition": "portable",
+    "reason": "This mixed commit changes both clone.rs and M4 tls_repro.c: merged PR #29 covers only the kernel CLONE_BACKWARDS argument fix, so classification is portable solely to extract and rerun the reproducer correction under #64.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / TLS and clone reproducer",
+    "main_equivalent_or_pr": "PR #29 covers only the kernel clone fix; the M4 tls_repro.c delta is not in that PR",
+    "verification": "git diff-tree --stat 3be555c8efe1972c5dcf282378df3f9eb420796c^ 3be555c8efe1972c5dcf282378df3f9eb420796c; run the destination's focused local acceptance checks before admission"
+  },
+  "344ac065be95ca8e8bd6e8d9d503c372939a08a2": {
+    "disposition": "portable",
+    "reason": "The diff extends M3/M4 scripts with GD-TLS loading and `nix eval` checks; those exact userspace checks are portable to #64 and require execution against the generated closure.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / TLS and clone reproducer",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 344ac065be95ca8e8bd6e8d9d503c372939a08a2^ 344ac065be95ca8e8bd6e8d9d503c372939a08a2; run the destination's focused local acceptance checks before admission"
+  },
+  "1940e9c46cd098f57059ff41e55b62c0d8c28836": {
+    "disposition": "portable",
+    "reason": "The M6 diff adds trivial.nix, hello.nix, build_m6.sh, and a store-realisation boot test; these derivation inputs are portable to #64, with no old-branch success promoted to current evidence.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / Nix store builds",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 1940e9c46cd098f57059ff41e55b62c0d8c28836^ 1940e9c46cd098f57059ff41e55b62c0d8c28836; run the destination's focused local acceptance checks before admission"
+  },
+  "a7593ac52acc6377084946f689e1b7f7b166bb4b": {
+    "disposition": "portable",
+    "reason": "This M6 follow-up makes hello-gcc.nix produce and execute a store binary; the derivation and validation logic are portable to #64 but must be rebuilt with the current toolchain and closure.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / Nix store builds",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat a7593ac52acc6377084946f689e1b7f7b166bb4b^ a7593ac52acc6377084946f689e1b7f7b166bb4b; run the destination's focused local acceptance checks before admission"
+  },
+  "fc8b81cdcab889db4cae4893ad0c59fa307c1abc": {
+    "disposition": "rewrite",
+    "reason": "M6-report.md asserts old-track `/nix/store` realisation results without reusable source changes; rewrite it under #64 only after current-main derivation evidence replaces those claims.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / Nix store builds",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat fc8b81cdcab889db4cae4893ad0c59fa307c1abc^ fc8b81cdcab889db4cae4893ad0c59fa307c1abc; run the destination's focused local acceptance checks before admission"
+  },
+  "8a7396a1fae4dfce21b2d0e19794b83dd7771bd8": {
+    "disposition": "portable",
+    "reason": "The useful unit in this M7 commit is standalone scm_repro.c exercising SCM_RIGHTS and SO_PEERCRED; carry that file to #67, but do not admit its old boot/rootfs scripts or PASS claim.",
+    "destination": "#67 (selectively adapt and re-test in generated multi-user NixOS)",
+    "subsystem": "NixOS userspace / Unix-domain IPC reproducer",
+    "main_equivalent_or_pr": "N/A: standalone scm_repro.c is not on main and is not in an existing PR",
+    "verification": "git diff-tree --stat 8a7396a1fae4dfce21b2d0e19794b83dd7771bd8^ 8a7396a1fae4dfce21b2d0e19794b83dd7771bd8; run the destination's focused local acceptance checks before admission"
+  },
+  "300593d43a322dbfbf410794adb672b67c4737e0": {
+    "disposition": "portable",
+    "reason": "The M7 daemon diff supplies a multi-user nix-daemon init, build script, and three derivations; these are portable inputs for #67 and need generated-system ownership, socket, and build retesting.",
+    "destination": "#67 (selectively adapt and re-test in generated multi-user NixOS)",
+    "subsystem": "NixOS userspace / nix-daemon",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 300593d43a322dbfbf410794adb672b67c4737e0^ 300593d43a322dbfbf410794adb672b67c4737e0; run the destination's focused local acceptance checks before admission"
+  },
+  "e74c57ef9380de864b0e4b2ac0b847174a4fded5": {
+    "disposition": "rewrite",
+    "reason": "M7-report.md claims a successful multi-user daemon build and no kernel gap on the old branch; #67 must rewrite the report from current daemon/socket/credential evidence.",
+    "destination": "#67 (selectively adapt and re-test in generated multi-user NixOS)",
+    "subsystem": "NixOS userspace / nix-daemon",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat e74c57ef9380de864b0e4b2ac0b847174a4fded5^ e74c57ef9380de864b0e4b2ac0b847174a4fded5; run the destination's focused local acceptance checks before admission"
+  },
+  "a561ecc2d8c5e84169897d63e1cf1e680ce32815": {
+    "disposition": "portable",
+    "reason": "The M8 diff contains cap_repro.c plus a lightweight nix-profile prototype; these focused capability/profile inputs are portable to #64, not evidence that generated stage 2 already works.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / capabilities and profiles",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat a561ecc2d8c5e84169897d63e1cf1e680ce32815^ a561ecc2d8c5e84169897d63e1cf1e680ce32815; run the destination's focused local acceptance checks before admission"
+  },
+  "87866cd7f31edcd344a779861930ef32b714c4cd": {
+    "disposition": "rewrite",
+    "reason": "M8-report.md records an old stage-2 go/no-go and declares the lightweight route working; rewrite it under #64 after the real closure and capability checks run on current main.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / capabilities and profiles",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 87866cd7f31edcd344a779861930ef32b714c4cd^ 87866cd7f31edcd344a779861930ef32b714c4cd; run the destination's focused local acceptance checks before admission"
+  },
+  "f7b7e14c991b679df375858708857788127a9be9": {
+    "disposition": "portable",
+    "reason": "The M9 diff builds a BusyBox-init lightweight demo with rc scripts, accounts, and sample tools; these scaffolding files are portable to #64 but are explicitly not a full NixOS closure.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / lightweight system and persistence",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat f7b7e14c991b679df375858708857788127a9be9^ f7b7e14c991b679df375858708857788127a9be9; run the destination's focused local acceptance checks before admission"
+  },
+  "b98fccd4911b6c70f22e7c6e9c307aaf4883babc": {
+    "disposition": "rewrite",
+    "reason": "M9 README/report describes the lightweight demo as landed, a status tied to the old branch; rewrite it under #64 to describe only the generated closure actually produced there.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "NixOS userspace / lightweight system and persistence",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat b98fccd4911b6c70f22e7c6e9c307aaf4883babc^ b98fccd4911b6c70f22e7c6e9c307aaf4883babc; run the destination's focused local acceptance checks before admission"
+  },
+  "e311ef37af507bc7a79433935e1313e7f0d35ad4": {
+    "disposition": "portable",
+    "reason": "The M9 persistence diff adds an ext2 image builder, persist smoke driver, and init hardening; adapt those concrete disk ideas to #65's current virtio-blk/stage-1 design.",
+    "destination": "#65 (adapt to the current persistent root-disk design)",
+    "subsystem": "NixOS userspace / lightweight system and persistence",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat e311ef37af507bc7a79433935e1313e7f0d35ad4^ e311ef37af507bc7a79433935e1313e7f0d35ad4; run the destination's focused local acceptance checks before admission"
+  },
+  "36915af88e731b5d31b63e58cc2168366b9b8f82": {
+    "disposition": "already-main",
+    "reason": "The System V shared-memory kernel implementation has exact stable-patch equivalent a4d0e1e3 in merged PR #31, so this source commit is already-main.",
+    "destination": "main via merged PR #31",
+    "subsystem": "kernel and userspace / System V shared memory",
+    "main_equivalent_or_pr": "a4d0e1e3aab8043156030d76b29895f7f7dbe9cd via merged PR #31",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat a4d0e1e3aab8043156030d76b29895f7f7dbe9cd"
+  },
+  "df3db08b328393f8dbae39f5f48151007aa97af7": {
+    "disposition": "already-main",
+    "reason": "The RISC-V System V shm QEMU harness is byte-for-byte patch-equivalent to 114a7076 in merged PR #31, making this test record already-main.",
+    "destination": "main via merged PR #31",
+    "subsystem": "kernel and userspace / System V shared memory",
+    "main_equivalent_or_pr": "114a70764cd01bf2a073a4fbcaa3431ef88630c5 via merged PR #31",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 114a70764cd01bf2a073a4fbcaa3431ef88630c5"
+  },
+  "4e9550e11cb6983c1780e4ff31b9800fb07e2c35": {
+    "disposition": "portable",
+    "reason": "Although FOUNDATION-M1-report.md is historical, this commit also adds an isolated ET_EXEC loader smoke payload and boot script; selectively port that reproducer to #64 and rerun it there.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "kernel and userspace / System V shared memory",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 4e9550e11cb6983c1780e4ff31b9800fb07e2c35^ 4e9550e11cb6983c1780e4ff31b9800fb07e2c35; run the destination's focused local acceptance checks before admission"
+  },
+  "2f304af049b9de9062b8494cab3a0821fa61e263": {
+    "disposition": "already-main",
+    "reason": "Both the mlock/munlock syscall code and its RISC-V smoke assets match stable patch 6f701f31 from merged PR #31, so the complete mixed record is already-main.",
+    "destination": "main via merged PR #31",
+    "subsystem": "kernel and userspace / mlock",
+    "main_equivalent_or_pr": "6f701f3139bef7f39b9094490b86f2e93fee2a8b via merged PR #31",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 6f701f3139bef7f39b9094490b86f2e93fee2a8b"
+  },
+  "9e50290e1ad13d98e4c8c26b85622684d18a8b6e": {
+    "disposition": "retire",
+    "reason": "This commit only updates FOUNDATION-M1-report.md to announce mlock/munlock completion already represented by PR #31; retire the redundant status report under #63.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "kernel and userspace / mlock",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 9e50290e1ad13d98e4c8c26b85622684d18a8b6e^ 9e50290e1ad13d98e4c8c26b85622684d18a8b6e; run the destination's focused local acceptance checks before admission"
+  },
+  "3662d125443e1e16e5bd2dd566e0e4d26eec349f": {
+    "disposition": "retire",
+    "reason": "The old ltp-gate.sh plus custom initramfs builder/runner implement pre-Stage-6 orchestration; retire this harness because merged PR #61 is the authoritative current-main LTP path.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 3662d125443e1e16e5bd2dd566e0e4d26eec349f^ 3662d125443e1e16e5bd2dd566e0e4d26eec349f; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "63f63c71380484212ab456feebcd3208a2bdf752": {
+    "disposition": "retire",
+    "reason": "FOUNDATION-M2-report.md preserves the obsolete `43 fails + 1 hang` run from the track harness; retire those counts in favor of new immutable Stage 6 results.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 63f63c71380484212ab456feebcd3208a2bdf752^ 63f63c71380484212ab456feebcd3208a2bdf752; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "50f29f4d8d9797f13d13503b14a0ff0322f1c280": {
+    "disposition": "already-main",
+    "reason": "The openat2 and membarrier syscall patch has exact stable-patch equivalent 393ea1a6 in merged PR #32, so it requires no further admission.",
+    "destination": "main via merged PR #32",
+    "subsystem": "kernel / openat2 and membarrier",
+    "main_equivalent_or_pr": "393ea1a660180d1f30e5c5efac61c449a36e0395 via merged PR #32",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 393ea1a660180d1f30e5c5efac61c449a36e0395"
+  },
+  "ae4304c1a2c861a0a1a761b4bfdd10920ae7c00f": {
+    "disposition": "already-main",
+    "reason": "The pivot_root resolver fix is patch-equivalent to 2676fe6b in merged PR #32 and is therefore already present on fixed main.",
+    "destination": "main via merged PR #32",
+    "subsystem": "kernel / VFS pivot_root",
+    "main_equivalent_or_pr": "2676fe6bf7ebb72f11c9e7202ea0575abc738b0d via merged PR #32",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 2676fe6bf7ebb72f11c9e7202ea0575abc738b0d"
+  },
+  "e3fd90d80f8ea04c9f6d24ca49b51565f028cdef": {
+    "disposition": "portable",
+    "reason": "The FM3 gate supplies focused openat2, membarrier, mount_setattr, and propagation smoke code; port those test cases to #66's generated-stage preflight rather than its old boot layout.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "kernel and test / mount semantics",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat e3fd90d80f8ea04c9f6d24ca49b51565f028cdef^ e3fd90d80f8ea04c9f6d24ca49b51565f028cdef; run the destination's focused local acceptance checks before admission"
+  },
+  "e35769cc088ce54e0096cb4d632d6158377396f2": {
+    "disposition": "already-main",
+    "reason": "The mount_setattr and propagation-type implementation was rewritten as 875fa822 in merged PR #32; current main already contains the behavior despite a different patch ID.",
+    "destination": "main via merged PR #32",
+    "subsystem": "kernel and test / mount semantics",
+    "main_equivalent_or_pr": "875fa822e6ea444e668a6768410c7a2045efa87e via merged PR #32 (merge c367fa99781a189f83fda91bb0491c5c2c648a21)",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 875fa822e6ea444e668a6768410c7a2045efa87e"
+  },
+  "b5f0cfca638ad99713a3e5df79524f617ba60a23": {
+    "disposition": "portable",
+    "reason": "This commit corrects the FM3 smoke wrapper by removing an invalid `--release`; preserve that exact runner correction with the portable FM3 tests routed to #66.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "kernel and test / mount semantics",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat b5f0cfca638ad99713a3e5df79524f617ba60a23^ b5f0cfca638ad99713a3e5df79524f617ba60a23; run the destination's focused local acceptance checks before admission"
+  },
+  "c5ab0a70de8b8c097309b2958a76cbaa067177c6": {
+    "disposition": "retire",
+    "reason": "FOUNDATION-M3-report.md only summarizes already-merged openat2, membarrier, pivot_root, and mount work plus old smoke observations; retire it as #63 provenance.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "kernel and test / mount semantics",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat c5ab0a70de8b8c097309b2958a76cbaa067177c6^ c5ab0a70de8b8c097309b2958a76cbaa067177c6; run the destination's focused local acceptance checks before admission"
+  },
+  "48666769ae3523ebc12ee278bea9db7d2757a83d": {
+    "disposition": "portable",
+    "reason": "The FM4 gate provides focused fanotify, keyctl, and seccomp syscall probes; port those probes to #66 while leaving the outstanding keyctl behavior to open PR #43.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 48666769ae3523ebc12ee278bea9db7d2757a83d^ 48666769ae3523ebc12ee278bea9db7d2757a83d; run the destination's focused local acceptance checks before admission"
+  },
+  "0b0723c7b5ba64ea828b5a90a1956ec364f94dca": {
+    "disposition": "already-main",
+    "reason": "The fanotify_init/fanotify_mark implementation has exact stable-patch equivalent 3e3f2e63 in merged PR #33, so this record is already-main.",
+    "destination": "main via merged PR #33",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "3e3f2e63c5f6ff44844b160fbf35b5f69bf655aa via merged PR #33",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 3e3f2e63c5f6ff44844b160fbf35b5f69bf655aa"
+  },
+  "f63137307c400772f7140e89cd5ceb3654f999ac": {
+    "disposition": "already-main",
+    "reason": "The minimal keyring serial allocator matches e1667ce8 from merged PR #33 exactly; later keyctl no-op behavior remains separately tracked by #43.",
+    "destination": "main via merged PR #33",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "e1667ce8065e8644e0c2698eedfccaf41c34305c via merged PR #33",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat e1667ce8065e8644e0c2698eedfccaf41c34305c"
+  },
+  "cf7490e5ccea50a890a80b6cc229b59b21bc8cb9": {
+    "disposition": "already-main",
+    "reason": "Strict-mode seccomp with SIGSYS delivery is patch-equivalent to 279d4ac2 in merged PR #33, establishing an exact current-main destination.",
+    "destination": "main via merged PR #33",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "279d4ac2e951bbbd3a37d7b343963a5da04e5a51 via merged PR #33",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 279d4ac2e951bbbd3a37d7b343963a5da04e5a51"
+  },
+  "a32ae241385315d77a27c96a4523692be4694417": {
+    "disposition": "retire",
+    "reason": "FOUNDATION-M4-report.md is a result-only summary of the fanotify/keyctl/seccomp trio already routed through PR #33 and #43; retire the stale report under #63.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat a32ae241385315d77a27c96a4523692be4694417^ a32ae241385315d77a27c96a4523692be4694417; run the destination's focused local acceptance checks before admission"
+  },
+  "39dedb0aa4ca1a48814f55bac8c37881813f13cd": {
+    "disposition": "existing-pr",
+    "reason": "The KEYCTL_LINK/SETPERM/UNLINK accepted-no-op changes in keyctl.rs are represented by open PR #43 commit 6b6b9f42; continue that review instead of duplicating it.",
+    "destination": "#43 (open; do not duplicate)",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "Open PR #43, open commit 6b6b9f42441688f34b06679cf76ae8fd0945a5e8",
+    "verification": "gh pr view 43 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat 39dedb0aa4ca1a48814f55bac8c37881813f13cd^ 39dedb0aa4ca1a48814f55bac8c37881813f13cd"
+  },
+  "bf51bab24a9bdea48b72dbf14bf77b527ab82f0f": {
+    "disposition": "rewrite",
+    "reason": "The SO_TIMESTAMP accepted-no-op patch changes socket option ABI behavior but has no focused PR or current-main test; rewrite it through a new #63-routed kernel issue before admission.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat bf51bab24a9bdea48b72dbf14bf77b527ab82f0f^ bf51bab24a9bdea48b72dbf14bf77b527ab82f0f; run the destination's focused local acceptance checks before admission"
+  },
+  "d1d142cae803656e1a3ed394b957c7f5c967cf86": {
+    "disposition": "rewrite",
+    "reason": "The getty, service lifecycle, socket activation, and journald assets target a pre-D-Bus systemd tree and obsolete boot/gate hooks; rebuild all four behaviors on generated stage 2 in #66.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "systemd integration",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat d1d142cae803656e1a3ed394b957c7f5c967cf86^ d1d142cae803656e1a3ed394b957c7f5c967cf86; run the destination's focused local acceptance checks before admission"
+  },
+  "b624dd92f5c9b2e866e0af0da9afdbae78afbc68": {
+    "disposition": "rewrite",
+    "reason": "The cgroup-v2 memory.max read/write implementation is unmerged old-branch kernel code with no focused regression; split it into a #63-routed current-main controller change and tests.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / cgroup v2",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat b624dd92f5c9b2e866e0af0da9afdbae78afbc68^ b624dd92f5c9b2e866e0af0da9afdbae78afbc68; run the destination's focused local acceptance checks before admission"
+  },
+  "1fd727e3a5785a1923073da1db94aaeefc930f82": {
+    "disposition": "already-main",
+    "reason": "Classic-BPF seccomp filter support has exact stable-patch equivalent 4832bfa1 in merged PR #34, so the kernel functionality is already-main.",
+    "destination": "main via merged PR #34",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "4832bfa1e0c824cebbea0584ad46072c72b3bb34 via merged PR #34",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 4832bfa1e0c824cebbea0584ad46072c72b3bb34"
+  },
+  "549b70f52f1b9cf38c91bf621bd7a2cb658e6881": {
+    "disposition": "portable",
+    "reason": "The PM1 scripts and init payload exercise SECCOMP_SET_MODE_FILTER; port that concrete BPF smoke to #66 as a current stage-2 preflight, without retaining its old run result.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 549b70f52f1b9cf38c91bf621bd7a2cb658e6881^ 549b70f52f1b9cf38c91bf621bd7a2cb658e6881; run the destination's focused local acceptance checks before admission"
+  },
+  "9d72caec89158035e9778d3815c08a5b1cb36ae3": {
+    "disposition": "retire",
+    "reason": "POLISH-M1-report.md mixes stale cgroup-memory observations, old LTP triage, and seccomp results; retire its conclusions because Stage 6 and focused destinations supersede them.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 9d72caec89158035e9778d3815c08a5b1cb36ae3^ 9d72caec89158035e9778d3815c08a5b1cb36ae3; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "1e7437a0fd78c9a2da7bafa06e920a6642b8d288": {
+    "disposition": "already-main",
+    "reason": "Seccomp mode/filter inheritance across fork and vfork is patch-equivalent to ad2dc05f in merged PR #34, so the implementation is already-main.",
+    "destination": "main via merged PR #34",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "ad2dc05f8b274e804c6b6de530e48f5539a6d382 via merged PR #34",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat ad2dc05f8b274e804c6b6de530e48f5539a6d382"
+  },
+  "1f284a1c12d716cf2bbab7d43508b054c7d5aba6": {
+    "disposition": "portable",
+    "reason": "This change adds a focused child-process assertion to the PM1 seccomp init payload; carry that inheritance check to #66 and rerun it against the merged PR #34 implementation.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "kernel and test / fanotify, keyctl, seccomp",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 1f284a1c12d716cf2bbab7d43508b054c7d5aba6^ 1f284a1c12d716cf2bbab7d43508b054c7d5aba6; run the destination's focused local acceptance checks before admission"
+  },
+  "dcdfc417fd13836affc3fca360036c4494b41222": {
+    "disposition": "retire",
+    "reason": "POLISH-M2-report.md declares sigaltstack02 resolved and seccomp inheritance verified using old-track LTP execution; retire those runtime claims in favor of Stage 6 evidence.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat dcdfc417fd13836affc3fca360036c4494b41222^ dcdfc417fd13836affc3fca360036c4494b41222; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "9756a2e9ff70b0f4dccc8f52f9c37dbc967ed930": {
+    "disposition": "rewrite",
+    "reason": "The pwritev2 patch recognizes RWF_APPEND and RWF_NOAPPEND but lacks a dedicated PR and focused current-main regression; rewrite it via a #63-created syscall issue.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel and evidence / pwritev2 and syscall triage",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 9756a2e9ff70b0f4dccc8f52f9c37dbc967ed930^ 9756a2e9ff70b0f4dccc8f52f9c37dbc967ed930; run the destination's focused local acceptance checks before admission"
+  },
+  "0986ff4ac701133773e4097e985a6946add56d28": {
+    "disposition": "retire",
+    "reason": "This POLISH-M2 edit merely records the unmerged pwritev2 flag fix as successful; retire the status text and let a focused #63 issue establish current behavior.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 0986ff4ac701133773e4097e985a6946add56d28^ 0986ff4ac701133773e4097e985a6946add56d28; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "bd4a9ef76d60fe7e95dbecc32284e264de23d873": {
+    "disposition": "retire",
+    "reason": "This report-only edit reclassifies readlinkat02 as musl behavior based on an old run; retire that diagnosis until current Stage 6 evidence supports it.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat bd4a9ef76d60fe7e95dbecc32284e264de23d873^ bd4a9ef76d60fe7e95dbecc32284e264de23d873; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "67a6d40ec7daa621c312b9a3f4b86510fc1dd98e": {
+    "disposition": "retire",
+    "reason": "POLISH-M3-report.md records an old seccomp verification and PR #34 status; the code is already-main, but this stale result report itself must retire.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 67a6d40ec7daa621c312b9a3f4b86510fc1dd98e^ 67a6d40ec7daa621c312b9a3f4b86510fc1dd98e; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "a011827a1c10eb0f2a0c77a309af7e8ee37f97f6": {
+    "disposition": "already-main",
+    "reason": "The virtio-sound PCM playback driver has exact stable-patch equivalent 78a58c55 in merged PR #35, so the kernel source is already-main.",
+    "destination": "main via merged PR #35",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "78a58c55f0d36084091db29dbaf052b157b61795 via merged PR #35",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 78a58c55f0d36084091db29dbaf052b157b61795"
+  },
+  "439c1fbcbb1556487eee5ef85fa95b1dad81e091": {
+    "disposition": "already-main",
+    "reason": "The /dev/snd/pcmC0D0p exposure patch matches b666ea38 in merged PR #35 exactly and therefore needs no duplicate admission.",
+    "destination": "main via merged PR #35",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "b666ea38c42e2ca4f52d5b865637759f9b4dd184 via merged PR #35",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat b666ea38c42e2ca4f52d5b865637759f9b4dd184"
+  },
+  "ee05b6db7d23cef6aca7c288905e9a3453f39837": {
+    "disposition": "portable",
+    "reason": "The AUDIO-M1 commit adds audio-gate.sh, a QEMU boot driver, build script, and tone payload; those focused smoke assets are portable to #68, while its embedded report is historical.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat ee05b6db7d23cef6aca7c288905e9a3453f39837^ ee05b6db7d23cef6aca7c288905e9a3453f39837; run the destination's focused local acceptance checks before admission"
+  },
+  "a894ccc9404dffe079a8d2b3266163356c0809f3": {
+    "disposition": "already-main",
+    "reason": "The sound-device formatting and dead transport-field adjustment is patch-equivalent to 8b048b72 in merged PR #35, so it is already-main.",
+    "destination": "main via merged PR #35",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "8b048b72e9eca691ba525ca90fd0bb57c4407f87 via merged PR #35",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 8b048b72e9eca691ba525ca90fd0bb57c4407f87"
+  },
+  "f82d151e09a97434f705435f0dc6ea480a55d2a0": {
+    "disposition": "already-main",
+    "reason": "The formatting plus FsEventPublisher link repair was rewritten as b4e7b8f5 and merged through PR #36; replaying the track form would duplicate main.",
+    "destination": "main via merged PR #36",
+    "subsystem": "build hygiene and historical evidence",
+    "main_equivalent_or_pr": "b4e7b8f5b01863da78f61f7ecb35339bc5de53e8 via merged PR #36 (merge 942026b95551e3ae7eaa538cfb22042c161b750d)",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat b4e7b8f5b01863da78f61f7ecb35339bc5de53e8"
+  },
+  "f913e8857c58f02a4461b8e3b97b4d3ce05eeaa8": {
+    "disposition": "retire",
+    "reason": "This AUDIO-M1 report update only narrates old CI formatting/transport fixes and merged PR #36; retire the report while retaining PR metadata as provenance.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat f913e8857c58f02a4461b8e3b97b4d3ce05eeaa8^ f913e8857c58f02a4461b8e3b97b4d3ce05eeaa8; run the destination's focused local acceptance checks before admission"
+  },
+  "9ee85742454102a4603b6b3887bdfba7f62c39d9": {
+    "disposition": "portable",
+    "reason": "The boot_audio.py change verifies a generated 440 Hz waveform rather than byte count alone; port this focused audible-tone assertion to #68 and rerun it on the graphical closure.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat 9ee85742454102a4603b6b3887bdfba7f62c39d9^ 9ee85742454102a4603b6b3887bdfba7f62c39d9; run the destination's focused local acceptance checks before admission"
+  },
+  "72ed537e64eeaddeb2e0fc57389823f28cabb2b2": {
+    "disposition": "retire",
+    "reason": "The AUDIO-M1 report's audible-tone claim, license PR #37 note, and CI blocker list describe old branch state; retire those claims and regenerate #68 evidence.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 72ed537e64eeaddeb2e0fc57389823f28cabb2b2^ 72ed537e64eeaddeb2e0fc57389823f28cabb2b2; run the destination's focused local acceptance checks before admission"
+  },
+  "44f2e7da9f98f99f9622706eafd9b0273ab0108c": {
+    "disposition": "already-main",
+    "reason": "The `#[expect(dead_code)]` sound transport annotation is patch-equivalent to 27b86563 in merged PR #35, making the record already-main.",
+    "destination": "main via merged PR #35",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "27b86563881f3db0ff34487ea0aa010c347f894a via merged PR #35",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 27b86563881f3db0ff34487ea0aa010c347f894a"
+  },
+  "6dca092fadc9ed366800f75ef4bed180865f648e": {
+    "disposition": "already-main",
+    "reason": "The nightly clippy fixes across evdev, framebuffer, getdents64, syscall, and RISC-V framebuffer code match 51aef50b in merged PR #38 exactly.",
+    "destination": "main via merged PR #38",
+    "subsystem": "build hygiene and historical evidence",
+    "main_equivalent_or_pr": "51aef50b7778dc2d3e874612c7c7805f78776300 via merged PR #38",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 51aef50b7778dc2d3e874612c7c7805f78776300"
+  },
+  "6a24cd5b7dedbcc00df8516301c43b2a6bf6d212": {
+    "disposition": "already-main",
+    "reason": "The RISC-V Image-header removal of the LLVM-IAS-incompatible `.if` matches 1ee499f9 from merged PR #38 and is already-main.",
+    "destination": "main via merged PR #38",
+    "subsystem": "build hygiene and historical evidence",
+    "main_equivalent_or_pr": "1ee499f9568913befe9b18eb6d03891e85f1e7f1 via merged PR #38",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 1ee499f9568913befe9b18eb6d03891e85f1e7f1"
+  },
+  "41326346335da7632e9d1e839f96080165efc75b": {
+    "disposition": "retire",
+    "reason": "POLISH-M4-report.md summarizes old CI blockers, PR #38, and an ALSA evaluation but adds no current implementation; retire it as historical #68 input.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "build hygiene and historical evidence",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 41326346335da7632e9d1e839f96080165efc75b^ 41326346335da7632e9d1e839f96080165efc75b; run the destination's focused local acceptance checks before admission"
+  },
+  "e96c2722dcf59c79945b23b656762ee076759e23": {
+    "disposition": "already-main",
+    "reason": "The tmpfs root mode 01777 change has exact stable-patch equivalent 130c0599 in merged PR #39, so the fix is already-main.",
+    "destination": "main via merged PR #39",
+    "subsystem": "kernel / tmpfs",
+    "main_equivalent_or_pr": "130c0599585053f704c825f6f76272ebeb43dcff via merged PR #39",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 130c0599585053f704c825f6f76272ebeb43dcff"
+  },
+  "b95fe974518fbaf4c0694cf2a50e411c927fb537": {
+    "disposition": "portable",
+    "reason": "snd-device-model.md documents the ALSA-over-virtio-sound ABI design; port this specific design input to #68 for validation against the current driver and closure.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat b95fe974518fbaf4c0694cf2a50e411c927fb537^ b95fe974518fbaf4c0694cf2a50e411c927fb537; run the destination's focused local acceptance checks before admission"
+  },
+  "7775689ccc1602cf2f8384dbd2600249c02fbfd5": {
+    "disposition": "already-main",
+    "reason": "The clock_getres syscall implementation is patch-equivalent to 85add1df in merged PR #40, establishing exact current-main delivery.",
+    "destination": "main via merged PR #40",
+    "subsystem": "kernel / clock_getres",
+    "main_equivalent_or_pr": "85add1df62853530fe556070496b976631724360 via merged PR #40",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat 85add1df62853530fe556070496b976631724360"
+  },
+  "4ccf0755428efc4f953037ee91d2dc674272f9cf": {
+    "disposition": "retire",
+    "reason": "The old ltp-gate.sh command-timeout passthrough belongs to the superseded track runner; retire it because Stage 6 owns timeout and terminal-state handling.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 4ccf0755428efc4f953037ee91d2dc674272f9cf^ 4ccf0755428efc4f953037ee91d2dc674272f9cf; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "393cff7a4432eaaa5bad7d36fa34ce07d2ac935a": {
+    "disposition": "retire",
+    "reason": "POLISH-M5-report.md combines historical ALSA feasibility, snd design, tmpfs, and clock_getres results; retire its old evidence while #68 and merged PRs hold the live work.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "historical evidence / ALSA and syscall fixes",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 393cff7a4432eaaa5bad7d36fa34ce07d2ac935a^ 393cff7a4432eaaa5bad7d36fa34ce07d2ac935a; run the destination's focused local acceptance checks before admission"
+  },
+  "842b8cf0e959a36b84ac1d6194ec8f93e76b581b": {
+    "disposition": "retire",
+    "reason": "This report edit only notes merged PRs #39 and #40 at a past point in time; retire the status note as #63 reconciliation provenance.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "historical evidence / ALSA and syscall fixes",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 842b8cf0e959a36b84ac1d6194ec8f93e76b581b^ 842b8cf0e959a36b84ac1d6194ec8f93e76b581b; run the destination's focused local acceptance checks before admission"
+  },
+  "a86c3614680595a4724e2ca2259d77faa8bd7c92": {
+    "disposition": "retire",
+    "reason": "The `463/41/29/1` LTP rerun and verification claims in POLISH-M5-report.md come from obsolete orchestration; retire them and use immutable Stage 6 runs.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat a86c3614680595a4724e2ca2259d77faa8bd7c92^ a86c3614680595a4724e2ca2259d77faa8bd7c92; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "b87c09ea37203c45f29ec7ccd438d9fcb58c1c62": {
+    "disposition": "already-main",
+    "reason": "The ALSA SYNC_PTR/writei auto-start implementation and its audio gate have exact stable-patch equivalent cfa11a86, delivered to main via PR #35 after PR #42.",
+    "destination": "main via merged PR #35",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "cfa11a86c8ff8eabd8c5194e39c12959a0c2ebcf via merged PR #35 (PR #42 first merged into that topic branch)",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat cfa11a86c8ff8eabd8c5194e39c12959a0c2ebcf"
+  },
+  "acfc5c4302de8a8a72b4c384c83ad7ab0f594972": {
+    "disposition": "retire",
+    "reason": "POLISH-M6-report.md asserts `aplay` produced sound on the old track; retire that result and require #68 to reproduce audio inside the generated graphical closure.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "kernel and test / virtio-sound and ALSA",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat acfc5c4302de8a8a72b4c384c83ad7ab0f594972^ acfc5c4302de8a8a72b4c384c83ad7ab0f594972; run the destination's focused local acceptance checks before admission"
+  },
+  "de587fb3aa471196f984e1a93677b0f1a6c56872": {
+    "disposition": "rewrite",
+    "reason": "The ALSA-in-systemd gate builds against obsolete systemd scripts and integration hooks; rewrite the tone service and acceptance flow on #66's generated stage 2.",
+    "destination": "#66 (rewrite/adapt against generated stage 2 and current systemd)",
+    "subsystem": "systemd integration",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat de587fb3aa471196f984e1a93677b0f1a6c56872^ de587fb3aa471196f984e1a93677b0f1a6c56872; run the destination's focused local acceptance checks before admission"
+  },
+  "f88a7541451d6d409ad53b0fecc2c49ea69ed393": {
+    "disposition": "retire",
+    "reason": "This commit couples a deprecated LTP subset runner with repro.c/run_repro.sh; retire the runner and re-author any still-needed syscall cases in focused current-main tests.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat f88a7541451d6d409ad53b0fecc2c49ea69ed393^ f88a7541451d6d409ad53b0fecc2c49ea69ed393; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "c716a22f3812503131ece23a4e16cfcc433233f4": {
+    "disposition": "retire",
+    "reason": "POLISH-M7-report.md mixes old ALSA-in-systemd, LTP re-baseline, and PR #42 observations; retire the combined report rather than treating any branch-local result as current.",
+    "destination": "#68 (historical input or reusable asset for the graphical closure)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat c716a22f3812503131ece23a4e16cfcc433233f4^ c716a22f3812503131ece23a4e16cfcc433233f4; run the destination's focused local acceptance checks before admission"
+  },
+  "89216fa1ef78365174391a96063f847fe0eec8d6": {
+    "disposition": "existing-pr",
+    "reason": "The NULL iov_base with nonzero length EFAULT fix is represented by open PR #44 commit 6a5ba383; continue that exact iovec review and do not duplicate it.",
+    "destination": "#44 (open; do not duplicate)",
+    "subsystem": "kernel / iovec",
+    "main_equivalent_or_pr": "Open PR #44, open commit 6a5ba3838927e603c8d0f6177222cafddc2e7bb8",
+    "verification": "gh pr view 44 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat 89216fa1ef78365174391a96063f847fe0eec8d6^ 89216fa1ef78365174391a96063f847fe0eec8d6"
+  },
+  "538ed5168c9c2e29f24a782a91343096de50d387": {
+    "disposition": "existing-pr",
+    "reason": "SCHED_RESET_ON_FORK and fork policy inheritance are represented by open PR #45 commit 887d811a; route implementation review there.",
+    "destination": "#45 (open; do not duplicate)",
+    "subsystem": "kernel / scheduler",
+    "main_equivalent_or_pr": "Open PR #45, open commit 887d811a48ffe54d74651f5b5470eac1f0fc20a5",
+    "verification": "gh pr view 45 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat 538ed5168c9c2e29f24a782a91343096de50d387^ 538ed5168c9c2e29f24a782a91343096de50d387"
+  },
+  "9e8586d9a332b1632002357a56c8aa9b03303034": {
+    "disposition": "retire",
+    "reason": "This POLISH-M7 update reports pwrite fixed, scheduler reclassification, and sendfile07 hangs from an obsolete run; retire all three status claims under Stage 6.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 9e8586d9a332b1632002357a56c8aa9b03303034^ 9e8586d9a332b1632002357a56c8aa9b03303034; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "07e3d78b0c86ba7086fc731fcc3d97f1eb8bf954": {
+    "disposition": "retire",
+    "reason": "The report says PRs #44 and #45 flowed to main, but both are currently open; retire this factually stale PR-status statement and use live metadata.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "historical evidence / open PR status",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 07e3d78b0c86ba7086fc731fcc3d97f1eb8bf954^ 07e3d78b0c86ba7086fc731fcc3d97f1eb8bf954; run the destination's focused local acceptance checks before admission"
+  },
+  "ebda2cfdce1ed2cc34dc11bf5156deecba674bd8": {
+    "disposition": "retire",
+    "reason": "The LTP_TIMEOUT_MUL runner change, BusyBox environment helpers, and sendfile probe are tied to the retired track harness; Stage 6 must own any replacement cases.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat ebda2cfdce1ed2cc34dc11bf5156deecba674bd8^ ebda2cfdce1ed2cc34dc11bf5156deecba674bd8; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "fda6052ee94a4a06c34083fa7541c3d6dcf9e988": {
+    "disposition": "retire",
+    "reason": "The `0 genuine bugs left` sendfile07 conclusion rests on an old slow-fill experiment; retire the overbroad claim and require current focused evidence.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat fda6052ee94a4a06c34083fa7541c3d6dcf9e988^ fda6052ee94a4a06c34083fa7541c3d6dcf9e988; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "f2ce0fd101f051bbbe103f93db45d454eef7d8e4": {
+    "disposition": "existing-pr",
+    "reason": "Recognition of WEXITED in process wait is represented by open PR #49 commit c1ca82b5; do not create a second implementation.",
+    "destination": "#49 (open; do not duplicate)",
+    "subsystem": "kernel / process wait",
+    "main_equivalent_or_pr": "Open PR #49, open commit c1ca82b559e17b821974ed23c7eef8ff0c8696bb",
+    "verification": "gh pr view 49 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat f2ce0fd101f051bbbe103f93db45d454eef7d8e4^ f2ce0fd101f051bbbe103f93db45d454eef7d8e4"
+  },
+  "c295a4715f436ced7904784d7216c6580d329f92": {
+    "disposition": "existing-pr",
+    "reason": "sync_file_range2 and rseq support are represented by open PR #50 commit f89f3ce5 across the same thread/syscall files; continue review there.",
+    "destination": "#50 (open; do not duplicate)",
+    "subsystem": "kernel / rseq and sync_file_range2",
+    "main_equivalent_or_pr": "Open PR #50, open commit f89f3ce53a877c50e9dc4b967d1fa0cedcbdd840",
+    "verification": "gh pr view 50 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat c295a4715f436ced7904784d7216c6580d329f92^ c295a4715f436ced7904784d7216c6580d329f92"
+  },
+  "6e065bb56f3dc403f19feac55f84063eb85062fb": {
+    "disposition": "existing-pr",
+    "reason": "CLONE_INTO_CGROUP support is represented by open PR #51 commit ad181e7b in cgroupfs/clone paths; avoid duplicate admission work.",
+    "destination": "#51 (open; do not duplicate)",
+    "subsystem": "kernel / cgroup v2",
+    "main_equivalent_or_pr": "Open PR #51, open commit ad181e7b77f23d02bba5a35c06c77eef89feea1e",
+    "verification": "gh pr view 51 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat 6e065bb56f3dc403f19feac55f84063eb85062fb^ 6e065bb56f3dc403f19feac55f84063eb85062fb"
+  },
+  "2bf8d217e411bda87012c88bf80a863c5f214e87": {
+    "disposition": "retire",
+    "reason": "POLISH-M8-report.md records old results for topics now in open PRs #49, #50, and #51; retire the report while keeping those PRs as live destinations.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 2bf8d217e411bda87012c88bf80a863c5f214e87^ 2bf8d217e411bda87012c88bf80a863c5f214e87; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "f6a01a996e84425e31aa07c9e4a26b6a6855f974": {
+    "disposition": "existing-pr",
+    "reason": "name_to_handle_at/open_by_handle_at support is represented by open PR #52 commit a455235c; implementation review belongs to that PR.",
+    "destination": "#52 (open; do not duplicate)",
+    "subsystem": "kernel and test / file handles",
+    "main_equivalent_or_pr": "Open PR #52, open commit a455235c59eec5126169887551073ed46a17b91b",
+    "verification": "gh pr view 52 -R TankTechnology/asterinas-riscv --json state,commits,files; git diff-tree --stat f6a01a996e84425e31aa07c9e4a26b6a6855f974^ f6a01a996e84425e31aa07c9e4a26b6a6855f974"
+  },
+  "60fdb67341d2ede439b75e796693eb39723cfb47": {
+    "disposition": "portable",
+    "reason": "The cgroup file-handle round-trip probe in fh_repro.c and boot_fh_repro.py is absent from PR #52; port this focused companion test to that PR destination and rerun it.",
+    "destination": "#52 (focused repro evidence; not currently part of the open PR diff)",
+    "subsystem": "kernel and test / file handles",
+    "main_equivalent_or_pr": "Open PR #52 is related kernel context, but does not contain this repro commit",
+    "verification": "git diff-tree --stat 60fdb67341d2ede439b75e796693eb39723cfb47^ 60fdb67341d2ede439b75e796693eb39723cfb47; run the destination's focused local acceptance checks before admission"
+  },
+  "a9705727329e063f5186ba1ea301dc7083dcf938": {
+    "disposition": "retire",
+    "reason": "POLISH-M9-report.md claims successful cgroup file-handle behavior from the old track; retire that result and let PR #52 plus the portable repro establish current evidence.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "kernel and test / file handles",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat a9705727329e063f5186ba1ea301dc7083dcf938^ a9705727329e063f5186ba1ea301dc7083dcf938; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "671015e90c0a9952cd3ffe2b2c77073055fd4fff": {
+    "disposition": "retire",
+    "reason": "The POLISH-M10 `473/28/29/3` totals and `zero genuine kernel bugs` conclusion are obsolete result-only evidence; retire them in favor of Stage 6.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 671015e90c0a9952cd3ffe2b2c77073055fd4fff^ 671015e90c0a9952cd3ffe2b2c77073055fd4fff; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "61edb1bcae91b8e12e9a99c652fac9e098e9c3bc": {
+    "disposition": "portable",
+    "reason": "This commit adds raw sched policy, reset-on-fork, and fork-latency syscalls to repro.c; selectively extract those probes for #45 instead of retaining the surrounding LTP file.",
+    "destination": "#45 (selectively extract focused sched/fork probes; do not carry old LTP orchestration)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "Open PR #45 covers the scheduler topic only; these userspace probes are not in its diff",
+    "verification": "git diff-tree --stat 61edb1bcae91b8e12e9a99c652fac9e098e9c3bc^ 61edb1bcae91b8e12e9a99c652fac9e098e9c3bc; run the destination's focused local acceptance checks before admission"
+  },
+  "954e4409012cbb7f29f1fdd9a2e4bcffcb1bded6": {
+    "disposition": "retire",
+    "reason": "POLISH-M11-report.md is a per-item narrative of 31 residuals from the old runner; retire those diagnoses until Stage 6 reproduces each relevant case.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 954e4409012cbb7f29f1fdd9a2e4bcffcb1bded6^ 954e4409012cbb7f29f1fdd9a2e4bcffcb1bded6; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "4474ccb539cddfde2ae93208f401d36240e6ecd4": {
+    "disposition": "retire",
+    "reason": "The batch-2 `all.txt` expansion and `649 tests, 510/81/58/3` report belong to obsolete track orchestration; retire both the list mutation and its counts.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 4474ccb539cddfde2ae93208f401d36240e6ecd4^ 4474ccb539cddfde2ae93208f401d36240e6ecd4; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "715b2c541a567453048eb6ae6f092c07603dc390": {
+    "disposition": "rewrite",
+    "reason": "This mixed commit combines four kernel fixes with POLISH-M26 prose and repro/run scripts; rewrite by splitting capget/capset, F_DUPFD, and PR_SET_NAME into focused #63 issues and regressions.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel and test / LTP-derived syscall fixes",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 715b2c541a567453048eb6ae6f092c07603dc390^ 715b2c541a567453048eb6ae6f092c07603dc390; run the destination's focused local acceptance checks before admission"
+  },
+  "a4ef18017fdd688e5d2af48450d7459020fb7596": {
+    "disposition": "retire",
+    "reason": "The batch-3 `all.txt` edit, code-review note, and `767 tests, 549/137/81/5/3` report are stale track evidence; retire the bundle under Stage 6.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat a4ef18017fdd688e5d2af48450d7459020fb7596^ a4ef18017fdd688e5d2af48450d7459020fb7596; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "3821b7c5822ba24eba47cf3cbe65c40db0b1a86c": {
+    "disposition": "rewrite",
+    "reason": "This commit combines a sound writei allocation bound with two fanotify locking fixes; rewrite them as separate #63-routed bounds/concurrency changes with focused tests.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / sound allocation and fanotify concurrency",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 3821b7c5822ba24eba47cf3cbe65c40db0b1a86c^ 3821b7c5822ba24eba47cf3cbe65c40db0b1a86c; run the destination's focused local acceptance checks before admission"
+  },
+  "b1d26f0296484a384fa63f649b3d80362a3b0099": {
+    "disposition": "portable",
+    "reason": "The commit adds a BusyBox initramfs smoke build plus sched_probe.c; port only those explicit scaffolding/repro files to #64/#45 and do not call the result NixOS.",
+    "destination": "#64 (selectively adapt and re-test in the real closure)",
+    "subsystem": "userspace scaffold / BusyBox and sched probe",
+    "main_equivalent_or_pr": "N/A: reusable track asset requires selective extraction and current-main re-test",
+    "verification": "git diff-tree --stat b1d26f0296484a384fa63f649b3d80362a3b0099^ b1d26f0296484a384fa63f649b3d80362a3b0099; run the destination's focused local acceptance checks before admission"
+  },
+  "9d939c4d8f536891b49afe7f410b1b62c32d95d4": {
+    "disposition": "retire",
+    "reason": "ACCELERATION.md, the old nixos-riscv plan, and review-HEAD.md describe a superseded branch workflow; retire all three planning artifacts as #63 history.",
+    "destination": "#63 (retain only as historical reconciliation provenance)",
+    "subsystem": "historical planning documentation",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat 9d939c4d8f536891b49afe7f410b1b62c32d95d4^ 9d939c4d8f536891b49afe7f410b1b62c32d95d4; run the destination's focused local acceptance checks before admission"
+  },
+  "8b28de0ef24d17b1a537ed9363821dd8cb18f0b5": {
+    "disposition": "rewrite",
+    "reason": "INADDR_ANY bind support changes TCP/UDP address semantics but has no focused current-main issue or regression; rewrite it through a new #63 networking destination.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 8b28de0ef24d17b1a537ed9363821dd8cb18f0b5^ 8b28de0ef24d17b1a537ed9363821dd8cb18f0b5; run the destination's focused local acceptance checks before admission"
+  },
+  "97d1bfb1710413fa1e60d1caac5c91e802d90ba3": {
+    "disposition": "rewrite",
+    "reason": "The listen auto-bind bound_port ownership fix is unmerged and coupled to old stream-init state; rewrite it with a focused lifetime regression created from #63.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 97d1bfb1710413fa1e60d1caac5c91e802d90ba3^ 97d1bfb1710413fa1e60d1caac5c91e802d90ba3; run the destination's focused local acceptance checks before admission"
+  },
+  "c0b7833e76719b0a902ea6e6ee1e2f6cd3804bf4": {
+    "disposition": "retire",
+    "reason": "POLISH-M28 reports two passes, seven new failure modes, and zero kernel bugs for old INADDR_ANY testing; retire those contradictory historical conclusions.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat c0b7833e76719b0a902ea6e6ee1e2f6cd3804bf4^ c0b7833e76719b0a902ea6e6ee1e2f6cd3804bf4; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "7f081686e89b2db02ccd8f9cd5c6348f3ab6a53b": {
+    "disposition": "portable",
+    "reason": "This commit is the initial /dev/loopN and /dev/loop-control subsystem source for #70; it is portable provenance only until current-main ABI, lifetime, and I/O tests pass.",
+    "destination": "#70 (focused current-main loop-device admission; not ready to merge)",
+    "subsystem": "kernel / loop block device",
+    "main_equivalent_or_pr": "N/A: source provenance for #70; no main equivalent or PR is claimed",
+    "verification": "git diff-tree --stat 7f081686e89b2db02ccd8f9cd5c6348f3ab6a53b^ 7f081686e89b2db02ccd8f9cd5c6348f3ab6a53b; run the destination's focused local acceptance checks before admission"
+  },
+  "b62561964230974dc7e7e9606509c41c478eec1c": {
+    "disposition": "portable",
+    "reason": "The zero-sector partition guard and loop-init simplification are a follow-up source layer for #70; port selectively after zero-sized-image and partition tests, with no merge-readiness claim.",
+    "destination": "#70 (focused current-main loop-device admission; not ready to merge)",
+    "subsystem": "kernel / loop block device",
+    "main_equivalent_or_pr": "N/A: source provenance for #70; no main equivalent or PR is claimed",
+    "verification": "git diff-tree --stat b62561964230974dc7e7e9606509c41c478eec1c^ b62561964230974dc7e7e9606509c41c478eec1c; run the destination's focused local acceptance checks before admission"
+  },
+  "f0ecc340a952d5a7a0c13eab5cc4d510472ac2f2": {
+    "disposition": "portable",
+    "reason": "The block-registry ioctl dispatch wiring completes the old loop prototype; preserve it as #70 provenance pending current-main registry adaptation and focused ioctl tests.",
+    "destination": "#70 (focused current-main loop-device admission; not ready to merge)",
+    "subsystem": "kernel / loop block device",
+    "main_equivalent_or_pr": "N/A: source provenance for #70; no main equivalent or PR is claimed",
+    "verification": "git diff-tree --stat f0ecc340a952d5a7a0c13eab5cc4d510472ac2f2^ f0ecc340a952d5a7a0c13eab5cc4d510472ac2f2; run the destination's focused local acceptance checks before admission"
+  },
+  "8fd6a71f995fa0ea6f460bc3af0d0028935faf15": {
+    "disposition": "rewrite",
+    "reason": "The EPROTONOSUPPORT versus EAFNOSUPPORT socket errno change has no dedicated PR or ABI regression; rewrite it through a focused #63 issue before admission.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 8fd6a71f995fa0ea6f460bc3af0d0028935faf15^ 8fd6a71f995fa0ea6f460bc3af0d0028935faf15; run the destination's focused local acceptance checks before admission"
+  },
+  "27ea278847e31f4a73780af7a3f1f3723b512429": {
+    "disposition": "rewrite",
+    "reason": "The getsockopt/setsockopt NULL-optval validation order changes observable EFAULT behavior; rewrite it with focused option-name and pointer tests from a #63-created issue.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 27ea278847e31f4a73780af7a3f1f3723b512429^ 27ea278847e31f4a73780af7a3f1f3723b512429; run the destination's focused local acceptance checks before admission"
+  },
+  "f3f4c4dfd9ca18cdfab4dadb2afb32ba5b4f06a2": {
+    "disposition": "rewrite",
+    "reason": "Resolving connect to 0.0.0.0/:: as localhost changes stream address semantics and lacks a dedicated current-main destination; rewrite and test it through #63.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / networking",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat f3f4c4dfd9ca18cdfab4dadb2afb32ba5b4f06a2^ f3f4c4dfd9ca18cdfab4dadb2afb32ba5b4f06a2; run the destination's focused local acceptance checks before admission"
+  },
+  "be13b75a8ae39a817cf17a85b109589a3468a748": {
+    "disposition": "retire",
+    "reason": "Copying execve/execveat helper binaries into the old LTP initramfs fixes only the retired track packaging path; current Stage 6 packaging supersedes this commit.",
+    "destination": "#61 (current main Stage 6 LTP gate supersedes this track asset)",
+    "subsystem": "test and evidence / LTP",
+    "main_equivalent_or_pr": "N/A: historical artifact is not current evidence and has no admission target",
+    "verification": "git diff-tree --stat be13b75a8ae39a817cf17a85b109589a3468a748^ be13b75a8ae39a817cf17a85b109589a3468a748; inspect tools/riscv/ltp_gate.py and merged Stage 6 PR #61"
+  },
+  "724b2440aa0aafbf101094c076e1e6b52a8a7cca": {
+    "disposition": "rewrite",
+    "reason": "Returning EFAULT for a NULL clock_getres timespec is an unmerged errno fix with no focused regression; rewrite it as a #63-routed syscall change.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / clock_getres",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 724b2440aa0aafbf101094c076e1e6b52a8a7cca^ 724b2440aa0aafbf101094c076e1e6b52a8a7cca; run the destination's focused local acceptance checks before admission"
+  },
+  "4519504eede43039ec69e90afe3eb63ee979e79c": {
+    "disposition": "rewrite",
+    "reason": "Returning EFBIG for fallocate offset overflow changes Linux ABI error semantics but has no dedicated PR; rewrite it with boundary tests via a new #63 issue.",
+    "destination": "#63 (create focused kernel issue before admission)",
+    "subsystem": "kernel / fallocate",
+    "main_equivalent_or_pr": "N/A: no complete current-main equivalent or focused PR exists",
+    "verification": "git diff-tree --stat 4519504eede43039ec69e90afe3eb63ee979e79c^ 4519504eede43039ec69e90afe3eb63ee979e79c; run the destination's focused local acceptance checks before admission"
+  },
+  "44172c41cb914e510ec45fb8b65441b0fafa4c6b": {
+    "disposition": "already-main",
+    "reason": "The virtio-input queue-drain-through-SYN_REPORT fix is patch-equivalent to ac1d0513 already in the fixed main base, so no replay is needed.",
+    "destination": "main (fixed base b54aad2f89ce529691dd9944dac53bf33c8dcb93)",
+    "subsystem": "kernel / virtio-input",
+    "main_equivalent_or_pr": "ac1d051345f6725065c8f1d0b9aec45d6b010f77 already in fixed main",
+    "verification": "git cherry -v b54aad2f89ce529691dd9944dac53bf33c8dcb93 44172c41cb914e510ec45fb8b65441b0fafa4c6b; git show --stat ac1d051345f6725065c8f1d0b9aec45d6b010f77"
+  }
+}

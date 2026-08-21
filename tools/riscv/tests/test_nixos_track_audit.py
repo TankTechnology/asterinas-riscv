@@ -15,6 +15,18 @@ from unittest import mock
 
 
 TOOLS = Path(__file__).resolve().parents[1]
+REPOSITORY = Path(__file__).resolve().parents[3]
+TRACK_ADMISSION_MANIFEST = (
+    REPOSITORY / "tools/riscv/nixos/track-admission.v1.json"
+)
+TRACK_ADMISSION_OVERRIDES = (
+    REPOSITORY / "tools/riscv/nixos/track-admission-overrides.v1.json"
+)
+TRACK_ADMISSION_CHERRY_SNAPSHOT = (
+    REPOSITORY / "tools/riscv/nixos/track-admission-git-cherry.v1.txt"
+)
+TRACK_ADMISSION_BASE = "b54aad2f89ce529691dd9944dac53bf33c8dcb93"
+TRACK_ADMISSION_TRACK = "44172c41cb914e510ec45fb8b65441b0fafa4c6b"
 sys.path.insert(0, str(TOOLS))
 
 from nixos_track_audit import (  # noqa: E402
@@ -231,6 +243,145 @@ class OverrideTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_checked_in_track_admission_inventory_is_complete(self) -> None:
+        manifest = json.loads(TRACK_ADMISSION_MANIFEST.read_text(encoding="utf-8"))
+        cherry = TRACK_ADMISSION_CHERRY_SNAPSHOT.read_text(encoding="utf-8")
+        regenerated = render_manifest(
+            TRACK_ADMISSION_BASE,
+            TRACK_ADMISSION_TRACK,
+            apply_overrides(
+                parse_cherry(cherry),
+                load_overrides(TRACK_ADMISSION_OVERRIDES),
+            ),
+        )
+
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["base"], TRACK_ADMISSION_BASE)
+        self.assertEqual(manifest["track"], TRACK_ADMISSION_TRACK)
+        self.assertEqual(regenerated, manifest)
+        self.assertEqual(len(manifest["records"]), 108)
+        self.assertNotIn("unclassified", manifest["counts"])
+        self.assertEqual(sum(manifest["counts"].values()), 108)
+
+        allowed_classifications = {
+            "already-main",
+            "existing-pr",
+            "portable",
+            "rewrite",
+            "retire",
+        }
+        required_fields = (
+            "source_commit",
+            "subject",
+            "classification",
+            "reason",
+            "destination",
+            "subsystem",
+            "main_equivalent_or_pr",
+            "verification",
+        )
+        commits = []
+        for record in manifest["records"]:
+            for field in required_fields:
+                self.assertIsInstance(record[field], str)
+                self.assertTrue(record[field].strip(), (record["source_commit"], field))
+            self.assertIn(record["classification"], allowed_classifications)
+            commits.append(record["source_commit"])
+
+        self.assertEqual(len(commits), len(set(commits)))
+        reasons = [record["reason"] for record in manifest["records"]]
+        self.assertEqual(len(reasons), len(set(reasons)))
+        self.assertEqual(
+            sum(
+                record["automatic_disposition"] == "already-main"
+                for record in manifest["records"]
+            ),
+            20,
+        )
+
+        by_commit = {
+            record["source_commit"]: record for record in manifest["records"]
+        }
+        for commit in (
+            "7f081686e89b2db02ccd8f9cd5c6348f3ab6a53b",
+            "b62561964230974dc7e7e9606509c41c478eec1c",
+            "f0ecc340a952d5a7a0c13eab5cc4d510472ac2f2",
+        ):
+            self.assertEqual(by_commit[commit]["classification"], "portable")
+            self.assertIn("#70", by_commit[commit]["destination"])
+
+        scm = by_commit["8a7396a1fae4dfce21b2d0e19794b83dd7771bd8"]
+        self.assertEqual(scm["classification"], "portable")
+        self.assertIn("#67", scm["destination"])
+
+        mixed_clone = by_commit[
+            "3be555c8efe1972c5dcf282378df3f9eb420796c"
+        ]
+        self.assertEqual(mixed_clone["classification"], "portable")
+        self.assertIn("#64", mixed_clone["destination"])
+        self.assertIn("#29", mixed_clone["main_equivalent_or_pr"])
+        self.assertIn("only the kernel clone fix", mixed_clone["main_equivalent_or_pr"])
+
+        mixed_ltp = by_commit["715b2c541a567453048eb6ae6f092c07603dc390"]
+        self.assertEqual(mixed_ltp["classification"], "rewrite")
+        self.assertIn("#63", mixed_ltp["destination"])
+
+        existing_prs = {
+            "39dedb0aa4ca1a48814f55bac8c37881813f13cd": "#43",
+            "89216fa1ef78365174391a96063f847fe0eec8d6": "#44",
+            "538ed5168c9c2e29f24a782a91343096de50d387": "#45",
+            "f2ce0fd101f051bbbe103f93db45d454eef7d8e4": "#49",
+            "c295a4715f436ced7904784d7216c6580d329f92": "#50",
+            "6e065bb56f3dc403f19feac55f84063eb85062fb": "#51",
+            "f6a01a996e84425e31aa07c9e4a26b6a6855f974": "#52",
+        }
+        self.assertEqual(
+            {
+                record["source_commit"]
+                for record in manifest["records"]
+                if record["classification"] == "existing-pr"
+            },
+            set(existing_prs),
+        )
+        for commit, pull_request in existing_prs.items():
+            self.assertEqual(by_commit[commit]["classification"], "existing-pr")
+            self.assertEqual(
+                by_commit[commit]["destination"],
+                f"{pull_request} (open; do not duplicate)",
+            )
+
+    def test_live_git_cherry_matches_checked_in_snapshot_when_refs_exist(
+        self,
+    ) -> None:
+        for commit in (TRACK_ADMISSION_BASE, TRACK_ADMISSION_TRACK):
+            resolved = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+                cwd=REPOSITORY,
+                capture_output=True,
+                text=True,
+            )
+            if resolved.returncode != 0:
+                self.skipTest(f"Git commit is unavailable in this checkout: {commit}")
+
+        live_cherry = subprocess.run(
+            [
+                "git",
+                "cherry",
+                "-v",
+                TRACK_ADMISSION_BASE,
+                TRACK_ADMISSION_TRACK,
+            ],
+            cwd=REPOSITORY,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+        self.assertEqual(
+            live_cherry,
+            TRACK_ADMISSION_CHERRY_SNAPSHOT.read_text(encoding="utf-8"),
+        )
+
     def test_manifest_is_deterministic_and_preserves_record_order(self) -> None:
         records = apply_overrides(
             parse_cherry(f"+ {HASH_B} second\n- {HASH_A} first\n"),
