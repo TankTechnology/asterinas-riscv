@@ -114,7 +114,7 @@ Typo (nit): The safety documentation contains the misspelling `derefernecer`, wh
 >     ($region: expr, $typ: expr) => {{
 >         debug_assert!($region.base().is_multiple_of(PAGE_SIZE));
 >         debug_assert!($region.len().is_multiple_of(PAGE_SIZE));
-> 
+>
 >         let seg = Segment::from_unused($region.base()..$region.end(), |_| $typ).unwrap();
 >         let _ = ManuallyDrop::new(seg);
 >     }};
