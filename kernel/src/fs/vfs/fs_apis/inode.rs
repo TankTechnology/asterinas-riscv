@@ -600,9 +600,12 @@ pub trait Inode: Any + FileOps + Send + Sync {
             // Read/write DACs are always overridable.
             perm -= Permission::MAY_READ | Permission::MAY_WRITE;
 
-            // Executable DACs are overridable when there is at least one exec bit set.
+            // Executable DACs are always overridable for directories. For
+            // regular files, they are overridable only when there is at least
+            // one exec bit set. This matches Linux's `generic_permission()`.
             if perm.may_exec() {
-                if mode.is_owner_executable()
+                if self.type_() == InodeType::Dir
+                    || mode.is_owner_executable()
                     || mode.is_group_executable()
                     || mode.is_other_executable()
                 {
