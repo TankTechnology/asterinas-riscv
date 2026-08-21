@@ -238,6 +238,66 @@ for f in "${ROOTFS}/usr/share/dbus-1/system.conf" \
 done
 mkdir -p "${ROOTFS}/var/lib/dbus"
 
+# 8d. Xfce core libraries (XFCE-M2): shared-library closure cross-built by
+#     tools/riscv/xfce/build_xfce_{deps,libs}.sh into the same prefix. Copied
+#     as .so files (the M1 desktop clients were static, but xfwm4/xfce4-panel
+#     in M3 will link these dynamically). /usr/lib is in the guest loader's
+#     default search path. Skipped (with a warning) when the Xfce libs are not
+#     in the prefix, so this script still works for a matchbox-only image.
+if [ -f "${CROSS_USR}/lib/libxfce4ui-2.so.0" ]; then
+    ( cd "${CROSS_USR}/lib" && find . -maxdepth 1 \( -name '*.so' -o -name '*.so.*' \) | \
+      cpio -pdm --quiet "${ROOTFS}/usr/lib/" )
+    for tool in xfconfd xfce4-about xfce4-keyboard-shortcuts \
+                exo-open exo-desktop-item-edit exo-preferred-applications; do
+        [ -f "${CROSS_USR}/bin/${tool}" ] && cp "${CROSS_USR}/bin/${tool}" "${ROOTFS}/usr/bin/${tool}"
+    done
+    if [ -d "${CROSS_USR}/share/dbus-1/services" ]; then
+        mkdir -p "${ROOTFS}/usr/share/dbus-1/services"
+        cp "${CROSS_USR}/share/dbus-1/services/"*.service "${ROOTFS}/usr/share/dbus-1/services/"
+    fi
+    if [ -d "${CROSS_USR}/share/dbus-1/accessibility-services" ]; then
+        mkdir -p "${ROOTFS}/usr/share/dbus-1/accessibility-services"
+        cp "${CROSS_USR}/share/dbus-1/accessibility-services/"*.service "${ROOTFS}/usr/share/dbus-1/accessibility-services/"
+    fi
+    find "${ROOTFS}/usr/share/dbus-1/services" "${ROOTFS}/usr/share/dbus-1/accessibility-services" \
+        -name '*.service' -exec sed -i \
+            -e "s|${CROSS_USR}/libexec|/usr/libexec|g" \
+            -e "s|${CROSS_USR}/lib|/usr/lib|g" \
+            -e "s|${CROSS_USR}/bin|/usr/bin|g" {} + 2>/dev/null || true
+    # xfconfd installs to lib/xfce4/xfconf/ (D-Bus activated); at-spi2 helpers
+    # in libexec/ back GTK3's atk-bridge.
+    if [ -d "${CROSS_USR}/lib/xfce4" ]; then
+        mkdir -p "${ROOTFS}/usr/lib/xfce4"
+        cp -rL "${CROSS_USR}/lib/xfce4/." "${ROOTFS}/usr/lib/xfce4/"
+    fi
+    for helper in at-spi-bus-launcher at-spi2-registryd; do
+        if [ -f "${CROSS_USR}/libexec/${helper}" ]; then
+            mkdir -p "${ROOTFS}/usr/libexec"
+            cp "${CROSS_USR}/libexec/${helper}" "${ROOTFS}/usr/libexec/${helper}"
+        fi
+    done
+    for d in exo garcon xfce4 xfconf; do
+        if [ -d "${CROSS_USR}/share/${d}" ]; then
+            mkdir -p "${ROOTFS}/usr/share/${d}"
+            cp -rL "${CROSS_USR}/share/${d}/." "${ROOTFS}/usr/share/${d}/"
+        fi
+    done
+    # shared-mime-info database (garcon/glib MIME lookup) + gsettings schemas
+    # (compiled at assembly time with the HOST glib-compile-schemas).
+    if [ -d "${CROSS_USR}/share/mime" ]; then
+        mkdir -p "${ROOTFS}/usr/share/mime"
+        cp -rL "${CROSS_USR}/share/mime/." "${ROOTFS}/usr/share/mime/"
+    fi
+    if [ -d "${CROSS_USR}/share/glib-2.0/schemas" ]; then
+        mkdir -p "${ROOTFS}/usr/share/glib-2.0/schemas"
+        cp "${CROSS_USR}/share/glib-2.0/schemas/"*.gschema.xml "${ROOTFS}/usr/share/glib-2.0/schemas/" 2>/dev/null || true
+        glib-compile-schemas "${ROOTFS}/usr/share/glib-2.0/schemas" || true
+    fi
+    find "${ROOTFS}/usr/lib" -name '*.so.*' -type f -exec "${STRIP}" --strip-unneeded {} + 2>/dev/null || true
+else
+    echo "NOTE: Xfce libs not in cross prefix; skipping XFCE-M2 payload (matchbox-only image)" >&2
+fi
+
 # 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm/netsurf-gtk are
 #    dynamic or static; all resolve against the glibc runtime in /lib).
 for cli in matchbox-window-manager xpanel pcmanfm xterm netsurf-gtk; do
