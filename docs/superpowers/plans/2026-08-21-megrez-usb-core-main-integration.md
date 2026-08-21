@@ -161,40 +161,63 @@ Expected: formatting and whitespace checks pass and the worktree is clean.
 - Modify: `kernel/comps/usb/Cargo.toml`
 - Modify: `kernel/comps/usb/src/arch/riscv/mod.rs`
 - Modify: `ostd/src/bus/usb.rs`
+- Modify: `ostd/src/irq/top_half.rs`
+- Modify: `ostd/src/arch/riscv/irq/chip/mod.rs`
+- Modify: `ostd/src/arch/riscv/irq/mod.rs`
+- Modify: `ostd/src/arch/x86/irq/mod.rs`
+- Modify: `ostd/src/arch/loongarch/irq/mod.rs`
+- Modify: `Cargo.toml`
 - Modify: `Cargo.lock`
 
-- [ ] **Step 1: Port the event-ring and lockfile commits in order**
+- [x] **Step 1: Port the event-ring and lockfile commits in order**
 
 ```bash
 git cherry-pick -x 2734074154f8558f0088ee7f31b516644900690c
 git cherry-pick -x 1e176746acd322c2cf5f1cc9d2ae9d2da3518ce6
 ```
 
-Expected: `aster-softirq` is wired into `aster-usb`; the interrupt handler
-schedules deferred work instead of running an idle polling loop.
+Result: the xHCI event ring is interrupt-driven. Follow-up hardening removed the
+taskless softirq dependency: the IRQ top half now only masks, acknowledges, and
+wakes an ordinary task, while USB enumeration and input registration stay in
+sleepable task context.
 
-- [ ] **Step 2: Prove the intended interrupt architecture is present**
+- [x] **Step 2: Make level-triggered PLIC deferral teardown-safe**
 
 ```bash
-rg -n 'handle_event_irq|Taskless|IrqLine|IRQ_CHIP|aster-softirq' \
-  kernel/comps/usb/Cargo.toml \
+rg -n 'DeferredMappedIrqLine|on_active_and_mask|new_external|rearm|EnabledKeyboardIrq' \
   kernel/comps/usb/src/arch/riscv/mod.rs \
-  ostd/src/bus/usb.rs
-! rg -n 'loop[[:space:]]*\{' kernel/comps/usb/src/arch/riscv/mod.rs
+  ostd/src/arch/riscv/irq/chip/mod.rs \
+  ostd/src/arch/riscv/irq/mod.rs
+! rg -n 'Taskless|handle_event_irq|unsafe impl (Send|Sync)' \
+  kernel/comps/usb/src/arch/riscv/mod.rs ostd/src/bus/usb.rs
 ```
 
-Expected: interrupt and deferred-work symbols are present and no unconditional
-idle polling loop is introduced.
+Result: the dedicated mapping keeps target IE enabled, uses PLIC priority zero
+as the mask, snapshots callback ownership while the claim is serialized, fences
+mask and completion writes, and wakes only after completion. Teardown disables
+xHCI INTE first, then masks and waits for in-flight claim snapshots before it
+clears IE and unmaps the PLIC source. Legacy UART/VirtIO mappings retain their
+existing `MappedIrqLine` interface.
 
-- [ ] **Step 3: Run focused structural tests**
+- [x] **Step 3: Run focused structural and runtime tests**
 
 ```bash
 python3 -m unittest discover -s tools/usb-hid/tests -p 'test_*.py' -v
 cargo fmt --all -- --check
-git diff --check HEAD~2
+cargo osdk check --ktests -p ostd -p aster-kernel \
+  --target riscv64imac-unknown-none-elf
+cd ostd
+OSDK_TARGET_ARCH=riscv64 cargo osdk test \
+  external_claim_holds_registered_callback_until_hw_token_drop \
+  --scheme riscv --qemu-args='-smp 4'
 ```
 
-Expected: 49 tests pass and the two-commit batch is formatting-clean.
+Result: all 49 HID tests passed; the combined RISC-V OSTD/kernel ktest compile
+passed; the claim-time ownership regression passed in RISC-V QEMU with four
+harts; x86-64 OSTD/kernel ktest compilation also passed. A fresh OSDK test
+resolution selected the pinned `dma-api = 0.9.3`. The LoongArch check reached a
+pre-existing target dependency failure (`loongArch64` and `fdt` unavailable),
+not a Task 3 source error.
 
 ### Task 4: Port RISC-V PCI BAR allocation and PCI xHCI discovery
 
