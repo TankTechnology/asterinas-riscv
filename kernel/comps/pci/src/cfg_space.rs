@@ -117,6 +117,8 @@ pub enum PciBridgeCfgOffset {
     IoLimitUpper16 = 0x32,
     /// Capabilities pointer
     CapabilitiesPointer = 0x34,
+    /// Expansion ROM base address
+    ExpansionRomBaseAddress = 0x38,
     /// Bridge control
     BridgeControl = 0x3E,
 }
@@ -283,6 +285,21 @@ impl Bar {
             Self::Io(IoBar::new(&location, index, raw)?)
         };
         Ok(result)
+    }
+
+    /// Returns the number of configuration-space slots encoded by a BAR.
+    ///
+    /// This is intentionally decoded before probing the BAR. A 64-bit BAR
+    /// still consumes its upper slot if probing later fails, for example when
+    /// the platform MMIO allocator is exhausted.
+    pub(super) fn slot_width(location: PciDeviceLocation, index: u8) -> u8 {
+        let offset = index as u16 * 4 + PciGeneralDeviceCfgOffset::Bar0 as u16;
+        let raw = location.read32(offset);
+        if raw & 1 == 0 && (raw >> 1) & 3 == 0b10 {
+            2
+        } else {
+            1
+        }
     }
 }
 
