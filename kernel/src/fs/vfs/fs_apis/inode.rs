@@ -612,6 +612,32 @@ pub trait Inode: Any + FileOps + Send + Sync {
         let creds = posix_thread.credentials();
         check_permission_ids(&task, posix_thread, self, perm, creds.ruid(), creds.rgid())
     }
+
+    /// Checks whether the caller may open the file with `O_NOATIME`.
+    ///
+    /// Like Linux, `O_NOATIME` is allowed when the caller's fsuid owns the
+    /// file or when the caller holds `CAP_FOWNER`; otherwise `EPERM`.
+    fn check_noatime_permission(&self) -> Result<()> {
+        let Some(task) = Task::current() else {
+            return Ok(());
+        };
+        let Some(posix_thread) = task.as_posix_thread() else {
+            return Ok(());
+        };
+
+        let creds = posix_thread.credentials();
+        if self.metadata()?.uid == creds.fsuid() {
+            return Ok(());
+        }
+        if has_capability(&task, posix_thread, CapSet::FOWNER) {
+            return Ok(());
+        }
+
+        return_errno_with_message!(
+            Errno::EPERM,
+            "O_NOATIME requires owning the file or holding CAP_FOWNER"
+        );
+    }
 }
 
 /// The core of [`Inode::check_permission`], parameterized by the UID/GID to
@@ -681,15 +707,19 @@ fn check_permission_ids<I: Inode + ?Sized>(
     Ok(())
 }
 
-fn has_dac_override_capability(task: &CurrentTask, posix_thread: &PosixThread) -> bool {
+fn has_capability(task: &CurrentTask, posix_thread: &PosixThread, cap: CapSet) -> bool {
     let thread_local = task.as_thread_local().unwrap();
     let user_ns = thread_local.borrow_user_ns();
     lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
         user_ns.as_ref(),
         posix_thread,
-        CapSet::DAC_OVERRIDE,
+        cap,
     ))
     .is_ok()
+}
+
+fn has_dac_override_capability(task: &CurrentTask, posix_thread: &PosixThread) -> bool {
+    has_capability(task, posix_thread, CapSet::DAC_OVERRIDE)
 }
 
 impl dyn Inode {
