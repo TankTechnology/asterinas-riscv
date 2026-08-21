@@ -830,6 +830,19 @@ mod vmspace {
     /// A very large address (16 TiB) beyond typical physical memory for testing.
     const IOMEM_PADDR: usize = 0x100_000_000_000;
 
+    #[ktest]
+    fn iomem_reports_unique_backing_ownership() {
+        let iomem = IoMem::acquire(IOMEM_PADDR + 0x6000..IOMEM_PADDR + 0x7000).unwrap();
+        assert!(iomem.is_unique());
+
+        let clone = iomem.clone();
+        assert!(!iomem.is_unique());
+        assert!(!clone.is_unique());
+
+        drop(clone);
+        assert!(iomem.is_unique());
+    }
+
     fn expected_iomem_flags(flags: PageFlags) -> PageFlags {
         #[cfg(target_arch = "riscv64")]
         {
