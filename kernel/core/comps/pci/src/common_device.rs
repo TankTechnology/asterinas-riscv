@@ -6,7 +6,7 @@ use ostd::Result;
 
 use crate::{
     capability::{RawCapabilities, msix::CapabilityMsixData, vendor::CapabilityVndrData},
-    cfg_space::{AddrLen, Bar, Command, PciBridgeCfgOffset, PciCommonCfgOffset, Status},
+    cfg_space::{Bar, Command, PciBridgeCfgOffset, PciCommonCfgOffset, Status},
     device_info::{PciDeviceId, PciDeviceLocation},
 };
 
@@ -224,33 +224,64 @@ impl BarManager {
 
     /// Parses the BAR space by PCI device location.
     fn new(device_type: PciDeviceType, location: PciDeviceLocation) -> Self {
-        let mut bars = [None, None, None, None, None, None];
-
         // Determine the maximum number of BARs based on the device type.
         let max = match device_type {
             PciDeviceType::GeneralDevice => 6,
             PciDeviceType::PciToPciBridge(_, _, _) => 2,
             PciDeviceType::PciToCardbusBridge => 0,
         };
-        let mut idx = 0;
-        while idx < max {
-            let mut idx_step = 1;
-            let Ok(bar) = Bar::new(location, idx) else {
-                idx += idx_step;
-                continue;
+        let bars = collect_bar_slots(max, |idx| {
+            let width = Bar::slot_width(location, idx);
+            let bar = if idx.checked_add(width).is_some_and(|end| end <= max) {
+                Bar::new(location, idx)
+            } else {
+                Err(ostd::Error::InvalidArgs)
             };
-
-            if let Bar::Memory(memory_bar) = &bar
-                && memory_bar.address_length() == AddrLen::Bits64
-            {
-                // 64-bit BAR occupies two BAR slots.
-                idx_step += 1;
-            }
-
-            bars[idx as usize] = Some(bar);
-            idx += idx_step;
-        }
+            (width, bar)
+        });
 
         Self { bars }
+    }
+}
+
+fn collect_bar_slots<T, E>(
+    max: u8,
+    mut inspect: impl FnMut(u8) -> (u8, Result<T, E>),
+) -> [Option<T>; 6] {
+    let mut bars = [const { None }; 6];
+    let mut idx = 0;
+    while idx < max {
+        let (width, item) = inspect(idx);
+        debug_assert!(matches!(width, 1 | 2));
+        if let Ok(item) = item {
+            bars[idx as usize] = Some(item);
+        }
+        idx += width;
+    }
+    bars
+}
+
+#[cfg(ktest)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use ostd::{Error, prelude::ktest};
+
+    use super::*;
+
+    #[ktest]
+    fn failed_64_bit_bar_still_consumes_both_slots() {
+        let mut visited = Vec::new();
+        let bars: [Option<()>; 6] = collect_bar_slots(6, |idx| {
+            visited.push(idx);
+            if idx == 0 {
+                (2, Err(Error::NotEnoughResources))
+            } else {
+                (1, Err(Error::InvalidArgs))
+            }
+        });
+
+        assert!(bars.iter().all(Option::is_none));
+        assert_eq!(visited, [0, 2, 3, 4, 5]);
     }
 }
