@@ -1078,7 +1078,6 @@ impl FileOps for RamInode {
         if self.typ == InodeType::File && !status_flags.contains(StatusFlags::O_NOATIME) {
             self.metadata.lock().set_atime(now());
         }
-        }
         Ok(read_len)
     }
 

@@ -158,6 +158,26 @@ impl VdsoData {
         self.basetime[clockid].nanos_info = nanos_info;
     }
 
+    /// Computes the basetime for a wall clock (REALTIME/REALTIME_COARSE),
+    /// applying the (possibly negative) wall-clock adjustment from
+    /// `clock_settime` on top of the boot-time epoch. The boot-time epoch
+    /// keeps sub-second precision.
+    fn wall_clock_basetime(instant: Instant) -> (u64, u64) {
+        const NANOS_PER_SEC: i128 = 1_000_000_000;
+
+        let start = START_DURATION.get().unwrap();
+        let adjust_nanos = crate::time::wall_clock_adjust_nanos() as i128;
+        let total_nanos = instant.secs() as i128 * NANOS_PER_SEC
+            + start.as_secs() as i128 * NANOS_PER_SEC
+            + (instant.nanos() + start.subsec_nanos()) as i128
+            + adjust_nanos;
+        let total_nanos = total_nanos.max(0);
+        (
+            (total_nanos / NANOS_PER_SEC) as u64,
+            (total_nanos % NANOS_PER_SEC) as u64,
+        )
+    }
+
     fn update_high_res_instant(&mut self, instant: Instant, instant_cycles: u64) {
         self.last_cycles = instant_cycles;
         for clock_id in HIGH_RES_CLOCK_IDS {
@@ -190,7 +210,16 @@ impl VdsoData {
         #[cfg(ktest)]
         let start_offset = test::TEST_START_OFFSET;
 
-        start_offset + Duration::new(instant.secs(), instant.nanos())
+        let base = start_offset + Duration::new(instant.secs(), instant.nanos());
+
+        // Apply the wall-clock adjustment made by `clock_settime` so that the
+        // vDSO-accelerated realtime readings agree with the syscall path.
+        let adjust = crate::time::wall_clock_adjust_nanos();
+        if adjust >= 0 {
+            base + Duration::from_nanos(adjust as u64)
+        } else {
+            base.saturating_sub(Duration::from_nanos((-adjust) as u64))
+        }
     }
 }
 
@@ -363,6 +392,21 @@ fn update_vdso_high_res_instant(instant: Instant, instant_cycles: u64) {
     VDSO.get()
         .unwrap()
         .update_high_res_instant(instant, instant_cycles);
+}
+
+/// Immediately refreshes the wall-clock fields in the vDSO data page after
+/// `clock_settime`, mirroring Linux's `timekeeping_update()` →
+/// `update_vsyscall()` (the periodic update runs at only 10 Hz, which is too
+/// slow for `settime`-then-`gettime` sequences).
+pub(crate) fn on_wall_clock_change() {
+    let Some(vdso) = VDSO.get() else {
+        return;
+    };
+
+    let clocksource = aster_time::default_clocksource();
+    let (instant, cycles) = clocksource.last_record();
+    vdso.update_high_res_instant(instant, cycles);
+    vdso.update_coarse_res_instant(instant);
 }
 
 /// Updates instants with respect to coarse-resolution clocks in vDSO data.

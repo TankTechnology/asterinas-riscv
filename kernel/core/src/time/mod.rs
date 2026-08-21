@@ -5,7 +5,9 @@
 pub(crate) use core::{Clock, timer};
 
 use ::core::time::Duration;
-pub(crate) use timer::{Timer, TimerManager};
+pub use system_time::{START_TIME, SystemTime};
+pub(crate) use system_time::wall_clock_adjust_nanos;
+pub use timer::{Timer, TimerManager};
 
 use crate::prelude::*;
 
@@ -13,6 +15,7 @@ pub(crate) mod clocks;
 mod core;
 pub(crate) mod cpu_time_stats;
 mod softirq;
+mod system_time;
 pub(crate) mod timerfd;
 pub(crate) mod wait;
 
