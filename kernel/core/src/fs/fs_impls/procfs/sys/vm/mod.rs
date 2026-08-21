@@ -5,7 +5,7 @@ use crate::{
         file::{InodeType, mkmod},
         procfs::{
             ProcDir, StaticEntry,
-            sys::vm::mmap_min_addr::MmapMinAddrFileOps,
+            sys::vm::{drop_caches::DropCachesFileOps, mmap_min_addr::MmapMinAddrFileOps},
             template::{
                 ProcDirOps, ReaddirEntry, listed_entries_from_table, lookup_child_from_table,
                 visit_listed_entries,
@@ -16,6 +16,7 @@ use crate::{
     prelude::*,
 };
 
+mod drop_caches;
 mod mmap_min_addr;
 
 /// Represents the inode at `/proc/sys/vm`.
@@ -29,11 +30,18 @@ impl VmDirOps {
         ProcDir::new(Self, parent, mkmod!(a+rx))
     }
 
-    const STATIC_ENTRIES: &'static [StaticEntry] = &[(
-        "mmap_min_addr",
-        InodeType::File,
-        MmapMinAddrFileOps::new_inode,
-    )];
+    const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        (
+            "mmap_min_addr",
+            InodeType::File,
+            MmapMinAddrFileOps::new_inode,
+        ),
+        (
+            "drop_caches",
+            InodeType::File,
+            DropCachesFileOps::new_inode,
+        ),
+    ];
 }
 
 impl ProcDirOps for VmDirOps {
