@@ -405,12 +405,6 @@ impl LoopFile {
     pub(crate) fn new(device: Arc<dyn BlockDevice>) -> Self {
         Self(device)
     }
-
-    fn device(&self) -> &LoopDevice {
-        self.0
-            .downcast_ref::<LoopDevice>()
-            .expect("LoopFile must wrap a LoopDevice")
-    }
 }
 
 impl Device for LoopFile {
