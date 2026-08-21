@@ -340,9 +340,7 @@ mod tests {
         line_discipline.set_termios(termios);
         let mut received_signal = None;
 
-        line_discipline
-            .push_char(b'x', |_| {}, |_| {})
-            .unwrap();
+        line_discipline.push_char(b'x', |_| {}, |_| {}).unwrap();
         line_discipline
             .push_char(
                 CCtrlCharId::VINTR.default_char(),
