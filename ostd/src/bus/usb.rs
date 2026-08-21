@@ -35,7 +35,8 @@ use crate::{
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
-const XHCI_CAPABILITY_REGISTERS_LEN: usize = 0x24;
+const XHCI_MIN_CAPLENGTH: usize = 0x20;
+const XHCI_CAPABILITY_ACCESSORS_LEN: usize = 0x24;
 const XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET: usize = 0x400;
 const XHCI_PORT_REGISTER_SET_LEN: usize = 0x10;
 const XHCI_RUNTIME_INTERRUPTER_REGISTERS_OFFSET: usize = 0x20;
@@ -113,6 +114,7 @@ enum XhciMmioError {
     InvalidMappingProperties,
     InvalidRegisterLayout,
     InvalidExtendedCapability,
+    UnsupportedExtendedCapability,
 }
 
 struct XhciHost {
@@ -198,7 +200,7 @@ fn validate_xhci_mmio_with(
     mmio_size: usize,
     mut read: impl FnMut(usize) -> Result<u32, XhciMmioError>,
 ) -> Result<(), XhciMmioError> {
-    if !region_fits(0, XHCI_CAPABILITY_REGISTERS_LEN, mmio_size) {
+    if !region_fits(0, XHCI_CAPABILITY_ACCESSORS_LEN, mmio_size) {
         return Err(XhciMmioError::InvalidRegisterLayout);
     }
 
@@ -224,7 +226,7 @@ fn validate_xhci_mmio_with(
         .checked_mul(XHCI_INTERRUPTER_REGISTER_SET_LEN)
         .and_then(|length| XHCI_RUNTIME_INTERRUPTER_REGISTERS_OFFSET.checked_add(length));
 
-    if operational_offset < XHCI_CAPABILITY_REGISTERS_LEN
+    if operational_offset < XHCI_MIN_CAPLENGTH
         || !operational_offset.is_multiple_of(size_of::<u64>())
         || !(0x0090..=0x0120).contains(&version)
         || max_slots == 0
@@ -302,12 +304,10 @@ fn extended_capability_len(
                 .and_then(|length| 0x10usize.checked_add(length))
                 .ok_or(XhciMmioError::InvalidExtendedCapability)?
         }
-        5 => match (header & (1 << 23) != 0, header & (1 << 24) != 0) {
-            (false, false) => 0x0c,
-            (true, false) => 0x10,
-            (false, true) => 0x14,
-            (true, true) => 0x18,
-        },
+        // CrabUSB 0.9.10 uses xhci 0.9.2's `repr(C)` MSI accessor, whose Rust layout does not
+        // match all legal PCI MSI capability layouts and can panic or access beyond the
+        // capability. Reject MSI until the dependency models these registers safely.
+        5 => return Err(XhciMmioError::UnsupportedExtendedCapability),
         6 => {
             if !region_fits(offset, 8, mmio_size) {
                 return Err(XhciMmioError::InvalidExtendedCapability);
@@ -623,9 +623,9 @@ mod tests {
     use core::{cell::Cell, future::poll_fn, task::Poll};
 
     use super::{
-        DriveError, UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_REGISTERS_LEN,
-        XhciMmioError, drive_with, new_usb_kernel_op, validate_xhci_mapping_properties,
-        validate_xhci_mmio_with,
+        DriveError, UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN,
+        XHCI_MIN_CAPLENGTH, XhciMmioError, drive_with, new_usb_kernel_op,
+        validate_xhci_mapping_properties, validate_xhci_mmio_with,
     };
     use crate::{
         mm::{CachePolicy, dma::DmaWindow},
@@ -682,7 +682,8 @@ mod tests {
     #[ktest]
     fn accepts_valid_fixed_layout_without_extended_capabilities() {
         assert_eq!(validate_standard_layout(0x500, 1, &[]), Ok(()));
-        assert_eq!(XHCI_CAPABILITY_REGISTERS_LEN, 0x24);
+        assert_eq!(XHCI_MIN_CAPLENGTH, 0x20);
+        assert_eq!(XHCI_CAPABILITY_ACCESSORS_LEN, 0x24);
     }
 
     #[ktest]
@@ -704,7 +705,7 @@ mod tests {
     }
 
     #[ktest]
-    fn accepts_all_msi_capability_layouts() {
+    fn rejects_all_msi_capabilities_until_dependency_is_fixed() {
         let cases = [
             (0x4f4, 0x0000_0005),
             (0x4f0, 0x0080_0005),
@@ -718,7 +719,7 @@ mod tests {
             let hccparams1 = ((offset / size_of::<u32>()) as u32) << 16 | 1;
             assert_eq!(
                 validate_standard_layout(0x500, hccparams1, &[(offset, header)]),
-                Ok(()),
+                Err(XhciMmioError::UnsupportedExtendedCapability),
                 "MSI capability at {offset:#x} with header {header:#x}",
             );
         }
