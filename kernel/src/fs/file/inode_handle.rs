@@ -47,6 +47,9 @@ impl InodeHandle {
             // object itself".
             // Reference: <https://man7.org/linux/man-pages/man2/openat.2.html>
             inode.check_permission(access_mode.into())?;
+            if status_flags.contains(StatusFlags::O_NOATIME) {
+                inode.check_noatime_permission()?;
+            }
         }
 
         Self::new_unchecked_access(path, access_mode, status_flags)
