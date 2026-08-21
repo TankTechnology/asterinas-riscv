@@ -97,6 +97,38 @@ full NixOS closure.
 | M8 capabilities/profile | `a561ecc2d...` | #64 | Reuse focused capability/profile inputs; old go/no-go report is not current proof. |
 | M9 lightweight system | `f7b7e14c9...`, `e311ef37a...` | #64 / #65 | Treat as scaffolding for closure/persistence work, not a generated NixOS system. |
 
+### Admitted M7 source fixture
+
+`tools/riscv/nixos/m7/scm_repro.c` is adapted and admitted from
+`8a7396a1fae4dfce21b2d0e19794b83dd7771bd8` as a source-only fixture for #67.
+Its focused test checks the SPDX marker, provenance, SCM_RIGHTS and
+SO_PEERCRED on a server-accepted connection from a distinct child, checkout
+independence, warning-free host compilation, and timeout-bounded host
+execution.
+Default execution restricts its credential-status marker to the PID-only
+`__M7_PEERCRED_PID_OK__ ... distinct_ids=0`;
+it still emits lifecycle and SCM-transfer markers,
+and it does not claim UID/GID isolation.
+Full credential validation requires root execution of
+`"$repro_bin" --require-distinct-ids` from the README's private temporary
+directory recipe.
+The child then drops to 65534:65534 before connecting,
+and the parent requires
+`__M7_PEERCRED_OK__ ... uid=65534 gid=65534 distinct_ids=1`.
+The fixture uses a Linux abstract AF_UNIX address,
+so it creates no persistent socket path.
+Abstract bind collisions retry a bounded `(parent PID, attempt)` name sequence.
+A single five-second monotonic deadline covers accept, SCM receive readiness,
+and child exit. Cleanup checks the `SIGKILL` result and uses WNOHANG under a
+250 ms deadline; `PR_SET_PDEATHSIG(SIGKILL)` independently bounds the child
+lifetime when a credential-dropped child cannot be signalled by the parent.
+Thus pre-connect exit, post-connect send stall, and cleanup `EPERM` cannot
+enter an unbounded wait.
+These are host checks and an Asterinas/QEMU acceptance recipe, not an
+Asterinas/QEMU runtime PASS.
+The old rootfs builder, cached closure, boot integration, and historical PASS
+claim from that commit are not admitted.
+
 Additional portable inputs are the ET_EXEC reproducer (`4e9550e11...`),
 focused mount/security/seccomp smoke sources (`e3fd90d80...`, `b5f0cfca6...`,
 `48666769a...`, `549b70f52...`, `1f284a1c1...`), audio tests/design
