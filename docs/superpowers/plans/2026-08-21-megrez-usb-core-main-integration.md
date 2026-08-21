@@ -219,50 +219,53 @@ resolution selected the pinned `dma-api = 0.9.3`. The LoongArch check reached a
 pre-existing target dependency failure (`loongArch64` and `fdt` unavailable),
 not a Task 3 source error.
 
-### Task 4: Port RISC-V PCI BAR allocation and PCI xHCI discovery
+### Task 4: Port and harden RISC-V PCI BAR allocation
 
 **Files:**
 - Modify: `kernel/comps/pci/Cargo.toml`
 - Modify: `kernel/comps/pci/src/arch/riscv/mod.rs`
 - Modify: `kernel/comps/pci/src/cfg_space.rs`
-- Modify: `kernel/comps/usb/Cargo.toml`
-- Modify: `kernel/comps/usb/src/arch/riscv/mod.rs`
-- Create: `kernel/comps/usb/src/arch/riscv/pci.rs`
-- Modify: `Cargo.lock`
 
-- [ ] **Step 1: Port PCI allocation, xHCI discovery, and address-aware IRQ mapping**
+- [x] **Step 1: Port PCI allocation and harden the assignment preflight**
 
 ```bash
 git cherry-pick -x 47364d032546f7a10f516e7c4829007ccf3382ad
-git cherry-pick -x 32979fab9091d57b8b5f09040b9946e8dcac5ffc
-git cherry-pick -x ba139ca91dbf19677a077cc1899862d54a1fc135
 ```
 
 Expected: zero-valued RISC-V BARs can be allocated from firmware PCIe memory
-ranges; the xHCI class driver stores BAR0, DMA, and IRQ resources; interrupt
-map matching includes both masked PCI address and interrupt pin.
+ranges only after a read-only scan proves that ordinary and expansion-ROM
+memory BARs are all unassigned. Unsupported, translated, prefetchable-only, or
+mixed-assignment layouts fail closed.
 
-- [ ] **Step 2: Verify the PCI/xHCI contracts in source**
+- [x] **Step 2: Verify the PCI BAR contracts in source**
 
 ```bash
 rg -n 'MmioAllocator|alloc_mmio|ranges' kernel/comps/pci/src/arch/riscv/mod.rs
-rg -n '0x0[Cc]|0x03|0x30|BAR0|interrupt-map-mask|pci_address|interrupt_pin' \
-  kernel/comps/usb/src/arch/riscv/pci.rs
+rg -n 'slot_width|ExpansionRomBaseAddress|has_assigned_memory_bar' \
+  kernel/comps/pci/src
 ```
 
-Expected: both searches expose the allocator, xHCI class match, BAR0, and
-address-plus-pin interrupt routing.
+Expected: the searches expose the bounded allocator, 64-bit BAR slot handling,
+and conservative assigned-BAR/ROM detection.
 
-- [ ] **Step 3: Run formatting and host regressions**
+- [x] **Step 3: Run formatting, lint, and QEMU regressions**
 
 ```bash
 cargo fmt --all -- --check
-python3 -m unittest discover -s tools/usb-hid/tests -p 'test_*.py' -v
-git diff --check HEAD~3
+RUSTFLAGS=-Dwarnings cargo clippy -p aster-pci \
+  --target riscv64imac-unknown-none-elf --no-deps
+cargo osdk test --scheme riscv --qemu-args='-smp 4'
+git diff --check
 ```
 
-Expected: formatting passes, 49 host tests pass, and the batch has no
-whitespace error.
+Result: formatting, strict clippy, and diff checks passed; RISC-V QEMU with
+four harts passed all four focused PCI tests. Review closed with Critical 0 and
+Important 0.
+
+PCI xHCI discovery was deliberately removed from this milestone after review:
+generic identity DMA was not validated against `dma-ranges`/IOMMU, and PCI INTx
+may be shared while the deferred PLIC mapping is exclusive. It remains blocked
+on a validated DMA contract plus shared INTx dispatch or MSI/MSI-X.
 
 ### Task 5: Stabilize keyboard registration and deliver input through TTY
 
@@ -429,6 +432,12 @@ Expected: the normal QEMU ELF is rebuilt after `cargo osdk test`.
 
 ### Task 8: Run the QEMU `smp=4` xHCI acceptance gates
 
+> **Deferred after review.** Do not execute these runtime acceptance steps for
+> the current milestone. The commands remain as the target for the later PCI
+> xHCI milestone, after DMA translation and shared-interrupt ownership are
+> implemented. Current QEMU evidence is limited to focused xHCI event-ring and
+> PCI BAR kernel tests; `qemu-xhci + usb-kbd` is not a supported input path yet.
+
 **Files:**
 - Verify: `tools/riscv/make_qemu_uboot_initramfs.py`
 - Verify: `target/osdk/aster-kernel/aster-kernel-osdk-bin.qemu_elf`
@@ -529,8 +538,8 @@ rg -n 'failed to resolve USB host|Hello from RISC-V userspace' \
   target/qemu-uboot/usb-keyboard-runtime/invalid-dwc3-serial.log
 ```
 
-Expected: the warning and userspace marker are present, PCI keyboard fallback
-delivers the key, and no panic is present.
+Future expected result: the warning and userspace marker are present, a
+reviewed PCI keyboard path delivers the key, and no panic is present.
 
 ### Task 9: Run final gates, review, and fast-forward local main
 
@@ -570,9 +579,10 @@ git diff --check cc0d19383..HEAD
 git status --short --branch
 ```
 
-Expected: ancestry succeeds, the diff contains only the approved USB/xHCI,
-PCI, DMA, input/TTY, test, and integration-document scope, and the worktree is
-clean apart from ignored build artifacts.
+Expected: ancestry succeeds, the diff contains only the approved Megrez
+USB/xHCI software path, event-ring IRQ work, safe PCI BAR foundation, DMA,
+input/TTY, tests, and integration documents. PCI xHCI discovery and QEMU
+keyboard runtime code must be absent.
 
 - [ ] **Step 4: Complete spec and code-quality reviews**
 
