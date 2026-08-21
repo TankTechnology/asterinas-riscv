@@ -133,4 +133,3 @@ The milestone is complete when:
 - the verified commits can fast-forward local `main` without pulling in the
   deferred NixOS, graphics, board-tooling, or historical branch stack;
 - no remote ref is changed without separate user approval.
-
