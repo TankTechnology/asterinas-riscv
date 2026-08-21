@@ -197,11 +197,17 @@ impl BlockDevice for LoopDevice {
 // /dev/loopN — Device + PerOpenFileOps
 // ---------------------------------------------------------------------------
 
-pub(crate) struct LoopFile(Arc<LoopDevice>);
+pub(crate) struct LoopFile(Arc<dyn BlockDevice>);
 
 impl LoopFile {
-    pub(crate) fn new(device: Arc<LoopDevice>) -> Self {
+    pub(crate) fn new(device: Arc<dyn BlockDevice>) -> Self {
         Self(device)
+    }
+
+    fn device(&self) -> &LoopDevice {
+        self.0
+            .downcast_ref::<LoopDevice>()
+            .expect("LoopFile must wrap a LoopDevice")
     }
 }
 
@@ -234,7 +240,15 @@ mod ioctl_defs {
 
 /// Per-open-file handle for a loop device.
 struct OpenLoopDevice {
-    device: Arc<LoopDevice>,
+    device: Arc<dyn BlockDevice>,
+}
+
+impl OpenLoopDevice {
+    fn loop_dev(&self) -> &LoopDevice {
+        self.device
+            .downcast_ref::<LoopDevice>()
+            .expect("OpenLoopDevice must wrap a LoopDevice")
+    }
 }
 
 impl FileOps for OpenLoopDevice {
@@ -248,7 +262,7 @@ impl FileOps for OpenLoopDevice {
         if total == 0 {
             return Ok(0);
         }
-        let device_size = self.device.size_bytes();
+        let device_size = self.loop_dev().size_bytes();
         if offset >= device_size {
             return Ok(0);
         }
@@ -273,7 +287,7 @@ impl FileOps for OpenLoopDevice {
         if total == 0 {
             return Ok(0);
         }
-        let device_size = self.device.size_bytes();
+        let device_size = self.loop_dev().size_bytes();
         if offset >= device_size {
             return_errno_with_message!(Errno::ENOSPC, "the write offset is beyond the block device");
         }
@@ -306,7 +320,7 @@ impl PerOpenFileOps for OpenLoopDevice {
     }
 
     fn seek_end(&self) -> Result<Option<usize>> {
-        Ok(Some(self.device.size_bytes()))
+        Ok(Some(self.loop_dev().size_bytes()))
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -319,7 +333,7 @@ impl PerOpenFileOps for OpenLoopDevice {
                 Ok(0)
             }
             cmd @ BlkGetSize64 => {
-                let size = self.device.size_bytes() as u64;
+                let size = self.loop_dev().size_bytes() as u64;
                 cmd.write(&size)?;
                 Ok(0)
             }
@@ -353,31 +367,31 @@ impl PerOpenFileOps for OpenLoopDevice {
                     Ok(f) => f,
                     Err(_) => return Some(Err(Error::new(Errno::EBADF))),
                 };
-                match self.device.set_backing_file(backing_file) {
+                match self.loop_dev().set_backing_file(backing_file) {
                     Ok(()) => Some(Ok(0)),
                     Err(e) => Some(Err(e.into())),
                 }
             }
             LOOP_CLR_FD => {
-                self.device.clear_backing_file();
+                self.loop_dev().clear_backing_file();
                 Some(Ok(0))
             }
             LOOP_SET_STATUS => {
                 let mut buf = [0u8; 132];
                 match current_userspace!().read_bytes(raw_ioctl.arg(), &mut buf) {
                     Ok(()) => {
-                        self.device.set_lo_name(&buf[28..92]);
+                        self.loop_dev().set_lo_name(&buf[28..92]);
                         Some(Ok(0))
                     }
                     Err(e) => Some(Err(e.into())),
                 }
             }
             LOOP_GET_STATUS => {
-                if !self.device.has_backing_file() {
+                if !self.loop_dev().has_backing_file() {
                     return Some(Err(Error::new(Errno::ENXIO)));
                 }
                 let mut buf = [0u8; 132];
-                let lo_name = self.device.lo_name();
+                let lo_name = self.loop_dev().lo_name();
                 buf[28..92].copy_from_slice(&lo_name);
                 match current_userspace!().write_bytes(raw_ioctl.arg(), &buf) {
                     Ok(()) => Some(Ok(0)),
