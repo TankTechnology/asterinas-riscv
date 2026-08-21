@@ -40,7 +40,7 @@ done
 # runtime data live in the same cross prefix.
 SD_BUILD="${REPO_ROOT}/target/riscv-cross/src/systemd-257.5/build-riscv"
 CROSS_USR="${REPO_ROOT}/target/riscv-cross/usr"
-GLIBC_LIB="${REPO_ROOT}/target/xorg-rootfs/lib"   # proven glibc 2.41 runtime
+GLIBC_LIB="/usr/riscv64-linux-gnu/lib"   # glibc 2.41 runtime from cross toolchain sysroot
 SYSROOT_LIB="/usr/riscv64-linux-gnu/lib"
 
 CC="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
@@ -145,6 +145,15 @@ cat > "${ROOTFS}/etc/hosts" <<'EOF'
 ::1       localhost localhost.localdomain
 EOF
 
+# 6b. Manager default PATH. This rootfs is unmerged-usr and the busybox applet
+#     symlinks (ls, cat, sh, ...) live in /bin only, while this systemd build's
+#     compiled-in default service PATH excludes /bin — without this, shells
+#     spawned by services (e.g. xterm) cannot find `ls` ("sh: ls: not found").
+cat > "${ROOTFS}/etc/systemd/system.conf" <<'EOF'
+[Manager]
+DefaultEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EOF
+
 # 7. Unit set: default.target -> graphical.target -> multi-user.target ->
 #    basic.target, plus the desktop services. All unit files are versioned in
 #    tools/riscv/systemd/units/.
@@ -162,6 +171,18 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 cp "${CROSS_USR}/lib/libxcvt.so.0.1.3" "${ROOTFS}/usr/lib/libxcvt.so.0.1.3"
 ln -sf libxcvt.so.0.1.3 "${ROOTFS}/usr/lib/libxcvt.so.0"
+
+# 8b. libudev for evdev_drv.so: the evdev input driver references udev_*
+#     symbols but has no DT_NEEDED for libudev, so the loader cannot pull it
+#     in automatically — xorg.service LD_PRELOADs /usr/lib/libudev.so.1.
+#     Without this Xorg dies with "undefined symbol: udev_new" (exit 127)
+#     right after keyboard init.
+if ls "${ROOTFS}/usr/lib/systemd"/libudev.so.1.* >/dev/null 2>&1; then
+    cp "${ROOTFS}/usr/lib/systemd"/libudev.so.1.* "${ROOTFS}/usr/lib/"
+    ln -sf "$(basename "${ROOTFS}/usr/lib"/libudev.so.1.*)" "${ROOTFS}/usr/lib/libudev.so.1"
+else
+    echo "WARNING: libudev.so.1 not found; evdev input will crash Xorg" >&2
+fi
 
 # 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm/netsurf-gtk are
 #    dynamic or static; all resolve against the glibc runtime in /lib).
