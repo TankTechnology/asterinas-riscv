@@ -126,7 +126,14 @@ where
 
     fn lookup(&self, id: u32) -> Option<D> {
         match self.devices.get(&id) {
-            Some(DeviceRegistration::Ready(device)) => Some(device.clone()),
+            Some(
+                DeviceRegistration::Ready(device)
+                | DeviceRegistration::PendingNode {
+                    device,
+                    rollback: PendingNodeRollback::Restore,
+                    ..
+                },
+            ) => Some(device.clone()),
             _ => None,
         }
     }
@@ -385,9 +392,15 @@ mod tests {
 
         let requests = registrations.activate("resolver");
         assert_eq!(requests.len(), 3);
-        assert_eq!(registrations.lookup(1), None);
-        assert_eq!(registrations.lookup(2), None);
-        assert_eq!(registrations.lookup(3), None);
+        assert_eq!(registrations.lookup(1), Some("success"));
+        assert_eq!(registrations.lookup(2), Some("failure"));
+        assert_eq!(registrations.lookup(3), Some("unprocessed"));
+        assert_eq!(registrations.remove(1), None);
+        assert_eq!(registrations.remove(2), None);
+        assert_eq!(registrations.remove(3), None);
+        assert!(registrations.insert(1, "replacement").is_err());
+        assert!(registrations.insert(2, "replacement").is_err());
+        assert!(registrations.insert(3, "replacement").is_err());
 
         assert!(registrations.commit_node(requests[0].token));
         assert!(registrations.rollback_node(requests[1].token));
