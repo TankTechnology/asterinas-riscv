@@ -524,6 +524,25 @@ impl DirEntry {
 }
 
 impl RamInode {
+    /// Computes the group owner and the final mode for a newly created
+    /// inode, following Linux's `inode_init_owner()`: if the (parent)
+    /// directory has the S_ISGID bit set, the new inode inherits the
+    /// parent's gid instead of the creator's fsgid, and a new directory
+    /// also inherits the S_ISGID bit itself.
+    fn init_child_owner(&self, gid: Gid, mode: InodeMode, is_dir: bool) -> (Gid, InodeMode) {
+        let parent_meta = self.metadata.lock();
+        if !parent_meta.mode.contains(InodeMode::S_ISGID) {
+            return (gid, mode);
+        }
+
+        let mode = if is_dir {
+            mode | InodeMode::S_ISGID
+        } else {
+            mode
+        };
+        (parent_meta.gid, mode)
+    }
+
     fn new_dir(
         fs: &Arc<RamFs>,
         mode: InodeMode,
@@ -903,6 +922,8 @@ impl Inode for RamInode {
         }
 
         let (uid, gid) = current_fs_ids();
+        // `mknod` never creates directories.
+        let (gid, mode) = self.init_child_owner(gid, mode, false);
         let new_inode = match type_ {
             MknodType::CharDevice(dev_id) | MknodType::BlockDevice(dev_id) => {
                 let dev_type = type_.device_type().unwrap();
@@ -951,6 +972,7 @@ impl Inode for RamInode {
 
         let fs = self.fs.upgrade().unwrap();
         let (uid, gid) = current_fs_ids();
+        let (gid, mode) = self.init_child_owner(gid, mode, type_ == InodeType::Dir);
         let new_inode = match type_ {
             InodeType::File => RamInode::new_file(&fs, mode, uid, gid),
             InodeType::SymLink => RamInode::new_symlink(&fs, mode, uid, gid),
@@ -988,6 +1010,8 @@ impl Inode for RamInode {
 
         let fs = self.fs.upgrade().unwrap();
         let (uid, gid) = current_fs_ids();
+        // A temporary file is never a directory, so only the gid is inherited.
+        let (gid, mode) = self.init_child_owner(gid, mode, false);
         Ok(RamInode::new_tmpfile(&fs, mode, uid, gid, hard_linkability))
     }
 
