@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 aster-input.workspace = true
 aster-logger.workspace = true
-aster-softirq.workspace = true
 component.workspace = true
 ostd.workspace = true
 spin.workspace = true
