@@ -156,6 +156,11 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
         self.cache_policy
     }
 
+    /// Returns whether this is the sole handle to the underlying MMIO mapping.
+    pub(crate) fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.kvirt_area) == 1
+    }
+
     /// Returns the base virtual address of the MMIO range.
     fn base(&self) -> usize {
         self.kvirt_area.deref().start() + self.offset
