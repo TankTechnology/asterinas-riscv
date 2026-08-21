@@ -141,7 +141,7 @@ BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 if [ -x "${BUSYBOX}" ]; then
     mkdir -p "${ROOTFS}/bin"
     cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
-    for a in sh cat true echo test; do
+    for a in sh cat true echo test cp; do
         ln -sf busybox "${ROOTFS}/bin/${a}"
     done
     echo "busybox applets: $(ls "${ROOTFS}/bin")"
@@ -154,7 +154,8 @@ fi
 for pair in \
     "execve/execve_child" \
     "execveat/execveat_child" \
-    "execveat/execveat_errno"; do
+    "execveat/execveat_errno" \
+    "openat/openat02_child"; do
     src="${LTP_SRC}/testcases/kernel/syscalls/${pair}"
     if [ -f "${src}" ]; then
         cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/"
