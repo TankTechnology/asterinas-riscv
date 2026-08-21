@@ -10,7 +10,7 @@ use crate::{
     prelude::*,
 };
 
-pub(super) fn sys_faccessat(
+pub fn sys_faccessat(
     dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u32,
@@ -24,13 +24,13 @@ pub(super) fn sys_faccessat(
     do_faccessat(dirfd, path_ptr, mode, 0, ctx)
 }
 
-pub(super) fn sys_access(path_ptr: Vaddr, mode: u32, ctx: &Context) -> Result<SyscallReturn> {
+pub fn sys_access(path_ptr: Vaddr, mode: u32, ctx: &Context) -> Result<SyscallReturn> {
     debug!("access: path_ptr = {:#x}, mode = {:o}", path_ptr, mode);
 
     do_faccessat(AT_FDCWD, path_ptr, mode, 0, ctx)
 }
 
-pub(super) fn sys_faccessat2(
+pub fn sys_faccessat2(
     dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u32,
@@ -46,48 +46,20 @@ pub(super) fn sys_faccessat2(
 }
 
 bitflags! {
-    #[derive(Clone, Copy, Debug)]
     struct FaccessatFlags: u32 {
-        const AT_EACCESS          = 0x200;
+        const AT_EACCESS = 0x200;
         const AT_SYMLINK_NOFOLLOW = 0x100;
-        const AT_EMPTY_PATH       = 0x1000;
+        const AT_EMPTY_PATH = 0x1000;
     }
 }
 
 bitflags! {
-    /// The accessibility checks requested by the `access(2)` family.
-    ///
-    /// Do not confuse this type with [`crate::fs::file::AccessMode`],
-    /// which describes the read/write mode of an opened file.
-    #[derive(Clone, Copy, Debug)]
     struct AccessMode: u32 {
         const R_OK = 0x4;
         const W_OK = 0x2;
         const X_OK = 0x1;
-        // We should ignore `F_OK` in bitflags.
+        // We should ignore F_OK in bitflags.
         // const F_OK = 0x0;
-    }
-}
-
-impl AccessMode {
-    /// Returns the permissions that the access mode requires.
-    ///
-    /// `F_OK` is represented by `AccessMode::empty()`,
-    /// which requires no permissions.
-    fn required_permission(&self) -> Permission {
-        let mut permission = Permission::empty();
-
-        if self.contains(Self::R_OK) {
-            permission |= Permission::MAY_READ;
-        }
-        if self.contains(Self::W_OK) {
-            permission |= Permission::MAY_WRITE;
-        }
-        if self.contains(Self::X_OK) {
-            permission |= Permission::MAY_EXEC;
-        }
-
-        permission
     }
 }
 
@@ -138,13 +110,31 @@ fn do_faccessat(
         );
     }
 
-    // `F_OK` is represented by `AccessMode::empty()`.
-    // It only asks whether the file exists,
-    // which the successful path lookup above has already established.
-    // So we can skip the permission check, which is not free.
-    let permission = mode.required_permission();
-    if !permission.is_empty() {
-        inode.check_permission(permission)?;
+    // Without AT_EACCESS, access(2) checks permissions against the real
+    // UID/GID; with AT_EACCESS, against the effective (filesystem) IDs.
+    let use_real_ids = !flags.contains(FaccessatFlags::AT_EACCESS);
+
+    // F_OK is represented by `AccessMode::empty()`, which does not perform permission checks.
+    if mode.contains(AccessMode::R_OK) {
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_READ)?;
+        } else {
+            inode.check_permission(Permission::MAY_READ)?;
+        }
+    }
+    if mode.contains(AccessMode::W_OK) {
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_WRITE)?;
+        } else {
+            inode.check_permission(Permission::MAY_WRITE)?;
+        }
+    }
+    if mode.contains(AccessMode::X_OK) {
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_EXEC)?;
+        } else {
+            inode.check_permission(Permission::MAY_EXEC)?;
+        }
     }
 
     Ok(SyscallReturn::Return(0))

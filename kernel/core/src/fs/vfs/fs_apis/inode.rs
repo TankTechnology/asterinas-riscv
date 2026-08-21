@@ -6,6 +6,7 @@ use alloc::boxed::ThinBox;
 use core::time::Duration;
 
 use device_id::DeviceId;
+use no_std_io2::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use ostd::task::{CurrentTask, Task};
 use spin::Once;
 
@@ -16,11 +17,9 @@ use super::{
 use crate::{
     device::{Device, DeviceType},
     fs::{
-        file::{
-            AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags, SyncMode,
-        },
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags},
         utils::DirentVisitor,
-        vfs::path::{Dentry, Path},
+        vfs::path::Path,
     },
     prelude::*,
     process::{
@@ -30,11 +29,11 @@ use crate::{
     },
     security::lsm::hooks as lsm_hooks,
     time::clocks::RealTimeCoarseClock,
-    vm::page_cache::Vmo,
+    vm::page_cache::PageCache,
 };
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Metadata {
+pub struct Metadata {
     /// The inode number, which uniquely identifies the file within the filesystem.
     ///
     /// Corresponds to `st_ino`.
@@ -139,7 +138,7 @@ pub(crate) struct Metadata {
 /// whose target is a pathname string, so creating one does not link the target
 /// inode directly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HardLinkability {
+pub enum HardLinkability {
     /// Allows creating hard links to the inode.
     Linkable,
     /// Prevents creating hard links to the inode.
@@ -147,12 +146,7 @@ pub(crate) enum HardLinkability {
 }
 
 impl Metadata {
-    pub(crate) fn new_dir(
-        ino: u64,
-        mode: InodeMode,
-        blk_size: usize,
-        container_dev_id: DeviceId,
-    ) -> Self {
+    pub fn new_dir(ino: u64, mode: InodeMode, blk_size: usize, container_dev_id: DeviceId) -> Self {
         let now = RealTimeCoarseClock::get().read_time();
         Self {
             ino,
@@ -173,7 +167,7 @@ impl Metadata {
         }
     }
 
-    pub(crate) fn new_file(
+    pub fn new_file(
         ino: u64,
         mode: InodeMode,
         blk_size: usize,
@@ -199,7 +193,7 @@ impl Metadata {
         }
     }
 
-    pub(crate) fn new_symlink(
+    pub fn new_symlink(
         ino: u64,
         mode: InodeMode,
         blk_size: usize,
@@ -225,7 +219,7 @@ impl Metadata {
         }
     }
 
-    pub(crate) fn new_device(
+    pub fn new_device(
         ino: u64,
         mode: InodeMode,
         blk_size: usize,
@@ -253,14 +247,14 @@ impl Metadata {
     }
 }
 
-pub(crate) enum MknodType {
+pub enum MknodType {
     NamedPipe,
     CharDevice(u64),
     BlockDevice(u64),
 }
 
 impl MknodType {
-    pub(crate) fn device_type(&self) -> Option<DeviceType> {
+    pub fn device_type(&self) -> Option<DeviceType> {
         match self {
             MknodType::NamedPipe => None,
             MknodType::CharDevice(_) => Some(DeviceType::Char),
@@ -278,14 +272,12 @@ bitflags! {
     /// `create`, `unlink`, `mkdir`, and `rmdir`. This lets the VFS keep its
     /// dentry cache consistent with the underlying filesystem.
     ///
-    /// However, some filesystems create or delete inodes outside the VFS
-    /// operation that populated a dentry cache. For example, procfs entries
-    /// under `/proc` appear and disappear as processes are forked and reaped,
-    /// and devtmpfs nodes under `/dev` appear and disappear as devices are
-    /// registered and unregistered. Networked filesystems may also be modified
-    /// by remote peers. For such filesystems, the VFS must revalidate cached
-    /// entries by asking the parent directory whether a cached child is still
-    /// valid.
+    /// However, some filesystems create or delete inodes without going through
+    /// the VFS. For example, procfs entries under `/proc` appear and disappear
+    /// as processes are forked and reaped. Networked filesystems may also be
+    /// modified by remote peers. For such filesystems, the VFS must revalidate
+    /// cached entries by asking the parent directory whether a cached child is
+    /// still valid.
     ///
     /// # Revalidation protocol
     ///
@@ -307,8 +299,7 @@ bitflags! {
     ///
     /// The revalidation callbacks run on every matching cache hit, so
     /// filesystems should keep them cheap.
-    #[derive(Clone, Copy, Debug)]
-    pub(crate) struct RevalidationPolicy: u8 {
+    pub struct RevalidationPolicy: u8 {
         /// Revalidate positive cache entries (cached child inodes).
         ///
         /// Set this when the directory may spontaneously
@@ -361,17 +352,10 @@ pub trait FileOps {
     }
 }
 
-/// Represents the filesystem metadata and operations associated with an inode.
-///
-/// When a method accepts `self_dentry`, it should be the [`Dentry`] corresponding to this inode;
-/// it provides additional VFS context, such as the parent of the dentry from which the operation
-/// originated, which can be useful to some filesystem implementations such as overlayfs.
-pub(crate) trait Inode: Any + FileOps + Send + Sync {
-    /// Returns the current size of the inode.
+pub trait Inode: Any + FileOps + Send + Sync {
     fn size(&self) -> usize;
 
-    /// Changes the size of the inode.
-    fn resize(&self, self_dentry: &Dentry, new_size: usize) -> Result<()>;
+    fn resize(&self, new_size: usize) -> Result<()>;
 
     /// Returns all inode metadata.
     ///
@@ -392,7 +376,6 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// [`group`]: Inode::group
     fn metadata(&self) -> Result<Metadata>;
 
-    /// Returns the inode number.
     fn ino(&self) -> u64;
 
     /// Encodes an opaque file handle for `name_to_handle_at`.
@@ -408,145 +391,99 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         Ok(self.ino().to_le_bytes().to_vec())
     }
 
-    /// Returns the inode type.
     fn type_(&self) -> InodeType;
 
-    /// Returns the inode's permission mode.
     fn mode(&self) -> Result<InodeMode>;
 
-    /// Sets the inode's permission mode.
-    fn set_mode(&self, self_dentry: &Dentry, mode: InodeMode) -> Result<()>;
+    fn set_mode(&self, mode: InodeMode) -> Result<()>;
 
-    /// Returns the inode owner's user ID.
     fn owner(&self) -> Result<Uid>;
 
-    /// Sets the inode owner's user ID.
-    fn set_owner(&self, self_dentry: &Dentry, uid: Uid) -> Result<()>;
+    fn set_owner(&self, uid: Uid) -> Result<()>;
 
-    /// Returns the inode owner's group ID.
     fn group(&self) -> Result<Gid>;
 
-    /// Sets the inode owner's group ID.
-    fn set_group(&self, self_dentry: &Dentry, gid: Gid) -> Result<()>;
+    fn set_group(&self, gid: Gid) -> Result<()>;
 
-    /// Returns the inode's access time.
     fn atime(&self) -> Duration;
 
-    /// Sets the inode's access time.
-    fn set_atime(&self, self_dentry: &Dentry, time: Duration);
+    fn set_atime(&self, time: Duration);
 
-    /// Returns the inode's modification time.
     fn mtime(&self) -> Duration;
 
-    /// Sets the inode's modification time.
-    fn set_mtime(&self, self_dentry: &Dentry, time: Duration);
+    fn set_mtime(&self, time: Duration);
 
-    /// Returns the inode's metadata-change time.
     fn ctime(&self) -> Duration;
 
-    /// Sets the inode's metadata-change time.
-    fn set_ctime(&self, self_dentry: &Dentry, time: Duration);
+    fn set_ctime(&self, time: Duration);
 
-    /// Returns the inode's page cache, if it has one.
-    fn page_cache(&self) -> Option<Arc<Vmo>> {
+    fn page_cache(&self) -> Option<PageCache> {
         None
     }
 
-    /// Creates a child inode.
-    ///
-    /// Use [`Inode::create_symlink`] to create symbolic links and
-    /// [`Inode::mknod`] to create device nodes or named pipes.
-    fn create(
-        &self,
-        self_dentry: &Dentry,
-        name: &str,
-        type_: InodeType,
-        mode: InodeMode,
-    ) -> Result<Arc<dyn Inode>> {
+    fn create(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Creates a symbolic-link child inode.
-    fn create_symlink(
-        &self,
-        self_dentry: &Dentry,
-        name: &str,
-        target: &str,
-        mode: InodeMode,
-    ) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EOPNOTSUPP))
-    }
-
-    /// Creates an unnamed temporary inode.
     fn create_tmpfile(
         &self,
-        self_dentry: &Dentry,
         mode: InodeMode,
         hard_linkability: HardLinkability,
     ) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::EOPNOTSUPP))
     }
 
-    /// Creates a device or named-pipe inode.
-    fn mknod(
-        &self,
-        self_dentry: &Dentry,
-        name: &str,
-        mode: InodeMode,
-        type_: MknodType,
-    ) -> Result<Arc<dyn Inode>> {
+    fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Opens a file for this inode if supported.
     fn open(
         &self,
-        self_dentry: &Dentry,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         None
     }
 
-    /// Creates a hard link to an existing inode.
-    fn link(&self, self_dentry: &Dentry, old_dentry: &Dentry, name: &str) -> Result<()> {
+    fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Removes the specified child directory entry from this directory.
-    fn unlink(&self, child_dentry: &Dentry) -> Result<()> {
+    fn unlink(&self, name: &str) -> Result<()> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Removes the specified child directory from this directory.
-    fn rmdir(&self, child_dentry: &Dentry) -> Result<()> {
+    fn rmdir(&self, name: &str) -> Result<()> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Looks up a child inode by name.
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Renames or moves a child entry, optionally replacing an existing inode.
     fn rename(
         &self,
-        old_child_dentry: &Dentry,
-        new_dir_dentry: &Dentry,
+        old_name: &str,
+        target: &Arc<dyn Inode>,
         new_name: &str,
-        replaced_inode: Option<&Arc<dyn Inode>>,
         mode: RenameMode,
     ) -> Result<()> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    /// Reads the target of a symbolic link.
     fn read_link(&self) -> Result<SymbolicLink> {
         Err(Error::new(Errno::EISDIR))
     }
 
-    /// Flushes inode data and metadata according to the requested synchronization mode.
-    fn sync(&self, _mode: SyncMode) -> Result<()> {
+    fn write_link(&self, target: &str) -> Result<()> {
+        Err(Error::new(Errno::EISDIR))
+    }
+
+    fn sync_all(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn sync_data(&self) -> Result<()> {
         Ok(())
     }
 
@@ -556,7 +493,6 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         return_errno!(Errno::EOPNOTSUPP);
     }
 
-    /// Returns the filesystem containing this inode.
     fn fs(&self) -> Arc<dyn FileSystem>;
 
     /// Returns the revalidation policy for cached children of this directory.
@@ -622,10 +558,8 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// Gets the extension of this inode.
     fn extension(&self) -> &Extension;
 
-    /// Sets an extended attribute on this inode.
     fn set_xattr(
         &self,
-        self_dentry: &Dentry,
         name: XattrName,
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
@@ -633,18 +567,15 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         Err(Error::new(Errno::EOPNOTSUPP))
     }
 
-    /// Reads an extended attribute value into the supplied writer.
     fn get_xattr(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize> {
         Err(Error::new(Errno::EOPNOTSUPP))
     }
 
-    /// Lists the extended attributes in the specified namespace.
     fn list_xattr(&self, namespace: XattrNamespace, list_writer: &mut VmWriter) -> Result<usize> {
         Err(Error::new(Errno::EOPNOTSUPP))
     }
 
-    /// Removes an extended attribute from this inode.
-    fn remove_xattr(&self, self_dentry: &Dentry, _name: XattrName) -> Result<()> {
+    fn remove_xattr(&self, name: XattrName) -> Result<()> {
         Err(Error::new(Errno::EOPNOTSUPP))
     }
 
@@ -652,7 +583,7 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     ///
     /// Similar to Linux, using "fsuid" here allows setting filesystem permissions
     /// without changing the "normal" uids for other tasks.
-    fn check_permission(&self, mut perm: Permission) -> Result<()> {
+    fn check_permission(&self, perm: Permission) -> Result<()> {
         let Some(task) = Task::current() else {
             return Ok(());
         };
@@ -661,62 +592,93 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         };
 
         let creds = posix_thread.credentials();
-        let metadata = self.metadata()?;
-        let mode = metadata.mode;
-
-        // With DAC_OVERRIDE capability, the user can bypass some permission checks.
-        if has_dac_override_capability(&task, posix_thread) {
-            if metadata.type_ == InodeType::Dir {
-                // DACs are overridable for directories, including the search permission
-                // even when the directory has no execute bits set.
-                perm -= Permission::MAY_READ | Permission::MAY_WRITE | Permission::MAY_EXEC;
-            } else {
-                // Read/write DACs are always overridable.
-                perm -= Permission::MAY_READ | Permission::MAY_WRITE;
-
-                // Executable DACs are always overridable for directories. For
-                // regular files, they are overridable only when there is at least
-                // one exec bit set. This matches Linux's `generic_permission()`.
-                if perm.may_exec() {
-                    if self.type_() == InodeType::Dir
-                        || mode.is_owner_executable()
-                        || mode.is_group_executable()
-                        || mode.is_other_executable()
-                    {
-                        perm -= Permission::MAY_EXEC;
-                    } else {
-                        return_errno_with_message!(
-                            Errno::EACCES,
-                            "root execute permission denied: no execute bits set"
-                        );
-                    }
-                }
-            }
-        }
-
-        if metadata.uid == creds.fsuid() {
-            if (perm.may_read() && !mode.is_owner_readable())
-                || (perm.may_write() && !mode.is_owner_writable())
-                || (perm.may_exec() && !mode.is_owner_executable())
-            {
-                return_errno_with_message!(Errno::EACCES, "owner permission check failed");
-            }
-        } else if creds.has_group_for_fs_access(metadata.gid) {
-            if (perm.may_read() && !mode.is_group_readable())
-                || (perm.may_write() && !mode.is_group_writable())
-                || (perm.may_exec() && !mode.is_group_executable())
-            {
-                return_errno_with_message!(Errno::EACCES, "group permission check failed");
-            }
-        } else if (perm.may_read() && !mode.is_other_readable())
-            || (perm.may_write() && !mode.is_other_writable())
-            || (perm.may_exec() && !mode.is_other_executable())
-        {
-            return_errno_with_message!(Errno::EACCES, "other permission check failed");
-        }
-
-        Ok(())
+        check_permission_ids(&task, posix_thread, self, perm, creds.fsuid(), creds.fsgid())
     }
+
+    /// Same as [`Inode::check_permission`], but checks against the real UID/GID
+    /// instead of the filesystem UID/GID.
+    ///
+    /// This is the behavior required by `access(2)` (and `faccessat2(2)`
+    /// without `AT_EACCESS`). As in Linux, the capability check still uses the
+    /// effective capability set.
+    fn check_permission_with_real_ids(&self, perm: Permission) -> Result<()> {
+        let Some(task) = Task::current() else {
+            return Ok(());
+        };
+        let Some(posix_thread) = task.as_posix_thread() else {
+            return Ok(());
+        };
+
+        let creds = posix_thread.credentials();
+        check_permission_ids(&task, posix_thread, self, perm, creds.ruid(), creds.rgid())
+    }
+}
+
+/// The core of [`Inode::check_permission`], parameterized by the UID/GID to
+/// check against. Supplementary group membership is honored when checking the
+/// group permission class.
+fn check_permission_ids<I: Inode + ?Sized>(
+    task: &CurrentTask,
+    posix_thread: &PosixThread,
+    inode: &I,
+    mut perm: Permission,
+    uid: Uid,
+    gid: Gid,
+) -> Result<()> {
+    let metadata = inode.metadata()?;
+    let mode = metadata.mode;
+
+    // With DAC_OVERRIDE capability, the user can bypass some permission checks.
+    if has_dac_override_capability(task, posix_thread) {
+        // Read/write DACs are always overridable.
+        perm -= Permission::MAY_READ | Permission::MAY_WRITE;
+
+        // Executable DACs are always overridable for directories. For
+        // regular files, they are overridable only when there is at least
+        // one exec bit set. This matches Linux's `generic_permission()`.
+        if perm.may_exec() {
+            if inode.type_() == InodeType::Dir
+                || mode.is_owner_executable()
+                || mode.is_group_executable()
+                || mode.is_other_executable()
+            {
+                perm -= Permission::MAY_EXEC;
+            } else {
+                return_errno_with_message!(
+                    Errno::EACCES,
+                    "root execute permission denied: no execute bits set"
+                );
+            }
+        }
+    }
+
+    if metadata.uid == uid {
+        if (perm.may_read() && !mode.is_owner_readable())
+            || (perm.may_write() && !mode.is_owner_writable())
+            || (perm.may_exec() && !mode.is_owner_executable())
+        {
+            return_errno_with_message!(Errno::EACCES, "owner permission check failed");
+        }
+    } else if metadata.gid == gid
+        || posix_thread
+            .credentials()
+            .groups()
+            .contains(&metadata.gid)
+    {
+        if (perm.may_read() && !mode.is_group_readable())
+            || (perm.may_write() && !mode.is_group_writable())
+            || (perm.may_exec() && !mode.is_group_executable())
+        {
+            return_errno_with_message!(Errno::EACCES, "group permission check failed");
+        }
+    } else if (perm.may_read() && !mode.is_other_readable())
+        || (perm.may_write() && !mode.is_other_writable())
+        || (perm.may_exec() && !mode.is_other_executable())
+    {
+        return_errno_with_message!(Errno::EACCES, "other permission check failed");
+    }
+
+    Ok(())
 }
 
 fn has_dac_override_capability(task: &CurrentTask, posix_thread: &PosixThread) -> bool {
@@ -731,20 +693,49 @@ fn has_dac_override_capability(task: &CurrentTask, posix_thread: &PosixThread) -
 }
 
 impl dyn Inode {
-    pub(crate) fn downcast_ref<T: Inode>(&self) -> Option<&T> {
+    pub fn downcast_ref<T: Inode>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref::<T>()
     }
 
-    #[cfg_attr(not(ktest), expect(dead_code))]
-    pub(crate) fn read_bytes_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+    pub fn writer(&self, from_offset: usize) -> InodeWriter<'_> {
+        InodeWriter {
+            inner: self,
+            offset: from_offset,
+        }
+    }
+
+    pub fn read_bytes_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let mut writer = VmWriter::from(buf).to_fallible();
         self.read_at(offset, &mut writer, StatusFlags::empty())
     }
 
     #[cfg_attr(not(ktest), expect(dead_code))]
-    pub(crate) fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
+    pub fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let mut reader = VmReader::from(buf).to_fallible();
         self.write_at(offset, &mut reader, StatusFlags::empty())
+    }
+}
+
+pub struct InodeWriter<'a> {
+    inner: &'a dyn Inode,
+    offset: usize,
+}
+
+impl Write for InodeWriter<'_> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        let mut reader = VmReader::from(buf).to_fallible();
+        let write_len = self
+            .inner
+            .write_at(self.offset, &mut reader, StatusFlags::empty())
+            .map_err(|_| IoError::new(IoErrorKind::WriteZero, "failed to write buffer"))?;
+        self.offset += write_len;
+        Ok(write_len)
+    }
+
+    #[inline]
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
     }
 }
 
@@ -763,7 +754,7 @@ impl Debug for dyn Inode {
 /// FS types (e.g., [`Inode`]) independent of the kernel types. This allows the file system
 /// implementation to exist outside the kernel.
 #[derive(Debug)]
-pub(crate) struct Extension {
+pub struct Extension {
     group1: Once<ThinBox<dyn Any + Send + Sync>>,
     group2: Once<ThinBox<dyn Any + Send + Sync>>,
     group3: Once<ThinBox<dyn Any + Send + Sync>>,
@@ -771,7 +762,7 @@ pub(crate) struct Extension {
 
 impl Extension {
     /// Creates a new, empty extension.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             group1: Once::new(),
             group2: Once::new(),
@@ -780,24 +771,24 @@ impl Extension {
     }
 
     /// Gets the first extension group.
-    pub(crate) fn group1(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
+    pub fn group1(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
         &self.group1
     }
 
     /// Gets the second extension group.
-    pub(crate) fn group2(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
+    pub fn group2(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
         &self.group2
     }
 
     /// Gets the third extension group.
-    pub(crate) fn group3(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
+    pub fn group3(&self) -> &Once<ThinBox<dyn Any + Send + Sync>> {
         &self.group3
     }
 }
 
 /// A symbolic link.
 #[derive(Clone, Debug)]
-pub(crate) enum SymbolicLink {
+pub enum SymbolicLink {
     /// A plain text.
     ///
     /// This is the most common type of symbolic link.
@@ -815,7 +806,7 @@ pub(crate) enum SymbolicLink {
 /// Each mode determines whether the target disk space within a file
 /// will be allocated, deallocated, or zeroed, among other operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FallocMode {
+pub enum FallocMode {
     /// Allocates disk space within the range specified.
     Allocate,
     /// Like `Allocate`, but does not change the file size.
@@ -836,7 +827,7 @@ pub(crate) enum FallocMode {
 
 /// The behavior of rename operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RenameMode {
+pub enum RenameMode {
     /// Replaces the destination if it already exists.
     Replace,
     /// Fails with `EEXIST` if the destination already exists.
