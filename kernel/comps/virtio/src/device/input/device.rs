@@ -233,10 +233,14 @@ impl InputDevice {
             // EV_SYN events
             0 => match virtio_event.code {
                 0 => {
-                    // SYN_REPORT: end of event sequence, send `SynEvent::Report`
+                    // SYN_REPORT: end of event sequence, send `SynEvent::Report`.
+                    // Keep draining the queue: more events may already be batched
+                    // behind the SYN, and no new IRQ will arrive for them until the
+                    // device posts another event (or never). Stopping here strands
+                    // key releases, which Xorg answers with autorepeat storms.
                     let syn_event = InputEvent::from_sync_event(SynEvent::Report);
                     registered_device.submit_events(&[syn_event]);
-                    return false;
+                    return true;
                 }
                 _ => {
                     // Other sync events (SYN_DROPPED, SYN_CONFIG, etc.)
