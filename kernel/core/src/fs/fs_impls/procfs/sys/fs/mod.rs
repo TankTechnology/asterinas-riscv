@@ -5,7 +5,7 @@ use crate::{
         file::{InodeType, mkmod},
         procfs::{
             ProcDir, StaticEntry,
-            sys::fs::nr_open::NrOpenFileOps,
+            sys::fs::{file_max::FileMaxFileOps, nr_open::NrOpenFileOps},
             template::{
                 ProcDirOps, ReaddirEntry, listed_entries_from_table, lookup_child_from_table,
                 visit_listed_entries,
@@ -16,6 +16,7 @@ use crate::{
     prelude::*,
 };
 
+pub(crate) mod file_max;
 mod nr_open;
 
 /// Represents the inode at `/proc/sys/fs`.
@@ -30,7 +31,8 @@ impl FsDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntry] =
-        &[("nr_open", InodeType::File, NrOpenFileOps::new_inode)];
+        &[("nr_open", InodeType::File, NrOpenFileOps::new_inode),
+          ("file-max", InodeType::File, FileMaxFileOps::new_inode)];
 }
 
 impl ProcDirOps for FsDirOps {
