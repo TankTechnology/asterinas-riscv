@@ -26,7 +26,7 @@ use crate::{
     arch,
     io::IoMem,
     mm::{
-        HasSize, VmIoOnce,
+        CachePolicy, HasSize, VmIoOnce,
         dma::{DmaWindow, UsbKernelOp},
     },
     task::Task,
@@ -35,7 +35,7 @@ use crate::{
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
-const XHCI_CAPABILITY_REGISTERS_LEN: usize = 0x20;
+const XHCI_CAPABILITY_REGISTERS_LEN: usize = 0x24;
 const XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET: usize = 0x400;
 const XHCI_PORT_REGISTER_SET_LEN: usize = 0x10;
 const XHCI_RUNTIME_INTERRUPTER_REGISTERS_OFFSET: usize = 0x20;
@@ -110,27 +110,34 @@ struct BootKeyboardInterface {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum XhciMmioError {
     MmioRead,
+    InvalidMappingProperties,
     InvalidRegisterLayout,
     InvalidExtendedCapability,
 }
 
 struct XhciHost {
-    // Fields drop in declaration order, so CrabUSB releases its raw register accessors before the
-    // mapping that backs them. Successful polling keyboards retain this entire value permanently.
+    // Fields drop in declaration order: CrabUSB releases its register accessors before the MMIO
+    // mapping, then its callback adapter. Failed active hosts are abandoned as one complete value.
     host: USBHost,
     _mmio: IoMem,
-    kernel_op: &'static UsbKernelOp,
+    kernel_op: Box<UsbKernelOp>,
 }
 
 impl XhciHost {
     fn new(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
         validate_xhci_mmio(&mmio).map_err(|_| UsbKeyboardError::InvalidMmio)?;
         let kernel_op = new_usb_kernel_op(dma_window);
+        // SAFETY: `kernel_op` has a stable heap address and is moved into `XhciHost` without moving
+        // its allocation. Field order drops `host` before `kernel_op`, while active failed hosts
+        // are forgotten whole. If construction fails, CrabUSB returns no host retaining the
+        // callback and `kernel_op` is reclaimed normally.
+        let kernel_op_static = unsafe { extend_kernel_op_lifetime(kernel_op.as_ref()) };
 
         // SAFETY: `validate_xhci_mmio` checked every fixed and controller-derived register range
-        // that CrabUSB 0.9.10 constructs or dereferences. The xHCI capability registers are
-        // read-only after reset, and `_mmio` keeps the validated mapping alive until after `host`.
-        let host = unsafe { new_xhci_host_unchecked(mmio.as_non_null_ptr(), kernel_op) }?;
+        // that CrabUSB 0.9.10 constructs or dereferences, as well as unique ownership and UC
+        // mapping. The xHCI capability registers are read-only after reset, and `_mmio` keeps the
+        // validated mapping alive until after `host`.
+        let host = unsafe { new_xhci_host_unchecked(mmio.as_non_null_ptr(), kernel_op_static) }?;
         Ok(Self {
             host,
             _mmio: mmio,
@@ -139,13 +146,25 @@ impl XhciHost {
     }
 }
 
+/// Extends a boxed callback adapter's reference for CrabUSB's host lifetime.
+///
+/// # Safety
+///
+/// The adapter must have a stable address and outlive every CrabUSB value that receives the
+/// returned reference.
+unsafe fn extend_kernel_op_lifetime(kernel_op: &UsbKernelOp) -> &'static UsbKernelOp {
+    // SAFETY: The caller upholds the allocation's stability and lifetime.
+    unsafe { &*(kernel_op as *const UsbKernelOp) }
+}
+
 /// Creates a CrabUSB host from a raw xHCI register base.
 ///
 /// # Safety
 ///
-/// `mmio_base` must remain mapped and exclusively owned for the returned host's lifetime. The
-/// mapping must cover every fixed register, every region described by `CAPLENGTH`, `HCSPARAMS1`,
-/// `DBOFF`, and `RTSOFF`, and every entry and linked-list hop described by `HCCPARAMS1.XECP`.
+/// `mmio_base` must remain uniquely owned, uncacheable, and mapped for the returned host's
+/// lifetime. No other accessor may touch its registers. The mapping must cover every fixed
+/// register, every region described by `CAPLENGTH`, `HCSPARAMS1`, `DBOFF`, and `RTSOFF`, and every
+/// entry and linked-list hop described by `HCCPARAMS1.XECP`.
 unsafe fn new_xhci_host_unchecked(
     mmio_base: NonNull<u8>,
     kernel_op: &'static dyn KernelOp,
@@ -154,6 +173,7 @@ unsafe fn new_xhci_host_unchecked(
 }
 
 fn validate_xhci_mmio(mmio: &IoMem) -> Result<(), XhciMmioError> {
+    validate_xhci_mapping_properties(mmio.cache_policy(), mmio.is_unique())?;
     if !(mmio.as_non_null_ptr().as_ptr() as usize).is_multiple_of(size_of::<u64>()) {
         return Err(XhciMmioError::InvalidRegisterLayout);
     }
@@ -162,6 +182,16 @@ fn validate_xhci_mmio(mmio: &IoMem) -> Result<(), XhciMmioError> {
         mmio.read_once::<u32>(offset)
             .map_err(|_| XhciMmioError::MmioRead)
     })
+}
+
+fn validate_xhci_mapping_properties(
+    cache_policy: CachePolicy,
+    is_unique: bool,
+) -> Result<(), XhciMmioError> {
+    if cache_policy != CachePolicy::Uncacheable || !is_unique {
+        return Err(XhciMmioError::InvalidMappingProperties);
+    }
+    Ok(())
 }
 
 fn validate_xhci_mmio_with(
@@ -272,13 +302,12 @@ fn extended_capability_len(
                 .and_then(|length| 0x10usize.checked_add(length))
                 .ok_or(XhciMmioError::InvalidExtendedCapability)?
         }
-        5 if header & (1 << 23) != 0 => {
-            if !offset.is_multiple_of(size_of::<u64>()) {
-                return Err(XhciMmioError::InvalidExtendedCapability);
-            }
-            0x20
-        }
-        5 => 0x14,
+        5 => match (header & (1 << 23) != 0, header & (1 << 24) != 0) {
+            (false, false) => 0x0c,
+            (true, false) => 0x10,
+            (false, true) => 0x14,
+            (true, true) => 0x18,
+        },
         6 => {
             if !region_fits(offset, 8, mmio_size) {
                 return Err(XhciMmioError::InvalidExtendedCapability);
@@ -307,10 +336,8 @@ fn region_fits(offset: usize, length: usize, mmio_size: usize) -> bool {
         .is_some_and(|end| end <= mmio_size)
 }
 
-fn new_usb_kernel_op(dma_window: DmaWindow) -> &'static UsbKernelOp {
-    // CrabUSB retains a `'static` callback, while polling xHCI hosts and their DMA-visible state
-    // are intentionally never reclaimed because CrabUSB has no controller shutdown operation.
-    Box::leak(Box::new(UsbKernelOp::new(dma_window)))
+fn new_usb_kernel_op(dma_window: DmaWindow) -> Box<UsbKernelOp> {
+    Box::new(UsbKernelOp::new(dma_window))
 }
 
 struct Deadline {
@@ -454,7 +481,6 @@ impl PollingUsbKeyboard {
     /// Starts the firmware-configured xHCI controller and discovers one boot keyboard.
     pub fn open(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
         let mut xhci = XhciHost::new(mmio, dma_window)?;
-        let kernel_op = xhci.kernel_op;
         let events = xhci.host.create_event_handler();
 
         match drive(xhci.host.init(), &events) {
@@ -464,8 +490,9 @@ impl PollingUsbKeyboard {
                 return Err(UsbKeyboardError::HostInit);
             }
             Err(DriveError::Timeout) => {
+                let error = timeout_at(UsbKeyboardStage::HostInit, xhci.kernel_op.as_ref());
                 abandon_host(xhci, events);
-                return Err(timeout_at(UsbKeyboardStage::HostInit, kernel_op));
+                return Err(error);
             }
         }
 
@@ -478,8 +505,9 @@ impl PollingUsbKeyboard {
                     return Err(UsbKeyboardError::Enumeration);
                 }
                 Err(DriveError::Timeout) => {
+                    let error = timeout_at(UsbKeyboardStage::Enumeration, xhci.kernel_op.as_ref());
                     abandon_host(xhci, events);
-                    return Err(timeout_at(UsbKeyboardStage::Enumeration, kernel_op));
+                    return Err(error);
                 }
             };
 
@@ -508,8 +536,9 @@ impl PollingUsbKeyboard {
                 return Err(UsbKeyboardError::DeviceOpen);
             }
             Err(DriveError::Timeout) => {
+                let error = timeout_at(UsbKeyboardStage::DeviceOpen, xhci.kernel_op.as_ref());
                 abandon_host(xhci, events);
-                return Err(timeout_at(UsbKeyboardStage::DeviceOpen, kernel_op));
+                return Err(error);
             }
         };
 
@@ -523,8 +552,9 @@ impl PollingUsbKeyboard {
                 return Err(UsbKeyboardError::ClaimInterface);
             }
             Err(DriveError::Timeout) => {
+                let error = timeout_at(UsbKeyboardStage::ClaimInterface, xhci.kernel_op.as_ref());
                 abandon_open_device(xhci, events, device);
-                return Err(timeout_at(UsbKeyboardStage::ClaimInterface, kernel_op));
+                return Err(error);
             }
         }
 
@@ -542,8 +572,9 @@ impl PollingUsbKeyboard {
                 return Err(UsbKeyboardError::SetBootProtocol);
             }
             Err(DriveError::Timeout) => {
+                let error = timeout_at(UsbKeyboardStage::SetBootProtocol, xhci.kernel_op.as_ref());
                 abandon_open_device(xhci, events, device);
-                return Err(timeout_at(UsbKeyboardStage::SetBootProtocol, kernel_op));
+                return Err(error);
             }
         }
 
@@ -592,43 +623,206 @@ mod tests {
     use core::{cell::Cell, future::poll_fn, task::Poll};
 
     use super::{
-        DriveError, UsbKeyboardError, UsbKeyboardStage, XhciMmioError, drive_with,
-        new_usb_kernel_op, validate_xhci_mmio_with,
+        DriveError, UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_REGISTERS_LEN,
+        XhciMmioError, drive_with, new_usb_kernel_op, validate_xhci_mapping_properties,
+        validate_xhci_mmio_with,
     };
-    use crate::{mm::dma::DmaWindow, prelude::ktest};
+    use crate::{
+        mm::{CachePolicy, dma::DmaWindow},
+        prelude::ktest,
+    };
+
+    const VALID_CAPLENGTH_HCIVERSION: u32 = 0x0110_0020;
+    const VALID_HCSPARAMS1: u32 = 0x0100_0101;
+    const VALID_DOORBELL_OFFSET: u32 = 0x0480;
+    const VALID_RUNTIME_OFFSET: u32 = 0x0440;
+
+    fn validate_layout(
+        mmio_size: usize,
+        caplength_hciversion: u32,
+        hcsparams1: u32,
+        hccparams1: u32,
+        doorbell_offset: u32,
+        runtime_offset: u32,
+        extended_registers: &[(usize, u32)],
+    ) -> Result<(), XhciMmioError> {
+        validate_xhci_mmio_with(mmio_size, |offset| {
+            Ok(match offset {
+                0x00 => caplength_hciversion,
+                0x04 => hcsparams1,
+                0x10 => hccparams1,
+                0x14 => doorbell_offset,
+                0x18 => runtime_offset,
+                _ => extended_registers
+                    .iter()
+                    .find_map(|(register_offset, value)| {
+                        (*register_offset == offset).then_some(*value)
+                    })
+                    .unwrap_or_else(|| panic!("unexpected xHCI register read at {offset:#x}")),
+            })
+        })
+    }
+
+    fn validate_standard_layout(
+        mmio_size: usize,
+        hccparams1: u32,
+        extended_registers: &[(usize, u32)],
+    ) -> Result<(), XhciMmioError> {
+        validate_layout(
+            mmio_size,
+            VALID_CAPLENGTH_HCIVERSION,
+            VALID_HCSPARAMS1,
+            hccparams1,
+            VALID_DOORBELL_OFFSET,
+            VALID_RUNTIME_OFFSET,
+            extended_registers,
+        )
+    }
+
+    #[ktest]
+    fn accepts_valid_fixed_layout_without_extended_capabilities() {
+        assert_eq!(validate_standard_layout(0x500, 1, &[]), Ok(()));
+        assert_eq!(XHCI_CAPABILITY_REGISTERS_LEN, 0x24);
+    }
+
+    #[ktest]
+    fn accepts_extended_capability_ending_at_mmio_end() {
+        let offset = 0x4f8;
+        let hccparams1 = ((offset / size_of::<u32>()) as u32) << 16 | 1;
+
+        assert_eq!(
+            validate_standard_layout(0x500, hccparams1, &[(offset, 1)]),
+            Ok(())
+        );
+    }
 
     #[ktest]
     fn rejects_extended_capability_next_pointer_outside_mmio() {
-        let result = validate_xhci_mmio_with(0x4f0, |offset| {
-            Ok(match offset {
-                0x00 => 0x0110_0020,
-                0x04 => 0x0100_0101,
-                0x10 => 0x0040_0001,
-                0x14 => 0x0480,
-                0x18 => 0x0440,
-                0x100 => 0x0000_ff01,
-                _ => unreachable!("unexpected xHCI register read at {offset:#x}"),
-            })
-        });
+        let result = validate_standard_layout(0x4f0, 0x0040_0001, &[(0x100, 0x0000_ff01)]);
 
         assert_eq!(result, Err(XhciMmioError::InvalidExtendedCapability));
     }
 
     #[ktest]
-    fn rejects_misaligned_64bit_extended_capability() {
-        let result = validate_xhci_mmio_with(0x600, |offset| {
-            Ok(match offset {
-                0x00 => 0x0110_0020,
-                0x04 => 0x0100_0101,
-                0x10 => 0x0041_0001,
-                0x14 => 0x0480,
-                0x18 => 0x0440,
-                0x104 => 0x0080_0005,
-                _ => unreachable!("unexpected xHCI register read at {offset:#x}"),
-            })
-        });
+    fn accepts_all_msi_capability_layouts() {
+        let cases = [
+            (0x4f4, 0x0000_0005),
+            (0x4f0, 0x0080_0005),
+            (0x4ec, 0x0100_0005),
+            (0x4e8, 0x0180_0005),
+            // A 64-bit MSI capability remains valid at a 4-mod-8 dword address.
+            (0x4ec, 0x0080_0005),
+        ];
 
-        assert_eq!(result, Err(XhciMmioError::InvalidExtendedCapability));
+        for (offset, header) in cases {
+            let hccparams1 = ((offset / size_of::<u32>()) as u32) << 16 | 1;
+            assert_eq!(
+                validate_standard_layout(0x500, hccparams1, &[(offset, header)]),
+                Ok(()),
+                "MSI capability at {offset:#x} with header {header:#x}",
+            );
+        }
+    }
+
+    #[ktest]
+    fn accepts_supported_local_memory_and_unknown_capability_boundaries() {
+        let cases: &[(usize, &[(usize, u32)])] = &[
+            (0x4e8, &[(0x4e8, 2), (0x4f0, 0x2000_0000)]),
+            (0x4f8, &[(0x4f8, 6), (0x4fc, 0)]),
+            (0x4fc, &[(0x4fc, 0xff)]),
+        ];
+
+        for (offset, registers) in cases {
+            let hccparams1 = ((*offset / size_of::<u32>()) as u32) << 16 | 1;
+            assert_eq!(
+                validate_standard_layout(0x500, hccparams1, registers),
+                Ok(()),
+                "extended capability boundary at {offset:#x}",
+            );
+        }
+    }
+
+    #[ktest]
+    fn rejects_out_of_bounds_controller_regions() {
+        let cases = [
+            (
+                "capability accessors",
+                0x23,
+                VALID_CAPLENGTH_HCIVERSION,
+                VALID_HCSPARAMS1,
+                1,
+                0x20,
+                0x40,
+            ),
+            (
+                "port registers",
+                0x42f,
+                VALID_CAPLENGTH_HCIVERSION,
+                VALID_HCSPARAMS1,
+                1,
+                0x100,
+                0x200,
+            ),
+            (
+                "doorbells",
+                0x500,
+                VALID_CAPLENGTH_HCIVERSION,
+                VALID_HCSPARAMS1,
+                1,
+                0x4fc,
+                VALID_RUNTIME_OFFSET,
+            ),
+            (
+                "runtime interrupters",
+                0x500,
+                VALID_CAPLENGTH_HCIVERSION,
+                VALID_HCSPARAMS1,
+                1,
+                VALID_DOORBELL_OFFSET,
+                0x4e0,
+            ),
+            (
+                "extended capability head",
+                0x500,
+                VALID_CAPLENGTH_HCIVERSION,
+                VALID_HCSPARAMS1,
+                0x0140_0001,
+                VALID_DOORBELL_OFFSET,
+                VALID_RUNTIME_OFFSET,
+            ),
+        ];
+
+        for (name, size, caplength, hcsparams1, hccparams1, doorbell, runtime) in cases {
+            assert!(
+                validate_layout(
+                    size,
+                    caplength,
+                    hcsparams1,
+                    hccparams1,
+                    doorbell,
+                    runtime,
+                    &[],
+                )
+                .is_err(),
+                "accepted out-of-bounds {name}",
+            );
+        }
+    }
+
+    #[ktest]
+    fn requires_unique_uncacheable_mmio() {
+        assert_eq!(
+            validate_xhci_mapping_properties(CachePolicy::Uncacheable, true),
+            Ok(())
+        );
+        assert_eq!(
+            validate_xhci_mapping_properties(CachePolicy::Uncacheable, false),
+            Err(XhciMmioError::InvalidMappingProperties)
+        );
+        assert_eq!(
+            validate_xhci_mapping_properties(CachePolicy::Writeback, true),
+            Err(XhciMmioError::InvalidMappingProperties)
+        );
     }
 
     #[ktest]
@@ -639,7 +833,7 @@ mod tests {
         let first = new_usb_kernel_op(first_window);
         let second = new_usb_kernel_op(second_window);
 
-        assert!(!core::ptr::eq(first, second));
+        assert!(!core::ptr::eq(&*first, &*second));
         assert_eq!(
             first.translate_for_test(0x1800..0x1801).unwrap().start,
             0x2800

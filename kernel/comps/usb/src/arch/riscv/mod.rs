@@ -8,9 +8,9 @@ use ostd::{
     bus::usb::PollingUsbKeyboard,
     io::IoMem,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
+    sync::SpinLock,
     task::Task,
 };
-use spin::Once;
 
 use crate::keyboard::{HidBootKeyboard, register};
 
@@ -23,19 +23,6 @@ const EIC7700_DRAM_START: usize = 0x8000_0000;
 const EIC7700_DRAM_SIZE: usize = 0x4_0000_0000;
 const PAGE_SIZE: usize = 0x1000;
 const USB_HOST_SELECTOR: &str = "asterinas,usb-host";
-const XHCI_CAPLENGTH: usize = 0x00;
-const XHCI_RTSOFF: usize = 0x18;
-const XHCI_USBCMD: usize = 0x00;
-const XHCI_USBSTS: usize = 0x04;
-const XHCI_CRCR: usize = 0x18;
-const XHCI_DCBAAP: usize = 0x30;
-const XHCI_CONFIG: usize = 0x38;
-const XHCI_PORTSC_1: usize = 0x400;
-const XHCI_INTERRUPTER_0: usize = 0x20;
-const XHCI_IMAN: usize = 0x00;
-const XHCI_ERSTSZ: usize = 0x08;
-const XHCI_ERSTBA: usize = 0x10;
-const XHCI_ERDP: usize = 0x18;
 const DWC3_GCTL: usize = 0xc110;
 const DWC3_GCTL_PRTCAPDIR_MASK: u32 = 0x3 << 12;
 const DWC3_GCTL_PRTCAP_HOST: u32 = 0x1 << 12;
@@ -54,7 +41,7 @@ struct HostResources {
     mmio: IoMem,
 }
 
-static HOST_RESOURCES: Once<HostResources> = Once::new();
+static HOST_RESOURCES: SpinLock<Option<HostResources>> = SpinLock::new(None);
 
 fn dwc3_host_gctl(gctl: u32) -> u32 {
     (gctl & !DWC3_GCTL_PRTCAPDIR_MASK) | DWC3_GCTL_PRTCAP_HOST
@@ -72,36 +59,6 @@ fn prepare_dwc3_host(mmio: &IoMem) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
-}
-
-fn log_xhci_snapshot(mmio: &IoMem) {
-    let Ok(cap_length) = mmio.read_once::<u8>(XHCI_CAPLENGTH) else {
-        ostd::warn!("failed to read xHCI diagnostic registers");
-        return;
-    };
-    let Ok(runtime_offset) = mmio.read_once::<u32>(XHCI_RTSOFF) else {
-        ostd::warn!("failed to read xHCI runtime offset");
-        return;
-    };
-    let operational = usize::from(cap_length);
-    let interrupter = (runtime_offset as usize & !0x1f) + XHCI_INTERRUPTER_0;
-    let read_u32 = |offset| mmio.read_once::<u32>(offset).ok();
-    let read_u64 = |offset| mmio.read_once::<u64>(offset).ok();
-
-    ostd::warn!(
-        "xHCI timeout snapshot: GCTL={:x?}, USBCMD={:x?}, USBSTS={:x?}, CRCR={:x?}, DCBAAP={:x?}, CONFIG={:x?}, PORTSC1={:x?}, IMAN={:x?}, ERSTSZ={:x?}, ERSTBA={:x?}, ERDP={:x?}",
-        read_u32(DWC3_GCTL),
-        read_u32(operational + XHCI_USBCMD),
-        read_u32(operational + XHCI_USBSTS),
-        read_u64(operational + XHCI_CRCR),
-        read_u64(operational + XHCI_DCBAAP),
-        read_u32(operational + XHCI_CONFIG),
-        read_u32(operational + XHCI_PORTSC_1),
-        read_u32(interrupter + XHCI_IMAN),
-        read_u32(interrupter + XHCI_ERSTSZ),
-        read_u64(interrupter + XHCI_ERSTBA),
-        read_u64(interrupter + XHCI_ERDP),
-    );
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -321,11 +278,14 @@ pub(super) fn init() {
         capabilities.contexts_64byte,
     );
 
-    HOST_RESOURCES.call_once(|| HostResources { config, mmio });
+    let mut resources = HOST_RESOURCES.lock();
+    if resources.is_none() {
+        *resources = Some(HostResources { config, mmio });
+    }
 }
 
 pub fn run_polling() {
-    let Some(resources) = HOST_RESOURCES.get() else {
+    let Some(resources) = HOST_RESOURCES.lock().take() else {
         return;
     };
     if prepare_dwc3_host(&resources.mmio).is_err() {
@@ -338,15 +298,13 @@ pub fn run_polling() {
         resources.mmio.size(),
     );
 
-    let mut keyboard =
-        match PollingUsbKeyboard::open(resources.mmio.clone(), resources.config.dma_window) {
-            Ok(keyboard) => keyboard,
-            Err(error) => {
-                log_xhci_snapshot(&resources.mmio);
-                ostd::warn!("polling xHCI keyboard startup failed: {:?}", error);
-                return;
-            }
-        };
+    let mut keyboard = match PollingUsbKeyboard::open(resources.mmio, resources.config.dma_window) {
+        Ok(keyboard) => keyboard,
+        Err(error) => {
+            ostd::warn!("polling xHCI keyboard startup failed: {:?}", error);
+            return;
+        }
+    };
     let info = keyboard.info();
     let registered = register(info.vendor_id, info.product_id);
     ostd::info!(
