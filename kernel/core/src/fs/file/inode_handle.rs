@@ -85,9 +85,25 @@ impl InodeHandle {
         } else if inode.type_() == InodeType::Socket {
             return_errno_with_message!(Errno::ENXIO, "a socket cannot be opened as a file");
         } else {
-            inode
+            // Track opens for writing so that `execve` can deny executing a
+            // file that is being written to (ETXTBSY), mirroring Linux's
+            // `i_writecount`. The count is released when the handle is dropped.
+            let write_tracked = access_mode.is_writable() && inode.type_().is_regular_file();
+            if write_tracked {
+                inode.write_access_tracker_or_init().acquire_write()?;
+            }
+            match inode
                 .open(path.dentry(), access_mode, status_flags)
-                .transpose()?
+                .transpose()
+            {
+                Ok(open_file) => open_file,
+                Err(err) => {
+                    if write_tracked {
+                        inode.write_access_tracker_or_init().release_write();
+                    }
+                    return Err(err);
+                }
+            }
         };
 
         Ok(Self {
@@ -555,6 +571,18 @@ impl FileLike for InodeHandle {
 impl Drop for InodeHandle {
     fn drop(&mut self) {
         let _ = self.unlock_flock();
+
+        // Release the write-access tracking registered at open time.
+        // The predicate mirrors the one in `new_unchecked_access`
+        // (`O_PATH` handles have empty rights and thus never match).
+        if self.access_mode().is_writable()
+            && self.path().inode().type_().is_regular_file()
+        {
+            self.path()
+                .inode()
+                .write_access_tracker_or_init()
+                .release_write();
+        }
     }
 }
 
