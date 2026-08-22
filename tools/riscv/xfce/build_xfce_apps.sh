@@ -140,6 +140,16 @@ build_xfce4_settings() { xfce_app xfce4-settings-4.20.0.tar.bz2; }
 
 # ------------------------------------------------------------------ data ----
 
+build_hicolor_icons() {
+  cd "$SRC"
+  local d; d=$(srcdir hicolor-icon-theme-0.18.tar.xz \
+    https://icon-theme.freedesktop.org/releases/hicolor-icon-theme-0.18.tar.xz)
+  # Provides hicolor/index.theme — the mandatory fallback theme every icon
+  # lookup ends in (gtk warns "The 'hicolor' theme was not found" without it).
+  MESON_SETUP "$SRC/$d"
+  NINJA_INSTALL "$SRC/$d/build-riscv"
+}
+
 build_adwaita_icons() {
   cd "$SRC"
   local d; d=$(srcdir adwaita-icon-theme-47.0.tar.xz \
@@ -163,6 +173,7 @@ run_pkg xfdesktop           build_xfdesktop
 run_pkg iceauth             build_iceauth
 run_pkg xfce4-session       build_xfce4_session
 run_pkg xfce4-settings      build_xfce4_settings
+run_pkg hicolor-icon-theme  build_hicolor_icons
 run_pkg adwaita-icon-theme  build_adwaita_icons
 
 echo "=== verify: XFCE-M3 artifacts in $PREFIX ==="
@@ -172,7 +183,8 @@ for f in bin/xfwm4 bin/xfce4-panel bin/xfdesktop bin/xfce4-session \
          lib/libxfce4windowing-0.so.0 lib/libxfce4windowingui-0.so.0 \
          lib/libXinerama.so.1 lib/libXpresent.so.1 lib/libyaml-0.so.2 \
          lib/libdisplay-info.so.2 \
-         share/icons/Adwaita/index.theme share/icons/Adwaita/cursors/left_ptr; do
+         share/icons/Adwaita/index.theme share/icons/Adwaita/cursors/left_ptr \
+         share/icons/hicolor/index.theme; do
   if [ -e "$PREFIX/$f" ]; then echo "OK   $f"; else echo "MISS $f"; rc=1; fi
 done
 exit "$rc"
