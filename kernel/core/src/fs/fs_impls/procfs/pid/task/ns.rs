@@ -20,7 +20,7 @@ use crate::{
         },
     },
     ipc::IpcNamespace,
-    net::uts_ns::UtsNamespace,
+    net::{net_ns::NetNamespace, uts_ns::UtsNamespace},
     prelude::*,
     process::{NsProxy, PidNamespace, UserNamespace, posix_thread::AsPosixThread},
     thread::Thread,
@@ -52,6 +52,8 @@ enum NsProxyEntry {
     Ipc,
     /// The mount namespace.
     Mnt,
+    /// The network namespace.
+    Net,
     /// The PID namespace for children.
     PidForChildren,
     /// The UTS namespace.
@@ -64,6 +66,7 @@ impl NsProxyEntry {
         Self::Cgroup,
         Self::Ipc,
         Self::Mnt,
+        Self::Net,
         Self::PidForChildren,
         Self::Uts,
     ];
@@ -74,6 +77,7 @@ impl NsProxyEntry {
             Self::Cgroup => "cgroup",
             Self::Ipc => "ipc",
             Self::Mnt => "mnt",
+            Self::Net => "net",
             Self::PidForChildren => "pid_for_children",
             Self::Uts => "uts",
         }
@@ -85,6 +89,7 @@ impl NsProxyEntry {
             "cgroup" => Some(Self::Cgroup),
             "ipc" => Some(Self::Ipc),
             "mnt" => Some(Self::Mnt),
+            "net" => Some(Self::Net),
             "pid_for_children" => Some(Self::PidForChildren),
             "uts" => Some(Self::Uts),
             _ => None,
@@ -114,6 +119,11 @@ impl NsProxyEntry {
                 ns_proxy.mnt_ns().get_path(),
                 parent,
             ),
+            Self::Net => NsSymOps::<NetNamespace>::new_inode(
+                dir.clone(),
+                ns_proxy.net_ns().get_path(),
+                parent,
+            ),
             Self::PidForChildren => NsSymOps::<PidNamespace>::new_inode(
                 dir.clone(),
                 ns_proxy.pid_ns_for_children().get_path(),
@@ -136,6 +146,9 @@ fn cached_ns_path(inode: &dyn Inode) -> Option<&Path> {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<IpcNamespace>>() {
+        return Some(&sym.inner().ns_path);
+    }
+    if let Some(sym) = inode.downcast_ref::<NsSymlink<NetNamespace>>() {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<PidNamespace>>() {
@@ -296,6 +309,10 @@ impl ProcDirOps for NsDirOps {
 
         if child.downcast_ref::<NsSymlink<UtsNamespace>>().is_some() {
             return cached_path == &ns_proxy.uts_ns().get_path();
+        }
+
+        if child.downcast_ref::<NsSymlink<NetNamespace>>().is_some() {
+            return cached_path == &ns_proxy.net_ns().get_path();
         }
 
         if child.downcast_ref::<NsSymlink<IpcNamespace>>().is_some() {
