@@ -170,6 +170,18 @@ if [ -d "$PREFIX/share/defaults" ]; then
   mkdir -p "$ROOTFS/usr/share/defaults"
   cp -rL "$PREFIX/share/defaults/." "$ROOTFS/usr/share/defaults/"
 fi
+# xfdesktop's built-in default backdrop is share/backgrounds/xfce/xfce-x.svg
+# (observed in the M3 serial log). Our gdk-pixbuf has no SVG loader (librsvg
+# is a Rust crate — out of scope for M3), so render it to PNG content at pack
+# time and keep the .svg filename: gdk-pixbuf sniffs by content, not suffix.
+if [ -d "$PREFIX/share/backgrounds" ]; then
+  mkdir -p "$ROOTFS/usr/share/backgrounds"
+  cp -rL "$PREFIX/share/backgrounds/." "$ROOTFS/usr/share/backgrounds/"
+  if command -v rsvg-convert >/dev/null && [ -f "$PREFIX/share/backgrounds/xfce/xfce-x.svg" ]; then
+    rsvg-convert -w 1280 -h 1024 "$PREFIX/share/backgrounds/xfce/xfce-x.svg" \
+      -o "$ROOTFS/usr/share/backgrounds/xfce/xfce-x.svg"
+  fi
+fi
 # pnp.ids for libdisplay-info (xfce4-display-settings / xfsettingsd EDID).
 if [ -f /usr/share/hwdata/pnp.ids ]; then
   mkdir -p "$ROOTFS/usr/share/hwdata"
