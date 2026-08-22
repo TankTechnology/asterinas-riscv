@@ -192,7 +192,7 @@ cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/opt/ltp/lib/libltp.so"
 # tools/riscv/nixos/build_busybox.sh) and the applet symlinks those tests use.
 mkdir -p "${ROOTFS}/bin"
 cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
-for applet in sh cat true echo test; do
+for applet in sh cat true echo test cp; do
     ln -sf busybox "${ROOTFS}/bin/${applet}"
 done
 echo "busybox applets: $(ls "${ROOTFS}/bin")"
@@ -202,7 +202,8 @@ echo "busybox applets: $(ls "${ROOTFS}/bin")"
 for pair in \
     "execve/execve_child" \
     "execveat/execveat_child" \
-    "execveat/execveat_errno"; do
+    "execveat/execveat_errno" \
+    "openat/openat02_child"; do
     src="${LTP_SRC}/testcases/kernel/syscalls/${pair}"
     if [ -f "${src}" ]; then
         cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/"

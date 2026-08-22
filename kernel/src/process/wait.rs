@@ -33,9 +33,13 @@ bitflags! {
 
 impl WaitOptions {
     pub fn check(&self) -> Result<()> {
+        // `WEXITED` is what systemd's PID 1 passes on every `waitid(2)`;
+        // exited children are always reported (see `try_wait_children`), so it
+        // is fully supported and should not trigger the "unsupported" warning.
         let supported_args = WaitOptions::WNOHANG
             | WaitOptions::WSTOPPED
             | WaitOptions::WCONTINUED
+            | WaitOptions::WEXITED
             | WaitOptions::WNOWAIT;
         if !supported_args.contains(*self) {
             warn!(

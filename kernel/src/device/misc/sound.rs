@@ -15,15 +15,12 @@ use ostd::mm::VmIo;
 use crate::{
     context::current_userspace,
     device::{
-        Device, DeviceType, DevtmpfsInodeMeta,
-        registry::char,
-        snd::{
-            control,
-            pcm::{
-                DEV_BUFFER_BYTES, DEV_CHANNELS, DEV_PERIOD_BYTES, PcmStream, SNDRV_PCM_VERSION,
-                SndPcmChannelInfo, SndXferi, ioctl_defs,
-            },
+        snd::control,
+        snd::pcm::{
+            PcmStream, SndPcmChannelInfo, SndXferi, ioctl_defs,
+            SNDRV_PCM_VERSION, DEV_BUFFER_BYTES, DEV_BUFFER_FRAMES, DEV_CHANNELS, DEV_PERIOD_BYTES,
         },
+        Device, DeviceType, DevtmpfsInodeMeta, registry::char,
     },
     events::IoEvents,
     fs::{
@@ -133,15 +130,21 @@ impl SoundPcmFile {
         if self.pcm.lock().params().is_some() {
             self.start_device()?;
         }
-        let frame_bytes = {
+        let (frame_bytes, buffer_frames) = {
             let pcm = self.pcm.lock();
-            pcm.params()
+            let params = pcm.params();
+            let fb = params
                 .map(|p| (p.channels * 2) as usize) // S16 = 2 bytes/sample
-                .unwrap_or((DEV_CHANNELS * 2) as usize)
+                .unwrap_or((DEV_CHANNELS * 2) as usize);
+            let bf = params
+                .map(|p| p.buffer_frames as usize)
+                .unwrap_or(DEV_BUFFER_FRAMES as usize);
+            (fb, bf)
         };
-        let len = (xferi.frames as usize)
-            .checked_mul(frame_bytes)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "writei frame size overflows"))?;
+        let effective_frames = (xferi.frames as usize).min(buffer_frames);
+        let len = effective_frames.checked_mul(frame_bytes).ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "writei frame size overflows")
+        })?;
         if len == 0 {
             xferi.result = 0;
             current_userspace!().write_val(arg, &xferi.result)?;
@@ -205,6 +208,7 @@ impl FileOps for SoundPcmFile {
         }
         Ok(total)
     }
+
 }
 
 impl PerOpenFileOps for SoundPcmFile {
@@ -304,7 +308,10 @@ impl PerOpenFileOps for SoundPcmFile {
                 Ok(0)
             }
             _ => {
-                ostd::warn!("unknown ALSA PCM ioctl command {:#x}", raw_ioctl.cmd());
+                ostd::warn!(
+                    "unknown ALSA PCM ioctl command {:#x}",
+                    raw_ioctl.cmd()
+                );
                 return_errno_with_message!(Errno::ENOTTY, "unknown ALSA PCM ioctl");
             }
         })

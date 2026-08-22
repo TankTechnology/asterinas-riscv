@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -29,6 +30,10 @@ from qemu_uboot_secure_io import PinnedOutputDirectory
 _PR_SET_CHILD_SUBREAPER = 36
 _PR_GET_CHILD_SUBREAPER = 37
 SERIAL_OUTPUT_LIMIT = 4 * 1024 * 1024
+# A final quiet-window drain for bytes buffered while capture runs, not a QMP timeout.
+TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS = 0.01
+# QMP capture uses a five-second request bound; retain controller headroom.
+TERMINAL_ACTION_TIMEOUT_SECONDS = 6.0
 
 
 class SerialOutputLimitExceeded(RuntimeError):
@@ -436,6 +441,16 @@ class _SerialProtocol:
             except TimeoutError:
                 return
 
+    def drain_after_terminal_action(self) -> None:
+        """Drain bytes buffered during a bounded host-side terminal action."""
+
+        deadline = time.monotonic() + TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._read_serial_chunk(deadline=deadline, needle=b"terminal action drain")
+            except TimeoutError:
+                return
+
     def run(self) -> None:
         booti_started: float | None = None
         try:
@@ -652,6 +667,74 @@ def _cleanup_serial_process(
     )
 
 
+def _run_terminal_action_while_draining(
+    protocol: _SerialProtocol,
+    terminal_action: Callable[[], None],
+) -> tuple[BaseException | None, threading.Thread | None]:
+    """Run one terminal action while draining serial output and join its worker."""
+
+    action_errors: list[BaseException] = []
+
+    def run_terminal_action() -> None:
+        try:
+            terminal_action()
+        except BaseException as error:
+            action_errors.append(error)
+
+    action_thread = threading.Thread(target=run_terminal_action, daemon=True)
+    action_thread.start()
+    deadline = time.monotonic() + TERMINAL_ACTION_TIMEOUT_SECONDS
+    action_timed_out = False
+    try:
+        while action_thread.is_alive():
+            if time.monotonic() >= deadline:
+                action_timed_out = True
+                break
+            try:
+                protocol._read_serial_chunk(
+                    deadline=min(
+                        deadline,
+                        time.monotonic() + TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS,
+                    ),
+                    needle=b"terminal action drain",
+                )
+            except TimeoutError:
+                continue
+            except SerialOutputLimitExceeded:
+                protocol.failure = f"serial-output-limit:{protocol.stage}"
+            except ValueError:
+                protocol.failure = f"command-validation:{protocol.stage}"
+                break
+            except (OSError, RuntimeError):
+                protocol.failure = f"process-error:{protocol.stage}"
+                break
+    except BaseException:
+        # Preserve join-before-cleanup when the bounded action completes, but
+        # never let a hostile callback block deferred process termination.
+        action_thread.join(max(0.0, deadline - time.monotonic()))
+        raise
+    finally:
+        if action_thread.is_alive():
+            action_timed_out = True
+        if not action_timed_out:
+            action_thread.join()
+        else:
+            action_thread.join(TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS)
+    if action_timed_out:
+        return TimeoutError("terminal action exceeded its bounded timeout"), action_thread
+    terminal_action_error = action_errors[0] if action_errors else None
+    try:
+        protocol.drain_after_terminal_action()
+    except SerialOutputLimitExceeded:
+        protocol.failure = f"serial-output-limit:{protocol.stage}"
+    except ValueError:
+        protocol.failure = f"command-validation:{protocol.stage}"
+    except (OSError, RuntimeError):
+        if terminal_action_error is None:
+            protocol.failure = f"process-error:{protocol.stage}"
+    return terminal_action_error, None
+
+
 def run_serial_session(
     argv: Sequence[str],
     *,
@@ -668,8 +751,15 @@ def run_serial_session(
     post_terminal_timeout: float = 0.0,
     milestone_expectations: Sequence[MilestoneExpectation] = (),
     raw_log_file: BinaryIO | None = None,
+    terminal_action: Callable[[], None] | None = None,
 ) -> SessionResult:
-    """Run one guarded command sequence over a subprocess serial stream."""
+    """Run one guarded serial session and its optional live terminal action.
+
+    Runs the action once after a successful marker and post-terminal observation
+    while QEMU remains live; suppresses it for timeout, protocol/process failure,
+    exit, and reboot recovery. Serial bytes are drained after the action, and an
+    action exception is re-raised only after process-group cleanup.
+    """
 
     _validate_session_timeouts(
         startup_timeout=startup_timeout,
@@ -714,6 +804,7 @@ def run_serial_session(
                 post_terminal_timeout=post_terminal_timeout,
                 milestone_expectations=milestone_expectations,
                 raw_log_file=log_file,
+                terminal_action=terminal_action,
                 deferred_termination=deferred_termination,
             )
 
@@ -754,6 +845,7 @@ def _run_serial_session(
     milestone_expectations: Sequence[MilestoneExpectation] = (),
     raw_log_file: BinaryIO | None = None,
     deferred_termination: _DeferredTermination,
+    terminal_action: Callable[[], None] | None = None,
 ) -> SessionResult:
     """Run one session while orphaned descendants are adopted by this process."""
 
@@ -778,6 +870,8 @@ def _run_serial_session(
     selector: selectors.BaseSelector | None = None
     protocol: _SerialProtocol | None = None
     cleanup: _ProcessCleanupResult | None = None
+    terminal_action_error: BaseException | None = None
+    terminal_action_worker: threading.Thread | None = None
     try:
         deferred_termination.raise_if_pending()
         assert process.stdin is not None
@@ -802,15 +896,40 @@ def _run_serial_session(
             milestone_expectations=milestone_expectations,
         )
         protocol.run()
+        if (
+            terminal_action is not None
+            and protocol.marker_seen
+            and not protocol.timed_out
+            and protocol.failure is None
+            and reboot_expectation is None
+            and process.poll() is None
+        ):
+            terminal_action_error, terminal_action_worker = _run_terminal_action_while_draining(
+                protocol,
+                terminal_action,
+            )
     finally:
-        cleanup = _cleanup_serial_process(
-            process,
-            selector=selector,
-            owned_raw_log=owned_raw_log,
-            grace=termination_grace,
-            stage="startup" if protocol is None else protocol.stage,
-            failure=None if protocol is None else protocol.failure,
-        )
+        try:
+            cleanup = _cleanup_serial_process(
+                process,
+                selector=selector,
+                owned_raw_log=owned_raw_log,
+                grace=termination_grace,
+                stage="startup" if protocol is None else protocol.stage,
+                failure=None if protocol is None else protocol.failure,
+            )
+        except BaseException as cleanup_error:
+            if terminal_action_error is not None:
+                raise cleanup_error from terminal_action_error
+            raise
+        finally:
+            if terminal_action_worker is not None:
+                # A hostile Python callback cannot be killed safely.  Keep it
+                # daemonized and make only a bounded post-cleanup join attempt.
+                terminal_action_worker.join(TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS)
+
+    if terminal_action_error is not None:
+        raise terminal_action_error
 
     assert protocol is not None
     assert cleanup is not None

@@ -5,7 +5,11 @@
 #![warn(unused)]
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{fmt, ops::Bound, sync::atomic::Ordering};
+use core::{
+    fmt,
+    ops::Bound,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ostd::{
     arch::read_tsc as sched_clock,
@@ -148,6 +152,7 @@ pub struct SchedAttr {
     last_cpu: AtomicCpuId,
     real_time: real_time::RealTimeAttr,
     fair: fair::FairAttr,
+    reset_on_fork: AtomicBool,
 }
 
 impl SchedAttr {
@@ -167,12 +172,37 @@ impl SchedAttr {
                 SchedPolicy::Fair(nice) => nice,
                 _ => Nice::default(),
             }),
+            reset_on_fork: AtomicBool::new(false),
         }
     }
 
     /// Retrieves the current scheduling policy of the thread.
     pub fn policy(&self) -> SchedPolicy {
         self.policy.get()
+    }
+
+    /// Sets whether the thread's scheduling policy is reset on `fork`.
+    ///
+    /// This corresponds to Linux's `SCHED_RESET_ON_FORK` flag.
+    pub fn set_reset_on_fork(&self, reset: bool) {
+        self.reset_on_fork.store(reset, Ordering::Relaxed);
+    }
+
+    /// Returns whether the thread's scheduling policy is reset on `fork`.
+    pub fn reset_on_fork(&self) -> bool {
+        self.reset_on_fork.load(Ordering::Relaxed)
+    }
+
+    /// Returns the scheduling policy a forked child should inherit.
+    ///
+    /// When `SCHED_RESET_ON_FORK` is set, the child is reset to the default
+    /// `SCHED_NORMAL` policy; otherwise it inherits the parent's policy.
+    pub fn fork_child_policy(&self) -> SchedPolicy {
+        if self.reset_on_fork() {
+            SchedPolicy::Fair(Nice::default())
+        } else {
+            self.policy()
+        }
     }
 
     fn policy_kind(&self) -> SchedPolicyKind {

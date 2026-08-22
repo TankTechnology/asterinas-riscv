@@ -22,6 +22,7 @@ macro_rules! import_generic_syscall_entries {
             chown::{sys_fchown, sys_fchownat},
             chroot::sys_chroot,
             clock_gettime::{sys_clock_getres, sys_clock_gettime},
+            clock_settime::sys_clock_settime,
             clone::{sys_clone, sys_clone3},
             close::{sys_close, sys_close_range},
             connect::sys_connect,
@@ -88,6 +89,7 @@ macro_rules! import_generic_syscall_entries {
             mremap::sys_mremap,
             msync::sys_msync,
             munmap::sys_munmap,
+            name_to_handle_at::{sys_name_to_handle_at, sys_open_by_handle_at},
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
             openat2::sys_openat2,
@@ -119,6 +121,7 @@ macro_rules! import_generic_syscall_entries {
             rt_sigreturn::sys_rt_sigreturn,
             rt_sigsuspend::sys_rt_sigsuspend,
             rt_sigtimedwait::sys_rt_sigtimedwait,
+            rseq::sys_rseq,
             sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
             sched_get_priority_max::sys_sched_get_priority_max,
             sched_get_priority_min::sys_sched_get_priority_min,
@@ -311,6 +314,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_TIMER_GETTIME = 108          => sys_timer_gettime(args[..2]);
             SYS_TIMER_SETTIME = 110          => sys_timer_settime(args[..4]);
             SYS_TIMER_DELETE = 111           => sys_timer_delete(args[..1]);
+            SYS_CLOCK_SETTIME = 112          => sys_clock_settime(args[..2]);
             SYS_CLOCK_GETTIME = 113          => sys_clock_gettime(args[..2]);
             SYS_CLOCK_GETRES = 114           => sys_clock_getres(args[..2]);
             SYS_CLOCK_NANOSLEEP = 115        => sys_clock_nanosleep(args[..4]);
@@ -414,6 +418,8 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PRLIMIT64 = 261              => sys_prlimit64(args[..4]);
             SYS_FANOTIFY_INIT = 262          => sys_fanotify_init(args[..2]);
             SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
+            SYS_NAME_TO_HANDLE_AT = 264      => sys_name_to_handle_at(args[..5]);
+            SYS_OPEN_BY_HANDLE_AT = 265      => sys_open_by_handle_at(args[..3]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
@@ -428,6 +434,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
+            SYS_RSEQ = 293                   => sys_rseq(args[..4]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
             SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
             SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);
