@@ -1,0 +1,159 @@
+[RUN] 1 clone01
+[PASS] clone01
+[RUN] 2 clone02
+[PASS] clone02
+[RUN] 3 clone03
+[PASS] clone03
+[RUN] 4 clone04
+[PASS] clone04
+[RUN] 5 clone05
+[PASS] clone05
+[RUN] 6 clone06
+[PASS] clone06
+[RUN] 7 clone07
+[PASS] clone07
+[RUN] 8 clone08
+[FAIL] clone08
+[RUN] 9 clone10
+[CONF] clone10
+[RUN] 10 clone304
+[FAIL] clone304
+[RUN] 11 execve01
+[CONF] execve01
+[RUN] 12 execve02
+[PASS] execve02
+[RUN] 13 execve03
+[PASS] execve03
+[RUN] 14 execve04
+[PASS] execve04
+[RUN] 15 execve05
+[PASS] execve05
+[RUN] 16 execve06
+[CONF] execve06
+[RUN] 17 execveat01
+[PASS] execveat01
+[RUN] 18 execveat02
+[PASS] execveat02
+[RUN] 19 execveat03
+[CONF] execveat03
+[RUN] 20 exit01
+[PASS] exit01
+[RUN] 21 exit02
+[PASS] exit02
+[RUN] 22 exit_group01
+[PASS] exit_group01
+[RUN] 23 fork01
+[PASS] fork01
+[RUN] 24 fork03
+[PASS] fork03
+[RUN] 25 fork04
+[PASS] fork04
+[RUN] 26 fork05
+[CONF] fork05
+[RUN] 27 fork06
+[PASS] fork06
+[RUN] 28 fork07
+[PASS] fork07
+[RUN] 29 fork08
+[PASS] fork08
+[RUN] 30 fork09
+[PASS] fork09
+[RUN] 31 fork10
+[PASS] fork10
+[RUN] 32 fork11
+[PASS] fork11
+[RUN] 33 getpgid01
+[PASS] getpgid01
+[RUN] 34 getpgrp01
+[PASS] getpgrp01
+[RUN] 35 getpid01
+[PASS] getpid01
+[RUN] 36 getpid02
+[PASS] getpid02
+[RUN] 37 getppid01
+[PASS] getppid01
+[RUN] 38 getppid02
+[PASS] getppid02
+[RUN] 39 get_robust_list01
+[CONF] get_robust_list01
+[RUN] 40 getsid01
+[PASS] getsid01
+[RUN] 41 gettid01
+[PASS] gettid01
+[RUN] 42 gettid02
+[PASS] gettid02
+[RUN] 43 kill02
+[PASS] kill02
+[RUN] 44 kill03
+[PASS] kill03
+[RUN] 45 kill05
+[PASS] kill05
+[RUN] 46 kill06
+[PASS] kill06
+[RUN] 47 kill08
+[PASS] kill08
+[RUN] 48 set_robust_list01
+[PASS] set_robust_list01
+[RUN] 49 set_tid_address01
+[PASS] set_tid_address01
+[RUN] 50 setpgid01
+[PASS] setpgid01
+[RUN] 51 setsid01
+[PASS] setsid01
+[RUN] 52 tgkill01
+[PASS] tgkill01
+[RUN] 53 tgkill02
+[FAIL] tgkill02
+[RUN] 54 tgkill03
+[PASS] tgkill03
+[RUN] 55 tkill01
+[PASS] tkill01
+[RUN] 56 tkill02
+[PASS] tkill02
+[RUN] 57 vfork01
+[PASS] vfork01
+[RUN] 58 vfork02
+[PASS] vfork02
+[RUN] 59 wait01
+[PASS] wait01
+[RUN] 60 wait02
+[PASS] wait02
+[RUN] 61 wait401
+[PASS] wait401
+[RUN] 62 waitpid01
+[FAIL] waitpid01
+[RUN] 63 waitpid03
+[PASS] waitpid03
+[RUN] 64 waitpid06
+[PASS] waitpid06
+[RUN] 65 waitpid07
+[PASS] waitpid07
+[RUN] 66 waitpid09
+[PASS] waitpid09
+[RUN] 67 waitpid11
+[PASS] waitpid11
+[RUN] 68 waitpid12
+[PASS] waitpid12
+[RUN] 69 waitid01
+[PASS] waitid01
+[RUN] 70 waitid02
+[PASS] waitid02
+[RUN] 71 waitid03
+[PASS] waitid03
+[RUN] 72 waitid04
+[PASS] waitid04
+[RUN] 73 waitid05
+[PASS] waitid05
+[RUN] 74 waitid06
+[PASS] waitid06
+[RUN] 75 waitid07
+[PASS] waitid07
+[RUN] 76 waitid08
+[PASS] waitid08
+[RUN] 77 waitid09
+[PASS] waitid09
+[RUN] 78 waitid11
+[PASS] waitid11
+__LTP_GATE_DONE__
+[summary] total=78 pass=68 fail=4 conf=6 crash=0 timeout=0
+__LTP_GATE_FAIL__
