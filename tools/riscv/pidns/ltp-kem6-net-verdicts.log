@@ -1,0 +1,91 @@
+[RUN] 1 accept01
+[PASS] accept01
+[RUN] 2 bind01
+[PASS] bind01
+[RUN] 3 bind03
+[PASS] bind03
+[RUN] 4 bind04
+[PASS] bind04
+[RUN] 5 connect01
+[FAIL] connect01
+[RUN] 6 epoll_create01
+[PASS] epoll_create01
+[RUN] 7 epoll_create02
+[PASS] epoll_create02
+[RUN] 8 epoll_create1_01
+[PASS] epoll_create1_01
+[RUN] 9 epoll_create1_02
+[PASS] epoll_create1_02
+[RUN] 10 epoll01
+[TIMEOUT] epoll01
+[RUN] 11 epoll_ctl01
+[PASS] epoll_ctl01
+[RUN] 12 epoll_ctl03
+[PASS] epoll_ctl03
+[RUN] 13 epoll_ctl04
+[FAIL] epoll_ctl04
+[RUN] 14 epoll_wait01
+[PASS] epoll_wait01
+[RUN] 15 epoll_wait03
+[PASS] epoll_wait03
+[RUN] 16 epoll_wait04
+[PASS] epoll_wait04
+[RUN] 17 epoll_wait05
+[FAIL] epoll_wait05
+[RUN] 18 epoll_wait07
+[PASS] epoll_wait07
+[RUN] 19 epoll_pwait01
+[PASS] epoll_pwait01
+[RUN] 20 epoll_pwait02
+[PASS] epoll_pwait02
+[RUN] 21 epoll_pwait04
+[PASS] epoll_pwait04
+[RUN] 22 epoll_pwait05
+[PASS] epoll_pwait05
+[RUN] 23 epoll_pwait06
+[PASS] epoll_pwait06
+[RUN] 24 getsockopt01
+[FAIL] getsockopt01
+[RUN] 25 listen01
+[PASS] listen01
+[RUN] 26 poll01
+[PASS] poll01
+[RUN] 27 poll02
+[FAIL] poll02
+[RUN] 28 poll03
+[PASS] poll03
+[RUN] 29 poll04
+[PASS] poll04
+[RUN] 30 ppoll01
+[PASS] ppoll01
+[RUN] 31 recvfrom01
+[FAIL] recvfrom01
+[RUN] 32 recvmsg01
+[FAIL] recvmsg01
+[RUN] 33 select01
+[PASS] select01
+[RUN] 34 select02
+[FAIL] select02
+[RUN] 35 select03
+[PASS] select03
+[RUN] 36 sendmsg01
+[FAIL] sendmsg01
+[RUN] 37 sendto01
+[FAIL] sendto01
+[RUN] 38 setsockopt01
+[FAIL] setsockopt01
+[RUN] 39 setsockopt03
+[PASS] setsockopt03
+[RUN] 40 shutdown01
+[PASS] shutdown01
+[RUN] 41 socket01
+[FAIL] socket01
+[RUN] 42 socket02
+[PASS] socket02
+[RUN] 43 socketpair01
+[FAIL] socketpair01
+[RUN] 44 socketpair02
+[PASS] socketpair02
+__LTP_GATE_DONE__
+[summary] total=44 pass=30 fail=14 conf=0 crash=0 timeout=1
+__LTP_GATE_FAIL__
