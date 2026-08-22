@@ -56,6 +56,9 @@ XORG_BANNER = b"X.Org X Server"
 XORG_INPUT = b"Adding extended input device"
 SESSION_STARTED = b"Started Xfce desktop session"
 SESSION_LAUNCH = b"xfce-session-start: launching dbus-run-session"
+# The panel logs this the moment it realizes (icon-theme warning is
+# incidental but reliably timed with the panel mapping).
+PANEL_UP = b"applicationsmenu"
 EMERGENCY = b"Welcome to emergency mode"
 PANIC_MARKERS = [
     b"kernel panic", b"Kernel panic", b"page fault handler failed",
@@ -241,6 +244,7 @@ def main() -> int:
 
         deadline = time.monotonic() + args.collect_timeout
         graphical_at: float | None = None
+        panel_at: float | None = None
         while time.monotonic() < deadline:
             clean_pending = ANSI_RE.sub(b"", bytes(boot.pending))
             if any(m in clean_pending for m in PANIC_MARKERS):
@@ -251,8 +255,15 @@ def main() -> int:
                 break
             if graphical_at is None and GRAPHICAL_TARGET in clean_pending:
                 graphical_at = time.monotonic()
-                print("[boot] graphical.target reached; settling", flush=True)
-            if graphical_at is not None and time.monotonic() - graphical_at >= args.settle:
+                print("[boot] graphical.target reached; waiting for panel", flush=True)
+            # Anchor the settle clock to the panel actually starting (its
+            # icon-theme warning fires when the panel maps), not to
+            # graphical.target — userspace startup time drifts a lot between
+            # runs as the image grows.
+            if panel_at is None and PANEL_UP in clean_pending:
+                panel_at = time.monotonic()
+                print("[boot] xfce4-panel up; settling", flush=True)
+            if panel_at is not None and time.monotonic() - panel_at >= args.settle:
                 reached = "settled"
                 break
             try:
@@ -260,9 +271,9 @@ def main() -> int:
             except RuntimeError:
                 reached = "serial-closed"
                 break
-        # Screendumps at 0/30/60 s after settle: the panel/desktop may still
-        # be painting when the first lands.
-        for i, delay in enumerate((0, 120, 120)):
+        # Screendumps after the settle: the panel/desktop may still be
+        # painting when the first lands, so space them out.
+        for i, delay in enumerate((0, 90, 90)):
             if delay:
                 try:
                     boot._drain(float(delay))
