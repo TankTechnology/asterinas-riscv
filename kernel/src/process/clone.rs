@@ -26,7 +26,7 @@ use crate::{
     },
     prelude::*,
     process::{
-        NsProxy, UserNamespace,
+        NsProxy, PidNamespace, UserNamespace,
         credentials::capabilities::CapSet,
         pid_file::PidFile,
         posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
@@ -225,6 +225,13 @@ impl CloneArgs {
                 return_errno_with_message!(
                     Errno::EINVAL,
                     "`CLONE_THREAD` cannot be used together with `CLONE_PIDFD` or `CLONE_NEWUSER`"
+                );
+            }
+
+            if clone_flags.contains(CloneFlags::CLONE_NEWPID) {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "`CLONE_THREAD` cannot be used together with `CLONE_NEWPID`"
                 );
             }
         }
@@ -551,6 +558,11 @@ fn clone_child_process(
         clone_flags,
     )?;
 
+    // The child process joins the proxy's PID namespace for children: with
+    // `CLONE_NEWPID` (or after `unshare(CLONE_NEWPID)`) that is the new
+    // namespace, and the child becomes its init process.
+    let child_pid_ns = child_ns_proxy.pid_ns_for_children().clone();
+
     // Clone default timer slack
     let default_timer_slack_ns = posix_thread.timer_slack_ns();
 
@@ -635,6 +647,7 @@ fn clone_child_process(
             child_oom_score_adj,
             child_sig_dispositions,
             child_user_ns,
+            child_pid_ns,
             child_thread_builder,
         )
     };
@@ -863,6 +876,7 @@ fn create_child_process(
     oom_score_adj: i16,
     sig_dispositions: Arc<Mutex<SigDispositions>>,
     user_ns: Arc<UserNamespace>,
+    pid_ns: Arc<PidNamespace>,
     thread_builder: PosixThreadBuilder,
 ) -> Arc<Process> {
     let child_proc = Process::new(
@@ -873,6 +887,7 @@ fn create_child_process(
         oom_score_adj,
         sig_dispositions,
         user_ns,
+        pid_ns,
     );
 
     let child_task = thread_builder.process(Arc::downgrade(&child_proc)).build();
