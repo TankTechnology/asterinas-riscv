@@ -41,6 +41,9 @@ static const char N3_SCRIPT[] =
     "echo __N3_PING_START__\n"
     "NIX_REMOTE=daemon nix store ping 2>&1\n"
     "echo __N3_PING_EXIT__=$?\n"
+    // N3-5: real substitution. The busybox store path is not rooted yet
+    // (the profile install below comes later), so it can be deleted and
+    // re-realised, forcing a real download from cache.nixos.org.
     // Install the closure's busybox into the default profile via the daemon
     // (N3-3): a real package install (DB write + profile generation + gcroot).
     "echo __N3_INSTALL_START__\n"
@@ -62,12 +65,33 @@ static const char N3_SCRIPT[] =
     "cat /tmp/build.log\n"
     "cat /nix/store/*-n3-hello 2>/dev/null\n"
     // N3-5 stretch: HTTPS substituter reachability (DNS + TCP + TLS through
-    // QEMU slirp). Not part of the pass criteria.
+    // QEMU slirp).
     "echo __N3_NET_START__\n"
     "netprobe\n"
     "NIX_SSL_CERT_FILE=/nix/store/p72fm684r47aw9whpmg9ggnjz998hy2r-nss-cacert-riscv64-unknown-linux-gnu-3.108/etc/ssl/certs/ca-bundle.crt nix store ping --store https://cache.nixos.org >/tmp/netping.log 2>&1\n"
     "echo __N3_NET_RC__=$?\n"
     "cat /tmp/netping.log\n"
+    "echo __N3_SUBST_START__\n"
+    // A path from the nix 2.28.5 closure: confirmed present on
+    // cache.nixos.org (host-side narinfo 200) and absent locally, so
+    // realising it forces a real substitution (editline + its glibc + attr).
+    "SUB=/nix/store/23xc4k52ymabr5lda1p1vhk9pkv8xxpz-editline-riscv64-unknown-linux-gnu-1.17.1\n"
+    "test -e \"$SUB\" && echo unexpectedly-present || echo not-local\n"
+    "NIX_SSL_CERT_FILE=/nix/store/p72fm684r47aw9whpmg9ggnjz998hy2r-nss-cacert-riscv64-unknown-linux-gnu-3.108/etc/ssl/certs/ca-bundle.crt nix copy --from https://cache.nixos.org --to daemon \"$SUB\" --no-check-sigs 2>&1\n"
+    "echo __N3_SUBST_RC__=$?\n"
+    "ls \"$SUB\"/lib/ 2>&1\n"
+    "test -f \"$SUB\"/lib/libeditline.so.1 && echo __N3_SUBST_RESTORED__\n"
+    // N4 task 3: profile generations + GC smoke.
+    "echo __N3_GEN_START__\n"
+    "NIX_REMOTE=daemon nix profile add --profile /nix/var/nix/profiles/default \"$SUB\" 2>&1\n"
+    "echo gen2-rc=$?\n"
+    "ls /nix/var/nix/profiles/\n"
+    "NIX_REMOTE=daemon nix profile rollback --profile /nix/var/nix/profiles/default 2>&1\n"
+    "echo __N3_ROLLBACK_RC__=$?\n"
+    // The n3-hello build output is unrooted, so a GC must collect it.
+    "NIX_REMOTE=daemon nix store gc 2>&1\n"
+    "echo __N3_GC_RC__=$?\n"
+    "test -e /nix/store/4namh6905i9mhrvk28byaw04qxy4js6j-n3-hello && echo gc-missed || echo __N3_GC_COLLECTED__\n"
     "echo __N3_DONE__\n";
 
 int main(void) {
