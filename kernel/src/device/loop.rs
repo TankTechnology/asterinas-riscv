@@ -134,8 +134,7 @@ impl BlockDevice for LoopDevice {
 
         let mut current_sid: u64 = 0;
         for segment in bio.segments() {
-            let start_offset =
-                (sid_range.start + current_sid).to_raw() as usize * SECTOR_SIZE;
+            let start_offset = (sid_range.start + current_sid).to_raw() as usize * SECTOR_SIZE;
             let byte_len = segment.nbytes();
             let slice = segment.inner_dma_slice();
 
@@ -275,7 +274,10 @@ impl FileOps for OpenLoopDevice {
         }
         let device_size = self.device.size_bytes();
         if offset >= device_size {
-            return_errno_with_message!(Errno::ENOSPC, "the write offset is beyond the block device");
+            return_errno_with_message!(
+                Errno::ENOSPC,
+                "the write offset is beyond the block device"
+            );
         }
         let write_len = total.min(device_size - offset);
         {
@@ -346,16 +348,14 @@ impl PerOpenFileOps for OpenLoopDevice {
                 use crate::fs::file::file_table::FileDesc;
                 let backing_fd = raw_ioctl.arg() as i32;
                 let fd = FileDesc::try_from(backing_fd).ok()?;
-                let backing_file = file_table.read_with(|inner| {
-                    inner.get_file(fd).map(|f| f.clone())
-                });
+                let backing_file = file_table.read_with(|inner| inner.get_file(fd).cloned());
                 let backing_file = match backing_file {
                     Ok(f) => f,
                     Err(_) => return Some(Err(Error::new(Errno::EBADF))),
                 };
                 match self.device.set_backing_file(backing_file) {
                     Ok(()) => Some(Ok(0)),
-                    Err(e) => Some(Err(e.into())),
+                    Err(e) => Some(Err(e)),
                 }
             }
             LOOP_CLR_FD => {
@@ -491,6 +491,16 @@ static LOOP_MAJOR: Mutex<Option<aster_block::MajorIdOwner>> = Mutex::new(None);
 static LOOP_DEVICES: Mutex<Vec<Arc<LoopDevice>>> = Mutex::new(Vec::new());
 static LOOP_CONTROL_MAJOR: Mutex<Option<CharMajorIdOwner>> = Mutex::new(None);
 
+/// Looks up a loop device by its device ID.
+///
+/// The block registry wraps every registered block device (including loop
+/// devices) in a `BlockFile`; this lets the block open path recover the
+/// `Arc<LoopDevice>` so loop ioctls (LOOP_SET_FD, ...) reach the loop
+/// subsystem.
+pub(super) fn lookup_device(id: DeviceId) -> Option<Arc<LoopDevice>> {
+    LOOP_DEVICES.lock().iter().find(|d| d.id() == id).cloned()
+}
+
 pub(super) fn init_in_first_kthread() {
     let major = aster_block::allocate_major().expect("failed to allocate loop block major");
     *LOOP_MAJOR.lock() = Some(major);
@@ -520,7 +530,12 @@ pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> 
     let ctl_device = LoopControlDevice::new(ctl_id);
     char::register(ctl_device).expect("failed to register loop-control");
     let ctl_meta = DevtmpfsInodeMeta::new("loop-control");
-    add_node(DeviceType::Char, ctl_id.as_encoded_u64(), &ctl_meta, path_resolver)?;
+    add_node(
+        DeviceType::Char,
+        ctl_id.as_encoded_u64(),
+        &ctl_meta,
+        path_resolver,
+    )?;
 
     Ok(())
 }

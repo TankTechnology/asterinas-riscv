@@ -6,8 +6,8 @@ use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::posix_thread::{
-        Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
-        RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+        RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
+        RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET, Rseq,
     },
 };
 
@@ -43,13 +43,14 @@ pub fn sys_rseq(
     if rseq_ptr == 0 || rseq_len < RSEQ_MIN_SIZE {
         return_errno_with_message!(Errno::EINVAL, "rseq area is null or too small");
     }
-    if rseq_ptr % RSEQ_ALIGN != 0 {
+    if !rseq_ptr.is_multiple_of(RSEQ_ALIGN) {
         return_errno_with_message!(Errno::EINVAL, "rseq area is not 32-byte aligned");
     }
 
     // Write the signature and a stable `cpu_id`/`cpu_id_start` of 0 before
     // remembering the area. Errors here are reported to the caller.
-    ctx.user_space().write_val(rseq_ptr + RSEQ_SIG_OFFSET, &sig)?;
+    ctx.user_space()
+        .write_val(rseq_ptr + RSEQ_SIG_OFFSET, &sig)?;
     ctx.user_space().write_val(rseq_ptr, &0u32)?;
     ctx.user_space()
         .write_val(rseq_ptr + RSEQ_CPU_ID_OFFSET, &0u32)?;

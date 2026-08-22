@@ -10,7 +10,6 @@ use crate::{
         posix_thread::{ContextPthreadAdminApi, MAX_THREAD_NAME_LEN},
         signal::sig_num::SigNum,
     },
-    util::ReadCString,
 };
 
 pub fn sys_prctl(

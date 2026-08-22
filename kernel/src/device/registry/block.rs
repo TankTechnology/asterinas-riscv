@@ -120,10 +120,9 @@ impl Device for BlockFile {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
-        // Loop devices need their own ioctl_with_table handler (LOOP_SET_FD, etc.).
-        if let Some(loop_device) = self.0.downcast_ref::<r#loop::LoopDevice>() {
-            let loop_file = r#loop::LoopFile::new(loop_device.clone());
-            return loop_file.open();
+        // Loop devices need their own ioctl handler (LOOP_SET_FD, etc.).
+        if let Some(loop_device) = r#loop::lookup_device(self.0.id()) {
+            return r#loop::LoopFile::new(loop_device).open();
         }
         Ok(Box::new(OpenBlockFile(self.0.clone())))
     }
