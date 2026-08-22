@@ -87,6 +87,20 @@ Their tests were not repeated during this documentation-only consolidation.
 The byte-identical inputs preserve the recorded 49-test host result and the
 historical key-matrix evidence.
 
+The admission audit compared the following blob identities directly:
+
+| Path group | Shared blob |
+|---|---|
+| Architecture fallback | `cbafdb2a20c9c17969f68ae3f85c47ce0b00c4f3` |
+| xHCI capability probe | `6cfa1329035ec5fe78a5a91fcd416f9dc9dfc1e6` |
+| HID decoder | `1380a929b176f9b98cd83961e3227e994c55593f` |
+| Linux keyboard vectors | `447736675b932461067d95cc3a1c4e4dfbb64f45` |
+| Bounded report queue | `8a01b917ebbe97c3ffe5706e7c705ad5edb7ef62` |
+| Oracle README | `ff75b216faf975e5a043fdf9684629902037e807` |
+| Oracle generator | `2e716a895311ea53afe326496314b3cbe277892d` |
+| Oracle requirements | `4f3fbea5141da4c95f1bb425ea26314fdd3a5481` |
+| Oracle tests | `a34ed82501a06f151f6844c78a5ea44dc42b30bf` |
+
 ### xHCI ownership and IRQ deferral
 
 Current main contains the reviewed follow-up series:
