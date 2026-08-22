@@ -1,0 +1,12 @@
+# /etc/profile — M9 lightweight-NixOS activation.
+# Sourced by every login shell (busybox ash, invoked as "-sh" by login). The
+# activation is simple: put the Nix profile bin dirs on PATH so every
+# nix-installed binary is callable by bare name. Also export nix's profile
+# variables, a friendly prompt, and a login marker the smoke test keys on.
+export PATH="/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin:$PATH"
+export NIX_PROFILES="/nix/var/nix/profiles/default /root/.nix-profile"
+export PS1='NIXOS# '
+echo "__M9_LOGIN_OK__"
+echo "  M9 lightweight NixOS — profile activated"
+echo "  try: hello | nixos-info | fortune | curl --version | jq --version"
+echo "  service log: tail /var/log/heartbeat.log"

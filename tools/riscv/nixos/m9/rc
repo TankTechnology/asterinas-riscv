@@ -1,0 +1,44 @@
+#!/bin/sh
+# /etc/rc — M9 system bootstrap (run as `::sysinit` by busybox init, i.e. once
+# at boot and synchronously before getty starts).
+#
+#   1. install the nix profile (two generations, single-user nix — no daemon)
+#   2. start the services (/etc/init.d/S*)
+#   3. print the banner + a done marker
+
+echo "=== M9 rc: booting lightweight NixOS ==="
+echo "__M9_RC_START__"
+
+# --- 1. Nix profile activation -------------------------------------------
+# Single-user nix (no daemon): M8 found daemon-mode `nix profile install`
+# hangs, single-user completes in ~25s (M8-report.md). Two installs produce
+# two profile generations: core tools, then the real curl+jq closure.
+echo "== nix profile install (generation 1: core tools) =="
+nix profile install --profile /nix/var/nix/profiles/default --impure \
+    --expr 'import /m9/core.nix' 2>&1
+echo "__M9_INSTALL1_EXIT__=$?"
+
+echo "== nix profile install (generation 2: curl + jq) =="
+nix profile install --profile /nix/var/nix/profiles/default --impure \
+    --expr 'import /m9/real.nix' 2>&1
+echo "__M9_INSTALL2_EXIT__=$?"
+
+echo "__M9_PROFILE_LIST_BEGIN__"
+nix profile list --profile /nix/var/nix/profiles/default 2>&1
+echo "__M9_PROFILE_LIST_END__"
+
+echo "__M9_PROFILE_BIN_BEGIN__"
+ls -1 /nix/var/nix/profiles/default/bin 2>&1
+echo "__M9_PROFILE_BIN_END__"
+
+# --- 2. Services ---------------------------------------------------------
+echo "== starting services =="
+for s in /etc/init.d/S*; do
+    [ -x "$s" ] || continue
+    echo "  rc: $(basename "$s") start"
+    "$s" start
+done
+
+# --- 3. Banner + done ----------------------------------------------------
+echo "__M9_RC_DONE__"
+cat /etc/motd 2>/dev/null || true

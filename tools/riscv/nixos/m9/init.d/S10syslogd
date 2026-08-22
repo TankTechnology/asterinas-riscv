@@ -1,0 +1,13 @@
+#!/bin/sh
+# S10syslogd — busybox syslogd logging to /var/log/messages (socket /dev/log).
+case "$1" in
+    start)
+        mkdir -p /var/log
+        syslogd -n -O /var/log/messages &
+        echo "    syslogd: started (pid $!)"
+        ;;
+    stop)
+        killall syslogd 2>/dev/null
+        ;;
+    *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac

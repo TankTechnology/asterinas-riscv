@@ -46,7 +46,7 @@ fn check_offset_and_len(offset: i64, len: i64, ctx: &Context) -> Result<()> {
         );
     }
     if offset.checked_add(len).is_none() {
-        return_errno_with_message!(Errno::EINVAL, "offset+len has overflowed");
+        return_errno_with_message!(Errno::EFBIG, "offset+len has overflowed");
     }
 
     let max_file_size = {

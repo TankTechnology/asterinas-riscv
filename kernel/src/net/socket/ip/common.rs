@@ -16,20 +16,42 @@ use crate::{
 
 fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
     match *ip_addr {
-        IpAddress::Ipv4(ipv4_addr) => iter_all_ifaces()
-            .find(|iface| {
-                iface
-                    .ipv4_cidr()
-                    .is_some_and(|cidr| cidr.address() == ipv4_addr)
-            })
-            .map(Clone::clone),
-        IpAddress::Ipv6(ipv6_addr) => iter_all_ifaces()
-            .find(|iface| {
-                iface
-                    .ipv6_cidr()
-                    .is_some_and(|cidr| cidr.address() == ipv6_addr)
-            })
-            .map(Clone::clone),
+        IpAddress::Ipv4(ipv4_addr) => {
+            if ipv4_addr.is_unspecified() {
+                // INADDR_ANY (0.0.0.0) — bind to the default interface.
+                return Some(default_iface());
+            }
+            iter_all_ifaces()
+                .find(|iface| {
+                    iface
+                        .ipv4_cidr()
+                        .is_some_and(|cidr| cidr.address() == ipv4_addr)
+                })
+                .map(Clone::clone)
+        }
+        IpAddress::Ipv6(ipv6_addr) => {
+            if ipv6_addr.is_unspecified() {
+                // in6addr_any (::) — bind to the default interface with IPv6.
+                return Some(default_iface());
+            }
+            iter_all_ifaces()
+                .find(|iface| {
+                    iface
+                        .ipv6_cidr()
+                        .is_some_and(|cidr| cidr.address() == ipv6_addr)
+                })
+                .map(Clone::clone)
+        }
+    }
+}
+
+/// Returns the default interface for INADDR_ANY binds.
+/// Prefers virtio if available, otherwise falls back to loopback.
+fn default_iface() -> Arc<Iface> {
+    if let Some(virtio_iface) = virtio_iface() {
+        virtio_iface.clone()
+    } else {
+        loopback_iface().clone()
     }
 }
 

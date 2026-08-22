@@ -20,7 +20,7 @@ use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
     fs::{
-        cgroupfs::{CgroupMembership, CgroupSysNode},
+        cgroupfs::{CgroupMembership, CgroupSysNode, cgroup_node_from_fd},
         file::file_table::{FdFlags, FileTable, RawFileDesc},
         thread_info::ThreadFsInfo,
     },
@@ -113,7 +113,7 @@ pub struct CloneArgs {
     pub tls: u64,
     pub _set_tid: Option<u64>,
     pub _set_tid_size: Option<u64>,
-    pub _cgroup: Option<u64>,
+    pub cgroup: Option<u64>,
 }
 
 impl CloneArgs {
@@ -309,12 +309,19 @@ pub fn clone_child(
         // won't change during the charge and the subsequent move operation.
         let cgroup_read_guard = CgroupMembership::read_lock();
 
+        // Resolve the target cgroup: the `CLONE_INTO_CGROUP` directory fd if the
+        // caller passed one (via `clone3`), otherwise the parent's current cgroup.
+        let target_cgroup = if let Some(cgroup_fd) = clone_args.cgroup {
+            Some(cgroup_node_from_fd(cgroup_fd, ctx)?)
+        } else {
+            ctx.process.cgroup().get().map(|cgroup| cgroup.clone())
+        };
+
         // Pre-charge the pids sub-controller before creating the child process.
         // This enforces `pids.max` at fork time per cgroupv2 semantics.
         // The charge must happen before process creation so that on failure
         // we can return EAGAIN without leaving an orphaned process.
-        let parent_cgroup = ctx.process.cgroup().get().map(|cgroup| cgroup.clone());
-        let pids_charge = if let Some(ref cgroup) = parent_cgroup {
+        let pids_charge = if let Some(ref cgroup) = target_cgroup {
             let pids_charge = cgroup
                 .controller()
                 .pre_charge_pids(&cgroup_read_guard)
@@ -330,7 +337,7 @@ pub fn clone_child(
 
         // Use the same cgroup snapshot that was charged above to avoid
         // a mismatch if the parent migrates concurrently.
-        if let Some(ref cgroup) = parent_cgroup {
+        if let Some(ref cgroup) = target_cgroup {
             cgroup_read_guard.move_forked_process_to_node(
                 child_process.clone(),
                 cgroup,
@@ -595,6 +602,7 @@ fn clone_child_process(
             .default_timer_slack_ns(default_timer_slack_ns)
             .seccomp_mode(posix_thread.seccomp_mode())
             .seccomp_filter(posix_thread.seccomp_filter())
+            .sched_policy(ctx.thread.sched_attr().fork_child_policy())
         };
         #[cfg(target_arch = "x86_64")]
         {

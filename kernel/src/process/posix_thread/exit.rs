@@ -7,6 +7,8 @@ use super::{
     futex::{FutexVisibility, futex_wake},
     ptrace::PtraceEvent,
     robust_list::wake_robust_futex,
+    rseq::RSEQ_CPU_ID_OFFSET,
+    rseq::RSEQ_CPU_ID_UNINITIALIZED,
 };
 use crate::{
     context::current_userspace,
@@ -102,6 +104,8 @@ fn exit_internal(
 
     wake_robust_list(thread_local, posix_thread.tid());
 
+    unregister_rseq(thread_local);
+
     // According to Linux behavior, the main thread shouldn't be removed from the table until the
     // process is reaped by its parent.
     if posix_thread.tid() != posix_process.pid() {
@@ -156,6 +160,19 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
         .inspect_err(|err| debug!("exit: cannot wake the futex on the child TID: {:?}", err));
 
     thread_local.clear_child_tid().set(0);
+}
+
+/// Marks the thread's rseq area as uninitialized.
+///
+/// This corresponds to Linux's `rseq_reset_rseq_cpu_node_id`. Errors are
+/// silently ignored (the thread is exiting).
+fn unregister_rseq(thread_local: &ThreadLocal) {
+    let Some(rseq) = thread_local.rseq().borrow_mut().take() else {
+        return;
+    };
+    let _ = current_userspace!()
+        .write_val(rseq.ptr + RSEQ_CPU_ID_OFFSET, &RSEQ_CPU_ID_UNINITIALIZED)
+        .inspect_err(|err| debug!("exit: cannot unregister rseq: {:?}", err));
 }
 
 /// Walks the robust futex list, marking futex dead and waking waiters.

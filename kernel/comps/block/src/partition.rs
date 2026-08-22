@@ -148,6 +148,10 @@ impl GptEntry {
 }
 
 pub(super) fn parse(device: &Arc<dyn BlockDevice>) -> Option<Vec<Option<PartitionInfo>>> {
+    // Guard against devices with no sectors (e.g., loop devices without a backing file).
+    if device.metadata().nr_sectors == 0 {
+        return None;
+    }
     let mbr = device.read_val::<MbrHeader>(0).unwrap();
 
     // 0xEE indicates a GPT Protective MBR, a fake partition covering the entire disk.
