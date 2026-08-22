@@ -144,12 +144,14 @@ def main() -> int:
     parser.add_argument("--serial-log", type=Path, default=Path("/tmp/asterinas-sd-serial.log"))
     parser.add_argument("--collect-timeout", type=float, default=120.0)
     parser.add_argument("--smp", type=int, default=1)
+    parser.add_argument("--boot-disk", type=Path, default=BOOT_DISK,
+                        help="boot disk image (defaults to the shared target/qemu-uboot disk)")
     args = parser.parse_args()
 
     if not UBOOT.exists():
         raise SystemExit(f"missing U-Boot: {UBOOT}")
-    if not BOOT_DISK.exists():
-        raise SystemExit(f"missing boot disk: {BOOT_DISK}")
+    if not args.boot_disk.exists():
+        raise SystemExit(f"missing boot disk: {args.boot_disk}")
 
     argv = [
         "qemu-system-riscv64",

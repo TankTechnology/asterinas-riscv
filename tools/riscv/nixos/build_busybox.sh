@@ -37,6 +37,7 @@ readonly -a APPLETS=(
     DF FREE UNAME SYNC STAT SLEEP KILL PIDOF
     TRUE FALSE YES
     CP                          # LTP helpers shell out to cp (execve02, execveat01)
+    IP IPLINK IPADDR            # iproute2-lite for netlink guest verification (NIXOS-N1)
     GETTY LOGIN                 # serial console login (systemd getty@ttyS0)
     LOGGER HOSTNAME             # journald injection + hostname helper
 )
