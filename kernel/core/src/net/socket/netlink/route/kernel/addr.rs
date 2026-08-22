@@ -10,7 +10,8 @@ use aster_bigtcp::{iface::InterfaceFlags, wire::IpCidr};
 use super::util::{self, ResponseMode};
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::Iface,
+        net_ns::current_net_ns,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -42,10 +43,15 @@ pub(super) fn do_get_addr(
     // References:
     // - <https://elixir.bootlin.com/linux/v7.1/source/net/ipv4/devinet.c#L1950>
     // - <https://elixir.bootlin.com/linux/v7.1/source/net/ipv6/addrconf.c#L5430>
+    //
+    // Only the interfaces visible in the current network namespace are reported.
     let requested_index = strict_check
         .then(|| NonZeroU32::new(request_segment.body().index))
         .flatten();
-    let mut ifaces = iter_all_ifaces()
+    let net_ns = current_net_ns();
+    let mut ifaces = net_ns
+        .ifaces()
+        .iter()
         .filter(|iface| requested_index.is_none_or(|index| index.get() == iface.index()))
         .peekable();
     if requested_index.is_some() && ifaces.peek().is_none() {
