@@ -75,12 +75,9 @@ passwd: files
 group: files
 hosts: files dns
 EOF
-# Workaround for the guest UDP-inbound gap (DNS replies never arrive);
-# resolve the substituter statically.
 cat > "${ROOTFS}/etc/hosts" <<'EOF'
 127.0.0.1 localhost
 ::1 localhost
-199.232.161.91 cache.nixos.org
 EOF
 cat > "${ROOTFS}/etc/resolv.conf" <<'EOF'
 nameserver 10.0.2.3
