@@ -7,7 +7,7 @@ use aster_bigtcp::{
 };
 
 use crate::{
-    net::{iface::Iface, route, socket::util::check_port_privilege},
+    net::{iface::Iface, net_ns::current_net_ns, route, socket::util::check_port_privilege},
     prelude::*,
 };
 
@@ -31,14 +31,17 @@ pub(super) fn resolve_bind_iface_and_config(
 /// Resolves the default interface for an unspecified (`INADDR_ANY`/`in6addr_any`)
 /// bind address.
 ///
-/// `IFACES` is ordered with the loopback interface first, so prefer any other
-/// interface (e.g. virtio) and fall back to loopback when it is the only one.
+/// The interface view is resolved in the caller's network namespace. Within a
+/// namespace the interfaces are ordered with the loopback interface first, so
+/// prefer any other interface (e.g. virtio) and fall back to loopback when it
+/// is the only one.
 fn default_bind_iface() -> Result<Arc<Iface>> {
-    let mut ifaces = crate::net::iface::iter_all_ifaces();
-    let Some(loopback) = ifaces.next() else {
+    let net_ns = current_net_ns();
+    let ifaces = net_ns.ifaces();
+    let Some(loopback) = ifaces.first() else {
         return_errno_with_message!(Errno::EADDRNOTAVAIL, "no network interface is available");
     };
-    let iface = ifaces.next().unwrap_or(loopback);
+    let iface = ifaces.get(1).unwrap_or(loopback);
     Ok(iface.clone())
 }
 
