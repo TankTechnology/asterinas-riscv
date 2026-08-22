@@ -25,7 +25,7 @@ use crate::{
         ramfs::RamFs,
         vfs::{
             inode::MknodType,
-            path::{FsPath, Path, PathResolver, PerMountFlags},
+            path::{FsPath, LookupResult, Path, PathResolver, PerMountFlags},
             registry::FsAndRoot,
         },
     },
@@ -180,8 +180,16 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     let fs = ctx.thread_local.borrow_fs();
     let path_resolver = fs.resolver().read();
 
-    // Mount devtmpfs.
-    let dev_path = path_resolver.lookup(&FsPath::try_from("/dev")?)?;
+    // Mount devtmpfs. Create `/dev` first if it does not exist yet, since a
+    // minimal initramfs may not provide it; otherwise path resolution fails and
+    // the kernel panics before any device node can be registered.
+    let dev_path = match path_resolver.lookup_unresolved(&FsPath::try_from("/dev")?)? {
+        LookupResult::Resolved(path) => path,
+        LookupResult::AtParent(result) => {
+            let (parent, name) = result.into_parent_and_basename();
+            parent.new_fs_child(&name, InodeType::Dir, mkmod!(a+rx, u+w))?
+        }
+    };
     dev_path.mount(
         FsAndRoot::new(RamFs::new()),
         PerMountFlags::default(),
@@ -193,7 +201,7 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     pty::init_in_first_process(&path_resolver, ctx)?;
     shm::init_in_first_process(&path_resolver, ctx)?;
     registry::init_in_first_process(&path_resolver)?;
-    r#loop::init_in_first_process(&path_resolver)?;
+    r#loop::init_in_first_process()?;
 
     Ok(())
 }
