@@ -5,6 +5,8 @@
 #[path = "./generic.rs"]
 mod generic;
 
+use crate::syscall::riscv_hwprobe::sys_riscv_hwprobe;
+
 generic::define_syscalls_with_generic_syscall_table! {
-    // TODO: Add RISC-V specific syscalls here.
+    SYS_RISCV_HWPROBE = 258 => sys_riscv_hwprobe(args[..5]);
 }
