@@ -44,6 +44,10 @@ CHECKS = [
     ("profile-binary-runs", b"__N3_PROFILE_RUN_EXIT__=0"),
     ("drv-build", b"__N3_BUILD_RC__=0"),
     ("drv-output", b"hello-from-n3"),
+    ("dns-single-shot", b"__NETPROBE__ dns answer rcode=0"),
+    ("https-subst-ping", b"__N3_NET_RC__=0"),
+    ("substitution", b"__N3_SUBST_RESTORED__"),
+    ("gc", b"__N3_GC_COLLECTED__"),
 ]
 
 UBOOT_COMMANDS = [
