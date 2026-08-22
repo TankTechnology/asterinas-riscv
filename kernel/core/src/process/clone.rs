@@ -781,7 +781,10 @@ fn clone_sighand(
 
 fn clone_sysvsem(clone_flags: CloneFlags) -> Result<()> {
     if clone_flags.contains(CloneFlags::CLONE_SYSVSEM) {
-        warn!("CLONE_SYSVSEM is not supported now");
+        // Sharing the System V semaphore undo list is a no-op: `SEM_UNDO`
+        // itself is not supported yet, so there is no undo list whose
+        // sharing semantics could be observed.
+        debug!("CLONE_SYSVSEM is accepted as a no-op (SEM_UNDO is not supported)");
     }
     Ok(())
 }
