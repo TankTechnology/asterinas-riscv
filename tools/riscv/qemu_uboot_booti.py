@@ -32,6 +32,7 @@ from qemu_uboot_commands import (
     qemu_version,
 )
 from qemu_uboot_dtb import verify_prepared_dtb
+from qemu_uboot_devices import HEADLESS, QemuDeviceSet, device_set_by_name
 from qemu_uboot_execution import (
     ExecutionDependencies,
     PreparedRunResult,
@@ -51,6 +52,8 @@ from qemu_uboot_session import (
     SessionResult as SessionResult,
     run_serial_session,
 )
+from qemu_ppm import audit_ppm
+from qemu_qmp import capture_screendump
 from qemu_uboot_shell import interaction_by_name
 from qemu_uboot_variants import QemuUbootVariant, variant_by_name
 
@@ -75,6 +78,10 @@ def run_prepared(
     variant_audit: Path | None = None,
     bootargs_override: str | None = None,
     serial_interaction: SerialInteraction | None = None,
+    progress_log: Path | None = None,
+    device_set: QemuDeviceSet = HEADLESS,
+    screenshot: Path | None = None,
+    display_audit: Path | None = None,
 ) -> PreparedRunResult:
     """Run and audit one prepared U-Boot boot using immutable evidence."""
     run_arguments = dict(locals())
@@ -86,6 +93,8 @@ def run_prepared(
         qemu_version=qemu_version,
         run_serial_session=run_serial_session,
         audit_serial_log=audit_serial_log,
+        capture_screendump=capture_screendump,
+        audit_ppm=audit_ppm,
     )
     return execute_prepared(dependencies=dependencies, **run_arguments)
 
@@ -105,6 +114,13 @@ def _validate_runnable_profile(profile: QemuUbootProfile) -> None:
 def _profile_argument(value: str) -> QemuUbootProfile:
     try:
         return profile_by_name(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _device_set_argument(value: str) -> QemuDeviceSet:
+    try:
+        return device_set_by_name(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
 
@@ -150,6 +166,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     print_parser.add_argument("--variant", type=variant_by_name, default=None)
     print_parser.add_argument("--bootargs-override")
+    print_parser.add_argument(
+        "--device-set", type=_device_set_argument, default=HEADLESS
+    )
     manifest_parser = subparsers.add_parser("write-manifest")
     for name in ("kernel", "dtb", "initrd", "output"):
         manifest_parser.add_argument(f"--{name}", type=Path, required=True)
@@ -165,6 +184,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         run_parser.add_argument(f"--{name}", type=Path, required=True)
     for name in ("dtb-audit", "source-dtb", "variant-audit"):
         run_parser.add_argument(f"--{name}", type=Path)
+    run_parser.add_argument("--progress-log", type=Path)
+    run_parser.add_argument("--device-set", type=_device_set_argument, default=HEADLESS)
+    run_parser.add_argument("--screenshot", type=Path)
+    run_parser.add_argument("--display-audit", type=Path)
     run_parser.add_argument("--variant", type=variant_by_name)
     run_parser.add_argument("--profile", type=_profile_argument, default=GENERIC_SV39)
     run_parser.add_argument(
@@ -201,6 +224,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             and args.scenario is not BootScenario.POSITIVE
         ):
             parser.error("bootargs override requires the positive scenario")
+        if (args.screenshot is None) != (args.display_audit is None):
+            parser.error("screenshot and display audit must be provided together")
+        if args.device_set.framebuffer is None and args.screenshot is not None:
+            parser.error("non-framebuffer device set forbids display outputs")
+        if args.device_set.framebuffer is not None and (
+            args.screenshot is None or args.scenario is not BootScenario.POSITIVE
+        ):
+            parser.error("framebuffer device set requires positive display outputs")
     return args
 
 
@@ -225,6 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scenario=args.scenario,
             variant=args.variant,
             bootargs_override=args.bootargs_override,
+            device_set=args.device_set,
         ):
             print(command.text)
         return 0

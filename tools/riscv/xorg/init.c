@@ -47,7 +47,7 @@ static void spawn_client(char *const argv[]) {
 /* Some clients (matchbox-window-manager, xterm) exit immediately if the X
  * server isn't up yet (unlike our own xwm/xclient/gtk-hello, which retry
  * internally). Wrap them in a respawn loop. */
-static void spawn_retrying(const char *path) {
+static void spawn_retrying_argv(char *const argv[]) {
     pid_t pid = fork();
     if (pid == 0) {
         setenv("DISPLAY", ":0", 1);
@@ -56,7 +56,6 @@ static void spawn_retrying(const char *path) {
         for (;;) {
             pid_t p = fork();
             if (p == 0) {
-                char *argv[] = { (char *)path, NULL };
                 execv(argv[0], argv);
                 tty_log("xorg: exec client failed");
                 _exit(1);
@@ -67,6 +66,11 @@ static void spawn_retrying(const char *path) {
             sleep(1);
         }
     }
+}
+
+static void spawn_retrying(const char *path) {
+    char *argv[] = { (char *)path, NULL };
+    spawn_retrying_argv(argv);
 }
 
 static pid_t launch_xorg(void) {
@@ -102,10 +106,30 @@ int main(void) {
     pid_t xorg = launch_xorg();
 
     tty_log("xorg: launching session clients");
+    /* matchbox-window-manager is the session WM (reparenting + window
+     * switching). Its frame reparenting previously left client content
+     * unrendered under the shadow driver; that was fixed with a defensive
+     * clip-region fallback in the xserver mi layer (see GTK-M2-report.md).
+     * It exits if X is not up yet, so wrap it in a respawn loop. */
     spawn_retrying("/usr/bin/matchbox-window-manager");
+    {
+        char *xpanel_argv[] = { "/usr/bin/xpanel", NULL };
+        spawn_client(xpanel_argv);
+    }
     {
         char *gtk_hello_argv[] = { "/usr/bin/gtk-hello", NULL };
         spawn_client(gtk_hello_argv);
+    }
+    {
+        char *gtk_hello2_argv[] = { "/usr/bin/gtk-hello", NULL };
+        spawn_client(gtk_hello2_argv);
+    }
+    /* The file manager (pcmanfm, browsing the root filesystem) and a terminal
+     * (xterm). Both are statically-linked GTK2/X11 apps; xterm exits immediately
+     * if X is not up yet, so both go through the respawn loop. */
+    {
+        char *pcmanfm_argv[] = { "/usr/bin/pcmanfm", "/", NULL };
+        spawn_retrying_argv(pcmanfm_argv);
     }
     spawn_retrying("/usr/bin/xterm");
 

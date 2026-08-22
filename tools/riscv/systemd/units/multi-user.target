@@ -1,6 +1,8 @@
 [Unit]
 Description=Multi-User System
+Documentation=man:systemd.special(7)
 Requires=basic.target
+Wants=dbus.service
 Conflicts=rescue.service rescue.target
 After=basic.target rescue.service rescue.target
 AllowIsolate=yes

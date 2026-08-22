@@ -26,7 +26,8 @@ use crate::{
     },
     prelude::*,
     process::{
-        NsProxy, UserNamespace,
+        NsProxy, PidNamespace, UserNamespace,
+        credentials::capabilities::CapSet,
         pid_file::PidFile,
         posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
         stats::PROCESS_CREATION_COUNTER,
@@ -224,6 +225,13 @@ impl CloneArgs {
                 return_errno_with_message!(
                     Errno::EINVAL,
                     "`CLONE_THREAD` cannot be used together with `CLONE_PIDFD` or `CLONE_NEWUSER`"
+                );
+            }
+
+            if clone_flags.contains(CloneFlags::CLONE_NEWPID) {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "`CLONE_THREAD` cannot be used together with `CLONE_NEWPID`"
                 );
             }
         }
@@ -541,7 +549,7 @@ fn clone_child_process(
     let child_fpu_context = thread_local.supp_user_context().fpu().get();
 
     // Clone the namespaces
-    let child_user_ns = clone_user_ns(clone_flags, thread_local)?;
+    let child_user_ns = clone_user_ns(clone_flags, thread_local, ctx)?;
     let child_ns_proxy = clone_ns_proxy(
         thread_local.borrow_ns_proxy().unwrap(),
         &child_user_ns,
@@ -549,6 +557,11 @@ fn clone_child_process(
         posix_thread,
         clone_flags,
     )?;
+
+    // The child process joins the proxy's PID namespace for children: with
+    // `CLONE_NEWPID` (or after `unshare(CLONE_NEWPID)`) that is the new
+    // namespace, and the child becomes its init process.
+    let child_pid_ns = child_ns_proxy.pid_ns_for_children().clone();
 
     // Clone default timer slack
     let default_timer_slack_ns = posix_thread.timer_slack_ns();
@@ -583,7 +596,15 @@ fn clone_child_process(
 
             let credentials = {
                 let credentials = ctx.posix_thread.credentials();
-                Credentials::new_from(&credentials)
+                let child_credentials = Credentials::new_from(&credentials);
+                if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+                    // A process that creates a new user namespace is granted
+                    // all capabilities within the new namespace.
+                    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/fork.c#L2315>.
+                    child_credentials.set_permitted_capset(CapSet::all());
+                    child_credentials.set_effective_capset(CapSet::all());
+                }
+                child_credentials
             };
 
             PosixThreadBuilder::new(
@@ -626,6 +647,7 @@ fn clone_child_process(
             child_oom_score_adj,
             child_sig_dispositions,
             child_user_ns,
+            child_pid_ns,
             child_thread_builder,
         )
     };
@@ -772,7 +794,10 @@ fn clone_sighand(
 
 fn clone_sysvsem(clone_flags: CloneFlags) -> Result<()> {
     if clone_flags.contains(CloneFlags::CLONE_SYSVSEM) {
-        warn!("CLONE_SYSVSEM is not supported now");
+        // Sharing the System V semaphore undo list is a no-op: `SEM_UNDO`
+        // itself is not supported yet, so there is no undo list whose
+        // sharing semantics could be observed.
+        debug!("CLONE_SYSVSEM is accepted as a no-op (SEM_UNDO is not supported)");
     }
     Ok(())
 }
@@ -819,12 +844,14 @@ fn clone_pidfd(
 fn clone_user_ns(
     clone_flags: CloneFlags,
     thread_local: &ThreadLocal,
+    ctx: &Context,
 ) -> Result<Arc<UserNamespace>> {
     if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
-        return_errno_with_message!(
-            Errno::EINVAL,
-            "cloning a new user namespace is not supported"
-        );
+        // The new user namespace is owned by the creator's effective UID.
+        // Following Linux, the child process will be granted all capabilities
+        // within the new namespace (see `clone_child_process`).
+        let creator_euid = ctx.posix_thread.credentials().euid();
+        Ok(thread_local.borrow_user_ns().new_child(creator_euid))
     } else {
         Ok(thread_local.borrow_user_ns().clone())
     }
@@ -849,6 +876,7 @@ fn create_child_process(
     oom_score_adj: i16,
     sig_dispositions: Arc<Mutex<SigDispositions>>,
     user_ns: Arc<UserNamespace>,
+    pid_ns: Arc<PidNamespace>,
     thread_builder: PosixThreadBuilder,
 ) -> Arc<Process> {
     let child_proc = Process::new(
@@ -859,6 +887,7 @@ fn create_child_process(
         oom_score_adj,
         sig_dispositions,
         user_ns,
+        pid_ns,
     );
 
     let child_task = thread_builder.process(Arc::downgrade(&child_proc)).build();

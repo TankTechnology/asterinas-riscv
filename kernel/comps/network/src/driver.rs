@@ -8,14 +8,20 @@ use aster_bigtcp::{
 };
 use ostd::mm::VmWriter;
 
-use crate::{AnyNetworkDevice, buffer::RxBuffer};
+use crate::{AnyNetworkDevice, NetError, buffer::RxBuffer};
 
 impl device::Device for dyn AnyNetworkDevice {
     type RxToken<'a> = RxToken;
     type TxToken<'a> = TxToken<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.can_receive() && self.can_send() {
+        // Receiving must not be gated on the transmit queue being able to accept a
+        // new packet. A full send queue would otherwise block *all* ingress and
+        // leave received packets (SYN-ACKs, TLS/HTTP data, ACKs) stuck in the used
+        // ring until the queue drains, which shows up as intermittent connect
+        // failures and mid-transfer receive errors under load. Replies are sent on
+        // a best-effort basis by `TxToken::consume` instead.
+        if self.can_receive() {
             let rx_buffer = self.receive().unwrap();
             Some((RxToken(rx_buffer), TxToken(self)))
         } else {
@@ -65,7 +71,14 @@ impl device::TxToken for TxToken<'_> {
     {
         let mut buffer = vec![0u8; len];
         let res = f(&mut buffer);
-        self.0.send(&buffer).expect("Send packet failed");
+        match self.0.send(&buffer) {
+            Ok(()) => {}
+            // A reply (ACK / ARP reply / RST) is best-effort: if the send queue is
+            // momentarily full, drop it rather than panic. TCP retransmits, so a
+            // dropped ACK only adds a little latency; it never breaks correctness.
+            Err(NetError::Busy) => {}
+            Err(err) => panic!("Send packet failed: {:?}", err),
+        }
         res
     }
 }

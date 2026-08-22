@@ -14,6 +14,7 @@ macro_rules! import_generic_syscall_entries {
             accept::{sys_accept, sys_accept4},
             access::{sys_faccessat, sys_faccessat2},
             bind::sys_bind,
+            bpf::sys_bpf,
             brk::sys_brk,
             capget::sys_capget,
             capset::sys_capset,
@@ -26,6 +27,7 @@ macro_rules! import_generic_syscall_entries {
             clone::{sys_clone, sys_clone3},
             close::{sys_close, sys_close_range},
             connect::sys_connect,
+            copy_file_range::sys_copy_file_range,
             dup::{sys_dup, sys_dup3},
             epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2},
             eventfd::sys_eventfd2,
@@ -70,6 +72,9 @@ macro_rules! import_generic_syscall_entries {
             ioctl::sys_ioctl,
             keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
+            landlock::{
+                sys_landlock_add_rule, sys_landlock_create_ruleset, sys_landlock_restrict_self,
+            },
             link::sys_linkat,
             listen::sys_listen,
             listmount::sys_listmount,
@@ -104,6 +109,7 @@ macro_rules! import_generic_syscall_entries {
             pread64::sys_pread64,
             preadv::{sys_preadv, sys_preadv2, sys_readv},
             prlimit64::{sys_getrlimit, sys_prlimit64, sys_setrlimit},
+            process_madvise::{sys_process_madvise, sys_process_mrelease},
             pselect6::sys_pselect6,
             ptrace::sys_ptrace,
             pwrite64::sys_pwrite64,
@@ -115,13 +121,13 @@ macro_rules! import_generic_syscall_entries {
             recvmsg::sys_recvmsg,
             removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
             rename::sys_renameat2,
+            rseq::sys_rseq,
             rt_sigaction::sys_rt_sigaction,
             rt_sigpending::sys_rt_sigpending,
             rt_sigprocmask::sys_rt_sigprocmask,
             rt_sigreturn::sys_rt_sigreturn,
             rt_sigsuspend::sys_rt_sigsuspend,
             rt_sigtimedwait::sys_rt_sigtimedwait,
-            rseq::sys_rseq,
             sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
             sched_get_priority_max::sys_sched_get_priority_max,
             sched_get_priority_min::sys_sched_get_priority_min,
@@ -159,6 +165,7 @@ macro_rules! import_generic_syscall_entries {
             setreuid::sys_setreuid,
             setsid::sys_setsid,
             setsockopt::sys_setsockopt,
+            settimeofday::sys_settimeofday,
             setuid::sys_setuid,
             setxattr::{sys_fsetxattr, sys_lsetxattr, sys_setxattr},
             shmat::sys_shmat,
@@ -367,6 +374,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PRCTL = 167                  => sys_prctl(args[..5]);
             SYS_GETCPU = 168                 => sys_getcpu(args[..3]);
             SYS_GETTIMEOFDAY = 169           => sys_gettimeofday(args[..2]);
+            SYS_SETTIMEOFDAY = 170           => sys_settimeofday(args[..2]);
             SYS_GETPID = 172                 => sys_getpid(args[..0]);
             SYS_GETPPID = 173                => sys_getppid(args[..0]);
             SYS_GETUID = 174                 => sys_getuid(args[..0]);
@@ -429,8 +437,10 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SECCOMP = 277                => sys_seccomp(args[..3]);
             SYS_GETRANDOM = 278              => sys_getrandom(args[..3]);
             SYS_MEMFD_CREATE = 279           => sys_memfd_create(args[..2]);
+            SYS_BPF = 280                    => sys_bpf(args[..3]);
             SYS_EXECVEAT = 281               => sys_execveat(args[..5], &mut user_ctx);
             SYS_MEMBARRIER = 283             => sys_membarrier(args[..3]);
+            SYS_COPY_FILE_RANGE = 285        => sys_copy_file_range(args[..6]);
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
@@ -446,8 +456,13 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_OPENAT2 = 437                => sys_openat2(args[..4]);
             SYS_PIDFD_GETFD = 438            => sys_pidfd_getfd(args[..3]);
             SYS_FACCESSAT2 = 439             => sys_faccessat2(args[..4]);
+            SYS_PROCESS_MADVISE = 440        => sys_process_madvise(args[..5]);
             SYS_EPOLL_PWAIT2 = 441           => sys_epoll_pwait2(args[..6]);
             SYS_MOUNT_SETATTR = 442          => sys_mount_setattr(args[..5]);
+            SYS_LANDLOCK_CREATE_RULESET = 444 => sys_landlock_create_ruleset(args[..3]);
+            SYS_LANDLOCK_ADD_RULE = 445      => sys_landlock_add_rule(args[..4]);
+            SYS_LANDLOCK_RESTRICT_SELF = 446 => sys_landlock_restrict_self(args[..2]);
+            SYS_PROCESS_MRELEASE = 448       => sys_process_mrelease(args[..2]);
             SYS_FCHMODAT2 = 452              => sys_fchmodat2(args[..4]);
             SYS_LISTMOUNT = 458              => sys_listmount(args[..4]);
             // Architecture-specific syscalls

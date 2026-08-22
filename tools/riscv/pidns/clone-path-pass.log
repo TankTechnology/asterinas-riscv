@@ -1,0 +1,6 @@
+ok: clone(NEWPID|NEWUSER) child getpid()==1
+ok: child getppid()==0 (parent outside ns)
+ok: clone(CLONE_NEWPID|CLONE_NEWUSER|SIGCHLD) succeeds
+ok: grandchild vpid 2 reaped
+PIDNS_CLONE_TEST_PASS
+ok: ns init exited cleanly

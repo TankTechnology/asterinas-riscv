@@ -65,11 +65,8 @@ struct VtKeyboardHandler;
 
 impl VtKeyboardHandler {
     fn handle_key_event(&self, keycode: KeyCode, key_status: KeyStatus) {
-        ostd::debug!(
-            "Virtual terminal keyboard handler received key event: keycode={:?}, status={:?}",
-            keycode,
-            key_status
-        );
+        // Key-event dispatch is on the input IRQ hot path; don't log per-event
+        // at info/debug — the costs stack up even at loglevel=warn.
 
         // Lock order: console keyboard -> console backend
 

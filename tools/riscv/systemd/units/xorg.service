@@ -1,0 +1,19 @@
+[Unit]
+Description=Xorg display server
+Documentation=man:xorg(1)
+After=multi-user.target
+Before=matchbox-window-manager.service xpanel.service pcmanfm.service xterm.service
+Conflicts=rescue.service
+
+[Service]
+Type=simple
+# evdev_drv.so references udev_* symbols but lacks a DT_NEEDED for libudev;
+# preload it so the dynamic linker can resolve them (Xorg exit 127 root cause).
+Environment=LD_PRELOAD=/usr/lib/libudev.so.1
+ExecStart=/usr/bin/Xorg -config /etc/xorg.conf -modulepath /usr/lib/xorg/modules -xkbdir /usr/share/X11/xkb -logfile /dev/ttyS0 -noreset
+Restart=on-failure
+RestartSec=2s
+KeyringMode=inherit
+StandardInput=null
+StandardOutput=tty
+StandardError=tty

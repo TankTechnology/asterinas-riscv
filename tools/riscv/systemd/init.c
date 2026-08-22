@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Static PID-1 launcher for the SYSTEMD-BOOT-M1 milestone. The kernel hands
+// Static PID-1 launcher for the SYSTEMD-DESKTOP milestone. The kernel hands
 // control to /init; this program does the absolute minimum of early setup
 // (create the mount-point directories, mount a writable tmpfs on /run so
 // systemd has somewhere to place runtime state) and then exec()s the real
