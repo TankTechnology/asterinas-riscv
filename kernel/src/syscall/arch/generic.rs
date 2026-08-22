@@ -27,6 +27,7 @@ macro_rules! import_generic_syscall_entries {
             clone::{sys_clone, sys_clone3},
             close::{sys_close, sys_close_range},
             connect::sys_connect,
+            copy_file_range::sys_copy_file_range,
             dup::{sys_dup, sys_dup3},
             epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2},
             eventfd::sys_eventfd2,
@@ -439,6 +440,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_BPF = 280                    => sys_bpf(args[..3]);
             SYS_EXECVEAT = 281               => sys_execveat(args[..5], &mut user_ctx);
             SYS_MEMBARRIER = 283             => sys_membarrier(args[..3]);
+            SYS_COPY_FILE_RANGE = 285        => sys_copy_file_range(args[..6]);
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
