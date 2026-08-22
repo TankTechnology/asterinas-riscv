@@ -17,7 +17,7 @@ this ledger.
 
 | Item | Value |
 |---|---|
-| Current downstream baseline | `origin/main@dab7dacff` |
+| Current downstream baseline | `origin/main@e8d2e8bbf` |
 | Local topic source | `codex/megrez-usb-keyboard@ecdea5a39` |
 | Remote topic provenance | `origin/codex/megrez-usb-keyboard@243edb99b` |
 | Consolidation branch | `codex/usb-stack-cleanup` |

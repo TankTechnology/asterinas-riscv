@@ -31,7 +31,8 @@ and GitHub CLI.
 - Remote provenance branch: `origin/codex/megrez-usb-keyboard` at `243edb99b`
 - Consolidation worktree: `/home/ubuntu/.config/superpowers/worktrees/asterinas/usb-stack-cleanup`
 - Consolidation branch: `codex/usb-stack-cleanup`
-- Consolidation base: `origin/main` at `dab7dacff`
+- Initial consolidation base: `origin/main` at `dab7dacff`
+- Publication base after final rebase: `origin/main` at `e8d2e8bbf`
 - Design commit: `80b030566`
 
 The source worktree's modified files and untracked artifacts remain untouched.

@@ -30,6 +30,9 @@ Consolidation is performed in the global worktree
 `/home/ubuntu/.config/superpowers/worktrees/asterinas/usb-stack-cleanup`
 on `codex/usb-stack-cleanup`,
 starting from `origin/main` at `dab7dacff`.
+Before publication,
+the consolidation branch was rebased without conflict onto
+`origin/main` at `e8d2e8bbf`.
 The branch may be pushed only to `origin`,
 whose URL is `https://github.com/TankTechnology/asterinas-riscv.git`.
 No pull request or push to `upstream` is part of this milestone.
