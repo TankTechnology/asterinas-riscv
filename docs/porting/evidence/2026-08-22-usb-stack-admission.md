@@ -236,3 +236,25 @@ must run focused tests plus a RISC-V SMP=4 cross-layer gate.
 - `origin/codex/megrez-usb-keyboard` remains provenance and is not force-pushed.
 - `upstream/*` remains unchanged.
 - Issue #75 remains open for PCI xHCI runtime and physical-board validation.
+
+## Final Scope Proof
+
+The final local audit established:
+
+- the mixed `codex/megrez-usb-keyboard` branch is not an ancestor of the
+  consolidation branch;
+- production USB,
+  PCI,
+  TTY,
+  and lockfile paths are identical to `origin/main`;
+- the only downstream-main differences are this ledger,
+  the approved consolidation design,
+  and its implementation plan;
+- `git diff --check origin/main...HEAD` passes;
+- the frozen source worktree still contains exactly the known modified and
+  untracked paths recorded above.
+
+No production test was invalidated,
+so no already-completed Cargo,
+KTest,
+or QEMU gate was repeated.
