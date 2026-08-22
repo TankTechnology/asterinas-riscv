@@ -76,6 +76,11 @@ impl<E: Ext> dyn Iface<E> {
         self.common().flags()
     }
 
+    /// Sets the interface flags (e.g., bringing the interface up or down).
+    pub fn set_flags(&self, flags: InterfaceFlags) {
+        self.common().set_flags(flags)
+    }
+
     // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the
     // address-related APIs below only account for the first CIDR of each family.
 
