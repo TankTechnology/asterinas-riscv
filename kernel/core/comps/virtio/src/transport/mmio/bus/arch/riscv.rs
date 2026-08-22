@@ -13,6 +13,11 @@ use crate::transport::mmio::{
     MMIO_BUS, bus::common_device::MmioCommonDevice, layout::VirtioMmioLayout,
 };
 
+/// Sorts the pending MMIO slots by their start address.
+fn sort_mmio_slots_by_address<T>(slots: &mut [(usize, T)]) {
+    slots.sort_unstable_by_key(|(mmio_start, _)| *mmio_start);
+}
+
 pub(super) fn probe_for_device() {
     // The device tree parsing logic here assumed a Linux-compatible device
     // tree.
@@ -47,9 +52,25 @@ pub(super) fn probe_for_device() {
 
         mmio_slots.push((io_mem.paddr(), MmioCommonDevice::new(io_mem, irq_line)));
     }
-    mmio_slots.sort_by_key(|(mmio_start, _)| *mmio_start);
+    sort_mmio_slots_by_address(&mut mmio_slots);
 
     for (_, device) in mmio_slots {
         MMIO_BUS.lock().register_mmio_device(device);
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::sort_mmio_slots_by_address;
+
+    #[ktest]
+    fn sorts_mmio_slots_by_ascending_address() {
+        let mut slots = [(0x3000, ()), (0x1000, ()), (0x2000, ())];
+
+        sort_mmio_slots_by_address(&mut slots);
+
+        assert_eq!(slots.map(|slot| slot.0), [0x1000, 0x2000, 0x3000]);
     }
 }
