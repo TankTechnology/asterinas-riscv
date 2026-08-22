@@ -7,15 +7,17 @@
 //! [`super::DriHandle::ioctl`].
 
 use super::{
-    DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeCardRes, DrmModeCreateDumb,
-    DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb,
-    DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb,
-    DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
-};
-use super::virtio_gpu::{
-    DrmVirtgpu3dTransferFromHost, DrmVirtgpu3dTransferToHost, DrmVirtgpu3dWait,
-    DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
-    DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
+    DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
+    DrmModeCreateDumb, DrmModeCreatePropertyBlob, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor,
+    DrmModeCursor2, DrmModeDestroyDumb, DrmModeDestroyPropertyBlob, DrmModeFbCmd, DrmModeFbCmd2,
+    DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
+    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeObjGetProperties,
+    DrmSetClientCap, DrmVersion,
+    virtio_gpu::{
+        DrmVirtgpu3dTransferFromHost, DrmVirtgpu3dTransferToHost, DrmVirtgpu3dWait,
+        DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
+        DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
+    },
 };
 use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
@@ -52,6 +54,16 @@ pub(super) type ModeCursor2 = ioc!(DRM_IOCTL_MODE_CURSOR2, b'd', 0xbb, InOutData
 /// Unlike the other mode ioctls, `RMFB` passes its argument by value rather than
 /// by pointer, so it is dispatched by raw command instead of a typed `ioc!`.
 pub(super) const MODE_RMFB_CMD: u32 = 0xc00464af;
+
+// Atomic modesetting and plane ioctls.
+pub(super) type ModeGetProperty = ioc!(DRM_IOCTL_MODE_GETPROPERTY, b'd', 0xaa, InOutData<DrmModeGetProperty>);
+pub(super) type ModeGetPropertyBlob = ioc!(DRM_IOCTL_MODE_GETPROPBLOB, b'd', 0xac, InOutData<DrmModeGetBlob>);
+pub(super) type ModeAtomic = ioc!(DRM_IOCTL_MODE_ATOMIC, b'd', 0xbc, InOutData<DrmModeAtomic>);
+pub(super) type ModeCreatePropertyBlob = ioc!(DRM_IOCTL_MODE_CREATEPROPBLOB, b'd', 0xbd, InOutData<DrmModeCreatePropertyBlob>);
+pub(super) type ModeDestroyPropertyBlob = ioc!(DRM_IOCTL_MODE_DESTROYPROPBLOB, b'd', 0xbe, InOutData<DrmModeDestroyPropertyBlob>);
+pub(super) type ModeGetPlaneRes = ioc!(DRM_IOCTL_MODE_GETPLANERESOURCES, b'd', 0xb5, InOutData<DrmModeGetPlaneRes>);
+pub(super) type ModeGetPlane = ioc!(DRM_IOCTL_MODE_GETPLANE, b'd', 0xb6, InOutData<DrmModeGetPlane>);
+pub(super) type ModeAddFb2 = ioc!(DRM_IOCTL_MODE_ADDFB2, b'd', 0xb8, InOutData<DrmModeFbCmd2>);
 
 // virtio-gpu specific ioctls.
 pub(super) type VirtgpuExecbuffer = ioc!(DRM_VIRTGPU_EXECBUFFER, b'd', 0x42, InOutData<DrmVirtgpuExecbuffer>);

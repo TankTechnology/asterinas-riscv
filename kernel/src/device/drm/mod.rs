@@ -14,20 +14,20 @@
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+mod atomic;
 mod dumb;
 mod gem;
 mod ioctl;
 mod kms;
+mod plane;
+mod property;
 mod virtio_gpu;
 
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 
-use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
-use ostd::sync::SpinLock;
 
 use crate::{
     context::current_userspace,
@@ -46,7 +46,10 @@ use crate::{
 /// Linux DRM character-device major number.
 const DRM_MAJOR: u16 = 226;
 
-const DRIVER_NAME: &str = "virtio-gpu";
+/// Kernel driver name reported by `DRM_IOCTL_VERSION`. Must match Mesa's
+/// DRI driver file name (`virtio_gpu_dri.so`), which Mesa's loader derives
+/// from this string.
+const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260818";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D driver";
 
@@ -92,6 +95,21 @@ const DRM_CLIENT_CAP_ASPECT_RATIO: u64 = 4;
 const DRM_CLIENT_CAP_WRITEBACK_CONNECTORS: u64 = 5;
 const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
+/// `DRM_MODE_OBJECT_*` type constants for `MODE_OBJ_GETPROPERTIES` and `MODE_ATOMIC`.
+const DRM_MODE_OBJECT_CRTC: u32 = 0xcccccccc;
+const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0c0c0;
+const DRM_MODE_OBJECT_PLANE: u32 = 0xeeeeeeee;
+
+/// `DRM_MODE_ATOMIC_*` flags.
+const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
+
+/// `DRM_PLANE_TYPE_PRIMARY` — the plane type enum value.
+const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
+
+/// Our single primary plane id.
+const PRIMARY_PLANE_ID: u32 = 1;
+
 /// Size of the single contiguous dumb-buffer pool, in bytes.
 ///
 /// Covers framebuffers up to ~2048x2048 at 32 bpp; enough for the QEMU
@@ -121,8 +139,11 @@ struct GpuManager {
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
     /// Global FLINK name → object_id.
     gem_names: SpinLock<BTreeMap<u32, u32>>,
+    /// GEM object_id → virtio-gpu 3D resource id (set by `RESOURCE_CREATE`).
+    gem_resources: SpinLock<BTreeMap<u32, u32>>,
     next_gem_id: AtomicU32,
-    next_gem_name: AtomicU32,
+    /// Property manager for atomic modesetting.
+    property_manager: property::PropertyManager,
 }
 
 impl GpuManager {
@@ -133,8 +154,9 @@ impl GpuManager {
             next_offset: SpinLock::new(0),
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_names: SpinLock::new(BTreeMap::new()),
+            gem_resources: SpinLock::new(BTreeMap::new()),
             next_gem_id: AtomicU32::new(1),
-            next_gem_name: AtomicU32::new(1),
+            property_manager: property::PropertyManager::new(),
         }
     }
 
@@ -307,6 +329,8 @@ struct DriInner {
     current_fb_id: Option<u32>,
     current_width: u32,
     current_height: u32,
+    /// Current mode blob id (set via atomic MODE_ID property).
+    mode_blob: Option<u32>,
 }
 
 impl DriHandle {
@@ -327,6 +351,7 @@ impl DriHandle {
                 current_fb_id: None,
                 current_width,
                 current_height,
+                mode_blob: None,
             }),
         }
     }
@@ -378,20 +403,24 @@ impl PerOpenFileOps for DriHandle {
 
     fn mappable(&self) -> Result<Mappable> {
         let guard = self.gpu_manager.pool.lock();
-        let pool = guard
-            .as_ref()
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet"))?;
+        let pool = guard.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
+        })?;
         Ok(Mappable::Vmo(pool.clone()))
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl::*;
 
+
         // `RMFB` passes its argument by value, so it cannot go through the typed
         // dispatch below.
         if raw_ioctl.cmd() == MODE_RMFB_CMD {
             if self.is_render_node() {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "KMS ioctl not available on render node"
+                );
             }
             return kms::rm_fb(self, raw_ioctl.arg() as u32).map(|_| 0);
         }
@@ -458,7 +487,10 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeGetResources => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let mut res = cmd.read()?;
                 res.count_fbs = 0;
@@ -483,25 +515,37 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeGetConnector => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 kms::get_connector(self, cmd)
             }
             cmd @ ModeGetEncoder => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 kms::get_encoder(cmd)
             }
             cmd @ ModeGetCrtc => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 kms::get_crtc(self, cmd)
             }
             cmd @ ModeSetCrtc => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let req = cmd.read()?;
                 kms::set_crtc(self, &req)?;
@@ -509,7 +553,10 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeCursor => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let req = cmd.read()?;
                 kms::set_cursor(self, req.flags, req.crtc_id, req.x, req.y, req.handle, 0, 0)?;
@@ -517,11 +564,21 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeCursor2 => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let req = cmd.read()?;
                 kms::set_cursor(
-                    self, req.flags, req.crtc_id, req.x, req.y, req.handle, req.hot_x, req.hot_y,
+                    self,
+                    req.flags,
+                    req.crtc_id,
+                    req.x,
+                    req.y,
+                    req.handle,
+                    req.hot_x,
+                    req.hot_y,
                 )?;
                 Ok(0)
             }
@@ -542,7 +599,10 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeAddFb => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let mut req = cmd.read()?;
                 req.fb_id = kms::add_fb(self, &req)?;
@@ -557,16 +617,94 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeObjGetProperties => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
-                let mut props = cmd.read()?;
-                props.count_props = 0;
-                cmd.write(&props)?;
+                property::get_obj_properties(self, cmd)
+            }
+            cmd @ ModeGetProperty => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                property::get_property(self, cmd)
+            }
+            cmd @ ModeGetPropertyBlob => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                property::get_property_blob(self, cmd)
+            }
+            cmd @ ModeGetPlaneRes => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                plane::get_plane_resources(cmd)
+            }
+            cmd @ ModeGetPlane => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                plane::get_plane(cmd)
+            }
+            cmd @ ModeAtomic => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                atomic::mode_atomic(self, cmd)
+            }
+            cmd @ ModeCreatePropertyBlob => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                property::create_property_blob(self, cmd)
+            }
+            cmd @ ModeDestroyPropertyBlob => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                property::destroy_property_blob(self, cmd)
+            }
+            cmd @ ModeAddFb2 => {
+                if self.is_render_node() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
+                }
+                let mut req = cmd.read()?;
+                req.fb_id = kms::add_fb2(self, &req)?;
+                cmd.write(&req)?;
                 Ok(0)
             }
             cmd @ ModePageFlip => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let req = cmd.read()?;
                 if req.crtc_id != CRTC_ID {
@@ -580,7 +718,10 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeDirtyFb => {
                 if self.is_render_node() {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "KMS ioctl not available on render node"
+                    );
                 }
                 let req = cmd.read()?;
                 if req.fb_id == 0 {
@@ -885,6 +1026,42 @@ struct DrmModeObjGetProperties {
     pad: u32,
 }
 
+/// `struct drm_mode_get_property`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L963>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetProperty {
+    values_ptr: u64,
+    enum_blob_ptr: u64,
+    prop_id: u32,
+    flags: u32,
+    name: [u8; 32],
+    count_values: u32,
+    count_enum_blobs: u32,
+}
+
+/// `struct drm_mode_property_enum`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L952>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModePropertyEnum {
+    value: u64,
+    name: [u8; 32],
+}
+
+/// `struct drm_mode_get_blob`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1084>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetBlob {
+    blob_id: u32,
+    length: u32,
+    data: u64,
+}
+
 /// `struct drm_mode_crtc_page_flip`.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1424>.
@@ -941,6 +1118,93 @@ struct DrmModeCursor2 {
     handle: u32,
     hot_x: i32,
     hot_y: i32,
+}
+
+/// `struct drm_mode_atomic`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1430>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeAtomic {
+    flags: u32,
+    count_props: u32,
+    objs_ptr: u64,
+    count_props_ptr: u64,
+    props_ptr: u64,
+    prop_values_ptr: u64,
+    blob_id: u64,
+    user_data: u64,
+    reserved: u64,
+    reserved_ptr: u64,
+}
+
+/// `struct drm_mode_create_blob`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1400>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeCreatePropertyBlob {
+    data_ptr: u64,
+    length: u32,
+    blob_id: u32,
+}
+
+/// `struct drm_mode_destroy_blob`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1407>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeDestroyPropertyBlob {
+    blob_id: u32,
+    pad: u32,
+}
+
+/// `struct drm_mode_get_plane_res`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1120>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetPlaneRes {
+    plane_id_ptr: u64,
+    count_planes: u32,
+    pad: u32,
+}
+
+/// `struct drm_mode_get_plane`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1130>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetPlane {
+    plane_id: u32,
+    crtc_id: u32,
+    fb_id: u32,
+    possible_crtcs: u32,
+    gamma_size: u32,
+    count_format_types: u32,
+    format_type_ptr: u64,
+}
+
+/// `struct drm_mode_fb_cmd2`.
+///
+/// The `__u32` fields before `__u64 modifier[4]` leave 4 bytes of implicit
+/// padding on 64-bit architectures (the C `sizeof` is 104, not 100); model
+/// that explicitly so the struct stays `Pod`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L699>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeFbCmd2 {
+    fb_id: u32,
+    width: u32,
+    height: u32,
+    pixel_format: u32,
+    flags: u32,
+    handles: [u32; 4],
+    pitches: [u32; 4],
+    offsets: [u32; 4],
+    pad: u32,
+    modifier: [u64; 4],
 }
 
 // ---------------------------------------------------------------------------

@@ -9,11 +9,9 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use align_ext::AlignExt;
-use ostd::sync::SpinLock;
 
+use super::{DUMB_POOL_SIZE, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DumbBuffer};
 use crate::prelude::*;
-
-use super::{DumbBuffer, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DUMB_POOL_SIZE};
 
 /// Creates a dumb buffer, allocating from the global pool and wrapping it
 /// in a GEM object.
@@ -24,7 +22,7 @@ pub(super) fn create_dumb(
     if req.flags != 0 {
         return_errno_with_message!(Errno::EINVAL, "unsupported dumb buffer flags");
     }
-    let bytes_per_pixel = (req.bpp + 7) / 8;
+    let bytes_per_pixel = req.bpp.div_ceil(8);
     let pitch = req
         .width
         .checked_mul(bytes_per_pixel)
@@ -85,10 +83,7 @@ pub(super) fn create_dumb(
 }
 
 /// Returns the byte offset of a dumb buffer within the pool for mmap.
-pub(super) fn map_dumb(
-    handle: &super::DriHandle,
-    req: &DrmModeMapDumb,
-) -> Result<DrmModeMapDumb> {
+pub(super) fn map_dumb(handle: &super::DriHandle, req: &DrmModeMapDumb) -> Result<DrmModeMapDumb> {
     let inner = handle.inner.lock();
     let object_id = inner
         .handles
@@ -105,10 +100,7 @@ pub(super) fn map_dumb(
 }
 
 /// Destroys a dumb buffer (removes the per-file handle, drops the GEM object).
-pub(super) fn destroy_dumb(
-    handle: &super::DriHandle,
-    req: &DrmModeDestroyDumb,
-) -> Result<()> {
+pub(super) fn destroy_dumb(handle: &super::DriHandle, req: &DrmModeDestroyDumb) -> Result<()> {
     let mut inner = handle.inner.lock();
     if inner.handles.remove(&req.handle).is_none() {
         return_errno_with_message!(Errno::EINVAL, "unknown dumb buffer handle");

@@ -11,10 +11,7 @@ use core::sync::atomic::Ordering;
 use crate::prelude::*;
 
 /// GEM_CLOSE: drop a per-file handle, decrementing the object's ref count.
-pub(super) fn gem_close(
-    handle: &super::DriHandle,
-    gem_handle: u32,
-) -> Result<()> {
+pub(super) fn gem_close(handle: &super::DriHandle, gem_handle: u32) -> Result<()> {
     let mut inner = handle.inner.lock();
     let object_id = inner
         .handles
@@ -29,10 +26,7 @@ pub(super) fn gem_close(
 }
 
 /// GEM_FLINK: return the object's id as a global 32-bit name.
-pub(super) fn gem_flink(
-    handle: &super::DriHandle,
-    gem_handle: u32,
-) -> Result<u32> {
+pub(super) fn gem_flink(handle: &super::DriHandle, gem_handle: u32) -> Result<u32> {
     let inner = handle.inner.lock();
     let object_id = inner
         .handles
@@ -59,10 +53,7 @@ pub(super) fn gem_flink(
 }
 
 /// GEM_OPEN: look up a global name and create a per-file handle.
-pub(super) fn gem_open(
-    handle: &super::DriHandle,
-    name: u32,
-) -> Result<(u32, u64)> {
+pub(super) fn gem_open(handle: &super::DriHandle, name: u32) -> Result<(u32, u64)> {
     let names = handle.gpu_manager.gem_names.lock();
     let object_id = names
         .get(&name)

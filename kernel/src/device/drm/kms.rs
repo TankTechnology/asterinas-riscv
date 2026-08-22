@@ -7,29 +7,21 @@
 //! the render node. The caller (`mod.rs`) must gate on `is_render_node()`
 //! before dispatching here.
 
-use alloc::sync::Arc;
-
 use ostd::mm::VmIo;
 
+use super::{
+    CONNECTOR_ID, CRTC_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL, DRM_MODE_CURSOR_BO,
+    DRM_MODE_CURSOR_MOVE, DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2,
+    DrmModeGetConnector, DrmModeGetEncoder, ENCODER_ID, Framebuffer, build_mode,
+};
 use crate::{
     context::current_userspace,
     prelude::*,
     util::ioctl::{InOutData, Ioctl},
 };
 
-use super::{
-    DrmModeCrtc, DrmModeFbCmd, DrmModeGetConnector, DrmModeGetEncoder,
-    DrmModeModeInfo, Framebuffer,
-    CRTC_ID, CONNECTOR_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL,
-    DRM_MODE_CURSOR_BO, DRM_MODE_CURSOR_MOVE, DRM_MODE_ENCODER_VIRTUAL,
-    DRM_MODE_TYPE_PREFERRED, ENCODER_ID, MAX_RESOLUTION, build_mode,
-};
-
 /// ADDFB: register a framebuffer backed by a GEM/dumb-buffer handle.
-pub(super) fn add_fb(
-    handle: &super::DriHandle,
-    req: &DrmModeFbCmd,
-) -> Result<u32> {
+pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u32> {
     let object_id = {
         let inner = handle.inner.lock();
         let object_id = *inner
@@ -65,11 +57,49 @@ pub(super) fn add_fb(
     Ok(fb_id)
 }
 
+/// ADDFB2: register a framebuffer with explicit format and modifier info.
+///
+/// For the initial implementation, modifiers are accepted but ignored —
+/// virtio-gpu 2D path uses linear scanout. We validate the first handle
+/// matches the GEM object dimensions.
+pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
+    let object_id = {
+        let inner = handle.inner.lock();
+        let object_id = *inner
+            .handles
+            .get(&req.handles[0])
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
+        let guard = handle.gpu_manager.gem_objects.lock();
+        let obj = guard
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        let buf = &obj.buffer;
+        if req.width != buf.width || req.height != buf.height {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "framebuffer dimensions do not match GEM object"
+            );
+        }
+        // Accept any pitch — ADDFB2 allows explicit pitches
+        object_id
+    };
+
+    let mut inner = handle.inner.lock();
+    let fb_id = inner.next_fb_id;
+    inner.next_fb_id += 1;
+    inner.framebuffers.insert(
+        fb_id,
+        Framebuffer {
+            object_id,
+            width: req.width,
+            height: req.height,
+        },
+    );
+    Ok(fb_id)
+}
+
 /// RMFB: unregister a framebuffer.
-pub(super) fn rm_fb(
-    handle: &super::DriHandle,
-    fb_id: u32,
-) -> Result<()> {
+pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
     let mut inner = handle.inner.lock();
     if inner.framebuffers.remove(&fb_id).is_none() {
         return_errno_with_message!(Errno::EINVAL, "unknown framebuffer id");
@@ -81,10 +111,7 @@ pub(super) fn rm_fb(
 }
 
 /// SETCRTC: set the mode and scanout framebuffer for a CRTC.
-pub(super) fn set_crtc(
-    handle: &super::DriHandle,
-    req: &DrmModeCrtc,
-) -> Result<()> {
+pub(super) fn set_crtc(handle: &super::DriHandle, req: &DrmModeCrtc) -> Result<()> {
     if req.crtc_id != CRTC_ID {
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
@@ -95,10 +122,7 @@ pub(super) fn set_crtc(
 }
 
 /// Presents a framebuffer on the scanout, copying its pixels to the host.
-pub(super) fn present_fb(
-    handle: &super::DriHandle,
-    fb_id: u32,
-) -> Result<()> {
+pub(super) fn present_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
     let (addr, size, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
@@ -110,7 +134,12 @@ pub(super) fn present_fb(
             .get(&fb.object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
         let base = handle.gpu_manager.pool_paddr()?;
-        (base + obj.buffer.offset, obj.buffer.size, fb.width, fb.height)
+        (
+            base + obj.buffer.offset,
+            obj.buffer.size,
+            fb.width,
+            fb.height,
+        )
     };
 
     handle
@@ -129,7 +158,7 @@ pub(super) fn present_fb(
 /// GETCRTC: read back the current CRTC state.
 pub(super) fn get_crtc(
     handle: &super::DriHandle,
-    cmd: Ioctl<b'd', { 0xa1 }, true, InOutData<DrmModeCrtc>>,
+    cmd: Ioctl<b'd', 0xa1, true, InOutData<DrmModeCrtc>>,
 ) -> Result<i32> {
     let req = cmd.read()?;
     if req.crtc_id != CRTC_ID {
@@ -149,7 +178,7 @@ pub(super) fn get_crtc(
 /// GETCONNECTOR: enumerate modes and encoder for a connector.
 pub(super) fn get_connector(
     handle: &super::DriHandle,
-    cmd: Ioctl<b'd', { 0xa7 }, true, InOutData<DrmModeGetConnector>>,
+    cmd: Ioctl<b'd', 0xa7, true, InOutData<DrmModeGetConnector>>,
 ) -> Result<i32> {
     let mut conn = cmd.read()?;
     if conn.connector_id != CONNECTOR_ID {
@@ -168,7 +197,10 @@ pub(super) fn get_connector(
     conn.subpixel = 0;
     conn.pad = 0;
     if conn.modes_ptr != 0 && capacity >= 1 {
-        let mode = build_mode(handle.gpu_manager.gpu.width(), handle.gpu_manager.gpu.height());
+        let mode = build_mode(
+            handle.gpu_manager.gpu.width(),
+            handle.gpu_manager.gpu.height(),
+        );
         current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
     }
     if conn.encoders_ptr != 0 {
@@ -180,7 +212,7 @@ pub(super) fn get_connector(
 
 /// GETENCODER: return encoder properties.
 pub(super) fn get_encoder(
-    cmd: Ioctl<b'd', { 0xa6 }, true, InOutData<DrmModeGetEncoder>>,
+    cmd: Ioctl<b'd', 0xa6, true, InOutData<DrmModeGetEncoder>>,
 ) -> Result<i32> {
     let mut enc = cmd.read()?;
     if enc.encoder_id != ENCODER_ID {
@@ -195,6 +227,7 @@ pub(super) fn get_encoder(
 }
 
 /// CURSOR / CURSOR2: set or move the hardware cursor.
+#[expect(clippy::too_many_arguments)]
 pub(super) fn set_cursor(
     handle: &super::DriHandle,
     flags: u32,
