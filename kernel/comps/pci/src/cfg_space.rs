@@ -117,6 +117,8 @@ pub enum PciBridgeCfgOffset {
     IoLimitUpper16 = 0x32,
     /// Capabilities pointer
     CapabilitiesPointer = 0x34,
+    /// Expansion ROM base address
+    ExpansionRomBaseAddress = 0x38,
     /// Bridge control
     BridgeControl = 0x3E,
 }
@@ -284,6 +286,21 @@ impl Bar {
         };
         Ok(result)
     }
+
+    /// Returns the number of configuration-space slots encoded by a BAR.
+    ///
+    /// This is intentionally decoded before probing the BAR. A 64-bit BAR
+    /// still consumes its upper slot if probing later fails, for example when
+    /// the platform MMIO allocator is exhausted.
+    pub(super) fn slot_width(location: PciDeviceLocation, index: u8) -> u8 {
+        let offset = index as u16 * 4 + PciGeneralDeviceCfgOffset::Bar0 as u16;
+        let raw = location.read32(offset);
+        if raw & 1 == 0 && (raw >> 1) & 3 == 0b10 {
+            2
+        } else {
+            1
+        }
+    }
 }
 
 /// Access to memory or I/O port BAR.
@@ -420,15 +437,41 @@ impl MemoryBar {
         // Decode the BAR's size.
         let size = decode_size(size_encoded64, BarKind::Memory);
 
-        // Restore the original base address.
-        #[cfg(not(target_arch = "loongarch64"))]
+        // Restore the original base address, allocating one only when the
+        // platform firmware left it uninitialized.
+        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
         let base = raw64 & MEMORY_ADDRESS_MASK;
-        // In LoongArch, the BAR base address needs to be allocated manually.
         #[cfg(target_arch = "loongarch64")]
         let base = {
             use core::alloc::Layout;
             crate::arch::alloc_mmio(Layout::from_size_align(size as usize, size as usize).unwrap())
                 .unwrap() as u64
+        };
+        #[cfg(target_arch = "riscv64")]
+        let base = if raw64 & MEMORY_ADDRESS_MASK != 0 {
+            raw64 & MEMORY_ADDRESS_MASK
+        } else {
+            use core::alloc::Layout;
+
+            let allocated = (|| {
+                let size = usize::try_from(size).map_err(|_| Error::Overflow)?;
+                let layout = Layout::from_size_align(size, size).map_err(|_| Error::InvalidArgs)?;
+                crate::arch::alloc_mmio(layout).ok_or(Error::NotEnoughResources)
+            })();
+            let base = match allocated {
+                Ok(base) => base,
+                Err(error) => {
+                    match address_length {
+                        AddrLen::Bits32 => location.write32(offset, raw64 as u32),
+                        AddrLen::Bits64 => {
+                            location.write32(offset, raw64 as u32);
+                            location.write32(offset + 4, (raw64 >> 32) as u32);
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            base as u64
         };
         match address_length {
             AddrLen::Bits32 => location.write32(offset, base as u32),
@@ -442,7 +485,7 @@ impl MemoryBar {
         // initialize all PCI devices. Consequently, the base address reported by uninitialized PCI
         // devices is zero. To address this, we may need to add the ability to manually allocate
         // the base address.
-        #[cfg(not(target_arch = "loongarch64"))]
+        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64")))]
         if base == 0 {
             ostd::info!(
                 "presumably uninitialized BAR {} (Memory {:?}, size={}) of PCI device {:?}",
