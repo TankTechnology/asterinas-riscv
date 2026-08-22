@@ -11,7 +11,7 @@ typedef unsigned long usize;
 #define SYS_OPENAT 56
 #define SYS_CLOSE 57
 #define SYS_WRITE 64
-#define SYS_EXIT 93
+#define SYS_SCHED_YIELD 124
 
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
@@ -82,6 +82,6 @@ void _start(void) {
         (void)syscall1(SYS_CLOSE, loop_control_fd);
 
     say(">>> M8 nodev init done <<<\n");
-    (void)syscall1(SYS_EXIT, 0);
-    for (;;) {}
+    for (;;)
+        (void)syscall1(SYS_SCHED_YIELD, 0);
 }

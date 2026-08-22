@@ -18,10 +18,37 @@ OUT="${REPO_ROOT}/target/nixos/m8/devtmpfs-nodev"
 CC="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
 QEMU="${QEMU_SYSTEM_RISCV64:-qemu-system-riscv64}"
 
-KERNEL_IMAGE="${ASTERINAS_KERNEL_IMAGE:-${REPO_ROOT}/target/osdk/aster-kernel-osdk-bin.Image}"
+KERNEL_IMAGE="${ASTERINAS_KERNEL_IMAGE:-}"
 DTB="${OUT}/qemu-virt.dtb"
 
 mkdir -p "${OUT}"
+
+# Build the current checkout by default. An explicit image is accepted only
+# with a matching SHA-256, which keeps deliberate RED runs reproducible without
+# silently packaging an unrelated cached kernel.
+if [[ -n "${KERNEL_IMAGE}" ]]; then
+    : "${ASTERINAS_KERNEL_IMAGE_SHA256:?set ASTERINAS_KERNEL_IMAGE_SHA256 for an explicit image}"
+    printf '%s  %s\n' "${ASTERINAS_KERNEL_IMAGE_SHA256}" "${KERNEL_IMAGE}" | sha256sum --check --status
+else
+    RUSTOBJCOPY_DIR="$(dirname "$(find "${HOME}/.rustup/toolchains" -name rust-objcopy -type f 2>/dev/null | head -1)")"
+    export PATH="${RUSTOBJCOPY_DIR}:${PATH}"
+    export VDSO_LIBRARY_DIR="${VDSO_LIBRARY_DIR:-${HOME}/.local/share/linux_vdso}"
+    ( cd "${REPO_ROOT}/kernel" && \
+        OSDK_TARGET_ARCH=riscv64 cargo osdk build --scheme riscv --features riscv_sv39_mode )
+    KERNEL_IMAGE="${REPO_ROOT}/target/osdk/aster-kernel-osdk-bin.Image"
+fi
+
+sha256sum "${KERNEL_IMAGE}" > "${OUT}/kernel-image.sha256"
+SOURCE_REVISION="${ASTERINAS_SOURCE_REVISION:-}"
+if [[ -z "${SOURCE_REVISION}" ]] && git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
+    SOURCE_REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+    if ! git -C "${REPO_ROOT}" diff --quiet --ignore-submodules --; then
+        DIFF_SHA256="$(git -C "${REPO_ROOT}" diff --binary | sha256sum | cut -d' ' -f1)"
+        SOURCE_REVISION="${SOURCE_REVISION}+dirty-${DIFF_SHA256}"
+    fi
+fi
+: "${SOURCE_REVISION:?set ASTERINAS_SOURCE_REVISION when Git metadata is unavailable}"
+printf '%s\n' "${SOURCE_REVISION}" > "${OUT}/source-revision.txt"
 
 # 1. cross-compile the /init (static glibc)
 "${CC}" -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \

@@ -157,6 +157,10 @@ def main() -> int:
                     boot.read_until(b"=> ", 30)
         marker, _ = boot.read_until_any([DONE_MARKER, *PANIC_MARKERS], 120)
         reached = "init-done" if marker == DONE_MARKER else "panic"
+        if marker == DONE_MARKER:
+            # PID 1 remains alive after the marker. Keep draining briefly so a
+            # delayed kernel panic cannot be hidden behind a successful marker.
+            boot._drain(1.0)
         transcript = bytes(boot.transcript)
     finally:
         boot.close()
@@ -172,9 +176,7 @@ def main() -> int:
         "loop-control-present": b"__M8_LOOP_CONTROL__=PRESENT" in transcript,
         "init-done": DONE_MARKER in transcript,
     }
-    done_index = transcript.find(DONE_MARKER)
-    pre_done = transcript if done_index < 0 else transcript[:done_index]
-    panics = [m.decode() for m in PANIC_MARKERS if m in pre_done]
+    panics = [m.decode() for m in PANIC_MARKERS if m in transcript]
 
     print("\n=== devtmpfs auto-create result ===", flush=True)
     for k, v in results.items():
