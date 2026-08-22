@@ -26,18 +26,47 @@ impl LsmModule for CapabilityLsm {
 
 impl LsmCapabilityHook for CapabilityLsm {
     fn on_capable(&self, context: &CapableContext) -> Result<()> {
-        // Since creating new user namespaces is not supported at the moment,
-        // there is effectively only one user namespace in the entire system.
-        // Therefore, the thread has a single set of capabilities used for permission checks.
-        // FIXME: Once support for creating new user namespaces is added,
-        // we should verify the thread's capabilities within the relevant user namespace.
-        if context
-            .posix_thread()
-            .credentials()
-            .effective_capset()
-            .contains(context.required_cap())
-        {
-            return Ok(());
+        // Namespace-aware capability check, following Linux's
+        // `ns_capable_common`: the thread passes if, for the target user
+        // namespace or one of its ancestors,
+        //  1. the thread belongs to that namespace and holds the capability
+        //     in its effective set, or
+        //  2. the thread belongs to the *parent* of that namespace and is
+        //     the namespace's owner (the creator has all capabilities over
+        //     the namespaces it created).
+        //
+        // Note that capabilities held in a child user namespace never apply
+        // to resources owned by an ancestor namespace, since the walk only
+        // goes upwards from the target.
+        //
+        // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/capability.c#L384>.
+        let credentials = context.posix_thread().credentials();
+        let thread_user_ns = context.posix_thread().process().user_ns().lock().clone();
+
+        let mut target_ns = context.target_user_ns();
+        loop {
+            if core::ptr::eq(thread_user_ns.as_ref(), target_ns) {
+                if credentials
+                    .effective_capset()
+                    .contains(context.required_cap())
+                {
+                    return Ok(());
+                }
+                break;
+            }
+
+            let Some(parent_ns) = target_ns.parent_ns() else {
+                break;
+            };
+            if core::ptr::eq(thread_user_ns.as_ref(), parent_ns.as_ref())
+                && target_ns
+                    .owner_uid()
+                    .is_ok_and(|owner| owner == credentials.euid())
+            {
+                return Ok(());
+            }
+
+            target_ns = parent_ns;
         }
 
         return_errno_with_message!(
