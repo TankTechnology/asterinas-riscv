@@ -1,0 +1,14 @@
+ok: parent shmget(IPC_CREAT)
+ok: unshare(NEWUSER)
+ok: child unshare(NEWIPC)
+ok: child unshare(NEWUTS)
+ok: parent shm invisible in new ipc ns
+ok: child creates own shm under same key
+ok: child removes its shm
+ok: child sethostname
+ok: child uname shows new hostname
+ok: child ipc/uts checks passed
+ok: parent shm still reachable by key
+ok: parent hostname unchanged
+ok: parent removes its shm
+IPC_UTS_TEST_PASS
