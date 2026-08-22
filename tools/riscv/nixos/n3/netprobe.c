@@ -37,6 +37,9 @@ int main(void) {
         .sin_port = htons(53),
         .sin_addr.s_addr = htonl(0x0a000203), // 10.0.2.3
     };
+
+    // No ARP warm-up: with the kernel ARP pending-queue fix, the first packet
+    // to an unresolved next hop must be delivered after the ARP exchange.
     ssize_t sent = sendto(fd, query, sizeof(query), 0,
                           (struct sockaddr *)&dns, sizeof(dns));
     printf("__NETPROBE__ dns sendto=%zd errno=%d\n", sent, sent < 0 ? errno : 0);
