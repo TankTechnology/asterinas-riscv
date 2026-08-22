@@ -185,10 +185,8 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     // the kernel panics before any device node can be registered.
     let dev_path = match path_resolver.lookup_unresolved(&FsPath::try_from("/dev")?)? {
         LookupResult::Resolved(path) => path,
-        LookupResult::AtParent(_) => {
-            let (parent, name) = path_resolver
-                .lookup_unresolved(&FsPath::try_from("/dev")?)?
-                .into_parent_and_filename()?;
+        LookupResult::AtParent(result) => {
+            let (parent, name) = result.into_parent_and_basename();
             parent.new_fs_child(&name, InodeType::Dir, mkmod!(a+rx, u+w))?
         }
     };
@@ -203,7 +201,7 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     pty::init_in_first_process(&path_resolver, ctx)?;
     shm::init_in_first_process(&path_resolver, ctx)?;
     registry::init_in_first_process(&path_resolver)?;
-    r#loop::init_in_first_process(&path_resolver)?;
+    r#loop::init_in_first_process()?;
 
     Ok(())
 }
