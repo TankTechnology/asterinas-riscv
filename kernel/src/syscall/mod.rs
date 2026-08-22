@@ -138,6 +138,7 @@ mod recvfrom;
 mod recvmsg;
 mod removexattr;
 mod rename;
+mod riscv_flush_icache;
 mod riscv_hwprobe;
 mod rmdir;
 mod rseq;
