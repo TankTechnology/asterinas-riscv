@@ -124,7 +124,8 @@ impl Attribute for AddrAttr {
             }
 
             (_, _) => {
-                warn!("addr attribute `{:?}` is not supported", class);
+                // Known attributes that we do not use (e.g. IFA_FLAGS) are
+                // ignored silently, like unknown ones.
                 reader.skip_some(payload_len);
                 return Ok(ContinueRead::Skipped);
             }
