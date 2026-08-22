@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicI64, Ordering},
+    time::Duration,
+};
 
 use aster_time::{read_monotonic_time, read_start_time};
 use spin::Once;
@@ -14,6 +17,11 @@ pub struct SystemTime(PrimitiveDateTime);
 
 pub static START_TIME: Once<SystemTime> = Once::new();
 pub(super) static START_TIME_AS_DURATION: Once<Duration> = Once::new();
+
+/// The wall-clock adjustment in nanoseconds, applied on top of
+/// `START_TIME + monotonic time`. It is changed by `clock_settime` and is
+/// zero at boot.
+static WALL_CLOCK_ADJUST_NANOS: AtomicI64 = AtomicI64::new(0);
 
 pub(super) fn init() {
     let start_time = convert_system_time(read_start_time()).unwrap();
@@ -41,11 +49,36 @@ impl SystemTime {
     /// Returns the current system time
     pub fn now() -> Self {
         // The get real time result should always be valid
-        START_TIME
+        let base = START_TIME
             .get()
             .unwrap()
             .checked_add(read_monotonic_time())
+            .unwrap();
+
+        let adjust_nanos = WALL_CLOCK_ADJUST_NANOS.load(Ordering::Acquire);
+        if adjust_nanos == 0 {
+            return base;
+        }
+        base.0
+            .checked_add(time::Duration::nanoseconds(adjust_nanos))
+            .map(SystemTime)
+            .expect("the wall-clock adjustment pushed the system time out of range")
+    }
+
+    /// Sets the wall clock to the given time, moving all future readings of
+    /// the real-time clock (`clock_settime(CLOCK_REALTIME)` semantics).
+    pub fn set(time: SystemTime) {
+        let raw = START_TIME
+            .get()
             .unwrap()
+            .checked_add(read_monotonic_time())
+            .unwrap();
+        let adjust = time.0 - raw.0;
+        WALL_CLOCK_ADJUST_NANOS.store(adjust.whole_nanoseconds() as i64, Ordering::Release);
+
+        // Refresh the vDSO data page immediately so that vDSO-accelerated
+        // `clock_gettime(CLOCK_REALTIME)` sees the new wall clock at once.
+        crate::vdso::on_wall_clock_change();
     }
 
     /// Add a duration to self. If the result does not exceed inner bounds return Some(t), else return None.
@@ -81,6 +114,14 @@ impl SystemTime {
         let now = SystemTime::now();
         now.duration_since(self)
     }
+}
+
+/// Returns the current wall-clock adjustment in (signed) nanoseconds.
+///
+/// The vDSO data page computes the real time without going through
+/// [`SystemTime::now`], so it needs the adjustment directly.
+pub(crate) fn wall_clock_adjust_nanos() -> i64 {
+    WALL_CLOCK_ADJUST_NANOS.load(Ordering::Acquire)
 }
 
 /// convert ostd::time::Time to System time

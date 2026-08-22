@@ -211,7 +211,8 @@ impl FanotifyFile {
             }
         }
 
-        // Create a new subscriber and register it.
+        // Create a new subscriber and register it, holding the lock across
+        // the existence check and the push to prevent duplicate entries.
         let subscriber = Arc::new(FanotifySubscriber::new(self.this.clone(), mask));
         let dyn_subscriber = subscriber.clone() as Arc<dyn FsEventSubscriber>;
 
@@ -228,10 +229,23 @@ impl FanotifyFile {
         inode.fs().fs_event_subscriber_stats().add_subscriber();
 
         let entry = MarkEntry {
-            inode: inode_weak,
+            inode: inode_weak.clone(),
             subscriber: Arc::downgrade(&subscriber),
         };
-        self.marks.lock().push(entry);
+        {
+            let mut marks = self.marks.lock();
+            // Double-check: another thread may have added a mark for the same
+            // inode while we were setting up the subscriber.
+            if marks
+                .iter()
+                .any(|e| Weak::ptr_eq(&e.inode, &inode_weak))
+            {
+                // The subscriber we just registered is now owned by the
+                // existing mark — drop our strong reference and return.
+                return Ok(());
+            }
+            marks.push(entry);
+        }
 
         Ok(())
     }
@@ -240,17 +254,16 @@ impl FanotifyFile {
     pub fn remove_mark(&self, path: &Path) -> Result<()> {
         let inode_weak = Arc::downgrade(path.inode());
 
-        let idx = {
-            let marks = self.marks.lock();
-            marks
-                .iter()
-                .position(|entry| Weak::ptr_eq(&entry.inode, &inode_weak))
-        };
+        let mut marks = self.marks.lock();
+        let idx = marks
+            .iter()
+            .position(|entry| Weak::ptr_eq(&entry.inode, &inode_weak));
         let Some(idx) = idx else {
             return_errno_with_message!(Errno::ENOENT, "no fanotify mark on this inode");
         };
 
-        let entry = self.marks.lock().remove(idx);
+        let entry = marks.remove(idx);
+        drop(marks);
         let (inode, subscriber) = match (entry.inode.upgrade(), entry.subscriber.upgrade()) {
             (Some(inode), Some(subscriber)) => (inode, subscriber),
             _ => return Ok(()),

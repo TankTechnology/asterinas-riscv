@@ -30,25 +30,30 @@ pub fn sys_ioctl(
 
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
-    // Then, handle the ioctl command the affects the file description.
-    let res = if let Some(res) = handle_file_ioctl(&**file, raw_ioctl) {
+    // Handle file-level ioctls (FIONBIO, FIOASYNC) on the borrowed file.
+    if let Some(res) = handle_file_ioctl(&**file, raw_ioctl) {
         res?;
-        0
-    } else {
-        let file_owned = file.into_owned();
-        // We have to drop `file_table` because some I/O command will modify the file table
-        // (e.g., TIOCGPTPEER).
-        drop(file_table);
-        file_owned.ioctl(raw_ioctl)?
-    };
+        return Ok(SyscallReturn::Return(0));
+    }
 
-    Ok(SyscallReturn::Return(res as _))
+    // Clone to release the borrow on file_table before calling ioctl_with_table
+    // (which needs to borrow file_table again).
+    let file_owned = file.into_owned();
+
+    // Try ioctl_with_table first (e.g., LOOP_SET_FD needs file_table access).
+    if let Some(res) = file_owned.ioctl_with_table(raw_ioctl, &mut file_table) {
+        return Ok(SyscallReturn::Return(res? as isize));
+    }
+
+    // We have to drop `file_table` because some I/O command will modify the
+    // file table (e.g., TIOCGPTPEER).
+    drop(file_table);
+    let res = file_owned.ioctl(raw_ioctl)?;
+    Ok(SyscallReturn::Return(res as isize))
 }
 
 mod ioctl_defs {
     use crate::util::ioctl::{InData, NoData, ioc};
-
-    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ioctls.h>
 
     pub(super) type SetNonBlocking    = ioc!(FIONBIO,  0x5421, InData<i32>);
     pub(super) type SetAsync          = ioc!(FIOASYNC, 0x5452, InData<i32>);
@@ -66,23 +71,15 @@ fn handle_fd_ioctl(
 
     dispatch_ioctl!(match raw_ioctl {
         SetNotCloseOnExec => {
-            // Clears the close-on-exec flag of the file.
-            // Follow the implementation of `fcntl()`.
-
             Some(file_table.read_with(|inner| {
                 let entry = inner.get_entry(raw_fd.try_into()?)?;
-                // FIXME: This is racy.
                 entry.set_flags(entry.flags() - FdFlags::CLOEXEC);
                 Ok(())
             }))
         }
         SetCloseOnExec => {
-            // Sets the close-on-exec flag of the file.
-            // Follow the implementation of `fcntl()`.
-
             Some(file_table.read_with(|inner| {
                 let entry = inner.get_entry(raw_fd.try_into()?)?;
-                // FIXME: This is racy.
                 entry.set_flags(entry.flags() | FdFlags::CLOEXEC);
                 Ok(())
             }))
@@ -108,9 +105,6 @@ fn handle_file_ioctl(file: &dyn FileLike, raw_ioctl: RawIoctl) -> Option<Result<
             let handler = || {
                 let is_async = cmd.read()? != 0;
 
-                // Setting the `O_ASYNC` flag will cause the kernel to send the owner process a
-                // `SIGIO` signal when input/output is possible. The user should first call
-                // `fcntl(fd, F_SETOWN, pid)` to specify the process to be notified.
                 file.update_status_async(is_async)
             };
             Some(handler())

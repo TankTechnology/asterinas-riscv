@@ -8,7 +8,7 @@ use crate::{
     net::socket::options::{
         AcceptConn, Broadcast, Error, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
         RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-        SendTimeout, SocketOption, SocketType,
+        SendTimeout, SocketOption, SocketType, Timestamp,
     },
     prelude::*,
     process::Gid,
@@ -43,6 +43,7 @@ enum CSocketOptionName {
     SNDTIMEO_OLD = 21,
     ATTACH_FILTER = 26,
     DETACH_FILTER = 27,
+    TIMESTAMP = 29,
     ACCPETCONN = 30,
     PEERSEC = 31,
     SNDBUFFORCE = 32,
@@ -80,6 +81,7 @@ pub fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::SNDBUFFORCE => Ok(Box::new(SendBufForce::new())),
         CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
         CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
+        CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
         _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported socket-level option"),
     }
 }
@@ -101,6 +103,7 @@ impl_raw_sock_option_get_only!(PeerCred);
 impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
 impl_raw_socket_option!(RecvBufForce);
+impl_raw_socket_option!(Timestamp);
 
 // SO_PEERGROUPS is a read-only option. However, calling setsockopt on SO_PEERGROUPS will return EINVAL
 // instead of ENOPROTOOPT like other options. Therefore, we manually implement `RawSocketOption` for it.
