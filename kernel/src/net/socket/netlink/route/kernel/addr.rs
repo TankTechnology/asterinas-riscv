@@ -10,7 +10,8 @@ use aster_bigtcp::{iface::InterfaceFlags, wire::IpCidr};
 use super::util::finish_response;
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::Iface,
+        net_ns::current_net_ns,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -33,7 +34,12 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     }
 
     let requested_family = request_segment.body().family;
-    let mut addr_segments: Vec<AddrSegment> = iter_all_ifaces()
+    // Only the interfaces visible in the current network namespace are
+    // reported.
+    let net_ns = current_net_ns();
+    let mut addr_segments: Vec<AddrSegment> = net_ns
+        .ifaces()
+        .iter()
         .flat_map(|iface| iface_to_new_addrs(request_segment.header(), requested_family, iface))
         .collect();
 
