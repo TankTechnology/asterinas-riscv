@@ -1,0 +1,18 @@
+ok: unshare(NEWUSER)
+ok: unshare(NEWPID)
+ok: unshare(NEWPID) does not move the caller
+ok: ns init getpid()==1
+ok: ns init getppid()==0 (parent outside ns)
+ok: grandchild getpid()==2
+ok: grandchild getppid()==1
+numeric /proc entries in ns: 2
+ok: procfs shows only ns members
+ok: waitpid(2) reaps grandchild with vpid
+ok: kill(3, SIGTERM) by vpid
+ok: grandchild died of SIGTERM
+ns init exiting; pid 6 should be SIGKILLed
+reaped pid 6: exited=0 sig=9
+ok: ns init exited cleanly
+reaped pid 2: exited=1 sig=0
+ok: sleeper in dead ns was SIGKILLed
+PIDNS_TEST_PASS
