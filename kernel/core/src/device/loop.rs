@@ -1028,14 +1028,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
     // (block::init_in_first_process) which iterates all registered block
     // devices. We only need to create /dev/loop-control manually.
 
-    let ctl_major = char::allocate_major().expect("failed to allocate loop-control major");
-    *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
-    let ctl_id = DeviceId::new(
-        LOOP_CONTROL_MAJOR.lock().as_ref().unwrap().get(),
-        MinorId::new(237),
-    );
+    let ctl_major = char::allocate_major()?;
+    let ctl_id = DeviceId::new(ctl_major.get(), MinorId::new(237));
     let ctl_device = LoopControlDevice::new(ctl_id);
     char::register(ctl_device).expect("failed to register loop-control");
+    *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
     let ctl_meta = DevtmpfsNodeMeta::new("loop-control")
         .expect("the loop-control node path is valid");
     devtmpfs::create_node(DevtmpfsNode::new(DeviceType::Char, ctl_id, ctl_meta))?;
