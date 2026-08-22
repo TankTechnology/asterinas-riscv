@@ -24,6 +24,12 @@ pub(super) fn poll_ifaces() {
     }
 }
 
+/// Spawns the background polling thread for a newly created interface
+/// (e.g., the loopback interface of a new network namespace).
+pub(in crate::net) fn spawn_poll_thread(iface: Arc<Iface>) {
+    spawn_background_poll_thread(iface);
+}
+
 fn spawn_background_poll_thread(iface: Arc<Iface>) {
     let task_fn = move || {
         debug!("spawn background poll thread for {:?}", iface.name());
