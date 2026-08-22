@@ -24,6 +24,12 @@ pub fn sys_getsockopt(
 
     debug!("level = {level:?}, sockfd = {sockfd}, optname = {optname:?}, optlen = {optlen}");
 
+    // Validate optval pointer before option-name lookup: Linux returns EFAULT
+    // for a NULL buffer even when the option name is unknown.
+    if optval == 0 {
+        return_errno_with_message!(Errno::EFAULT, "optval is NULL");
+    }
+
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;

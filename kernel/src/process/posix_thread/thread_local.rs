@@ -8,7 +8,7 @@ use ostd::{
     arch::cpu::context::FpuContext, irq::DisabledLocalIrqGuard, sync::RwArc, task::CurrentTask,
 };
 
-use super::{RobustListHead, cpu_sync::CpuSync};
+use super::{RobustListHead, Rseq, cpu_sync::CpuSync};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
@@ -33,6 +33,10 @@ pub struct ThreadLocal {
     // Robust futexes.
     // https://man7.org/linux/man-pages/man2/get_robust_list.2.html
     robust_list: RefCell<Option<RobustListHead>>,
+
+    // Restartable sequences.
+    // https://man7.org/linux/man-pages/man2/rseq.2.html
+    rseq: RefCell<Option<Rseq>>,
 
     // Files.
     /// File table.
@@ -76,6 +80,7 @@ impl ThreadLocal {
             vmar: RefCell::new(Some(vmar)),
             page_fault_disabled: Cell::new(false),
             robust_list: RefCell::new(None),
+            rseq: RefCell::new(None),
             file_table: RefCell::new(Some(file_table)),
             fs: RefCell::new(fs),
             supp_user_context,
@@ -140,6 +145,10 @@ impl ThreadLocal {
 
     pub fn robust_list(&self) -> &RefCell<Option<RobustListHead>> {
         &self.robust_list
+    }
+
+    pub fn rseq(&self) -> &RefCell<Option<Rseq>> {
+        &self.rseq
     }
 
     pub fn borrow_file_table(&self) -> FileTableRef<'_> {

@@ -1,0 +1,21 @@
+#!/bin/sh
+# S30heartbeat — the nix-derivation-driven service. The daemon binary is
+# installed into /nix/store by core.nix and reached through the profile; this
+# script only starts/stops it. Proves a Nix-managed service stays up.
+DAEMON=/nix/var/nix/profiles/default/bin/heartbeat
+PIDFILE=/run/heartbeat.pid
+case "$1" in
+    start)
+        if [ ! -x "$DAEMON" ]; then
+            echo "    heartbeat: $DAEMON not found"; exit 1
+        fi
+        "$DAEMON" /var/log/heartbeat.log &
+        echo $! > "$PIDFILE"
+        echo "    heartbeat: started (pid $(cat "$PIDFILE")) from nix profile"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+        ;;
+    *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac

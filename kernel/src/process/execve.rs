@@ -12,7 +12,7 @@ use ostd::{
 
 use super::process_vm::activate_vmar;
 use crate::{
-    fs::vfs::{inode::Inode, path::Path},
+    fs::vfs::{inode::Inode, inode_ext::WriteAccessDenyGuard, path::Path},
     prelude::*,
     process::{
         ContextUnshareAdminApi, Credentials, Gid, Process, Uid, pid_table,
@@ -56,6 +56,11 @@ pub fn do_execve(
         argv,
         envp
     );
+
+    // Deny write access to the executable file while it is being loaded, and
+    // fail with ETXTBSY if it is currently open for writing (the behavior of
+    // Linux's `deny_write_access()` in `open_exec()` before Linux 6.11).
+    let _write_deny_guard = WriteAccessDenyGuard::new(elf_file.inode().clone())?;
 
     let program_to_load =
         ProgramToLoad::build_from_file(elf_file.clone(), &path_resolver, argv, envp)?;

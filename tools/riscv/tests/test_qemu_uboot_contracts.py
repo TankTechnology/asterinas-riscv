@@ -46,7 +46,18 @@ from qemu_uboot_profiles import (  # noqa: E402
     profile_by_name,
     validate_registered_profile,
 )
-from qemu_uboot_commands import boot_commands, qemu_argv  # noqa: E402
+from qemu_uboot_commands import BootCommand, boot_commands, qemu_argv  # noqa: E402
+from qemu_uboot_devices import (  # noqa: E402
+    BOCHS_XRGB8888,
+    HEADLESS,
+    MEGREZ_BASIC,
+    DeviceKind,
+    QemuDeviceSet,
+    RuntimeDevicePaths,
+    device_set_by_name,
+    render_device_argv,
+    validate_registered_device_set,
+)
 from qemu_uboot_dtb import generated_dtb_qemu_argv  # noqa: E402
 from qemu_uboot_dtb import (  # noqa: E402
     GeneratedDtbAudit,
@@ -80,7 +91,283 @@ class ContractCompositionTests(unittest.TestCase):
         struct.pack_into("<I", image, 0x38, 0x05435352)
         return bytes(image)
 
+    def test_device_sets_are_registered_and_frozen(self) -> None:
+        self.assertIs(device_set_by_name("headless"), HEADLESS)
+        self.assertIs(device_set_by_name("megrez-basic"), MEGREZ_BASIC)
+        self.assertEqual(
+            MEGREZ_BASIC.devices,
+            (DeviceKind.BOCHS_DISPLAY,),
+        )
+        with self.assertRaises(FrozenInstanceError):
+            MEGREZ_BASIC.name = "changed"
+
+    def test_replaced_device_set_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "registered device set"):
+            validate_registered_device_set(
+                replace(MEGREZ_BASIC, devices=(DeviceKind.BOCHS_DISPLAY,))
+            )
+
+    def test_boot_commands_rejects_replaced_device_set_at_entry(self) -> None:
+        with self.assertRaisesRegex(ValueError, "registered device set"):
+            boot_commands(
+                device_set=replace(
+                    MEGREZ_BASIC,
+                    devices=(DeviceKind.BOCHS_DISPLAY,),
+                )
+            )
+
+    def test_megrez_basic_injects_one_fixed_framebuffer_before_booti(self) -> None:
+        commands = boot_commands(
+            profile=MEGREZ_SV48_SVADE_FAST,
+            device_set=MEGREZ_BASIC,
+        )
+        names = [command.name for command in commands]
+        expected_framebuffer_plan = (
+            BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
+            BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+            BootCommand(
+                "framebuffer-node",
+                "fdt mknode / framebuffer@40000000",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-compatible",
+                'fdt set /framebuffer@40000000 compatible "simple-framebuffer"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reg",
+                "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-width",
+                "fdt set /framebuffer@40000000 width <0x500>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-height",
+                "fdt set /framebuffer@40000000 height <0x400>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-stride",
+                "fdt set /framebuffer@40000000 stride <0x1400>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-format",
+                'fdt set /framebuffer@40000000 format "x8r8g8b8"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-status",
+                'fdt set /framebuffer@40000000 status "okay"',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-verify",
+                "fdt print /framebuffer@40000000",
+                "simple-framebuffer",
+            ),
+        )
+        self.assertEqual(names.count("dtb-resize"), 1)
+        dtb_resize_index = names.index("dtb-resize")
+        framebuffer_start = dtb_resize_index + 1
+        framebuffer_end = framebuffer_start + len(expected_framebuffer_plan)
+        self.assertEqual(
+            commands[framebuffer_start:framebuffer_end],
+            expected_framebuffer_plan,
+        )
+        self.assertEqual(names.count("bootargs-env"), 1)
+        self.assertEqual(commands[framebuffer_end].name, "bootargs-env")
+        for command in expected_framebuffer_plan:
+            with self.subTest(command=command.name):
+                self.assertEqual(names.count(command.name), 1)
+        self.assertLess(names.index("framebuffer-verify"), names.index("booti"))
+        self.assertEqual(names.count("booti"), 1)
+
+    def test_headless_commands_remain_byte_for_byte_compatible(self) -> None:
+        self.assertEqual(
+            boot_commands(device_set=HEADLESS),
+            boot_commands(),
+        )
+
+    def test_device_set_validation_rejects_invalid_shapes(self) -> None:
+        for device_set, message in (
+            (
+                QemuDeviceSet(
+                    "duplicate",
+                    (DeviceKind.BOCHS_DISPLAY, DeviceKind.BOCHS_DISPLAY),
+                ),
+                "duplicate devices",
+            ),
+            (
+                QemuDeviceSet("bad-framebuffer", (), BOCHS_XRGB8888),
+                "framebuffer requires bochs-display",
+            ),
+            (
+                QemuDeviceSet("bochs-without-framebuffer", (DeviceKind.BOCHS_DISPLAY,)),
+                "bochs-display requires framebuffer",
+            ),
+        ):
+            with self.subTest(device_set=device_set):
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_registered_device_set(device_set)
+
+    def test_megrez_basic_renders_its_fixed_devices_and_qmp_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "capture"
+            capture_root.mkdir(mode=0o700)
+            monitor_socket = capture_root / "qmp.sock"
+
+            self.assertEqual(
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=monitor_socket,
+                    ),
+                ),
+                (
+                    "-device",
+                    "bochs-display,xres=1280,yres=1024",
+                    "-qmp",
+                    f"unix:{monitor_socket},server=on,wait=off",
+                ),
+            )
+            self.assertEqual(
+                qemu_argv(
+                    uboot=Path("/tmp/u-boot"),
+                    boot_disk=Path("/tmp/boot.ext4"),
+                    device_set=MEGREZ_BASIC,
+                    device_paths=RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=monitor_socket,
+                    ),
+                )[-4:],
+                [
+                    "-device",
+                    "bochs-display,xres=1280,yres=1024",
+                    "-qmp",
+                    f"unix:{monitor_socket},server=on,wait=off",
+                ],
+            )
+
+    def test_headless_rejects_all_runtime_paths(self) -> None:
+        for field, path in (
+            ("capture_root", Path("/tmp/capture")),
+            ("monitor_socket", Path("/tmp/qmp.sock")),
+            ("scratch_disk", Path("/tmp/scratch.img")),
+            ("nvme_disk", Path("/tmp/nvme.img")),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "headless"):
+                    render_device_argv(HEADLESS, RuntimeDevicePaths(**{field: path}))
+
+    def test_framebuffer_paths_must_be_present_and_unused_disks_are_rejected(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "requires capture_root"):
+            render_device_argv(MEGREZ_BASIC, None)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "capture"
+            capture_root.mkdir(mode=0o700)
+            for field, path in (
+                ("scratch_disk", Path("/tmp/scratch.img")),
+                ("nvme_disk", Path("/tmp/nvme.img")),
+            ):
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(ValueError, "unused"):
+                        render_device_argv(
+                            MEGREZ_BASIC,
+                            RuntimeDevicePaths(
+                                capture_root=capture_root,
+                                monitor_socket=capture_root / "qmp.sock",
+                                **{field: path},
+                            ),
+                        )
+
+    def test_framebuffer_paths_are_confined_and_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            capture_root = parent / "capture"
+            capture_root.mkdir(mode=0o700)
+            outside = parent / "outside"
+            outside.mkdir()
+
+            unsafe_paths = (
+                RuntimeDevicePaths(
+                    capture_root=Path("relative"),
+                    monitor_socket=Path("/tmp/qmp.sock"),
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=Path("relative.sock"),
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=outside / "qmp.sock",
+                ),
+                RuntimeDevicePaths(
+                    capture_root=capture_root,
+                    monitor_socket=capture_root / "qmp,sock",
+                ),
+            )
+            for paths in unsafe_paths:
+                with self.subTest(paths=paths):
+                    with self.assertRaises(ValueError):
+                        render_device_argv(MEGREZ_BASIC, paths)
+
+            bad_mode = parent / "bad-mode"
+            bad_mode.mkdir()
+            bad_mode.chmod(0o755)
+            self.assertEqual(bad_mode.stat().st_mode & 0o777, 0o755)
+            with self.assertRaisesRegex(ValueError, "mode 0700"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=bad_mode,
+                        monitor_socket=bad_mode / "qmp.sock",
+                    ),
+                )
+
+            root_link = parent / "capture-link"
+            root_link.symlink_to(capture_root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=root_link,
+                        monitor_socket=root_link / "qmp.sock",
+                    ),
+                )
+
+            socket_link = capture_root / "qmp.sock"
+            socket_link.symlink_to(outside / "socket")
+            with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                render_device_argv(
+                    MEGREZ_BASIC,
+                    RuntimeDevicePaths(
+                        capture_root=capture_root,
+                        monitor_socket=socket_link,
+                    ),
+                )
+
     def test_contract_vocabulary_is_closed(self) -> None:
+        self.assertEqual(
+            tuple((kind.name, kind.value) for kind in DeviceKind),
+            (
+                ("BOCHS_DISPLAY", "bochs-display"),
+                ("VIRTIO_KEYBOARD", "virtio-keyboard"),
+                ("VIRTIO_RNG", "virtio-rng"),
+                ("VIRTIO_NET", "virtio-net"),
+                ("VIRTIO_GPU", "virtio-gpu"),
+                ("SCRATCH_VIRTIO_BLOCK", "scratch-virtio-block"),
+                ("NVME", "nvme"),
+            ),
+        )
         self.assertEqual(tuple(QemuMachine), (QemuMachine.VIRT, QemuMachine.SIFIVE_U))
         self.assertEqual(
             tuple(StorageTransport),

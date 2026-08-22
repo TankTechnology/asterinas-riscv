@@ -16,6 +16,7 @@ softirq = { name = "aster-softirq" }
 systree = { name = "aster-systree" }
 time = { name = "aster-time" }
 uart = { name = "aster-uart" }
+usb = { name = "aster-usb" }
 virtio = { name = "aster-virtio" }
 
 [whitelist]

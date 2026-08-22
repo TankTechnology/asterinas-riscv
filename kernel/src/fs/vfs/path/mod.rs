@@ -112,6 +112,12 @@ impl Path {
         Self { mount, dentry }
     }
 
+    /// Creates a pseudo `Path` for an inode recovered from an opaque file handle
+    /// by `open_by_handle_at`.
+    pub(crate) fn from_inode_and_mount(mount: Arc<Mount>, inode: Arc<dyn Inode>) -> Self {
+        Self::new_pseudo(mount, inode, |inode| inode.ino().to_string())
+    }
+
     /// Gets the mount node of current `Path`.
     pub fn mount_node(&self) -> &Arc<Mount> {
         &self.mount

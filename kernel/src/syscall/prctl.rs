@@ -10,6 +10,7 @@ use crate::{
         posix_thread::{ContextPthreadAdminApi, MAX_THREAD_NAME_LEN},
         signal::sig_num::SigNum,
     },
+    util::ReadCString,
 };
 
 pub fn sys_prctl(
@@ -63,9 +64,13 @@ pub fn sys_prctl(
             credentials.set_keep_capabilities(keep_cap != 0)?;
         }
         PrctlCmd::PR_SET_NAME(read_addr) => {
+            // Linux accepts up to 16 bytes (15 chars + null) and silently
+            // truncates longer strings. Read up to MAX_THREAD_NAME_LEN + 1
+            // bytes so that a 16-char name (16+null=17 bytes) can be read
+            // and then truncated to 15 chars by ThreadName::set_name.
             let new_thread_name = ctx
                 .user_space()
-                .read_cstring(read_addr, MAX_THREAD_NAME_LEN)?;
+                .read_cstring(read_addr, MAX_THREAD_NAME_LEN + 1)?;
             let mut thread_name = ctx.posix_thread.thread_name().lock();
             thread_name.set_name(&new_thread_name);
         }

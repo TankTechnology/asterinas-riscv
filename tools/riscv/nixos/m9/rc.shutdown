@@ -1,0 +1,8 @@
+#!/bin/sh
+# /etc/rc.shutdown — stop services (run as `::shutdown` by busybox init).
+for s in /etc/init.d/S*; do
+    [ -x "$s" ] || continue
+    echo "  rc: $(basename "$s") stop"
+    "$s" stop
+done
+echo "M9 NixOS: services stopped."

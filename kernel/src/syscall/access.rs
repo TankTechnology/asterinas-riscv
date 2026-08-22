@@ -97,15 +97,31 @@ fn do_faccessat(
 
     let inode = path.inode();
 
+    // Without AT_EACCESS, access(2) checks permissions against the real
+    // UID/GID; with AT_EACCESS, against the effective (filesystem) IDs.
+    let use_real_ids = !flags.contains(FaccessatFlags::AT_EACCESS);
+
     // F_OK is represented by `AccessMode::empty()`, which does not perform permission checks.
     if mode.contains(AccessMode::R_OK) {
-        inode.check_permission(Permission::MAY_READ)?;
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_READ)?;
+        } else {
+            inode.check_permission(Permission::MAY_READ)?;
+        }
     }
     if mode.contains(AccessMode::W_OK) {
-        inode.check_permission(Permission::MAY_WRITE)?;
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_WRITE)?;
+        } else {
+            inode.check_permission(Permission::MAY_WRITE)?;
+        }
     }
     if mode.contains(AccessMode::X_OK) {
-        inode.check_permission(Permission::MAY_EXEC)?;
+        if use_real_ids {
+            inode.check_permission_with_real_ids(Permission::MAY_EXEC)?;
+        } else {
+            inode.check_permission(Permission::MAY_EXEC)?;
+        }
     }
 
     Ok(SyscallReturn::Return(0))

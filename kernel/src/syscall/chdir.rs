@@ -4,7 +4,7 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            InodeType,
+            InodeType, Permission,
             file_table::{RawFileDesc, get_file_fast},
         },
         vfs::path::FsPath,
@@ -27,6 +27,10 @@ pub fn sys_chdir(path_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     if path.type_() != InodeType::Dir {
         return_errno_with_message!(Errno::ENOTDIR, "must be directory");
     }
+    // chdir(2) requires search (execute) permission on the target directory.
+    // The path lookup above only checks the permission on the intermediate
+    // components, so the final component is checked here.
+    path.inode().check_permission(Permission::MAY_EXEC)?;
     path_resolver.set_cwd(path);
     Ok(SyscallReturn::Return(0))
 }

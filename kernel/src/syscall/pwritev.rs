@@ -181,5 +181,7 @@ bitflags! {
         const RWF_HIPRI = 0x00000002;
         const RWF_SYNC = 0x00000004;
         const RWF_NOWAIT = 0x00000008;
+        const RWF_APPEND = 0x00000010;
+        const RWF_NOAPPEND = 0x00000020;
     }
 }

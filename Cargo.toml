@@ -42,6 +42,7 @@ members = [
     "kernel/comps/systree",
     "kernel/comps/time",
     "kernel/comps/uart",
+    "kernel/comps/usb",
     "kernel/comps/virtio",
     "kernel/libs/aster-bigtcp",
     "kernel/libs/aster-fuse",
@@ -90,6 +91,7 @@ default-members = [
     "kernel/comps/systree",
     "kernel/comps/time",
     "kernel/comps/uart",
+    "kernel/comps/usb",
     "kernel/comps/virtio",
     "kernel/libs/aster-bigtcp",
     "kernel/libs/aster-fuse",
@@ -165,6 +167,7 @@ aster-softirq = { path = "kernel/comps/softirq" }
 aster-systree = { path = "kernel/comps/systree" }
 aster-time = { path = "kernel/comps/time" }
 aster-uart = { path = "kernel/comps/uart" }
+aster-usb = { path = "kernel/comps/usb" }
 aster-virtio = { path = "kernel/comps/virtio" }
 
 # Crates under kernel/libs
@@ -196,6 +199,8 @@ osdk-heap-allocator = { path = "osdk/deps/heap-allocator" }
 
 # External dependencies only for unsafe crates (i.e., crates under ostd directory)
 bit_field = "0.10.1"
+crab-usb = "=0.9.10"
+dma-api = "=0.9.3"
 gimli = { version = "0.28", default-features = false, features = ["read-core"] }
 minicov = "0.3"
 num-traits = { version = "0.2", default-features = false }
@@ -203,6 +208,7 @@ serde = { version = "1.0.192", default-features = false, features = ["alloc", "d
 smallvec = "1.13.2"
 uart_16550 = "0.3.0"
 volatile = "0.6.1"
+usb-if = "=0.7.2"
 
 # External dependencies only for safe crates (i.e., crates under kernel or osdk/deps directories)
 #

@@ -36,6 +36,7 @@ readonly -a APPLETS=(
     ECHO PRINTF TEST GREP FIND HEAD TAIL DD
     DF FREE UNAME SYNC STAT SLEEP KILL PIDOF
     TRUE FALSE YES
+    CP                              # LTP helpers shell out to cp (execve02, execveat01)
     GETTY LOGIN                     # serial console login
     LOGGER HOSTNAME                 # journald injection + hostname helper
 )
