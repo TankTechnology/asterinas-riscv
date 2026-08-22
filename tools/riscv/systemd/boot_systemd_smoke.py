@@ -164,7 +164,7 @@ def main() -> int:
         "-serial", "stdio",
         "-no-reboot",
         "-kernel", str(UBOOT),
-        "-drive", f"if=none,format=raw,file={BOOT_DISK},id=bootdisk",
+        "-drive", f"if=none,format=raw,file={args.boot_disk},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
     ]
 
