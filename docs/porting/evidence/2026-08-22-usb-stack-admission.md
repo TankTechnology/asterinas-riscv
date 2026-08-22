@@ -178,6 +178,14 @@ worktree:
 - `kernel/target-echo-ktest.log`;
 - `kernel/target-kernel-ktest.log`.
 
+The lockfile audit recorded current main at
+`c2fc46ef0bfa17b5693c2b72670bfd330b0b4ab7`,
+the committed topic at
+`9c345ed20119cb53dc031664fc09bc734671dab3`,
+and the dirty worktree at
+`d6366b8cbab236f77ea9f1f7d48e0de5bd083cc0`.
+The current-main lockfile remains authoritative.
+
 ## Megrez Hardware Boundary
 
 Current main admits the explicitly selected DWC3 path,
