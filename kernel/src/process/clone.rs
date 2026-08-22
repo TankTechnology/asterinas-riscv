@@ -27,6 +27,7 @@ use crate::{
     prelude::*,
     process::{
         NsProxy, UserNamespace,
+        credentials::capabilities::CapSet,
         pid_file::PidFile,
         posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
         stats::PROCESS_CREATION_COUNTER,
@@ -541,7 +542,7 @@ fn clone_child_process(
     let child_fpu_context = thread_local.supp_user_context().fpu().get();
 
     // Clone the namespaces
-    let child_user_ns = clone_user_ns(clone_flags, thread_local)?;
+    let child_user_ns = clone_user_ns(clone_flags, thread_local, ctx)?;
     let child_ns_proxy = clone_ns_proxy(
         thread_local.borrow_ns_proxy().unwrap(),
         &child_user_ns,
@@ -583,7 +584,15 @@ fn clone_child_process(
 
             let credentials = {
                 let credentials = ctx.posix_thread.credentials();
-                Credentials::new_from(&credentials)
+                let child_credentials = Credentials::new_from(&credentials);
+                if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+                    // A process that creates a new user namespace is granted
+                    // all capabilities within the new namespace.
+                    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/fork.c#L2315>.
+                    child_credentials.set_permitted_capset(CapSet::all());
+                    child_credentials.set_effective_capset(CapSet::all());
+                }
+                child_credentials
             };
 
             PosixThreadBuilder::new(
@@ -819,12 +828,14 @@ fn clone_pidfd(
 fn clone_user_ns(
     clone_flags: CloneFlags,
     thread_local: &ThreadLocal,
+    ctx: &Context,
 ) -> Result<Arc<UserNamespace>> {
     if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
-        return_errno_with_message!(
-            Errno::EINVAL,
-            "cloning a new user namespace is not supported"
-        );
+        // The new user namespace is owned by the creator's effective UID.
+        // Following Linux, the child process will be granted all capabilities
+        // within the new namespace (see `clone_child_process`).
+        let creator_euid = ctx.posix_thread.credentials().euid();
+        Ok(thread_local.borrow_user_ns().new_child(creator_euid))
     } else {
         Ok(thread_local.borrow_user_ns().clone())
     }

@@ -201,6 +201,10 @@ impl ThreadLocal {
         self.user_ns.borrow()
     }
 
+    pub(in crate::process) fn borrow_user_ns_mut(&self) -> RefMut<'_, Arc<UserNamespace>> {
+        self.user_ns.borrow_mut()
+    }
+
     pub fn borrow_ns_proxy(&self) -> NsProxyRef<'_> {
         ThreadLocalOptionRef(self.ns_proxy.borrow())
     }
