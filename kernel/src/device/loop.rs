@@ -1022,14 +1022,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
     // devices. The active char registry likewise creates /dev/loop-control
     // when the control device is registered below.
 
-    let ctl_major = char::allocate_major().expect("failed to allocate loop-control major");
-    *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
-    let ctl_id = DeviceId::new(
-        LOOP_CONTROL_MAJOR.lock().as_ref().unwrap().get(),
-        MinorId::new(237),
-    );
+    let ctl_major = char::allocate_major()?;
+    let ctl_id = DeviceId::new(ctl_major.get(), MinorId::new(237));
     let ctl_device = LoopControlDevice::new(ctl_id);
-    char::register(ctl_device).expect("failed to register loop-control");
+    char::register(ctl_device)?;
+    *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
 
     Ok(())
 }
