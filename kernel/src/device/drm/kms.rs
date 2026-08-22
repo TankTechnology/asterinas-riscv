@@ -33,12 +33,12 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
             .get(&object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
         let buf = &obj.buffer;
-        if req.width != buf.width
-            || req.height != buf.height
-            || req.pitch != buf.pitch
-            || req.bpp != buf.bpp
-        {
-            return_errno_with_message!(Errno::EINVAL, "framebuffer does not match GEM object");
+        // The framebuffer may be smaller than the backing buffer (drivers
+        // over-allocate, e.g. llvmpipe aligns the height up); the fb only
+        // needs to fit within the buffer.
+        let needed = buf.pitch * (req.height - 1) + req.width * (req.bpp + 7) / 8;
+        if req.bpp != buf.bpp || needed as usize > buf.size {
+            return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
         }
         object_id
     };
@@ -60,8 +60,8 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
 /// ADDFB2: register a framebuffer with explicit format and modifier info.
 ///
 /// For the initial implementation, modifiers are accepted but ignored —
-/// virtio-gpu 2D path uses linear scanout. We validate the first handle
-/// matches the GEM object dimensions.
+/// virtio-gpu 2D path uses linear scanout. We validate that the framebuffer
+/// fits within the GEM object (the buffer may be larger than the fb).
 pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
     let object_id = {
         let inner = handle.inner.lock();
@@ -74,11 +74,14 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
             .get(&object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
         let buf = &obj.buffer;
-        if req.width != buf.width || req.height != buf.height {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "framebuffer dimensions do not match GEM object"
-            );
+        // The framebuffer may be smaller than the backing buffer (drivers
+        // over-allocate, e.g. llvmpipe aligns the height to 32); it only
+        // needs to fit: last-row start + one row of pixels within the buffer.
+        let pitch = req.pitches[0] as usize;
+        let bytes_per_pixel = 4usize;
+        let needed = pitch * (req.height as usize - 1) + req.width as usize * bytes_per_pixel;
+        if needed > buf.size {
+            return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
         }
         // Accept any pitch — ADDFB2 allows explicit pitches
         object_id

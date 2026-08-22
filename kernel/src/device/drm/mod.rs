@@ -126,7 +126,11 @@ const PRIMARY_PLANE_ID: u32 = 1;
 /// virtio-gpu scanouts (1024x768 by default) and a generous multi-resolution
 /// headroom. A single pool is required because the mmap path maps one
 /// `Mappable::Vmo` per file and selects a buffer by its byte offset within it.
-const DUMB_POOL_SIZE: usize = 16 * 1024 * 1024;
+///
+/// 64 MiB holds ~15 1280x800@32bpp buffers — enough for a GBM surface's
+/// back/front/shadow buffers plus a few app allocations. Note the allocator
+/// is a bump allocator: destroyed buffers are not reclaimed yet.
+const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
