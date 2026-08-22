@@ -41,6 +41,11 @@ impl UeventMessage {
         &self.src_addr
     }
 
+    /// Returns the uevent message as raw bytes (for socket filters).
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        self.uevent.as_bytes()
+    }
+
     /// Writes the uevent to the given `writer`.
     pub(super) fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {
         let _nbytes = writer.write(&mut VmReader::from(self.uevent.as_bytes()))?;
