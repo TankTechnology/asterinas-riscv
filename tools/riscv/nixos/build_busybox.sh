@@ -36,6 +36,7 @@ readonly -a APPLETS=(
     ECHO PRINTF TEST GREP FIND HEAD TAIL DD
     DF FREE UNAME SYNC STAT SLEEP KILL PIDOF
     TRUE FALSE YES
+    IP IPLINK IPADDR            # iproute2-lite for netlink guest verification (NIXOS-N1)
     GETTY LOGIN                     # serial console login
     LOGGER HOSTNAME                 # journald injection + hostname helper
 )
