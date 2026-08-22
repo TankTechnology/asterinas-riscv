@@ -1,46 +1,87 @@
-// DRM-M8 `/init` — devtmpfs auto-create regression test.
-//
-// The initramfs this is packed into deliberately contains **no `/dev`
-// directory**. Before the fix, the kernel panicked in
-// `device::init_in_first_process` ("path resolution did not reach the final
-// target") because it looked up `/dev` to mount devtmpfs and did not create it
-// when absent. After the fix the kernel creates `/dev` itself, mounts devtmpfs,
-// and registers `/dev/console` — so this init (PID 1) can prove:
-//
-//   __M8_DEV__=DIR          /dev exists and is a directory
-//   __M8_CONSOLE__=PRESENT  /dev/console was registered
-//   __M8_OPEN_CONSOLE__=OK  /dev/console opens R/W
-//
-// Static glibc, run as PID 1. fd 0/1/2 are already wired to /dev/console by
-// fs::init_in_first_process before the first process is spawned.
-#define _GNU_SOURCE
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+// SPDX-License-Identifier: MPL-2.0
 
-static void say(const char *s) { (void)write(1, s, strlen(s)); }
+// Freestanding RISC-V `/init` for the devtmpfs auto-create regression test.
+//
+// The initramfs deliberately contains no `/dev`. Reaching `_start` proves the
+// kernel created `/dev` before starting PID 1; opening the directory and its
+// console device verifies that devtmpfs was mounted and populated.
 
-int main(void) {
+typedef unsigned long usize;
+
+#define SYS_OPENAT 56
+#define SYS_CLOSE 57
+#define SYS_WRITE 64
+#define SYS_EXIT 93
+
+#define AT_FDCWD (-100)
+#define O_RDONLY 0
+#define O_RDWR 2
+#define O_DIRECTORY 0x10000
+
+static long syscall1(long number, long arg0) {
+    register long a0 __asm__("a0") = arg0;
+    register long a7 __asm__("a7") = number;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a7) : "memory");
+    return a0;
+}
+
+static long syscall3(long number, long arg0, long arg1, long arg2) {
+    register long a0 __asm__("a0") = arg0;
+    register long a1 __asm__("a1") = arg1;
+    register long a2 __asm__("a2") = arg2;
+    register long a7 __asm__("a7") = number;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
+    return a0;
+}
+
+static long syscall4(long number, long arg0, long arg1, long arg2, long arg3) {
+    register long a0 __asm__("a0") = arg0;
+    register long a1 __asm__("a1") = arg1;
+    register long a2 __asm__("a2") = arg2;
+    register long a3 __asm__("a3") = arg3;
+    register long a7 __asm__("a7") = number;
+    __asm__ volatile(
+        "ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a7) : "memory"
+    );
+    return a0;
+}
+
+static usize string_length(const char *string) {
+    usize length = 0;
+    while (string[length] != '\0')
+        ++length;
+    return length;
+}
+
+static void say(const char *string) {
+    (void)syscall3(SYS_WRITE, 1, (long)string, (long)string_length(string));
+}
+
+static long open_path(const char *path, long flags) {
+    return syscall4(SYS_OPENAT, AT_FDCWD, (long)path, flags, 0);
+}
+
+void _start(void) {
     say(">>> M8 nodev init: no /dev was in the initramfs <<<\n");
 
-    struct stat st;
-    if (stat("/dev", &st) == 0 && S_ISDIR(st.st_mode))
-        say("__M8_DEV__=DIR\n");
-    else
-        say("__M8_DEV__=MISSING\n");
+    long dev_fd = open_path("/dev", O_RDONLY | O_DIRECTORY);
+    say(dev_fd >= 0 ? "__M8_DEV__=DIR\n" : "__M8_DEV__=MISSING\n");
+    if (dev_fd >= 0)
+        (void)syscall1(SYS_CLOSE, dev_fd);
 
-    if (stat("/dev/console", &st) == 0)
-        say("__M8_CONSOLE__=PRESENT\n");
-    else
-        say("__M8_CONSOLE__=MISSING\n");
+    long console_fd = open_path("/dev/console", O_RDWR);
+    say(console_fd >= 0 ? "__M8_CONSOLE__=PRESENT\n" : "__M8_CONSOLE__=MISSING\n");
+    say(console_fd >= 0 ? "__M8_OPEN_CONSOLE__=OK\n" : "__M8_OPEN_CONSOLE__=FAIL\n");
+    if (console_fd >= 0)
+        (void)syscall1(SYS_CLOSE, console_fd);
 
-    int fd = open("/dev/console", O_RDWR);
-    say(fd >= 0 ? "__M8_OPEN_CONSOLE__=OK\n" : "__M8_OPEN_CONSOLE__=FAIL\n");
-    if (fd >= 0)
-        (void)close(fd);
+    long loop_control_fd = open_path("/dev/loop-control", O_RDWR);
+    say(loop_control_fd >= 0 ? "__M8_LOOP_CONTROL__=PRESENT\n"
+                             : "__M8_LOOP_CONTROL__=MISSING\n");
+    if (loop_control_fd >= 0)
+        (void)syscall1(SYS_CLOSE, loop_control_fd);
 
     say(">>> M8 nodev init done <<<\n");
-    return 0;
+    (void)syscall1(SYS_EXIT, 0);
+    for (;;) {}
 }

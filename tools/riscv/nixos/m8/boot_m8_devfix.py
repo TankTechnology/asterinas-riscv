@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""DRM-M8 (part 1) devtmpfs auto-create regression test.
+"""Boot the devtmpfs auto-create regression test on Asterinas RISC-V.
 
-Boots the DRM-tree kernel with an initramfs that contains **no `/dev`**
+Boots the current kernel with an initramfs that contains **no `/dev`**
 directory. Before the fix, the kernel panicked in
 ``device::init_in_first_process`` ("path resolution did not reach the final
 target"); after the fix it must create `/dev`, mount devtmpfs, register
 `/dev/console`, and run `/init` to completion.
 
 Exit 0 iff all of these appear: init marker, ``__M8_DEV__=DIR``,
-``__M8_CONSOLE__=PRESENT``, ``__M8_OPEN_CONSOLE__=OK``, init-done marker — and no
-panic marker.
+``__M8_CONSOLE__=PRESENT``, ``__M8_OPEN_CONSOLE__=OK``,
+``__M8_LOOP_CONTROL__=PRESENT``, init-done marker — and no panic marker.
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ import sys
 import time
 from pathlib import Path
 
-OUT = Path("/tmp/drm-m8-dev")
-UBOOT = OUT / "u-boot"
+REPO = Path(__file__).resolve().parent.parent.parent.parent.parent
+OUT = REPO / "target/nixos/m8/devtmpfs-nodev"
+UBOOT = REPO / "target/qemu-uboot/cache/u-boot-build/u-boot"
 BOOT_DISK = OUT / "boot.ext4"
 
 KERNEL_LOAD = 0x8020_0000
@@ -48,10 +49,11 @@ UBOOT_COMMANDS = [
 ]
 
 PANIC_MARKERS = [
-    b"kernel panic", b"Kernel panic", b"page fault handler failed",
+    b"kernel panic", b"Kernel panic", b"Uncaught panic", b"page fault handler failed",
     b"Oops", b"BUG:", b"panic!",
     b"path resolution did not reach the final target",
 ]
+DONE_MARKER = b">>> M8 nodev init done <<<"
 
 
 class Boot:
@@ -80,17 +82,22 @@ class Boot:
                 self.log_file.flush()
                 self.pending.extend(chunk)
 
-    def read_until(self, needle, timeout):
+    def read_until_any(self, needles, timeout):
         deadline = time.monotonic() + timeout
-        while needle not in self.pending:
+        while not any(needle in self.pending for needle in needles):
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"timeout waiting {needle!r}; tail={bytes(self.transcript[-600:])!r}")
+                    f"timeout waiting {needles!r}; tail={bytes(self.transcript[-600:])!r}")
             self._drain(min(1.0, deadline - time.monotonic()))
+        needle = next(needle for needle in needles if needle in self.pending)
         idx = self.pending.index(needle)
         end = idx + len(needle)
         consumed = bytes(self.pending[:end])
         del self.pending[:end]
+        return needle, consumed
+
+    def read_until(self, needle, timeout):
+        _, consumed = self.read_until_any([needle], timeout)
         return consumed
 
     def send(self, text):
@@ -117,7 +124,7 @@ def make_argv() -> list[str]:
         "qemu-system-riscv64",
         "-machine", "virt",
         "-cpu", "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
-        "-m", "2G", "-smp", "1", "-display", "none", "-no-reboot",
+        "-m", "2G", "-smp", "4", "-display", "none", "-no-reboot",
         "-kernel", str(UBOOT),
         "-drive", f"if=none,format=raw,file={BOOT_DISK},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
@@ -132,6 +139,8 @@ def main() -> int:
 
     if not BOOT_DISK.exists():
         raise SystemExit("missing boot.ext4 — run build_m8_devfix.sh first")
+    if not UBOOT.exists():
+        raise SystemExit("missing U-Boot — run tools/riscv/prepare_qemu_uboot_booti.sh first")
 
     boot = Boot(make_argv(), args.serial_log)
     transcript = b""
@@ -146,8 +155,8 @@ def main() -> int:
                 boot.read_until(expected.encode(), 30)
                 if expected != "=>":
                     boot.read_until(b"=> ", 30)
-        boot.read_until(b">>> M8 nodev init done <<<", 120)
-        reached = "init-done"
+        marker, _ = boot.read_until_any([DONE_MARKER, *PANIC_MARKERS], 120)
+        reached = "init-done" if marker == DONE_MARKER else "panic"
         transcript = bytes(boot.transcript)
     finally:
         boot.close()
@@ -160,11 +169,14 @@ def main() -> int:
         "dev-is-dir": b"__M8_DEV__=DIR" in transcript,
         "console-present": b"__M8_CONSOLE__=PRESENT" in transcript,
         "console-open": b"__M8_OPEN_CONSOLE__=OK" in transcript,
-        "init-done": b">>> M8 nodev init done <<<" in transcript,
+        "loop-control-present": b"__M8_LOOP_CONTROL__=PRESENT" in transcript,
+        "init-done": DONE_MARKER in transcript,
     }
-    panics = [m.decode() for m in PANIC_MARKERS if m in transcript]
+    done_index = transcript.find(DONE_MARKER)
+    pre_done = transcript if done_index < 0 else transcript[:done_index]
+    panics = [m.decode() for m in PANIC_MARKERS if m in pre_done]
 
-    print("\n=== DRM-M8 devtmpfs auto-create result ===", flush=True)
+    print("\n=== devtmpfs auto-create result ===", flush=True)
     for k, v in results.items():
         print(f"  {k}: {'OK' if v else 'FAIL'}", flush=True)
     print(f"  collection-ended: {reached}", flush=True)
@@ -172,7 +184,7 @@ def main() -> int:
         print(f"  panic markers: {panics}", flush=True)
 
     ok = all(results.values()) and not panics
-    print(f"\n=== DRM-M8 dev-fix: {'PASS' if ok else 'FAIL'} ===", flush=True)
+    print(f"\n=== devtmpfs auto-create: {'PASS' if ok else 'FAIL'} ===", flush=True)
     return 0 if ok else 1
 
 
