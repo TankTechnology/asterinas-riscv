@@ -511,7 +511,7 @@ checksum = "bf15768c43061f501f803de42ac83af3abe9c2b04f56360060e591997be1d964"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -721,7 +721,7 @@ checksum = "24e08e0c402b6085977ee82e5c831738f9b5591719b3be89edbb6cef02ec98f4"
 dependencies = [
  "anyhow",
  "ax-kspin",
- "bitflags 2.13.0",
+ "bitflags 2.13.1",
  "crossbeam",
  "crossbeam-skiplist",
  "dma-api",
@@ -923,7 +923,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustc_version",
- "syn 2.0.118",
+ "syn 2.0.119",
  "unicode-xid",
 ]
 
@@ -971,7 +971,7 @@ dependencies = [
  "once_cell",
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1699,7 +1699,7 @@ checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2366,7 +2366,7 @@ dependencies = [
  "lenient_semver",
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
