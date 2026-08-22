@@ -31,6 +31,7 @@ mod alarm;
 #[cfg(target_arch = "x86_64")]
 mod arch_prctl;
 mod bind;
+mod bpf;
 mod brk;
 mod capget;
 mod capset;

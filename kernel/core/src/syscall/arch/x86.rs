@@ -8,6 +8,7 @@ use super::{
     alarm::sys_alarm,
     arch_prctl::sys_arch_prctl,
     bind::sys_bind,
+    bpf::sys_bpf,
     brk::sys_brk,
     capget::sys_capget,
     capset::sys_capset,
@@ -431,6 +432,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_RENAMEAT2 = 316        => sys_renameat2(args[..5]);
     SYS_GETRANDOM = 318        => sys_getrandom(args[..3]);
     SYS_MEMFD_CREATE = 319     => sys_memfd_create(args[..2]);
+    SYS_BPF = 321              => sys_bpf(args[..3]);
     SYS_EXECVEAT = 322         => sys_execveat(args[..5], &mut user_ctx);
     SYS_MEMBARRIER = 324       => sys_membarrier(args[..3]);
     SYS_PREADV2 = 327          => sys_preadv2(args[..6]);
