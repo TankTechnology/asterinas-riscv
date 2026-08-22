@@ -13,13 +13,20 @@
 
 use spin::Once;
 
-use super::super::Process;
-use crate::prelude::*;
+use super::super::{Process, UserNamespace};
+use crate::{
+    fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
+    prelude::*,
+};
 
 /// A PID namespace.
 pub struct PidNamespace {
     /// The parent namespace; `None` only for the initial PID namespace.
     parent: Option<Arc<PidNamespace>>,
+    /// The user namespace that owns this PID namespace (the user namespace
+    /// active when it was created).
+    owner: Arc<UserNamespace>,
+    stashed_dentry: StashedDentry,
     inner: Mutex<PidNsInner>,
 }
 
@@ -40,6 +47,8 @@ impl PidNamespace {
         INIT.call_once(|| {
             Arc::new(Self {
                 parent: None,
+                owner: UserNamespace::get_init_singleton().clone(),
+                stashed_dentry: StashedDentry::new(),
                 inner: Mutex::new(PidNsInner {
                     // Virtual PIDs in the initial namespace are the global
                     // PIDs; the allocator here only serves as a fallback for
@@ -51,15 +60,32 @@ impl PidNamespace {
         })
     }
 
-    /// Creates a child PID namespace.
-    pub fn new_child(self: &Arc<Self>) -> Arc<Self> {
+    /// Creates a child PID namespace owned by `owner`.
+    pub fn new_child(self: &Arc<Self>, owner: Arc<UserNamespace>) -> Arc<Self> {
         Arc::new(Self {
             parent: Some(self.clone()),
+            owner,
+            stashed_dentry: StashedDentry::new(),
             inner: Mutex::new(PidNsInner {
                 next_vpid: 1,
                 vpids: BTreeMap::new(),
             }),
         })
+    }
+
+    /// Returns whether this namespace is the same as, or a descendant of,
+    /// the given namespace.
+    pub fn is_same_or_descendant_of(self: &Arc<Self>, ancestor: &Arc<Self>) -> bool {
+        let mut current = self;
+        loop {
+            if Arc::ptr_eq(current, ancestor) {
+                return true;
+            }
+            let Some(parent) = current.parent_ns() else {
+                return false;
+            };
+            current = parent;
+        }
     }
 
     /// Returns whether this is the initial PID namespace.
@@ -127,5 +153,25 @@ impl PidNamespace {
             .iter()
             .filter_map(|(vpid, weak)| weak.upgrade().map(|process| (*vpid, process)))
             .collect()
+    }
+}
+
+impl NsCommonOps for PidNamespace {
+    const TYPE: NsType = NsType::Pid;
+
+    fn owner_user_ns(&self) -> Option<&Arc<UserNamespace>> {
+        Some(&self.owner)
+    }
+
+    fn parent(&self) -> Result<&Arc<Self>> {
+        // The initial PID namespace has no parent; `NS_GET_PARENT` on it
+        // fails with `EPERM`, as in Linux.
+        self.parent.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::EPERM, "the initial PID namespace has no parent")
+        })
+    }
+
+    fn stashed_dentry(&self) -> &StashedDentry {
+        &self.stashed_dentry
     }
 }
