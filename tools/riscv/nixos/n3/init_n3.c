@@ -61,6 +61,13 @@ static const char N3_SCRIPT[] =
     "echo __N3_BUILD_RC__=$?\n"
     "cat /tmp/build.log\n"
     "cat /nix/store/*-n3-hello 2>/dev/null\n"
+    // N3-5 stretch: HTTPS substituter reachability (DNS + TCP + TLS through
+    // QEMU slirp). Not part of the pass criteria.
+    "echo __N3_NET_START__\n"
+    "netprobe\n"
+    "NIX_SSL_CERT_FILE=/nix/store/p72fm684r47aw9whpmg9ggnjz998hy2r-nss-cacert-riscv64-unknown-linux-gnu-3.108/etc/ssl/certs/ca-bundle.crt nix store ping --store https://cache.nixos.org >/tmp/netping.log 2>&1\n"
+    "echo __N3_NET_RC__=$?\n"
+    "cat /tmp/netping.log\n"
     "echo __N3_DONE__\n";
 
 int main(void) {
