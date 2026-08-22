@@ -49,6 +49,7 @@ mkdir -p "${ROOTFS}/bin" "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" \
     "${ROOTFS}/nix/var/nix/profiles" "${ROOTFS}/nix/var/log/nix"
 
 "${CC}" -O2 -static -no-pie -fno-stack-protector -o "${ROOTFS}/init" "${SRC_DIR}/init_n3.c"
+"${CC}" -O2 -static -no-pie -fno-stack-protector -o "${ROOTFS}/bin/netprobe" "${SRC_DIR}/netprobe.c"
 
 cp "${BUSYBOX}" "${ROOTFS}/bin/busybox"
 for applet in sh echo cat ls mkdir sleep head mount "["; do
@@ -73,6 +74,13 @@ cat > "${ROOTFS}/etc/nsswitch.conf" <<'EOF'
 passwd: files
 group: files
 hosts: files dns
+EOF
+# Workaround for the guest UDP-inbound gap (DNS replies never arrive);
+# resolve the substituter statically.
+cat > "${ROOTFS}/etc/hosts" <<'EOF'
+127.0.0.1 localhost
+::1 localhost
+199.232.161.91 cache.nixos.org
 EOF
 cat > "${ROOTFS}/etc/resolv.conf" <<'EOF'
 nameserver 10.0.2.3
