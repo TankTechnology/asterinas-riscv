@@ -8,7 +8,8 @@ use crate::{
     net::socket::options::{
         AcceptConn, AttachFilter, Broadcast, DetachFilter, Error, KeepAlive, Linger, PassCred,
         PeerCred, PeerGroups, Priority, RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort,
-        SendBuf, SendBufForce, SendTimeout, SocketOption, SocketType, Timestamp,
+        SendBuf, SendBufForce, SendTimeout, SockDomain, SockProtocol, SocketOption, SocketType,
+        Timestamp,
     },
     prelude::*,
     process::Gid,
@@ -49,6 +50,8 @@ enum CSocketOptionName {
     PEERSEC = 31,
     SNDBUFFORCE = 32,
     RCVBUFFORCE = 33,
+    PROTOCOL = 38,
+    DOMAIN = 39,
     PEERGROUPS = 59,
     RCVTIMEO_NEW = 66,
     SNDTIMEO_NEW = 67,
@@ -85,6 +88,8 @@ pub fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
         CSocketOptionName::ATTACH_FILTER => Ok(Box::new(AttachFilter::new())),
         CSocketOptionName::DETACH_FILTER => Ok(Box::new(DetachFilter::new())),
+        CSocketOptionName::PROTOCOL => Ok(Box::new(SockProtocol::new())),
+        CSocketOptionName::DOMAIN => Ok(Box::new(SockDomain::new())),
         _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported socket-level option"),
     }
 }
@@ -149,6 +154,8 @@ impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
 impl_raw_socket_option!(RecvBufForce);
 impl_raw_socket_option!(Timestamp);
+impl_raw_sock_option_get_only!(SockDomain);
+impl_raw_sock_option_get_only!(SockProtocol);
 
 // SO_PEERGROUPS is a read-only option. However, calling setsockopt on SO_PEERGROUPS will return EINVAL
 // instead of ENOPROTOOPT like other options. Therefore, we manually implement `RawSocketOption` for it.

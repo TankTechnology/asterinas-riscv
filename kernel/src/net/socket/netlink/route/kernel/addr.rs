@@ -51,6 +51,53 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     Ok(response_segments)
 }
 
+/// Handles an RTM_NEWADDR request to add an address to an interface.
+///
+/// The `Iface` trait is currently read-only, so addresses cannot actually be
+/// added. Adding an address that the interface already has (which is what
+/// systemd's loopback setup does with 127.0.0.1/8 and ::1/128) reports EEXIST
+/// like Linux; anything else fails with EOPNOTSUPP.
+pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
+    };
+
+    let Some(iface) = iter_all_ifaces().find(|iface| iface.index() == index.get()) else {
+        return_errno_with_message!(Errno::ENODEV, "no link found");
+    };
+
+    // The requested address is in the IFA_LOCAL attribute (falling back to
+    // IFA_ADDRESS, which Linux treats as the local address when no peer
+    // address is set).
+    let Some(requested) = request_segment.attrs().iter().find_map(|attr| match attr {
+        AddrAttr::Local(addr) | AddrAttr::Address(addr) => Some(*addr),
+        _ => None,
+    }) else {
+        return_errno_with_message!(Errno::EINVAL, "no address attribute specified");
+    };
+
+    let exists = match requested {
+        IpAddr::V4(_) => iface.ipv4_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+        IpAddr::V6(_) => iface.ipv6_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+    };
+    if exists {
+        return_errno_with_message!(Errno::EEXIST, "the address already exists");
+    }
+
+    return_errno_with_message!(
+        Errno::EOPNOTSUPP,
+        "adding addresses to an interface is not supported"
+    );
+}
+
 fn iface_to_new_addrs(
     request_header: &CMsgSegHdr,
     requested_family: i32,

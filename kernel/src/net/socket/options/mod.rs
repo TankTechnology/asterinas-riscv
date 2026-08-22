@@ -41,4 +41,6 @@ impl_socket_options!(
     pub struct RecvBufForce(u32);
     pub struct PeerGroups(Arc<[Gid]>);
     pub struct Timestamp(bool);
+    pub struct SockDomain(i32);
+    pub struct SockProtocol(i32);
 );
