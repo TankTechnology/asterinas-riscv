@@ -33,6 +33,16 @@ pub fn sys_setns(fd: RawFileDesc, flags: u32, ctx: &Context) -> Result<SyscallRe
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid `setns` flags"))?;
     debug!("setns flags = {:?}", ns_type_flags);
 
+    if ns_type_flags.contains(CloneFlags::CLONE_NEWPID) {
+        // Joining a PID namespace via `setns` has deferred semantics (it only
+        // affects subsequently forked children) and is left for the next
+        // stage of PID namespace support.
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "setting a PID namespace is not supported yet"
+        );
+    }
+
     let file = {
         let file_table = ctx.thread_local.borrow_file_table();
         let file_table_locked = file_table.unwrap().read();

@@ -21,7 +21,9 @@ use crate::{
 /// any signal.
 pub fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<()> {
     // Fast path: If the signal is sent to self, we can skip most checks.
-    if pid == ctx.process.pid() {
+    // (Only valid in the initial PID namespace, where virtual PIDs equal
+    // global PIDs; in other namespaces the PID below is a virtual one.)
+    if ctx.process.pid_ns().is_init() && pid == ctx.process.pid() {
         let Some(signal) = signal else {
             return Ok(());
         };
@@ -36,9 +38,16 @@ pub fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<
     }
 
     // Slow path
-    let process = pid_table::pid_table_mut()
-        .get_process(pid)
-        .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process does not exist"))?;
+    //
+    // The PID is interpreted in the caller's PID namespace; processes outside
+    // the namespace are invisible and cannot be signaled.
+    let caller_pid_ns = ctx.process.pid_ns();
+    let process = if caller_pid_ns.is_init() {
+        pid_table::pid_table_mut().get_process(pid)
+    } else {
+        caller_pid_ns.process_of_vpid(pid)
+    }
+    .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process does not exist"))?;
 
     kill_process(&process, signal, ctx)
 }
