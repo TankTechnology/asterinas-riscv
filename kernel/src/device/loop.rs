@@ -28,7 +28,7 @@ use spin::Once;
 use crate::{
     context::current_userspace,
     device::{
-        Device, DeviceType, DevtmpfsInodeMeta, add_node,
+        Device, DeviceType, DevtmpfsInodeMeta,
         registry::char::{self, MajorIdOwner as CharMajorIdOwner},
     },
     events::IoEvents,
@@ -37,10 +37,7 @@ use crate::{
             FileLike, InodeHandle, PerOpenFileOps, SeekFrom, SettableStatusFlags, StatusFlags,
             file_table::WithFileTable,
         },
-        vfs::{
-            inode::FileOps,
-            path::{Path, PathResolver},
-        },
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::{
@@ -1019,10 +1016,11 @@ pub(super) fn init_in_first_kthread() {
     }
 }
 
-pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {
+pub(super) fn init_in_first_process() -> Result<()> {
     // /dev/loopN nodes are created automatically by the block registry
     // (block::init_in_first_process) which iterates all registered block
-    // devices. We only need to create /dev/loop-control manually.
+    // devices. The active char registry likewise creates /dev/loop-control
+    // when the control device is registered below.
 
     let ctl_major = char::allocate_major().expect("failed to allocate loop-control major");
     *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
@@ -1032,13 +1030,6 @@ pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> 
     );
     let ctl_device = LoopControlDevice::new(ctl_id);
     char::register(ctl_device).expect("failed to register loop-control");
-    let ctl_meta = DevtmpfsInodeMeta::new("loop-control");
-    add_node(
-        DeviceType::Char,
-        ctl_id.as_encoded_u64(),
-        &ctl_meta,
-        path_resolver,
-    )?;
 
     Ok(())
 }
