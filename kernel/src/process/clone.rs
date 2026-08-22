@@ -375,6 +375,17 @@ pub fn clone_child(
         }
 
         let child_pid = child_process.pid();
+        // Report the child's virtual PID in the caller's PID namespace, as
+        // in Linux: with `CLONE_NEWPID` (or after `unshare(CLONE_NEWPID)`)
+        // the child is a member of a nested namespace, in which the caller
+        // sees it under the virtual PID. The caller's namespace is always
+        // an ancestor of (or the same as) the child's, so the lookup cannot
+        // fail.
+        let caller_pid_ns = ctx.process.pid_ns().clone();
+        let child_pid = child_process
+            .pid_in_ns(&caller_pid_ns)
+            .map(|vpid| vpid as Tid)
+            .unwrap_or(child_pid);
         Ok(child_pid)
     }
 }

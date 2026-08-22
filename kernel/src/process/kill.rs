@@ -66,9 +66,20 @@ pub fn kill_group<S: Signal + Clone>(pgid: Pgid, signal: Option<S>, ctx: &Contex
         .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target group does not exist"))?;
 
     let mut result = Ok(());
+    let mut any_visible = false;
+
+    // Only group members visible in the caller's PID namespace can be
+    // signaled; if none are visible the group does not exist from the
+    // caller's point of view.
+    let caller_pid_ns = ctx.process.pid_ns().clone();
 
     let inner = process_group.lock();
     for process in inner.iter() {
+        if process.pid_in_ns(&caller_pid_ns).is_none() {
+            continue;
+        }
+        any_visible = true;
+
         let res = kill_process(
             &process,
             signal.clone().map(|s| Box::new(s) as Box<dyn Signal>),
@@ -77,6 +88,13 @@ pub fn kill_group<S: Signal + Clone>(pgid: Pgid, signal: Option<S>, ctx: &Contex
         if res.is_err_and(|err| err.error() != Errno::EPERM) {
             result = res;
         }
+    }
+
+    if !any_visible {
+        return_errno_with_message!(
+            Errno::ESRCH,
+            "the target group has no members in the caller's PID namespace"
+        );
     }
 
     result
@@ -136,8 +154,20 @@ pub fn tgkill(
 pub fn kill_all<S: Signal + Clone>(signal: Option<S>, ctx: &Context) -> Result<()> {
     let mut result = Ok(());
 
+    // Only processes visible in the caller's PID namespace are signaled
+    // (except the caller itself and the init process), as in Linux.
+    let caller_pid_ns = ctx.process.pid_ns().clone();
+
     for process in pid_table::pid_table_mut().iter_processes() {
         if Arc::ptr_eq(&ctx.process, &process) || process.is_init_process() {
+            continue;
+        }
+        if process.pid_in_ns(&caller_pid_ns).is_none() {
+            continue;
+        }
+        // The init of the caller's PID namespace is protected from
+        // `kill(-1)`, as in Linux.
+        if !caller_pid_ns.is_init() && process.is_ns_init() {
             continue;
         }
 

@@ -48,6 +48,18 @@ impl ContextUnshareAdminApi for Context<'_> {
     }
 
     fn unshare_namespaces(&self, flags: CloneFlags) -> Result<()> {
+        // Reject `CLONE_NEWPID` for multithreaded processes, as in Linux:
+        // a thread may share its process with other threads, but the PID
+        // namespace for children is a per-process property in effect.
+        if flags.contains(CloneFlags::CLONE_NEWPID)
+            && self.process.tasks().lock().as_slice().len() > 1
+        {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "`CLONE_NEWPID` cannot be unshared by a multithreaded process"
+            );
+        }
+
         // Create the new user namespace first: any other namespaces created
         // by the same `unshare` call are owned by it, and the calling process
         // is granted all capabilities within it (so an unprivileged caller
