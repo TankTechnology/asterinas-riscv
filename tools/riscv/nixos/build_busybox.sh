@@ -26,7 +26,7 @@ CROSS_PREFIX="riscv64-linux-gnu-"
 CC="${CROSS_PREFIX}gcc"
 JOBS="$(nproc)"
 
-# Applets to enable on top of allnoconfig. Each is a busybox Kconfig symbol
+# Applets to enable on top of allnoconfig. Each is a BusyBox Kconfig symbol
 # whose allnoconfig line reads `# CONFIG_<NAME> is not set`.
 readonly -a APPLETS=(
     ASH                             # sh (ash)
@@ -36,10 +36,10 @@ readonly -a APPLETS=(
     ECHO PRINTF TEST GREP FIND HEAD TAIL DD
     DF FREE UNAME SYNC STAT SLEEP KILL PIDOF
     TRUE FALSE YES
-    CP                          # LTP helpers shell out to cp (execve02, execveat01)
-    IP IPLINK IPADDR            # iproute2-lite for netlink guest verification (NIXOS-N1)
-    GETTY LOGIN                 # serial console login (systemd getty@ttyS0)
-    LOGGER HOSTNAME             # journald injection + hostname helper
+    CP                              # LTP helpers shell out to cp (execve02, execveat01)
+    IP IPLINK IPADDR                # iproute2-lite for netlink guest verification (NIXOS-N1)
+    GETTY LOGIN                     # serial console login
+    LOGGER HOSTNAME                 # journald injection + hostname helper
 )
 
 mkdir -p "${BUILD_ROOT}"
@@ -64,12 +64,12 @@ sed -i 's/^# CONFIG_FEATURE_SH_STANDALONE is not set$/CONFIG_FEATURE_SH_STANDALO
 
 # Internal /etc/passwd + /etc/group parsing. Static glibc cannot dlopen the NSS
 # "files" module, so libc getpwnam()/getgrnam() always fail in a static binary.
-# This makes busybox's login/getty read the passwd/group files directly.
+# This makes BusyBox's login/getty read the passwd/group files directly.
 sed -i 's/^# CONFIG_USE_BB_PWD_GRP is not set$/CONFIG_USE_BB_PWD_GRP=y/' .config
 
-# Internal DES crypt(). glibc >= 2.41 dropped libcrypt/crypt.h, but busybox's
+# Internal DES crypt(). glibc >= 2.41 dropped libcrypt/crypt.h, but BusyBox's
 # login applet still compiles pw_encrypt.c, which #includes <crypt.h> unless
-# USE_BB_CRYPT is set. Using busybox's own crypt avoids the missing header and
+# USE_BB_CRYPT is set. Using BusyBox's own crypt avoids the missing header and
 # the static-NSS password issue in one move (empty root password never calls it).
 sed -i 's/^# CONFIG_USE_BB_CRYPT is not set$/CONFIG_USE_BB_CRYPT=y/' .config
 

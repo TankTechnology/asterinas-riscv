@@ -10,11 +10,19 @@ from pathlib import Path
 
 from qemu_uboot_artifacts import (
     DEFAULT_ARTIFACTS,
-    DTB_EXPANSION_SIZE,
+    DTB_LEGACY_COMMAND_EXPANSION_SIZE,
     DTB_LOAD_ADDRESS,
+    DTB_MAX_SUPPORTED_EXPANSION_SIZE,
     INITRD_LOAD_ADDRESS,
     KERNEL_LOAD_ADDRESS,
     ArtifactExpectations,
+)
+from qemu_uboot_devices import (
+    HEADLESS,
+    QemuDeviceSet,
+    RuntimeDevicePaths,
+    render_device_argv,
+    validate_registered_device_set,
 )
 from qemu_uboot_profiles import (
     GENERIC_SV39,
@@ -90,8 +98,34 @@ def qemu_argv(
     slow_permit: object | None = None,
     guest_reboot: bool = False,
     snapshot_disk: bool = False,
+    device_set: QemuDeviceSet = HEADLESS,
+    device_paths: RuntimeDevicePaths | None = None,
 ) -> list[str]:
     """Construct the selected guarded QEMU U-Boot command line."""
+
+    validate_registered_device_set(device_set)
+    argv = _base_qemu_argv(
+        uboot=uboot,
+        boot_disk=boot_disk,
+        profile=profile,
+        slow_permit=slow_permit,
+        guest_reboot=guest_reboot,
+        snapshot_disk=snapshot_disk,
+    )
+    argv.extend(render_device_argv(device_set, device_paths))
+    return argv
+
+
+def _base_qemu_argv(
+    *,
+    uboot: Path,
+    boot_disk: Path,
+    profile: QemuUbootProfile = GENERIC_SV39,
+    slow_permit: object | None = None,
+    guest_reboot: bool = False,
+    snapshot_disk: bool = False,
+) -> list[str]:
+    """Construct the pre-device QEMU U-Boot command line."""
 
     if "," in os.fspath(boot_disk):
         raise ValueError("QEMU boot disk path must not contain a comma")
@@ -161,6 +195,57 @@ def _filesystem_plan(profile: QemuUbootProfile) -> tuple[list[BootCommand], str]
     raise AssertionError("unhandled registered storage transport")
 
 
+def _framebuffer_plan(device_set: QemuDeviceSet) -> tuple[BootCommand, ...]:
+    """Return the fixed firmware framebuffer update for a device contract."""
+
+    framebuffer = device_set.framebuffer
+    if framebuffer is None:
+        return ()
+    node = f"/framebuffer@{framebuffer.address:x}"
+    return (
+        BootCommand(
+            "framebuffer-resize",
+            f"fdt resize {DTB_MAX_SUPPORTED_EXPANSION_SIZE:#x}",
+            "=>",
+        ),
+        BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+        BootCommand("framebuffer-node", f"fdt mknode / {node[1:]}", "=>"),
+        BootCommand(
+            "framebuffer-compatible",
+            f'fdt set {node} compatible "simple-framebuffer"',
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-reg",
+            f"fdt set {node} reg <0x0 {framebuffer.address:#x} "
+            f"0x0 {framebuffer.size:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-width",
+            f"fdt set {node} width <{framebuffer.width:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-height",
+            f"fdt set {node} height <{framebuffer.height:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-stride",
+            f"fdt set {node} stride <{framebuffer.stride:#x}>",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-format",
+            f'fdt set {node} format "{framebuffer.pixel_format}"',
+            "=>",
+        ),
+        BootCommand("framebuffer-status", f'fdt set {node} status "okay"', "=>"),
+        BootCommand("framebuffer-verify", f"fdt print {node}", "simple-framebuffer"),
+    )
+
+
 def boot_commands(
     artifacts: ArtifactExpectations = DEFAULT_ARTIFACTS,
     *,
@@ -168,9 +253,11 @@ def boot_commands(
     scenario: BootScenario = BootScenario.POSITIVE,
     bootargs_override: str | None = None,
     variant: QemuUbootVariant | None = None,
+    device_set: QemuDeviceSet = HEADLESS,
 ) -> tuple[BootCommand, ...]:
     """Return the guarded command sequence for a registered U-Boot flow."""
 
+    validate_registered_device_set(device_set)
     validate_registered_profile(profile)
     if profile.boot_flow.actions != tuple(BootActionKind):
         raise ValueError("registered U-Boot flow has an unsupported action order")
@@ -252,7 +339,12 @@ def boot_commands(
             artifacts.dtb_crc32,
         ),
         BootCommand("dtb-select", f"fdt addr {dtb_address}", "Working FDT set"),
-        BootCommand("dtb-resize", f"fdt resize {DTB_EXPANSION_SIZE:#x}", "=>"),
+        BootCommand(
+            "dtb-resize",
+            f"fdt resize {DTB_LEGACY_COMMAND_EXPANSION_SIZE:#x}",
+            "=>",
+        ),
+        *_framebuffer_plan(device_set),
         BootCommand(
             "bootargs-env",
             f'setenv bootargs "{environment_bootargs}"',

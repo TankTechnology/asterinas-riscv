@@ -35,8 +35,9 @@ use crate::{
     },
     prelude::*,
     process::{
-        Pid,
+        Pid, PidNamespace,
         pid_table::{self, PidEntryType},
+        posix_thread::AsPosixThread,
     },
 };
 
@@ -176,10 +177,19 @@ impl RootDirOps {
 
 impl ProcDirOps for RootDirOps {
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
-        if let Ok(pid) = name.parse::<Pid>() {
+        if let Ok(vpid) = name.parse::<u32>() {
+            // The PID directory name is interpreted in the reading process's
+            // PID namespace.
             let pid_entry = {
+                let reader_ns = reader_pid_ns();
                 let pid_table = pid_table::pid_table_mut();
-                pid_table.get_entry(pid)
+                if reader_ns.is_init() {
+                    pid_table.get_entry(vpid)
+                } else {
+                    reader_ns
+                        .process_of_vpid(vpid)
+                        .and_then(|process| pid_table.get_entry(process.pid()))
+                }
             };
             if let Some(pid_entry) = pid_entry
                 && let Some(type_) = pid_entry.type_()
@@ -215,11 +225,17 @@ impl ProcDirOps for RootDirOps {
         )?;
 
         // Collect PIDs before visiting entries, as `visit_fn` may copy data to user memory.
+        //
+        // Only processes visible in the reading process's PID namespace are
+        // listed, under their virtual PIDs in that namespace.
         let process_pids = {
+            let reader_ns = reader_pid_ns();
             let pid_table = pid_table::pid_table_mut();
             pid_table
                 .iter_processes()
-                .filter_map(|process| usize::try_from(process.pid()).ok())
+                .filter_map(|process| process.pid_in_ns(&reader_ns))
+                .map(usize::try_from)
+                .filter_map(Result::ok)
                 .collect::<Vec<_>>()
         };
 
@@ -262,17 +278,35 @@ impl ProcDirOps for RootDirOps {
     }
 
     fn revalidate_absent(&self, name: &str) -> bool {
-        let Ok(pid) = name.parse::<Pid>() else {
+        let Ok(vpid) = name.parse::<u32>() else {
             return true;
         };
 
         let pid_entry = {
+            let reader_ns = reader_pid_ns();
             let pid_table = pid_table::pid_table_mut();
-            pid_table.get_entry(pid)
+            if reader_ns.is_init() {
+                pid_table.get_entry(vpid)
+            } else {
+                reader_ns
+                    .process_of_vpid(vpid)
+                    .and_then(|process| pid_table.get_entry(process.pid()))
+            }
         };
 
         pid_entry.is_none_or(|pid_entry| pid_entry.type_().is_none())
     }
+}
+
+/// Returns the PID namespace of the process reading procfs, used to filter
+/// and translate the PID entries under `/proc`.
+fn reader_pid_ns() -> Arc<PidNamespace> {
+    current_thread!()
+        .as_posix_thread()
+        .unwrap()
+        .process()
+        .pid_ns()
+        .clone()
 }
 
 type StaticEntry = StaticDirEntry<fn(Weak<dyn Inode>) -> Arc<dyn Inode>>;

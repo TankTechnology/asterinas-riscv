@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::{fs::file::file_table::FileTable, prelude::*, process::CloneFlags};
+use crate::{
+    fs::file::file_table::FileTable,
+    prelude::*,
+    process::{
+        CloneFlags, credentials::capabilities::CapSet, posix_thread::ContextPthreadAdminApi,
+    },
+};
 
 /// Provides administrative APIs for disassociating execution contexts.
 pub trait ContextUnshareAdminApi {
@@ -35,16 +41,28 @@ impl ContextUnshareAdminApi for Context<'_> {
     }
 
     fn unshare_sysvsem(&self) {
-        // TODO: Support unsharing System V semaphore.
-        warn!("unsharing System V semaphore is not supported");
+        // Unsharing the System V semaphore undo list is a no-op: `SEM_UNDO`
+        // itself is not supported yet, so there is no undo list whose
+        // sharing semantics could be observed.
+        debug!("unshare(CLONE_SYSVSEM) is accepted as a no-op (SEM_UNDO is not supported)");
     }
 
     fn unshare_namespaces(&self, flags: CloneFlags) -> Result<()> {
+        // Create the new user namespace first: any other namespaces created
+        // by the same `unshare` call are owned by it, and the calling process
+        // is granted all capabilities within it (so an unprivileged caller
+        // can, e.g., create a UTS namespace in the same call).
+        // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/fork.c#L3282>.
         if flags.contains(CloneFlags::CLONE_NEWUSER) {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "cloning a new user namespace is not supported"
-            );
+            let creator_euid = self.posix_thread.credentials().euid();
+            let new_user_ns = self.thread_local.borrow_user_ns().new_child(creator_euid);
+
+            let credentials = self.credentials_mut();
+            credentials.set_permitted_capset(CapSet::all());
+            credentials.set_effective_capset(CapSet::all());
+
+            *self.process.user_ns().lock() = new_user_ns.clone();
+            *self.thread_local.borrow_user_ns_mut() = new_user_ns;
         }
 
         let user_ns_ref = self.thread_local.borrow_user_ns();

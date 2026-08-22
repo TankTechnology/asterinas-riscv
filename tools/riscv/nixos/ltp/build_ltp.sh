@@ -11,11 +11,12 @@
 # limit or needs a second block device, both blocked kernel bugs — see
 # FOUNDATION-M2-report.md. The musl sysroot lacks the Linux UAPI headers, so we
 # -isystem the glibc cross sysroot's include dir (musl's own headers win). Only
-# the tests enabled in test/initramfs/src/conformance/ltp/testcases/all.txt are
-# packed, crossed against LTP's runtest/syscalls manifest.
+# the tests enabled by the selected closed suite are packed, crossed against
+# LTP's runtest/syscalls manifest.
 #
 # Options:
 #   --skip-compile   reuse already-built LTP binaries (fast re-pack)
+#   --suite NAME     package syscalls (default) or arch-riscv64
 
 set -euo pipefail
 
@@ -25,25 +26,66 @@ LTP_SRC="${REPO_ROOT}/target/ltp/src"
 ROOTFS="${REPO_ROOT}/target/ltp/rootfs"
 OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
-ALL_TESTS="${REPO_ROOT}/test/initramfs/src/conformance/ltp/testcases/all.txt"
+BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
+PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
 MUSL_ROOT="/usr/riscv64-linux-musl"
 MUSL_LIBC="${MUSL_ROOT}/lib/musl/lib/libc.so"
+GNU_UAPI_ROOT="/usr/riscv64-linux-gnu/include"
 JOBS="${JOBS:-16}"
+SUITE="syscalls"
 SKIP_COMPILE=0
 
-for arg in "$@"; do
-    case "${arg}" in
-        --skip-compile) SKIP_COMPILE=1 ;;
-        *) echo "unknown arg: ${arg}" >&2; exit 2 ;;
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --skip-compile) SKIP_COMPILE=1; shift ;;
+        --suite)
+            if [[ "$#" -lt 2 ]]; then
+                echo "--suite requires a value" >&2
+                exit 2
+            fi
+            SUITE="$2"; shift 2
+            ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-for tool in "${CC}" "${STRIP}"; do
+if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
+    gate=(
+        python3 "${REPO_ROOT}/tools/riscv/ltp_gate.py" build
+        --suite "${SUITE}"
+    )
+    if [[ "${SKIP_COMPILE}" -eq 1 ]]; then
+        gate+=(--skip-compile)
+    fi
+    exec "${gate[@]}"
+fi
+
+mapfile -t SUITE_FIELDS < <(
+    python3 "${REPO_ROOT}/tools/riscv/ltp_suite.py" describe \
+        --repo "${REPO_ROOT}" --suite "${SUITE}"
+)
+if [[ "${#SUITE_FIELDS[@]}" -ne 3 ]]; then
+    echo "failed to resolve LTP suite: ${SUITE}" >&2
+    exit 2
+fi
+ENABLED_TESTS="${SUITE_FIELDS[0]}"
+EXPECTED_SELECTED="${SUITE_FIELDS[1]}"
+EXPECTED_UNAVAILABLE="${SUITE_FIELDS[2]}"
+
+rm -f "${PACKAGE_IDENTITY}"
+
+for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
         echo "missing ${tool}" >&2
+        exit 2
+    fi
+done
+for input in "${MUSL_LIBC}" "${GNU_UAPI_ROOT}/linux/limits.h"; do
+    if [ ! -f "${input}" ]; then
+        echo "missing cross-build input ${input}" >&2
         exit 2
     fi
 done
@@ -51,6 +93,11 @@ if [ ! -d "${LTP_SRC}" ]; then
     echo "missing LTP source at ${LTP_SRC}" >&2
     echo "clone it with: git clone --depth 1 --branch 20260529 \\" >&2
     echo "    https://github.com/linux-test-project/ltp.git target/ltp/src" >&2
+    exit 2
+fi
+if [[ ! -x "${BUSYBOX}" ]]; then
+    echo "missing required BusyBox at ${BUSYBOX}" >&2
+    echo "build it with: tools/riscv/nixos/build_busybox.sh" >&2
     exit 2
 fi
 
@@ -62,7 +109,7 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     # CC/libc/flag switch does not leave a mixed build.
     [ -f Makefile ] && make clean >/dev/null 2>&1 || true
     CC="${CC}" DEBUG_CFLAGS="" \
-        CFLAGS="-O2 -fno-stack-protector -fPIC -isystem /usr/riscv64-linux-gnu/include" \
+        CFLAGS="-O2 -fno-stack-protector -fPIC -isystem ${GNU_UAPI_ROOT}" \
         LDFLAGS="" \
         ./configure --host=riscv64-linux-gnu --prefix=/opt/ltp \
         >/dev/null 2>&1 || { echo "configure failed" >&2; exit 2; }
@@ -102,27 +149,33 @@ mkdir -p "${ROOTFS}/opt/ltp/testcases/bin" \
 
 # musl getpwnam/getgrnam read these directly; without them LTP's "nobody"
 # lookups fail with ENOENT and break most tests.
-cp -f "${SRC_DIR}/etc-passwd" "${ROOTFS}/etc/passwd"
-cp -f "${SRC_DIR}/etc-group" "${ROOTFS}/etc/group"
+install -m 0644 "${SRC_DIR}/etc-passwd" "${ROOTFS}/etc/passwd"
+install -m 0644 "${SRC_DIR}/etc-group" "${ROOTFS}/etc/group"
 
-# Filter runtest/syscalls down to the tests enabled in all.txt, and copy only
-# those binaries.
-ENABLED="$(mktemp)"
-grep -vE '^\s*#' "${ALL_TESTS}" | grep -E '\S' > "${ENABLED}"
+# Select the complete validated manifest first. The selector records every
+# unavailable test instead of silently dropping it from the runtime evidence.
 FILTERED="${ROOTFS}/opt/ltp/runtest/syscalls"
-: > "${FILTERED}"
+UNAVAILABLE="${REPO_ROOT}/target/ltp/unavailable-tests.json"
+rm -f "${FILTERED}" "${UNAVAILABLE}"
+python3 "${REPO_ROOT}/tools/riscv/ltp_manifest.py" select \
+    --enabled "${ENABLED_TESTS}" \
+    --runtest "${LTP_SRC}/runtest/syscalls" \
+    --bin-dir "${STAGE}/opt/ltp/testcases/bin" \
+    --output "${FILTERED}" \
+    --unavailable-output "${UNAVAILABLE}" \
+    --expected-count "${EXPECTED_SELECTED}"
+
+ACTUAL_UNAVAILABLE="$(grep -c '"name"' "${UNAVAILABLE}")"
+if [[ "${ACTUAL_UNAVAILABLE}" -ne "${EXPECTED_UNAVAILABLE}" ]]; then
+    echo "expected ${EXPECTED_UNAVAILABLE} unavailable tests, got ${ACTUAL_UNAVAILABLE}" >&2
+    exit 2
+fi
+
+# Copy only the binaries referenced by the validated manifest.
 while read -r tag bin params; do
-    [ -z "${tag}" ] && continue
-    case "${tag}" in \#*) continue ;; esac
-    if grep -qx "${tag}" "${ENABLED}"; then
-        src="${STAGE}/opt/ltp/testcases/bin/${bin}"
-        if [ -f "${src}" ]; then
-            cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/${bin}"
-            echo "${tag} ${bin} ${params}" >> "${FILTERED}"
-        fi
-    fi
-done < "${LTP_SRC}/runtest/syscalls"
-rm -f "${ENABLED}"
+    cp -f "${STAGE}/opt/ltp/testcases/bin/${bin}" \
+        "${ROOTFS}/opt/ltp/testcases/bin/${bin}"
+done < "${FILTERED}"
 N_TESTS=$(grep -cE '\S' "${FILTERED}")
 
 # Copy the shared libraries the dynamic binaries need: musl libc at both the
@@ -137,17 +190,12 @@ cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/opt/ltp/lib/libltp.so"
 # posix_fadvise03, setrlimit04); without them the tests TBROK on a missing
 # helper rather than exercising the kernel. Layer a static busybox (built by
 # tools/riscv/nixos/build_busybox.sh) and the applet symlinks those tests use.
-BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
-if [ -x "${BUSYBOX}" ]; then
-    mkdir -p "${ROOTFS}/bin"
-    cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
-    for a in sh cat true echo test cp; do
-        ln -sf busybox "${ROOTFS}/bin/${a}"
-    done
-    echo "busybox applets: $(ls "${ROOTFS}/bin")"
-else
-    echo "WARN: no busybox at ${BUSYBOX} — shell-out tests will TBROK" >&2
-fi
+mkdir -p "${ROOTFS}/bin"
+cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
+for applet in sh cat true echo test cp; do
+    ln -sf busybox "${ROOTFS}/bin/${applet}"
+done
+echo "busybox applets: $(ls "${ROOTFS}/bin")"
 
 # Copy LTP resource files (helper binaries) that the Makefile install
 # target doesn't include but tests need at runtime.
@@ -167,6 +215,7 @@ find "${ROOTFS}/opt/ltp/testcases/bin" -type f -executable \
     -exec "${STRIP}" {} \; 2>/dev/null || true
 "${STRIP}" "${ROOTFS}/opt/ltp/lib/libltp.so" 2>/dev/null || true
 echo "manifest: ${N_TESTS} enabled tests"
+echo "suite: ${SUITE}"
 
 echo "=== build /init and /ltp_runner (static musl) ==="
 "${CC}" -O2 -static -no-pie -fno-stack-protector \
@@ -176,4 +225,10 @@ echo "=== build /init and /ltp_runner (static musl) ==="
 
 echo "=== pack initramfs ==="
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )
+python3 "${REPO_ROOT}/tools/riscv/ltp_package.py" publish \
+    --suite "${SUITE}" \
+    --initramfs "${OUTPUT}" \
+    --manifest "${FILTERED}" \
+    --unavailable "${UNAVAILABLE}" \
+    --output "${PACKAGE_IDENTITY}"
 echo "built ${OUTPUT} ($(wc -c < "${OUTPUT}") bytes, ${N_TESTS} tests)"

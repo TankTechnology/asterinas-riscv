@@ -97,6 +97,33 @@ pub fn tsc_freq() -> u64 {
     timer::get_timebase_freq()
 }
 
+/// Flushes the instruction cache so that freshly written code becomes
+/// executable.
+///
+/// This is the backend of the `riscv_flush_icache` system call: user-space
+/// JITs write code pages with data stores and must synchronize the
+/// instruction stream before executing them.
+///
+/// If `local_only` is set, only the current hart's instruction cache is
+/// flushed; otherwise all harts are flushed (via the SBI RFENCE extension).
+/// Note that flushing all harts is a safe superset of Linux's semantics,
+/// which only flush the harts the current address space has run on.
+pub fn flush_icache(local_only: bool) {
+    // SAFETY: Executing `fence.i` is always safe; it only synchronizes the
+    // instruction stream with data memory on the current hart.
+    unsafe { core::arch::asm!("fence.i", options(nostack)) };
+
+    if !local_only {
+        // An all-ones mask with base 0 covers every hart with hart ID smaller
+        // than the machine word width; QEMU virt and SiFive platforms number
+        // their harts from 0, so this covers all of them.
+        let ret = sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(!0, 0));
+        if ret.error != 0 {
+            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+        }
+    }
+}
+
 /// Reads the current value of the processor's time-stamp counter (TSC).
 pub fn read_tsc() -> u64 {
     riscv::register::time::read64()

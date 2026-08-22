@@ -1,0 +1,7 @@
+[Unit]
+Description=Graphical Interface
+Documentation=man:systemd.special(7)
+Requires=multi-user.target
+Wants=nix-activation.service nix-smoke.service dbus-smoke.service xorg.service matchbox-window-manager.service xpanel.service pcmanfm.service xterm.service netsurf.service
+After=multi-user.target
+AllowIsolate=yes

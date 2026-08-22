@@ -11,6 +11,7 @@
 // __LTP_GATE_FAIL__ lets the QEMU driver decide pass/fail.
 
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -24,12 +25,18 @@
 
 #define MAX_LINE 512
 #define MAX_ARGS 32
+#ifndef BIN_DIR
 #define BIN_DIR "/opt/ltp/testcases/bin"
+#endif
+#ifndef LOG_DIR
 #define LOG_DIR "/tmp/ltp_logs"
+#endif
 // QEMU TCG is ~100x slower than native; LTP's own guidance for slow machines is
 // to raise LTP_TIMEOUT_MUL. We default the per-test watchdog generously so slow
-// but correct tests (e.g. sendfile07's 65536-write fill loop) are not mis-killed.
+// but correct tests (e.g. sendfile07's 65536-write fill loop) are not killed incorrectly.
+#ifndef DEFAULT_TIMEOUT_SEC
 #define DEFAULT_TIMEOUT_SEC 300
+#endif
 
 static int timeout_sec = DEFAULT_TIMEOUT_SEC;
 static char timeout_mul_buf[16] = "8";
@@ -42,17 +49,28 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int log_has_token(const char *path, const char *tok) {
+static int log_has_result(const char *path, const char *token) {
     FILE *f = fopen(path, "r");
     if (!f)
         return 0;
     char buf[1024];
     int found = 0;
     while (fgets(buf, sizeof(buf), f)) {
-        if (strstr(buf, tok)) {
-            found = 1;
-            break;
+        char *cursor = buf;
+        while ((cursor = strstr(cursor, token))) {
+            char *after = cursor + strlen(token);
+            if ((cursor == buf || isspace((unsigned char)cursor[-1]))) {
+                while (isspace((unsigned char)*after))
+                    after++;
+                if (*after == ':') {
+                    found = 1;
+                    break;
+                }
+            }
+            cursor++;
         }
+        if (found)
+            break;
     }
     fclose(f);
     return found;
@@ -63,13 +81,17 @@ static int classify(const char *log_path, int status, int timed_out) {
         return R_TIMEOUT;
     if (WIFSIGNALED(status))
         return R_CRASH;
-    if (log_has_token(log_path, "TFAIL") || log_has_token(log_path, "TBROK"))
+    if (log_has_result(log_path, "TFAIL") ||
+        log_has_result(log_path, "TBROK") ||
+        log_has_result(log_path, "TWARN"))
         return R_FAIL;
-    if (log_has_token(log_path, "TCONF"))
-        return R_CONF;
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    if (!WIFEXITED(status))
         return R_FAIL;
-    return R_PASS;
+    if (WEXITSTATUS(status) != 0)
+        return WEXITSTATUS(status) == 32 && log_has_result(log_path, "TCONF")
+                   ? R_CONF
+                   : R_FAIL;
+    return log_has_result(log_path, "TPASS") ? R_PASS : R_FAIL;
 }
 
 static const char *verdict_name(int r) {
@@ -81,6 +103,12 @@ static const char *verdict_name(int r) {
     case R_TIMEOUT: return "TIMEOUT";
     }
     return "UNKNOWN";
+}
+
+static void kill_test_group(pid_t supervisor) {
+    if (supervisor <= 0)
+        return;
+    (void)kill(-supervisor, SIGKILL);
 }
 
 int main(int argc, char **argv) {
@@ -130,52 +158,86 @@ int main(int argc, char **argv) {
 
         char log_path[256];
         snprintf(log_path, sizeof(log_path), "%s/%s.log", LOG_DIR, tag);
+        printf("[RUN] %d %s\n", total + 1, tag);
+        fflush(stdout);
         int logfd = open(log_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
         if (logfd < 0)
             logfd = open("/dev/null", O_WRONLY);
 
         pid_t pid = fork();
         if (pid == 0) {
-            if (logfd >= 0) {
-                (void)dup2(logfd, 1);
-                (void)dup2(logfd, 2);
-                if (logfd > 2)
-                    (void)close(logfd);
+            // Keep the persistent runner one process away from tests that
+            // intentionally exercise kill()/process-group behavior.
+            (void)setpgid(0, 0);
+            pid_t test = fork();
+            if (test == 0) {
+                if (logfd >= 0) {
+                    (void)dup2(logfd, 1);
+                    (void)dup2(logfd, 2);
+                    if (logfd > 2)
+                        (void)close(logfd);
+                }
+                char env_path[512];
+                snprintf(env_path, sizeof(env_path), "%s:%s", BIN_DIR,
+                         "/usr/bin:/bin");
+                setenv("PATH", env_path, 1);
+                setenv("TMPDIR", "/tmp", 1);
+                setenv("LTPROOT", "/opt/ltp", 1);
+                setenv("LTP_TIMEOUT_MUL", timeout_mul_buf, 1);
+                setenv("LTP_COLORIZE_OUTPUT", "0", 1);
+                setenv("KCONFIG_SKIP_CHECK", "1", 1);
+                // Dynamic test binaries resolve libltp.so / libc.so here.
+                setenv("LD_LIBRARY_PATH", "/opt/ltp/lib", 1);
+                execv(binpath, args);
+                dprintf(2, "TBROK: cannot exec %s: %s\n", binpath,
+                        strerror(errno));
+                _exit(126);
             }
-            char env_path[512];
-            snprintf(env_path, sizeof(env_path), "%s:%s", BIN_DIR,
-                     "/usr/bin:/bin");
-            setenv("PATH", env_path, 1);
-            setenv("TMPDIR", "/tmp", 1);
-            setenv("LTPROOT", "/opt/ltp", 1);
-            setenv("LTP_TIMEOUT_MUL", timeout_mul_buf, 1);
-            setenv("LTP_COLORIZE_OUTPUT", "0", 1);
-            setenv("KCONFIG_SKIP_CHECK", "1", 1);
-            // Dynamic test binaries resolve libltp.so / libc.so here.
-            setenv("LD_LIBRARY_PATH", "/opt/ltp/lib", 1);
-            execv(binpath, args);
-            dprintf(2, "TCONF: cannot exec %s\n", binpath);
-            _exit(32);
+            if (test < 0)
+                _exit(125);
+
+            int test_status;
+            pid_t waited;
+            do {
+                waited = waitpid(test, &test_status, 0);
+            } while (waited < 0 && errno == EINTR);
+            if (waited < 0)
+                _exit(125);
+            if (WIFEXITED(test_status))
+                _exit(WEXITSTATUS(test_status));
+            if (WIFSIGNALED(test_status)) {
+                int test_signal = WTERMSIG(test_status);
+                (void)signal(test_signal, SIG_DFL);
+                (void)kill(getpid(), test_signal);
+                _exit(128 + test_signal);
+            }
+            _exit(125);
         }
+        if (pid > 0)
+            (void)setpgid(pid, pid);
 
         // Watchdog poll.
         long long start = now_ms();
-        int status = 0;
+        int status = 125 << 8;
         int timed_out = 0;
-        int done = 0;
+        int done = pid < 0;
         while (!done) {
             int w = waitpid(pid, &status, WNOHANG);
             if (w == pid || w < 0) {
                 done = 1;
             } else if (now_ms() - start > (long long)timeout_sec * 1000) {
                 timed_out = 1;
-                kill(pid, SIGKILL);
+                kill_test_group(pid);
                 waitpid(pid, &status, 0);
                 done = 1;
             } else {
                 usleep(10000);
             }
         }
+        // A normally exiting test may leave background descendants behind.
+        // They remain in the supervisor's process group, so close that group
+        // on every completion path before the next manifest entry starts.
+        kill_test_group(pid);
         if (logfd >= 0)
             close(logfd);
 

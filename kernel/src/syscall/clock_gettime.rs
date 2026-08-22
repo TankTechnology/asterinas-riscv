@@ -108,7 +108,7 @@ pub enum ClockId {
 pub(super) enum DynamicClockIdInfo {
     Pid(u32, DynamicClockType),
     Tid(u32, DynamicClockType),
-    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
+    #[cfg_attr(all(target_arch = "x86_64", not(ktest)), expect(dead_code))]
     Fd(u32),
 }
 

@@ -8,7 +8,7 @@
 //! importing its complexity: a PCM device node speaks the ALSA PCM protocol
 //! (magic `'A'`) and delegates the actual transport to a driver (currently the
 //! virtio-sound device). The first consumer is `/dev/snd/pcmC0D0p` (see
-//! [`crate::device::misc::sound`]).
+//! `crate::device::misc::sound`).
 //!
 //! The struct layouts in [`pcm`] are transcribed verbatim from
 //! `include/uapi/sound/asound.h` (LP64) so unmodified musl ALSA clients such as

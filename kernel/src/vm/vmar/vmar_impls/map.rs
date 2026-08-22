@@ -348,11 +348,14 @@ impl<'a> VmarMapOptions<'a> {
         // Parse the `Mappable` and prepare the `MappedMemory`.
         let (mapped_mem, io_mem) = match mappable {
             Some(Mappable::Vmo(vmo)) => {
-                if let Some(ref path) = path {
-                    debug_assert!(Arc::ptr_eq(
-                        &vmo,
-                        &path.inode().page_cache().unwrap().as_vmo().clone()
-                    ));
+                // For inode-backed files the mapped VMO must be the inode's page
+                // cache. Special files (e.g. the DRM char device) may map a
+                // standalone VMO that is not attached to any page cache, in which
+                // case the invariant does not apply.
+                if let Some(ref path) = path
+                    && let Some(page_cache) = path.inode().page_cache()
+                {
+                    debug_assert!(Arc::ptr_eq(&vmo, page_cache.as_vmo()));
                 }
 
                 let is_writable_tracked = if let Some(ref path) = path

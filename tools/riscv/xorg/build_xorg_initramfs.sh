@@ -22,7 +22,8 @@ mkdir -p "${ROOTFS}/lib" "${ROOTFS}/usr/lib" "${ROOTFS}/usr/bin" \
     "${ROOTFS}/usr/lib/xorg/modules/drivers" \
     "${ROOTFS}/usr/lib/xorg/modules/input" "${ROOTFS}/etc" \
     "${ROOTFS}/usr/share/X11/xkb" "${ROOTFS}/etc/fonts" "${ROOTFS}/usr/share/fonts" \
-    "${ROOTFS}/bin" "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp"
+    "${ROOTFS}/bin" "${ROOTFS}/dev" "${ROOTFS}/proc" "${ROOTFS}/sys" "${ROOTFS}/tmp" \
+    "${ROOTFS}/root"
 
 # /init launcher (static).
 "${CC}" -O2 -static -no-pie -o "${ROOTFS}/init" "${SRC_DIR}/init.c"
@@ -56,11 +57,25 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 
 # Desktop session clients (statically-linked riscv64 X11 apps).
-for cli in xwm xclient gtk-hello matchbox-window-manager xterm; do
+# pcmanfm (file manager) and xterm (terminal) are bundled as well; they cross
+# compile but previously pushed the initramfs past the kernel's ~20 MB
+# early-memory limit (fixed in the OSTD RISC-V boot path, see GTK-M3-report.md).
+for cli in gtk-hello matchbox-window-manager xpanel pcmanfm xterm; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"
     else
         echo "WARNING: ${CROSS_USR}/bin/${cli} not found; skipping" >&2
+    fi
+done
+
+# pcmanfm / libfm runtime data: GTK builder .ui files (dialogs), the file-type
+# icons (folder.png / unknown.png) the file list uses, and the .desktop menu
+# entries. These are architecture-independent text/png files. pcmanfm still
+# browses without them, but the file list shows generic (blank) icons.
+for d in pcmanfm libfm applications; do
+    if [ -d "${CROSS_USR}/share/${d}" ]; then
+        mkdir -p "${ROOTFS}/usr/share/${d}"
+        cp -rL "${CROSS_USR}/share/${d}/." "${ROOTFS}/usr/share/${d}/"
     fi
 done
 
@@ -103,11 +118,15 @@ else
 fi
 cp "${SRC_DIR}/fonts.conf" "${ROOTFS}/etc/fonts/fonts.conf"
 
-# terminfo database for xterm (the xterm entry + fallbacks are compiled into
-# libtinfo, but ship the DB for TERMINFO lookups).
-if [ -d "${CROSS_USR}/share/terminfo" ]; then
-    mkdir -p "${ROOTFS}/usr/share/terminfo"
-    cp -r "${CROSS_USR}/share/terminfo/." "${ROOTFS}/usr/share/terminfo/"
+# terminfo database for xterm. The full ncurses DB is ~12 MB of entries we
+# never use (xterm, linux, vt100 fallbacks are compiled into libtinfo via
+# --with-fallbacks). Shipping only the `x`/ directory keeps TERMINFO lookups
+# working for xterm while keeping the initramfs under the kernel's
+# early-memory limit (the full DB pushed it over and stalled the boot at
+# "Spawn the first kernel thread").
+if [ -d "${CROSS_USR}/share/terminfo/x" ]; then
+    mkdir -p "${ROOTFS}/usr/share/terminfo/x"
+    cp -r "${CROSS_USR}/share/terminfo/x/." "${ROOTFS}/usr/share/terminfo/x/"
 fi
 
 # Pack as newc cpio + gzip.
