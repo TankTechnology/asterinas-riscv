@@ -118,6 +118,17 @@ source-worktree experiment.
 The documented RISC-V SMP=4 ownership regression and completed code review are
 reused because none of these files changed in the consolidation branch.
 
+The audit also recorded distinct source identities so that the dirty
+experiment cannot be mistaken for admitted main code:
+
+| RISC-V USB worker | Blob |
+|---|---|
+| Current `origin/main` | `8d61d00dd04ab5307a6db1fe05450a2f3e688d15` |
+| Committed topic source | `d3b9f9e0bc7b7f815306c2f7949a704f54b5528b` |
+| Dirty source worktree | `a1d29a8a4793b90a8c223df023381829c9ea1e84` |
+
+Only the first blob is admission authority.
+
 ## Deferred PCI xHCI Contract
 
 The old PCI driver is not admitted.
