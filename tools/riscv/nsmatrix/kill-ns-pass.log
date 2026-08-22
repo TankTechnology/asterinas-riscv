@@ -1,0 +1,11 @@
+ok: pthread_create
+ok: multithreaded unshare(NEWPID) fails with EINVAL
+ok: unshare(NEWUSER)
+ok: unshare(NEWPID)
+ok: ns init getpid()==1
+ok: kill(-pgid) of invisible group fails with ESRCH
+ok: kill(-1, SIGTERM) from ns init
+ok: ns member killed by kill(-1)
+ok: ns init checks passed
+ok: outsider process unaffected by in-ns kill(-pgid)/kill(-1)
+KILL_NS_TEST_PASS
