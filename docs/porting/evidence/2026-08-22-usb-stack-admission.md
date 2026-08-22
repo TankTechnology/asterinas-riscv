@@ -83,9 +83,9 @@ The following files have identical Git blobs on the source topic and current
 - `tools/usb-hid/requirements.txt`;
 - `tools/usb-hid/tests/test_boot_keyboard_oracle.py`.
 
-Their tests were not repeated during this documentation-only consolidation.
-The byte-identical inputs preserve the recorded 49-test host result and the
-historical key-matrix evidence.
+The byte-identical inputs preserve the historical key-matrix evidence.
+The 49-test host oracle suite was also repeated before publication and passed
+in full.
 
 The admission audit compared the following blob identities directly:
 
@@ -115,8 +115,10 @@ Current main contains the reviewed follow-up series:
 
 This series supersedes both the original interrupt commit and the uncommitted
 source-worktree experiment.
-The documented RISC-V SMP=4 ownership regression and completed code review are
-reused because none of these files changed in the consolidation branch.
+The completed code review is reused because none of these files changed in the
+consolidation branch.
+A fresh full RISC-V OSTD KTest run with four harts exercised the admitted USB
+DMA and IRQ-supporting OSTD paths before publication.
 
 The audit also recorded distinct source identities so that the dirty
 experiment cannot be mistaken for admitted main code:
@@ -222,10 +224,27 @@ and mock-session tests before publication.
 | USB main-integration plan | SMP=4 IRQ ownership regression | Reused because IRQ source is unchanged |
 | USB main-integration plan | Four SMP=4 PCI BAR tests | Reused because PCI source is unchanged |
 | USB main-integration review | Critical 0, Important 0 | Reused for the accepted current-main implementation |
+| Fresh publication gate | `git diff --check origin/main...HEAD` | Passed |
+| Fresh publication gate | USB/HID host oracle | 49/49 passed |
+| Fresh publication gate | `aster-usb` RISC-V compile check | Passed for `riscv64imac-unknown-none-elf` |
+| Fresh publication gate | Combined OSTD/kernel RISC-V KTest compile | Passed; seven warnings are inherited from unchanged `origin/main` sources |
+| Fresh publication gate | Full OSTD RISC-V QEMU KTest, SMP=4 | 291/291 passed across four crates |
 
-No Cargo,
-KTest,
-or QEMU command is required for this documentation-only branch.
+This documentation-only branch does not invalidate production evidence.
+At publication time,
+the host oracle,
+RISC-V compilation,
+and full SMP=4 QEMU KTest gates were nevertheless repeated at the user's
+request.
+The QEMU run used the official
+`asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc` environment,
+the pinned 2026-07-21 Rust toolchain,
+the image-provided RISC-V vDSO,
+and `-snapshot` for the existing test disks.
+
+`cargo fmt --all -- --check` still reports formatting differences in
+unchanged Rust files inherited from `origin/main`.
+This branch changes no Rust file and does not rewrite that unrelated baseline.
 Any later `ADAPT` implementation invalidates only its affected evidence and
 must run focused tests plus a RISC-V SMP=4 cross-layer gate.
 
@@ -254,7 +273,7 @@ The final local audit established:
 - the frozen source worktree still contains exactly the known modified and
   untracked paths recorded above.
 
-No production test was invalidated,
-so no already-completed Cargo,
-KTest,
-or QEMU gate was repeated.
+No production test was invalidated.
+The fresh publication gates above were run as an additional admission check;
+the previously completed focused PCI and board-specific tests were not
+repeated.
