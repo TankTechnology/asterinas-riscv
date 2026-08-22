@@ -5,7 +5,10 @@
 use alloc::borrow::ToOwned;
 use core::num::NonZero;
 
-use aster_bigtcp::{iface::InterfaceType, wire::EthernetAddress};
+use aster_bigtcp::{
+    iface::{InterfaceFlags, InterfaceType},
+    wire::EthernetAddress,
+};
 
 use super::util::finish_response;
 use crate::{
@@ -57,6 +60,35 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
     Ok(response_segments)
 }
 
+/// Handles an RTM_SETLINK request to change interface flags.
+///
+/// The `Iface` trait is currently read-only, so only no-op flag changes
+/// (e.g. setting IFF_UP on an interface that is already up, which is what
+/// systemd's loopback setup does) are accepted; everything else fails with
+/// EOPNOTSUPP.
+pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
+    };
+
+    let Some(iface) = iter_all_ifaces().find(|iface| iface.index() == index.get()) else {
+        return_errno_with_message!(Errno::ENODEV, "no link found");
+    };
+
+    let current = iface.flags();
+    let target = (current & !body.change) | (body.flags & body.change);
+    if target != current {
+        return_errno_with_message!(
+            Errno::EOPNOTSUPP,
+            "changing interface flags is not supported"
+        );
+    }
+
+    Ok(Vec::new())
+}
+
 enum FilterBy<'a> {
     Index(u32),
     Name(&'a CStr),
@@ -104,9 +136,8 @@ impl<'a> FilterBy<'a> {
 // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#strict-checking>.
 
 fn validate_getlink_request(body: &LinkSegmentBody) -> Result<()> {
-    // FIXME: The Linux implementation also checks the `padding` and `change` fields,
-    // but these fields are lost during the conversion of a `CIfInfoMsg` to `LinkSegmentBody`.
-    // We should consider including the `change` field in `LinkSegmentBody`.
+    // FIXME: The Linux implementation also checks the `padding` field,
+    // but this field is lost during the conversion of a `CIfInfoMsg` to `LinkSegmentBody`.
     // Reference: <https://elixir.bootlin.com/linux/v6.13/source/net/core/rtnetlink.c#L4043>.
     if !body.flags.is_empty() || body.type_ != InterfaceType::NETROM {
         return_errno_with_message!(Errno::EINVAL, "the flags or the type is not valid");
@@ -147,6 +178,7 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
         type_: iface.type_(),
         index: NonZero::new(iface.index()),
         flags: iface.flags(),
+        change: InterfaceFlags::empty(),
     };
 
     // Linux may report dozens of attributes in a fixed order.

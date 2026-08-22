@@ -47,6 +47,7 @@ pub struct LinkSegmentBody {
     pub type_: InterfaceType,
     pub index: Option<NonZeroU32>,
     pub flags: InterfaceFlags,
+    pub change: InterfaceFlags,
 }
 
 impl TryFrom<CIfinfoMsg> for LinkSegmentBody {
@@ -57,12 +58,14 @@ impl TryFrom<CIfinfoMsg> for LinkSegmentBody {
         let type_ = InterfaceType::try_from(value.type_)?;
         let index = NonZeroU32::new(value.index);
         let flags = InterfaceFlags::from_bits_truncate(value.flags);
+        let change = InterfaceFlags::from_bits_truncate(value.change);
 
         Ok(Self {
             family,
             type_,
             index,
             flags,
+            change,
         })
     }
 }

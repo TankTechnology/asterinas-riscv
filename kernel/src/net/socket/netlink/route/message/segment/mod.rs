@@ -51,9 +51,10 @@ use crate::{
 #[derive(Debug)]
 pub enum RtnlSegment {
     NewLink(LinkSegment),
-    GetLink(LinkSegment),
+    SetLink(LinkSegment),
     NewAddr(AddrSegment),
     GetAddr(AddrSegment),
+    GetLink(LinkSegment),
     Done(DoneSegment),
     Error(ErrorSegment),
 }
@@ -61,9 +62,9 @@ pub enum RtnlSegment {
 impl ProtocolSegment for RtnlSegment {
     fn header(&self) -> &CMsgSegHdr {
         match self {
-            RtnlSegment::NewLink(link_segment) | RtnlSegment::GetLink(link_segment) => {
-                link_segment.header()
-            }
+            RtnlSegment::NewLink(link_segment)
+            | RtnlSegment::SetLink(link_segment)
+            | RtnlSegment::GetLink(link_segment) => link_segment.header(),
             RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
                 addr_segment.header()
             }
@@ -74,9 +75,9 @@ impl ProtocolSegment for RtnlSegment {
 
     fn header_mut(&mut self) -> &mut CMsgSegHdr {
         match self {
-            RtnlSegment::NewLink(link_segment) | RtnlSegment::GetLink(link_segment) => {
-                link_segment.header_mut()
-            }
+            RtnlSegment::NewLink(link_segment)
+            | RtnlSegment::SetLink(link_segment)
+            | RtnlSegment::GetLink(link_segment) => link_segment.header_mut(),
             RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
                 addr_segment.header_mut()
             }
@@ -97,6 +98,15 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETADDR) => {
                 AddrSegment::read_from(&header, reader)?.map(RtnlSegment::GetAddr)
             }
+            Ok(CSegmentType::NEWLINK) => {
+                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
+            }
+            Ok(CSegmentType::SETLINK) => {
+                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::SetLink)
+            }
+            Ok(CSegmentType::NEWADDR) => {
+                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::NewAddr)
+            }
             _ => {
                 let payload_len = header.calc_payload_len_with_padding(reader)?;
                 reader.skip_some(payload_len);
@@ -116,8 +126,8 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewAddr(addr_segment) => addr_segment.write_to(writer)?,
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,
-            RtnlSegment::GetAddr(_) | RtnlSegment::GetLink(_) => {
-                unreachable!("kernel should not write get requests to user space");
+            RtnlSegment::SetLink(_) | RtnlSegment::GetAddr(_) | RtnlSegment::GetLink(_) => {
+                unreachable!("kernel should not write set/get requests to user space");
             }
         }
         Ok(())
