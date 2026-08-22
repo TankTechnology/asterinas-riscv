@@ -114,6 +114,7 @@ exclude = [
     "kernel/libs/comp-sys/controlled",
     "osdk",
     "tools/sctrace",
+    "tools/vnc-capture",
 ]
 
 [workspace.lints.rust]
