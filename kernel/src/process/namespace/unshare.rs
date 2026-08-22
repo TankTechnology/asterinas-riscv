@@ -41,8 +41,10 @@ impl ContextUnshareAdminApi for Context<'_> {
     }
 
     fn unshare_sysvsem(&self) {
-        // TODO: Support unsharing System V semaphore.
-        warn!("unsharing System V semaphore is not supported");
+        // Unsharing the System V semaphore undo list is a no-op: `SEM_UNDO`
+        // itself is not supported yet, so there is no undo list whose
+        // sharing semantics could be observed.
+        debug!("unshare(CLONE_SYSVSEM) is accepted as a no-op (SEM_UNDO is not supported)");
     }
 
     fn unshare_namespaces(&self, flags: CloneFlags) -> Result<()> {
