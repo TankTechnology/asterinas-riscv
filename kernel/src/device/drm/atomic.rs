@@ -5,13 +5,15 @@
 //! Implements `DRM_IOCTL_MODE_ATOMIC` with support for:
 //! - `DRM_MODE_ATOMIC_TEST_ONLY` — validate-only mode
 //! - `DRM_MODE_ATOMIC_ALLOW_MODESET` — mode changes (MODE_ID blob)
+//! - `DRM_MODE_PAGE_FLIP_EVENT` — queue a flip-completion event on commit
 //! - Framebuffer commits (FB_ID → `present_fb`)
 
 use ostd::mm::VmIo;
 
 use super::{
-    DRM_MODE_ATOMIC_ALLOW_MODESET, DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_OBJECT_CONNECTOR,
-    DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE, DrmModeAtomic, kms,
+    DRM_MODE_ATOMIC_ALLOW_MODESET, DRM_MODE_ATOMIC_NONBLOCK, DRM_MODE_ATOMIC_TEST_ONLY,
+    DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE,
+    DRM_MODE_PAGE_FLIP_EVENT, DrmModeAtomic, kms,
     property::{PropertyManager, PropertyType, PropertyValue},
 };
 use crate::{
@@ -28,6 +30,16 @@ pub(super) fn mode_atomic(
     let req = cmd.read()?;
     let flags = req.flags;
     let count_props = req.count_props as usize;
+
+    if flags
+        & !(DRM_MODE_ATOMIC_TEST_ONLY
+            | DRM_MODE_ATOMIC_NONBLOCK
+            | DRM_MODE_ATOMIC_ALLOW_MODESET
+            | DRM_MODE_PAGE_FLIP_EVENT)
+        != 0
+    {
+        return_errno_with_message!(Errno::EINVAL, "unsupported atomic flags");
+    }
 
     if count_props == 0 {
         return Ok(0);
@@ -98,7 +110,15 @@ pub(super) fn mode_atomic(
     }
 
     // Commit the atomic changes
-    commit_atomic_state(handle, prop_mgr, &obj_ids, &prop_ids, &prop_values, flags)
+    commit_atomic_state(
+        handle,
+        prop_mgr,
+        &obj_ids,
+        &prop_ids,
+        &prop_values,
+        flags,
+        req.user_data,
+    )
 }
 
 /// Validate a single property value against its type and range.
@@ -144,6 +164,7 @@ fn commit_atomic_state(
     prop_ids: &[u32],
     prop_values: &[u64],
     flags: u32,
+    user_data: u64,
 ) -> Result<i32> {
     let mut new_fb_id: Option<u32> = None;
     let mut new_mode_blob: Option<u32> = None;
@@ -217,6 +238,9 @@ fn commit_atomic_state(
     // If we have a FB_ID, present it
     if let Some(fb_id) = new_fb_id {
         kms::present_fb(handle, fb_id)?;
+        if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+            handle.queue_flip_event(user_data);
+        }
     }
 
     Ok(0)

@@ -23,8 +23,9 @@ mod plane;
 mod property;
 mod virtio_gpu;
 
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, Ordering};
 
+use aster_time::read_monotonic_time;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
@@ -38,7 +39,7 @@ use crate::{
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
+    process::signal::{PollHandle, Pollable, Pollee},
     util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
@@ -102,7 +103,16 @@ const DRM_MODE_OBJECT_PLANE: u32 = 0xeeeeeeee;
 
 /// `DRM_MODE_ATOMIC_*` flags.
 const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0200;
 const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
+
+/// `DRM_MODE_PAGE_FLIP_*` flags. `DRM_MODE_PAGE_FLIP_EVENT` is also accepted
+/// in `DRM_IOCTL_MODE_ATOMIC` commit flags (as wlroots does).
+const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
+const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
+
+/// `DRM_EVENT_FLIP_COMPLETE` event type for `drm_event_vblank`.
+const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
 
 /// `DRM_PLANE_TYPE_PRIMARY` — the plane type enum value.
 const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
@@ -144,6 +154,8 @@ struct GpuManager {
     next_gem_id: AtomicU32,
     /// Property manager for atomic modesetting.
     property_manager: property::PropertyManager,
+    /// Monotonic page-flip sequence number (our "vblank counter").
+    flip_sequence: AtomicU32,
 }
 
 impl GpuManager {
@@ -157,6 +169,7 @@ impl GpuManager {
             gem_resources: SpinLock::new(BTreeMap::new()),
             next_gem_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
+            flip_sequence: AtomicU32::new(0),
         }
     }
 
@@ -317,6 +330,8 @@ struct DriHandle {
     gpu_manager: Arc<GpuManager>,
     node_type: DriNodeType,
     inner: SpinLock<DriInner>,
+    /// Notifies readers/pollers when page-flip events are queued.
+    pollee: Pollee,
 }
 
 #[derive(Debug)]
@@ -331,6 +346,8 @@ struct DriInner {
     current_height: u32,
     /// Current mode blob id (set via atomic MODE_ID property).
     mode_blob: Option<u32>,
+    /// Pending page-flip completion events, readable via `read()`.
+    events: VecDeque<DrmEventVblank>,
 }
 
 impl DriHandle {
@@ -352,13 +369,61 @@ impl DriHandle {
                 current_width,
                 current_height,
                 mode_blob: None,
+                events: VecDeque::new(),
             }),
+            pollee: Pollee::new(),
         }
     }
 
     /// Returns true if KMS ioctls are forbidden on this handle.
     fn is_render_node(&self) -> bool {
         matches!(self.node_type, DriNodeType::Render)
+    }
+
+    /// Queues a page-flip completion event for this file.
+    ///
+    /// Our present path is synchronous (the virtio-gpu control command has
+    /// completed by the time the ioctl returns), so the event is queued
+    /// immediately, right after the flip is applied.
+    fn queue_flip_event(&self, user_data: u64) {
+        let now = read_monotonic_time();
+        let sequence = self
+            .gpu_manager
+            .flip_sequence
+            .fetch_add(1, Ordering::Relaxed);
+        let event = DrmEventVblank {
+            type_: DRM_EVENT_FLIP_COMPLETE,
+            length: size_of::<DrmEventVblank>() as u32,
+            user_data,
+            tv_sec: now.as_secs() as u32,
+            tv_usec: now.subsec_micros(),
+            sequence,
+            crtc_id: CRTC_ID,
+        };
+        self.inner.lock().events.push_back(event);
+        self.pollee.notify(IoEvents::IN);
+    }
+
+    /// Pops pending page-flip events into `writer`.
+    fn read_events(&self, writer: &mut VmWriter) -> Result<usize> {
+        let max_events = writer.avail() / size_of::<DrmEventVblank>();
+        if max_events == 0 && writer.avail() != 0 {
+            return_errno_with_message!(Errno::EINVAL, "the buffer is too short for an event");
+        }
+
+        let mut inner = self.inner.lock();
+        let mut bytes = 0;
+        while bytes / size_of::<DrmEventVblank>() < max_events {
+            let Some(event) = inner.events.pop_front() else {
+                break;
+            };
+            writer.write_val(&event)?;
+            bytes += size_of::<DrmEventVblank>();
+        }
+        if bytes == 0 {
+            return_errno_with_message!(Errno::EAGAIN, "no pending DRM events");
+        }
+        Ok(bytes)
     }
 }
 
@@ -367,8 +432,19 @@ impl DriHandle {
 // ---------------------------------------------------------------------------
 
 impl Pollable for DriHandle {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        mask & IoEvents::OUT
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        self.pollee
+            .poll_with(mask, poller, || self.check_io_events())
+    }
+}
+
+impl DriHandle {
+    fn check_io_events(&self) -> IoEvents {
+        let mut events = IoEvents::OUT;
+        if !self.inner.lock().events.is_empty() {
+            events |= IoEvents::IN;
+        }
+        events
     }
 }
 
@@ -376,10 +452,14 @@ impl FileOps for DriHandle {
     fn read_at(
         &self,
         _offset: usize,
-        _writer: &mut VmWriter,
-        _status_flags: StatusFlags,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
     ) -> Result<usize> {
-        Ok(0)
+        if status_flags.contains(StatusFlags::O_NONBLOCK) {
+            return self.read_events(writer);
+        }
+        // Block until a page-flip event arrives.
+        self.wait_events(IoEvents::IN, None, || self.read_events(writer))
     }
 
     fn write_at(
@@ -411,7 +491,6 @@ impl PerOpenFileOps for DriHandle {
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl::*;
-
 
         // `RMFB` passes its argument by value, so it cannot go through the typed
         // dispatch below.
@@ -713,7 +792,13 @@ impl PerOpenFileOps for DriHandle {
                 if req.fb_id == 0 {
                     return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
                 }
+                if req.flags & !(DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC) != 0 {
+                    return_errno_with_message!(Errno::EINVAL, "unsupported page flip flags");
+                }
                 kms::present_fb(self, req.fb_id)?;
+                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+                    self.queue_flip_event(req.user_data);
+                }
                 Ok(0)
             }
             cmd @ ModeDirtyFb => {
@@ -1060,6 +1145,22 @@ struct DrmModeGetBlob {
     blob_id: u32,
     length: u32,
     data: u64,
+}
+
+/// `struct drm_event_vblank` — the payload delivered by `read()` on the DRM
+/// file for `DRM_EVENT_FLIP_COMPLETE` events.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h#L937>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmEventVblank {
+    type_: u32,
+    length: u32,
+    user_data: u64,
+    tv_sec: u32,
+    tv_usec: u32,
+    sequence: u32,
+    crtc_id: u32,
 }
 
 /// `struct drm_mode_crtc_page_flip`.
