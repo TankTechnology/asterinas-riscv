@@ -383,6 +383,11 @@ impl CTermios {
     pub fn local_flags(&self) -> &CLocalFlags {
         &self.c_lflags
     }
+
+    #[cfg(ktest)]
+    pub(super) fn local_flags_mut(&mut self) -> &mut CLocalFlags {
+        &mut self.c_lflags
+    }
 }
 
 /// The speeds stored outside legacy `struct termios`.

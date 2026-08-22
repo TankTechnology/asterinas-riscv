@@ -126,8 +126,14 @@ impl LineDiscipline {
         };
 
         if let Some(signum) = char_to_signal(ch, &self.termios) {
+            if !self.termios.local_flags().contains(CLocalFlags::NOFLSH) {
+                self.drain_input();
+            }
+            if self.termios.local_flags().contains(CLocalFlags::ECHO) {
+                self.output_char(ch, echo_callback);
+            }
             signal_callback(signum);
-            // CBREAK mode may require the character to be echoed, so just go ahead.
+            return Ok(());
         }
 
         // Typically, a TTY in raw mode does not echo. But the TTY can also be in a CBREAK mode,
@@ -362,7 +368,7 @@ fn is_ctrl_char(ch: u8) -> bool {
 }
 
 fn char_to_signal(ch: u8, termios: &CTermios) -> Option<SigNum> {
-    if !termios.is_canonical_mode() || !termios.local_flags().contains(CLocalFlags::ISIG) {
+    if !termios.local_flags().contains(CLocalFlags::ISIG) {
         return None;
     }
 
@@ -376,4 +382,32 @@ fn char_to_signal(ch: u8, termios: &CTermios) -> Option<SigNum> {
 fn ctrl_char_to_printable(ch: u8) -> u8 {
     debug_assert!(is_ctrl_char(ch));
     ch + b'A' - 1
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn isig_generates_signals_outside_canonical_mode() {
+        let mut line_discipline = LineDiscipline::new();
+        let mut termios = CTermios::default();
+        termios.local_flags_mut().remove(CLocalFlags::ICANON);
+        line_discipline.set_termios(termios);
+        let mut received_signal = None;
+
+        line_discipline.push_char(b'x', |_| {}, |_| {}).unwrap();
+        line_discipline
+            .push_char(
+                CCtrlCharId::VINTR.default_char(),
+                |signal| received_signal = Some(signal),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(received_signal, Some(SIGINT));
+        assert_eq!(line_discipline.buffer_len(), 0);
+    }
 }

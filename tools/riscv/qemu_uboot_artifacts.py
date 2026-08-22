@@ -44,7 +44,9 @@ DRAM_RANGE = range(0x8000_0000, 0x1_0000_0000)
 KERNEL_LOAD_ADDRESS = 0x8020_0000
 INITRD_LOAD_ADDRESS = 0x8300_0000
 DTB_LOAD_ADDRESS = 0x8800_0000
-DTB_EXPANSION_SIZE = 0x1000
+DTB_LEGACY_COMMAND_EXPANSION_SIZE = 0x1000
+DTB_RESIZE_ALIGNMENT = 0x1000
+DTB_MAX_SUPPORTED_EXPANSION_SIZE = 0x2000
 LINUX_IMAGE_HEADER_SIZE = 64
 LINUX_IMAGE_ENTRY_JUMP = 0x0400_006F
 LINUX_IMAGE_TEXT_OFFSET = 0x20_0000
@@ -106,7 +108,11 @@ def _validate_linux_image(image: bytes) -> None:
 
 
 def payload_ranges(artifacts: ArtifactExpectations) -> dict[str, range]:
-    """Return the occupied guest ranges, including DTB expansion space."""
+    """Return occupied guest ranges, including maximum DTB resize space."""
+
+    dtb_size_aligned = (
+        (artifacts.dtb_size + DTB_RESIZE_ALIGNMENT - 1) // DTB_RESIZE_ALIGNMENT
+    ) * DTB_RESIZE_ALIGNMENT
 
     return {
         "kernel": range(
@@ -119,7 +125,7 @@ def payload_ranges(artifacts: ArtifactExpectations) -> dict[str, range]:
         ),
         "dtb": range(
             DTB_LOAD_ADDRESS,
-            DTB_LOAD_ADDRESS + artifacts.dtb_size + DTB_EXPANSION_SIZE,
+            DTB_LOAD_ADDRESS + dtb_size_aligned + DTB_MAX_SUPPORTED_EXPANSION_SIZE,
         ),
     }
 

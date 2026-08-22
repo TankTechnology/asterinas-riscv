@@ -8,6 +8,7 @@ pub(crate) mod util;
 use core::{
     marker::PhantomData,
     ops::{Deref, Range},
+    ptr::NonNull,
 };
 
 use align_ext::AlignExt;
@@ -155,9 +156,19 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
         self.cache_policy
     }
 
+    /// Returns whether this is the sole handle to the underlying MMIO mapping.
+    pub(crate) fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.kvirt_area) == 1
+    }
+
     /// Returns the base virtual address of the MMIO range.
     fn base(&self) -> usize {
         self.kvirt_area.deref().start() + self.offset
+    }
+
+    /// Returns the base virtual address for an in-kernel MMIO driver.
+    pub(crate) fn as_non_null_ptr(&self) -> NonNull<u8> {
+        NonNull::new(self.base() as *mut u8).expect("an I/O mapping has a non-null base")
     }
 
     /// Validates that the offset range lies within the MMIO window.
@@ -257,11 +268,11 @@ impl IoMem<Insensitive> {
                 .base()
                 .checked_add(range.end)
                 .ok_or(Error::InvalidArgs)?;
-            crate::arch::mm::sync_io_mem_to_device(
+            return crate::arch::mm::sync_io_mem_to_device(
                 physical_range,
                 virtual_start..virtual_end,
                 self.cache_policy,
-            )
+            );
         }
 
         #[cfg(not(target_arch = "riscv64"))]

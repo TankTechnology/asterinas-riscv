@@ -79,6 +79,9 @@ mod top_half;
 pub use bottom_half::{register_bottom_half_handler_l1, register_bottom_half_handler_l2};
 pub use guard::{DisabledLocalIrqGuard, disable_local};
 pub use level::InterruptLevel;
+pub(crate) use top_half::PhasedCallbackSnapshot;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use top_half::snapshot_phased_callback;
 pub use top_half::{IrqCallbackFunction, IrqLine};
 
 use crate::{
