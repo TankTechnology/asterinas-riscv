@@ -115,7 +115,7 @@ impl NsProxy {
                 posix_thread,
                 CapSet::SYS_ADMIN,
             ))?;
-            builder.pid_ns(self.pid_ns.new_child());
+            builder.pid_ns(self.pid_ns.new_child(user_ns.clone()));
         }
 
         // TODO: Support other namespaces.
