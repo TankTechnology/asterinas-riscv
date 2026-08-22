@@ -323,6 +323,12 @@ impl Process {
             .map(|(_, vpid)| *vpid)
     }
 
+    /// Returns the process's virtual PID in its own PID namespace and in
+    /// every ancestor namespace, innermost first.
+    pub fn ns_vpids(&self) -> &[(Arc<PidNamespace>, u32)] {
+        &self.ns_vpids
+    }
+
     /// Returns whether this process is the init process of a non-initial
     /// PID namespace (i.e., virtual PID 1 in its own namespace).
     pub fn is_ns_init(&self) -> bool {
