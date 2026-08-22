@@ -233,8 +233,20 @@ fn is_covered_by_memory(fdt: &Fdt, start: usize, end: usize) -> bool {
             return false;
         };
         let base = region.starting_address as usize;
-        start >= base && end <= base + size
+        contains_range(base, size, start, end)
     })
+}
+
+/// Returns whether a nonempty range is covered by a non-overflowing region.
+fn contains_range(region_start: usize, region_size: usize, start: usize, end: usize) -> bool {
+    if start >= end {
+        return false;
+    }
+
+    let Some(region_end) = region_start.checked_add(region_size) else {
+        return false;
+    };
+    start >= region_start && end <= region_end
 }
 
 /// Checks that every MMU-capable CPU carries a local interrupt controller
@@ -317,4 +329,22 @@ unsafe extern "C" fn riscv_boot(hart_id: usize, device_tree_paddr: usize) -> ! {
     // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it
     // once after setting up necessary resources.
     unsafe { start_kernel() };
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::contains_range;
+    use crate::prelude::ktest;
+
+    #[ktest]
+    fn range_containment_rejects_invalid_and_overflowing_regions() {
+        assert!(contains_range(0x8000, 0x2000, 0x9000, 0xa000));
+        assert!(!contains_range(0x8000, 0x2000, 0xa000, 0x9000));
+        assert!(!contains_range(
+            usize::MAX - 0xfff,
+            0x2000,
+            usize::MAX - 0x800,
+            usize::MAX,
+        ));
+    }
 }
