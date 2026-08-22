@@ -1,0 +1,33 @@
+ok: readlink /proc/self/ns/pid
+ok: readlink /proc/self/ns/pid_for_children
+self ns: pid=pid:[4] pid_for_children=pid:[4]
+ok: initially pid == pid_for_children
+ok: unshare(NEWPID) as root
+ok: open own (initial) pid ns
+ok: privileged setns into ancestor pid ns fails with EINVAL
+ok: unshare(NEWUSER)
+ok: unshare(NEWPID)
+ok: readlink pid_for_children after unshare
+ok: readlink pid after unshare
+after unshare: pid=pid:[4] pid_for_children=pid:[10]
+ok: unshare(NEWPID) switched pid_for_children
+ok: unshare(NEWPID) kept pid namespace
+ns init global pid: 2
+ok: open /proc/<init>/ns/pid
+ok: setns(CLONE_NEWPID) into child ns
+ok: readlink pid after setns
+ok: readlink pid_for_children after setns
+ok: setns kept own pid namespace
+ok: setns switched pid_for_children to target
+ok: ns init getpid()==1
+ok: setns-joined child getpid()==2 (ns init is 1)
+ok: setns-joined child getppid()==0 (parent outside ns)
+ok: setns-joined child passed its checks
+ok: read NSpid of ns init
+NSpid line: NSpid:	2	1	1
+ok: NSpid shows <global>	1
+ok: pidfd_open(<ns init>)
+ok: setns(pidfd, CLONE_NEWPID)
+ok: open /proc/1/ns/pid
+ok: setns into ancestor pid ns is rejected
+SETNS_TEST_PASS
