@@ -1,5 +1,5 @@
 [Unit]
-Description=PCManFM file manager
+Description=GTK3 smoke window (bare X11, no WM)
 After=xorg.service
 Requires=xorg.service
 PartOf=graphical.target
@@ -10,9 +10,7 @@ KeyringMode=inherit
 Type=simple
 Environment=DISPLAY=:0
 Environment=HOME=/root
-Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
-ExecStart=/usr/bin/pcmanfm /
-Restart=always
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/bin/gtk3-hello
+Restart=on-failure
 RestartSec=2s
-StandardOutput=null
-StandardError=null

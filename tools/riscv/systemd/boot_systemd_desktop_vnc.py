@@ -67,7 +67,6 @@ WM_STARTED = b"Started Matchbox window manager"
 PANEL_STARTED = b"Started Xpanel"
 PCMANFM_STARTED = b"Started PCManFM file manager"
 XTERM_STARTED = b"Started XTerm terminal emulator"
-NETSURF_STARTED = b"Started NetSurf web browser"
 
 PANIC_MARKERS = [
     b"kernel panic", b"Kernel panic", b"page fault handler failed",
@@ -75,9 +74,8 @@ PANIC_MARKERS = [
 ]
 
 
-def uboot_commands(fb_addr: int, loglevel: str = "warn") -> list[tuple[str, str, str]]:
+def uboot_commands() -> list[tuple[str, str, str]]:
     """U-Boot command sequence: booti handoff + bochs framebuffer DTB injection."""
-    fb_node = f"framebuffer@{fb_addr:x}"
     return [
         ("version", "version", "U-Boot 2026"),
         ("virtio-scan", "virtio scan", "=>"),
@@ -86,17 +84,17 @@ def uboot_commands(fb_addr: int, loglevel: str = "warn") -> list[tuple[str, str,
         ("dtb-load", f"ext4load virtio 0:0 {DTB_LOAD:#x} /qemu-virt.dtb", "bytes read"),
         ("dtb-select", f"fdt addr {DTB_LOAD:#x}", "Working FDT set"),
         ("dtb-resize", "fdt resize 0x1000", "=>"),
-        ("pci-probe", "pci", "=>"),  # full PCI scan to assign BARs
-        ("fb-mknode", f"fdt mknode / {fb_node}", "=>"),
-        ("fb-compatible", f'fdt set /{fb_node} compatible "simple-framebuffer"', "=>"),
-        ("fb-reg", f"fdt set /{fb_node} reg <0x0 {fb_addr:#x} 0x0 0x1000000>", "=>"),
-        ("fb-width", f"fdt set /{fb_node} width <0x500>", "=>"),
-        ("fb-height", f"fdt set /{fb_node} height <0x400>", "=>"),
-        ("fb-stride", f"fdt set /{fb_node} stride <0x1400>", "=>"),
-        ("fb-format", f'fdt set /{fb_node} format "x8r8g8b8"', "=>"),
-        ("fb-status", f'fdt set /{fb_node} status "okay"', "=>"),
-        ("fb-verify", f"fdt print /{fb_node}", "simple-framebuffer"),
-        ("bootargs", f'setenv bootargs "console=ttyS0 loglevel={loglevel} init=/init"', "=>"),
+        ("pci-probe", "pci display 0.1.0", "=>"),
+        ("fb-mknode", "fdt mknode / framebuffer@40000000", "=>"),
+        ("fb-compatible", 'fdt set /framebuffer@40000000 compatible "simple-framebuffer"', "=>"),
+        ("fb-reg", "fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>", "=>"),
+        ("fb-width", "fdt set /framebuffer@40000000 width <0x500>", "=>"),
+        ("fb-height", "fdt set /framebuffer@40000000 height <0x400>", "=>"),
+        ("fb-stride", "fdt set /framebuffer@40000000 stride <0x1400>", "=>"),
+        ("fb-format", 'fdt set /framebuffer@40000000 format "x8r8g8b8"', "=>"),
+        ("fb-status", 'fdt set /framebuffer@40000000 status "okay"', "=>"),
+        ("fb-verify", "fdt print /framebuffer@40000000", "simple-framebuffer"),
+        ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=warn init=/init"', "=>"),
         ("initrd-load", f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz", "bytes read"),
         ("initrd-size-save", "setenv initrd_size ${filesize}", "=>"),
         ("booti", f"booti {KERNEL_LOAD:#x} {INITRD_LOAD:#x}:${{initrd_size}} {DTB_LOAD:#x}",
@@ -187,53 +185,32 @@ def main() -> int:
     parser.add_argument("--serial-log", type=Path, default=Path("/tmp/asterinas-sd-desktop.log"))
     parser.add_argument("--collect-timeout", type=float, default=300.0)
     parser.add_argument("--screenshot", type=Path, default=Path("/tmp/asterinas-sd-desktop.ppm"))
-    parser.add_argument("--boot-disk", type=Path, default=BOOT_DISK,
-                        help="override the U-Boot boot disk (e.g. an independent /tmp copy)")
-    parser.add_argument("--net", action="store_true",
-                        help="attach a virtio-net NIC via QEMU slirp user networking (guest 10.0.2.15/24, gw 10.0.2.2, dns 10.0.2.3)")
-    parser.add_argument("--settle-seconds", type=float, default=0.0,
-                        help="after the desktop is up, keep draining serial this long before the screendump (captures late-start units like NetSurf's network fetch)")
-    parser.add_argument("--init-timeout", type=float, default=300.0,
-                        help="max seconds to wait for the /init launcher marker; the kernel's 91 MB raw-cpio unpack + first-process spawn is non-deterministically slow under host contention (M5 §3.2 / M6 §3), so this must be generous")
-    parser.add_argument("--loglevel", type=str, default="warn",
-                        help="kernel log level passed via bootargs (e.g. warn|info|debug)")
-    parser.add_argument("--mon-sock", type=Path, default=MON_SOCK,
-                        help="QEMU monitor socket path (override to boot several guests in parallel)")
-    parser.add_argument("--smp", type=int, default=1,
-                        help="guest vCPU count (bump to 4 for faster guest execution)")
     args = parser.parse_args()
 
-    boot_disk = args.boot_disk
-    mon_sock = args.mon_sock
     if not UBOOT.exists():
         raise SystemExit(f"missing U-Boot: {UBOOT}")
-    if not boot_disk.exists():
-        raise SystemExit(f"missing boot disk: {boot_disk}")
-    if mon_sock.exists():
-        mon_sock.unlink()
+    if not BOOT_DISK.exists():
+        raise SystemExit(f"missing boot disk: {BOOT_DISK}")
+    if MON_SOCK.exists():
+        MON_SOCK.unlink()
 
     argv = [
         "qemu-system-riscv64",
         "-machine", "virt",
         "-cpu", "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
         "-m", "2G",
-        "-smp", str(args.smp),
-        "-display", "none",
+        "-smp", "1",
+        "-display", "vnc=127.0.0.1:1",
         "-no-reboot",
         "-kernel", str(UBOOT),
-        "-drive", f"if=none,format=raw,file={boot_disk},id=bootdisk",
-        "-device", "bochs-display",
+        "-drive", f"if=none,format=raw,file={BOOT_DISK},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
+        "-device", "bochs-display",
         "-device", "virtio-keyboard-device",
         "-device", "virtio-tablet-device",
         "-serial", "stdio",
-        "-monitor", f"unix:{mon_sock},server,nowait",
+        "-monitor", f"unix:{MON_SOCK},server,nowait",
     ]
-    if args.net:
-        argv.extend([
-            "-netdev", "user,id=net0",
-            "-device", "virtio-net-device,netdev=net0",
-        ])
 
     boot = Boot(argv, args.serial_log)
     reached = "timeout"
@@ -241,36 +218,7 @@ def main() -> int:
         print("[boot] waiting for U-Boot prompt", flush=True)
         boot.read_until(b"=> ", 60)
 
-        # --- Dynamic PCI BAR probing ---
-        # The bochs-display framebuffer address is not hardcoded — it depends on
-        # QEMU's PCI BAR assignment order.  We send a bare `pci` to trigger a
-        # PCI bus scan (which assigns BARs), then `pci bar 0.0.0` to read the
-        # BAR0 of the first device (bochs-display when it is placed before the
-        # virtio-blk-device on the QEMU command line).
-        FALLBACK_FB_ADDR = 0x4000_0000
-        fb_addr = FALLBACK_FB_ADDR
-
-        print("[uboot] pci-scan", flush=True)
-        boot.send("pci enum")
-        boot.read_until(b"=> ", 30)
-
-        print("[uboot] pci-bar-probe", flush=True)
-        boot.send("pci bar 0.1.0")
-        # U-Boot output: "BAR0: base=0xNNNNNNNN size=0xNNNNNNNN"
-        bar_output = boot.read_until(b"=> ", 30)
-        bar_text = bytes(boot.transcript[-3000:]).decode("utf-8", "replace")
-        # U-Boot pci bar output format (from pci_bar_show in cmd/pci.c):
-        #   ID   Base                Size                Width  Type
-        #   ----------------------------------------------------------
-        #    0   0x0000000040000000  0x0000000001000000  32     MEM   Prefetchable
-        bar_match = re.search(r"^\s*0\s+(0x[0-9a-fA-F]+)\s+", bar_text, re.MULTILINE)
-        if bar_match:
-            fb_addr = int(bar_match.group(1), 16)
-            print(f"[ok] bochs-display BAR0 = {fb_addr:#x}", flush=True)
-        else:
-            print(f"[warn] could not parse BAR0 from U-Boot; falling back to {FALLBACK_FB_ADDR:#x}", flush=True)
-
-        for name, text, expected in uboot_commands(fb_addr, args.loglevel):
+        for name, text, expected in uboot_commands():
             print(f"[uboot] {name}", flush=True)
             boot.send(text)
             if name == "booti":
@@ -281,7 +229,7 @@ def main() -> int:
                     boot.read_until(b"=> ", 30)
 
         print("[boot] waiting for /init launcher", flush=True)
-        boot.read_until(INIT_MARKER, args.init_timeout)
+        boot.read_until(INIT_MARKER, 120)
         print("[ok] /init reached (exec'ing systemd)", flush=True)
 
         # systemd runs forever; collect until the desktop is up or timeout.
@@ -309,22 +257,8 @@ def main() -> int:
     except TimeoutError as e:
         reached = "timeout"
         print(f"[boot] {e}", flush=True)
-    except RuntimeError as e:
-        # QEMU exited before we reached userspace (e.g. it crashed on launch or
-        # the kernel panicked and -no-reboot tore the machine down). Report and
-        # carry on to the screenshot/transcript tail instead of crashing.
-        reached = "serial-closed"
-        print(f"[boot] serial closed early: {e}", flush=True)
     finally:
-        if args.settle_seconds > 0:
-            print(f"[boot] settling {args.settle_seconds}s (draining serial)", flush=True)
-            settle_deadline = time.monotonic() + args.settle_seconds
-            while time.monotonic() < settle_deadline:
-                try:
-                    boot._drain(1.0)
-                except RuntimeError:
-                    break
-        screendump(mon_sock, args.screenshot)
+        screendump(MON_SOCK, args.screenshot)
         boot.close()
 
     raw = bytes(boot.transcript)
@@ -344,7 +278,6 @@ def main() -> int:
         "xpanel-started": PANEL_STARTED in clean,
         "pcmanfm-started": PCMANFM_STARTED in clean,
         "xterm-started": XTERM_STARTED in clean,
-        "netsurf-started": NETSURF_STARTED in clean,
         "emergency": EMERGENCY in clean,
     }
     panics = [m.decode() for m in PANIC_MARKERS if m in clean]

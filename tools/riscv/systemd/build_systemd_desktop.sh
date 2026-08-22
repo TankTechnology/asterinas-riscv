@@ -40,7 +40,7 @@ done
 # runtime data live in the same cross prefix.
 SD_BUILD="${REPO_ROOT}/target/riscv-cross/src/systemd-257.5/build-riscv"
 CROSS_USR="${REPO_ROOT}/target/riscv-cross/usr"
-GLIBC_LIB="${REPO_ROOT}/target/xorg-rootfs/lib"   # proven glibc 2.41 runtime
+GLIBC_LIB="/usr/riscv64-linux-gnu/lib"   # glibc 2.41 runtime from cross toolchain sysroot
 SYSROOT_LIB="/usr/riscv64-linux-gnu/lib"
 
 CC="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
@@ -113,7 +113,8 @@ if [[ -f "${BUSYBOX}" ]]; then
     cp "${BUSYBOX}" "${ROOTFS}/bin/busybox"
     ln -sf busybox "${ROOTFS}/bin/sh"
     for applet in ls cat echo mount umount mkdir rm ln mknod ps mountpoint \
-                  head tail grep find test true false sleep kill sync df free; do
+                  head tail grep find test true false sleep kill sync df free \
+                  stty; do
         ln -sf busybox "${ROOTFS}/bin/${applet}"
     done
 else
@@ -144,6 +145,17 @@ cat > "${ROOTFS}/etc/hosts" <<'EOF'
 ::1       localhost localhost.localdomain
 EOF
 
+# 6b. Manager default PATH. This rootfs is unmerged-usr and the busybox applet
+#     symlinks (ls, cat, sh, ...) live in /bin only, while this systemd build's
+#     compiled-in default service PATH excludes /bin — without this, shells
+#     spawned by services (e.g. xterm) cannot find `ls` ("sh: ls: not found").
+#     DBUS_SYSTEM_BUS_ADDRESS: dbus clients' compiled-in default socket path
+#     is the *host* prefix's var/run/dbus; point every service at the real one.
+cat > "${ROOTFS}/etc/systemd/system.conf" <<'EOF'
+[Manager]
+DefaultEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+EOF
+
 # 7. Unit set: default.target -> graphical.target -> multi-user.target ->
 #    basic.target, plus the desktop services. All unit files are versioned in
 #    tools/riscv/systemd/units/.
@@ -161,6 +173,130 @@ cp "${CROSS_USR}/lib/xorg/modules/drivers/fbdev_drv.so" "${ROOTFS}/usr/lib/xorg/
 cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/modules/input/"
 cp "${CROSS_USR}/lib/libxcvt.so.0.1.3" "${ROOTFS}/usr/lib/libxcvt.so.0.1.3"
 ln -sf libxcvt.so.0.1.3 "${ROOTFS}/usr/lib/libxcvt.so.0"
+
+# 8b. libudev for evdev_drv.so: the evdev input driver references udev_*
+#     symbols but has no DT_NEEDED for libudev, so the loader cannot pull it
+#     in automatically — xorg.service LD_PRELOADs /usr/lib/libudev.so.1.
+#     Without this Xorg dies with "undefined symbol: udev_new" (exit 127)
+#     right after keyboard init.
+if ls "${ROOTFS}/usr/lib/systemd"/libudev.so.1.* >/dev/null 2>&1; then
+    cp "${ROOTFS}/usr/lib/systemd"/libudev.so.1.* "${ROOTFS}/usr/lib/"
+    ln -sf "$(basename "${ROOTFS}/usr/lib"/libudev.so.1.*)" "${ROOTFS}/usr/lib/libudev.so.1"
+else
+    echo "WARNING: libudev.so.1 not found; evdev input will crash Xorg" >&2
+fi
+
+# 8c. D-Bus system bus (XFCE-M1): the reference dbus-daemon was cross-built
+#     into the prefix by build_dbus.sh (dynamic, glibc-only NEEDED). Xfce's
+#     session/notification/settings stack all talk over the system+session
+#     buses, so this lands before any Xfce package does.
+for tool in dbus-daemon dbus-launch dbus-send dbus-uuidgen dbus-monitor \
+            dbus-run-session dbus-update-activation-environment; do
+    if [ -f "${CROSS_USR}/bin/${tool}" ]; then
+        cp "${CROSS_USR}/bin/${tool}" "${ROOTFS}/usr/bin/${tool}"
+    else
+        echo "WARNING: ${tool} not found in cross prefix; D-Bus incomplete" >&2
+    fi
+done
+# dbus-daemon-launch-helper: setuid helper referenced by system.conf's
+# <servicehelper> directive (system service activation). The bus itself does
+# not need it for XFCE-M1, but shipping it keeps the config reference valid.
+if [ -f "${CROSS_USR}/libexec/dbus-daemon-launch-helper" ]; then
+    mkdir -p "${ROOTFS}/usr/libexec"
+    cp "${CROSS_USR}/libexec/dbus-daemon-launch-helper" "${ROOTFS}/usr/libexec/dbus-daemon-launch-helper"
+else
+    echo "WARNING: dbus-daemon-launch-helper not found; service activation will fail" >&2
+fi
+if [ -f "${CROSS_USR}/etc/dbus-1/system.conf" ]; then
+    mkdir -p "${ROOTFS}/etc/dbus-1"
+    cp "${CROSS_USR}/etc/dbus-1/system.conf" "${ROOTFS}/etc/dbus-1/"
+else
+    echo "WARNING: dbus system.conf not found; system bus will not start" >&2
+fi
+# The daemon's compiled-in default config path is the *host* prefix's
+# share/dbus-1/system.conf; the step-3 bridge maps that to /usr/share/dbus-1,
+# so ship the whole dir (config + system.d + system-services for activation).
+if [ -d "${CROSS_USR}/share/dbus-1" ]; then
+    mkdir -p "${ROOTFS}/usr/share/dbus-1"
+    cp -r "${CROSS_USR}/share/dbus-1/." "${ROOTFS}/usr/share/dbus-1/"
+fi
+# The stock configs carry baked *host* prefix paths (listen socket, pidfile,
+# include dirs, service helper); rewrite them to canonical guest locations.
+# Also strip <fork/> and <syslog/>: systemd Type=simple expects --nofork, and
+# the guest has no syslog daemon (dbus.service passes --nosyslog).
+PFX="${CROSS_USR}"
+for f in "${ROOTFS}/usr/share/dbus-1/system.conf" \
+         "${ROOTFS}/usr/share/dbus-1/session.conf" \
+         "${ROOTFS}/etc/dbus-1/system.conf"; do
+    [ -f "$f" ] || continue
+    sed -i -e "s|${PFX}/etc/dbus-1|/etc/dbus-1|g" \
+           -e "s|${PFX}/var/run/dbus|/run/dbus|g" \
+           -e "s|${PFX}|/usr|g" \
+           -e '/^[[:space:]]*<fork\/>/d' \
+           -e '/^[[:space:]]*<syslog\/>/d' \
+           -e '/^[[:space:]]*<pidfile>/d' "$f"
+done
+mkdir -p "${ROOTFS}/var/lib/dbus"
+
+# 8d. Xfce core libraries (XFCE-M2): shared-library closure cross-built by
+#     tools/riscv/xfce/build_xfce_{deps,libs}.sh into the same prefix. Copied
+#     as .so files (the M1 desktop clients were static, but xfwm4/xfce4-panel
+#     in M3 will link these dynamically). /usr/lib is in the guest loader's
+#     default search path. Skipped (with a warning) when the Xfce libs are not
+#     in the prefix, so this script still works for a matchbox-only image.
+if [ -f "${CROSS_USR}/lib/libxfce4ui-2.so.0" ]; then
+    ( cd "${CROSS_USR}/lib" && find . -maxdepth 1 \( -name '*.so' -o -name '*.so.*' \) | \
+      cpio -pdm --quiet "${ROOTFS}/usr/lib/" )
+    for tool in xfconfd xfce4-about xfce4-keyboard-shortcuts \
+                exo-open exo-desktop-item-edit exo-preferred-applications; do
+        [ -f "${CROSS_USR}/bin/${tool}" ] && cp "${CROSS_USR}/bin/${tool}" "${ROOTFS}/usr/bin/${tool}"
+    done
+    if [ -d "${CROSS_USR}/share/dbus-1/services" ]; then
+        mkdir -p "${ROOTFS}/usr/share/dbus-1/services"
+        cp "${CROSS_USR}/share/dbus-1/services/"*.service "${ROOTFS}/usr/share/dbus-1/services/"
+    fi
+    if [ -d "${CROSS_USR}/share/dbus-1/accessibility-services" ]; then
+        mkdir -p "${ROOTFS}/usr/share/dbus-1/accessibility-services"
+        cp "${CROSS_USR}/share/dbus-1/accessibility-services/"*.service "${ROOTFS}/usr/share/dbus-1/accessibility-services/"
+    fi
+    find "${ROOTFS}/usr/share/dbus-1/services" "${ROOTFS}/usr/share/dbus-1/accessibility-services" \
+        -name '*.service' -exec sed -i \
+            -e "s|${CROSS_USR}/libexec|/usr/libexec|g" \
+            -e "s|${CROSS_USR}/lib|/usr/lib|g" \
+            -e "s|${CROSS_USR}/bin|/usr/bin|g" {} + 2>/dev/null || true
+    # xfconfd installs to lib/xfce4/xfconf/ (D-Bus activated); at-spi2 helpers
+    # in libexec/ back GTK3's atk-bridge.
+    if [ -d "${CROSS_USR}/lib/xfce4" ]; then
+        mkdir -p "${ROOTFS}/usr/lib/xfce4"
+        cp -rL "${CROSS_USR}/lib/xfce4/." "${ROOTFS}/usr/lib/xfce4/"
+    fi
+    for helper in at-spi-bus-launcher at-spi2-registryd; do
+        if [ -f "${CROSS_USR}/libexec/${helper}" ]; then
+            mkdir -p "${ROOTFS}/usr/libexec"
+            cp "${CROSS_USR}/libexec/${helper}" "${ROOTFS}/usr/libexec/${helper}"
+        fi
+    done
+    for d in exo garcon xfce4 xfconf; do
+        if [ -d "${CROSS_USR}/share/${d}" ]; then
+            mkdir -p "${ROOTFS}/usr/share/${d}"
+            cp -rL "${CROSS_USR}/share/${d}/." "${ROOTFS}/usr/share/${d}/"
+        fi
+    done
+    # shared-mime-info database (garcon/glib MIME lookup) + gsettings schemas
+    # (compiled at assembly time with the HOST glib-compile-schemas).
+    if [ -d "${CROSS_USR}/share/mime" ]; then
+        mkdir -p "${ROOTFS}/usr/share/mime"
+        cp -rL "${CROSS_USR}/share/mime/." "${ROOTFS}/usr/share/mime/"
+    fi
+    if [ -d "${CROSS_USR}/share/glib-2.0/schemas" ]; then
+        mkdir -p "${ROOTFS}/usr/share/glib-2.0/schemas"
+        cp "${CROSS_USR}/share/glib-2.0/schemas/"*.gschema.xml "${ROOTFS}/usr/share/glib-2.0/schemas/" 2>/dev/null || true
+        glib-compile-schemas "${ROOTFS}/usr/share/glib-2.0/schemas" || true
+    fi
+    find "${ROOTFS}/usr/lib" -name '*.so.*' -type f -exec "${STRIP}" --strip-unneeded {} + 2>/dev/null || true
+else
+    echo "NOTE: Xfce libs not in cross prefix; skipping XFCE-M2 payload (matchbox-only image)" >&2
+fi
 
 # 9. Desktop session clients (matchbox-wm/xpanel/pcmanfm/xterm/netsurf-gtk are
 #    dynamic or static; all resolve against the glibc runtime in /lib).
@@ -187,11 +323,24 @@ fi
 # 10. xkbcomp (static riscv64). Xorg compiles keymaps by shelling out to xkbcomp
 #     at its configure-time XKB_BIN_DIRECTORY (the host cross prefix). The
 #     baked-host-path bridge from step 3 maps that to /usr/bin, so we place it
-#     there.
-if [ -f "${CROSS_USR}/bin/xkbcomp" ]; then
+#     there. We ship the xkbcomp-stub (which emits a pre-compiled keymap) as
+#     /usr/bin/xkbcomp to avoid the real xkbcomp's shell/pipe overhead.
+if [ -f "${SRC_DIR}/xkbcomp-stub" ]; then
+    cp "${SRC_DIR}/xkbcomp-stub" "${ROOTFS}/usr/bin/xkbcomp"
+elif [ -f "${CROSS_USR}/bin/xkbcomp" ]; then
     cp "${CROSS_USR}/bin/xkbcomp" "${ROOTFS}/usr/bin/xkbcomp"
 else
-    echo "WARNING: ${CROSS_USR}/bin/xkbcomp not found; Xorg keyboard init will fail" >&2
+    echo "WARNING: xkbcomp/xkbcomp-stub not found; Xorg keyboard init will fail" >&2
+fi
+
+# 10b. Pre-compiled keymap for Xorg's XkbCompiledKeymap option. This lets Xorg
+#      load the keymap directly from /etc/xkb/default.xkm without shelling out
+#      to xkbcomp at all, avoiding the busybox sh fork overhead.
+if [ -f "${SRC_DIR}/default.xkm" ]; then
+    mkdir -p "${ROOTFS}/etc/xkb"
+    cp "${SRC_DIR}/default.xkm" "${ROOTFS}/etc/xkb/default.xkm"
+else
+    echo "WARNING: default.xkm not found; Xorg will fall back to xkbcomp" >&2
 fi
 
 # 11. xorg.conf (fbdev + evdev) and the XKB rules/symbols/keycodes data.
@@ -324,6 +473,15 @@ fi
 if [ -d "${CROSS_USR}/share/terminfo/x" ]; then
     mkdir -p "${ROOTFS}/usr/share/terminfo/x"
     cp -r "${CROSS_USR}/share/terminfo/x/." "${ROOTFS}/usr/share/terminfo/x/"
+fi
+
+# 14b. XTerm app-defaults: backarrowKey=false so xterm sends DEL (0x7f) for
+#      backspace, matching the kernel tty's default VERASE (termio.rs: b'\x7f').
+#      Without this, xterm defaults to backarrowKey=true → sends ^H, which the
+#      line discipline doesn't recognise as erase, so bash sees literal ^H chars.
+if [ -f "${CROSS_USR}/lib/X11/app-defaults/XTerm" ]; then
+    mkdir -p "${ROOTFS}/usr/lib/X11/app-defaults"
+    cp "${CROSS_USR}/lib/X11/app-defaults/XTerm" "${ROOTFS}/usr/lib/X11/app-defaults/XTerm"
 fi
 
 # 15. Pack as raw newc cpio (no gzip — see header comment).
