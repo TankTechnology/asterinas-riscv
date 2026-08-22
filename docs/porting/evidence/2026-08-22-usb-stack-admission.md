@@ -150,6 +150,14 @@ layout.
 Generic Asterinas PCI MSI-X support therefore does not, by itself, satisfy the
 USB runtime contract.
 
+The committed PCI driver blob is
+`19f2d0454c29cba2b35139cd184a01dda93f6f94`.
+The dirty follow-up blob is
+`43786f621d84124bdeb0136f81f9a64987917c14`.
+Neither exists on `origin/main`,
+and neither is admission-ready.
+They remain recoverable from the frozen topic worktree.
+
 ## Input and Generated-State Cleanup
 
 The admitted USB worker registers a standard input device and submits decoded
