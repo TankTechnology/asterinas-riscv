@@ -244,7 +244,14 @@ impl GpuDevice {
         hot_x: u32,
         hot_y: u32,
     ) -> Result<(), VirtioDeviceError> {
-        self.send_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, resource_id, x, y, hot_x, hot_y)
+        self.send_cursor(
+            VIRTIO_GPU_CMD_UPDATE_CURSOR,
+            resource_id,
+            x,
+            y,
+            hot_x,
+            hot_y,
+        )
     }
 
     /// Sends a cursor-queue command (`UPDATE_CURSOR` or `MOVE_CURSOR`).
@@ -384,7 +391,7 @@ impl GpuDevice {
         req_slice.write_val(attach_len, &entry).unwrap();
 
         let mut queue = self.control_queue.lock();
-        let code = submit_control(
+        let (code, _) = submit_control(
             &mut queue,
             &self.control_buf,
             req_len,
@@ -472,6 +479,7 @@ impl GpuDevice {
     }
 
     /// 3D: create a 3D resource (texture, render target, or buffer).
+    #[expect(clippy::too_many_arguments)]
     pub fn resource_create_3d(
         &self,
         resource_id: u32,
@@ -570,11 +578,7 @@ impl GpuDevice {
     }
 
     /// 3D: submit a virgl command buffer to the host.
-    pub fn submit_3d(
-        &self,
-        size: u32,
-        data: &[u8],
-    ) -> Result<(), VirtioDeviceError> {
+    pub fn submit_3d(&self, size: u32, data: &[u8]) -> Result<(), VirtioDeviceError> {
         use super::VirtioGpuCmdSubmit;
         let req = VirtioGpuCmdSubmit {
             hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_SUBMIT_3D),
@@ -584,7 +588,7 @@ impl GpuDevice {
         let req_len = size_of::<VirtioGpuCmdSubmit>();
         let total_len = req_len + size as usize;
 
-        let req_slice = aster_util::mem_obj_slice::Slice::new(
+        let req_slice = Slice::new(
             self.control_buf.clone(),
             CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
         );
@@ -592,7 +596,7 @@ impl GpuDevice {
         req_slice.write_bytes(req_len, data).unwrap();
 
         let mut queue = self.control_queue.lock();
-        let code = submit_control(
+        let (code, _) = submit_control(
             &mut queue,
             &self.control_buf,
             total_len,
@@ -617,7 +621,7 @@ impl GpuDevice {
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET_INFO {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
-        let resp_slice = aster_util::mem_obj_slice::Slice::new(
+        let resp_slice = Slice::new(
             self.control_buf.clone(),
             CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
         );
@@ -627,11 +631,7 @@ impl GpuDevice {
     }
 
     /// 3D: fetch the capset data blob from the device.
-    pub fn get_capset(
-        &self,
-        capset_id: u32,
-        version: u32,
-    ) -> Result<alloc::vec::Vec<u8>, VirtioDeviceError> {
+    pub fn get_capset(&self, capset_id: u32, version: u32) -> Result<Vec<u8>, VirtioDeviceError> {
         let req = super::VirtioGpuGetCapset {
             hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_GET_CAPSET),
             capset_id,
@@ -642,32 +642,49 @@ impl GpuDevice {
         let info = self.get_capset_info(capset_id)?;
         let capset_size = info.capset_max_size as usize;
         if capset_size == 0 {
-            return Ok(alloc::vec::Vec::new());
+            return Ok(Vec::new());
         }
 
+        // The device returns the actual capset size, which may be smaller
+        // than the advertised maximum.
         let resp_len = size_of::<VirtioGpuCtrlHdr>() + capset_size;
+        let req_len = size_of::<super::VirtioGpuGetCapset>();
+        let req_slice = Slice::new(
+            self.control_buf.clone(),
+            CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len,
+        );
+        req_slice.write_val(0, &req).unwrap();
+
         let mut queue = self.control_queue.lock();
-        let code = control_cmd(&mut queue, &self.control_buf, &req, resp_len)?;
+        let (code, used_len) = submit_control(&mut queue, &self.control_buf, req_len, resp_len)?;
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
 
-        let resp_slice = aster_util::mem_obj_slice::Slice::new(
+        let data_len = used_len.saturating_sub(size_of::<VirtioGpuCtrlHdr>());
+        let resp_slice = Slice::new(
             self.control_buf.clone(),
             CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
         );
         resp_slice.sync_from_device().unwrap();
-        let mut data = alloc::vec![0u8; capset_size];
-        resp_slice.read_bytes(size_of::<VirtioGpuCtrlHdr>(), &mut data).unwrap();
+        let mut data = alloc::vec![0u8; data_len];
+        resp_slice
+            .read_bytes(size_of::<VirtioGpuCtrlHdr>(), &mut data)
+            .unwrap();
         Ok(data)
     }
 
     /// 3D: transfer data from guest to host for a 3D resource.
+    #[expect(clippy::too_many_arguments)]
     pub fn transfer_to_host_3d(
         &self,
         resource_id: u32,
-        x: u32, y: u32, z: u32,
-        w: u32, h: u32, d: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
         offset: u64,
         level: u32,
         stride: u32,
@@ -693,11 +710,16 @@ impl GpuDevice {
     }
 
     /// 3D: transfer data from host to guest for a 3D resource.
+    #[expect(clippy::too_many_arguments)]
     pub fn transfer_from_host_3d(
         &self,
         resource_id: u32,
-        x: u32, y: u32, z: u32,
-        w: u32, h: u32, d: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
         offset: u64,
         level: u32,
         stride: u32,
@@ -764,14 +786,18 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
 }
 
 /// Submits a control request of `req_len` bytes (already written into the
-/// buffer by the caller) and waits for a `resp_len`-byte response, returning
-/// the response type code.
+/// buffer by the caller) and waits for a response of at most `resp_len`
+/// bytes, returning the response type code and the actual used length.
+///
+/// The device may legitimately write fewer bytes than the buffer size (for
+/// example `GET_CAPSET` returns the actual capset size, not the maximum),
+/// so the used length is validated against the header size, not `resp_len`.
 fn submit_control(
     queue: &mut VirtQueue,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_len: usize,
-) -> Result<u32, VirtioDeviceError> {
+) -> Result<(u32, usize), VirtioDeviceError> {
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.sync_to_device().unwrap();
 
@@ -783,15 +809,15 @@ fn submit_control(
         queue.notify();
     }
 
-    loop {
-        if queue.pop_used_with_min_bytes(resp_len).is_ok() {
-            break;
+    let used_len = loop {
+        if let Ok((_, len)) = queue.pop_used_with_min_bytes(size_of::<VirtioGpuCtrlHdr>()) {
+            break (len as usize).min(resp_len);
         }
         spin_loop();
-    }
+    };
 
     resp_slice.sync_from_device().unwrap();
-    Ok(resp_slice.read_val::<u32>(0).unwrap())
+    Ok((resp_slice.read_val::<u32>(0).unwrap(), used_len))
 }
 
 /// Sends a fixed-size control request and waits for its response.
@@ -804,7 +830,8 @@ fn control_cmd<T: ostd_pod::Pod>(
     let req_len = size_of::<T>();
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.write_val(0, req).unwrap();
-    submit_control(queue, buf, req_len, resp_len)
+    let (code, _used_len) = submit_control(queue, buf, req_len, resp_len)?;
+    Ok(code)
 }
 
 /// Submits a cursor-queue request and waits for the device to return the buffer.
