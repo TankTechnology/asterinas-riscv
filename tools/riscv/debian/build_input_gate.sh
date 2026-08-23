@@ -97,6 +97,7 @@ trap 'exit 143' TERM
     "$SOURCE" \
     -o "$STAGE/init"
 chmod 0755 "$STAGE/init"
+chmod 0755 "$STAGE"
 touch -d "@$SOURCE_DATE_EPOCH" "$STAGE/init" "$STAGE"
 
 OUTPUT_DIR="$(dirname -- "$OUTPUT")"
@@ -112,5 +113,6 @@ if [[ ! -s "$OUTPUT_TMP" ]]; then
     exit 1
 fi
 
-mv -- "$OUTPUT_TMP" "$OUTPUT"
+chmod 0644 "$OUTPUT_TMP"
+mv -T -- "$OUTPUT_TMP" "$OUTPUT"
 OUTPUT_TMP=""

@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -13,6 +14,39 @@ import unittest
 from pathlib import Path
 
 from tools.riscv.debian import input_gate as gate
+
+
+def parse_newc_entries(archive: bytes) -> list[tuple[str, int, int, int, int]]:
+    entries = []
+    offset = 0
+
+    while True:
+        header = archive[offset : offset + 110]
+        if header[:6] != b"070701":
+            raise ValueError("invalid newc header")
+
+        fields = tuple(
+            int(header[field_offset : field_offset + 8], 16)
+            for field_offset in range(6, 110, 8)
+        )
+        mode, uid, gid = fields[1:4]
+        mtime = fields[5]
+        file_size = fields[6]
+        name_size = fields[11]
+
+        name_start = offset + 110
+        name_end = name_start + name_size
+        name_bytes = archive[name_start:name_end]
+        if not name_bytes.endswith(b"\0"):
+            raise ValueError("unterminated newc member name")
+        name = name_bytes[:-1].decode()
+
+        data_start = (name_end + 3) & ~3
+        offset = (data_start + file_size + 3) & ~3
+        if name == "TRAILER!!!":
+            return entries
+
+        entries.append((name, mode, uid, gid, mtime))
 
 
 class InputGateBuilderTests(unittest.TestCase):
@@ -146,6 +180,91 @@ class InputGateBuilderTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("SOURCE_DATE_EPOCH", result.stderr)
                     self.assertFalse(output.exists())
+
+    def test_existing_directory_is_not_used_as_output(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "initramfs.cpio"
+            output.mkdir()
+            sentinel = output / "sentinel"
+            sentinel.write_text("keep me")
+
+            result = subprocess.run(
+                [self.builder, output],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(output.is_dir())
+            self.assertEqual(sentinel.read_text(), "keep me")
+            self.assertEqual(set(output.iterdir()), {sentinel})
+            self.assertEqual(
+                list(Path(temporary_directory).glob(".initramfs.cpio.tmp.*")),
+                [],
+            )
+
+    def test_archive_has_canonical_metadata_and_filesystem_mode(self) -> None:
+        source_date_epoch = 1_700_000_000
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        environment["SOURCE_DATE_EPOCH"] = str(source_date_epoch)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "initramfs.cpio"
+            result = subprocess.run(
+                [self.builder, output],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with self.subTest(contract="archive filesystem mode"):
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
+            with self.subTest(contract="newc member metadata"):
+                self.assertEqual(
+                    parse_newc_entries(output.read_bytes()),
+                    [
+                        (".", stat.S_IFDIR | 0o755, 0, 0, source_date_epoch),
+                        (
+                            "init",
+                            stat.S_IFREG | 0o755,
+                            0,
+                            0,
+                            source_date_epoch,
+                        ),
+                    ],
+                )
+
+    def test_compile_failure_preserves_existing_output(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "false"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory)
+            output = output_directory / "initramfs.cpio"
+            output.write_text("keep me")
+
+            result = subprocess.run(
+                [self.builder, output],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(output.read_text(), "keep me")
+            self.assertEqual(
+                list(output_directory.glob(".initramfs.cpio.tmp.*")),
+                [],
+            )
 
 
 class InputGateContractTests(unittest.TestCase):
