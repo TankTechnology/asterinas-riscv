@@ -107,8 +107,43 @@ The runner rejects a DTB whose enabled CPU-node count differs from `--smp`.
 
 ## Run the QEMU gate
 
-Reuse the reviewed generic-Sv39 U-Boot binary at
+This guide assumes that the reviewed generic-Sv39 U-Boot cache exists at
 `target/qemu-uboot/cache/u-boot-build/u-boot`.
+Confirm the prerequisite with:
+
+```bash
+test -s target/qemu-uboot/cache/u-boot-build/u-boot
+```
+
+If the file is absent in a fresh worktree,
+prepare it with the repository's pinned U-Boot workflow.
+The bootstrap command below uses the independent marker initramfs,
+not this input gate's initramfs:
+
+```bash
+docker run --rm --privileged --network=host \
+  -v /dev:/dev \
+  -v "$PWD:/root/asterinas" \
+  -w /root/asterinas \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  bash -lc '
+    install -d -m 0755 target/qemu-uboot &&
+    python3 tools/riscv/make_qemu_uboot_initramfs.py \
+      target/qemu-uboot/marker-initramfs.cpio.gz &&
+    ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image" \
+    ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/marker-initramfs.cpio.gz" \
+    QEMU_UBOOT_PROFILE=generic-sv39 \
+    QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/debian-input-bootstrap" \
+    QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+      tools/riscv/prepare_qemu_uboot_booti.sh prepare
+  '
+```
+
+The script checks out its reviewed U-Boot commit and verifies the resulting
+`booti`, ext4, and VirtIO block configuration.
+See [Build U-Boot and generate the boot disk](../../../docs/porting/riscv-qemu-desktop.md#3-构建-u-boot-并生成-boot-磁盘)
+for the underlying workflow.
+
 The runner builds its own private ext4 boot disk below the gate output directory;
 it does not overwrite `target/qemu-uboot/current`.
 
