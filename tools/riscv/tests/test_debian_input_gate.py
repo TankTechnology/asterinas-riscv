@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -558,12 +559,17 @@ class InputGateOrchestrationTests(unittest.TestCase):
     ) -> gate.GateDependencies:
         monitor = monitor or FakeMonitor(self.events)
 
-        def prepare(config: gate.GateConfig, boot_disk: Path) -> None:
-            del config
+        def prepare(
+            config: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
+            del config, output
             self.events.append("prepare")
             boot_disk.write_bytes(b"private-ext4")
 
-        def launch(argv: list[str]) -> FakeProcess:
+        def launch(argv: list[str], pass_fds: tuple[int, ...]) -> FakeProcess:
+            self.assertEqual(len(pass_fds), 1)
             self.events.append("launch:" + " ".join(argv))
             return self.process
 
@@ -588,8 +594,12 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self._write_stale_pass_evidence()
         dependencies = self.dependencies(FakeBoot(self.events))
 
-        def fail_prepare(config: gate.GateConfig, boot_disk: Path) -> None:
-            del config, boot_disk
+        def fail_prepare(
+            config: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
+            del config, boot_disk, output
             raise RuntimeError("prepare failed")
 
         dependencies = dataclasses.replace(
@@ -607,8 +617,11 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self._write_stale_pass_evidence()
         dependencies = self.dependencies(FakeBoot(self.events))
 
-        def interrupt_launch(argv: list[str]) -> FakeProcess:
-            del argv
+        def interrupt_launch(
+            argv: list[str],
+            pass_fds: tuple[int, ...],
+        ) -> FakeProcess:
+            del argv, pass_fds
             raise KeyboardInterrupt
 
         dependencies = dataclasses.replace(
@@ -629,7 +642,12 @@ class InputGateOrchestrationTests(unittest.TestCase):
         snapshot_paths: dict[str, Path] = {}
         dependencies = self.dependencies(FakeBoot(self.events))
 
-        def prepare(snapshot: gate.GateConfig, boot_disk: Path) -> None:
+        def prepare(
+            snapshot: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
+            del output
             for name in self.artifacts:
                 snapshot_paths[name] = getattr(snapshot, name)
                 self.artifacts[name].write_bytes(f"changed-{name}".encode())
@@ -645,7 +663,7 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertTrue(result.passed)
         for name, original_content in original_contents.items():
             self.assertNotEqual(snapshot_paths[name], self.artifacts[name])
-            self.assertEqual(snapshot_paths[name].parent.parent, self.output)
+            self.assertTrue(str(snapshot_paths[name]).startswith("/proc/self/fd/"))
             self.assertEqual(
                 result.sha256[name], hashlib.sha256(original_content).hexdigest()
             )
@@ -653,6 +671,54 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertEqual(launched_uboot, snapshot_paths["uboot"])
         self.assertFalse(snapshot_paths["uboot"].parent.exists())
         self.assertEqual(list(self.output.glob(".artifacts.*")), [])
+
+    def test_output_path_swap_fails_closed_without_touching_symlink_target(
+        self,
+    ) -> None:
+        self._write_stale_pass_evidence()
+        attacker = self.root / "attacker"
+        attacker.mkdir(mode=0o700)
+        (attacker / "serial.log").write_bytes(b"attacker serial")
+        (attacker / "result.json").write_text('{"passed": true}\n')
+        (attacker / "sentinel").write_text("untouched")
+        attacker_before = {path.name: path.read_bytes() for path in attacker.iterdir()}
+        renamed_output = self.root / "renamed-output"
+        launched = False
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def swap_output(
+            snapshot: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
+            del snapshot, output
+            self.output.rename(renamed_output)
+            self.output.symlink_to(attacker, target_is_directory=True)
+            boot_disk.write_bytes(b"private-ext4")
+
+        def record_launch(
+            argv: list[str],
+            pass_fds: tuple[int, ...],
+        ) -> FakeProcess:
+            nonlocal launched
+            del argv, pass_fds
+            launched = True
+            return self.process
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            prepare_boot_disk=swap_output,
+            launch_process=record_launch,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "output directory identity changed"):
+            gate.run_gate(self.config(), dependencies)
+
+        self.assertFalse(launched)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in attacker.iterdir()},
+            attacker_before,
+        )
 
     def test_success_observes_boot_then_keys_then_pass_and_writes_evidence(
         self,
@@ -826,6 +892,21 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertEqual(evidence["panics"], ["Kernel panic"])
         self.assertFalse(evidence["passed"])
 
+    def test_canonical_forbidden_text_during_final_drain_prevents_pass(self) -> None:
+        for forbidden_text in (b"Uncaught panic:", b"unexpected exception"):
+            with self.subTest(forbidden_text=forbidden_text):
+                self.events = []
+                boot = FakeBoot(self.events, drain_append=forbidden_text + b"\n")
+
+                result = gate.run_gate(self.config(), self.dependencies(boot))
+
+                self.assertFalse(result.passed)
+                self.assertIn(forbidden_text.decode().rstrip(":"), result.panics)
+                self.assertIn(
+                    forbidden_text,
+                    (self.output / "serial.log").read_bytes(),
+                )
+
     def test_serial_drain_failure_is_recorded_and_prevents_pass(self) -> None:
         boot = FakeBoot(self.events, drain_failure=OSError("drain failed"))
 
@@ -975,9 +1056,13 @@ class InputGateOrchestrationTests(unittest.TestCase):
         prepared = False
         dependencies = self.dependencies(FakeBoot(self.events))
 
-        def record_prepare(config: gate.GateConfig, boot_disk: Path) -> None:
+        def record_prepare(
+            config: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
             nonlocal prepared
-            del config, boot_disk
+            del config, boot_disk, output
             prepared = True
 
         dependencies = dataclasses.replace(
@@ -1161,6 +1246,80 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertEqual(kill_calls[0], (process.pid, signal.SIGTERM))
         self.assertEqual(kill_calls[1:], [(process.pid, 0), (process.pid, 0)])
         self.assertTrue(process.wait_calls)
+
+    def test_sigterm_runs_finally_kills_stubborn_group_and_restores_handlers(
+        self,
+    ) -> None:
+        class SignalBoot(FakeBoot):
+            def wait_for(self, marker: bytes, timeout: float) -> None:
+                del marker, timeout
+                os.kill(os.getpid(), signal.SIGTERM)
+                raise AssertionError("SIGTERM handler did not interrupt the gate")
+
+        self._write_stale_pass_evidence()
+        child: subprocess.Popen[str] | None = None
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        old_sighup = signal.getsignal(signal.SIGHUP)
+        boot = SignalBoot(self.events)
+
+        def prepare(
+            config: gate.GateConfig,
+            boot_disk: Path,
+            output: gate.PinnedOutputDirectory,
+        ) -> None:
+            del config, output
+            boot_disk.write_bytes(b"private-ext4")
+
+        def launch(
+            argv: list[str],
+            pass_fds: tuple[int, ...],
+        ) -> subprocess.Popen[str]:
+            nonlocal child
+            del argv
+            self.assertEqual(len(pass_fds), 1)
+            child = subprocess.Popen(
+                [
+                    os.sys.executable,
+                    "-c",
+                    "import signal,time; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "print('ready', flush=True); time.sleep(60)",
+                ],
+                stdout=subprocess.PIPE,
+                start_new_session=True,
+                text=True,
+            )
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            return child
+
+        dependencies = gate.GateDependencies(
+            prepare_boot_disk=prepare,
+            launch_process=launch,
+            boot_console=lambda process: boot,
+            monitor=lambda path, timeout: FakeMonitor(self.events),
+            cleanup_process=gate._cleanup_process,
+        )
+        try:
+            with (
+                mock.patch.object(gate, "PROCESS_TERM_GRACE_SECONDS", 0.05),
+                self.assertRaises(gate.GateTermination),
+            ):
+                gate.run_gate(self.config(), dependencies)
+
+            self.assertIsNotNone(child)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(child.pid, 0)
+            self.assertFalse((self.output / "result.json").exists())
+            self.assertFalse((self.output / "serial.log").exists())
+            self.assertEqual(signal.getsignal(signal.SIGTERM), old_sigterm)
+            self.assertEqual(signal.getsignal(signal.SIGHUP), old_sighup)
+        finally:
+            if child is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+                if child.stdout is not None:
+                    child.stdout.close()
 
 
 if __name__ == "__main__":
