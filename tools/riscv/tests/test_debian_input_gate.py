@@ -12,6 +12,52 @@ from pathlib import Path
 from tools.riscv.debian import input_gate as gate
 
 
+class InputGateBuilderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.builder = (
+            Path(__file__).parents[1] / "debian" / "build_input_gate.sh"
+        )
+
+    def test_print_tools_lists_cross_compiler_and_cpio(self) -> None:
+        result = subprocess.run(
+            [self.builder, "--print-tools"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["riscv64-linux-gnu-gcc", "cpio"],
+        )
+
+    def test_print_entries_lists_only_archive_root_and_init(self) -> None:
+        result = subprocess.run(
+            [self.builder, "--print-entries"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [".", "init"])
+
+    def test_unknown_option_exits_two_without_creating_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "initramfs.cpio"
+            result = subprocess.run(
+                [self.builder, "--unknown", output],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertFalse(output.exists())
+
+
 class InputGateContractTests(unittest.TestCase):
     def test_guest_input_state_machine_self_test(self) -> None:
         guest_source = Path(__file__).parents[1] / "debian" / "input_gate_init.c"
