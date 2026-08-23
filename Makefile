@@ -263,6 +263,10 @@ RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_D
 RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
 RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
 
+.PHONY: test_riscv_debian_input_unit
+test_riscv_debian_input_unit:
+	@python3 -m unittest tools.riscv.tests.test_debian_input_gate
+
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
 	@PYTHONPATH=tools/riscv python3 -m unittest \

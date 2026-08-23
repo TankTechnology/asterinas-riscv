@@ -45,6 +45,24 @@ See [the LTP gate operator guide](ltp/README.md)
 for the exact containers, strict mode, SMP=4 runs, result schema,
 and evidence-provenance rules.
 
+## Debian RISC-V input gate
+
+The Debian input gate boots an Sv39 Asterinas kernel with four harts,
+discovers the VirtIO keyboard through evdev,
+and verifies normal, modifier, editing, and control-key events.
+It is a kernel-facing prerequisite for Debian RISC-V userspace,
+not a full Debian rootfs or desktop test.
+
+Run the host and guest-contract tests with:
+
+```bash
+make test_riscv_debian_input_unit
+```
+
+See [the Debian RISC-V input-gate operator guide](debian/README.md)
+for Debian provenance, the exact container build,
+the SMP-matched DTB command, the QEMU run, and evidence checks.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
