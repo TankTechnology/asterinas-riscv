@@ -94,8 +94,8 @@ and hart count as the gate itself:
 install -d -m 0755 target/debian-riscv/input-gate
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -v "$PWD:/root/asterinas" \
-  -w /root/asterinas \
+  -v "$PWD:/work/asterinas" \
+  -w /work/asterinas \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
   qemu-system-riscv64 \
     -machine virt,dumpdtb=target/debian-riscv/input-gate/qemu-virt-smp4.dtb \
@@ -116,8 +116,8 @@ it does not overwrite `target/qemu-uboot/current`.
 install -d -m 0700 target/debian-riscv/input-gate/run
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -v "$PWD:/root/asterinas" \
-  -w /root/asterinas \
+  -v "$PWD:/work/asterinas" \
+  -w /work/asterinas \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
   python3 tools/riscv/debian/input_gate.py \
     --kernel target/osdk/aster-kernel-osdk-bin.Image \
