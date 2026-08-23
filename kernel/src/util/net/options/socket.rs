@@ -2,16 +2,18 @@
 
 use ostd::mm::VmIo;
 
-use super::{RawSocketOption, impl_raw_sock_option_get_only, impl_raw_socket_option};
+use super::{RawSocketOption, impl_raw_sock_option_get_only, impl_raw_socket_option, utils::ReadFromUser};
 use crate::{
     context::current_userspace,
     net::socket::options::{
-        AcceptConn, Broadcast, Error, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
-        RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-        SendTimeout, SocketOption, SocketType, Timestamp,
+        AcceptConn, AttachFilter, Broadcast, DetachFilter, Error, KeepAlive, Linger, PassCred,
+        PeerCred, PeerGroups, Priority, RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort,
+        SendBuf, SendBufForce, SendTimeout, SockDomain, SockProtocol, SocketOption, SocketType,
+        Timestamp,
     },
     prelude::*,
     process::Gid,
+    util::bpf,
 };
 
 /// Socket level options.
@@ -48,6 +50,8 @@ enum CSocketOptionName {
     PEERSEC = 31,
     SNDBUFFORCE = 32,
     RCVBUFFORCE = 33,
+    PROTOCOL = 38,
+    DOMAIN = 39,
     PEERGROUPS = 59,
     RCVTIMEO_NEW = 66,
     SNDTIMEO_NEW = 67,
@@ -82,7 +86,53 @@ pub fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
         CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
         CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
+        CSocketOptionName::ATTACH_FILTER => Ok(Box::new(AttachFilter::new())),
+        CSocketOptionName::DETACH_FILTER => Ok(Box::new(DetachFilter::new())),
+        CSocketOptionName::PROTOCOL => Ok(Box::new(SockProtocol::new())),
+        CSocketOptionName::DOMAIN => Ok(Box::new(SockDomain::new())),
         _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported socket-level option"),
+    }
+}
+
+impl RawSocketOption for AttachFilter {
+    fn read_from_user(&mut self, addr: Vaddr, _max_len: u32) -> Result<()> {
+        let prog = bpf::read_prog_from_user(addr)?;
+        self.set(Arc::new(prog));
+        Ok(())
+    }
+
+    fn write_to_user(&self, _addr: Vaddr, _max_len: &mut u32) -> Result<usize> {
+        // TODO: support SO_GET_FILTER
+        return_errno_with_message!(Errno::ENOPROTOOPT, "SO_GET_FILTER is not supported");
+    }
+
+    fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
+        self
+    }
+
+    fn as_sock_option(&self) -> &dyn SocketOption {
+        self
+    }
+}
+
+impl RawSocketOption for DetachFilter {
+    fn read_from_user(&mut self, addr: Vaddr, max_len: u32) -> Result<()> {
+        // Linux ignores the optval of SO_DETACH_FILTER.
+        let _ = i32::read_from_user(addr, max_len)?;
+        self.set(0);
+        Ok(())
+    }
+
+    fn write_to_user(&self, _addr: Vaddr, _max_len: &mut u32) -> Result<usize> {
+        return_errno_with_message!(Errno::ENOPROTOOPT, "SO_DETACH_FILTER is write-only");
+    }
+
+    fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
+        self
+    }
+
+    fn as_sock_option(&self) -> &dyn SocketOption {
+        self
     }
 }
 
@@ -104,6 +154,8 @@ impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
 impl_raw_socket_option!(RecvBufForce);
 impl_raw_socket_option!(Timestamp);
+impl_raw_sock_option_get_only!(SockDomain);
+impl_raw_sock_option_get_only!(SockProtocol);
 
 // SO_PEERGROUPS is a read-only option. However, calling setsockopt on SO_PEERGROUPS will return EINVAL
 // instead of ENOPROTOOPT like other options. Therefore, we manually implement `RawSocketOption` for it.

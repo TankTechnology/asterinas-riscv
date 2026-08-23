@@ -17,11 +17,19 @@ pub fn sys_wait4(
 ) -> Result<SyscallReturn> {
     let wait_options = WaitOptions::from_bits(wait_options)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown wait option"))?;
-    debug!(
-        "pid = {}, status_ptr = {}, wait_options: {:?}",
-        wait_pid as i32, status_ptr, wait_options
-    );
-    debug!("wait4 current pid = {}", ctx.process.pid());
+
+    // A positive PID is interpreted in the caller's PID namespace; children
+    // outside it are invisible to `wait4`.
+    let caller_pid_ns = ctx.process.pid_ns();
+    let wait_pid = if wait_pid as i64 > 0 && !caller_pid_ns.is_init() {
+        let process = caller_pid_ns
+            .process_of_vpid(wait_pid as u32)
+            .ok_or_else(|| Error::with_message(Errno::ECHILD, "no such child process"))?;
+        process.pid() as u64
+    } else {
+        wait_pid
+    };
+
     let process_filter = ProcessFilter::from_id(wait_pid as _)?;
 
     if wait_options.intersects(WaitOptions::WSTOPPED | WaitOptions::WCONTINUED)
@@ -43,6 +51,12 @@ pub fn sys_wait4(
     };
 
     let (return_pid, status_code) = (wait_status.pid(), calculate_status_code(&wait_status));
+    // Report the child's virtual PID in the caller's PID namespace.
+    let return_pid = if !caller_pid_ns.is_init() {
+        wait_status.pid_in_ns(caller_pid_ns).unwrap_or(return_pid)
+    } else {
+        return_pid
+    };
     if status_ptr != 0 {
         ctx.user_space().write_val(status_ptr as _, &status_code)?;
     }

@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_map::BTreeMap, ffi::CString, sync::Arc};
+use alloc::{
+    boxed::Box,
+    collections::{btree_map::BTreeMap, vec_deque::VecDeque},
+    ffi::CString,
+    sync::Arc,
+    vec,
+};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
 use smoltcp::{
     iface::{Config, Context, packet::Packet},
-    phy::{Device, DeviceCapabilities, TxToken},
+    phy::{ChecksumCapabilities, Device, DeviceCapabilities, TxToken},
     wire::{
         self, ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Packet, Ipv6Packet,
+        EthernetRepr, IpAddress, IpRepr, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Packet,
+        Ipv4Repr, Ipv6Packet,
     },
 };
 
@@ -29,7 +36,18 @@ pub struct EtherIface<D, E: Ext> {
     common: IfaceCommon<E>,
     ether_addr: EthernetAddress,
     arp_table: SpinLock<BTreeMap<Ipv4Address, EthernetAddress>, BottomHalfDisabled>,
+    /// Serialized IPv4 packets waiting for an ARP resolution.
+    ///
+    /// When the next-hop Ethernet address is not yet known, the outgoing
+    /// packet used to be dropped and the upper layer had to notice the loss
+    /// and retransmit. That breaks one-shot protocols such as UDP DNS
+    /// queries, so we queue the packet here and flush the queue once the ARP
+    /// reply arrives (which triggers another interface poll).
+    pending_tx: SpinLock<VecDeque<Box<[u8]>>, BottomHalfDisabled>,
 }
+
+/// The maximum number of packets queued for ARP resolution.
+const MAX_PENDING_TX: usize = 64;
 
 impl<D: WithDevice, E: Ext> EtherIface<D, E> {
     pub fn new(
@@ -64,6 +82,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             common,
             ether_addr,
             arp_table: SpinLock::new(BTreeMap::new()),
+            pending_tx: SpinLock::new(VecDeque::new()),
         })
     }
 }
@@ -89,6 +108,9 @@ where
                 |data, iface_cx, tx_token| self.process(data, iface_cx, tx_token),
                 |pkt, iface_cx, tx_token| self.dispatch(pkt, iface_cx, tx_token),
             );
+            // The ingress poll above may have resolved ARP entries; retry the
+            // packets that were queued waiting for a resolution.
+            self.flush_pending_tx(&mut *device);
             device.notify_poll_end();
             self.common.sched_poll().schedule_next_poll(next_poll);
         });
@@ -207,20 +229,90 @@ impl<D, E: Ext> EtherIface<D, E> {
     }
 
     fn dispatch<T: TxToken>(&self, pkt: &Packet, iface_cx: &mut Context, tx_token: T) {
-        match self.resolve_ether_or_generate_arp(pkt, iface_cx) {
+        match self.resolve_ether_or_generate_arp(&pkt.ip_repr().dst_addr(), iface_cx) {
             Ok(ether) => Self::emit_ip(&ether, pkt, &iface_cx.caps, tx_token),
-            Err(Some(arp)) => Self::emit_arp(&arp, tx_token),
+            Err(Some(arp)) => {
+                // The next hop is not resolved yet. Instead of dropping the
+                // packet, queue it so that it can be sent once the ARP reply
+                // arrives (see `flush_pending_tx`).
+                self.enqueue_pending_tx(pkt, iface_cx);
+                Self::emit_arp(&arp, tx_token);
+            }
             Err(None) => (),
+        }
+    }
+
+    /// Queues a serialized copy of an IPv4 packet for deferred transmission.
+    fn enqueue_pending_tx(&self, pkt: &Packet, iface_cx: &Context) {
+        // Only IPv4 packets can be queued; IPv6 packets are dropped by the
+        // resolver (no neighbor discovery yet).
+        if !matches!(pkt.ip_repr(), IpRepr::Ipv4(_)) {
+            return;
+        }
+
+        let mut pending = self.pending_tx.lock();
+        if pending.len() >= MAX_PENDING_TX {
+            ostd::warn!("net: dropping packet because the ARP pending queue is full");
+            return;
+        }
+        pending.push_back(Self::serialize_ip(pkt, &iface_cx.caps));
+    }
+
+    /// Retries transmission of packets queued by [`Self::enqueue_pending_tx`].
+    ///
+    /// This is called at the end of each interface poll, after the ingress
+    /// phase has had a chance to process ARP replies.
+    fn flush_pending_tx<D2: Device + ?Sized>(&self, device: &mut D2) {
+        loop {
+            let Some(pkt_bytes) = self.pending_tx.lock().front().cloned() else {
+                return;
+            };
+
+            let Ok(pkt) = Ipv4Packet::new_checked(&pkt_bytes[..]) else {
+                self.pending_tx.lock().pop_front();
+                continue;
+            };
+            let Ok(ip_repr) = Ipv4Repr::parse(&pkt, &ChecksumCapabilities::ignored()) else {
+                self.pending_tx.lock().pop_front();
+                continue;
+            };
+
+            let mut interface = self.common.interface();
+            let iface_cx = interface.context_mut();
+
+            let Some(tx_token) = device.transmit(iface_cx.now()) else {
+                return;
+            };
+
+            match self
+                .resolve_ether_or_generate_arp(&IpAddress::Ipv4(ip_repr.dst_addr), iface_cx)
+            {
+                Ok(ether) => {
+                    Self::emit_frame(&ether, &pkt_bytes, tx_token);
+                    self.pending_tx.lock().pop_front();
+                }
+                Err(Some(arp)) => {
+                    // Still unresolved. Re-send the ARP request and wait for
+                    // the reply to trigger another poll.
+                    Self::emit_arp(&arp, tx_token);
+                    return;
+                }
+                Err(None) => {
+                    // The packet is unroutable; drop it.
+                    self.pending_tx.lock().pop_front();
+                }
+            }
+            drop(interface);
         }
     }
 
     fn resolve_ether_or_generate_arp(
         &self,
-        pkt: &Packet,
+        dst_addr: &IpAddress,
         iface_cx: &mut Context,
     ) -> Result<EthernetRepr, Option<ArpRepr>> {
         // Resolve the next-hop IP address.
-        let next_hop_ip = match iface_cx.route(&pkt.ip_repr().dst_addr(), iface_cx.now()) {
+        let next_hop_ip = match iface_cx.route(dst_addr, iface_cx.now()) {
             Some(IpAddress::Ipv4(next_hop_ip)) => next_hop_ip,
             Some(IpAddress::Ipv6(_)) => {
                 // FIXME: Currently, we drop outbound IPv6 packets because neighbor discovery is not
@@ -263,21 +355,26 @@ impl<D, E: Ext> EtherIface<D, E> {
         caps: &DeviceCapabilities,
         tx_token: T,
     ) {
-        tx_token.consume(
-            ether_repr.buffer_len() + ip_pkt.ip_repr().buffer_len(),
-            |buffer| {
-                let mut frame = EthernetFrame::new_unchecked(buffer);
-                ether_repr.emit(&mut frame);
+        let payload = Self::serialize_ip(ip_pkt, caps);
+        Self::emit_frame(ether_repr, &payload, tx_token);
+    }
 
-                let ip_repr = ip_pkt.ip_repr();
-                ip_repr.emit(frame.payload_mut(), &caps.checksum);
-                ip_pkt.emit_payload(
-                    &ip_repr,
-                    &mut frame.payload_mut()[ip_repr.header_len()..],
-                    caps,
-                );
-            },
-        );
+    /// Serializes an IP packet into wire bytes (with checksums filled in).
+    fn serialize_ip(ip_pkt: &Packet, caps: &DeviceCapabilities) -> Box<[u8]> {
+        let ip_repr = ip_pkt.ip_repr();
+        let mut data = vec![0; ip_repr.buffer_len()];
+        ip_repr.emit(&mut data, &caps.checksum);
+        ip_pkt.emit_payload(&ip_repr, &mut data[ip_repr.header_len()..], caps);
+        data.into_boxed_slice()
+    }
+
+    /// Consumes the token and emits an Ethernet frame with the given payload.
+    fn emit_frame<T: TxToken>(ether_repr: &EthernetRepr, payload: &[u8], tx_token: T) {
+        tx_token.consume(ether_repr.buffer_len() + payload.len(), |buffer| {
+            let mut frame = EthernetFrame::new_unchecked(buffer);
+            ether_repr.emit(&mut frame);
+            frame.payload_mut().copy_from_slice(payload);
+        });
     }
 
     /// Consumes the token and emits an ARP packet.

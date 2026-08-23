@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use super::{INIT_PROCESS_PID, Pid, Process, pid_table};
 use crate::{
     events::IoEvents, fs::cgroupfs::CgroupMembership, prelude::*,
-    process::signal::signals::kernel::KernelSignal,
+    process::signal::{constants::SIGKILL, signals::kernel::KernelSignal},
 };
 
 /// Exits the current POSIX process.
@@ -17,6 +17,14 @@ use crate::{
 /// [`do_exit_group`]: crate::process::posix_thread::do_exit_group
 pub(super) fn exit_process(current_process: &Process) {
     current_process.status().set_vfork_child(false);
+
+    // If the exiting process is the init of a PID namespace, all other
+    // processes in the namespace (including nested namespaces, whose members
+    // are registered in this namespace's map as well) are killed with
+    // SIGKILL. See Linux's `zap_pid_ns_processes`.
+    if current_process.is_ns_init() {
+        kill_pid_ns_members(current_process);
+    }
 
     // Drop fields in `Process`.
     drop_after!(current_process.lock_vmar().set_vmar(None));
@@ -43,6 +51,18 @@ pub(super) fn exit_process(current_process: &Process) {
     let mut cgroup_guard = CgroupMembership::write_lock();
     cgroup_guard.move_process_to_root(current_process);
     drop(cgroup_guard);
+}
+
+/// Kills all remaining member processes of the PID namespace whose init
+/// process `ns_init` is exiting.
+fn kill_pid_ns_members(ns_init: &Process) {
+    let ns = ns_init.pid_ns().clone();
+    for (vpid, process) in ns.vpids_snapshot() {
+        if vpid == 1 {
+            continue;
+        }
+        process.enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
+    }
 }
 
 /// Drops a value after releasing the lock or borrow guard.
