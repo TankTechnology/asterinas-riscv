@@ -13,7 +13,8 @@ use aster_bigtcp::{
 use super::util::finish_response;
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::Iface,
+        net_ns::current_net_ns,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{LinkAttr, LinkSegment, LinkSegmentBody, RtnlSegment},
@@ -38,7 +39,12 @@ const DEFAULT_TX_QUEUE_LEN: u32 = 1000;
 pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
     let filter_by = FilterBy::from_request(request_segment)?;
 
-    let mut response_segments: Vec<RtnlSegment> = iter_all_ifaces()
+    // Only the interfaces visible in the current network namespace are
+    // reported.
+    let net_ns = current_net_ns();
+    let mut response_segments: Vec<RtnlSegment> = net_ns
+        .ifaces()
+        .iter()
         // Filter to include only requested links.
         .filter(|iface| match &filter_by {
             FilterBy::Index(index) => *index == iface.index(),
@@ -62,31 +68,11 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
 
 /// Handles an RTM_SETLINK request to change interface flags.
 ///
-/// The `Iface` trait is currently read-only, so only no-op flag changes
-/// (e.g. setting IFF_UP on an interface that is already up, which is what
-/// systemd's loopback setup does) are accepted; everything else fails with
-/// EOPNOTSUPP.
+/// Shares the implementation with [`do_new_link`]: `RTM_NEWLINK` and
+/// `RTM_SETLINK` only differ in that the latter cannot create interfaces,
+/// which is unsupported anyway.
 pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
-    let body = request_segment.body();
-
-    let Some(index) = body.index else {
-        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
-    };
-
-    let Some(iface) = iter_all_ifaces().find(|iface| iface.index() == index.get()) else {
-        return_errno_with_message!(Errno::ENODEV, "no link found");
-    };
-
-    let current = iface.flags();
-    let target = (current & !body.change) | (body.flags & body.change);
-    if target != current {
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "changing interface flags is not supported"
-        );
-    }
-
-    Ok(Vec::new())
+    do_new_link(request_segment)
 }
 
 enum FilterBy<'a> {
@@ -202,4 +188,37 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
     ]);
 
     LinkSegment::new(header, link_message, attrs)
+}
+
+/// Handles a `RTM_NEWLINK` request that changes interface flags.
+///
+/// Only flag changes via `ifi_flags`/`ifi_change` are supported (this is what
+/// `ip link set <dev> up|down` uses); creating or deleting interfaces is not
+/// supported.
+pub(super) fn do_new_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
+    };
+
+    let net_ns = current_net_ns();
+    let iface = net_ns
+        .ifaces()
+        .iter()
+        .find(|iface| iface.index() == index.get())
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
+
+    // Apply `new = (old & !change) | (flags & change)`, as in Linux. If the
+    // change mask is empty, treat the flags as the new state of the
+    // well-known flag bits (some tools send `ifi_change = 0`).
+    let old_flags = iface.flags();
+    let new_flags = if body.change.is_empty() {
+        (old_flags & !(InterfaceFlags::UP | InterfaceFlags::RUNNING))
+            | (body.flags & (InterfaceFlags::UP | InterfaceFlags::RUNNING))
+    } else {
+        (old_flags & !body.change) | (body.flags & body.change)
+    };
+    iface.set_flags(new_flags);
+
+    Ok(Vec::new())
 }

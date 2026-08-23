@@ -10,7 +10,8 @@ use aster_bigtcp::{iface::InterfaceFlags, wire::IpCidr};
 use super::util::finish_response;
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::Iface,
+        net_ns::current_net_ns,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -33,7 +34,12 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     }
 
     let requested_family = request_segment.body().family;
-    let mut addr_segments: Vec<AddrSegment> = iter_all_ifaces()
+    // Only the interfaces visible in the current network namespace are
+    // reported.
+    let net_ns = current_net_ns();
+    let mut addr_segments: Vec<AddrSegment> = net_ns
+        .ifaces()
+        .iter()
         .flat_map(|iface| iface_to_new_addrs(request_segment.header(), requested_family, iface))
         .collect();
 
@@ -64,7 +70,10 @@ pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
         return_errno_with_message!(Errno::ENODEV, "no interface index specified");
     };
 
-    let Some(iface) = iter_all_ifaces().find(|iface| iface.index() == index.get()) else {
+    // Only interfaces visible in the current network namespace can be
+    // addressed.
+    let net_ns = current_net_ns();
+    let Some(iface) = net_ns.ifaces().iter().find(|iface| iface.index() == index.get()) else {
         return_errno_with_message!(Errno::ENODEV, "no link found");
     };
 

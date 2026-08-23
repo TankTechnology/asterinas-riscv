@@ -110,9 +110,39 @@ impl ProcFileOps for StatusFileOps {
         };
         writeln!(printer, "State:\t{}", state)?;
 
-        writeln!(printer, "Tgid:\t{}", process.pid())?;
-        writeln!(printer, "Pid:\t{}", posix_thread.tid())?;
-        writeln!(printer, "PPid:\t{}", process.parent().pid())?;
+        // PID-related fields are reported in the reading process's PID
+        // namespace, as in Linux.
+        let reader_ns = current_thread!()
+            .as_posix_thread()
+            .unwrap()
+            .process()
+            .pid_ns()
+            .clone();
+        let vpid_of = |process: &Arc<crate::process::Process>| {
+            process.pid_in_ns(&reader_ns).unwrap_or(0)
+        };
+
+        writeln!(printer, "Tgid:\t{}", vpid_of(&process))?;
+        writeln!(
+            printer,
+            "Pid:\t{}",
+            if posix_thread.tid() == process.pid() {
+                vpid_of(&process)
+            } else {
+                posix_thread.tid()
+            }
+        )?;
+        writeln!(
+            printer,
+            "PPid:\t{}",
+            process
+                .parent()
+                .lock()
+                .process()
+                .upgrade()
+                .map(|parent| vpid_of(&parent))
+                .unwrap_or(0)
+        )?;
         writeln!(
             printer,
             "TracerPid:\t{}",
@@ -121,6 +151,23 @@ impl ProcFileOps for StatusFileOps {
                 .map(|tracer| tracer.as_posix_thread().unwrap().tid())
                 .unwrap_or(0)
         )?;
+
+        // `NSpid` lists the process's virtual PID in every PID namespace
+        // from the outermost ancestor (that is visible to the reader) down
+        // to the process's own namespace, as in Linux.
+        let mut ns_pids: Vec<u32> = process
+            .ns_vpids()
+            .iter()
+            .filter(|(ns, _)| ns.is_same_or_descendant_of(&reader_ns))
+            .map(|(_, vpid)| *vpid)
+            .collect();
+        ns_pids.reverse();
+        let ns_pids_str = ns_pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(printer, "NSpid:\t{}", ns_pids_str)?;
 
         writeln!(
             printer,

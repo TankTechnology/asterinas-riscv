@@ -1,0 +1,24 @@
+ok: unshare(NEWUSER)
+ok: unshare(NEWNS)
+ok: mount(NULL, /, MS_REC|MS_PRIVATE)
+ok: mountinfo readable after MS_PRIVATE|MS_REC
+ok: mount tmpfs /tmp
+ok: bind mount /tmp/upper -> /tmp/target
+ok: bind mount exposes source file
+ok: remount bind target read-only
+ok: writes to ro-remounted bind fail with EROFS
+ok: source remains writable; change visible via bind
+ok: mountinfo lists /tmp/target
+ok: mount tmpfs /tmp/rupper
+ok: mount tmpfs /tmp/rupper/sub
+ok: recursive bind mount
+ok: recursive bind includes submount
+ok: umount2 recursive bind
+ok: umount2(MNT_DETACH)
+ok: mount tmpfs /tmp/newroot
+ok: pivot_root into tmpfs
+ok: chdir / after pivot_root
+ok: new root contents visible
+ok: detach old root
+ok: old root no longer accessible
+MOUNT_NS_TEST_PASS

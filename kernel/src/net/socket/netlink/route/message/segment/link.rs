@@ -47,6 +47,7 @@ pub struct LinkSegmentBody {
     pub type_: InterfaceType,
     pub index: Option<NonZeroU32>,
     pub flags: InterfaceFlags,
+    /// The mask of flags that a `RTM_NEWLINK` request wants to change.
     pub change: InterfaceFlags,
 }
 
@@ -78,7 +79,7 @@ impl From<LinkSegmentBody> for CIfinfoMsg {
             type_: value.type_ as _,
             index: value.index.map(NonZeroU32::get).unwrap_or(0),
             flags: value.flags.bits(),
-            change: 0,
+            change: value.change.bits(),
         }
     }
 }

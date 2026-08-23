@@ -17,11 +17,11 @@ use crate::{
 
 static IFACES: Once<Vec<Arc<Iface>>> = Once::new();
 
-pub fn loopback_iface() -> &'static Arc<Iface> {
+fn loopback_iface() -> &'static Arc<Iface> {
     &IFACES.get().unwrap()[0]
 }
 
-pub fn virtio_iface() -> Option<&'static Arc<Iface>> {
+fn virtio_iface() -> Option<&'static Arc<Iface>> {
     IFACES.get().unwrap().get(1)
 }
 
@@ -38,7 +38,7 @@ pub fn init() {
 
         // Initialize loopback before virtio
         // to ensure the loopback interface index is ahead of virtio.
-        ifaces.push(new_loopback());
+        ifaces.push(new_loopback(true));
 
         if let Some(iface_virtio) = new_virtio() {
             ifaces.push(iface_virtio);
@@ -58,7 +58,15 @@ pub fn init() {
     poll_ifaces();
 }
 
-fn new_loopback() -> Arc<Iface> {
+/// Creates a loopback interface for a new (non-initial) network namespace.
+///
+/// The interface starts down, as in Linux; it can be brought up from inside
+/// the namespace (e.g., `ip link set lo up`).
+pub(in crate::net) fn new_ns_loopback() -> Arc<Iface> {
+    new_loopback(false)
+}
+
+fn new_loopback(up: bool) -> Arc<Iface> {
     use aster_bigtcp::{
         device::{Loopback, Medium},
         iface::IpIface,
@@ -84,12 +92,14 @@ fn new_loopback() -> Arc<Iface> {
         }
     }
 
-    // FIXME: These flags are currently hardcoded.
-    // In the future, we should set appropriate values.
-    let flags = InterfaceFlags::UP
-        | InterfaceFlags::LOOPBACK
-        | InterfaceFlags::RUNNING
-        | InterfaceFlags::LOWER_UP;
+    // Loopback interfaces are always `LOOPBACK | LOWER_UP`; `UP | RUNNING`
+    // are set only when the interface is administratively up (the initial
+    // namespace's loopback starts up; a new namespace's loopback starts
+    // down, as in Linux).
+    let mut flags = InterfaceFlags::LOOPBACK | InterfaceFlags::LOWER_UP;
+    if up {
+        flags |= InterfaceFlags::UP | InterfaceFlags::RUNNING;
+    }
 
     IpIface::new(
         Wrapper(Mutex::new(Loopback::new(Medium::Ip))),

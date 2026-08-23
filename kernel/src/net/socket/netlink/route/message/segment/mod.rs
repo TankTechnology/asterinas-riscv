@@ -95,11 +95,11 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETLINK) => {
                 LinkSegment::read_from(&header, reader)?.map(RtnlSegment::GetLink)
             }
-            Ok(CSegmentType::GETADDR) => {
-                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::GetAddr)
-            }
             Ok(CSegmentType::NEWLINK) => {
                 LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
+            }
+            Ok(CSegmentType::GETADDR) => {
+                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::GetAddr)
             }
             Ok(CSegmentType::SETLINK) => {
                 LinkSegment::read_from(&header, reader)?.map(RtnlSegment::SetLink)
