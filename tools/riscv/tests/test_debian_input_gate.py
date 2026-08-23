@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import io
+import json
 import os
 import stat
 import subprocess
@@ -12,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.riscv.debian import input_gate as gate
 
@@ -52,9 +55,7 @@ def parse_newc_entries(archive: bytes) -> list[tuple[str, int, int, int, int]]:
 class InputGateBuilderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.builder = (
-            Path(__file__).parents[1] / "debian" / "build_input_gate.sh"
-        )
+        cls.builder = Path(__file__).parents[1] / "debian" / "build_input_gate.sh"
         cls.default_output = (
             Path(__file__).parents[3]
             / "target"
@@ -385,9 +386,7 @@ class InputGateContractTests(unittest.TestCase):
 
         self.assertTrue(gate.classify_transcript(transcript).passed)
         self.assertFalse(gate.classify_transcript(gate.PASS_MARKER).passed)
-        self.assertFalse(
-            gate.classify_transcript(transcript + b"Kernel panic").passed
-        )
+        self.assertFalse(gate.classify_transcript(transcript + b"Kernel panic").passed)
 
     def test_classification_reports_each_panic_marker(self) -> None:
         transcript = (
@@ -413,6 +412,353 @@ class InputGateContractTests(unittest.TestCase):
 
         with self.assertRaises(dataclasses.FrozenInstanceError):
             result.ready = False
+
+
+class FakeProcess:
+    def __init__(self) -> None:
+        self.pid = 4242
+
+
+class FakeBoot:
+    def __init__(
+        self,
+        events: list[str],
+        failure_marker: bytes | None = None,
+        failure: Exception | None = None,
+    ) -> None:
+        self.events = events
+        self.failure_marker = failure_marker
+        self.failure = failure
+        self.transcript = b""
+
+    def wait_for(self, marker: bytes, timeout: float) -> None:
+        del timeout
+        self.events.append(f"wait:{marker.decode()}")
+        if marker == self.failure_marker:
+            raise self.failure or TimeoutError(marker.decode())
+        self.transcript += marker + b"\n"
+
+    def send_line(self, command: str) -> None:
+        self.events.append(f"boot:{command}")
+
+
+class FakeMonitor:
+    def __init__(
+        self,
+        events: list[str],
+        failure_key: str | None = None,
+    ) -> None:
+        self.events = events
+        self.failure_key = failure_key
+
+    def connect(self) -> None:
+        self.events.append("monitor:connect")
+
+    def send_key(self, key: str) -> None:
+        self.events.append(f"key:{key}")
+        if key == self.failure_key:
+            raise gate.MonitorError(f"failed to send {key}")
+
+    def close(self) -> None:
+        self.events.append("monitor:close")
+
+
+class InputGateOrchestrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.artifacts = {}
+        for name in ("kernel", "uboot", "dtb", "initramfs"):
+            path = self.root / name
+            path.write_bytes(f"{name}-contents".encode())
+            self.artifacts[name] = path
+        self.output = self.root / "evidence"
+        self.events: list[str] = []
+        self.process = FakeProcess()
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def config(self) -> gate.GateConfig:
+        return gate.GateConfig(
+            kernel=self.artifacts["kernel"],
+            uboot=self.artifacts["uboot"],
+            dtb=self.artifacts["dtb"],
+            initramfs=self.artifacts["initramfs"],
+            output_dir=self.output,
+            smp=4,
+            startup_timeout=1.0,
+            command_timeout=1.0,
+            input_timeout=1.0,
+        )
+
+    def dependencies(
+        self,
+        boot: FakeBoot,
+        monitor: FakeMonitor | None = None,
+    ) -> gate.GateDependencies:
+        monitor = monitor or FakeMonitor(self.events)
+
+        def prepare(config: gate.GateConfig, boot_disk: Path) -> None:
+            del config
+            self.events.append("prepare")
+            boot_disk.write_bytes(b"private-ext4")
+
+        def launch(argv: list[str]) -> FakeProcess:
+            self.events.append("launch:" + " ".join(argv))
+            return self.process
+
+        def cleanup(process: FakeProcess) -> None:
+            self.assertIs(process, self.process)
+            self.events.append("cleanup")
+
+        return gate.GateDependencies(
+            prepare_boot_disk=prepare,
+            launch_process=launch,
+            boot_console=lambda process: boot,
+            monitor=lambda path, timeout: monitor,
+            cleanup_process=cleanup,
+        )
+
+    def test_success_observes_boot_then_keys_then_pass_and_writes_evidence(
+        self,
+    ) -> None:
+        boot = FakeBoot(self.events)
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        expected_boot_commands = [
+            "version",
+            "virtio scan",
+            "ext4ls virtio 0:0 /",
+            "ext4load virtio 0:0 0x80200000 /asterinas.booti",
+            "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
+            "fdt addr 0x90000000",
+            "setenv bootargs console=ttyS0 loglevel=warn init=/init",
+            "ext4load virtio 0:0 0x83000000 /initramfs.cpio.gz",
+            "setenv initrd_size ${filesize}",
+            "booti 0x80200000 0x83000000:${initrd_size} 0x90000000",
+        ]
+        expected = ["prepare", mock.ANY, "wait:=> "]
+        for command in expected_boot_commands[:-1]:
+            expected.extend([f"boot:{command}", "wait:=> "])
+        expected.extend(
+            [
+                f"boot:{expected_boot_commands[-1]}",
+                "wait:Starting kernel",
+                f"wait:{gate.READY_MARKER.decode()}",
+                "monitor:connect",
+                "key:a",
+                "key:shift-b",
+                "key:backspace",
+                "key:ctrl-c",
+                f"wait:{gate.PASS_MARKER.decode()}",
+                "monitor:close",
+                "cleanup",
+            ]
+        )
+        self.assertEqual(self.events, expected)
+        self.assertTrue(result.passed)
+
+        serial_path = self.output / "serial.log"
+        result_path = self.output / "result.json"
+        evidence = json.loads(result_path.read_text())
+        self.assertEqual(serial_path.read_bytes(), boot.transcript)
+        self.assertEqual(evidence["smp"], 4)
+        self.assertTrue(evidence["ready"])
+        self.assertTrue(evidence["complete"])
+        self.assertEqual(evidence["panics"], [])
+        self.assertTrue(evidence["passed"])
+        self.assertEqual(evidence["terminal_reason"], "passed")
+        self.assertEqual(evidence["qemu_argv"], result.qemu_argv)
+        self.assertEqual(
+            set(evidence["sha256"]),
+            {"uboot", "boot_disk", "kernel", "dtb", "initramfs"},
+        )
+        for name, path in self.artifacts.items():
+            self.assertEqual(
+                evidence["sha256"][name],
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        self.assertEqual(
+            evidence["sha256"]["boot_disk"],
+            hashlib.sha256(b"private-ext4").hexdigest(),
+        )
+        self.assertEqual(
+            result_path.read_text(),
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+        )
+
+    def test_cleanup_and_evidence_follow_ready_timeout(self) -> None:
+        boot = FakeBoot(
+            self.events,
+            gate.READY_MARKER,
+            TimeoutError("guest READY timeout"),
+        )
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "timeout: guest READY")
+        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+        self.assertTrue((self.output / "serial.log").exists())
+        evidence = json.loads((self.output / "result.json").read_text())
+        self.assertFalse(evidence["passed"])
+        self.assertEqual(evidence["terminal_reason"], "timeout: guest READY")
+
+    def test_cleanup_and_evidence_follow_monitor_failure(self) -> None:
+        boot = FakeBoot(self.events)
+        monitor = FakeMonitor(self.events, failure_key="backspace")
+
+        result = gate.run_gate(
+            self.config(),
+            self.dependencies(boot, monitor),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "monitor failure")
+        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+        self.assertNotIn(f"wait:{gate.PASS_MARKER.decode()}", self.events)
+
+    def test_cleanup_and_evidence_follow_early_process_exit(self) -> None:
+        boot = FakeBoot(
+            self.events,
+            b"=> ",
+            gate.EarlyProcessExit("QEMU exited with status 7"),
+        )
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "early process exit")
+        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+
+    def test_panic_prevents_pass_even_after_pass_marker(self) -> None:
+        boot = FakeBoot(self.events)
+        original_wait_for = boot.wait_for
+
+        def wait_with_panic(marker: bytes, timeout: float) -> None:
+            original_wait_for(marker, timeout)
+            if marker == gate.PASS_MARKER:
+                boot.transcript += b"Kernel panic\n"
+
+        boot.wait_for = wait_with_panic
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertTrue(result.complete)
+        self.assertEqual(result.panics, ("Kernel panic",))
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "panic detected")
+
+    def test_boot_disk_preparation_is_atomic_and_contains_only_contract_files(
+        self,
+    ) -> None:
+        self.output.mkdir(mode=0o700)
+        boot_disk = self.output / "boot.ext4"
+        commands = []
+
+        def run_command(argv: list[str]) -> None:
+            commands.append(argv)
+            stage = Path(argv[argv.index("-d") + 1])
+            self.assertEqual(
+                sorted(path.name for path in stage.iterdir()),
+                ["asterinas.booti", "initramfs.cpio.gz", "qemu-virt.dtb"],
+            )
+            Path(argv[-2]).write_bytes(b"formatted")
+
+        gate.prepare_boot_disk(self.config(), boot_disk, run_command=run_command)
+
+        self.assertEqual(boot_disk.read_bytes(), b"formatted")
+        self.assertEqual(commands[0][:4], ["mkfs.ext4", "-q", "-F", "-d"])
+        self.assertGreaterEqual(int(commands[0][-1]), 64 * 1024)
+        self.assertEqual(list(self.output.glob(".boot.ext4.*")), [])
+
+    def test_boot_disk_failure_preserves_previous_disk(self) -> None:
+        self.output.mkdir(mode=0o700)
+        boot_disk = self.output / "boot.ext4"
+        boot_disk.write_bytes(b"previous")
+
+        def fail(argv: list[str]) -> None:
+            del argv
+            raise subprocess.CalledProcessError(1, "mkfs.ext4")
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            gate.prepare_boot_disk(
+                self.config(),
+                boot_disk,
+                run_command=fail,
+            )
+
+        self.assertEqual(boot_disk.read_bytes(), b"previous")
+        self.assertEqual(list(self.output.glob(".boot.ext4.*")), [])
+
+    def test_config_rejects_invalid_timeouts_and_artifacts(self) -> None:
+        for timeout in (0.0, -1.0, float("inf"), float("nan")):
+            with self.subTest(timeout=timeout):
+                config = dataclasses.replace(self.config(), input_timeout=timeout)
+                with self.assertRaisesRegex(ValueError, "finite and positive"):
+                    gate.validate_config(config)
+
+        empty = self.root / "empty"
+        empty.touch()
+        with self.assertRaisesRegex(ValueError, "nonempty regular file"):
+            gate.validate_config(dataclasses.replace(self.config(), dtb=empty))
+
+        link = self.root / "kernel-link"
+        link.symlink_to(self.artifacts["kernel"])
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
+            gate.validate_config(dataclasses.replace(self.config(), kernel=link))
+
+    def test_output_directory_is_private_and_rejects_unsafe_existing_paths(
+        self,
+    ) -> None:
+        config = gate.validate_config(self.config())
+        self.assertEqual(stat.S_IMODE(config.output_dir.stat().st_mode), 0o700)
+
+        unsafe_output = self.root / "unsafe"
+        unsafe_output.mkdir(mode=0o755)
+        with self.assertRaisesRegex(ValueError, "private"):
+            gate.validate_config(
+                dataclasses.replace(self.config(), output_dir=unsafe_output)
+            )
+
+        output_link = self.root / "output-link"
+        output_link.symlink_to(config.output_dir, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
+            gate.validate_config(
+                dataclasses.replace(self.config(), output_dir=output_link)
+            )
+
+    def test_config_rejects_comma_before_qemu_structured_options(self) -> None:
+        comma_output = self.root / "comma,output"
+
+        with self.assertRaisesRegex(ValueError, "comma"):
+            gate.validate_config(
+                dataclasses.replace(self.config(), output_dir=comma_output)
+            )
+
+    def test_serial_console_does_not_reuse_an_old_prompt(self) -> None:
+        read_fd, write_fd = os.pipe()
+        process = type(
+            "PipeProcess",
+            (),
+            {
+                "stdin": io.BytesIO(),
+                "stdout": os.fdopen(read_fd, "rb", buffering=0),
+                "poll": lambda self: None,
+            },
+        )()
+        try:
+            os.write(write_fd, b"=> ")
+            console = gate.SerialBootConsole(process)
+            console.wait_for(b"=> ", 0.1)
+
+            with self.assertRaises(TimeoutError):
+                console.wait_for(b"=> ", 0.01)
+        finally:
+            os.close(write_fd)
+            process.stdout.close()
 
 
 if __name__ == "__main__":
