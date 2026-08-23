@@ -39,6 +39,10 @@ impl NetlinkSocketTable {
 pub trait SupportedNetlinkProtocol {
     type Message: 'static + Send;
 
+    /// The netlink protocol number (e.g., `NETLINK_ROUTE`), reported via
+    /// `getsockopt(SOL_SOCKET, SO_PROTOCOL)`.
+    fn protocol_id() -> NetlinkProtocolId;
+
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>>;
 
     fn bind(
@@ -72,6 +76,10 @@ pub enum NetlinkRouteProtocol {}
 impl SupportedNetlinkProtocol for NetlinkRouteProtocol {
     type Message = RtnlMessage;
 
+    fn protocol_id() -> NetlinkProtocolId {
+        StandardNetlinkProtocol::ROUTE as u32
+    }
+
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
         &NETLINK_SOCKET_TABLE.get().unwrap().route
     }
@@ -81,6 +89,10 @@ pub enum NetlinkUeventProtocol {}
 
 impl SupportedNetlinkProtocol for NetlinkUeventProtocol {
     type Message = UeventMessage;
+
+    fn protocol_id() -> NetlinkProtocolId {
+        StandardNetlinkProtocol::KOBJECT_UEVENT as u32
+    }
 
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
         &NETLINK_SOCKET_TABLE.get().unwrap().uevent

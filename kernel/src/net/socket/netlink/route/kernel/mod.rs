@@ -9,7 +9,7 @@ use super::message::{RtnlMessage, RtnlSegment};
 use crate::{
     net::socket::netlink::{
         addr::PortNum,
-        message::{ErrorSegment, ProtocolSegment},
+        message::{ErrorSegment, ProtocolSegment, SegHdrCommonFlags},
         table::{NetlinkRouteProtocol, SupportedNetlinkProtocol},
     },
     prelude::*,
@@ -39,6 +39,8 @@ impl NetlinkRouteKernelSocket {
             RtnlSegment::NewLink(request_segment) => link::do_new_link(request_segment),
             RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment),
             RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment),
+            RtnlSegment::SetLink(request_segment) => link::do_set_link(request_segment),
+            RtnlSegment::NewAddr(request_segment) => addr::do_new_addr(request_segment),
             _ => Err(Error::with_message(
                 Errno::EOPNOTSUPP,
                 "the netlink route request is not supported",
@@ -46,7 +48,19 @@ impl NetlinkRouteKernelSocket {
         };
 
         let mut response_segments = match response_segments {
-            Ok(segments) => segments,
+            Ok(segments) => {
+                // A successful request that produces no response segments
+                // (e.g. RTM_SETLINK/RTM_NEWADDR) is acknowledged with an empty
+                // NLMSG_ERROR when the ACK flag is set, as Linux does.
+                let ack_requested = SegHdrCommonFlags::from_bits_truncate(request_header.flags)
+                    .contains(SegHdrCommonFlags::ACK);
+                if segments.is_empty() && ack_requested {
+                    let ack_segment = ErrorSegment::new_from_request(request_header, None);
+                    self.report_error(ack_segment, dst_port);
+                    return;
+                }
+                segments
+            }
             Err(error) => {
                 // TODO: Deal with the `NetlinkMessageCommonFlags::ACK` flag.
                 // Should we return `ErrorSegment` if ACK flag does not exist?

@@ -66,6 +66,15 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
     Ok(response_segments)
 }
 
+/// Handles an RTM_SETLINK request to change interface flags.
+///
+/// Shares the implementation with [`do_new_link`]: `RTM_NEWLINK` and
+/// `RTM_SETLINK` only differ in that the latter cannot create interfaces,
+/// which is unsupported anyway.
+pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    do_new_link(request_segment)
+}
+
 enum FilterBy<'a> {
     Index(u32),
     Name(&'a CStr),
@@ -113,9 +122,8 @@ impl<'a> FilterBy<'a> {
 // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#strict-checking>.
 
 fn validate_getlink_request(body: &LinkSegmentBody) -> Result<()> {
-    // FIXME: The Linux implementation also checks the `padding` and `change` fields,
-    // but these fields are lost during the conversion of a `CIfInfoMsg` to `LinkSegmentBody`.
-    // We should consider including the `change` field in `LinkSegmentBody`.
+    // FIXME: The Linux implementation also checks the `padding` field,
+    // but this field is lost during the conversion of a `CIfInfoMsg` to `LinkSegmentBody`.
     // Reference: <https://elixir.bootlin.com/linux/v6.13/source/net/core/rtnetlink.c#L4043>.
     if !body.flags.is_empty() || body.type_ != InterfaceType::NETROM {
         return_errno_with_message!(Errno::EINVAL, "the flags or the type is not valid");
