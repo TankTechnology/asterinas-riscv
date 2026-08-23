@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{Uid, posix_thread::ContextPthreadAdminApi},
+    process::posix_thread::ContextPthreadAdminApi,
 };
 
 pub fn sys_setuid(uid: i32, ctx: &Context) -> Result<SyscallReturn> {
@@ -11,8 +11,10 @@ pub fn sys_setuid(uid: i32, ctx: &Context) -> Result<SyscallReturn> {
         return_errno_with_message!(Errno::EINVAL, "UIDs cannot be negative");
     }
 
-    let uid = Uid::new(uid.cast_unsigned());
-    debug!("uid = {:?}", uid);
+    let uid = ctx
+        .thread_local
+        .borrow_user_ns()
+        .make_kuid(uid.cast_unsigned())?;
 
     let credentials = ctx.credentials_mut();
     credentials.set_uid(uid)?;

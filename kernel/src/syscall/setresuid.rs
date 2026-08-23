@@ -7,25 +7,20 @@ use crate::{
 };
 
 pub fn sys_setresuid(ruid: i32, euid: i32, suid: i32, ctx: &Context) -> Result<SyscallReturn> {
-    let ruid = if ruid >= 0 {
-        Some(Uid::new(ruid.cast_unsigned()))
-    } else {
-        None
+    let map_uid = |id: i32| -> Result<Option<Uid>> {
+        if id < 0 {
+            Ok(None)
+        } else {
+            ctx.thread_local
+                .borrow_user_ns()
+                .make_kuid(id.cast_unsigned())
+                .map(Some)
+        }
     };
 
-    let euid = if euid >= 0 {
-        Some(Uid::new(euid.cast_unsigned()))
-    } else {
-        None
-    };
-
-    let suid = if suid >= 0 {
-        Some(Uid::new(suid.cast_unsigned()))
-    } else {
-        None
-    };
-
-    debug!("ruid = {:?}, euid = {:?}, suid = {:?}", ruid, euid, suid);
+    let ruid = map_uid(ruid)?;
+    let euid = map_uid(euid)?;
+    let suid = map_uid(suid)?;
 
     let credentials = ctx.credentials_mut();
     credentials.set_resuid(ruid, euid, suid)?;

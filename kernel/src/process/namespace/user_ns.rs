@@ -190,6 +190,27 @@ impl UserNamespace {
             .unwrap_or(Gid::OVERFLOW)
     }
 
+    /// Maps a UID visible inside this namespace to a global kernel UID.
+    ///
+    /// Unmapped IDs fail, matching Linux's `make_kuid` behavior in the
+    /// `setuid`-family system calls.
+    pub fn make_kuid(&self, uid: u32) -> Result<Uid> {
+        self.uid_map
+            .lock()
+            .map_up(uid)
+            .map(Uid::new)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "UID is not mapped in the user namespace"))
+    }
+
+    /// Maps a GID visible inside this namespace to a global kernel GID.
+    pub fn make_kgid(&self, gid: u32) -> Result<Gid> {
+        self.gid_map
+            .lock()
+            .map_up(gid)
+            .map(Gid::new)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GID is not mapped in the user namespace"))
+    }
+
     /// Locks the UID map of this namespace.
     pub fn lock_uid_map(&self) -> MutexGuard<'_, IdMap> {
         self.uid_map.lock()
