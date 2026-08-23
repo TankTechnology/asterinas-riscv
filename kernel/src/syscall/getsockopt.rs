@@ -25,8 +25,10 @@ pub fn sys_getsockopt(
     debug!("level = {level:?}, sockfd = {sockfd}, optname = {optname:?}, optlen = {optlen}");
 
     // Validate optval pointer before option-name lookup: Linux returns EFAULT
-    // for a NULL buffer even when the option name is unknown.
-    if optval == 0 {
+    // for a NULL buffer even when the option name is unknown. A NULL optval
+    // with a zero length is legal, though: it is the size-query form used by
+    // e.g. NETLINK_LIST_MEMBERSHIPS.
+    if optval == 0 && optlen > 0 {
         return_errno_with_message!(Errno::EFAULT, "optval is NULL");
     }
 

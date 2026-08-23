@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+pub mod bpf;
 mod copy_compact;
 pub mod ioctl;
 mod iovec;

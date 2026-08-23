@@ -6,24 +6,42 @@ use crate::{
         GroupIdSet, NetlinkSocketAddr, receiver::MessageQueue, table::BoundHandle,
     },
     prelude::*,
+    util::bpf::{self, SockFilter},
 };
 
 pub struct BoundNetlink<Message: 'static> {
     pub(in crate::net::socket::netlink) handle: BoundHandle<Message>,
     pub(in crate::net::socket::netlink) remote_addr: NetlinkSocketAddr,
     pub(in crate::net::socket::netlink) receive_queue: Arc<Mutex<MessageQueue<Message>>>,
+    pub(in crate::net::socket::netlink) filter: Option<Arc<Vec<SockFilter>>>,
 }
 
 impl<Message: 'static> BoundNetlink<Message> {
     pub(super) fn new(
         handle: BoundHandle<Message>,
         message_queue: Arc<Mutex<MessageQueue<Message>>>,
+        filter: Option<Arc<Vec<SockFilter>>>,
     ) -> Self {
         Self {
             handle,
             remote_addr: NetlinkSocketAddr::new_unspecified(),
             receive_queue: message_queue,
+            filter,
         }
+    }
+
+    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) {
+        self.filter = filter;
+    }
+
+    /// Returns whether a message passes the attached classic-BPF socket filter
+    /// (`SO_ATTACH_FILTER`). Messages are dropped when the filter returns 0 or
+    /// when the filter program is malformed.
+    pub(in crate::net::socket::netlink) fn filter_allows(&self, message_bytes: &[u8]) -> bool {
+        let Some(filter) = &self.filter else {
+            return true;
+        };
+        matches!(bpf::run_filter(filter, message_bytes, true), Some(verdict) if verdict != 0)
     }
 
     pub(in crate::net::socket::netlink) fn bind_common(

@@ -12,14 +12,18 @@ use crate::{
     },
     net::socket::{
         Socket,
-        netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
+        netlink::{
+            AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships,
+            NetlinkControlMessage, PktInfo, table::SupportedNetlinkProtocol,
+        },
         options::{
-            Error as SocketError, SocketOption,
+            AttachFilter, DetachFilter, Error as SocketError, SockDomain, SockProtocol,
+            SocketOption,
             macros::{sock_option_mut, sock_option_ref},
         },
         private::SocketPrivate,
         util::{
-            MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
+            ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
             datagram_common::{Bound, Inner, select_remote_and_bind},
             options::{
                 GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
@@ -28,7 +32,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    util::{MultiRead, MultiWrite, net::SockType},
+    util::{MultiRead, MultiWrite, bpf::SockFilter, net::{CSocketAddrFamily, SockType}},
 };
 
 mod bound;
@@ -47,12 +51,14 @@ pub struct NetlinkSocket<P: SupportedNetlinkProtocol> {
 #[derive(Clone, Debug)]
 struct OptionSet {
     socket: SocketOptionSet,
+    pktinfo: bool,
 }
 
 impl OptionSet {
     pub(self) fn new() -> Self {
         Self {
             socket: SocketOptionSet::new_netlink(),
+            pktinfo: false,
         }
     }
 }
@@ -193,9 +199,16 @@ where
             self.try_recv(writer, flags)
         })?;
 
-        // TODO: Receive control message
+        // Attach the pktinfo control message if NETLINK_PKTINFO is enabled.
+        // All messages we deliver originate from the kernel, so the group is 0
+        // (unicast).
+        let control_messages = if self.options.read().pktinfo {
+            vec![ControlMessage::Netlink(NetlinkControlMessage::new_pktinfo(0))]
+        } else {
+            Vec::new()
+        };
 
-        let message_header = MessageHeader::new(Some(addr), Vec::new());
+        let message_header = MessageHeader::new(Some(addr), control_messages);
 
         Ok((output, message_header))
     }
@@ -205,6 +218,40 @@ where
             socket_errors @ SocketError => {
                 // TODO: Support socket errors for netlink sockets
                 socket_errors.set(None);
+                return Ok(());
+            }
+            socket_domain @ SockDomain => {
+                socket_domain.set(CSocketAddrFamily::AF_NETLINK as i32);
+                return Ok(());
+            }
+            socket_protocol @ SockProtocol => {
+                socket_protocol.set(P::protocol_id() as i32);
+                return Ok(());
+            }
+            // Extended-ACK TLVs and strict checking are not implemented, so
+            // these read as disabled. NETLINK_PKTINFO reflects the stored
+            // socket-level state.
+            pktinfo @ PktInfo => {
+                pktinfo.set(self.options.read().pktinfo);
+                return Ok(());
+            }
+            ext_ack @ ExtAck => {
+                ext_ack.set(false);
+                return Ok(());
+            }
+            strict_chk @ GetStrictChk => {
+                strict_chk.set(false);
+                return Ok(());
+            }
+            list_memberships @ ListMemberships => {
+                let inner = self.inner.read();
+                let groups = match &*inner {
+                    Inner::Unbound(unbound_socket) => unbound_socket.addr().groups(),
+                    Inner::Bound(bound_socket) => bound_socket.local_endpoint().groups(),
+                };
+                // Linux reports 1-based group IDs for NETLINK_LIST_MEMBERSHIPS.
+                list_memberships
+                    .set(groups.ids_iter().map(|id| id + 1).collect::<Vec<u32>>());
                 return Ok(());
             }
             _ => (),
@@ -232,6 +279,21 @@ where
         {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res.map(|_need_iface_poll| ()),
+        }
+
+        // NETLINK_PKTINFO only controls whether recvmsg attaches the pktinfo
+        // control message, which is socket-level state. Handle it here while
+        // the options lock is held.
+        let mut is_pktinfo = false;
+        sock_option_ref!(match option {
+            pktinfo @ PktInfo => {
+                options.pktinfo = *pktinfo.get().unwrap();
+                is_pktinfo = true;
+            }
+            _ => (),
+        });
+        if is_pktinfo {
+            return Ok(());
         }
         // `options` must be dropped here because `do_netlink_setsockopt` may lock other mutexes.
         drop(options);
@@ -309,6 +371,13 @@ impl<P: SupportedNetlinkProtocol> Inner<UnboundNetlink<P>, BoundNetlink<P::Messa
             Inner::Bound(bound_socket) => bound_socket.drop_groups(groups),
         }
     }
+
+    fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) {
+        match self {
+            Inner::Unbound(unbound_socket) => unbound_socket.set_filter(filter),
+            Inner::Bound(bound_socket) => bound_socket.set_filter(filter),
+        }
+    }
 }
 
 fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
@@ -324,6 +393,17 @@ fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
             let groups = drop_membership.get().unwrap();
             inner.drop_groups(GroupIdSet::new(*groups));
         }
+        attach_filter @ AttachFilter => {
+            let filter = attach_filter.get().unwrap().clone();
+            inner.set_filter(Some(filter));
+        }
+        _detach_filter @ DetachFilter => {
+            inner.set_filter(None);
+        }
+        // NETLINK_PKTINFO is handled in `set_option` (socket-level state).
+        // NETLINK_EXT_ACK only enables extended-ACK TLVs in error messages,
+        // which we do not emit.
+        _ext_ack @ ExtAck => {},
         _ =>
             return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to be set is unknown"),
     });

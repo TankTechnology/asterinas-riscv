@@ -67,16 +67,29 @@ impl datagram_common::Bound for BoundNetlinkUevent {
 
         let mut receive_queue = self.receive_queue.lock();
 
-        receive_queue.dequeue_if(|response, response_len| {
-            let copied_len = response_len.min(writer.sum_lens());
-            response.write_to(writer)?;
+        // Drop messages rejected by the socket filter (SO_ATTACH_FILTER) and
+        // continue with the next one. Linux applies the filter at enqueue
+        // time; applying it at receive time is observably equivalent here.
+        loop {
+            let result = receive_queue.dequeue_if(|response, response_len| {
+                if !self.filter_allows(response.as_bytes()) {
+                    return Ok((true, None));
+                }
 
-            let remote = *response.src_addr();
+                let copied_len = response_len.min(writer.sum_lens());
+                response.write_to(writer)?;
 
-            let should_dequeue = flags.receive_behavior().will_consume_data();
-            let output = RecvOutput::new_for_packet(flags, copied_len, response_len);
-            Ok((should_dequeue, (output, remote)))
-        })
+                let remote = *response.src_addr();
+
+                let should_dequeue = flags.receive_behavior().will_consume_data();
+                let output = RecvOutput::new_for_packet(flags, copied_len, response_len);
+                Ok((should_dequeue, Some((output, remote))))
+            })?;
+
+            if let Some(output) = result {
+                return Ok(output);
+            }
+        }
     }
 
     fn check_io_events(&self) -> IoEvents {

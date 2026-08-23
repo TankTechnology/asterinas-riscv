@@ -78,7 +78,10 @@ impl datagram_common::Bound for BoundNetlinkRoute {
                 }
                 // There isn't a valid segment header. Either there are no more bytes to read, or
                 // the header is corrupted. These errors are not recoverable, so we abort the loop.
-                Err(_) => break,
+                Err(err) => {
+                    debug!("netlink route: failed to parse segment: {:?}", err);
+                    break;
+                }
             };
 
             // The header's PID should be the sender's port ID.
