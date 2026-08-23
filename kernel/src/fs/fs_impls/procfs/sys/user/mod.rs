@@ -1,47 +1,41 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use self::{fs::FsDirOps, kernel::KernelDirOps, user::UserDirOps};
-use super::{
-    StaticEntry,
-    template::{ReaddirEntry, listed_entries_from_table, visit_listed_entries},
-};
+use aster_util::printer::VmPrinter;
+
 use crate::{
     fs::{
         file::{InodeType, mkmod},
         procfs::{
-            sys::vm::VmDirOps,
-            template::{ProcDir, ProcDirOps, lookup_child_from_table},
+            ProcDir, StaticEntry,
+            sys::user::max_user_namespaces::MaxUserNamespacesFileOps,
+            template::{
+                ProcDirOps, ReaddirEntry, listed_entries_from_table, lookup_child_from_table,
+                visit_listed_entries,
+            },
         },
         vfs::inode::Inode,
     },
     prelude::*,
 };
 
-mod fs;
-mod kernel;
-mod user;
-mod vm;
+mod max_user_namespaces;
 
-/// Represents the inode at `/proc/sys`.
-pub struct SysDirOps;
+/// Represents the inode at `/proc/sys/user`.
+pub struct UserDirOps;
 
-impl SysDirOps {
+impl UserDirOps {
     pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
-        // Reference:
-        // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/proc_sysctl.c#L1566>
-        // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L488-L489>
         ProcDir::new(Self, parent, mkmod!(a+rx))
     }
 
-    const STATIC_ENTRIES: &'static [StaticEntry] = &[
-        ("fs", InodeType::Dir, FsDirOps::new_inode),
-        ("kernel", InodeType::Dir, KernelDirOps::new_inode),
-        ("user", InodeType::Dir, UserDirOps::new_inode),
-        ("vm", InodeType::Dir, VmDirOps::new_inode),
-    ];
+    const STATIC_ENTRIES: &'static [StaticEntry] = &[(
+        "max_user_namespaces",
+        InodeType::File,
+        MaxUserNamespacesFileOps::new_inode,
+    )];
 }
 
-impl ProcDirOps for SysDirOps {
+impl ProcDirOps for UserDirOps {
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         if let Some(child) = lookup_child_from_table(name, Self::STATIC_ENTRIES, |f| {
             (f)(this_dir.this_weak().clone())
