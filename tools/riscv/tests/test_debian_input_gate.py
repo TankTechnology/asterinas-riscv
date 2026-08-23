@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import select
 import signal
 import stat
 import subprocess
@@ -333,6 +334,49 @@ class InputGateContractTests(unittest.TestCase):
 
         self.assertEqual(run_result.returncode, 0, run_result.stderr)
         self.assertIn("input gate state machine: PASS", run_result.stdout)
+
+    def test_guest_normal_success_keeps_init_alive(self) -> None:
+        guest_source = Path(__file__).parents[1] / "debian" / "input_gate_init.c"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            guest_binary = Path(temporary_directory) / "input-gate-lifecycle-test"
+            compile_result = subprocess.run(
+                [
+                    "cc",
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-DINPUT_GATE_LIFECYCLE_TEST",
+                    str(guest_source),
+                    "-o",
+                    str(guest_binary),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+
+            process = subprocess.Popen(
+                [guest_binary],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertIsNotNone(process.stdout)
+                readable, _, _ = select.select([process.stdout], [], [], 1.0)
+                self.assertEqual(readable, [process.stdout])
+                self.assertEqual(
+                    process.stdout.readline().strip(),
+                    "__DEBIAN_INPUT_GATE_PASS__",
+                )
+                self.assertIsNone(process.poll(), "guest init exited after PASS")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.communicate(timeout=1.0)
 
     def test_qemu_argv_uses_smp4_and_two_distinct_input_devices(self) -> None:
         argv = gate.qemu_argv(

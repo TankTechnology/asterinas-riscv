@@ -140,6 +140,46 @@ int main(void)
 #include <time.h>
 #include <unistd.h>
 
+static _Noreturn void report_pass_and_hold(void)
+{
+    printf("__DEBIAN_INPUT_GATE_PASS__\n");
+    fflush(stdout);
+
+    for (;;) {
+        if (pause() < 0 && errno == EINTR) {
+            continue;
+        }
+    }
+}
+
+#ifdef INPUT_GATE_LIFECYCLE_TEST
+
+int main(void)
+{
+    struct input_state state = {0};
+    const size_t expected_event_count =
+        sizeof(EXPECTED_EVENTS) / sizeof(EXPECTED_EVENTS[0]);
+
+    for (size_t index = 0; index < expected_event_count; index++) {
+        const struct input_event event = {
+            .type = EV_KEY,
+            .code = EXPECTED_EVENTS[index].code,
+            .value = EXPECTED_EVENTS[index].value,
+        };
+        const enum transition_result result = input_state_consume(&state, &event);
+
+        if (result == TRANSITION_COMPLETE) {
+            report_pass_and_hold();
+        }
+        if (result != TRANSITION_ACCEPTED) {
+            return 1;
+        }
+    }
+    return 1;
+}
+
+#else
+
 enum {
     BITS_PER_BYTE = 8,
     DEVICE_NAME_CAPACITY = 128,
@@ -377,9 +417,7 @@ static int wait_for_expected_events(int file_descriptor)
                 return report_invalid_order(&state, &events[index]);
             }
             if (result == TRANSITION_COMPLETE) {
-                printf("__DEBIAN_INPUT_GATE_PASS__\n");
-                fflush(stdout);
-                return 0;
+                report_pass_and_hold();
             }
         }
     }
@@ -405,5 +443,7 @@ int main(void)
     close(file_descriptor);
     return result;
 }
+
+#endif
 
 #endif
