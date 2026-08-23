@@ -8,12 +8,14 @@ use crate::{
 
 pub fn sys_setfsuid(uid: i32, ctx: &Context) -> Result<SyscallReturn> {
     let fsuid = if uid >= 0 {
-        Some(Uid::new(uid.cast_unsigned()))
+        Some(
+            ctx.thread_local
+                .borrow_user_ns()
+                .make_kuid(uid.cast_unsigned())?,
+        )
     } else {
         None
     };
-
-    debug!("fsuid = {:?}", fsuid);
 
     let old_fsuid = {
         let credentials = ctx.credentials_mut();

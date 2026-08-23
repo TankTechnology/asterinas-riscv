@@ -7,25 +7,20 @@ use crate::{
 };
 
 pub fn sys_setresgid(rgid: i32, egid: i32, sgid: i32, ctx: &Context) -> Result<SyscallReturn> {
-    let rgid = if rgid >= 0 {
-        Some(Gid::new(rgid.cast_unsigned()))
-    } else {
-        None
+    let map_gid = |id: i32| -> Result<Option<Gid>> {
+        if id < 0 {
+            Ok(None)
+        } else {
+            ctx.thread_local
+                .borrow_user_ns()
+                .make_kgid(id.cast_unsigned())
+                .map(Some)
+        }
     };
 
-    let egid = if egid >= 0 {
-        Some(Gid::new(egid.cast_unsigned()))
-    } else {
-        None
-    };
-
-    let sgid = if sgid >= 0 {
-        Some(Gid::new(sgid.cast_unsigned()))
-    } else {
-        None
-    };
-
-    debug!("rgid = {:?}, egid = {:?}, sgid = {:?}", rgid, egid, sgid);
+    let rgid = map_gid(rgid)?;
+    let egid = map_gid(egid)?;
+    let sgid = map_gid(sgid)?;
 
     let credentials = ctx.credentials_mut();
     credentials.set_resgid(rgid, egid, sgid)?;
