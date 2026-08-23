@@ -8,12 +8,14 @@ use crate::{
 
 pub fn sys_setfsgid(gid: i32, ctx: &Context) -> Result<SyscallReturn> {
     let fsgid = if gid >= 0 {
-        Some(Gid::new(gid.cast_unsigned()))
+        Some(
+            ctx.thread_local
+                .borrow_user_ns()
+                .make_kgid(gid.cast_unsigned())?,
+        )
     } else {
         None
     };
-
-    debug!("fsgid = {:?}", fsgid);
 
     let old_fsgid = {
         let credentials = ctx.credentials_mut();
