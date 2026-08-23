@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import tempfile
@@ -425,21 +426,36 @@ class FakeBoot:
         events: list[str],
         failure_marker: bytes | None = None,
         failure: Exception | None = None,
+        failure_wait_number: int | None = None,
+        drain_append: bytes = b"",
+        drain_failure: Exception | None = None,
     ) -> None:
         self.events = events
         self.failure_marker = failure_marker
         self.failure = failure
+        self.failure_wait_number = failure_wait_number
+        self.drain_append = drain_append
+        self.drain_failure = drain_failure
+        self.wait_count = 0
         self.transcript = b""
 
     def wait_for(self, marker: bytes, timeout: float) -> None:
         del timeout
+        self.wait_count += 1
         self.events.append(f"wait:{marker.decode()}")
-        if marker == self.failure_marker:
+        if marker == self.failure_marker or self.wait_count == self.failure_wait_number:
             raise self.failure or TimeoutError(marker.decode())
         self.transcript += marker + b"\n"
 
     def send_line(self, command: str) -> None:
         self.events.append(f"boot:{command}")
+
+    def drain(self, timeout: float) -> None:
+        del timeout
+        self.events.append("drain")
+        self.transcript += self.drain_append
+        if self.drain_failure is not None:
+            raise self.drain_failure
 
 
 class FakeMonitor:
@@ -447,12 +463,18 @@ class FakeMonitor:
         self,
         events: list[str],
         failure_key: str | None = None,
+        connect_failure: Exception | None = None,
+        close_failure: Exception | None = None,
     ) -> None:
         self.events = events
         self.failure_key = failure_key
+        self.connect_failure = connect_failure
+        self.close_failure = close_failure
 
     def connect(self) -> None:
         self.events.append("monitor:connect")
+        if self.connect_failure is not None:
+            raise self.connect_failure
 
     def send_key(self, key: str) -> None:
         self.events.append(f"key:{key}")
@@ -461,6 +483,8 @@ class FakeMonitor:
 
     def close(self) -> None:
         self.events.append("monitor:close")
+        if self.close_failure is not None:
+            raise self.close_failure
 
 
 class InputGateOrchestrationTests(unittest.TestCase):
@@ -555,6 +579,7 @@ class InputGateOrchestrationTests(unittest.TestCase):
                 f"wait:{gate.PASS_MARKER.decode()}",
                 "monitor:close",
                 "cleanup",
+                "drain",
             ]
         )
         self.assertEqual(self.events, expected)
@@ -600,15 +625,41 @@ class InputGateOrchestrationTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertEqual(result.terminal_reason, "timeout: guest READY")
-        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
         self.assertTrue((self.output / "serial.log").exists())
         evidence = json.loads((self.output / "result.json").read_text())
         self.assertFalse(evidence["passed"])
         self.assertEqual(evidence["terminal_reason"], "timeout: guest READY")
 
+    def test_timeout_reason_distinguishes_uboot_ready_and_pass_phases(self) -> None:
+        cases = (
+            (1, None, "timeout: U-Boot prompt"),
+            (2, None, "timeout: U-Boot command"),
+            (None, gate.READY_MARKER, "timeout: guest READY"),
+            (None, gate.PASS_MARKER, "timeout: guest PASS"),
+        )
+        for wait_number, marker, expected_reason in cases:
+            with self.subTest(reason=expected_reason):
+                events: list[str] = []
+                self.events = events
+                boot = FakeBoot(
+                    events,
+                    failure_marker=marker,
+                    failure=TimeoutError("deadline expired"),
+                    failure_wait_number=wait_number,
+                )
+
+                result = gate.run_gate(self.config(), self.dependencies(boot))
+
+                self.assertFalse(result.passed)
+                self.assertEqual(result.terminal_reason, expected_reason)
+
     def test_cleanup_and_evidence_follow_monitor_failure(self) -> None:
         boot = FakeBoot(self.events)
-        monitor = FakeMonitor(self.events, failure_key="backspace")
+        monitor = FakeMonitor(
+            self.events,
+            connect_failure=gate.MonitorError("connect failed"),
+        )
 
         result = gate.run_gate(
             self.config(),
@@ -617,7 +668,8 @@ class InputGateOrchestrationTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertEqual(result.terminal_reason, "monitor failure")
-        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
+        self.assertNotIn("key:a", self.events)
         self.assertNotIn(f"wait:{gate.PASS_MARKER.decode()}", self.events)
 
     def test_cleanup_and_evidence_follow_early_process_exit(self) -> None:
@@ -631,7 +683,7 @@ class InputGateOrchestrationTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertEqual(result.terminal_reason, "early process exit")
-        self.assertEqual(self.events[-2:], ["monitor:close", "cleanup"])
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
 
     def test_panic_prevents_pass_even_after_pass_marker(self) -> None:
         boot = FakeBoot(self.events)
@@ -651,6 +703,69 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.terminal_reason, "panic detected")
 
+    def test_panic_arriving_during_post_cleanup_drain_prevents_pass(self) -> None:
+        boot = FakeBoot(self.events, drain_append=b"Kernel panic\n")
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.panics, ("Kernel panic",))
+        self.assertEqual(result.terminal_reason, "panic detected")
+        self.assertIn(b"Kernel panic", (self.output / "serial.log").read_bytes())
+        evidence = json.loads((self.output / "result.json").read_text())
+        self.assertEqual(evidence["panics"], ["Kernel panic"])
+        self.assertFalse(evidence["passed"])
+
+    def test_serial_drain_failure_is_recorded_and_prevents_pass(self) -> None:
+        boot = FakeBoot(self.events, drain_failure=OSError("drain failed"))
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "serial drain failure")
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
+
+    def test_serial_drain_timeout_is_recorded_and_prevents_pass(self) -> None:
+        boot = FakeBoot(self.events, drain_failure=TimeoutError("still open"))
+
+        result = gate.run_gate(self.config(), self.dependencies(boot))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "serial drain timeout")
+
+    def test_cleanup_failure_is_recorded_and_prevents_pass(self) -> None:
+        boot = FakeBoot(self.events)
+        dependencies = self.dependencies(boot)
+
+        def fail_cleanup(process: FakeProcess) -> None:
+            del process
+            self.events.append("cleanup")
+            raise RuntimeError("descendant survived")
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            cleanup_process=fail_cleanup,
+        )
+
+        result = gate.run_gate(self.config(), dependencies)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "cleanup failure")
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
+
+    def test_monitor_close_failure_is_recorded_and_prevents_pass(self) -> None:
+        boot = FakeBoot(self.events)
+        monitor = FakeMonitor(
+            self.events,
+            close_failure=gate.MonitorError("close failed"),
+        )
+
+        result = gate.run_gate(self.config(), self.dependencies(boot, monitor))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.terminal_reason, "monitor close failure")
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
+
     def test_boot_disk_preparation_is_atomic_and_contains_only_contract_files(
         self,
     ) -> None:
@@ -660,19 +775,46 @@ class InputGateOrchestrationTests(unittest.TestCase):
 
         def run_command(argv: list[str]) -> None:
             commands.append(argv)
-            stage = Path(argv[argv.index("-d") + 1])
-            self.assertEqual(
-                sorted(path.name for path in stage.iterdir()),
-                ["asterinas.booti", "initramfs.cpio.gz", "qemu-virt.dtb"],
-            )
-            Path(argv[-2]).write_bytes(b"formatted")
+            if argv[0] == "mkfs.ext4":
+                stage = Path(argv[argv.index("-d") + 1])
+                self.assertEqual(
+                    sorted(path.name for path in stage.iterdir()),
+                    ["asterinas.booti", "initramfs.cpio.gz", "qemu-virt.dtb"],
+                )
+                Path(argv[-2]).write_bytes(b"formatted")
 
         gate.prepare_boot_disk(self.config(), boot_disk, run_command=run_command)
 
         self.assertEqual(boot_disk.read_bytes(), b"formatted")
         self.assertEqual(commands[0][:4], ["mkfs.ext4", "-q", "-F", "-d"])
         self.assertGreaterEqual(int(commands[0][-1]), 64 * 1024)
+        self.assertEqual(
+            commands[1],
+            ["debugfs", "-w", "-R", "rmdir lost+found", mock.ANY],
+        )
         self.assertEqual(list(self.output.glob(".boot.ext4.*")), [])
+
+    def test_real_boot_disk_contains_exactly_the_three_payloads(self) -> None:
+        self.output.mkdir(mode=0o700)
+        boot_disk = self.output / "boot.ext4"
+
+        gate.prepare_boot_disk(self.config(), boot_disk)
+
+        listing = subprocess.run(
+            ["debugfs", "-R", "ls -p /", boot_disk],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        names = {
+            fields[5]
+            for line in listing.splitlines()
+            if len(fields := line.split("/")) > 5 and fields[5] not in (".", "..")
+        }
+        self.assertEqual(
+            names,
+            {"asterinas.booti", "initramfs.cpio.gz", "qemu-virt.dtb"},
+        )
 
     def test_boot_disk_failure_preserves_previous_disk(self) -> None:
         self.output.mkdir(mode=0o700)
@@ -716,12 +858,15 @@ class InputGateOrchestrationTests(unittest.TestCase):
         config = gate.validate_config(self.config())
         self.assertEqual(stat.S_IMODE(config.output_dir.stat().st_mode), 0o700)
 
-        unsafe_output = self.root / "unsafe"
-        unsafe_output.mkdir(mode=0o755)
-        with self.assertRaisesRegex(ValueError, "private"):
-            gate.validate_config(
-                dataclasses.replace(self.config(), output_dir=unsafe_output)
-            )
+        for mode in (0o500, 0o755, 0o1700):
+            unsafe_output = self.root / f"unsafe-{mode:o}"
+            unsafe_output.mkdir(mode=0o700)
+            unsafe_output.chmod(mode)
+            with self.subTest(mode=oct(mode)):
+                with self.assertRaisesRegex(ValueError, "exact mode 0700"):
+                    gate.validate_config(
+                        dataclasses.replace(self.config(), output_dir=unsafe_output)
+                    )
 
         output_link = self.root / "output-link"
         output_link.symlink_to(config.output_dir, target_is_directory=True)
@@ -729,6 +874,18 @@ class InputGateOrchestrationTests(unittest.TestCase):
             gate.validate_config(
                 dataclasses.replace(self.config(), output_dir=output_link)
             )
+
+    def test_new_output_directory_is_chmoded_to_0700_despite_umask(self) -> None:
+        output = self.root / "umask-output"
+        original_umask = os.umask(0o777)
+        try:
+            config = gate.validate_config(
+                dataclasses.replace(self.config(), output_dir=output)
+            )
+        finally:
+            os.umask(original_umask)
+
+        self.assertEqual(stat.S_IMODE(config.output_dir.stat().st_mode), 0o700)
 
     def test_config_rejects_comma_before_qemu_structured_options(self) -> None:
         comma_output = self.root / "comma,output"
@@ -759,6 +916,72 @@ class InputGateOrchestrationTests(unittest.TestCase):
         finally:
             os.close(write_fd)
             process.stdout.close()
+
+    def test_hmp_partial_responses_obey_one_total_command_deadline(self) -> None:
+        class PartialSocket:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+                self.recv_count = 0
+
+            def sendall(self, command: bytes) -> None:
+                self.command = command
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeouts.append(timeout)
+
+            def recv(self, size: int) -> bytes:
+                del size
+                self.recv_count += 1
+                if self.recv_count > 2:
+                    raise AssertionError("read beyond total deadline")
+                return b"partial"
+
+        fake_socket = PartialSocket()
+        monitor = gate.HmpMonitor(Path("/monitor.sock"), 1.0)
+        monitor._socket = fake_socket
+
+        with mock.patch.object(
+            gate.time,
+            "monotonic",
+            side_effect=(0.0, 0.25, 0.75, 1.0),
+        ):
+            with self.assertRaisesRegex(gate.MonitorError, "failed to send"):
+                monitor.send_key("a")
+
+        self.assertEqual(fake_socket.command, b"sendkey a\n")
+        self.assertEqual(fake_socket.timeouts, [0.75, 0.25])
+
+    def test_cleanup_targets_process_group_when_leader_already_exited(self) -> None:
+        class ExitedLeader:
+            pid = 4242
+
+            def __init__(self) -> None:
+                self.wait_calls = []
+
+            def poll(self) -> int:
+                return 7
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.wait_calls.append(timeout)
+                return 7
+
+        process = ExitedLeader()
+        kill_calls = []
+
+        def killpg(process_group: int, requested_signal: int) -> None:
+            kill_calls.append((process_group, requested_signal))
+            if requested_signal == 0 and kill_calls.count((process_group, 0)) > 1:
+                raise ProcessLookupError
+
+        with (
+            mock.patch.object(gate.os, "killpg", side_effect=killpg),
+            mock.patch.object(gate.time, "sleep"),
+        ):
+            gate._cleanup_process(process)
+
+        self.assertEqual(kill_calls[0], (process.pid, signal.SIGTERM))
+        self.assertEqual(kill_calls[1:], [(process.pid, 0), (process.pid, 0)])
+        self.assertTrue(process.wait_calls)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,8 @@ class BootConsole(Protocol):
 
     def send_line(self, command: str) -> None: ...
 
+    def drain(self, timeout: float) -> None: ...
+
 
 class Monitor(Protocol):
     """Describe the HMP operations needed by the input gate."""
@@ -237,10 +239,17 @@ def validate_config(config: GateConfig) -> GateConfig:
             )
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError(f"output directory must be a directory: {output_dir}")
-        if stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise ValueError(f"output directory must be private (0700): {output_dir}")
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise ValueError(
+                f"output directory must have exact mode 0700: {output_dir}"
+            )
     else:
         output_dir.mkdir(mode=0o700, parents=True)
+        output_dir.chmod(0o700)
+        if stat.S_IMODE(output_dir.lstat().st_mode) != 0o700:
+            raise ValueError(
+                f"output directory must have exact mode 0700: {output_dir}"
+            )
     output_dir = output_dir.resolve(strict=True)
 
     # Reuse the command builder as the single authority for SMP validation.
@@ -310,6 +319,15 @@ def prepare_boot_disk(
                     str(disk_size_kib),
                 ]
             )
+            run_command(
+                [
+                    "debugfs",
+                    "-w",
+                    "-R",
+                    "rmdir lost+found",
+                    str(temporary_disk),
+                ]
+            )
             os.replace(temporary_disk, boot_disk)
             temporary_disk = None
     finally:
@@ -335,24 +353,30 @@ def run_gate(
     boot: BootConsole | None = None
     monitor = dependencies.monitor(monitor_socket, config.command_timeout)
     terminal_reason = "orchestration failure"
+    timeout_reason = "timeout: U-Boot prompt"
+    lifecycle_failures: list[str] = []
     try:
         process = dependencies.launch_process(argv)
         boot = dependencies.boot_console(process)
         boot.wait_for(b"=> ", config.startup_timeout)
         for command in BOOT_COMMANDS[:-1]:
             boot.send_line(command)
+            timeout_reason = "timeout: U-Boot command"
             boot.wait_for(b"=> ", config.command_timeout)
         boot.send_line(BOOT_COMMANDS[-1])
+        timeout_reason = "timeout: kernel start"
         boot.wait_for(KERNEL_START_MARKER, config.startup_timeout)
+        timeout_reason = "timeout: guest READY"
         boot.wait_for(READY_MARKER, config.startup_timeout)
 
         monitor.connect()
         for key in KEY_SEQUENCE:
             monitor.send_key(key)
+        timeout_reason = "timeout: guest PASS"
         boot.wait_for(PASS_MARKER, config.input_timeout)
         terminal_reason = "passed"
-    except TimeoutError as error:
-        terminal_reason = _timeout_reason(error, boot)
+    except TimeoutError:
+        terminal_reason = timeout_reason
     except MonitorError:
         terminal_reason = "monitor failure"
     except EarlyProcessExit:
@@ -362,16 +386,33 @@ def run_gate(
     except Exception as error:  # Evidence is more valuable than hiding system failures.
         terminal_reason = f"orchestration failure: {type(error).__name__}"
     finally:
-        with contextlib.suppress(Exception):
+        try:
             monitor.close()
+        except Exception:
+            lifecycle_failures.append("monitor close failure")
         if process is not None:
-            with contextlib.suppress(Exception):
+            try:
                 dependencies.cleanup_process(process)
+            except Exception:
+                lifecycle_failures.append("cleanup failure")
+        if boot is not None:
+            try:
+                boot.drain(config.command_timeout)
+            except TimeoutError:
+                lifecycle_failures.append("serial drain timeout")
+            except Exception:
+                lifecycle_failures.append("serial drain failure")
+
+    if lifecycle_failures:
+        terminal_reason = "; ".join(lifecycle_failures)
 
     transcript = boot.transcript if boot is not None else b""
     classification = classify_transcript(transcript)
     if classification.panics:
-        terminal_reason = "panic detected"
+        if terminal_reason == "passed":
+            terminal_reason = "panic detected"
+        else:
+            terminal_reason += "; panic detected"
     passed = classification.passed and terminal_reason == "passed"
     result = GateRunResult(
         smp=config.smp,
@@ -427,6 +468,25 @@ class SerialBootConsole:
         except BrokenPipeError as error:
             raise EarlyProcessExit("QEMU closed its serial input") from error
 
+    def drain(self, timeout: float) -> None:
+        """Read all remaining serial bytes, requiring EOF within the bound."""
+
+        stdout = self._process.stdout
+        if stdout is None:
+            raise OSError("QEMU stdout is unavailable")
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("serial drain")
+            readable, _, _ = select.select([stdout], [], [], remaining)
+            if not readable:
+                raise TimeoutError("serial drain")
+            chunk = os.read(stdout.fileno(), 4096)
+            if not chunk:
+                return
+            self.transcript += chunk
+
 
 class HmpMonitor:
     """Send reviewed key commands through a bounded HMP connection."""
@@ -438,18 +498,19 @@ class HmpMonitor:
 
     def connect(self) -> None:
         deadline = time.monotonic() + self._timeout
-        last_error: OSError | None = None
+        last_error: Exception | None = None
         while time.monotonic() < deadline:
             candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                candidate.connect(os.fspath(self._path))
                 candidate.settimeout(max(0.001, deadline - time.monotonic()))
+                candidate.connect(os.fspath(self._path))
                 self._socket = candidate
-                self._read_prompt()
+                self._read_prompt(deadline)
                 return
-            except OSError as error:
+            except (MonitorError, OSError) as error:
                 last_error = error
                 candidate.close()
+                self._socket = None
                 time.sleep(
                     min(
                         HMP_INTER_KEY_DELAY_SECONDS, max(0, deadline - time.monotonic())
@@ -460,9 +521,10 @@ class HmpMonitor:
     def send_key(self, key: str) -> None:
         if self._socket is None:
             raise MonitorError("HMP monitor is not connected")
+        deadline = time.monotonic() + self._timeout
         try:
             self._socket.sendall(f"sendkey {key}\n".encode("ascii"))
-            self._read_prompt()
+            self._read_prompt(deadline)
             # HMP accepts commands before emulated key delivery completes; this
             # brief spacing keeps modifier and editing events in contract order.
             time.sleep(HMP_INTER_KEY_DELAY_SECONDS)
@@ -474,11 +536,15 @@ class HmpMonitor:
             self._socket.close()
             self._socket = None
 
-    def _read_prompt(self) -> None:
+    def _read_prompt(self, deadline: float) -> None:
         if self._socket is None:
             raise MonitorError("HMP monitor is not connected")
         response = b""
         while b"(qemu) " not in response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("HMP command prompt")
+            self._socket.settimeout(remaining)
             chunk = self._socket.recv(4096)
             if not chunk:
                 raise MonitorError("HMP monitor closed before command completion")
@@ -498,7 +564,12 @@ def default_dependencies() -> GateDependencies:
 
 
 def _run_checked_command(argv: list[str]) -> None:
-    subprocess.run(argv, check=True)
+    subprocess.run(
+        argv,
+        check=True,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
 
 
 def _launch_process(argv: list[str]) -> subprocess.Popen[bytes]:
@@ -513,17 +584,50 @@ def _launch_process(argv: list[str]) -> subprocess.Popen[bytes]:
 
 
 def _cleanup_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+    process_group = process.pid
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        process.wait(timeout=PROCESS_TERM_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        process.wait()
+        os.killpg(process_group, signal.SIGTERM)
     except ProcessLookupError:
+        _reap_process(process)
         return
+
+    if _wait_for_process_group_exit(process, process_group):
+        _reap_process(process)
+        return
+
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        _reap_process(process)
+        return
+    if not _wait_for_process_group_exit(process, process_group):
+        _reap_process(process)
+        raise RuntimeError(f"QEMU process group {process_group} survived SIGKILL")
+    _reap_process(process)
+
+
+def _wait_for_process_group_exit(
+    process: subprocess.Popen[bytes],
+    process_group: int,
+) -> bool:
+    deadline = time.monotonic() + PROCESS_TERM_GRACE_SECONDS
+    while True:
+        process.poll()
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(HMP_INTER_KEY_DELAY_SECONDS, remaining))
+
+
+def _reap_process(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ChildProcessError, subprocess.TimeoutExpired):
+        process.wait(timeout=PROCESS_TERM_GRACE_SECONDS)
 
 
 def _artifact_identities(config: GateConfig, boot_disk: Path) -> dict[str, str]:
@@ -542,17 +646,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _timeout_reason(error: TimeoutError, boot: BootConsole | None) -> str:
-    marker = str(error)
-    if READY_MARKER.decode() in marker or (
-        boot is not None and READY_MARKER not in boot.transcript
-    ):
-        return "timeout: guest READY"
-    if PASS_MARKER.decode() in marker:
-        return "timeout: guest PASS"
-    return "timeout: command"
 
 
 def _atomic_write(path: Path, contents: bytes) -> None:
