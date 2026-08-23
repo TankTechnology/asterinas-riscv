@@ -3,7 +3,10 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    },
 };
 
 /// Seccomp modes (values of the per-thread `seccomp_mode` field).
@@ -14,6 +17,9 @@ pub const SECCOMP_MODE_FILTER: u32 = 2;
 // --- `seccomp(2)` operations (`linux/seccomp.h`) ---
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
+
+/// `SECCOMP_FILTER_FLAG_TSYNC`: synchronize the filter across all threads.
+const SECCOMP_FILTER_FLAG_TSYNC: u32 = 0x1;
 
 /// `si_code` value for a seccomp-generated `SIGSYS` (`asm-generic/siginfo.h`).
 const SYS_SECCOMP: i32 = 1;
@@ -178,9 +184,9 @@ pub fn sys_seccomp(
             Ok(SyscallReturn::Return(0))
         }
         SECCOMP_SET_MODE_FILTER => {
-            // `SECCOMP_FILTER_FLAG_TSYNC` / `SECCOMP_FILTER_FLAG_NEW_LISTENER` /
-            // `SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV` are not supported yet.
-            if flags != 0 {
+            // Only `TSYNC` is supported; `LOG`/`SPEC_ALLOW`/`NEW_LISTENER`/
+            // `TSYNC_ESRCH`/`WAIT_KILLABLE_RECV` are not yet.
+            if flags & !SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 return_errno_with_message!(Errno::EINVAL, "unsupported seccomp filter flags");
             }
             if args == 0 {
@@ -188,10 +194,22 @@ pub fn sys_seccomp(
             }
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
+            let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
 
-            ctx.posix_thread
-                .set_seccomp_filter(Arc::from(filters.into_boxed_slice()));
-            ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+            if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
+                // Synchronize the filter across every thread in the process,
+                // including the caller. Collect the tasks first so we do not
+                // hold the task-set lock while locking per-thread seccomp state.
+                let tasks: Vec<_> = ctx.process.tasks().lock().as_slice().to_vec();
+                for task in &tasks {
+                    let posix_thread = task.as_posix_thread().unwrap();
+                    posix_thread.set_seccomp_filter(filter.clone());
+                    posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+                }
+            } else {
+                ctx.posix_thread.set_seccomp_filter(filter);
+                ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+            }
             Ok(SyscallReturn::Return(0))
         }
         _ => return_errno_with_message!(Errno::EINVAL, "unknown seccomp operation"),
