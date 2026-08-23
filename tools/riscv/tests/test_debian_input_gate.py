@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import dataclasses
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +13,39 @@ from tools.riscv.debian import input_gate as gate
 
 
 class InputGateContractTests(unittest.TestCase):
+    def test_guest_input_state_machine_self_test(self) -> None:
+        guest_source = Path(__file__).parents[1] / "debian" / "input_gate_init.c"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            guest_binary = Path(temporary_directory) / "input-gate-self-test"
+            compile_result = subprocess.run(
+                [
+                    "cc",
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-DINPUT_GATE_SELF_TEST",
+                    str(guest_source),
+                    "-o",
+                    str(guest_binary),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+
+            run_result = subprocess.run(
+                [guest_binary],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+        self.assertEqual(run_result.returncode, 0, run_result.stderr)
+        self.assertIn("input gate state machine: PASS", run_result.stdout)
+
     def test_qemu_argv_uses_smp4_and_two_distinct_input_devices(self) -> None:
         argv = gate.qemu_argv(
             Path("/u-boot"),
