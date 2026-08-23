@@ -37,7 +37,9 @@ RESULT_JSON_NAME = "result.json"
 MINIMUM_DISK_SIZE_KIB = 64 * 1024
 DISK_OVERHEAD_KIB = 16 * 1024
 HMP_INTER_KEY_DELAY_SECONDS = 0.05
+HMP_MAX_RESPONSE_BYTES = 64 * 1024
 PROCESS_TERM_GRACE_SECONDS = 2.0
+QEMU_CPU = "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"
 
 BOOT_COMMANDS = (
     "version",
@@ -164,6 +166,8 @@ def qemu_argv(
         "qemu-system-riscv64",
         "-machine",
         "virt",
+        "-cpu",
+        QEMU_CPU,
         "-m",
         "2G",
         "-smp",
@@ -228,7 +232,27 @@ def validate_config(config: GateConfig) -> GateConfig:
             raise ValueError(f"{name} must be a nonempty regular file: {path}")
         resolved_artifacts[name] = path.resolve(strict=True)
 
-    output_dir = Path(config.output_dir).absolute()
+    output_dir = _validate_output_dir(config.output_dir)
+
+    # Reuse the command builder as the single authority for SMP validation.
+    qemu_argv(
+        resolved_artifacts["uboot"],
+        output_dir / BOOT_DISK_NAME,
+        output_dir / MONITOR_SOCKET_NAME,
+        config.smp,
+    )
+    return GateConfig(
+        **resolved_artifacts,
+        output_dir=output_dir,
+        smp=config.smp,
+        startup_timeout=float(config.startup_timeout),
+        command_timeout=float(config.command_timeout),
+        input_timeout=float(config.input_timeout),
+    )
+
+
+def _validate_output_dir(path: Path) -> Path:
+    output_dir = Path(path).absolute()
     if "," in os.fspath(output_dir):
         raise ValueError("output directory path must not contain a comma")
     if output_dir.exists() or output_dir.is_symlink():
@@ -250,23 +274,112 @@ def validate_config(config: GateConfig) -> GateConfig:
             raise ValueError(
                 f"output directory must have exact mode 0700: {output_dir}"
             )
-    output_dir = output_dir.resolve(strict=True)
+    return output_dir.resolve(strict=True)
 
-    # Reuse the command builder as the single authority for SMP validation.
-    qemu_argv(
-        resolved_artifacts["uboot"],
-        output_dir / BOOT_DISK_NAME,
-        output_dir / MONITOR_SOCKET_NAME,
-        config.smp,
+
+def validate_dtb_cpu_count(dtb: Path, smp: int) -> None:
+    """Require the DTB's enabled CPU-node count to match QEMU SMP."""
+
+    try:
+        child_result = subprocess.run(
+            ["fdtget", "-l", str(dtb), "/cpus"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+        enabled_cpu_count = 0
+        for child in child_result.stdout.splitlines():
+            node = f"/cpus/{child.strip()}"
+            device_type = _fdt_string(dtb, node, "device_type", "")
+            if device_type != "cpu":
+                continue
+            status = _fdt_string(dtb, node, "status", "okay")
+            if status == "disabled":
+                continue
+            if status not in {"ok", "okay"}:
+                raise ValueError(f"DTB CPU node {node} has invalid status {status!r}")
+            enabled_cpu_count += 1
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError(f"cannot inspect DTB CPU nodes: {error}") from error
+
+    if enabled_cpu_count != smp:
+        raise ValueError(
+            f"DTB enabled CPU count {enabled_cpu_count} does not match SMP {smp}"
+        )
+
+
+def _fdt_string(dtb: Path, node: str, property_name: str, default: str) -> str:
+    result = subprocess.run(
+        [
+            "fdtget",
+            "-t",
+            "s",
+            "-d",
+            default,
+            str(dtb),
+            node,
+            property_name,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
     )
-    return GateConfig(
-        **resolved_artifacts,
-        output_dir=output_dir,
-        smp=config.smp,
-        startup_timeout=float(config.startup_timeout),
-        command_timeout=float(config.command_timeout),
-        input_timeout=float(config.input_timeout),
-    )
+    return result.stdout.strip()
+
+
+@contextlib.contextmanager
+def _snapshot_artifacts(config: GateConfig):
+    with tempfile.TemporaryDirectory(
+        prefix=".artifacts.",
+        dir=config.output_dir,
+    ) as temporary_directory:
+        snapshot_dir = Path(temporary_directory)
+        snapshot_dir.chmod(0o700)
+        snapshots = {}
+        for name in ("kernel", "uboot", "dtb", "initramfs"):
+            destination = snapshot_dir / name
+            _snapshot_regular_file(getattr(config, name), destination, name)
+            snapshots[name] = destination
+        yield GateConfig(
+            **snapshots,
+            output_dir=config.output_dir,
+            smp=config.smp,
+            startup_timeout=config.startup_timeout,
+            command_timeout=config.command_timeout,
+            input_timeout=config.input_timeout,
+        )
+
+
+def _snapshot_regular_file(source: Path, destination: Path, name: str) -> None:
+    source_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    source_fd = os.open(source, source_flags)
+    try:
+        metadata = os.fstat(source_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+            raise ValueError(f"{name} must be a nonempty regular file: {source}")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.fchmod(destination_fd, 0o600)
+        with (
+            os.fdopen(source_fd, "rb", closefd=False) as input_file,
+            os.fdopen(destination_fd, "wb") as output_file,
+        ):
+            shutil.copyfileobj(input_file, output_file)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+    finally:
+        os.close(source_fd)
+
+
+def _invalidate_evidence(output_dir: Path) -> None:
+    # Removing the result first ensures no interruption can preserve passed=true.
+    (output_dir / RESULT_JSON_NAME).unlink(missing_ok=True)
+    (output_dir / SERIAL_LOG_NAME).unlink(missing_ok=True)
 
 
 def prepare_boot_disk(
@@ -341,8 +454,19 @@ def run_gate(
 ) -> GateRunResult:
     """Run the QEMU input gate and atomically persist its evidence."""
 
+    output_dir = _validate_output_dir(config.output_dir)
+    _invalidate_evidence(output_dir)
     config = validate_config(config)
     dependencies = dependencies or default_dependencies()
+    with _snapshot_artifacts(config) as snapshot:
+        validate_dtb_cpu_count(snapshot.dtb, snapshot.smp)
+        return _run_snapshot_gate(snapshot, dependencies)
+
+
+def _run_snapshot_gate(
+    config: GateConfig,
+    dependencies: GateDependencies,
+) -> GateRunResult:
     boot_disk = config.output_dir / BOOT_DISK_NAME
     monitor_socket = config.output_dir / MONITOR_SOCKET_NAME
     dependencies.prepare_boot_disk(config, boot_disk)
@@ -527,9 +651,14 @@ class HmpMonitor:
             self._read_prompt(deadline)
             # HMP accepts commands before emulated key delivery completes; this
             # brief spacing keeps modifier and editing events in contract order.
+            remaining = deadline - time.monotonic()
+            if remaining < HMP_INTER_KEY_DELAY_SECONDS:
+                raise TimeoutError("HMP inter-key delay exceeds command deadline")
             time.sleep(HMP_INTER_KEY_DELAY_SECONDS)
+            if time.monotonic() > deadline:
+                raise TimeoutError("HMP inter-key delay exceeds command deadline")
         except (OSError, TimeoutError) as error:
-            raise MonitorError(f"failed to send HMP key {key}") from error
+            raise MonitorError(f"failed to send HMP key {key}: {error}") from error
 
     def close(self) -> None:
         if self._socket is not None:
@@ -548,6 +677,8 @@ class HmpMonitor:
             chunk = self._socket.recv(4096)
             if not chunk:
                 raise MonitorError("HMP monitor closed before command completion")
+            if len(response) + len(chunk) > HMP_MAX_RESPONSE_BYTES:
+                raise MonitorError("HMP response byte limit exceeded")
             response += chunk
 
 

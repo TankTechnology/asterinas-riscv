@@ -53,6 +53,36 @@ def parse_newc_entries(archive: bytes) -> list[tuple[str, int, int, int, int]]:
         entries.append((name, mode, uid, gid, mtime))
 
 
+def write_test_dtb(path: Path, cpu_count: int) -> None:
+    cpu_nodes = "\n".join(
+        f"""cpu@{cpu} {{
+            device_type = "cpu";
+            reg = <{cpu}>;
+            status = "okay";
+        }};"""
+        for cpu in range(cpu_count)
+    )
+    source = f"""/dts-v1/;
+/ {{
+    #address-cells = <2>;
+    #size-cells = <2>;
+    cpus {{
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <10000000>;
+        {cpu_nodes}
+    }};
+}};
+"""
+    subprocess.run(
+        ["dtc", "-I", "dts", "-O", "dtb", "-o", path],
+        check=True,
+        input=source,
+        text=True,
+        capture_output=True,
+    )
+
+
 class InputGateBuilderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -312,6 +342,10 @@ class InputGateContractTests(unittest.TestCase):
         )
 
         self.assertEqual(argv[argv.index("-machine") + 1], "virt")
+        self.assertEqual(
+            argv[argv.index("-cpu") + 1],
+            "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        )
         self.assertEqual(argv[argv.index("-smp") + 1], "4")
         self.assertIn("virtio-tablet-device", argv)
         self.assertIn("virtio-keyboard-device", argv)
@@ -496,6 +530,7 @@ class InputGateOrchestrationTests(unittest.TestCase):
             path = self.root / name
             path.write_bytes(f"{name}-contents".encode())
             self.artifacts[name] = path
+        write_test_dtb(self.artifacts["dtb"], 4)
         self.output = self.root / "evidence"
         self.events: list[str] = []
         self.process = FakeProcess()
@@ -543,6 +578,81 @@ class InputGateOrchestrationTests(unittest.TestCase):
             monitor=lambda path, timeout: monitor,
             cleanup_process=cleanup,
         )
+
+    def _write_stale_pass_evidence(self) -> None:
+        self.output.mkdir(mode=0o700, exist_ok=True)
+        (self.output / "serial.log").write_bytes(b"stale PASS transcript")
+        (self.output / "result.json").write_text('{"passed": true}\n')
+
+    def test_prepare_failure_invalidates_stale_pass_evidence(self) -> None:
+        self._write_stale_pass_evidence()
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def fail_prepare(config: gate.GateConfig, boot_disk: Path) -> None:
+            del config, boot_disk
+            raise RuntimeError("prepare failed")
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            prepare_boot_disk=fail_prepare,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "prepare failed"):
+            gate.run_gate(self.config(), dependencies)
+
+        self.assertFalse((self.output / "serial.log").exists())
+        self.assertFalse((self.output / "result.json").exists())
+
+    def test_launch_interruption_invalidates_stale_pass_evidence(self) -> None:
+        self._write_stale_pass_evidence()
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def interrupt_launch(argv: list[str]) -> FakeProcess:
+            del argv
+            raise KeyboardInterrupt
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            launch_process=interrupt_launch,
+        )
+
+        with self.assertRaises(KeyboardInterrupt):
+            gate.run_gate(self.config(), dependencies)
+
+        self.assertFalse((self.output / "serial.log").exists())
+        self.assertFalse((self.output / "result.json").exists())
+
+    def test_gate_hashes_and_uses_private_artifact_snapshots(self) -> None:
+        original_contents = {
+            name: path.read_bytes() for name, path in self.artifacts.items()
+        }
+        snapshot_paths: dict[str, Path] = {}
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def prepare(snapshot: gate.GateConfig, boot_disk: Path) -> None:
+            for name in self.artifacts:
+                snapshot_paths[name] = getattr(snapshot, name)
+                self.artifacts[name].write_bytes(f"changed-{name}".encode())
+            boot_disk.write_bytes(b"private-ext4")
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            prepare_boot_disk=prepare,
+        )
+
+        result = gate.run_gate(self.config(), dependencies)
+
+        self.assertTrue(result.passed)
+        for name, original_content in original_contents.items():
+            self.assertNotEqual(snapshot_paths[name], self.artifacts[name])
+            self.assertEqual(snapshot_paths[name].parent.parent, self.output)
+            self.assertEqual(
+                result.sha256[name], hashlib.sha256(original_content).hexdigest()
+            )
+        launched_uboot = Path(result.qemu_argv[result.qemu_argv.index("-kernel") + 1])
+        self.assertEqual(launched_uboot, snapshot_paths["uboot"])
+        self.assertFalse(snapshot_paths["uboot"].parent.exists())
+        self.assertEqual(list(self.output.glob(".artifacts.*")), [])
 
     def test_success_observes_boot_then_keys_then_pass_and_writes_evidence(
         self,
@@ -852,6 +962,35 @@ class InputGateOrchestrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symbolic link"):
             gate.validate_config(dataclasses.replace(self.config(), kernel=link))
 
+    def test_dtb_enabled_cpu_count_accepts_one_and_four_node_contracts(self) -> None:
+        for cpu_count in (1, 4):
+            with self.subTest(cpu_count=cpu_count):
+                dtb = self.root / f"{cpu_count}-cpu.dtb"
+                write_test_dtb(dtb, cpu_count)
+                gate.validate_dtb_cpu_count(dtb, cpu_count)
+
+    def test_dtb_smp_mismatch_is_rejected_before_disk_preparation(self) -> None:
+        write_test_dtb(self.artifacts["dtb"], 1)
+        self._write_stale_pass_evidence()
+        prepared = False
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def record_prepare(config: gate.GateConfig, boot_disk: Path) -> None:
+            nonlocal prepared
+            del config, boot_disk
+            prepared = True
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            prepare_boot_disk=record_prepare,
+        )
+
+        with self.assertRaisesRegex(ValueError, "enabled CPU count 1.*SMP 4"):
+            gate.run_gate(self.config(), dependencies)
+
+        self.assertFalse(prepared)
+        self.assertFalse((self.output / "result.json").exists())
+
     def test_output_directory_is_private_and_rejects_unsafe_existing_paths(
         self,
     ) -> None:
@@ -950,6 +1089,46 @@ class InputGateOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(fake_socket.command, b"sendkey a\n")
         self.assertEqual(fake_socket.timeouts, [0.75, 0.25])
+
+    def test_hmp_response_rejects_more_than_the_total_byte_limit(self) -> None:
+        class OversizedSocket:
+            def sendall(self, command: bytes) -> None:
+                del command
+
+            def settimeout(self, timeout: float) -> None:
+                del timeout
+
+            def recv(self, size: int) -> bytes:
+                del size
+                return b"x" * (gate.HMP_MAX_RESPONSE_BYTES + 1)
+
+        monitor = gate.HmpMonitor(Path("/monitor.sock"), 1.0)
+        monitor._socket = OversizedSocket()
+        with mock.patch.object(gate.time, "monotonic", return_value=0.0):
+            with self.assertRaisesRegex(gate.MonitorError, "response byte limit"):
+                monitor.send_key("a")
+
+    def test_hmp_inter_key_delay_must_fit_inside_command_deadline(self) -> None:
+        class PromptSocket:
+            def sendall(self, command: bytes) -> None:
+                del command
+
+            def settimeout(self, timeout: float) -> None:
+                del timeout
+
+            def recv(self, size: int) -> bytes:
+                del size
+                return b"(qemu) "
+
+        monitor = gate.HmpMonitor(Path("/monitor.sock"), 0.04)
+        monitor._socket = PromptSocket()
+        with (
+            mock.patch.object(gate.time, "monotonic", return_value=0.0),
+            mock.patch.object(gate.time, "sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(gate.MonitorError, "inter-key delay"):
+                monitor.send_key("a")
+        sleep.assert_not_called()
 
     def test_cleanup_targets_process_group_when_leader_already_exited(self) -> None:
         class ExitedLeader:
