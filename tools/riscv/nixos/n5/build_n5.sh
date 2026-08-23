@@ -50,7 +50,7 @@ if [[ ! -f "${ROOT_DISK}" ]]; then
     cp "${N3_ROOT}/rootfs/etc/nix/nix.conf" "${STAGE}/etc/nix/nix.conf"
     cp "${N3_ROOT}/rootfs/etc/nsswitch.conf" "${STAGE}/etc/nsswitch.conf"
     cp "${N3_ROOT}/rootfs/etc/resolv.conf" "${STAGE}/etc/resolv.conf"
-    truncate -s 512M "${ROOT_DISK}"
+    truncate -s 1536M "${ROOT_DISK}"
     mkfs.ext2 -q -F -d "${STAGE}" "${ROOT_DISK}"
     rm -rf "${STAGE}"
     echo "created ${ROOT_DISK}"
