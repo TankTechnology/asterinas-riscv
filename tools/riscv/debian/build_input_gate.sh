@@ -46,6 +46,23 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 SOURCE="$SCRIPT_DIR/input_gate_init.c"
 OUTPUT="${1:-$REPO_ROOT/target/debian-riscv/input-gate/initramfs.cpio}"
 CC="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-0}"
+
+MAX_NEWC_MTIME="4294967295"
+if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+    printf 'error: SOURCE_DATE_EPOCH must be a decimal integer between 0 and %s\n' \
+        "$MAX_NEWC_MTIME" >&2
+    exit 2
+fi
+NORMALIZED_EPOCH="${SOURCE_DATE_EPOCH#"${SOURCE_DATE_EPOCH%%[!0]*}"}"
+NORMALIZED_EPOCH="${NORMALIZED_EPOCH:-0}"
+if [[ ${#NORMALIZED_EPOCH} -gt ${#MAX_NEWC_MTIME} ]] \
+    || [[ ${#NORMALIZED_EPOCH} -eq ${#MAX_NEWC_MTIME} \
+        && "$NORMALIZED_EPOCH" > "$MAX_NEWC_MTIME" ]]; then
+    printf 'error: SOURCE_DATE_EPOCH must be a decimal integer between 0 and %s\n' \
+        "$MAX_NEWC_MTIME" >&2
+    exit 2
+fi
 
 if ! command -v "$CC" >/dev/null 2>&1; then
     printf 'error: required compiler not found: %s\n' "$CC" >&2
@@ -80,6 +97,7 @@ trap 'exit 143' TERM
     "$SOURCE" \
     -o "$STAGE/init"
 chmod 0755 "$STAGE/init"
+touch -d "@$SOURCE_DATE_EPOCH" "$STAGE/init" "$STAGE"
 
 OUTPUT_DIR="$(dirname -- "$OUTPUT")"
 mkdir -p -- "$OUTPUT_DIR"

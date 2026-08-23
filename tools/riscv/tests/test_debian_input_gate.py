@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -17,6 +20,13 @@ class InputGateBuilderTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.builder = (
             Path(__file__).parents[1] / "debian" / "build_input_gate.sh"
+        )
+        cls.default_output = (
+            Path(__file__).parents[3]
+            / "target"
+            / "debian-riscv"
+            / "input-gate"
+            / "initramfs.cpio"
         )
 
     def test_print_tools_lists_cross_compiler_and_cpio(self) -> None:
@@ -45,17 +55,97 @@ class InputGateBuilderTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [".", "init"])
 
     def test_unknown_option_exits_two_without_creating_output(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            output = Path(temporary_directory) / "initramfs.cpio"
-            result = subprocess.run(
-                [self.builder, "--unknown", output],
-                capture_output=True,
-                check=False,
-                text=True,
+        def snapshot_output() -> tuple[int, ...] | None:
+            if not self.default_output.exists():
+                return None
+
+            metadata = self.default_output.stat()
+            try:
+                digest = int.from_bytes(
+                    hashlib.sha256(self.default_output.read_bytes()).digest(),
+                    "big",
+                )
+            except PermissionError:
+                digest = 0
+            return (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_uid,
+                metadata.st_gid,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+                digest,
             )
 
-            self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertFalse(output.exists())
+        original_output = snapshot_output()
+
+        result = subprocess.run(
+            [self.builder, "--unknown"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("unknown option", result.stderr)
+        if original_output is None:
+            self.assertFalse(self.default_output.exists())
+        else:
+            self.assertEqual(snapshot_output(), original_output)
+
+    def test_build_is_reproducible_with_default_source_date_epoch(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        environment.pop("SOURCE_DATE_EPOCH", None)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            first_output = Path(temporary_directory) / "first.cpio"
+            second_output = Path(temporary_directory) / "second.cpio"
+
+            first_result = subprocess.run(
+                [self.builder, first_output],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(first_result.returncode, 0, first_result.stderr)
+
+            time.sleep(1.1)
+
+            second_result = subprocess.run(
+                [self.builder, second_output],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(second_result.returncode, 0, second_result.stderr)
+
+            self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
+
+    def test_source_date_epoch_must_fit_newc_mtime(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+
+        for invalid_epoch in ("not-a-number", "-1", "4294967296"):
+            with self.subTest(source_date_epoch=invalid_epoch):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    output = Path(temporary_directory) / "initramfs.cpio"
+                    environment["SOURCE_DATE_EPOCH"] = invalid_epoch
+                    result = subprocess.run(
+                        [self.builder, output],
+                        capture_output=True,
+                        check=False,
+                        env=environment,
+                        text=True,
+                    )
+
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("SOURCE_DATE_EPOCH", result.stderr)
+                    self.assertFalse(output.exists())
 
 
 class InputGateContractTests(unittest.TestCase):
