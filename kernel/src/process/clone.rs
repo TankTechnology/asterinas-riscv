@@ -197,10 +197,14 @@ impl CloneArgs {
 
         // Reject invalid argument combinations related to the CLONE_PARENT flag.
         if clone_flags.contains(CloneFlags::CLONE_PARENT) {
-            if clone_flags.intersects(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWPID) {
+            // Linux does _not_ reject `CLONE_PARENT` together with
+            // `CLONE_NEWUSER` or `CLONE_NEWPID` — the nix build sandbox
+            // relies on this (its builder helper clones with
+            // `CLONE_PARENT | CLONE_NEWPID | ...`).
+            if clone_flags.contains(CloneFlags::CLONE_THREAD) {
                 return_errno_with_message!(
                     Errno::EINVAL,
-                    "`CLONE_PARENT` cannot be used together with `CLONE_NEWUSER` or `CLONE_NEWPID`"
+                    "`CLONE_PARENT` cannot be used together with `CLONE_THREAD`"
                 );
             }
 
