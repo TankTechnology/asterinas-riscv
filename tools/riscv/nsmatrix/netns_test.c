@@ -111,22 +111,23 @@ static int lo_index(int fd)
         .g = { .rtgen_family = AF_PACKET },
     };
     if (send(fd, &req, sizeof(req), 0) < 0) return -1;
+    int found = -1;
     char buf[8192];
     for (;;) {
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         for (struct nlmsghdr *h = (void *)buf; NLMSG_OK(h, n); h = NLMSG_NEXT(h, n)) {
-            if (h->nlmsg_type == NLMSG_DONE) return -1;
+            if (h->nlmsg_type == NLMSG_DONE) return found;
             if (h->nlmsg_type != RTM_NEWLINK) continue;
             struct ifinfomsg *ifi = NLMSG_DATA(h);
             struct rtattr *rta = (void *)(ifi + 1);
             int len = h->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
             for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len))
                 if (rta->rta_type == IFLA_IFNAME && strcmp(RTA_DATA(rta), "lo") == 0)
-                    return ifi->ifi_index;
+                    found = ifi->ifi_index;
         }
     }
-    return -1;
+    return found;
 }
 
 static void ns_child(void)
