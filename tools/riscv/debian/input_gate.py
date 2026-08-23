@@ -662,16 +662,6 @@ def _termination_signal_handlers():
             signal.signal(signum, previous_handler)
 
 
-@contextlib.contextmanager
-def _block_termination_signals():
-    handled_signals = {signal.SIGTERM, signal.SIGHUP}
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
-    try:
-        yield
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-
-
 def run_gate(
     config: GateConfig,
     dependencies: GateDependencies | None = None,
@@ -720,8 +710,9 @@ def _run_snapshot_gate(
     lifecycle_failures: list[str] = []
     try:
         output.verify_identity()
-        with _block_termination_signals():
+        with termination.defer():
             process = dependencies.launch_process(argv, (output.file_descriptor,))
+        termination.raise_if_pending()
         boot = dependencies.boot_console(process)
         boot.wait_for(b"=> ", config.startup_timeout)
         for command in BOOT_COMMANDS[:-1]:

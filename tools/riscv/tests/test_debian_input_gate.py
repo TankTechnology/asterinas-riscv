@@ -1291,20 +1291,57 @@ class InputGateOrchestrationTests(unittest.TestCase):
         self.assertEqual(kill_calls[1:], [(process.pid, 0), (process.pid, 0)])
         self.assertTrue(process.wait_calls)
 
-    def test_sigterm_runs_finally_kills_stubborn_group_and_restores_handlers(
+    def test_real_launch_does_not_block_hup_or_term_in_child(self) -> None:
+        child: subprocess.Popen[bytes] | None = None
+        child_mask: list[str] = []
+        dependencies = self.dependencies(FakeBoot(self.events))
+
+        def launch(
+            argv: list[str],
+            pass_fds: tuple[int, ...],
+        ) -> subprocess.Popen[bytes]:
+            nonlocal child
+            del argv
+            child = gate._launch_process(
+                [
+                    os.sys.executable,
+                    "-c",
+                    "import signal; "
+                    "blocked=signal.pthread_sigmask(signal.SIG_BLOCK, []); "
+                    "print(int(signal.SIGHUP in blocked), "
+                    "int(signal.SIGTERM in blocked), flush=True)",
+                ],
+                pass_fds,
+            )
+            child_mask.append(child.stdout.readline().decode().strip())
+            return child
+
+        dependencies = dataclasses.replace(
+            dependencies,
+            launch_process=launch,
+            cleanup_process=gate._cleanup_process,
+        )
+        try:
+            result = gate.run_gate(self.config(), dependencies)
+
+            self.assertTrue(result.passed)
+            self.assertEqual(child_mask, ["0 0"])
+        finally:
+            if child is not None:
+                child.wait()
+                if child.stdout is not None:
+                    child.stdout.close()
+                if child.stdin is not None:
+                    child.stdin.close()
+
+    def test_sigterm_during_launch_kills_stubborn_group_and_restores_handlers(
         self,
     ) -> None:
-        class SignalBoot(FakeBoot):
-            def wait_for(self, marker: bytes, timeout: float) -> None:
-                del marker, timeout
-                os.kill(os.getpid(), signal.SIGTERM)
-                raise AssertionError("SIGTERM handler did not interrupt the gate")
-
         self._write_stale_pass_evidence()
         child: subprocess.Popen[str] | None = None
         old_sigterm = signal.getsignal(signal.SIGTERM)
         old_sighup = signal.getsignal(signal.SIGHUP)
-        boot = SignalBoot(self.events)
+        boot = FakeBoot(self.events)
 
         def prepare(
             config: gate.GateConfig,
@@ -1334,6 +1371,7 @@ class InputGateOrchestrationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(child.stdout.readline().strip(), "ready")
+            os.kill(os.getpid(), signal.SIGTERM)
             return child
 
         dependencies = gate.GateDependencies(
