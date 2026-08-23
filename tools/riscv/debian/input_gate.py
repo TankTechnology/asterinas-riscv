@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def qemu_argv(
 
     if isinstance(smp, bool) or not isinstance(smp, int) or smp <= 0:
         raise ValueError("SMP must be a strictly positive integer")
+    if "," in os.fspath(boot_disk):
+        raise ValueError("QEMU boot disk path must not contain a comma")
+    if "," in os.fspath(monitor_socket):
+        raise ValueError("monitor_socket must not contain a comma")
 
     return [
         "qemu-system-riscv64",

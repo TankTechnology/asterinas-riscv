@@ -38,6 +38,39 @@ class InputGateContractTests(unittest.TestCase):
         )
         self.assertEqual(argv[argv.index("-serial") + 1], "stdio")
         self.assertEqual(argv[argv.index("-nic") + 1], "none")
+        self.assertNotIn("-netdev", argv)
+        self.assertFalse(any("virtio-net" in argument for argument in argv))
+
+    def test_qemu_argv_defaults_to_smp4(self) -> None:
+        argv = gate.qemu_argv(
+            Path("/u-boot"),
+            Path("/boot.ext4"),
+            Path("/tmp/gate-monitor.sock"),
+        )
+
+        self.assertEqual(argv[argv.index("-smp") + 1], "4")
+
+    def test_qemu_argv_rejects_comma_in_boot_disk_path(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "QEMU boot disk path must not contain a comma",
+        ):
+            gate.qemu_argv(
+                Path("/u-boot"),
+                Path("/boot,disk.ext4"),
+                Path("/tmp/gate-monitor.sock"),
+            )
+
+    def test_qemu_argv_rejects_comma_in_monitor_socket_path(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "monitor_socket must not contain a comma",
+        ):
+            gate.qemu_argv(
+                Path("/u-boot"),
+                Path("/boot.ext4"),
+                Path("/tmp/gate,monitor.sock"),
+            )
 
     def test_qemu_argv_rejects_non_positive_or_non_integer_smp(self) -> None:
         paths = (
