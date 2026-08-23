@@ -79,6 +79,52 @@ class GateTermination(BaseException):
         self.signum = signum
 
 
+class TerminationSignalState:
+    """Coordinate termination delivery with cleanup and evidence publication."""
+
+    def __init__(self, handled_signals: tuple[int, ...]) -> None:
+        self._handled_signals = handled_signals
+        self._defer_depth = 0
+        self._pending_signum: int | None = None
+        self._is_committed = False
+
+    def first_signal(self, signum: int, unused_frame: object) -> None:
+        del unused_frame
+        if self._is_committed:
+            return
+        if self._defer_depth:
+            if self._pending_signum is None:
+                self._pending_signum = signum
+            return
+        self._install(self.second_signal)
+        raise GateTermination(signum)
+
+    def second_signal(self, signum: int, unused_frame: object) -> None:
+        del unused_frame
+        os._exit(128 + signum)
+
+    @contextlib.contextmanager
+    def defer(self):
+        self._defer_depth += 1
+        try:
+            yield
+        finally:
+            self._defer_depth -= 1
+
+    def raise_if_pending(self) -> None:
+        if self._pending_signum is not None and not self._is_committed:
+            raise GateTermination(self._pending_signum)
+
+    def commit(self) -> None:
+        self._is_committed = True
+        self._pending_signum = None
+        self._install(self.first_signal)
+
+    def _install(self, handler: Callable[[int, object], None]) -> None:
+        for signum in self._handled_signals:
+            signal.signal(signum, handler)
+
+
 class PinnedOutputDirectory:
     """Hold and verify one private output directory by file descriptor."""
 
@@ -605,21 +651,12 @@ def _termination_signal_handlers():
 
     handled_signals = (signal.SIGTERM, signal.SIGHUP)
     previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
-
-    def second_signal(signum: int, unused_frame: object) -> None:
-        del unused_frame
-        os._exit(128 + signum)
-
-    def first_signal(signum: int, unused_frame: object) -> None:
-        del unused_frame
-        for handled_signal in handled_signals:
-            signal.signal(handled_signal, second_signal)
-        raise GateTermination(signum)
+    state = TerminationSignalState(handled_signals)
 
     try:
         for signum in handled_signals:
-            signal.signal(signum, first_signal)
-        yield
+            signal.signal(signum, state.first_signal)
+        yield state
     finally:
         for signum, previous_handler in previous_handlers.items():
             signal.signal(signum, previous_handler)
@@ -645,7 +682,7 @@ def run_gate(
         _invalidate_evidence(output)
         config = validate_config(config, pinned_output=output)
         dependencies = dependencies or default_dependencies()
-        with _termination_signal_handlers():
+        with _termination_signal_handlers() as termination:
             with _snapshot_artifacts(config, output) as snapshot:
                 output.verify_identity()
                 validate_dtb_cpu_count(
@@ -654,13 +691,19 @@ def run_gate(
                     (output.file_descriptor,),
                 )
                 output.verify_identity()
-                return _run_snapshot_gate(snapshot, dependencies, output)
+                return _run_snapshot_gate(
+                    snapshot,
+                    dependencies,
+                    output,
+                    termination,
+                )
 
 
 def _run_snapshot_gate(
     config: GateConfig,
     dependencies: GateDependencies,
     output: PinnedOutputDirectory,
+    termination: TerminationSignalState,
 ) -> GateRunResult:
     boot_disk = output.path_for(BOOT_DISK_NAME)
     monitor_socket = output.path_for(MONITOR_SOCKET_NAME)
@@ -708,22 +751,25 @@ def _run_snapshot_gate(
     except Exception as error:  # Evidence is more valuable than hiding system failures.
         terminal_reason = f"orchestration failure: {type(error).__name__}"
     finally:
-        try:
-            monitor.close()
-        except Exception:
-            lifecycle_failures.append("monitor close failure")
-        if process is not None:
+        with termination.defer():
             try:
-                dependencies.cleanup_process(process)
+                monitor.close()
             except Exception:
-                lifecycle_failures.append("cleanup failure")
-        if boot is not None:
-            try:
-                boot.drain(config.command_timeout)
-            except TimeoutError:
-                lifecycle_failures.append("serial drain timeout")
-            except Exception:
-                lifecycle_failures.append("serial drain failure")
+                lifecycle_failures.append("monitor close failure")
+            if process is not None:
+                try:
+                    dependencies.cleanup_process(process)
+                except Exception:
+                    lifecycle_failures.append("cleanup failure")
+            if boot is not None:
+                try:
+                    boot.drain(config.command_timeout)
+                except TimeoutError:
+                    lifecycle_failures.append("serial drain timeout")
+                except Exception:
+                    lifecycle_failures.append("serial drain failure")
+
+    termination.raise_if_pending()
 
     if lifecycle_failures:
         terminal_reason = "; ".join(lifecycle_failures)
@@ -746,7 +792,7 @@ def _run_snapshot_gate(
         sha256=identities,
         terminal_reason=terminal_reason,
     )
-    _write_evidence(output, transcript, result)
+    _write_evidence(output, transcript, result, termination)
     return result
 
 
@@ -1012,13 +1058,16 @@ def _write_evidence(
     output: PinnedOutputDirectory,
     transcript: bytes,
     result: GateRunResult,
+    termination: TerminationSignalState,
 ) -> None:
-    output.verify_identity()
-    _atomic_write(output, SERIAL_LOG_NAME, transcript)
-    encoded_result = (
-        json.dumps(result.to_json(), indent=2, sort_keys=True) + "\n"
-    ).encode()
-    _atomic_write(output, RESULT_JSON_NAME, encoded_result)
+    with termination.defer():
+        output.verify_identity()
+        _atomic_write(output, SERIAL_LOG_NAME, transcript)
+        encoded_result = (
+            json.dumps(result.to_json(), indent=2, sort_keys=True) + "\n"
+        ).encode()
+        _atomic_write(output, RESULT_JSON_NAME, encoded_result)
+        termination.commit()
 
 
 def _parse_args(argv: list[str] | None) -> GateConfig:

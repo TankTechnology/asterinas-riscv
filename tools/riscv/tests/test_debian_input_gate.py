@@ -1365,6 +1365,49 @@ class InputGateOrchestrationTests(unittest.TestCase):
                 if child.stdout is not None:
                     child.stdout.close()
 
+    def test_sigterm_during_monitor_close_defers_until_cleanup_and_drain(self) -> None:
+        class SignalOnCloseMonitor(FakeMonitor):
+            def close(self) -> None:
+                self.events.append("monitor:close")
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        boot = FakeBoot(self.events)
+        monitor = SignalOnCloseMonitor(self.events)
+
+        with self.assertRaises(gate.GateTermination):
+            gate.run_gate(self.config(), self.dependencies(boot, monitor))
+
+        self.assertEqual(self.events[-3:], ["monitor:close", "cleanup", "drain"])
+        self.assertFalse((self.output / "result.json").exists())
+        self.assertEqual(signal.getsignal(signal.SIGTERM), old_sigterm)
+
+    def test_sigterm_after_result_publication_keeps_result_and_exit_consistent(
+        self,
+    ) -> None:
+        original_atomic_write = gate._atomic_write
+
+        def signal_after_result(
+            output: gate.PinnedOutputDirectory,
+            name: str,
+            contents: bytes,
+        ) -> None:
+            original_atomic_write(output, name, contents)
+            if name == gate.RESULT_JSON_NAME:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        with mock.patch.object(gate, "_atomic_write", side_effect=signal_after_result):
+            result = gate.run_gate(
+                self.config(),
+                self.dependencies(FakeBoot(self.events)),
+            )
+
+        evidence = json.loads((self.output / "result.json").read_text())
+        self.assertTrue(result.passed)
+        self.assertTrue(evidence["passed"])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), old_sigterm)
+
 
 if __name__ == "__main__":
     unittest.main()
