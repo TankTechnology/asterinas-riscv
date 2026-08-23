@@ -95,8 +95,17 @@ impl GpuDevice {
         let config = config_manager.read_config();
         ostd::debug!("virtio_gpu_config = {:?}", config);
 
-        let mut control_queue = VirtQueue::new(VQ_CONTROL, QUEUE_SIZE, device_transport.as_mut())?;
-        let cursor_queue = VirtQueue::new(VQ_CURSOR, QUEUE_SIZE, device_transport.as_mut())?;
+        // The cursor queue is allowed (and in QEMU, is) much smaller than the
+        // control queue (16 vs 256). Clamp each queue to what the device
+        // actually offers instead of assuming both are `QUEUE_SIZE`.
+        let control_queue_size = QUEUE_SIZE
+            .min(device_transport.max_queue_size(VQ_CONTROL).unwrap_or(QUEUE_SIZE));
+        let cursor_queue_size = QUEUE_SIZE
+            .min(device_transport.max_queue_size(VQ_CURSOR).unwrap_or(QUEUE_SIZE));
+        let mut control_queue =
+            VirtQueue::new(VQ_CONTROL, control_queue_size, device_transport.as_mut())?;
+        let cursor_queue =
+            VirtQueue::new(VQ_CURSOR, cursor_queue_size, device_transport.as_mut())?;
         let control_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
         let cursor_buf =

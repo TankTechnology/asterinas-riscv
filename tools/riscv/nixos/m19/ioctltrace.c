@@ -12,12 +12,24 @@
 static int (*real_ioctl)(int, unsigned long, ...) = NULL;
 static int (*real_open)(const char *, int, ...) = NULL;
 static int (*real_open64)(const char *, int, ...) = NULL;
+static void *(*real_dlopen)(const char *, int) = NULL;
 static int is_drm[64];
 
 static void init(void) {
     if (!real_ioctl) real_ioctl = dlsym(RTLD_NEXT, "ioctl");
     if (!real_open) real_open = dlsym(RTLD_NEXT, "open");
     if (!real_open64) real_open64 = dlsym(RTLD_NEXT, "open64");
+    if (!real_dlopen) real_dlopen = dlsym(RTLD_NEXT, "dlopen");
+}
+
+/* Mesa loads DRI drivers via dlopen; log those paths. */
+void *dlopen(const char *path, int flags) {
+    init();
+    if (path && (strstr(path, "_dri.so") || strstr(path, "gallium") ||
+                 strstr(path, "gbm") || strstr(path, "EGL") || strstr(path, "GLES"))) {
+        fprintf(stderr, "DLOPEN %s\n", path);
+    }
+    return real_dlopen(path, flags);
 }
 
 static const char *drm_cmd_name(unsigned long cmd) {
@@ -57,6 +69,8 @@ static const char *drm_cmd_name(unsigned long cmd) {
     case 0xc05064bc: return "MODE_ATOMIC";
     case 0xc0086409: return "GEM_CLOSE";
     case 0xc008640a: return "GEM_FLINK";
+    case 0xc00c642d: return "PRIME_HANDLE_TO_FD";
+    case 0xc00c642e: return "PRIME_FD_TO_HANDLE";
     default: return NULL;
     }
 }
@@ -81,6 +95,10 @@ int ioctl(int fd, unsigned long request, ...) {
 static int wrap_open(const char *path, int flags, mode_t mode, int has_mode) {
     init();
     int fd = has_mode ? real_open(path, flags, mode) : real_open(path, flags);
+    if (path && (strstr(path, "/dev/dri/") || strstr(path, "_dri.so") ||
+                 strstr(path, "gallium") || strstr(path, "/gbm/"))) {
+        fprintf(stderr, "OPEN %s -> %d\n", path, fd);
+    }
     if (fd >= 0 && fd < 64 && strstr(path, "/dev/dri/"))
         is_drm[fd] = 1;
     return fd;

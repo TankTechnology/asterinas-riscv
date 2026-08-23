@@ -159,7 +159,11 @@ where
     {
         let data_len = self.metadata().size() as usize;
         let mut send_len = 0;
-        let mut buffer = vec![0u8; 0x1000];
+        // Cap the buffer at 64 KiB: large files (the initramfs holds ~100+ MiB
+        // libraries) get fewer read/write round-trips, while small files avoid
+        // allocating a needlessly large buffer. The minimum of 4 bytes leaves
+        // room for the 0-3 byte data-padding read below.
+        let mut buffer = vec![0u8; data_len.min(0x10000).max(4)];
         while send_len < data_len {
             let len = min(buffer.len(), data_len - send_len);
             self.reader.read_exact(&mut buffer[..len])?;

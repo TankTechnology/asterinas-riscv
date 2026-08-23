@@ -61,7 +61,7 @@ def run() -> bytes:
         "-kernel", str(UBOOT),
         "-drive", f"if=none,format=raw,file={BOOTDISK},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
-        "-device", "virtio-gpu-gl-device",
+        "-device", "virtio-gpu-gl-pci",
     ]
 
     master_fd, slave_fd = pty.openpty()
@@ -103,7 +103,7 @@ def run() -> bytes:
             print(f"[boot] WARNING: '{cmd.decode()}' missed expected")
 
     print("[boot] Waiting for M19_VERIFY_DONE (TCG emulation, may take minutes)...")
-    deadline = time.time() + 1800
+    deadline = time.time() + 3600
     while time.time() < deadline:
         r, _, _ = select.select([master_fd], [], [], 0.5)
         if r:

@@ -12,7 +12,7 @@ use super::{
     DrmModeCursor2, DrmModeDestroyDumb, DrmModeDestroyPropertyBlob, DrmModeFbCmd, DrmModeFbCmd2,
     DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
     DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeObjGetProperties,
-    DrmSetClientCap, DrmVersion,
+    DrmPrimeHandle, DrmSetClientCap, DrmVersion,
     virtio_gpu::{
         DrmVirtgpu3dTransferFromHost, DrmVirtgpu3dTransferToHost, DrmVirtgpu3dWait,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
@@ -32,6 +32,12 @@ pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
 pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
 pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x0b, InOutData<DrmGemOpen>);
+
+// PRIME / dma-buf sharing. `DRM_CAP_PRIME` is advertised as IMPORT|EXPORT above;
+// these ioctls are the actual handle <-> fd conversions Mesa's virgl driver uses
+// to attach a GBM dumb buffer to a virgl resource.
+pub(super) type PrimeHandleToFd = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD, b'd', 0x2d, InOutData<DrmPrimeHandle>);
+pub(super) type PrimeFdToHandle = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE, b'd', 0x2e, InOutData<DrmPrimeHandle>);
 
 // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h>.
 pub(super) type ModeGetResources = ioc!(DRM_IOCTL_MODE_GETRESOURCES, b'd', 0xa0, InOutData<DrmModeCardRes>);

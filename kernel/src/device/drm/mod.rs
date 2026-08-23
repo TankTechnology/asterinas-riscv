@@ -20,6 +20,7 @@ mod gem;
 mod ioctl;
 mod kms;
 mod plane;
+mod prime;
 mod property;
 mod virtio_gpu;
 
@@ -35,11 +36,17 @@ use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
     events::IoEvents,
     fs::{
-        file::{Mappable, PerOpenFileOps, StatusFlags},
+        file::{
+            Mappable, PerOpenFileOps, StatusFlags,
+            file_table::{FileDesc, RawFileDesc, WithFileTable},
+        },
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable, Pollee},
+    process::{
+        posix_thread::FileTableRefMut,
+        signal::{PollHandle, Pollable, Pollee},
+    },
     util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
@@ -858,6 +865,68 @@ impl PerOpenFileOps for DriHandle {
             }
         })
     }
+
+    fn ioctl_with_table(
+        &self,
+        _path: &Path,
+        raw_ioctl: RawIoctl,
+        file_table: &mut FileTableRefMut,
+    ) -> Option<Result<i32>> {
+        use ioctl::*;
+
+        dispatch_ioctl!(match raw_ioctl {
+            cmd @ PrimeHandleToFd => {
+                let mut req = match cmd.read() {
+                    Ok(req) => req,
+                    Err(e) => return Some(Err(e)),
+                };
+                let (file, fd_flags) = match prime::handle_to_fd(self, req.handle, req.flags) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let fd: FileDesc = file_table.unwrap().write().insert(file, fd_flags);
+                req.fd = RawFileDesc::from(fd);
+                if let Err(e) = cmd.write(&req) {
+                    return Some(Err(e));
+                }
+                Some(Ok(0))
+            }
+            cmd @ PrimeFdToHandle => {
+                let req = match cmd.read() {
+                    Ok(req) => req,
+                    Err(e) => return Some(Err(e)),
+                };
+                let fd = match FileDesc::try_from(req.fd) {
+                    Ok(fd) => fd,
+                    Err(_) => return Some(Err(Error::new(Errno::EBADF))),
+                };
+                let file = match file_table.read_with(|t| t.get_file(fd).cloned()) {
+                    Ok(file) => file,
+                    Err(_) => return Some(Err(Error::new(Errno::EBADF))),
+                };
+                let dma_buf = match file.downcast_ref::<prime::DmaBufFile>() {
+                    Some(f) => f,
+                    None => {
+                        return Some(Err(Error::with_message(
+                            Errno::EINVAL,
+                            "the fd is not a dma-buf",
+                        )));
+                    }
+                };
+                let (handle, _size) = match prime::fd_to_handle(self, dma_buf) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let mut resp = req;
+                resp.handle = handle;
+                if let Err(e) = cmd.write(&resp) {
+                    return Some(Err(e));
+                }
+                Some(Ok(0))
+            }
+            _ => None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -897,9 +966,17 @@ fn build_mode(width: u32, height: u32) -> DrmModeModeInfo {
 fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
     let src_bytes = src.as_bytes();
     if dst != 0 && *len > 0 {
-        let copy = src_bytes.len().min(*len - 1);
+        // Match Linux's `drm_version`: copy `min(name_len, strlen + 1)` bytes,
+        // i.e. the full name plus a NUL terminator when the caller's buffer has
+        // room. Do not reserve a byte for the terminator up front, otherwise a
+        // buffer sized exactly to the name truncates the last character
+        // (e.g. "virtio_gpu" becomes "virtio_gp"), which breaks Mesa's driver
+        // lookup of `virtio_gpu_dri.so`.
+        let copy = src_bytes.len().min(*len);
         current_userspace!().write_bytes(dst, &src_bytes[..copy])?;
-        current_userspace!().write_val(dst + copy, &0u8)?;
+        if copy < *len {
+            current_userspace!().write_val(dst + copy, &0u8)?;
+        }
     }
     *len = src_bytes.len();
     Ok(())
@@ -966,6 +1043,17 @@ struct DrmGemOpen {
     name: u32,
     handle: u32,
     size: u64,
+}
+
+/// `struct drm_prime_handle` — argument for `DRM_IOCTL_PRIME_{HANDLE_TO_FD,FD_TO_HANDLE}`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmPrimeHandle {
+    handle: u32,
+    /// Only meaningful for HANDLE_TO_FD: `DRM_CLOEXEC`.
+    flags: u32,
+    /// Returned dmabuf fd (HANDLE_TO_FD) or input fd (FD_TO_HANDLE).
+    fd: i32,
 }
 
 /// `struct drm_mode_card_res`.

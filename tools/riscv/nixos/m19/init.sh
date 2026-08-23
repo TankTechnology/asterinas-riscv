@@ -15,6 +15,9 @@ fi
 /bin/busybox echo M19_DEV_NODES
 /bin/busybox ls -l /dev/dri 2>&1
 export EGL_LOG_LEVEL=debug
+/bin/busybox echo M20_PRIME_BEGIN
+/root/primetest
+/bin/busybox echo "M20_PRIME_RC=$?"
 /bin/busybox echo M19_VIRGL_RAW_BEGIN
 /root/virgltest
 /bin/busybox echo "M19_VIRGL_RAW_RC=$?"
