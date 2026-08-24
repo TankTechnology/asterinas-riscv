@@ -245,7 +245,18 @@ class ConcreteOperations:
     ) -> dict[str, Any]:
         self._require_config(config)
         output = self._require_output()
-        directory = Path(tempfile.mkdtemp(prefix=f"debian-qemu-b{boot_number}-"))
+        pinned_status = os.fstat(output._operation_fd)
+        if not os.path.samestat(config.output_directory.lstat(), pinned_status):
+            raise GateFailure("output directory identity changed before launch")
+        directory = Path(
+            tempfile.mkdtemp(
+                prefix=f".debian-qemu-b{boot_number}-",
+                dir=config.output_directory,
+            )
+        )
+        if not os.path.samestat(directory.parent.lstat(), pinned_status):
+            shutil.rmtree(directory, ignore_errors=True)
+            raise GateFailure("output directory identity changed during launch")
         os.chmod(directory, 0o700)
         master = slave = -1
         process = None
