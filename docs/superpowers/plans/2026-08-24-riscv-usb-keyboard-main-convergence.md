@@ -92,7 +92,7 @@ git merge-base HEAD "$INTEGRATION_MAIN"
 git rev-list --left-right --count HEAD..."$INTEGRATION_MAIN"
 ```
 
-Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 44 topic-side commits after the conflict-contract correction and 315 main-side commits.
+Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 45 topic-side commits after the merge-gate corrections and 315 main-side commits.
 
 ### Task 3: Start the merge and confirm its conflict contract
 
@@ -169,7 +169,7 @@ Expected: the named paths match `INTEGRATION_MAIN`; historical USB `pci.rs` is r
 ```bash
 test -z "$(git diff --name-only --diff-filter=U)"
 test ! -e kernel/comps/usb/src/arch/riscv/pci.rs
-git diff --cached --check
+git diff --cached "$INTEGRATION_MAIN" --check
 ```
 
 Expected: all commands exit zero.
@@ -227,7 +227,7 @@ Expected: 49 USB HID tests, three board-session tests, and 171 U-Boot contract t
 ```bash
 cargo metadata --no-deps --format-version 1 > /tmp/riscv-usb-main-convergence-metadata.json
 cargo fmt --all -- --check
-git diff --cached --check
+git diff --cached "$INTEGRATION_MAIN" --check
 python3 -c 'import json; d=json.load(open("/tmp/riscv-usb-main-convergence-metadata.json")); assert sum(p["name"] == "aster-usb" for p in d["packages"]) == 1'
 ```
 
