@@ -45,6 +45,23 @@ See [the LTP gate operator guide](ltp/README.md)
 for the exact containers, strict mode, SMP=4 runs, result schema,
 and evidence-provenance rules.
 
+## PCI xHCI USB keyboard gate
+
+The PCI xHCI gate boots QEMU `virt` in Sv39 mode with `smp=4`, one PCI
+`qemu-xhci` controller, and one USB HID boot keyboard. It proves the
+DT-routed INTx, xHCI, USB enumeration, input-core, and evdev path with an exact
+press/release sequence and no VirtIO or i8042 keyboard fallback.
+
+Run its host tests with:
+
+```bash
+make test_riscv_xhci_input_unit
+```
+
+See [the PCI xHCI keyboard operator guide](xhci/README.md) for the Sv39 build,
+private U-Boot disk, bounded QEMU command, evidence schema, verified M1 hashes,
+and the physical-board limitations.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
