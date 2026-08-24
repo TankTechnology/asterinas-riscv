@@ -248,6 +248,24 @@ class XhciHostGateTests(unittest.TestCase):
             self.assertNotIn(forbidden, joined)
         self.assertIn("-nic none", joined)
 
+    def test_registered_uboot_commands_preserve_expected_output(self) -> None:
+        artifacts = self.gate.ArtifactExpectations(
+            kernel_size=1024,
+            kernel_crc32="11111111",
+            dtb_size=1024,
+            dtb_crc32="22222222",
+            initrd_size=1024,
+            initrd_crc32="33333333",
+            kernel_sha256="1" * 64,
+            dtb_sha256="2" * 64,
+            initrd_sha256="3" * 64,
+        )
+        commands = self.gate._registered_commands(artifacts)
+        self.assertEqual(commands[0].name, "version")
+        self.assertEqual(commands[0].expected, b"U-Boot 2026.07")
+        self.assertEqual(commands[-1].name, "booti")
+        self.assertEqual(commands[-1].expected, b"Starting kernel ...")
+
     def test_classifier_requires_current_ordered_exact_evidence(self) -> None:
         valid = self.gate.expected_transcript()
         result = self.gate.classify_transcript(valid)
