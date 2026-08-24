@@ -383,6 +383,8 @@ def classify_boot(
 
     package_rows: list[tuple[str, str]] = []
     for line in extracted["packages"].splitlines():
+        if not line:
+            continue
         fields = line.split("\t")
         if len(fields) != 2 or not all(fields):
             return _failed("package identity output is malformed")

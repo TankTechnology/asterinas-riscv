@@ -2266,7 +2266,7 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
             "architecture": "riscv64",
             "debian-release": "13.6",
             "bash-version": "5.2.37(1)-release",
-            "packages": "\n".join(
+            "packages": "\r\r\n".join(
                 f"{name}\t{version}"
                 for name, version in DebianRootfsGateProtocolTests.EXPECTED_PACKAGES
             ),
