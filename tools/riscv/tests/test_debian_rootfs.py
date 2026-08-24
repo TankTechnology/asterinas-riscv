@@ -486,7 +486,7 @@ class DebianRootfsContractTests(unittest.TestCase):
                 "util-linux",
             ),
         )
-        self.assertEqual(ROOT_LABEL, "ASTER_DEBIAN_ROOT")
+        self.assertEqual(ROOT_LABEL, "ASTER_DEBIANROOT")
         self.assertEqual(rows, PACKAGE_ROWS)
         self.assertEqual(validated.debian_release, "13.6")
         self.assertEqual(validated.filesystem.size_bytes, ROOT_IMAGE_SIZE_BYTES)
@@ -494,6 +494,11 @@ class DebianRootfsContractTests(unittest.TestCase):
             validated.suite = "forky"
         with self.assertRaises(FrozenInstanceError):
             validated.filesystem.label = "mutable"
+
+    def test_root_label_fits_ext2_limit(self) -> None:
+        encoded_label = ROOT_LABEL.encode("ascii")
+
+        self.assertLessEqual(len(encoded_label), 16)
 
     def test_accepts_signed_debian_13_point_release_versions(self) -> None:
         for release in ("13.0", "13.6", "13.10"):
