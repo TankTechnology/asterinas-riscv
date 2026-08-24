@@ -261,7 +261,8 @@ prepare_private_workspace() {
     local output_parent
 
     output_parent="${OUTPUT_DIR%/*}"
-    mkdir -p -- "$output_parent" "$CACHE_DIR"
+    (umask 022 && mkdir -p -- "$output_parent")
+    mkdir -p -- "$CACHE_DIR"
     WORK_DIR="$(mktemp -d "$output_parent/.debian-rootfs.XXXXXXXX")"
     trap cleanup EXIT
     trap 'exit 129' HUP
