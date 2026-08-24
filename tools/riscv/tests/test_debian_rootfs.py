@@ -3193,6 +3193,22 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
         self.assertLess(destination.stat().st_blocks * 512, destination.stat().st_size)
 
+        directory_fd = os.open(
+            self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        )
+        self.addCleanup(os.close, directory_fd)
+        pinned_destination = Path(f"/proc/self/fd/{directory_fd}/pinned-run.ext2")
+        pinned_before, pinned_after, pinned_copied = copy_sparse_root(
+            descriptor,
+            pinned_destination,
+            destination_directory_fd=directory_fd,
+        )
+        self.assertEqual(
+            (pinned_before, pinned_after, pinned_copied),
+            (before, before, before),
+        )
+        self.assertTrue((self.directory / "pinned-run.ext2").is_file())
+
     def test_fdtget_accepts_exactly_four_enabled_cpu_nodes(self) -> None:
         source = self.directory / "four.dts"
         dtb = self.directory / "four.dtb"

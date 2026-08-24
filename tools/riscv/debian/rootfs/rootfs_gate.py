@@ -365,7 +365,12 @@ def build_boot_image(kernel: Path, dtb: Path, initramfs: Path, output: Path) -> 
             temporary_image.unlink(missing_ok=True)
 
 
-def copy_sparse_root(source_fd: int, destination: Path) -> tuple[str, str, str]:
+def copy_sparse_root(
+    source_fd: int,
+    destination: Path,
+    *,
+    destination_directory_fd: int | None = None,
+) -> tuple[str, str, str]:
     """Copy a pinned root descriptor sparsely and publish it atomically."""
 
     destination = Path(destination)
@@ -380,6 +385,9 @@ def copy_sparse_root(source_fd: int, destination: Path) -> tuple[str, str, str]:
     )
     os.close(temporary_fd)
     temporary = Path(temporary_name)
+    inherited_fds = (source_fd,)
+    if destination_directory_fd is not None:
+        inherited_fds += (destination_directory_fd,)
     try:
         subprocess.run(
             [
@@ -392,7 +400,7 @@ def copy_sparse_root(source_fd: int, destination: Path) -> tuple[str, str, str]:
             ],
             check=True,
             capture_output=True,
-            pass_fds=(source_fd,),
+            pass_fds=inherited_fds,
         )
         after = _hash_fd(source_fd)
         copied_fd = _open_regular(temporary)
