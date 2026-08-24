@@ -92,14 +92,13 @@ git merge-base HEAD "$INTEGRATION_MAIN"
 git rev-list --left-right --count HEAD..."$INTEGRATION_MAIN"
 ```
 
-Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 43 topic-side commits after the plan commit and 315 main-side commits.
+Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 44 topic-side commits after the conflict-contract correction and 315 main-side commits.
 
 ### Task 3: Start the merge and confirm its conflict contract
 
 **Files:**
 - Conflict: `Cargo.lock`
 - Conflict: `Cargo.toml`
-- Conflict: `Makefile`
 - Conflict: `docs/superpowers/plans/2026-08-20-riscv-ltp-gate-baseline.md`
 - Conflict: `docs/superpowers/plans/2026-08-20-wayland-global-size-fix.md`
 - Conflict: `docs/superpowers/specs/2026-08-20-riscv-ltp-layered-integration-design.md`
@@ -110,9 +109,7 @@ Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 43 topic-s
 - Conflict: `kernel/comps/usb/src/lib.rs`
 - Conflict: `kernel/src/device/registry/char.rs`
 - Conflict: `kernel/src/device/tty/line_discipline.rs`
-- Conflict: `kernel/src/device/tty/vt/keyboard/handler.rs`
 - Conflict: `kernel/src/init.rs`
-- Conflict: `kernel/src/lib.rs`
 - Conflict: `ostd/src/bus/usb.rs`
 - Conflict: `ostd/src/io/io_mem/mod.rs`
 - Conflict: `ostd/src/mm/dma/dma_coherent.rs`
@@ -128,13 +125,13 @@ git merge --no-ff --no-commit "$INTEGRATION_MAIN"
 
 Expected: Git stops with conflicts and creates no commit.
 
-- [ ] **Step 2: Assert all 21 paths and no others are unresolved**
+- [ ] **Step 2: Assert all 18 paths and no others are unresolved**
 
 ```bash
 git diff --name-only --diff-filter=U | sort
 ```
 
-Expected: exactly the 21 paths listed above.
+Expected: exactly the 18 paths listed above.
 If the pinned merge differs, abort and revise the plan before resolving files.
 
 ### Task 4: Restore the main-authoritative implementation
@@ -341,7 +338,7 @@ Expected: M0 is reviewable on its own. Write the M1 PCI xHCI plan from the merge
 
 ## Stop Conditions
 
-- Abort and revise the plan if the pinned conflict set is not exactly 21 paths.
+- Abort and revise the plan if the pinned conflict set is not exactly 18 paths.
 - Do not commit if any authority path differs from `INTEGRATION_MAIN`.
 - Do not copy a topic implementation to hide a main-side contract change.
 - On compile failure, identify the branch-only obsolete dependency and restore or remove it in a focused reviewed change.
