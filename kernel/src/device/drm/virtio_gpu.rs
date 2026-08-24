@@ -9,7 +9,12 @@
 use crate::prelude::*;
 
 use align_ext::AlignExt;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use crate::{
+    fs::file::file_table::FdFlags,
+    process::posix_thread::FileTableRefMut,
+};
 
 use super::{DUMB_POOL_SIZE, DumbBuffer, GemObject};
 
@@ -236,7 +241,7 @@ pub(super) fn virtgpu_resource_create(
         .gpu_manager
         .gpu
         .next_resource_id
-        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        .fetch_add(1, Ordering::Relaxed);
 
     // If a GEM buffer handle is provided, look up the backing memory.
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM
@@ -275,7 +280,7 @@ pub(super) fn virtgpu_resource_create(
         let object_id = handle
             .gpu_manager
             .next_gem_id
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed);
         let gem_obj = GemObject {
             name: AtomicU32::new(0),
             ref_count: AtomicU32::new(1),
@@ -446,10 +451,18 @@ pub(super) fn virtgpu_get_caps(
     Ok(0)
 }
 
+/// `VIRTGPU_EXECBUF_FENCE_FD_OUT` — the caller requests an out-fence (a pollable
+/// fd signaling when the submitted command completes).
+const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
+
 /// EXECBUFFER: submit a virgl command stream to the host.
 ///
 /// This is the core ioctl for virgl rendering. Mesa encodes GL commands
-/// in a virgl command buffer and submits them via this ioctl.
+/// in a virgl command buffer and submits them via this ioctl. When the caller
+/// sets `VIRTGPU_EXECBUF_FENCE_FD_OUT` in `flags`, the submission is fenced:
+/// the device defers its response until the command completes, so by the time
+/// this ioctl returns the render is done, and we hand back a pre-signaled
+/// [`super::fence::FenceFile`] fd in `fence_fd`.
 pub(super) fn virtgpu_execbuffer(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -458,52 +471,72 @@ pub(super) fn virtgpu_execbuffer(
         true,
         crate::util::ioctl::InOutData<DrmVirtgpuExecbuffer>,
     >,
-) -> Result<i32> {
-    let req = cmd.read()?;
+    file_table: &mut FileTableRefMut,
+) -> Option<Result<i32>> {
+    Some((|| -> Result<i32> {
+        let req = cmd.read()?;
 
-    // Read the command buffer from userspace
-    if req.size == 0 || req.command == 0 {
-        return_errno_with_message!(Errno::EINVAL, "empty command buffer");
-    }
-
-    let mut cmd_buf = vec![0u8; req.size as usize];
-    current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
-
-    // Validate the GEM buffer handles in the resource list
-    if req.num_bo_handles > 0 && req.bo_handles != 0 {
-        let handle_count = req.num_bo_handles as usize;
-        let mut bo_handles = vec![0u32; handle_count];
-        let mut raw = vec![0u8; handle_count * 4];
-        current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
-        for (i, chunk) in raw.as_chunks::<4>().0.iter().enumerate() {
-            bo_handles[i] = u32::from_le_bytes(*chunk);
+        // Read the command buffer from userspace
+        if req.size == 0 || req.command == 0 {
+            return_errno_with_message!(Errno::EINVAL, "empty command buffer");
         }
 
-        let inner = handle.inner.lock();
-        let guard = handle.gpu_manager.gem_objects.lock();
-        for bo_h in &bo_handles {
-            let valid = inner
-                .handles
-                .get(bo_h)
-                .is_some_and(|object_id| guard.contains_key(object_id));
-            if !valid {
-                return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
+        let mut cmd_buf = vec![0u8; req.size as usize];
+        current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
+
+        // Validate the GEM buffer handles in the resource list
+        if req.num_bo_handles > 0 && req.bo_handles != 0 {
+            let handle_count = req.num_bo_handles as usize;
+            let mut bo_handles = vec![0u32; handle_count];
+            let mut raw = vec![0u8; handle_count * 4];
+            current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
+            for (i, chunk) in raw.as_chunks::<4>().0.iter().enumerate() {
+                bo_handles[i] = u32::from_le_bytes(*chunk);
+            }
+
+            let inner = handle.inner.lock();
+            let guard = handle.gpu_manager.gem_objects.lock();
+            for bo_h in &bo_handles {
+                let valid = inner
+                    .handles
+                    .get(bo_h)
+                    .is_some_and(|object_id| guard.contains_key(object_id));
+                if !valid {
+                    return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
+                }
             }
         }
-    }
 
-    // Submit the command buffer to the host
-    handle
-        .gpu_manager
-        .gpu
-        .submit_3d(req.size, &cmd_buf)
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+        let mut resp = req;
 
-    // Always return fence_fd = -1 (no fence support for now)
-    let mut resp = req;
-    resp.fence_fd = -1;
-    cmd.write(&resp)?;
-    Ok(0)
+        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
+            // Fenced submit: blocks until the host finishes the command.
+            let fence_id = handle
+                .gpu_manager
+                .next_fence_id
+                .fetch_add(1, Ordering::Relaxed);
+            handle
+                .gpu_manager
+                .gpu
+                .submit_3d_fenced(req.size, &cmd_buf, fence_id)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+
+            // The fence is already signaled; hand back a pollable fd.
+            let fence_file = Arc::new(super::fence::FenceFile::new());
+            let fd = file_table.unwrap().write().insert(fence_file, FdFlags::empty());
+            resp.fence_fd = u32::from(fd) as i32;
+        } else {
+            handle
+                .gpu_manager
+                .gpu
+                .submit_3d(req.size, &cmd_buf)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+            resp.fence_fd = -1;
+        }
+
+        cmd.write(&resp)?;
+        Ok(0)
+    })())
 }
 
 /// CONTEXT_INIT: create a 3D context (virgl context) on the virtio-gpu device.

@@ -16,6 +16,7 @@
 
 mod atomic;
 mod dumb;
+mod fence;
 mod gem;
 mod ioctl;
 mod kms;
@@ -24,7 +25,7 @@ mod prime;
 mod property;
 mod virtio_gpu;
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use aster_time::read_monotonic_time;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
@@ -167,6 +168,8 @@ struct GpuManager {
     property_manager: property::PropertyManager,
     /// Monotonic page-flip sequence number (our "vblank counter").
     flip_sequence: AtomicU32,
+    /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
+    next_fence_id: AtomicU64,
 }
 
 impl GpuManager {
@@ -181,6 +184,7 @@ impl GpuManager {
             next_gem_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
+            next_fence_id: AtomicU64::new(1),
         }
     }
 
@@ -826,9 +830,6 @@ impl PerOpenFileOps for DriHandle {
                 kms::present_fb(self, req.fb_id)?;
                 Ok(0)
             }
-            cmd @ VirtgpuExecbuffer => {
-                virtio_gpu::virtgpu_execbuffer(self, cmd)
-            }
             cmd @ VirtgpuGetparam => {
                 virtio_gpu::virtgpu_getparam(self, cmd)
             }
@@ -875,6 +876,9 @@ impl PerOpenFileOps for DriHandle {
         use ioctl::*;
 
         dispatch_ioctl!(match raw_ioctl {
+            cmd @ VirtgpuExecbuffer => {
+                virtio_gpu::virtgpu_execbuffer(self, cmd, file_table)
+            }
             cmd @ PrimeHandleToFd => {
                 let mut req = match cmd.read() {
                     Ok(req) => req,

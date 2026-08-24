@@ -586,11 +586,39 @@ impl GpuDevice {
         check_ok(code)
     }
 
-    /// 3D: submit a virgl command buffer to the host.
+    /// 3D: submit a virgl command buffer to the host (unfenced — the response
+    /// acknowledges receipt, not completion).
     pub fn submit_3d(&self, size: u32, data: &[u8]) -> Result<(), VirtioDeviceError> {
+        self.submit_3d_with_fence(size, data, 0, 0)
+    }
+
+    /// 3D: submit a virgl command buffer with `VIRTIO_GPU_FLAG_FENCE` set.
+    ///
+    /// The device defers the response until the command has completed, so the
+    /// synchronous [`submit_control`] wait below returns only after rendering
+    /// finishes. This is how the render→scanout path synchronizes.
+    pub fn submit_3d_fenced(
+        &self,
+        size: u32,
+        data: &[u8],
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
+        self.submit_3d_with_fence(size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)
+    }
+
+    fn submit_3d_with_fence(
+        &self,
+        size: u32,
+        data: &[u8],
+        flags: u32,
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
         use super::VirtioGpuCmdSubmit;
+        let mut hdr = ctrl_hdr(super::VIRTIO_GPU_CMD_SUBMIT_3D);
+        hdr.flags = flags;
+        hdr.fence_id = fence_id;
         let req = VirtioGpuCmdSubmit {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_SUBMIT_3D),
+            hdr,
             size,
             padding: 0,
         };

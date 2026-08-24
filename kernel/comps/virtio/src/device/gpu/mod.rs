@@ -88,6 +88,11 @@ pub const VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM: u32 = 4;
 /// Maximum number of scanouts described by a single display-info response.
 pub const MAX_SCANOUTS: usize = 16;
 
+/// Control-header flag bits (5.7.6.3). Setting `FENCE` defers the command's
+/// response until the device has finished the command (used to synchronize 3D
+/// rendering).
+pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
+
 /// Common control header (5.7.6.3).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
