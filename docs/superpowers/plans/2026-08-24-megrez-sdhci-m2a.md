@@ -12,7 +12,7 @@
 
 ## Scope and invariants
 
-- Target only `/soc/mmc@0x50460000`, compatible `eswin,sdhci-sdio`, MMIO `0x50460000..0x5046ffff`, IRQ 81, 4-bit bus, `no-mmc`.
+- Target only `/soc/mmc@0x50460000`, compatible `eswin,sdhci-sdio`, MMIO `0x50460000..0x5046ffff`, IRQ 81, 4-bit bus, `no-mmc`, and its exact `eswin,syscrg_csr` core-clock resource (`0x51828000`, offset `0x164`).
 - Do not bind the eMMC controller at `0x50450000`.
 - Use SDHCI PIO and `CMD17` single-block reads. Multiple-sector BIOs are served by bounded repeated `CMD17` operations.
 - No DMA, write commands, discard, format, partition edits, or partition-2 provisioning in M2a.
@@ -192,6 +192,7 @@ The accepted value is exact:
 ```rust
 PlatformConfig {
     mmio: 0x5046_0000..0x5047_0000,
+    clock_mmio: 0x5182_8000..0x5182_9000,
     irq: 81,
     bus_width: 4,
     max_frequency: 208_000_000,
@@ -203,7 +204,10 @@ PlatformConfig {
 - Find exactly one accepted node in `DEVICE_TREE`.
 - Acquire the exact range with `IoMem::acquire`.
 - Implement 8/16/32-bit register reads/writes with bounds and alignment checks.
-- Reset the controller, configure the EIC7700 PHY conservatively, use 400 kHz for discovery and 25 MHz for data.
+- Reset the command/data lines, preserve the U-Boot-initialized EIC7700 PHY,
+  and program the vendor CRG core divider for 400 kHz discovery and 25 MHz
+  data. The standard SDHCI divider is not the authoritative EIC7700 clock
+  control.
 - Poll synchronously in M2a; IRQ 81 is validated and recorded but not enabled until a later performance milestone.
 - On non-RISC-V, initialization is an explicit no-op.
 

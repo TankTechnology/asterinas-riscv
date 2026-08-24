@@ -32,11 +32,18 @@ static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 fn init() -> Result<(), ComponentInitError> {
     #[cfg(target_arch = "riscv64")]
     {
-        let Some((host, card)) = arch::probe().map_err(|_| ComponentInitError::Unknown)? else {
+        let Some((host, card)) = arch::probe().map_err(|error| {
+            ostd::error!("[mmc] probe failed at {}: {:?}", error.stage(), error);
+            ComponentInitError::Unknown
+        })?
+        else {
             return Ok(());
         };
         MMC_BLOCK_MAJOR_ID.call_once(|| aster_block::allocate_major().unwrap());
-        block::register(host, card).map_err(|_| ComponentInitError::Unknown)?;
+        block::register(host, card).map_err(|error| {
+            ostd::error!("[mmc] block registration failed: {:?}", error);
+            ComponentInitError::Unknown
+        })?;
     }
     Ok(())
 }

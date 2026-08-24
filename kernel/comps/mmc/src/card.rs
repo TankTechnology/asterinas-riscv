@@ -71,9 +71,7 @@ impl Card {
         let mut ocr = None;
         for _ in 0..OCR_RETRIES {
             app_command(host, 0)?;
-            let value = host
-                .command(Command::new(41, OCR_ARGUMENT, ResponseType::Short, None))?
-                .short()?;
+            let value = host.command(Command::app_op_cond(OCR_ARGUMENT))?.short()?;
             if value & OCR_BUSY != 0 {
                 ocr = Some(value);
                 break;

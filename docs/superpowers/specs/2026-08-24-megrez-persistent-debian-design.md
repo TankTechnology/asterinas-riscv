@@ -30,6 +30,8 @@ The reviewed Megrez DTB identifies the removable SD controller as:
 - bus width: 4;
 - properties: `broken-cd`, `disable-wp`, `no-mmc`;
 - maximum declared frequency: 208 MHz.
+- core clock: `eswin,syscrg_csr` resolves to `0x51828000` with the SD core
+  divider at offset `0x164`.
 
 The controller at `0x50450000` is the separate non-removable 8-bit eMMC and is
 outside the first milestone.
@@ -61,9 +63,11 @@ sector I/O. Timeouts, command errors, CRC errors, and controller resets are
 reported instead of retried without limit.
 
 DTB discovery accepts only the reviewed `eswin,sdhci-sdio` node and MMIO/IRQ
-contract. U-Boot-provided clock/reset state may be reused initially, but the
-driver verifies controller capabilities and applies a conservative SD clock;
-it does not assume the DTB's 208 MHz maximum is immediately safe.
+contract. U-Boot-provided PHY/reset state may be reused initially, but the
+driver verifies controller capabilities and applies a conservative SD clock
+through the EIC7700 CRG divider. The standard SDHCI divider is not used as a
+substitute for this vendor clock resource, and the DTB's 208 MHz maximum is not
+treated as an immediately safe card clock.
 
 ### 2. Block and partition integration
 

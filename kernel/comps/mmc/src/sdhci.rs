@@ -40,6 +40,8 @@ impl Register {
 pub enum ResponseType {
     None,
     Short,
+    /// A short response without valid CRC or command-index fields, such as R3.
+    ShortNoChecks,
     ShortBusy,
     Long,
 }
@@ -72,6 +74,10 @@ impl Command {
         Self::new(55, (rca as u32) << 16, ResponseType::Short, None)
     }
 
+    pub const fn app_op_cond(argument: u32) -> Self {
+        Self::new(41, argument, ResponseType::ShortNoChecks, None)
+    }
+
     pub const fn read_single_block(lba: u32) -> Self {
         Self::new(17, lba, ResponseType::Short, Some(DataDirection::Read))
     }
@@ -95,11 +101,11 @@ impl Command {
         let response = match self.response {
             ResponseType::None => 0,
             ResponseType::Long => 1,
-            ResponseType::Short => 2,
+            ResponseType::Short | ResponseType::ShortNoChecks => 2,
             ResponseType::ShortBusy => 3,
         };
         let checks = match self.response {
-            ResponseType::None => 0,
+            ResponseType::None | ResponseType::ShortNoChecks => 0,
             ResponseType::Long => 1 << 3,
             ResponseType::Short | ResponseType::ShortBusy => (1 << 3) | (1 << 4),
         };
@@ -119,6 +125,22 @@ pub enum HostError {
     Unsupported,
 }
 
+/// Error context captured from one command interrupt status value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CommandFailure {
+    pub index: u8,
+    pub status: u32,
+    pub error: HostError,
+}
+
+/// Error context captured while waiting for one data-phase interrupt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DataFailure {
+    pub wanted: u32,
+    pub status: u32,
+    pub error: HostError,
+}
+
 /// Returns the highest-priority SDHCI interrupt error represented by `status`.
 pub const fn decode_interrupt_error(status: u32) -> Option<HostError> {
     if status & (1 << 16) != 0 {
@@ -134,6 +156,57 @@ pub const fn decode_interrupt_error(status: u32) -> Option<HostError> {
     } else {
         None
     }
+}
+
+pub(crate) const fn decode_command_failure(index: u8, status: u32) -> Option<CommandFailure> {
+    match decode_interrupt_error(status) {
+        Some(error) => Some(CommandFailure {
+            index,
+            status,
+            error,
+        }),
+        None => None,
+    }
+}
+
+pub(crate) const fn decode_data_failure(wanted: u32, status: u32) -> Option<DataFailure> {
+    match decode_interrupt_error(status) {
+        Some(error) => Some(DataFailure {
+            wanted,
+            status,
+            error,
+        }),
+        None => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Eic7700CoreClock {
+    pub divisor: u16,
+    pub select_416mhz: bool,
+}
+
+/// Selects the external EIC7700 MSHC core clock, following the vendor driver's
+/// `eswin_sdhci_set_core_clock` policy.
+pub(crate) const fn eic7700_core_clock_config(
+    requested_hz: u32,
+) -> Result<Eic7700CoreClock, HostError> {
+    if requested_hz == 0 {
+        return Err(HostError::Unsupported);
+    }
+    let (source_hz, select_416mhz) = if 416_000_000 % requested_hz == 0 {
+        (416_000_000u32, true)
+    } else {
+        (400_000_000u32, false)
+    };
+    let divisor = source_hz.div_ceil(requested_hz);
+    if divisor == 0 || divisor > 0x0fff {
+        return Err(HostError::Unsupported);
+    }
+    Ok(Eic7700CoreClock {
+        divisor: divisor as u16,
+        select_416mhz,
+    })
 }
 
 /// EIC7700-specific values from the upstream DesignWare MSHC driver.
@@ -175,6 +248,29 @@ mod tests {
         assert_eq!(Command::idle().command_bits(), 0x0000);
         assert_eq!(Command::send_if_cond(0x1aa).command_bits(), (8 << 8) | 0x1a);
         assert_eq!(Command::app_prefix(1).command_bits(), (55 << 8) | 0x1a);
+        assert_eq!(
+            Command::app_op_cond(0x40ff_8000).command_bits(),
+            (41 << 8) | 0x02
+        );
+    }
+
+    #[ktest]
+    fn eic7700_core_clock_policy_matches_the_vendor_driver() {
+        assert_eq!(
+            eic7700_core_clock_config(400_000),
+            Ok(Eic7700CoreClock {
+                divisor: 1040,
+                select_416mhz: true,
+            })
+        );
+        assert_eq!(
+            eic7700_core_clock_config(25_000_000),
+            Ok(Eic7700CoreClock {
+                divisor: 16,
+                select_416mhz: false,
+            })
+        );
+        assert_eq!(eic7700_core_clock_config(0), Err(HostError::Unsupported));
     }
 
     #[ktest]
@@ -188,6 +284,32 @@ mod tests {
         assert_eq!(decode_interrupt_error(1 << 21), Some(HostError::DataCrc));
         assert_eq!(decode_interrupt_error(1 << 22), Some(HostError::DataEndBit));
         assert_eq!(decode_interrupt_error(0), None);
+    }
+
+    #[ktest]
+    fn command_failures_retain_index_and_raw_status() {
+        assert_eq!(
+            decode_command_failure(8, (1 << 15) | (1 << 17)),
+            Some(CommandFailure {
+                index: 8,
+                status: (1 << 15) | (1 << 17),
+                error: HostError::CommandCrc,
+            })
+        );
+        assert_eq!(decode_command_failure(8, 0), None);
+    }
+
+    #[ktest]
+    fn data_failures_retain_waited_event_and_raw_status() {
+        assert_eq!(
+            decode_data_failure(1 << 5, (1 << 15) | (1 << 21)),
+            Some(DataFailure {
+                wanted: 1 << 5,
+                status: (1 << 15) | (1 << 21),
+                error: HostError::DataCrc,
+            })
+        );
+        assert_eq!(decode_data_failure(1 << 5, 0), None);
     }
 
     #[ktest]
