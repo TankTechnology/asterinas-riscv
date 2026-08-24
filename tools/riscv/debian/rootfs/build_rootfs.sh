@@ -739,7 +739,12 @@ publish_artifacts() {
     local destination_name
     local temporary
 
-    mkdir -p -- "$OUTPUT_DIR/source-metadata"
+    if [[ ! -d "$OUTPUT_DIR" ]]; then
+        mkdir -m 0755 -- "$OUTPUT_DIR"
+    fi
+    if [[ ! -d "$OUTPUT_DIR/source-metadata" ]]; then
+        mkdir -m 0755 -- "$OUTPUT_DIR/source-metadata"
+    fi
     for index in "${!PUBLISHED_PATHS[@]}"; do
         relative_path="${PUBLISHED_PATHS[$index]}"
         destination_directory="$OUTPUT_DIR/${relative_path%/*}"
