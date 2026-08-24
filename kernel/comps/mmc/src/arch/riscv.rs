@@ -2,12 +2,15 @@
 
 use core::{hint::spin_loop, ops::Range};
 
-use fdt::node::FdtNode;
+use fdt::{Fdt, node::FdtNode};
 use ostd::{arch::boot::DEVICE_TREE, io::IoMem, mm::io::VmIoOnce};
 
 use crate::{
     card::{Card, HostController, Response},
-    sdhci::{Command, DataDirection, HostError, Register, ResponseType, decode_interrupt_error},
+    sdhci::{
+        Command, DataDirection, HostError, Register, ResponseType, decode_command_failure,
+        decode_data_failure, eic7700_core_clock_config,
+    },
 };
 
 const COMPATIBLE: &str = "eswin,sdhci-sdio";
@@ -15,6 +18,15 @@ const MMIO_START: usize = 0x5046_0000;
 const MMIO_SIZE: usize = 0x1_0000;
 const INTERRUPT: u32 = 81;
 const BUS_WIDTH: usize = 4;
+const CLOCK_FREQUENCY: u32 = 208_000_000;
+const CLOCK_MMIO_START: usize = 0x5182_8000;
+const CLOCK_MMIO_SIZE: usize = 0x8_0000;
+const CLOCK_CORE_OFFSET: usize = 0x164;
+const CLOCK_AHB_OFFSET: usize = 0x148;
+const CLOCK_CONFIG_OFFSET: usize = 0x14c;
+const CLOCK_CORE_ENABLE: u32 = 1 << 16;
+const CLOCK_CORE_DIVISOR_MASK: u32 = 0x0fff << 4;
+const CLOCK_CORE_SELECT_416MHZ: u32 = 1;
 const POLL_BUDGET: usize = 1_000_000;
 
 const BLOCK_COUNT: usize = 0x06;
@@ -41,8 +53,10 @@ const RESET_DATA: u8 = 1 << 2;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PlatformConfig {
     mmio_range: Range<usize>,
+    clock_mmio_range: Range<usize>,
     interrupt: u32,
     bus_width: usize,
+    clock_frequency: u32,
     max_frequency: u32,
 }
 
@@ -53,8 +67,54 @@ struct ConfigFields {
     mmio: Option<(usize, usize)>,
     interrupt: Option<u32>,
     bus_width: Option<usize>,
+    clock_frequency: Option<u32>,
     max_frequency: Option<u32>,
     no_mmc: bool,
+    clock_resource_valid: bool,
+}
+
+fn valid_clock_resource(cells: &[u32], range: Option<(usize, usize)>) -> bool {
+    cells.len() == 4
+        && cells[1..]
+            == [
+                CLOCK_CORE_OFFSET as u32,
+                CLOCK_AHB_OFFSET as u32,
+                CLOCK_CONFIG_OFFSET as u32,
+            ]
+        && range == Some((CLOCK_MMIO_START, CLOCK_MMIO_SIZE))
+}
+
+impl ConfigFields {
+    const fn invalid_field(self) -> Option<&'static str> {
+        if !self.enabled {
+            return Some("status");
+        }
+        if !self.compatible {
+            return Some("compatible");
+        }
+        if !matches!(self.mmio, Some((MMIO_START, MMIO_SIZE))) {
+            return Some("reg");
+        }
+        if !matches!(self.interrupt, Some(INTERRUPT)) {
+            return Some("interrupts");
+        }
+        if !matches!(self.bus_width, Some(BUS_WIDTH)) {
+            return Some("bus-width");
+        }
+        if !matches!(self.clock_frequency, Some(CLOCK_FREQUENCY)) {
+            return Some("clock-frequency");
+        }
+        if !self.no_mmc {
+            return Some("no-mmc");
+        }
+        if !self.clock_resource_valid {
+            return Some("eswin,syscrg_csr");
+        }
+        match self.max_frequency {
+            Some(frequency) if frequency > 0 && frequency <= 208_000_000 => None,
+            _ => Some("max-frequency"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,29 +124,79 @@ pub(super) enum ProbeError {
     Host(HostError),
 }
 
+impl ProbeError {
+    pub(super) const fn stage(self) -> &'static str {
+        match self {
+            Self::InvalidDeviceTree => "device-tree",
+            Self::MmioUnavailable => "mmio-acquire",
+            Self::Host(_) => "host-handoff-or-card",
+        }
+    }
+}
+
 fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
-    if !fields.enabled
-        || !fields.compatible
-        || fields.mmio != Some((MMIO_START, MMIO_SIZE))
-        || fields.interrupt != Some(INTERRUPT)
-        || fields.bus_width != Some(BUS_WIDTH)
-        || !fields.no_mmc
-    {
+    if fields.invalid_field().is_some() {
         return Err(ProbeError::InvalidDeviceTree);
     }
-    let max_frequency = fields
-        .max_frequency
-        .filter(|frequency| *frequency > 0 && *frequency <= 208_000_000)
-        .ok_or(ProbeError::InvalidDeviceTree)?;
+    let max_frequency = fields.max_frequency.unwrap();
     Ok(PlatformConfig {
         mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
+        clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
         interrupt: INTERRUPT,
         bus_width: BUS_WIDTH,
+        clock_frequency: fields.clock_frequency.unwrap(),
         max_frequency,
     })
 }
 
-fn config_from_node(node: FdtNode<'_, '_>) -> Result<PlatformConfig, ProbeError> {
+fn select_config(
+    fields: impl IntoIterator<Item = ConfigFields>,
+) -> Result<Option<PlatformConfig>, ProbeError> {
+    let mut saw_compatible = false;
+    let mut selected = None;
+    for fields in fields {
+        saw_compatible = true;
+        if fields.invalid_field().is_some() {
+            continue;
+        }
+        let config = validate(fields)?;
+        if selected.replace(config).is_some() {
+            return Err(ProbeError::InvalidDeviceTree);
+        }
+    }
+    match (saw_compatible, selected) {
+        (_, Some(config)) => Ok(Some(config)),
+        (true, None) => Err(ProbeError::InvalidDeviceTree),
+        (false, None) => Ok(None),
+    }
+}
+
+fn clock_resource_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
+    let Some(property) = node.property("eswin,syscrg_csr") else {
+        return false;
+    };
+    let (chunks, remainder) = property.value.as_chunks::<4>();
+    if chunks.len() != 4 || !remainder.is_empty() {
+        return false;
+    }
+    let cells = [
+        u32::from_be_bytes(chunks[0]),
+        u32::from_be_bytes(chunks[1]),
+        u32::from_be_bytes(chunks[2]),
+        u32::from_be_bytes(chunks[3]),
+    ];
+    let range = tree.find_phandle(cells[0]).and_then(|node| {
+        let mut regions = node.reg()?;
+        let first = regions.next()?;
+        if regions.next().is_some() {
+            return None;
+        }
+        Some((first.starting_address as usize, first.size?))
+    });
+    valid_clock_resource(&cells, range)
+}
+
+fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
     let enabled = match node.property("status") {
         None => true,
         Some(status) => matches!(status.as_str(), Some("ok" | "okay")),
@@ -105,7 +215,7 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<PlatformConfig, ProbeError>
         .interrupts()
         .and_then(|mut interrupts| interrupts.next())
         .and_then(|value| value.try_into().ok());
-    validate(ConfigFields {
+    ConfigFields {
         enabled,
         compatible,
         mmio,
@@ -113,30 +223,33 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<PlatformConfig, ProbeError>
         bus_width: node
             .property("bus-width")
             .and_then(|value| value.as_usize()),
+        clock_frequency: node
+            .property("clock-frequency")
+            .and_then(|value| value.as_usize())
+            .and_then(|value| value.try_into().ok()),
         max_frequency: node
             .property("max-frequency")
             .and_then(|value| value.as_usize())
             .and_then(|value| value.try_into().ok()),
         no_mmc: node.property("no-mmc").is_some(),
-    })
+        clock_resource_valid: clock_resource_from_node(tree, node),
+    }
 }
 
 pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
     let tree = DEVICE_TREE.get().unwrap();
-    let mut nodes = tree.all_nodes().filter(|node| {
+    let nodes = tree.all_nodes().filter(|node| {
         node.compatible()
             .is_some_and(|values| values.all().any(|value| value == COMPATIBLE))
     });
-    let Some(node) = nodes.next() else {
+    let Some(config) = select_config(nodes.map(|node| fields_from_node(tree, node)))? else {
         return Ok(None);
     };
-    if nodes.next().is_some() {
-        return Err(ProbeError::InvalidDeviceTree);
-    }
-    let config = config_from_node(node)?;
     let mmio =
         IoMem::acquire(config.mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
-    let mut host = MmioHost { mmio };
+    let clock_mmio =
+        IoMem::acquire(config.clock_mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
+    let mut host = MmioHost { mmio, clock_mmio };
     host.validate_handoff().map_err(ProbeError::Host)?;
     ostd::info!(
         "[mmc] controller {:#x} irq={} read-only",
@@ -144,10 +257,15 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         config.interrupt
     );
     let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
+    let mut sector0 = [0u8; 512];
+    card.read_sector(&mut host, 0, &mut sector0)
+        .map_err(ProbeError::Host)?;
     ostd::info!(
-        "[mmc] SDHC rca={} sectors={}",
+        "[mmc] SDHC rca={} sectors={} sector0={:02x}{:02x}",
         card.rca(),
-        card.nr_sectors()
+        card.nr_sectors(),
+        sector0[510],
+        sector0[511]
     );
     Ok(Some((host, card)))
 }
@@ -155,6 +273,7 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
 /// Safe MMIO-backed SDHCI polling host.
 pub(super) struct MmioHost {
     mmio: IoMem,
+    clock_mmio: IoMem,
 }
 
 impl MmioHost {
@@ -189,10 +308,53 @@ impl MmioHost {
             let status = self.read32(Register::InterruptStatus.offset())?;
             if status & INTERRUPT_ERROR != 0 {
                 self.write32(Register::InterruptStatus.offset(), status)?;
-                return Err(decode_interrupt_error(status).unwrap_or(HostError::Unsupported));
+                let failure =
+                    decode_data_failure(wanted, status).unwrap_or(crate::sdhci::DataFailure {
+                        wanted,
+                        status,
+                        error: HostError::Unsupported,
+                    });
+                ostd::error!(
+                    "[mmc] data wait {:#x} failed: status={:#x} error={:?}",
+                    failure.wanted,
+                    failure.status,
+                    failure.error
+                );
+                return Err(failure.error);
             }
             if status & wanted != 0 {
                 self.write32(Register::InterruptStatus.offset(), wanted)?;
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(HostError::Timeout)
+    }
+
+    fn wait_command_complete(&self, index: u8) -> Result<(), HostError> {
+        for _ in 0..POLL_BUDGET {
+            let status = self.read32(Register::InterruptStatus.offset())?;
+            if status & INTERRUPT_ERROR != 0 {
+                self.write32(Register::InterruptStatus.offset(), status)?;
+                let failure =
+                    decode_command_failure(index, status).unwrap_or(crate::sdhci::CommandFailure {
+                        index,
+                        status,
+                        error: HostError::Unsupported,
+                    });
+                ostd::error!(
+                    "[mmc] CMD{} failed: status={:#x} error={:?}",
+                    failure.index,
+                    failure.status,
+                    failure.error
+                );
+                return Err(failure.error);
+            }
+            if status & INTERRUPT_COMMAND_COMPLETE != 0 {
+                self.write32(
+                    Register::InterruptStatus.offset(),
+                    INTERRUPT_COMMAND_COMPLETE,
+                )?;
                 return Ok(());
             }
             spin_loop();
@@ -236,6 +398,18 @@ impl MmioHost {
             .map_err(|_| HostError::Unsupported)
     }
 
+    fn read_clock32(&self, offset: usize) -> Result<u32, HostError> {
+        self.clock_mmio
+            .read_once(offset)
+            .map_err(|_| HostError::Unsupported)
+    }
+
+    fn write_clock32(&self, offset: usize, value: u32) -> Result<(), HostError> {
+        self.clock_mmio
+            .write_once(offset, &value)
+            .map_err(|_| HostError::Unsupported)
+    }
+
     fn long_response(&self) -> Result<[u32; 4], HostError> {
         let response = |offset| -> Result<u32, HostError> {
             Ok((self.read32(offset)? << 8) | self.read8(offset - 1)? as u32)
@@ -261,14 +435,48 @@ impl HostController for MmioHost {
         Err(HostError::Timeout)
     }
 
-    fn set_clock(&mut self, _hz: u32) -> Result<(), HostError> {
-        let clock = self.read16(Register::ClockControl.offset())?;
-        if clock & (CLOCK_INTERNAL_STABLE | CLOCK_CARD_ENABLE)
-            != CLOCK_INTERNAL_STABLE | CLOCK_CARD_ENABLE
-        {
-            return Err(HostError::Unsupported);
+    fn set_clock(&mut self, hz: u32) -> Result<(), HostError> {
+        let config = eic7700_core_clock_config(hz)?;
+        let host_clock = self.read16(Register::ClockControl.offset())?;
+        self.write16(
+            Register::ClockControl.offset(),
+            host_clock & !CLOCK_CARD_ENABLE,
+        )?;
+
+        let old_core = self.read_clock32(CLOCK_CORE_OFFSET)?;
+        self.write_clock32(CLOCK_CORE_OFFSET, old_core & !CLOCK_CORE_ENABLE)?;
+        for _ in 0..POLL_BUDGET {
+            spin_loop();
         }
-        Ok(())
+        let mut new_core = old_core & !(CLOCK_CORE_DIVISOR_MASK | CLOCK_CORE_SELECT_416MHZ);
+        new_core |= (config.divisor as u32) << 4;
+        if config.select_416mhz {
+            new_core |= CLOCK_CORE_SELECT_416MHZ;
+        }
+        self.write_clock32(CLOCK_CORE_OFFSET, new_core)?;
+        for _ in 0..POLL_BUDGET / 10 {
+            spin_loop();
+        }
+        self.write_clock32(CLOCK_CORE_OFFSET, new_core | CLOCK_CORE_ENABLE)?;
+        for _ in 0..POLL_BUDGET {
+            spin_loop();
+        }
+
+        self.write16(
+            Register::ClockControl.offset(),
+            (host_clock & !CLOCK_CARD_ENABLE) | CLOCK_INTERNAL_ENABLE,
+        )?;
+        for _ in 0..POLL_BUDGET {
+            if self.read16(Register::ClockControl.offset())? & CLOCK_INTERNAL_STABLE != 0 {
+                self.write16(
+                    Register::ClockControl.offset(),
+                    host_clock | CLOCK_INTERNAL_ENABLE | CLOCK_CARD_ENABLE,
+                )?;
+                return Ok(());
+            }
+            spin_loop();
+        }
+        Err(HostError::Timeout)
     }
 
     fn command(&mut self, command: Command) -> Result<Response, HostError> {
@@ -289,11 +497,11 @@ impl HostController for MmioHost {
         }
         self.write32(Register::Argument.offset(), command.argument)?;
         self.write16(Register::Command.offset(), command.command_bits())?;
-        self.wait_interrupt(INTERRUPT_COMMAND_COMPLETE)?;
+        self.wait_command_complete(command.index)?;
         match command.response {
             ResponseType::None => Ok(Response::None),
             ResponseType::Long => Ok(Response::Long(self.long_response()?)),
-            ResponseType::Short | ResponseType::ShortBusy => {
+            ResponseType::Short | ResponseType::ShortNoChecks | ResponseType::ShortBusy => {
                 Ok(Response::Short(self.read32(Register::Response0.offset())?))
             }
         }
@@ -334,8 +542,10 @@ mod tests {
             mmio: Some((MMIO_START, MMIO_SIZE)),
             interrupt: Some(INTERRUPT),
             bus_width: Some(BUS_WIDTH),
+            clock_frequency: Some(208_000_000),
             max_frequency: Some(208_000_000),
             no_mmc: true,
+            clock_resource_valid: true,
         }
     }
 
@@ -345,8 +555,10 @@ mod tests {
             validate(valid_fields()).unwrap(),
             PlatformConfig {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
+                clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
+                clock_frequency: 208_000_000,
                 max_frequency: 208_000_000,
             }
         );
@@ -369,5 +581,73 @@ mod tests {
             mutate(&mut fields);
             assert_eq!(validate(fields), Err(ProbeError::InvalidDeviceTree));
         }
+    }
+
+    #[ktest]
+    fn probe_errors_have_stable_diagnostic_stages() {
+        assert_eq!(ProbeError::InvalidDeviceTree.stage(), "device-tree");
+        assert_eq!(ProbeError::MmioUnavailable.stage(), "mmio-acquire");
+        assert_eq!(
+            ProbeError::Host(HostError::Timeout).stage(),
+            "host-handoff-or-card"
+        );
+    }
+
+    #[ktest]
+    fn identifies_the_first_rejected_dtb_field() {
+        assert_eq!(valid_fields().invalid_field(), None);
+
+        let mut fields = valid_fields();
+        fields.mmio = Some((MMIO_START, MMIO_SIZE / 2));
+        assert_eq!(fields.invalid_field(), Some("reg"));
+
+        let mut fields = valid_fields();
+        fields.interrupt = None;
+        assert_eq!(fields.invalid_field(), Some("interrupts"));
+
+        let mut fields = valid_fields();
+        fields.clock_frequency = None;
+        assert_eq!(fields.invalid_field(), Some("clock-frequency"));
+
+        let mut fields = valid_fields();
+        fields.max_frequency = None;
+        assert_eq!(fields.invalid_field(), Some("max-frequency"));
+    }
+
+    #[ktest]
+    fn selects_one_fully_valid_node_among_compatible_controllers() {
+        let mut other_sdio = valid_fields();
+        other_sdio.mmio = Some((0x5047_0000, MMIO_SIZE));
+        assert_eq!(
+            select_config([other_sdio, valid_fields()]),
+            Ok(Some(PlatformConfig {
+                mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
+                clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
+                interrupt: INTERRUPT,
+                bus_width: BUS_WIDTH,
+                clock_frequency: 208_000_000,
+                max_frequency: 208_000_000,
+            }))
+        );
+        assert_eq!(
+            select_config([valid_fields(), valid_fields()]),
+            Err(ProbeError::InvalidDeviceTree)
+        );
+    }
+
+    #[ktest]
+    fn accepts_only_the_megrez_sdhci_core_clock_resource() {
+        assert!(valid_clock_resource(
+            &[0x12, 0x164, 0x148, 0x14c],
+            Some((0x5182_8000, 0x8_0000))
+        ));
+        assert!(!valid_clock_resource(
+            &[0x12, 0x165, 0x148, 0x14c],
+            Some((0x5182_8000, 0x8_0000))
+        ));
+        assert!(!valid_clock_resource(
+            &[0x12, 0x164, 0x148, 0x14c],
+            Some((0x5181_0000, 0x8_0000))
+        ));
     }
 }
