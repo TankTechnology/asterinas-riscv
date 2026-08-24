@@ -307,6 +307,12 @@ def validate_frozen_root(
             "downloaded package identities are missing explicit install packages: "
             f"{sorted(missing_install_packages)}"
         )
+    downloaded_rows = {
+        (name, architecture, version)
+        for name, architecture, version, _ in downloaded_packages
+    }
+    if downloaded_rows != locked_rows:
+        raise ContractError("downloaded package set does not equal packages.lock set")
 
     gate_versions = dict(manifest.gate_packages)
     for package_name in GATE_IDENTITY_PACKAGES:
