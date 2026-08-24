@@ -92,7 +92,7 @@ git merge-base HEAD "$INTEGRATION_MAIN"
 git rev-list --left-right --count HEAD..."$INTEGRATION_MAIN"
 ```
 
-Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 46 topic-side commits after the merge-gate corrections and 315 main-side commits.
+Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 47 topic-side commits after the merge-gate corrections and 315 main-side commits.
 
 ### Task 3: Start the merge and confirm its conflict contract
 
@@ -226,12 +226,36 @@ Expected: 49 USB HID tests, three board-session tests, and 229 U-Boot contract t
 
 ```bash
 cargo metadata --no-deps --format-version 1 > /tmp/riscv-usb-main-convergence-metadata.json
-cargo fmt --all -- --check
+if cargo fmt --all -- --check > /tmp/riscv-usb-main-convergence-fmt.log 2>&1; then
+  exit 1
+fi
+python3 - <<'PY'
+from pathlib import Path
+import re
+import subprocess
+
+integration_main = "8cd69a7d521cfa05adb52c05979cceaa58b29ab8"
+root = Path.cwd().resolve()
+output = Path("/tmp/riscv-usb-main-convergence-fmt.log").read_text()
+fmt_paths = {
+    str(Path(match).resolve().relative_to(root))
+    for match in re.findall(r"^Diff in (.+?):[0-9]+:$", output, re.MULTILINE)
+}
+assert len(fmt_paths) == 31, sorted(fmt_paths)
+for path in sorted(fmt_paths):
+    subprocess.run(
+        ["git", "diff", "--quiet", integration_main, "--", path],
+        check=True,
+    )
+PY
 git diff --cached "$INTEGRATION_MAIN" --check
 python3 -c 'import json; d=json.load(open("/tmp/riscv-usb-main-convergence-metadata.json")); assert sum(p["name"] == "aster-usb" for p in d["packages"]) == 1'
 ```
 
-Expected: all commands exit zero and the workspace has exactly one `aster-usb` package.
+Expected: metadata and scoped whitespace checks pass; the workspace has exactly
+one `aster-usb` package; the formatter reports exactly 31 paths and every one
+is byte-identical to the pinned main. Any topic-preserved or merge-resolution
+format drift fails the per-path `git diff --quiet` check.
 
 ### Task 6: Commit and prove graph convergence
 
