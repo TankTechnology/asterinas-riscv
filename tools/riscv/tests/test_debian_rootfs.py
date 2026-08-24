@@ -169,6 +169,31 @@ def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Pat
     return bin_directory
 
 
+def _make_fake_root_stat(directory: Path) -> Path:
+    bin_directory = directory / "fake-stat-bin"
+    bin_directory.mkdir()
+    stat = bin_directory / "stat"
+    stat.write_text(
+        """#!/bin/sh
+if [ "$1" = "-c" ] && [ "$2" = "%u %a" ]; then
+    shift 2
+    [ "$1" != "--" ] || shift
+    owner=0
+    case "$1" in
+        *nonroot*) owner=1000 ;;
+    esac
+    mode=$(/usr/bin/stat -c %a -- "$1") || exit
+    printf '%s %s\n' "$owner" "$mode"
+    exit 0
+fi
+exec /usr/bin/stat "$@"
+""",
+        encoding="utf-8",
+    )
+    stat.chmod(0o755)
+    return bin_directory
+
+
 def _package_checksums_text() -> str:
     rows = [
         (*row, hashlib.sha256(row[0].encode()).hexdigest())
@@ -380,6 +405,80 @@ exit 64
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("signed release changed during build", result.stderr)
+
+    def test_accepts_safe_packaged_keyring_paths(self) -> None:
+        keyring_directory = self.directory / "keyrings"
+        keyring_directory.mkdir()
+        regular_keyring = keyring_directory / "archive.pgp"
+        regular_keyring.write_bytes(b"keyring")
+        regular_keyring.chmod(0o644)
+        packaged_link = keyring_directory / "archive.gpg"
+        packaged_link.symlink_to(regular_keyring.name)
+        fake_bin = _make_fake_root_stat(self.directory)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+
+        for keyring in (regular_keyring, packaged_link):
+            with self.subTest(keyring=keyring):
+                result = _run_builder_function(
+                    "require_safe_keyring_path",
+                    str(keyring),
+                    environment=environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_unsafe_keyring_paths(self) -> None:
+        keyring_directory = self.directory / "unsafe-keyrings"
+        keyring_directory.mkdir()
+
+        safe_target = keyring_directory / "safe-target.pgp"
+        safe_target.write_bytes(b"keyring")
+        safe_target.chmod(0o644)
+        nested_directory = keyring_directory / "nested"
+        nested_directory.mkdir()
+        nested_target = nested_directory / "target.pgp"
+        nested_target.write_bytes(b"keyring")
+        writable_target = keyring_directory / "writable.pgp"
+        writable_target.write_bytes(b"keyring")
+        writable_target.chmod(0o664)
+        nonroot_target = keyring_directory / "nonroot.pgp"
+        nonroot_target.write_bytes(b"keyring")
+        directory_target = keyring_directory / "directory-target"
+        directory_target.mkdir()
+        second_link = keyring_directory / "second-link"
+        second_link.symlink_to(safe_target.name)
+        control_target = keyring_directory / "control\nname"
+        control_target.write_bytes(b"keyring")
+
+        unsafe_paths = []
+        for name, target in (
+            ("absolute", str(safe_target)),
+            ("slash", "nested/target.pgp"),
+            ("dotdot", "safe..target.pgp"),
+            ("missing-link", "missing-target.pgp"),
+            ("directory", directory_target.name),
+            ("second-symlink", second_link.name),
+            ("writable", writable_target.name),
+            ("nonroot", nonroot_target.name),
+            ("control", control_target.name),
+        ):
+            link = keyring_directory / name
+            link.symlink_to(target)
+            unsafe_paths.append(link)
+        unsafe_paths.append(keyring_directory / "missing-regular")
+
+        fake_bin = _make_fake_root_stat(self.directory)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        for keyring in unsafe_paths:
+            with self.subTest(keyring=keyring):
+                result = _run_builder_function(
+                    "require_safe_keyring_path",
+                    str(keyring),
+                    environment=environment,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsafe Debian archive keyring", result.stderr)
 
     def test_command_failure_preserves_every_published_artifact(self) -> None:
         output_directory = self.directory / "output with spaces"
