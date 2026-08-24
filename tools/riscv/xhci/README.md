@@ -1,0 +1,125 @@
+# RISC-V PCI xHCI keyboard gate
+
+This gate proves one narrow input path on QEMU `virt`:
+
+```text
+PCI qemu-xhci -> DT-routed INTx -> CrabUSB -> USB HID boot keyboard
+    -> Asterinas input core -> evdev -> guest /init
+```
+
+The accepted configuration is RISC-V Sv39 with `smp=4`, one Red Hat
+`1b36:000d` PCI xHCI controller, and one QEMU `0627:0001` USB keyboard.
+The QEMU device has MSI and MSI-X disabled explicitly. The gate does not allow a
+VirtIO or i8042 keyboard fallback and starts QEMU with `-nic none`.
+
+## Prerequisites
+
+Run the commands from the repository root in the Asterinas development
+container. In addition to the normal repository toolchain, the guest builder
+needs `cpio` and the RISC-V libc and Linux UAPI headers:
+
+```bash
+apt-get install -y --no-install-recommends \
+  libc6-dev-riscv64-cross linux-libc-dev-riscv64-cross cpio
+```
+
+The validated run used
+`asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached` and QEMU 10.2.1.
+The standard `asterinas/asterinas:0.18.0-20260702` image is also suitable after
+installing the RISC-V cross compiler, `dtc`, and the U-Boot build dependencies
+listed in the top-level RISC-V guide.
+
+## Unit gate
+
+Run the host, builder, guest-state-machine, lifecycle, and orchestration tests:
+
+```bash
+make test_riscv_xhci_input_unit
+```
+
+The builder creates a deterministic raw `newc` archive containing only `.` and
+an executable static RISC-V `/init`. The guest accepts exactly one
+`BUS_USB` keyboard named `usb_boot_keyboard`. It waits for delayed device
+registration, then requires this exact event sequence:
+
+1. `KEY_A` press and `SYN_REPORT`;
+2. `KEY_A` release and `SYN_REPORT`;
+3. `KEY_1` press and `SYN_REPORT`;
+4. `KEY_1` release and `SYN_REPORT`.
+
+## Build and prepare
+
+Build the gate initramfs and an Sv39 kernel. The Sv39 feature is mandatory:
+QEMU is started with Sv48 disabled, so a default Sv48 kernel is not a valid
+input to this gate.
+
+```bash
+mkdir -p target/riscv-xhci-input
+tools/riscv/xhci/build_input_gate.sh \
+  target/riscv-xhci-input/initramfs.cpio
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+```
+
+Prepare a private four-hart U-Boot disk. This path is intentionally separate
+from `target/qemu-uboot/current` and other desktop/LTP artifacts.
+
+```bash
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/riscv-xhci-input/initramfs.cpio" \
+QEMU_UBOOT_PROFILE=generic-sv39-ltp-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/xhci-input" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+  tools/riscv/prepare_qemu_uboot_booti.sh prepare
+```
+
+The host gate verifies that the prepared DTB has exactly four enabled CPU
+nodes and that the disk payload matches `artifacts.json` before QEMU starts.
+
+## Run
+
+```bash
+timeout 180s python3 tools/riscv/xhci/input_gate.py \
+  --uboot target/qemu-uboot/cache/u-boot-build/u-boot \
+  --boot-disk target/qemu-uboot/xhci-input/boot.ext4 \
+  --manifest target/qemu-uboot/xhci-input/artifacts.json \
+  --serial-log target/riscv-xhci-input/serial.log \
+  --result target/riscv-xhci-input/result.json \
+  --smp 4
+```
+
+Success requires all of the following current-run evidence, in order:
+
+- PCI `0000:00:01.0 1b36:000d`, DT interrupt parent 9, interrupt 33;
+- USB `0627:0001`, bus `usb`, name `usb_boot_keyboard`;
+- guest READY, the eight exact evdev records, then PASS;
+- no panic marker, no alternative keyboard device, and complete process-group
+  cleanup.
+
+The gate snapshots all inputs without following symlinks, bounds serial and HMP
+operations, and atomically replaces stale evidence. Treat `result.json` as the
+machine-readable verdict; a boot log alone is insufficient.
+
+## Verified M1 evidence
+
+The 2026-08-24 QEMU 10.2.1 run completed with `passed: true`, `smp: 4`, and
+`cleanup: complete`. Its hashes were:
+
+| Item | SHA-256 |
+| --- | --- |
+| Kernel Image | `ca43d09445f7a9e717661742454ac4169eaeada3569ab091e9f3a50c17df31b4` |
+| DTB | `dbf0dcb409786d3ffc626ac9aaef6f280a8bfa4fec4b92a021bb473ce1bd7074` |
+| Input initramfs | `9fcc82709ac613e6adc41d31c9c9b2484d48837b588b5dbbee25a6523a519058` |
+| Serial log | `8316587e32b44af93c9378644086adccaac969f5c6a421949e5a31feba03f2cc` |
+| Result JSON | `1699de4ea1859e9089460e8ddee192ed590baf13beb4ed352fc7b74a80d1f209` |
+
+The ignored evidence files remain under `target/riscv-xhci-input/` in the
+worktree that performed the run.
+
+## Scope boundary
+
+This M1 proves cold-boot enumeration and deterministic key delivery for one
+QEMU PCI xHCI controller and one HID boot keyboard. It does **not** prove USB
+hotplug, hubs, multiple keyboards, HID report protocol, key repeat, keyboard
+LEDs, TTY/Xorg integration, physical Megrez xHCI, MSI/MSI-X, or arbitrary xHCI
+hardware. Physical-board work must separately validate clocks, resets, PHY,
+cache coherency, DMA windows, and the board's real interrupt topology.
