@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import argparse
+import datetime
 import hashlib
 import hmac
 import json
 import os
 import re
+import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -344,6 +348,100 @@ def validate_frozen_root(
     return manifest
 
 
+def write_manifest(
+    *,
+    output: Path,
+    image: Path,
+    packages_lock: Path,
+    inrelease: Path,
+    package_checksums: Path,
+    mirror_url: str,
+    suite: str,
+    debian_release: str,
+    build_timestamp: str,
+    tool_versions: Sequence[str],
+) -> None:
+    """Validates build inputs and atomically writes a canonical manifest."""
+
+    _require_safe_output_path(output)
+    _require_exact(suite, _SUITE, "suite")
+    _require_https(mirror_url, "mirror_url")
+    if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
+        raise ContractError("debian_release must be a signed Debian 13 point release")
+    _require_build_timestamp(build_timestamp)
+
+    lock_rows = parse_packages_lock(packages_lock)
+    downloaded_packages = _load_package_checksums(package_checksums)
+    parsed_tool_versions = _parse_tool_versions(tool_versions)
+    gate_versions = _gate_versions(lock_rows)
+
+    manifest = {
+        "architecture": _ARCHITECTURE,
+        "build_timestamp": build_timestamp,
+        "debian_release": debian_release,
+        "downloaded_packages": [
+            {
+                "architecture": architecture,
+                "name": name,
+                "sha256": sha256,
+                "version": version,
+            }
+            for name, architecture, version, sha256 in downloaded_packages
+        ],
+        "filesystem": {
+            "block_size_bytes": _FILESYSTEM_BLOCK_SIZE_BYTES,
+            "label": ROOT_LABEL,
+            "size_bytes": _ROOT_IMAGE_SIZE_BYTES,
+            "type": _FILESYSTEM_TYPE,
+            "uuid": ROOT_UUID,
+        },
+        "gate_packages": gate_versions,
+        "mirror_url": mirror_url,
+        "packages_lock_sha256": sha256_file(packages_lock),
+        "root_image_sha256": sha256_file(image),
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "signed_metadata": {
+            "sha256": sha256_file(inrelease),
+            "url": f"{mirror_url.rstrip('/')}/dists/{suite}/InRelease",
+        },
+        "suite": suite,
+        "tool_versions": parsed_tool_versions,
+    }
+    serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    _write_validated_manifest_atomically(
+        output,
+        serialized,
+        image,
+        packages_lock,
+    )
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Runs the explicit manifest-writer command-line interface."""
+
+    raw_arguments = list(sys.argv[1:] if arguments is None else arguments)
+    _reject_duplicate_cli_options(raw_arguments)
+    parser = _argument_parser()
+    namespace = parser.parse_args(raw_arguments)
+
+    try:
+        write_manifest(
+            output=namespace.output,
+            image=namespace.image,
+            packages_lock=namespace.packages_lock,
+            inrelease=namespace.inrelease,
+            package_checksums=namespace.package_checksums,
+            mirror_url=namespace.mirror,
+            suite=namespace.suite,
+            debian_release=namespace.debian_release,
+            build_timestamp=namespace.build_timestamp,
+            tool_versions=namespace.tool_version,
+        )
+    except (ContractError, OSError) as error:
+        parser.error(str(error))
+    return 0
+
+
 def _mapping(value: object, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ContractError(f"{path} must be an object")
@@ -479,3 +577,148 @@ def _require_https(value: str, path: str) -> None:
 def _require_exact(actual: object, expected: object, path: str) -> None:
     if actual != expected:
         raise ContractError(f"unexpected {path}: {actual!r}; expected {expected!r}")
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="contract")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    writer = subparsers.add_parser("write-manifest")
+    writer.add_argument("--output", required=True, type=Path)
+    writer.add_argument("--image", required=True, type=Path)
+    writer.add_argument("--packages-lock", required=True, type=Path)
+    writer.add_argument("--inrelease", required=True, type=Path)
+    writer.add_argument("--package-checksums", required=True, type=Path)
+    writer.add_argument("--mirror", required=True)
+    writer.add_argument("--suite", required=True)
+    writer.add_argument("--debian-release", required=True)
+    writer.add_argument("--build-timestamp", required=True)
+    writer.add_argument("--tool-version", action="append", required=True)
+    return parser
+
+
+def _reject_duplicate_cli_options(arguments: Sequence[str]) -> None:
+    repeatable = {"--tool-version"}
+    seen: set[str] = set()
+    for argument in arguments:
+        option = argument.split("=", maxsplit=1)[0]
+        if not option.startswith("--") or option in repeatable:
+            continue
+        if option in seen:
+            raise ContractError(f"duplicate command-line option: {option}")
+        seen.add(option)
+
+
+def _require_build_timestamp(value: str) -> None:
+    if (
+        re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value)
+        is None
+    ):
+        raise ContractError("build_timestamp must be canonical UTC RFC 3339")
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as error:
+        raise ContractError("build_timestamp must be canonical UTC RFC 3339") from error
+
+
+def _load_package_checksums(path: Path) -> tuple[DownloadedPackageIdentity, ...]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("package-checksums must be UTF-8") from error
+
+    rows: list[DownloadedPackageIdentity] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        fields = line.split("\t")
+        if len(fields) != 4 or any(not field for field in fields):
+            raise ContractError(
+                f"package-checksums line {line_number} must contain four "
+                "non-empty tab-separated fields"
+            )
+        sha256 = _sha256(fields[3], f"package-checksums line {line_number} SHA-256")
+        rows.append((fields[0], fields[1], fields[2], sha256))
+
+    identities = tuple(rows)
+    if not identities:
+        raise ContractError("package-checksums must contain at least one row")
+    if identities != tuple(sorted(identities)) or len(identities) != len(
+        set(identities)
+    ):
+        raise ContractError("package-checksums rows must be sorted and unique")
+    package_identities = tuple(
+        (name, architecture) for name, architecture, _, _ in identities
+    )
+    if len(package_identities) != len(set(package_identities)):
+        raise ContractError("package-checksums package identities must be unique")
+    return identities
+
+
+def _parse_tool_versions(values: Sequence[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for value in values:
+        name, separator, version = value.partition("=")
+        if not separator or not name or not version:
+            raise ContractError("tool versions must use non-empty NAME=VERSION values")
+        if name in versions:
+            raise ContractError(f"duplicate tool version: {name}")
+        versions[name] = version
+    return dict(sorted(versions.items()))
+
+
+def _gate_versions(rows: Sequence[PackageLockRow]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for package_name in GATE_IDENTITY_PACKAGES:
+        matches = [
+            version
+            for name, architecture, version in rows
+            if name == package_name and architecture == _ARCHITECTURE
+        ]
+        if len(matches) != 1:
+            raise ContractError(
+                f"gate package {package_name} must have exactly one {_ARCHITECTURE} lock row"
+            )
+        versions[package_name] = matches[0]
+    return versions
+
+
+def _require_safe_output_path(path: Path) -> None:
+    absolute = path.absolute()
+    for component in (absolute, *absolute.parents):
+        if component.is_symlink():
+            raise ContractError(f"manifest output path contains a symlink: {component}")
+    if path.exists() and not path.is_file():
+        raise ContractError("manifest output target must be a regular file")
+    if not path.parent.is_dir():
+        raise ContractError("manifest output parent must be an existing directory")
+
+
+def _write_validated_manifest_atomically(
+    output: Path,
+    serialized: str,
+    image: Path,
+    packages_lock: Path,
+) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output_file:
+            output_file.write(serialized)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+
+        manifest = load_manifest(temporary_path)
+        validate_frozen_root(image, manifest, packages_lock)
+        os.replace(temporary_path, output)
+        directory_descriptor = os.open(output.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
