@@ -28,6 +28,17 @@ def _parse_fails(args: list[str]) -> None:
         board.parse_args(args)
 
 
+def _make_session() -> board.BoardSession:
+    session = board.BoardSession.__new__(board.BoardSession)
+    session.fd = -1
+    session.confirm = False
+    session.milestones = {}
+    session._milestone_tail = ""
+    session._next_milestone = 0
+    session._log = mock.Mock()
+    return session
+
+
 class MilestoneDetectionTests(unittest.TestCase):
     def test_all_milestones_match_their_markers(self):
         samples = {
@@ -37,6 +48,15 @@ class MilestoneDetectionTests(unittest.TestCase):
         }
         for name, text in samples.items():
             self.assertIn(board.MILESTONES[name], text, name)
+
+        session = _make_session()
+        with self.assertRaisesRegex(RuntimeError, "out of order"):
+            session.note_milestone(
+                "Hello from RISC-V userspace\n"
+                "Presented by the Asterinas developers\n"
+                "Enter riscv_boot\n"
+            )
+        self.assertEqual(session.milestones, {})
 
     def test_unrelated_text_does_not_match(self):
         for marker in board.MILESTONES.values():
@@ -76,12 +96,59 @@ class ArgumentContractTests(unittest.TestCase):
             with self.subTest(spec=spec):
                 _parse_fails(_required_args() + ["--expected-crc32", spec])
 
+        unsafe_values = (
+            ("--booti", "kernel;reset"),
+            ("--dtb", "board\nreset.dtb"),
+            ("--initrd", "initrd && reset"),
+            ("--bootargs", "init=/init; reset"),
+            ("--bootargs", 'init="/init"'),
+            ("--bootargs", "init=/init && reset"),
+            ("--bootargs", "init=/init | reset"),
+            ("--bootargs", "init=/init `reset`"),
+            ("--bootargs", "init=/init\rreset"),
+            ("--bootargs", "init=/init\x01"),
+        )
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        for flag, unsafe_value in unsafe_values:
+            with (
+                self.subTest(flag=flag, value=unsafe_value),
+                mock.patch.object(
+                    board, "open_serial", side_effect=AssertionError("serial opened")
+                ) as open_serial,
+                mock.patch.object(board.BoardSession, "send") as send,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                argv = _required_args() + crc_args
+                if flag in argv:
+                    argv[argv.index(flag) + 1] = unsafe_value
+                else:
+                    argv.extend((flag, unsafe_value))
+                try:
+                    result: int | str = board.main(argv)
+                except SystemExit as error:
+                    result = error.code
+                except AssertionError:
+                    result = "serial opened"
+                self.assertEqual(result, 2)
+                open_serial.assert_not_called()
+                send.assert_not_called()
+
     def test_mock_mode_accepts_a_short_positive_timeout_without_crcs(self):
         args = board.parse_args(
             _required_args() + ["--mock-qemu", "--mock-timeout", "0.05"]
         )
         self.assertEqual(args.mock_timeout, 0.05)
         self.assertIsNone(args.expected_crc32)
+        self.assertEqual(args.bootargs, board.DEFAULT_BOOTARGS)
+
+        help_output = io.StringIO()
+        with contextlib.redirect_stdout(help_output), self.assertRaises(SystemExit):
+            board.parse_args(["--help"])
+        self.assertIn("--expected-crc32", help_output.getvalue())
+        self.assertNotIn("[--expected-crc32", help_output.getvalue())
 
     def test_mock_timeout_must_be_finite_and_positive(self):
         for value in ("0", "-1", "nan", "inf"):
@@ -109,9 +176,12 @@ class MockQemuContractTests(unittest.TestCase):
                     except socket.timeout:
                         return
                     with connection:
-                        for chunk in chunks:
-                            connection.sendall(chunk)
-                            time.sleep(0.005)
+                        try:
+                            for chunk in chunks:
+                                connection.sendall(chunk)
+                                time.sleep(0.005)
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
                         if hold_connection_open:
                             release_connection.wait(timeout=1)
 
@@ -151,6 +221,25 @@ class MockQemuContractTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertLess(elapsed, 0.4)
 
+        invalid_sequences = (
+            [
+                b"Hello from RISC-V userspace\n",
+                b"Presented by the Asterinas developers\n",
+                b"Enter riscv_boot\n",
+            ],
+            [
+                b"Presented by the Asterinas developers\n",
+                b"Enter riscv_boot\n",
+                b"Presented by the Asterinas developers\n",
+                b"Hello from RISC-V userspace\n",
+            ],
+        )
+        for invalid in invalid_sequences:
+            with self.subTest(sequence=invalid):
+                result, elapsed = self._run(invalid, timeout=0.2)
+                self.assertEqual(result, 2)
+                self.assertLess(elapsed, 0.5)
+
     def test_missing_milestone_fails_within_the_requested_timeout(self):
         chunks = [b"Enter riscv_boot\n", b"Presented by the Asterinas developers\n"]
         result, elapsed = self._run(chunks, timeout=0.05, hold_connection_open=True)
@@ -158,15 +247,64 @@ class MockQemuContractTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.04)
         self.assertLess(elapsed, 0.5)
 
+        class ConnectTimeoutSocket:
+            def __init__(self):
+                self.timeout_at_connect: float | None = None
+                self.current_timeout: float | None = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, timeout: float) -> None:
+                self.current_timeout = timeout
+
+            def connect(self, _device: str) -> None:
+                self.timeout_at_connect = self.current_timeout
+                raise socket.timeout("connect timed out")
+
+        timed_out_socket = ConnectTimeoutSocket()
+        with (
+            mock.patch.object(socket, "socket", return_value=timed_out_socket),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            try:
+                result = board.main(
+                    _required_args() + ["--mock-qemu", "--mock-timeout", "0.05"]
+                )
+            except socket.timeout:
+                result = "raised socket.timeout"
+        self.assertEqual(result, 2)
+        self.assertEqual(timed_out_socket.timeout_at_connect, 0.05)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_socket = str(Path(tmp) / "missing.sock")
+            with contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    result = board.main(
+                        [
+                            missing_socket,
+                            "--booti",
+                            "kernel",
+                            "--initrd",
+                            "initrd",
+                            "--dtb",
+                            "board.dtb",
+                            "--mock-qemu",
+                            "--mock-timeout",
+                            "0.05",
+                        ]
+                    )
+                except OSError:
+                    result = "raised OSError"
+        self.assertEqual(result, 2)
+
 
 class SerialContractTests(unittest.TestCase):
     def _session(self) -> board.BoardSession:
-        session = board.BoardSession.__new__(board.BoardSession)
-        session.fd = -1
-        session.confirm = False
-        session.milestones = {}
-        session._milestone_tail = ""
-        return session
+        return _make_session()
 
     def test_wait_for_logs_every_new_chunk_once(self):
         session = self._session()
@@ -223,6 +361,15 @@ class SerialContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "U-Boot error"):
             session.command(command)
 
+        fdt_command = "fdt set /chosen asterinas,usb-host /soc/usb@50480000"
+        session.wait_for = mock.Mock(
+            return_value=(
+                f"{fdt_command}\r\nlibfdt fdt_setprop(): FDT_ERR_NOSPACE\r\n=> "
+            )
+        )
+        with self.assertRaisesRegex(RuntimeError, "FDT error"):
+            session.command(fdt_command)
+
     def test_load_artifact_requires_load_evidence_not_just_echo(self):
         session = self._session()
         load = "ext4load mmc 1:1 0x80200000 /kernel"
@@ -265,6 +412,7 @@ class BootTransactionTests(unittest.TestCase):
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []
         session = mock.Mock()
+        session.start_boot_attempt.side_effect = lambda: events.append(("start",))
         session.load_artifact.side_effect = lambda *args: events.append(("load", *args))
         session.command.side_effect = lambda command, **kwargs: (
             events.append(("command", command, kwargs)) or "boot output"
@@ -304,6 +452,40 @@ class BootTransactionTests(unittest.TestCase):
                 if event[0] == "load"
             )
         )
+        self.assertEqual(events[booti_index - 1], ("start",))
+        session.start_boot_attempt.assert_called_once_with()
+
+        current_boot = "Enter riscv_boot\nPresented by the Asterinas developers\nHello from RISC-V userspace\n"
+        stale_preload = f"{current_boot}{board.PROMPT}"
+        physical_session = mock.Mock()
+        physical_session.wait_for.return_value = stale_preload
+        physical_session.milestones = {}
+        physical_session.log = mock.Mock()
+        physical_session.fd = -1
+
+        def record_current_attempt(text: str) -> None:
+            if text == current_boot:
+                physical_session.milestones.update(
+                    {name: float(index) for index, name in enumerate(board.MILESTONES)}
+                )
+
+        physical_session.note_milestone.side_effect = record_current_attempt
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value=current_boot
+            ),
+            mock.patch.object(board.os, "close"),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                ]
+            )
+        self.assertEqual(result, 0)
+        physical_session.note_milestone.assert_called_once_with(current_boot)
 
 
 if __name__ == "__main__":
