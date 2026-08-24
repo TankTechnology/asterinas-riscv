@@ -627,6 +627,22 @@ static int duplicate_console_fd(int console_fd, int destination_fd)
     do {
         result = dup2(console_fd, destination_fd);
     } while (result < 0 && errno == EINTR);
+    if (result < 0) {
+        return -1;
+    }
+
+    int descriptor_flags;
+    do {
+        descriptor_flags = fcntl(destination_fd, F_GETFD);
+    } while (descriptor_flags < 0 && errno == EINTR);
+    if (descriptor_flags < 0) {
+        return -1;
+    }
+
+    do {
+        result = fcntl(destination_fd, F_SETFD,
+                       descriptor_flags & ~FD_CLOEXEC);
+    } while (result < 0 && errno == EINTR);
     return result;
 }
 
