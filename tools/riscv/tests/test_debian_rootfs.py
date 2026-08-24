@@ -153,8 +153,8 @@ class DebianRootfsContractTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             validated.filesystem.label = "mutable"
 
-    def test_accepts_canonical_debian_13_release_versions(self) -> None:
-        for release in ("13", "13.6", "13.6.1"):
+    def test_accepts_signed_debian_13_point_release_versions(self) -> None:
+        for release in ("13.0", "13.6", "13.10"):
             with self.subTest(release=release):
                 self.payload["debian_release"] = release
                 self.write_manifest()
@@ -211,6 +211,12 @@ class DebianRootfsContractTests(unittest.TestCase):
         self.manifest_path.write_text('{"schema_version":', encoding="utf-8")
 
         with self.assertRaisesRegex(ContractError, "invalid manifest JSON"):
+            load_manifest(self.manifest_path)
+
+    def test_wraps_invalid_manifest_utf8_as_contract_error(self) -> None:
+        self.manifest_path.write_bytes(b'{"suite":"trixie","bad":"\xff"}')
+
+        with self.assertRaisesRegex(ContractError, "manifest must be UTF-8"):
             load_manifest(self.manifest_path)
 
     def test_rejects_booleans_where_integers_are_required(self) -> None:
@@ -327,9 +333,11 @@ class DebianRootfsContractTests(unittest.TestCase):
         for release in (
             "",
             "12",
+            "13",
             "13.",
             "13..6",
             "13.06",
+            "13.6.1",
             "13.6a",
             " 13.6",
             "13.6 ",
