@@ -39,16 +39,26 @@ MILESTONES = {
     "banner": "Presented by the Asterinas developers",
     "userspace": "Hello from RISC-V userspace",
 }
+MILESTONE_SEQUENCE = tuple(MILESTONES)
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
 CRC_RESULT_PATTERN = re.compile(
     r"(?im)^\s*CRC32 for\s+(0x)?([0-9a-f]+)\b[^\r\n]*==>\s*([0-9a-f]{8})\s*$"
 )
 UBOOT_ERROR_PATTERN = re.compile(
-    r"(?im)^\s*(?:\*\*|error\b|failed\b|unknown command\b|bad\b|cannot\b)"
+    r"(?im)^\s*(?:\*\*|error\b|failed\b|command failed\b|"
+    r"unknown command\b|bad\b|cannot\b)"
+)
+FDT_ERROR_PATTERN = re.compile(
+    r"(?i)(?:\blibfdt\b|\bFDT_ERR_[A-Z0-9_]+\b|"
+    r"\bfdt\b[^\r\n]*\b(?:error|failed)\b)"
 )
 ARTIFACT_NAMES = frozenset(("booti", "dtb", "initrd"))
 MILESTONE_TAIL_LENGTH = max(len(marker) for marker in MILESTONES.values()) - 1
+ARTIFACT_NAME_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
+)
+BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = (
     "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
 )
@@ -95,16 +105,31 @@ def read_available(fd: int, timeout: float) -> str:
 
 
 def observe_milestones(
-    seen: set[str] | dict[str, float], tail: str, text: str
-) -> tuple[list[str], str]:
-    """Return newly observed milestone names and the next split-marker tail."""
+    next_index: int, tail: str, text: str
+) -> tuple[list[str], int, str]:
+    """Advance a strict milestone sequence and retain a split-marker tail."""
     window = tail + text
-    found = [
-        name
-        for name, marker in MILESTONES.items()
-        if name not in seen and marker in window
-    ]
-    return found, window[-MILESTONE_TAIL_LENGTH:]
+    found: list[str] = []
+    cursor = 0
+    while next_index < len(MILESTONE_SEQUENCE):
+        occurrences = [
+            (position, name)
+            for name, marker in MILESTONES.items()
+            if (position := window.find(marker, cursor)) >= 0
+        ]
+        if not occurrences:
+            break
+        position, name = min(occurrences)
+        expected = MILESTONE_SEQUENCE[next_index]
+        if name != expected:
+            raise RuntimeError(
+                f"milestone out of order: expected {expected}, observed {name}"
+            )
+        found.append(name)
+        next_index += 1
+        cursor = position + len(MILESTONES[name])
+    tail = window[cursor:][-MILESTONE_TAIL_LENGTH:]
+    return found, next_index, tail
 
 
 class BoardSession:
@@ -114,6 +139,7 @@ class BoardSession:
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
         self._milestone_tail = ""
+        self._next_milestone = 0
 
     def _log(self, text: str) -> None:
         self.log.write(text)
@@ -163,6 +189,8 @@ class BoardSession:
             raise RuntimeError(
                 f"U-Boot error while running {command!r}: {out[-200:]!r}"
             )
+        if command.startswith("fdt ") and FDT_ERROR_PATTERN.search(out):
+            raise RuntimeError(f"FDT error while running {command!r}: {out[-200:]!r}")
         return out
 
     def load_artifact(
@@ -190,12 +218,20 @@ class BoardSession:
         return int(load_result.group(1))
 
     def note_milestone(self, text: str) -> None:
-        found, self._milestone_tail = observe_milestones(
-            self.milestones, self._milestone_tail, text
+        found, next_index, tail = observe_milestones(
+            self._next_milestone, self._milestone_tail, text
         )
+        self._next_milestone = next_index
+        self._milestone_tail = tail
         for name in found:
             self.milestones[name] = time.monotonic()
             self._log(f"\n[MILESTONE] {name}\n")
+
+    def start_boot_attempt(self) -> None:
+        """Discard pre-boot observations and start one ordered boot attempt."""
+        self.milestones.clear()
+        self._milestone_tail = ""
+        self._next_milestone = 0
 
 
 def parse_expected_crc32(spec: str) -> dict[str, str]:
@@ -228,13 +264,37 @@ def positive_finite_seconds(value: str) -> float:
     return seconds
 
 
+def safe_artifact_name(value: str) -> str:
+    if ARTIFACT_NAME_PATTERN.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "artifact names may contain only safe path letters, digits, '/', '.', '_', '+', and '-'"
+        )
+    return value
+
+
+def safe_bootargs(value: str) -> str:
+    if BOOTARGS_PATTERN.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "bootargs contain a control character or U-Boot shell separator"
+        )
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        usage=(
+            "%(prog)s DEVICE --booti FILE --initrd FILE --dtb FILE "
+            "--expected-crc32 booti=8hex,dtb=8hex,initrd=8hex [options]\n"
+            "       %(prog)s DEVICE --booti FILE --initrd FILE --dtb FILE "
+            "--mock-qemu [--mock-timeout SECONDS] [options]"
+        ),
+    )
     p.add_argument("device")
-    p.add_argument("--booti", required=True)
-    p.add_argument("--initrd", required=True)
-    p.add_argument("--dtb", required=True)
-    p.add_argument("--bootargs", default=DEFAULT_BOOTARGS)
+    p.add_argument("--booti", required=True, type=safe_artifact_name)
+    p.add_argument("--initrd", required=True, type=safe_artifact_name)
+    p.add_argument("--dtb", required=True, type=safe_artifact_name)
+    p.add_argument("--bootargs", type=safe_bootargs, default=DEFAULT_BOOTARGS)
     p.add_argument(
         "--expected-crc32",
         type=parse_expected_crc32,
@@ -260,10 +320,16 @@ def run_mock_qemu(device: str, timeout: float) -> int:
     import socket
 
     seen: set[str] = set()
+    next_index = 0
     tail = ""
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.connect(device)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(device)
+        except OSError as error:
+            print(f"mock serial connect failed: {error}", file=sys.stderr)
+            return 2
         while len(seen) != len(MILESTONES):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -273,10 +339,17 @@ def run_mock_qemu(device: str, timeout: float) -> int:
                 data = sock.recv(4096)
             except socket.timeout:
                 continue
+            except OSError as error:
+                print(f"mock serial read failed: {error}", file=sys.stderr)
+                break
             if not data:
                 break
             text = data.decode(errors="replace")
-            found, tail = observe_milestones(seen, tail, text)
+            try:
+                found, next_index, tail = observe_milestones(next_index, tail, text)
+            except RuntimeError as error:
+                print(str(error), file=sys.stderr)
+                return 2
             for name in found:
                 seen.add(name)
                 print(f"[MILESTONE] {name}")
@@ -302,6 +375,7 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     session.command(f'setenv bootargs "{args.bootargs}"')
     session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
     session.command("fdt set /chosen asterinas,usb-host /soc/usb@50480000")
+    session.start_boot_attempt()
     return session.command(
         "booti 0x80200000 0x83000000:${initrd_size} 0xf0000000",
         expect=MILESTONES["kernel_enter"],
@@ -319,7 +393,6 @@ def main(argv: list[str]) -> int:
         boot = session.wait_for(PROMPT, timeout=60)
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
-        session.note_milestone(boot)
 
         session.note_milestone(boot_loaded_artifacts(session, args))
 

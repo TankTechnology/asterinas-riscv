@@ -111,6 +111,26 @@ Notes:
 
 ## Asterinas-specific
 
+### `asterinas.reboot_after`
+
+On RISC-V, opt in to a software recovery deadline.
+After the specified number of seconds,
+the deadline requests an SBI cold reboot.
+
+Example:
+```text
+asterinas.reboot_after=120
+```
+
+Notes:
+- This parameter is supported only on RISC-V.
+  It is disabled when omitted or set to `0`.
+- The value must fit in an unsigned 32-bit integer.
+- Once armed, a fatal kernel panic also requests the recovery restart.
+- This is an emergency debugging mechanism, not a graceful shutdown.
+  It does not sync filesystems, unmount storage,
+  or run userspace shutdown handlers.
+
 ### `i8042.exist`
 
 Override ACPI's indication of whether a PS/2 (i8042) controller exists.
