@@ -155,6 +155,28 @@ def _run_builder_function(
     )
 
 
+def _run_image_creation(
+    work_directory: Path,
+    *,
+    environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; WORK_DIR="$2"; create_and_verify_image',
+            "builder-image-test",
+            str(BUILD_SCRIPT),
+            str(work_directory),
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -479,6 +501,56 @@ exit 64
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("unsafe Debian archive keyring", result.stderr)
+
+    def test_image_bash_smoke_uses_executable_debugfs_dump(self) -> None:
+        work_directory = self.directory / "image-work"
+        (work_directory / "stage").mkdir(parents=True)
+        bin_directory = self.directory / "image-tools"
+        bin_directory.mkdir()
+        fake_tools = {
+            "mke2fs": "#!/bin/sh\nexit 0\n",
+            "dumpe2fs": """#!/bin/sh
+cat <<EOF
+Filesystem volume name:   ASTER_DEBIANROOT
+Filesystem UUID:          7b7ad749-77d0-4e59-89e4-e117244a70aa
+Block size:               4096
+Filesystem features:      ext_attr resize_inode dir_index filetype sparse_super large_file
+EOF
+""",
+            "debugfs": """#!/bin/sh
+case "$2" in
+    "stat /usr/bin/qemu-riscv64-static")
+        printf 'File not found by ext2_lookup\n'
+        ;;
+    "stat "*)
+        printf 'Inode: 12   Type: regular\n'
+        ;;
+    "dump /bin/bash "*)
+        destination=${2#dump /bin/bash }
+        printf 'fake ELF' >"$destination"
+        chmod 0600 "$destination"
+        ;;
+    *) exit 64 ;;
+esac
+""",
+            "qemu-riscv64-static": """#!/bin/sh
+if [ ! -x "$3" ]; then
+    exit 86
+fi
+printf 'QEMU_SMOKE_EXECUTED\n'
+""",
+        }
+        for name, contents in fake_tools.items():
+            path = bin_directory / name
+            path.write_text(contents, encoding="utf-8")
+            path.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{bin_directory}:{environment['PATH']}"
+
+        result = _run_image_creation(work_directory, environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("QEMU_SMOKE_EXECUTED", result.stdout)
 
     def test_command_failure_preserves_every_published_artifact(self) -> None:
         output_directory = self.directory / "output with spaces"
