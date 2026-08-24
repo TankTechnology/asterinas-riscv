@@ -75,10 +75,11 @@ struct drm_virtgpu_getparam {
 };
 
 struct drm_virtgpu_get_caps {
-    uint64_t cap_set_id;
-    uint64_t cap_set_ver;
+    uint32_t cap_set_id;
+    uint32_t cap_set_ver;
     uint64_t addr;
     uint32_t size;
+    uint32_t pad;
 };
 
 struct drm_virtgpu_resource_create {

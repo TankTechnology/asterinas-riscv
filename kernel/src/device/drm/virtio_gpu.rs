@@ -8,6 +8,11 @@
 
 use crate::prelude::*;
 
+use align_ext::AlignExt;
+use core::sync::atomic::AtomicU32;
+
+use super::{DUMB_POOL_SIZE, DumbBuffer, GemObject};
+
 // ---------------------------------------------------------------------------
 // Wire types (matching Linux include/uapi/drm/virtgpu_drm.h)
 // ---------------------------------------------------------------------------
@@ -75,8 +80,8 @@ pub(super) struct DrmVirtgpuResourceInfo {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct DrmVirtgpuGetCaps {
-    pub cap_set_id: u64,
-    pub cap_set_ver: u64,
+    pub cap_set_id: u32,
+    pub cap_set_ver: u32,
     pub addr: u64, // void* — userspace output buffer
     pub size: u32,
     pub pad: u32,
@@ -94,9 +99,9 @@ pub(super) struct DrmVirtgpuContextSetParam {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct DrmVirtgpuContextInit {
-    pub ctx_set_params: u64, // __u64 — pointer to array of DrmVirtgpuContextSetParam
     pub num_params: u32,
     pub pad: u32,
+    pub ctx_set_params: u64, // __u64 — pointer to array of DrmVirtgpuContextSetParam
 }
 
 /// `struct drm_virtgpu_map`.
@@ -233,7 +238,10 @@ pub(super) fn virtgpu_resource_create(
         .next_resource_id
         .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // If a GEM buffer handle is provided, look up the backing memory
+    // If a GEM buffer handle is provided, look up the backing memory.
+    // Otherwise allocate a fresh dumb buffer so the resource has a GEM
+    // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
+    let mut new_gem_handle: Option<u32> = None;
     let backing = if req.bo_handle != 0 {
         let inner = handle.inner.lock();
         let object_id = *inner
@@ -247,7 +255,53 @@ pub(super) fn virtgpu_resource_create(
         let base = handle.gpu_manager.pool_paddr()?;
         Some((object_id, base + obj.buffer.offset, obj.buffer.size as u32))
     } else {
-        None
+        // Allocate a dumb buffer from the shared pool to back this resource.
+        let bpp = 32;
+        let pitch = req.width.saturating_mul(bpp / 8);
+        let size = (pitch as usize).saturating_mul(req.height as usize);
+        handle.gpu_manager.ensure_pool()?;
+
+        let mut offset_guard = handle.gpu_manager.next_offset.lock();
+        let offset = offset_guard.align_up(PAGE_SIZE);
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
+        if end > DUMB_POOL_SIZE {
+            return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
+        }
+        *offset_guard = end.align_up(PAGE_SIZE);
+        drop(offset_guard);
+
+        let object_id = handle
+            .gpu_manager
+            .next_gem_id
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let gem_obj = GemObject {
+            name: AtomicU32::new(0),
+            ref_count: AtomicU32::new(1),
+            buffer: DumbBuffer {
+                offset,
+                size,
+                pitch,
+                width: req.width,
+                height: req.height,
+                bpp,
+            },
+        };
+        handle
+            .gpu_manager
+            .gem_objects
+            .lock()
+            .insert(object_id, Arc::new(gem_obj));
+
+        let mut inner = handle.inner.lock();
+        let gem_handle = inner.next_handle;
+        inner.next_handle += 1;
+        inner.handles.insert(gem_handle, object_id);
+        new_gem_handle = Some(gem_handle);
+
+        let base = handle.gpu_manager.pool_paddr()?;
+        Some((object_id, base + offset, size as u32))
     };
 
     // Create the 3D resource on the virtio-gpu device. The gallium pipe
@@ -298,6 +352,9 @@ pub(super) fn virtgpu_resource_create(
 
     req.res_handle = res_handle;
     req.stride = req.width.saturating_mul(4);
+    if let Some(gh) = new_gem_handle {
+        req.bo_handle = gh;
+    }
     cmd.write(&req)?;
     Ok(0)
 }
@@ -343,12 +400,12 @@ pub(super) fn virtgpu_get_caps(
     let req = cmd.read()?;
 
     // Only virgl and virgl2 capsets are supported
-    if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL as u64
-        && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2 as u64
+    if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL
+        && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2
     {
         return_errno_with_message!(Errno::EINVAL, "unsupported capset id");
     }
-    let cap_set_id = req.cap_set_id as u32;
+    let cap_set_id = req.cap_set_id;
 
     // Query the capset info from the device
     let capset_info = handle
@@ -356,9 +413,17 @@ pub(super) fn virtgpu_get_caps(
         .gpu
         .get_capset_info(cap_set_id)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+    // If the host reports a zero-sized capset, it doesn't actually support
+    // this capset. Return EINVAL so Mesa falls back to the older capset
+    // (VIRGL v1) instead of getting an empty capset blob.
+    if capset_info.capset_max_size == 0 {
+        return_errno_with_message!(Errno::EINVAL, "capset not supported by device");
+    }
     // `cap_set_ver == 0` asks for the newest version the device supports.
+    // This virglrenderer advertises max_version=2 but returns a zeroed v2
+    // capset (only v1 carries real data), so pin to v1.
     let version = if req.cap_set_ver == 0 {
-        capset_info.capset_max_version
+        1
     } else {
         req.cap_set_ver as u32
     };
