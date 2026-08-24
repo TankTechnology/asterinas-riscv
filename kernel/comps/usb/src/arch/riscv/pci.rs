@@ -118,10 +118,10 @@ impl PciDriver for PciXhciDriver {
         let Some(bar0) = device.bar_manager_mut().bar_mut(0) else {
             return Err(Self::reject(device, PciAdapterError::MissingBar));
         };
-        let mmio = match bar0.acquire() {
+        let mmio = match bar0.acquire_exclusive() {
             Ok(BarAccess::Memory(mmio)) => mmio,
             Ok(BarAccess::Io) => return Err(Self::reject(device, PciAdapterError::IoBar)),
-            Err(_) => return Err(Self::reject(device, PciAdapterError::MissingBar)),
+            Err(_) => return Err(Self::reject(device, PciAdapterError::UnsafeResources)),
         };
         let host = PciHostConfig {
             location,

@@ -129,7 +129,10 @@ struct XhciHost {
 
 impl XhciHost {
     fn new(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
-        validate_xhci_mmio(&mmio).map_err(|_| UsbKeyboardError::InvalidMmio)?;
+        if let Err(error) = validate_xhci_mmio(&mmio) {
+            crate::warn!("xHCI MMIO validation failed: {:?}", error);
+            return Err(UsbKeyboardError::InvalidMmio);
+        }
         let kernel_op = new_usb_kernel_op(dma_window);
         // SAFETY: `kernel_op` has a stable heap address and is moved into `XhciHost` without moving
         // its allocation. Field order drops `host` before `kernel_op`, while active failed hosts
@@ -253,7 +256,7 @@ fn validate_xhci_mmio_with(
     let Some(mut offset) = extended_capability_offset.filter(|offset| *offset != 0) else {
         return Ok(());
     };
-    if offset < operational_offset {
+    if offset < XHCI_MIN_CAPLENGTH {
         return Err(XhciMmioError::InvalidExtendedCapability);
     }
 
@@ -721,6 +724,43 @@ mod tests {
         assert_eq!(
             validate_standard_layout(0x500, hccparams1, &[(offset, 1)]),
             Ok(())
+        );
+    }
+
+    #[ktest]
+    fn accepts_qemu_supported_protocols_before_operational_registers() {
+        let qemu_caplength_hciversion = 0x0100_0040;
+        let qemu_hcsparams1 = 0x0800_1040;
+        let qemu_hccparams1 = 0x0008_7001;
+        let supported_protocols = [
+            (0x20, 0x0200_0402),
+            (0x28, 0x0000_0405),
+            (0x30, 0x0300_0002),
+            (0x38, 0x0000_0401),
+        ];
+
+        assert_eq!(
+            validate_layout(
+                0x4000,
+                qemu_caplength_hciversion,
+                qemu_hcsparams1,
+                qemu_hccparams1,
+                0x2000,
+                0x1000,
+                &supported_protocols,
+            ),
+            Ok(())
+        );
+    }
+
+    #[ktest]
+    fn rejects_extended_capability_overlapping_base_capability_registers() {
+        let offset = XHCI_MIN_CAPLENGTH - size_of::<u32>();
+        let hccparams1 = ((offset / size_of::<u32>()) as u32) << 16 | 1;
+
+        assert_eq!(
+            validate_standard_layout(0x500, hccparams1, &[(offset, 1)]),
+            Err(XhciMmioError::InvalidExtendedCapability)
         );
     }
 

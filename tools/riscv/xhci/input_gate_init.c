@@ -33,6 +33,26 @@ enum transition_result {
     TRANSITION_REJECTED,
 };
 
+#if !defined(XHCI_INPUT_GATE_LIFECYCLE_TEST)
+enum keyboard_discovery {
+    KEYBOARD_DISCOVERY_PENDING,
+    KEYBOARD_DISCOVERY_READY,
+    KEYBOARD_DISCOVERY_REJECTED,
+};
+
+static enum keyboard_discovery classify_keyboard_discovery(
+    size_t keyboard_count, size_t matching_count)
+{
+    if (keyboard_count == 0) {
+        return KEYBOARD_DISCOVERY_PENDING;
+    }
+    if (keyboard_count == 1 && matching_count == 1) {
+        return KEYBOARD_DISCOVERY_READY;
+    }
+    return KEYBOARD_DISCOVERY_REJECTED;
+}
+#endif
+
 static enum transition_result input_state_consume(
     struct input_state *state, const struct input_event *event)
 {
@@ -169,6 +189,10 @@ static bool run_self_test(const char *name)
     if (strcmp(name, "virtio-keyboard") == 0) {
         return !has_one_exact_usb_keyboard(&virtio, 1);
     }
+    if (strcmp(name, "delayed-keyboard") == 0) {
+        return classify_keyboard_discovery(0, 0) == KEYBOARD_DISCOVERY_PENDING &&
+               classify_keyboard_discovery(1, 1) == KEYBOARD_DISCOVERY_READY;
+    }
     if (strcmp(name, "missing-release") == 0) {
         return incomplete_sequence_is_rejected();
     }
@@ -245,6 +269,7 @@ enum {
     INPUT_EVENT_NODE_COUNT = 32,
     INPUT_NODE_PATH_CAPACITY = 32,
     INPUT_WAIT_TIMEOUT_SECONDS = 30,
+    KEYBOARD_DISCOVERY_RETRY_MILLISECONDS = 50,
     MILLISECONDS_PER_SECOND = 1000,
     NANOSECONDS_PER_MILLISECOND = 1000000,
 };
@@ -288,7 +313,9 @@ static bool looks_like_keyboard(const unsigned char *bitmap)
            key_is_advertised(bitmap, KEY_ENTER);
 }
 
-static int discover_keyboard(char *selected_path, size_t path_size)
+static enum keyboard_discovery discover_keyboard(char *selected_path,
+                                                   size_t path_size,
+                                                   int *selected_fd_out)
 {
     int selected_fd = -1;
     size_t keyboard_count = 0;
@@ -330,13 +357,16 @@ static int discover_keyboard(char *selected_path, size_t path_size)
         selected_fd = fd;
     }
 
-    if (keyboard_count != 1 || matching_count != 1 || selected_fd < 0) {
+    const enum keyboard_discovery result =
+        classify_keyboard_discovery(keyboard_count, matching_count);
+    if (result != KEYBOARD_DISCOVERY_READY || selected_fd < 0) {
         if (selected_fd >= 0) {
             close(selected_fd);
         }
-        return -1;
+        return result;
     }
-    return selected_fd;
+    *selected_fd_out = selected_fd;
+    return KEYBOARD_DISCOVERY_READY;
 }
 
 static int remaining_timeout_ms(const struct timespec *deadline, int *timeout_ms)
@@ -363,18 +393,48 @@ static int remaining_timeout_ms(const struct timespec *deadline, int *timeout_ms
     return 0;
 }
 
-static int wait_for_events(int fd)
+static int wait_for_keyboard(const struct timespec *deadline, char *selected_path,
+                             size_t path_size)
+{
+    for (;;) {
+        int selected_fd = -1;
+        const enum keyboard_discovery discovery =
+            discover_keyboard(selected_path, path_size, &selected_fd);
+        if (discovery == KEYBOARD_DISCOVERY_READY) {
+            return selected_fd;
+        }
+        if (discovery == KEYBOARD_DISCOVERY_REJECTED) {
+            fail("usb-keyboard-selection");
+            return -1;
+        }
+
+        int timeout_ms;
+        if (remaining_timeout_ms(deadline, &timeout_ms) < 0) {
+            fail("clock-gettime");
+            return -1;
+        }
+        if (timeout_ms == 0) {
+            fail("usb-keyboard-timeout");
+            return -1;
+        }
+        if (timeout_ms > KEYBOARD_DISCOVERY_RETRY_MILLISECONDS) {
+            timeout_ms = KEYBOARD_DISCOVERY_RETRY_MILLISECONDS;
+        }
+        const int poll_result = poll(NULL, 0, timeout_ms);
+        if (poll_result < 0 && errno != EINTR) {
+            fail("keyboard-discovery-poll-error");
+            return -1;
+        }
+    }
+}
+
+static int wait_for_events(int fd, const struct timespec *deadline)
 {
     struct input_state state = {0};
-    struct timespec deadline;
-    if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0) {
-        return fail("clock-gettime");
-    }
-    deadline.tv_sec += INPUT_WAIT_TIMEOUT_SECONDS;
 
     for (;;) {
         int timeout_ms;
-        if (remaining_timeout_ms(&deadline, &timeout_ms) < 0) {
+        if (remaining_timeout_ms(deadline, &timeout_ms) < 0) {
             return fail("clock-gettime");
         }
         if (timeout_ms == 0) {
@@ -444,15 +504,20 @@ int main(void)
         errno != ENODEV) {
         return fail("mount-devtmpfs");
     }
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0) {
+        return fail("clock-gettime");
+    }
+    deadline.tv_sec += INPUT_WAIT_TIMEOUT_SECONDS;
     char selected_path[INPUT_NODE_PATH_CAPACITY] = {0};
-    const int fd = discover_keyboard(selected_path, sizeof(selected_path));
+    const int fd = wait_for_keyboard(&deadline, selected_path, sizeof(selected_path));
     if (fd < 0) {
-        return fail("usb-keyboard-selection");
+        return 1;
     }
     printf("XHCI_INPUT_READY path=%s bustype=%u name=usb_boot_keyboard\n", selected_path,
            BUS_USB);
     fflush(stdout);
-    const int result = wait_for_events(fd);
+    const int result = wait_for_events(fd, &deadline);
     close(fd);
     return result;
 }

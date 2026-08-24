@@ -400,7 +400,7 @@ byte-identical.
 Define injected dependencies for artifact staging, launch, serial protocol, HMP, and
 process-group cleanup. Tests must assert:
 
-- argv contains `-smp 4`, `-device qemu-xhci,id=xhci`, and
+- argv contains `-smp 4`, `-device qemu-xhci,id=xhci,msi=off,msix=off`, and
   `-device usb-kbd,id=usb-kbd,bus=xhci.0` in that order;
 - argv contains no `virtio-keyboard`, `i8042`, user networking, or extra USB device;
 - the HMP socket is mode-0700-directory-contained, bounded, and receives `sendkey a`
