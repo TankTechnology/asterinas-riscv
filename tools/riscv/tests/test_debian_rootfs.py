@@ -198,6 +198,32 @@ def _run_publish_artifacts(
     )
 
 
+def _run_prepare_private_workspace(
+    output_directory: Path,
+    cache_directory: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            """source "$1"
+OUTPUT_DIR="$2"
+CACHE_DIR="$3"
+prepare_private_workspace
+stat -c 'PRIVATE_MODE=%a' "$WORK_DIR"
+""",
+            "builder-workspace-test",
+            str(BUILD_SCRIPT),
+            str(output_directory),
+            str(cache_directory),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -601,6 +627,35 @@ printf 'QEMU_SMOKE_EXECUTED\n'
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(existing_output.stat().st_mode & 0o777, 0o700)
         self.assertEqual(existing_metadata.stat().st_mode & 0o777, 0o700)
+
+    def test_workspace_permissions_separate_public_and_private_paths(self) -> None:
+        public_root = self.directory / "new-public"
+        output_directory = public_root / "nested" / "rootfs"
+        cache_root = self.directory / "new-cache"
+        cache_directory = cache_root / "nested"
+
+        result = _run_prepare_private_workspace(output_directory, cache_directory)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PRIVATE_MODE=700", result.stdout)
+        self.assertEqual(public_root.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((public_root / "nested").stat().st_mode & 0o777, 0o755)
+        self.assertEqual(cache_root.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(cache_directory.stat().st_mode & 0o777, 0o700)
+
+        existing_public_root = self.directory / "existing-public"
+        existing_public_root.mkdir()
+        existing_public_root.chmod(0o700)
+        result = _run_prepare_private_workspace(
+            existing_public_root / "nested" / "rootfs",
+            self.directory / "second-cache",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(existing_public_root.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(
+            (existing_public_root / "nested").stat().st_mode & 0o777,
+            0o755,
+        )
 
     def test_command_failure_preserves_every_published_artifact(self) -> None:
         output_directory = self.directory / "output with spaces"
