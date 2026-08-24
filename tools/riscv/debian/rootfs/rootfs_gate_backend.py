@@ -462,6 +462,8 @@ def main(arguments: list[str] | None = None) -> int:
         with TerminationSignalState(), ConcreteOperations(config) as operations:
             result = orchestrate_gate(config, operations, nonce=secrets.token_hex(32))
         return 0 if result["passed"] else 1
+    except SystemExit as error:
+        return int(error.code or 0)
     except GateTermination as error:
         print(
             f"debian-rootfs-gate: terminated by signal {error.signum}", file=sys.stderr
