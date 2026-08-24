@@ -266,6 +266,37 @@ class XhciHostGateTests(unittest.TestCase):
         self.assertEqual(commands[-1].name, "booti")
         self.assertEqual(commands[-1].expected, b"Starting kernel ...")
 
+    def test_gate_rejects_non_smp4_dtb_and_plan_builds_sv39_smp4(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for count in (1, 4):
+                cpus = "".join(
+                    f'cpu@{index} {{ device_type = "cpu"; reg = <{index}>; status = "okay"; }};'
+                    for index in range(count)
+                )
+                source = directory / f"{count}.dts"
+                output = directory / f"{count}.dtb"
+                source.write_text(
+                    f"/dts-v1/; / {{ #address-cells = <2>; #size-cells = <2>; cpus {{ #address-cells = <1>; #size-cells = <0>; {cpus} }}; }};"
+                )
+                result = subprocess.run(
+                    ["dtc", "-q", "-I", "dts", "-O", "dtb", "-o", output, source],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            with self.assertRaisesRegex(ValueError, "exactly 4 enabled CPU"):
+                self.gate._validate_dtb_cpu_count(directory / "1.dtb")
+            self.gate._validate_dtb_cpu_count(directory / "4.dtb")
+
+        root = Path(__file__).parents[3]
+        plan = (
+            root / "docs/superpowers/plans/2026-08-24-riscv-pci-xhci-m1.md"
+        ).read_text()
+        self.assertIn("FEATURES=riscv_sv39_mode", plan)
+        self.assertIn("QEMU_UBOOT_PROFILE=generic-sv39-ltp-smp4", plan)
+
     def test_classifier_requires_current_ordered_exact_evidence(self) -> None:
         valid = self.gate.expected_transcript()
         result = self.gate.classify_transcript(valid)
