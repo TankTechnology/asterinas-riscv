@@ -281,6 +281,11 @@ test_riscv_ltp: test_riscv_ltp_unit
 		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(RISCV_LTP_SMP)" \
 		--suite "$(RISCV_LTP_SUITE)"
 
+.PHONY: test_riscv_xhci_input_unit
+test_riscv_xhci_input_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_xhci_input_gate -v
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
