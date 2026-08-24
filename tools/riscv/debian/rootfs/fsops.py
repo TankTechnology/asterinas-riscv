@@ -47,6 +47,7 @@ class _PublishFile:
     source: int
     directory: int
     name: str
+    mode: int = 0o644
     temporary: str | None = None
     backup: str | None = None
     existed: bool = False
@@ -256,7 +257,7 @@ def _prepare_publication_file(entry: _PublishFile) -> None:
     try:
         while chunk := os.read(entry.source, _CHUNK_SIZE_BYTES):
             _write_all(output, chunk)
-        os.fchmod(output, 0o644)
+        os.fchmod(output, entry.mode)
         os.fsync(output)
     finally:
         os.close(output)
@@ -298,6 +299,9 @@ def _rollback_publication(entries: Sequence[_PublishFile]) -> None:
                     src_dir_fd=entry.directory,
                     dst_dir_fd=entry.directory,
                 )
+                # Renaming one hard link over another to the same inode is a
+                # permitted no-op, so explicitly remove a surviving backup.
+                _unlink_if_present(entry.directory, entry.backup)
                 entry.backup = None
             elif not entry.existed:
                 _unlink_if_present(entry.directory, entry.name)
@@ -328,11 +332,18 @@ def _cleanup_publication_files(entries: Sequence[_PublishFile]) -> None:
             pass
 
 
-def publish_set(output_directory: Path, source_root: Path) -> None:
-    """Publishes the exact rootfs artifact set with rollback on process failure."""
+def _publish_entries(
+    output_directory: Path,
+    output: int,
+    entries: Sequence[_PublishFile],
+) -> None:
+    """Publishes one file set with rollback on command or signal failure.
 
-    sources = _open_publication_sources(source_root)
-    entries: list[_PublishFile] = []
+    POSIX has no multi-file atomic rename, so sudden power loss between renames
+    can still expose a mixed set. The directory fsync defines the commit point
+    for failures and signals that the running publisher can observe.
+    """
+
     previous_handlers: dict[int, signal.Handlers] = {}
     rolling_back = False
     committed = False
@@ -349,6 +360,48 @@ def publish_set(output_directory: Path, source_root: Path) -> None:
             return
         raise PublishInterrupted(signum)
 
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.signal(signum, handle_signal)
+    try:
+        _require_directory_still_pinned(output_directory, output)
+        for entry in entries:
+            _prepare_publication_file(entry)
+        _fsync_directories(entries)
+
+        try:
+            for entry in entries:
+                _require_directory_still_pinned(output_directory, output)
+                assert entry.temporary is not None
+                os.replace(
+                    entry.temporary,
+                    entry.name,
+                    src_dir_fd=entry.directory,
+                    dst_dir_fd=entry.directory,
+                )
+                entry.temporary = None
+            _fsync_directories(entries)
+            _require_directory_still_pinned(output_directory, output)
+            committed = True
+        except BaseException as error:
+            rolling_back = True
+            try:
+                _rollback_publication(entries)
+            except FsOpsError as rollback_error:
+                raise rollback_error from error
+            raise
+    finally:
+        _cleanup_publication_files(entries)
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+    if pending_signal is not None:
+        raise PublishInterrupted(pending_signal)
+
+
+def publish_set(output_directory: Path, source_root: Path) -> None:
+    """Publishes the exact rootfs artifact set with rollback on process failure."""
+
+    sources = _open_publication_sources(source_root)
+    entries: list[_PublishFile] = []
     try:
         with _open_directory(
             output_directory,
@@ -370,43 +423,42 @@ def publish_set(output_directory: Path, source_root: Path) -> None:
                     directory = metadata if len(path.parts) == 2 else output
                     entries.append(_PublishFile(source, directory, path.name))
 
-                for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-                    previous_handlers[signum] = signal.signal(signum, handle_signal)
-                try:
-                    _require_directory_still_pinned(output_directory, output)
-                    for entry in entries:
-                        _prepare_publication_file(entry)
-                    _fsync_directories(entries)
-
-                    try:
-                        for entry in entries:
-                            _require_directory_still_pinned(output_directory, output)
-                            assert entry.temporary is not None
-                            os.replace(
-                                entry.temporary,
-                                entry.name,
-                                src_dir_fd=entry.directory,
-                                dst_dir_fd=entry.directory,
-                            )
-                            entry.temporary = None
-                        _fsync_directories(entries)
-                        _require_directory_still_pinned(output_directory, output)
-                        committed = True
-                    except BaseException as error:
-                        rolling_back = True
-                        try:
-                            _rollback_publication(entries)
-                        except FsOpsError as rollback_error:
-                            raise rollback_error from error
-                        raise
-                finally:
-                    _cleanup_publication_files(entries)
-                    for signum, handler in previous_handlers.items():
-                        signal.signal(signum, handler)
-                if pending_signal is not None:
-                    raise PublishInterrupted(pending_signal)
+                _publish_entries(output_directory, output, entries)
             finally:
                 os.close(metadata)
+    finally:
+        for source in sources:
+            os.close(source)
+
+
+def publish_stage1(
+    output_directory: Path,
+    init_source: Path,
+    archive_source: Path,
+    archive_name: str = "initramfs.cpio",
+) -> None:
+    """Publishes the stage1 ELF/archive pair as one rollback transaction."""
+
+    if (
+        not archive_name
+        or archive_name in {".", "..", "init"}
+        or "/" in archive_name
+        or any(character in archive_name for character in "\0\n\r\t")
+    ):
+        raise FsOpsError(f"unsafe stage1 archive name: {archive_name!r}")
+
+    sources = [_open_regular_file(init_source), _open_regular_file(archive_source)]
+    try:
+        with _open_directory(
+            output_directory,
+            create=True,
+            create_mode=0o755,
+        ) as output:
+            entries = [
+                _PublishFile(sources[0], output, "init", mode=0o755),
+                _PublishFile(sources[1], output, archive_name, mode=0o644),
+            ]
+            _publish_entries(output_directory, output, entries)
     finally:
         for source in sources:
             os.close(source)
@@ -422,6 +474,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     publication = subparsers.add_parser("publish-set")
     publication.add_argument("--output-dir", required=True, type=Path)
     publication.add_argument("--source-root", required=True, type=Path)
+    stage1 = subparsers.add_parser("publish-stage1")
+    stage1.add_argument("--output-dir", required=True, type=Path)
+    stage1.add_argument("--init-source", required=True, type=Path)
+    stage1.add_argument("--archive-source", required=True, type=Path)
+    stage1.add_argument("--archive-name", default="initramfs.cpio")
     return parser
 
 
@@ -431,8 +488,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         if namespace.command == "cache-admit":
             admit_cache_entry(namespace.cache_dir, namespace.source, namespace.sha256)
-        else:
+        elif namespace.command == "publish-set":
             publish_set(namespace.output_dir, namespace.source_root)
+        else:
+            publish_stage1(
+                namespace.output_dir,
+                namespace.init_source,
+                namespace.archive_source,
+                namespace.archive_name,
+            )
     except PublishInterrupted as error:
         return 128 + error.signum
     except (FsOpsError, OSError) as error:
