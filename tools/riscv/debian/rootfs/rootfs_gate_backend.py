@@ -200,7 +200,11 @@ class ConcreteOperations:
             output.atomic_copy("boot.ext4", boot)
         pinned_parent = Path(f"/proc/self/fd/{output._operation_fd}")
         root = pinned_parent / "debian-root.run.ext2"
-        before, after, copied = copy_sparse_root(self._input_fds["root_image"], root)
+        before, after, copied = copy_sparse_root(
+            self._input_fds["root_image"],
+            root,
+            destination_directory_fd=output._operation_fd,
+        )
         if before != snapshots["root_image"] or before != after or before != copied:
             raise GateFailure("writable root copy does not match its snapshot")
         manifest = load_manifest(self.input_paths["manifest"])
