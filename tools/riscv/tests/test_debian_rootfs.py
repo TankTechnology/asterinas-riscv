@@ -29,6 +29,16 @@ from tools.riscv.debian.rootfs.contract import (
     parse_packages_lock,
     validate_frozen_root,
 )
+from tools.riscv.debian.rootfs.gate_protocol import (
+    MAX_COMMAND_PAYLOAD_BYTES,
+    MAX_TRANSCRIPT_BYTES,
+    BootEvidence,
+    GateResult,
+    ShellCommand,
+    classify_boot,
+    qemu_argv,
+    shell_commands,
+)
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -2179,6 +2189,354 @@ class DebianRootfsContractTests(unittest.TestCase):
 
         self.assertEqual(callback_count, 1)
         self.assertEqual(image.read_bytes(), replacement_bytes)
+
+
+class DebianRootfsGateProtocolTests(unittest.TestCase):
+    NONCE = "0123456789abcdef" * 4
+    EXPECTED_PACKAGES = tuple(
+        (name, version)
+        for name, architecture, version in PACKAGE_ROWS
+        if name in GATE_IDENTITY_PACKAGES and architecture == "riscv64"
+    )
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary_directory.name)
+        self.uboot = self._regular_file("u-boot", b"u-boot")
+        self.boot_disk = self._regular_file("boot.ext4", b"ext4")
+        self.root_disk = self._regular_file("debian-root.ext2", b"ext2")
+        self.monitor_socket = self.directory / "monitor.sock"
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def _regular_file(self, name: str, contents: bytes) -> Path:
+        path = self.directory / name
+        path.write_bytes(contents)
+        return path
+
+    def _qemu_argv(self, **overrides: object) -> tuple[str, ...]:
+        arguments: dict[str, object] = {
+            "uboot": self.uboot,
+            "boot_disk": self.boot_disk,
+            "root_disk": self.root_disk,
+            "monitor_socket": self.monitor_socket,
+            "smp": 4,
+            "dtb_enabled_cpu_count": 4,
+        }
+        arguments.update(overrides)
+        return qemu_argv(**arguments)
+
+    @staticmethod
+    def _command_output(command: ShellCommand, *, boot_number: int) -> str:
+        outputs = {
+            "architecture": "riscv64",
+            "debian-release": "13.6",
+            "bash-version": "5.2.37(1)-release",
+            "packages": "\n".join(
+                f"{name}\t{version}"
+                for name, version in DebianRootfsGateProtocolTests.EXPECTED_PACKAGES
+            ),
+            "root-filesystem": "ext2/ext3",
+            "persistence": DebianRootfsGateProtocolTests.NONCE,
+            "second-probe": "boot2-probe-created",
+        }
+        if command.name == "second-probe" and boot_number != 2:
+            raise AssertionError("boot one must not create the second probe")
+        return outputs[command.name]
+
+    def _successful_transcript(
+        self,
+        commands: tuple[ShellCommand, ...],
+        *,
+        boot_number: int,
+        echoed: bool = False,
+    ) -> str:
+        lines = ["Asterinas boot noise"]
+        for command in commands:
+            if echoed:
+                lines.append(f"root@asterinas:/# {command.payload}")
+            lines.extend(
+                (
+                    command.begin_marker,
+                    self._command_output(command, boot_number=boot_number),
+                    f"{command.status_prefix}0",
+                    command.end_marker,
+                )
+            )
+        return "\r\n".join(lines) + "\r\n"
+
+    def _classify(
+        self,
+        transcript: str | bytes,
+        commands: tuple[ShellCommand, ...],
+        *,
+        boot_number: int,
+    ) -> GateResult:
+        return classify_boot(
+            transcript,
+            commands,
+            boot_number=boot_number,
+            expected_debian_release="13.6",
+            expected_packages=self.EXPECTED_PACKAGES,
+            expected_nonce=self.NONCE,
+        )
+
+    def test_qemu_argv_is_the_frozen_headless_two_disk_contract(self) -> None:
+        argv = self._qemu_argv()
+
+        self.assertEqual(argv[0], "qemu-system-riscv64")
+        self.assertEqual(argv[argv.index("-machine") + 1], "virt")
+        self.assertEqual(
+            argv[argv.index("-cpu") + 1],
+            "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        )
+        self.assertEqual(argv[argv.index("-m") + 1], "2G")
+        self.assertEqual(argv[argv.index("-smp") + 1], "4")
+        self.assertEqual(argv[argv.index("-serial") + 1], "stdio")
+        self.assertEqual(argv[argv.index("-display") + 1], "none")
+        self.assertEqual(argv[argv.index("-nic") + 1], "none")
+        self.assertIn("-no-reboot", argv)
+
+        drives = [
+            argv[index + 1] for index, value in enumerate(argv) if value == "-drive"
+        ]
+        devices = [
+            argv[index + 1] for index, value in enumerate(argv) if value == "-device"
+        ]
+        self.assertEqual(
+            drives,
+            [
+                f"if=none,format=raw,file={self.boot_disk},id=bootdisk,readonly=on",
+                (
+                    f"if=none,format=raw,file={self.root_disk},id=rootdisk,"
+                    "cache=directsync"
+                ),
+            ],
+        )
+        self.assertEqual(
+            devices,
+            [
+                "virtio-blk-device,drive=bootdisk",
+                "virtio-blk-device,drive=rootdisk",
+            ],
+        )
+        forbidden = ("xhci", "usb", "keyboard", "tablet", "mouse", "netdev")
+        self.assertFalse(
+            any(token in argument.lower() for argument in argv for token in forbidden)
+        )
+
+    def test_qemu_argv_rejects_non_four_hart_contracts(self) -> None:
+        for override in ({"smp": 1}, {"smp": True}, {"dtb_enabled_cpu_count": 3}):
+            with (
+                self.subTest(override=override),
+                self.assertRaisesRegex(ValueError, "exactly 4"),
+            ):
+                self._qemu_argv(**override)
+
+    def test_qemu_argv_rejects_unsafe_or_non_regular_inputs(self) -> None:
+        comma_path = self._regular_file("boot,unsafe.ext4", b"ext4")
+        missing_path = self.directory / "missing.ext2"
+        symlink_path = self.directory / "root-link.ext2"
+        symlink_path.symlink_to(self.root_disk)
+        cases = (
+            ("boot_disk", comma_path, "comma"),
+            ("root_disk", missing_path, "regular file"),
+            ("root_disk", symlink_path, "symbolic link"),
+            ("uboot", self.directory, "regular file"),
+        )
+
+        for argument, path, message in cases:
+            with (
+                self.subTest(argument=argument, path=path),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                self._qemu_argv(**{argument: path})
+
+    def test_protocol_types_are_frozen(self) -> None:
+        command = ShellCommand("name", "true", "begin", "end", "status=")
+        evidence = BootEvidence(
+            boot_number=1,
+            architecture="riscv64",
+            debian_release="13.6",
+            bash_version="5.2",
+            packages=self.EXPECTED_PACKAGES,
+            root_filesystem="ext2/ext3",
+            persistence_nonce=self.NONCE,
+            second_probe=None,
+        )
+        result = GateResult(True, "pass", evidence)
+
+        for instance in (command, evidence, result):
+            with (
+                self.subTest(instance=instance),
+                self.assertRaises(FrozenInstanceError),
+            ):
+                instance.__setattr__(next(iter(instance.__dataclass_fields__)), None)
+
+    def test_shell_commands_cover_boot_one_identity_write_and_sync(self) -> None:
+        commands = shell_commands(boot_number=1, nonce=self.NONCE)
+
+        self.assertEqual(
+            tuple(command.name for command in commands),
+            (
+                "architecture",
+                "debian-release",
+                "bash-version",
+                "packages",
+                "root-filesystem",
+                "persistence",
+            ),
+        )
+        payload = "\n".join(command.payload for command in commands)
+        for required in (
+            "uname -m",
+            "/etc/debian_version",
+            "BASH_VERSION",
+            "base-files libc6 bash coreutils util-linux",
+            "stat -f",
+            "/var/lib/asterinas-debian-m1",
+            self.NONCE,
+            "sync",
+        ):
+            self.assertIn(required, payload)
+        self.assertIn("> /var/lib/asterinas-debian-m1/persist", payload)
+
+    def test_shell_commands_cover_boot_two_read_probe_and_sync(self) -> None:
+        commands = shell_commands(boot_number=2, nonce=self.NONCE)
+        payloads = {command.name: command.payload for command in commands}
+
+        self.assertIn(
+            "cat /var/lib/asterinas-debian-m1/persist", payloads["persistence"]
+        )
+        self.assertNotIn(
+            "> /var/lib/asterinas-debian-m1/persist", payloads["persistence"]
+        )
+        self.assertIn("second-probe", payloads["second-probe"])
+        self.assertIn("sync", payloads["second-probe"])
+        self.assertEqual(
+            len({command.begin_marker for command in commands}), len(commands)
+        )
+        self.assertTrue(
+            all(
+                len(command.payload.encode()) <= MAX_COMMAND_PAYLOAD_BYTES
+                for command in commands
+            )
+        )
+
+    def test_shell_commands_reject_bad_boot_or_nonce(self) -> None:
+        for arguments in (
+            {"boot_number": 3, "nonce": self.NONCE},
+            {"boot_number": 1, "nonce": "not-shell-safe"},
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                shell_commands(**arguments)
+
+    def test_classify_boot_accepts_echoed_commands_and_exact_identity(self) -> None:
+        for boot_number in (1, 2):
+            with self.subTest(boot_number=boot_number):
+                commands = shell_commands(boot_number=boot_number, nonce=self.NONCE)
+                transcript = self._successful_transcript(
+                    commands, boot_number=boot_number, echoed=True
+                )
+
+                result = self._classify(transcript, commands, boot_number=boot_number)
+
+                self.assertTrue(result.passed)
+                self.assertEqual(result.reason, "pass")
+                self.assertEqual(result.evidence.architecture, "riscv64")
+                self.assertEqual(result.evidence.packages, self.EXPECTED_PACKAGES)
+                self.assertEqual(result.evidence.persistence_nonce, self.NONCE)
+                self.assertEqual(
+                    result.evidence.second_probe,
+                    "boot2-probe-created" if boot_number == 2 else None,
+                )
+
+    def test_classify_boot_rejects_stale_duplicate_and_reordered_markers(self) -> None:
+        commands = shell_commands(boot_number=1, nonce=self.NONCE)
+        good = self._successful_transcript(commands, boot_number=1)
+        blocks = good.splitlines()[1:]
+        first_block = blocks[:4]
+        second_block = blocks[4:8]
+        cases = (
+            (commands[0].begin_marker + "\n" + good, "duplicate"),
+            ("\n".join(second_block + first_block + blocks[8:]), "reordered"),
+        )
+
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                result = self._classify(transcript, commands, boot_number=1)
+                self.assertFalse(result.passed)
+                self.assertIn(reason, result.reason)
+
+    def test_classify_boot_rejects_nonzero_and_wrong_identity(self) -> None:
+        commands = shell_commands(boot_number=1, nonce=self.NONCE)
+        good = self._successful_transcript(commands, boot_number=1)
+        cases = (
+            (
+                good.replace(
+                    f"{commands[0].status_prefix}0", f"{commands[0].status_prefix}7"
+                ),
+                "status 7",
+            ),
+            (good.replace("13.6", "12.0", 1), "Debian release"),
+            (good.replace("5.2.37-2+b5", "0.invalid", 1), "package versions"),
+        )
+
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                result = self._classify(transcript, commands, boot_number=1)
+                self.assertFalse(result.passed)
+                self.assertIn(reason, result.reason)
+
+    def test_classify_boot_scans_complete_transcript_for_fatal_markers(self) -> None:
+        commands = shell_commands(boot_number=1, nonce=self.NONCE)
+        good = self._successful_transcript(commands, boot_number=1)
+        fatal_markers = (
+            "Kernel panic - not syncing",
+            "reboot: Restarting system",
+            "EXT2-fs error (device vdb)",
+            "Buffer I/O error on dev vdb",
+            "blk_update_request: I/O error",
+            "DEBIAN_ROOTFS_FAIL reason=root_mount",
+        )
+
+        for marker in fatal_markers:
+            with self.subTest(marker=marker):
+                result = self._classify(good + marker + "\n", commands, boot_number=1)
+                self.assertFalse(result.passed)
+                self.assertIn("fatal transcript marker", result.reason)
+
+    def test_classify_boot_rejects_oversized_transcript_and_payload(self) -> None:
+        commands = shell_commands(boot_number=1, nonce=self.NONCE)
+        oversized_command = replace(
+            commands[0], payload="x" * (MAX_COMMAND_PAYLOAD_BYTES + 1)
+        )
+        cases = (
+            (b"x" * (MAX_TRANSCRIPT_BYTES + 1), commands, "transcript exceeds"),
+            (b"", (oversized_command, *commands[1:]), "payload exceeds"),
+        )
+
+        for transcript, candidate_commands, reason in cases:
+            with self.subTest(reason=reason):
+                result = self._classify(transcript, candidate_commands, boot_number=1)
+                self.assertFalse(result.passed)
+                self.assertIn(reason, result.reason)
+
+    def test_classify_boot_rejects_missing_or_mismatched_persistence(self) -> None:
+        commands = shell_commands(boot_number=2, nonce=self.NONCE)
+        good = self._successful_transcript(commands, boot_number=2)
+        cases = (
+            (good.replace(self.NONCE, "", 1), "persistence nonce"),
+            (good.replace(self.NONCE, "f" * 64, 1), "persistence nonce"),
+            (good.replace("boot2-probe-created", "", 1), "second probe"),
+        )
+
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                result = self._classify(transcript, commands, boot_number=2)
+                self.assertFalse(result.passed)
+                self.assertIn(reason, result.reason)
 
 
 if __name__ == "__main__":
