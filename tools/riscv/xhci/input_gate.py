@@ -864,7 +864,7 @@ def _registered_commands(artifacts: ArtifactExpectations) -> tuple[BootCommand, 
         bootargs_override="console=ttyS0 loglevel=info init=/init",
     )
     return tuple(
-        BootCommand(command.name, command.text, command.expected.encode())
+        BootCommand(command.name, command.text, command.expected_output.encode())
         for command in commands
     )
 
