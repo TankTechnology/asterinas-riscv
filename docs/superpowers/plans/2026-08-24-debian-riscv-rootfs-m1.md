@@ -77,7 +77,7 @@ Expected: nonzero exit because `tools.riscv.debian.rootfs.contract` does not exi
 
 - [ ] **Step 3: Implement the smallest immutable identity model**
 
-In `contract.py`, define frozen `FilesystemIdentity` and `RootfsManifest` dataclasses. Define `ROOT_LABEL = "ASTER_DEBIAN_ROOT"`; the explicit install tuple `bash`, `ca-certificates`, `coreutils`, `procps`, and `util-linux`; the gate identity tuple `base-files`, `libc6`, `bash`, `coreutils`, and `util-linux`; and an anchored lowercase SHA-256 regular expression.
+In `contract.py`, define frozen `FilesystemIdentity` and `RootfsManifest` dataclasses. Define `ROOT_LABEL = "ASTER_DEBIANROOT"`; the explicit install tuple `bash`, `ca-certificates`, `coreutils`, `procps`, and `util-linux`; the gate identity tuple `base-files`, `libc6`, `bash`, `coreutils`, and `util-linux`; and an anchored lowercase SHA-256 regular expression.
 
 Implement these typed operations:
 
@@ -151,7 +151,7 @@ Use these defaults:
 - content-addressed package cache: `target/debian-riscv/cache`;
 - mirror: `https://mirrors.tuna.tsinghua.edu.cn/debian`;
 - suite/architecture/variant: `trixie`, `riscv64`, `minbase`;
-- filesystem label: `ASTER_DEBIAN_ROOT`;
+- filesystem label: `ASTER_DEBIANROOT`;
 - filesystem UUID: `7b7ad749-77d0-4e59-89e4-e117244a70aa`;
 - filesystem size: 1 GiB;
 - filesystem block size: 4096.
@@ -164,10 +164,12 @@ Generate a lock row for every installed package from the staged dpkg database wi
 
 ```bash
 truncate -s 1G "$ROOT_TMP"
-mke2fs -q -F -t ext2 -b 4096 -L ASTER_DEBIAN_ROOT \
+mke2fs -q -F -t ext2 -b 4096 -L ASTER_DEBIANROOT \
   -U 7b7ad749-77d0-4e59-89e4-e117244a70aa \
   -d "$STAGE" "$ROOT_TMP"
 ```
+
+`ASTER_DEBIANROOT` is the corrected identity because ext2 volume labels are limited to 16 bytes.
 
 Verify label, UUID, type, block size, image size, and required files using `dumpe2fs` and `debugfs`. Extend `contract.py` with a deterministic manifest-writer CLI. Its exact schema records suite, Debian release version, mirror, architecture, signed-metadata hash, package-lock hash, every downloaded package hash, filesystem type/label/UUID/size/block size, relevant tool versions, build timestamp, and final root-image hash. Then publish `debian-root.ext2`, `rootfs-manifest.json`, `packages.lock`, `source-metadata/InRelease`, and `source-metadata/package-checksums` by same-directory temporary files, `fsync`, and atomic rename.
 
