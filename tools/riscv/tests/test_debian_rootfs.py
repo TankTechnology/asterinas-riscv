@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from unittest import mock
 
+from tools.riscv.debian.rootfs import fsops as fsops_module
 from tools.riscv.debian.rootfs.contract import (
     ContractError,
     GATE_IDENTITY_PACKAGES,
@@ -221,6 +223,27 @@ stat -c 'PRIVATE_MODE=%a' "$WORK_DIR"
     )
 
 
+def _run_admit_downloaded_packages(
+    work_directory: Path,
+    cache_directory: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; WORK_DIR="$2"; CACHE_DIR="$3"; admit_downloaded_packages',
+            "builder-cache-test",
+            str(BUILD_SCRIPT),
+            str(work_directory),
+            str(cache_directory),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -390,6 +413,34 @@ class DebianRootfsBuilderTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsafe", result.stderr)
+
+    def test_cache_admission_rejects_symlinked_digest_prefix(self) -> None:
+        work_directory = self.directory / "cache-work"
+        debs_directory = work_directory / "debs"
+        metadata_directory = work_directory / "source-metadata"
+        debs_directory.mkdir(parents=True)
+        metadata_directory.mkdir()
+        archive = debs_directory / "package.deb"
+        archive.write_bytes(b"signed package archive")
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        (work_directory / "package-index-checksums").write_text(
+            f"package\triscv64\t1.0\t{digest}\n",
+            encoding="utf-8",
+        )
+        cache_directory = self.directory / "cache"
+        sha256_directory = cache_directory / "sha256"
+        outside_directory = self.directory / "outside"
+        sha256_directory.mkdir(parents=True)
+        outside_directory.mkdir()
+        (sha256_directory / digest[:2]).symlink_to(
+            outside_directory,
+            target_is_directory=True,
+        )
+
+        result = _run_admit_downloaded_packages(work_directory, cache_directory)
+
+        self.assertFalse((outside_directory / f"{digest}.deb").exists())
+        self.assertNotEqual(result.returncode, 0)
 
     def test_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
@@ -676,6 +727,168 @@ printf 'QEMU_SMOKE_EXECUTED\n'
         self.assertEqual(result.returncode, 97)
         for artifact, contents in original_contents.items():
             self.assertEqual((output_directory / artifact).read_bytes(), contents)
+
+
+class DebianRootfsFsOpsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.source = self.directory / "source"
+        (self.source / "source-metadata").mkdir(parents=True)
+        for relative_path in PUBLISHED_ARTIFACTS:
+            source = self.source / relative_path
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(f"new:{relative_path}".encode())
+
+    def make_existing_output(self, name: str = "output") -> Path:
+        output = self.directory / name
+        (output / "source-metadata").mkdir(parents=True)
+        for relative_path in PUBLISHED_ARTIFACTS[1:]:
+            destination = output / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(f"old:{relative_path}".encode())
+        return output
+
+    def output_snapshot(self, output: Path) -> dict[str, bytes | None]:
+        return {
+            relative_path: (
+                (output / relative_path).read_bytes()
+                if (output / relative_path).exists()
+                else None
+            )
+            for relative_path in PUBLISHED_ARTIFACTS
+        }
+
+    def test_cache_admission_reuses_and_rejects_corrupt_entry(self) -> None:
+        source = self.directory / "package.deb"
+        source.write_bytes(b"package")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        cache = self.directory / "cache"
+
+        fsops_module.admit_cache_entry(cache, source, digest)
+        destination = cache / "sha256" / digest[:2] / f"{digest}.deb"
+        self.assertEqual(destination.read_bytes(), b"package")
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o444)
+        fsops_module.admit_cache_entry(cache, source, digest)
+
+        destination.chmod(0o644)
+        destination.write_bytes(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            fsops_module.admit_cache_entry(cache, source, digest)
+
+    def test_publish_set_rolls_back_second_replace_failure(self) -> None:
+        output = self.make_existing_output()
+        original = self.output_snapshot(output)
+        real_replace = os.replace
+        replace_count = 0
+
+        def fail_second_replace(*args, **kwargs):
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 2:
+                raise OSError("injected second replace failure")
+            return real_replace(*args, **kwargs)
+
+        with (
+            mock.patch.object(fsops_module.os, "replace", new=fail_second_replace),
+            self.assertRaisesRegex(OSError, "injected second replace failure"),
+        ):
+            fsops_module.publish_set(output, self.source)
+
+        self.assertEqual(replace_count, 1 + len(PUBLISHED_ARTIFACTS))
+        self.assertEqual(self.output_snapshot(output), original)
+
+    def test_publish_set_rolls_back_real_sigterm_on_second_replace(self) -> None:
+        output = self.make_existing_output()
+        original = self.output_snapshot(output)
+        process_id = os.fork()
+        if process_id == 0:
+            real_replace = os.replace
+            replace_count = 0
+
+            def signal_second_replace(*args, **kwargs):
+                nonlocal replace_count
+                replace_count += 1
+                if replace_count == 2:
+                    os.kill(os.getpid(), signal.SIGTERM)
+                return real_replace(*args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    fsops_module.os,
+                    "replace",
+                    new=signal_second_replace,
+                ):
+                    fsops_module.publish_set(output, self.source)
+            except BaseException as error:
+                interrupted = getattr(fsops_module, "PublishInterrupted", ())
+                if isinstance(error, interrupted):
+                    os._exit(128 + error.signum)
+                os._exit(99)
+            os._exit(0)
+
+        _, wait_status = os.waitpid(process_id, 0)
+        self.assertTrue(os.WIFEXITED(wait_status))
+        self.assertEqual(os.WEXITSTATUS(wait_status), 143)
+        self.assertEqual(self.output_snapshot(output), original)
+
+    def test_publish_set_absorbs_sigterm_after_commit(self) -> None:
+        output = self.make_existing_output()
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        real_cleanup = fsops_module._cleanup_publication_files
+
+        def signal_during_cleanup(entries):
+            os.kill(os.getpid(), signal.SIGTERM)
+            real_cleanup(entries)
+
+        with mock.patch.object(
+            fsops_module,
+            "_cleanup_publication_files",
+            new=signal_during_cleanup,
+        ):
+            fsops_module.publish_set(output, self.source)
+
+        self.assertEqual(
+            self.output_snapshot(output),
+            self.output_snapshot(self.source),
+        )
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
+
+    def test_publish_set_rejects_symlinked_or_swapped_output(self) -> None:
+        outside = self.directory / "outside"
+        outside.mkdir()
+        symlink_output = self.directory / "symlink-output"
+        symlink_output.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(OSError):
+            fsops_module.publish_set(symlink_output, self.source)
+        self.assertEqual(list(outside.iterdir()), [])
+
+        output = self.make_existing_output("swap-output")
+        moved_output = self.directory / "moved-output"
+        original = self.output_snapshot(output)
+        real_replace = os.replace
+        replace_count = 0
+
+        def swap_before_first_replace(*args, **kwargs):
+            nonlocal replace_count
+            replace_count += 1
+            if replace_count == 1:
+                output.rename(moved_output)
+                output.symlink_to(outside, target_is_directory=True)
+            return real_replace(*args, **kwargs)
+
+        with (
+            mock.patch.object(
+                fsops_module.os,
+                "replace",
+                new=swap_before_first_replace,
+            ),
+            self.assertRaisesRegex(ValueError, "changed during publication"),
+        ):
+            fsops_module.publish_set(output, self.source)
+        self.assertEqual(self.output_snapshot(moved_output), original)
+        self.assertEqual(list(outside.iterdir()), [])
 
 
 class DebianRootfsManifestWriterTests(unittest.TestCase):
