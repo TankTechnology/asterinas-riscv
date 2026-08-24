@@ -132,6 +132,29 @@ def _run_builder(
     )
 
 
+def _run_builder_function(
+    function: str,
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; shift; "$@"',
+            "builder-function-test",
+            str(BUILD_SCRIPT),
+            function,
+            *arguments,
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -213,9 +236,12 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         real_directory.mkdir()
         symlink_path = self.directory / "symlink"
         symlink_path.symlink_to(real_directory, target_is_directory=True)
+        masked_symlink_path = self.directory / "missing" / ".." / "symlink"
         cases = (
             ("--output-dir", str(symlink_path)),
             ("--cache-dir", str(symlink_path)),
+            ("--output-dir", str(masked_symlink_path)),
+            ("--cache-dir", str(masked_symlink_path)),
             (
                 "--output-dir",
                 str(real_directory),
@@ -257,6 +283,27 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsafe", result.stderr)
 
+    def test_rejects_symlinked_content_cache_directory(self) -> None:
+        cache_directory = self.directory / "cache"
+        cache_target = self.directory / "cache-target"
+        cache_directory.mkdir()
+        cache_target.mkdir()
+        (cache_directory / "sha256").symlink_to(
+            cache_target,
+            target_is_directory=True,
+        )
+
+        result = _run_builder(
+            "--output-dir",
+            str(self.directory / "output"),
+            "--cache-dir",
+            str(cache_directory),
+            cwd=self.directory,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe", result.stderr)
+
     def test_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
             with self.subTest(value=value):
@@ -266,8 +313,76 @@ class DebianRootfsBuilderTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("SOURCE_DATE_EPOCH", result.stderr)
 
+    def test_rejects_packages_index_not_bound_to_retained_inrelease(self) -> None:
+        work_directory = self.directory / "work"
+        metadata_directory = work_directory / "source-metadata"
+        metadata_directory.mkdir(parents=True)
+        (metadata_directory / "InRelease").write_text(
+            """Codename: trixie
+Version: 13.6
+SHA256:
+ 0000000000000000000000000000000000000000000000000000000000000000 12 main/binary-riscv64/Packages
+""",
+            encoding="utf-8",
+        )
+        package_index = work_directory / "Packages"
+        package_index.write_bytes(b"Package: bash\n")
+        result = _run_builder_function(
+            "authenticate_package_index",
+            str(package_index),
+            "main/binary-riscv64/Packages",
+            str(metadata_directory / "InRelease"),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not authenticated by retained InRelease", result.stderr)
+
+    def test_rejects_release_drift_after_package_install(self) -> None:
+        work_directory = self.directory / "work"
+        metadata_directory = work_directory / "source-metadata"
+        metadata_directory.mkdir(parents=True)
+        (metadata_directory / "InRelease").write_text(
+            "Codename: trixie\nVersion: 13.6\n",
+            encoding="utf-8",
+        )
+        bin_directory = self.directory / "release-tools"
+        bin_directory.mkdir()
+        curl = bin_directory / "curl"
+        curl.write_text(
+            """#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        shift
+        printf 'Codename: trixie\nVersion: 13.7\n' >"$1"
+        exit 0
+    fi
+    shift
+done
+exit 64
+""",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        gpgv = bin_directory / "gpgv"
+        gpgv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gpgv.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{bin_directory}:{environment['PATH']}"
+
+        result = _run_builder_function(
+            "verify_release_is_unchanged",
+            str(work_directory),
+            "https://deb.debian.org/debian",
+            "trixie",
+            "13.6",
+            environment=environment,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signed release changed during build", result.stderr)
+
     def test_command_failure_preserves_every_published_artifact(self) -> None:
-        output_directory = self.directory / "output"
+        output_directory = self.directory / "output with spaces"
         output_directory.mkdir()
         original_contents: dict[str, bytes] = {}
         for index, artifact in enumerate(PUBLISHED_ARTIFACTS):
@@ -284,7 +399,7 @@ class DebianRootfsBuilderTests(unittest.TestCase):
             "--output-dir",
             str(output_directory),
             "--cache-dir",
-            str(self.directory / "cache"),
+            str(self.directory / "cache with spaces"),
             cwd=self.directory,
             environment=environment,
         )
@@ -309,13 +424,18 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.inrelease = self.directory / "writer-InRelease"
         self.package_checksums = self.directory / "writer-package-checksums"
         self.output = self.directory / "writer-manifest.json"
+        self.reset_inputs()
+        self.output.unlink(missing_ok=True)
+
+    def reset_inputs(self) -> None:
+        with self.image.open("wb") as image_file:
+            image_file.truncate(ROOT_IMAGE_SIZE_BYTES)
         self.packages_lock.write_text(_lock_text(), encoding="utf-8")
         self.inrelease.write_bytes(b"InRelease")
         self.package_checksums.write_text(
             _package_checksums_text(),
             encoding="utf-8",
         )
-        self.output.unlink(missing_ok=True)
 
     def writer_arguments(self) -> list[str]:
         return [
@@ -424,15 +544,39 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
                 self.assertFalse(self.output.exists())
 
     def test_refuses_symlink_output_without_changing_target(self) -> None:
-        target = self.directory / "existing-manifest.json"
-        target.write_text("preserve me\n", encoding="utf-8")
-        self.output.symlink_to(target)
+        self.output.symlink_to(self.packages_lock)
 
         result = self.run_writer()
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("symlink", result.stderr)
-        self.assertEqual(target.read_text(encoding="utf-8"), "preserve me\n")
+        self.assertEqual(self.packages_lock.read_text(encoding="utf-8"), _lock_text())
+
+    def test_refuses_output_equal_to_any_input(self) -> None:
+        input_paths = (
+            self.image,
+            self.packages_lock,
+            self.inrelease,
+            self.package_checksums,
+        )
+
+        for input_path in input_paths:
+            with self.subTest(input_path=input_path):
+                self.reset_inputs()
+                arguments = self.writer_arguments()
+                arguments[arguments.index("--output") + 1] = str(input_path)
+                result = self.run_writer(arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("alias", result.stderr)
+
+    def test_refuses_hardlink_output_alias(self) -> None:
+        self.output.hardlink_to(self.packages_lock)
+
+        result = self.run_writer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("alias", result.stderr)
+        self.assertEqual(self.packages_lock.read_text(encoding="utf-8"), _lock_text())
 
 
 class DebianRootfsContractTests(unittest.TestCase):

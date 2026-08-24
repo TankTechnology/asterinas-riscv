@@ -149,16 +149,19 @@ validate_configuration() {
     decimal_is_at_most "$SOURCE_DATE_EPOCH" "$MAX_SOURCE_DATE_EPOCH" ||
         die "SOURCE_DATE_EPOCH exceeds the ext/newc-compatible u32 range"
 
-    require_safe_path "$OUTPUT_DIR" "output"
-    require_safe_path "$CACHE_DIR" "cache"
+    [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != *$'\n'* ]] || die "unsafe output path"
+    [[ -n "$CACHE_DIR" && "$CACHE_DIR" != *$'\n'* ]] || die "unsafe cache path"
     OUTPUT_DIR="$(normalize_path "$OUTPUT_DIR")"
     CACHE_DIR="$(normalize_path "$CACHE_DIR")"
+    require_safe_path "$OUTPUT_DIR" "output"
+    require_safe_path "$CACHE_DIR" "cache"
     [[ "$OUTPUT_DIR" != "/" && "$CACHE_DIR" != "/" ]] ||
         die "unsafe output/cache path: filesystem root"
     paths_are_disjoint "$OUTPUT_DIR" "$CACHE_DIR" ||
         die "unsafe output/cache path: directories alias or overlap"
 
     validate_existing_publication_targets
+    validate_existing_cache_targets
 }
 
 decimal_is_at_most() {
@@ -233,6 +236,17 @@ validate_existing_publication_targets() {
         [[ ! -e "$target" || -f "$target" ]] ||
             die "unsafe published artifact type: $target"
     done
+}
+
+validate_existing_cache_targets() {
+    if [[ -e "$CACHE_DIR" && ! -d "$CACHE_DIR" ]]; then
+        die "unsafe cache path: existing target is not a directory"
+    fi
+    [[ ! -L "$CACHE_DIR/sha256" ]] ||
+        die "unsafe cache path: sha256 is a symlink"
+    if [[ -e "$CACHE_DIR/sha256" && ! -d "$CACHE_DIR/sha256" ]]; then
+        die "unsafe cache path: sha256 is not a directory"
+    fi
 }
 
 require_tools() {
@@ -368,8 +382,14 @@ install_rootfs_packages() {
 audit_packages() {
     local stage="$WORK_DIR/stage"
     local package_list
+    local package_list_name
+    local package_index
+    local release_path
+    local authenticated_paths=""
+    local authenticated_index_count=0
 
     log "phase 6/8: auditing package lock and signed-index checksums"
+    verify_release_is_unchanged "$WORK_DIR" "$MIRROR" "$SUITE" "$DEBIAN_RELEASE"
     LC_ALL=C dpkg-query \
         "--admindir=$stage/var/lib/dpkg" \
         --show \
@@ -379,15 +399,102 @@ audit_packages() {
     : >"$WORK_DIR/package-index"
     for package_list in "$stage"/var/lib/apt/lists/*_Packages*; do
         [[ -f "$package_list" ]] || continue
+        package_list_name="${package_list##*/}"
+        case "$package_list_name" in
+            *_dists_${SUITE}_main_binary-${DEBIAN_ARCHITECTURE}_Packages*)
+                release_path="main/binary-$DEBIAN_ARCHITECTURE/Packages"
+                ;;
+            *_dists_${SUITE}_main_binary-all_Packages*)
+                release_path="main/binary-all/Packages"
+                ;;
+            *)
+                die "cannot map apt Packages index to retained InRelease: $package_list_name"
+                ;;
+        esac
+        [[ "$authenticated_paths" != *$'\n'"$release_path"$'\n'* ]] ||
+            die "ambiguous apt Packages index target: $release_path"
+        authenticated_paths+=$'\n'"$release_path"$'\n'
+        package_index="$WORK_DIR/package-index-$authenticated_index_count"
         chroot "$stage" /usr/lib/apt/apt-helper cat-file \
-            "/var/lib/apt/lists/${package_list##*/}" >>"$WORK_DIR/package-index"
+            "/var/lib/apt/lists/$package_list_name" >"$package_index"
+        authenticate_package_index \
+            "$package_index" \
+            "$release_path" \
+            "$WORK_DIR/source-metadata/InRelease"
+        cat "$package_index" >>"$WORK_DIR/package-index"
         printf '\n' >>"$WORK_DIR/package-index"
+        ((authenticated_index_count += 1))
     done
-    [[ -s "$WORK_DIR/package-index" ]] || die "no verified package index is available"
+    ((authenticated_index_count > 0)) || die "no authenticated package index is available"
     extract_package_index_checksums \
         "$WORK_DIR/package-index" \
         "$WORK_DIR/package-index-checksums"
     admit_downloaded_packages
+}
+
+verify_release_is_unchanged() {
+    local work_directory="$1"
+    local mirror="$2"
+    local suite="$3"
+    local expected_release="$4"
+    local retained="$work_directory/source-metadata/InRelease"
+    local current="$work_directory/source-metadata/InRelease.current"
+    local retained_sha256
+    local current_sha256
+    local -a codenames=()
+    local -a versions=()
+
+    curl \
+        --proto '=https' \
+        --tlsv1.2 \
+        --fail \
+        --location \
+        --show-error \
+        --silent \
+        --output "$current" \
+        "$mirror/dists/$suite/InRelease"
+    gpgv --keyring "$DEBIAN_KEYRING" "$current"
+
+    mapfile -t codenames < <(sed -n 's/^Codename: //p' "$current")
+    mapfile -t versions < <(sed -n 's/^Version: //p' "$current")
+    ((${#codenames[@]} == 1)) && [[ "${codenames[0]}" == "$suite" ]] ||
+        die "signed release changed during build: unexpected Codename"
+    ((${#versions[@]} == 1)) && [[ "${versions[0]}" == "$expected_release" ]] ||
+        die "signed release changed during build: unexpected Version"
+    retained_sha256="$(sha256sum "$retained")"
+    retained_sha256="${retained_sha256%% *}"
+    current_sha256="$(sha256sum "$current")"
+    current_sha256="${current_sha256%% *}"
+    [[ "$current_sha256" == "$retained_sha256" ]] ||
+        die "signed release changed during build: InRelease SHA-256 mismatch"
+}
+
+authenticate_package_index() {
+    local package_index="$1"
+    local release_path="$2"
+    local inrelease="$3"
+    local index_sha256
+    local index_size_bytes
+    local matching_entries
+
+    index_sha256="$(sha256sum "$package_index")"
+    index_sha256="${index_sha256%% *}"
+    index_size_bytes="$(wc -c <"$package_index")"
+    index_size_bytes="${index_size_bytes//[[:space:]]/}"
+    matching_entries="$(awk \
+        -v expected_hash="$index_sha256" \
+        -v expected_size="$index_size_bytes" \
+        -v expected_path="$release_path" '
+            $0 == "SHA256:" { in_sha256 = 1; next }
+            in_sha256 && $0 ~ /^[^[:space:]]/ { in_sha256 = 0 }
+            in_sha256 && NF == 3 &&
+                $1 == expected_hash && $2 == expected_size && $3 == expected_path {
+                matches += 1
+            }
+            END { print matches + 0 }
+        ' "$inrelease")"
+    [[ "$matching_entries" == 1 ]] ||
+        die "Packages index is not authenticated by retained InRelease: $release_path"
 }
 
 extract_package_index_checksums() {
@@ -625,4 +732,6 @@ die() {
     exit 2
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
