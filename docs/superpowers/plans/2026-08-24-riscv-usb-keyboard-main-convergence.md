@@ -92,7 +92,7 @@ git merge-base HEAD "$INTEGRATION_MAIN"
 git rev-list --left-right --count HEAD..."$INTEGRATION_MAIN"
 ```
 
-Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 45 topic-side commits after the merge-gate corrections and 315 main-side commits.
+Expected: merge base `1ed8a46c54afa7731f8e95f745d1b120ac5d8cc6`, with 46 topic-side commits after the merge-gate corrections and 315 main-side commits.
 
 ### Task 3: Start the merge and confirm its conflict contract
 
@@ -220,7 +220,7 @@ PYTHONPATH=tools/riscv python3 -m unittest tools.riscv.tests.test_megrez_board_s
 python3 -m unittest tools.riscv.tests.test_qemu_uboot_contracts tools.riscv.tests.test_qemu_uboot_booti -v
 ```
 
-Expected: 49 USB HID tests, three board-session tests, and 171 U-Boot contract tests pass; only the supported cross-compiler test skips.
+Expected: 49 USB HID tests, three board-session tests, and 229 U-Boot contract tests pass; only the supported cross-compiler test skips. The increase from the 171-test topic baseline is the pinned main's added contract coverage.
 
 - [ ] **Step 3: Verify metadata and formatting**
 
