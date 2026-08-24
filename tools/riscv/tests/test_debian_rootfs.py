@@ -177,6 +177,27 @@ def _run_image_creation(
     )
 
 
+def _run_publish_artifacts(
+    work_directory: Path,
+    output_directory: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; WORK_DIR="$2"; OUTPUT_DIR="$3"; publish_artifacts',
+            "builder-publish-test",
+            str(BUILD_SCRIPT),
+            str(work_directory),
+            str(output_directory),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -551,6 +572,35 @@ printf 'QEMU_SMOKE_EXECUTED\n'
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("QEMU_SMOKE_EXECUTED", result.stdout)
+
+    def test_publish_permissions_only_open_new_directories(self) -> None:
+        work_directory = self.directory / "publish-work"
+        (work_directory / "source-metadata").mkdir(parents=True)
+        for relative_path in PUBLISHED_ARTIFACTS:
+            source = work_directory / relative_path
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(relative_path.encode())
+
+        new_output = self.directory / "new-output"
+        result = _run_publish_artifacts(work_directory, new_output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(new_output.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(
+            (new_output / "source-metadata").stat().st_mode & 0o777,
+            0o755,
+        )
+        for relative_path in PUBLISHED_ARTIFACTS:
+            self.assertEqual((new_output / relative_path).stat().st_mode & 0o777, 0o644)
+
+        existing_output = self.directory / "existing-output"
+        existing_metadata = existing_output / "source-metadata"
+        existing_metadata.mkdir(parents=True)
+        existing_output.chmod(0o700)
+        existing_metadata.chmod(0o700)
+        result = _run_publish_artifacts(work_directory, existing_output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(existing_output.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(existing_metadata.stat().st_mode & 0o777, 0o700)
 
     def test_command_failure_preserves_every_published_artifact(self) -> None:
         output_directory = self.directory / "output with spaces"
