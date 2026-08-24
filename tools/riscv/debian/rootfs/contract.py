@@ -21,7 +21,7 @@ from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 
-ROOT_LABEL = "ASTER_DEBIAN_ROOT"
+ROOT_LABEL = "ASTER_DEBIANROOT"
 ROOT_UUID = "7b7ad749-77d0-4e59-89e4-e117244a70aa"
 INSTALL_PACKAGES = (
     "bash",
