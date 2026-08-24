@@ -23,6 +23,8 @@ from unittest import mock
 
 from tools.riscv.debian.rootfs import fsops as fsops_module
 from tools.riscv.debian.rootfs import gate_runtime as gate_runtime_module
+from tools.riscv.debian.rootfs import rootfs_gate as rootfs_gate_module
+from tools.riscv.debian.rootfs import rootfs_gate_backend as gate_backend_module
 from tools.riscv.debian.rootfs.contract import (
     ContractError,
     GATE_IDENTITY_PACKAGES,
@@ -52,6 +54,15 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     TerminationSignalState,
     launch_process,
     teardown_gate,
+)
+from tools.riscv.debian.rootfs.rootfs_gate import (
+    GateConfig,
+    GateFailure,
+    build_boot_image,
+    copy_sparse_root,
+    orchestrate_gate,
+    parse_gate_args,
+    verify_four_hart_dtb,
 )
 
 
@@ -2898,6 +2909,412 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         _, status = os.waitpid(pid, 0)
         self.assertTrue(os.WIFEXITED(status))
         self.assertEqual(os.WEXITSTATUS(status), 128 + signal.SIGTERM)
+
+
+class DebianRootfsGateOrchestrationTests(unittest.TestCase):
+    NONCE = "0123456789abcdef" * 4
+
+    class Operations:
+        def __init__(self, failure: str | None = None) -> None:
+            self.failure = failure
+            self.events: list[str] = []
+            self.publications: list[dict[str, object]] = []
+
+        def _event(self, name: str) -> None:
+            self.events.append(name)
+            if self.failure == name:
+                raise GateFailure(name)
+
+        def invalidate(self, config: GateConfig) -> None:
+            del config
+            self._event("invalidate")
+
+        def snapshot_inputs(self, config: GateConfig) -> dict[str, str]:
+            del config
+            self._event("snapshot")
+            return {"kernel": "a" * 64, "root_image": "b" * 64}
+
+        def validate_inputs(
+            self, config: GateConfig, snapshots: dict[str, str]
+        ) -> dict[str, object]:
+            del config, snapshots
+            self._event("validate")
+            return {
+                "debian_release": "13.6",
+                "packages": (("bash", "5.2"),),
+            }
+
+        def prepare(
+            self,
+            config: GateConfig,
+            snapshots: dict[str, str],
+            identity: dict[str, object],
+        ) -> dict[str, str]:
+            del config, snapshots, identity
+            self._event("prepare")
+            return {"boot_disk": "boot.ext4", "root_disk": "root.ext2"}
+
+        def launch(
+            self, config: GateConfig, prepared: dict[str, str], boot_number: int
+        ) -> dict[str, object]:
+            del config, prepared
+            self._event(f"launch{boot_number}")
+            return {
+                "boot_number": boot_number,
+                "argv": ("qemu-system-riscv64", f"boot={boot_number}"),
+            }
+
+        def drive_uboot(self, session: dict[str, object], config: GateConfig) -> None:
+            del config
+            self._event(f"uboot{session['boot_number']}")
+
+        def enter_debian(self, session: dict[str, object], config: GateConfig) -> None:
+            del config
+            self._event(f"shell{session['boot_number']}")
+
+        def execute_checks(
+            self,
+            session: dict[str, object],
+            config: GateConfig,
+            identity: dict[str, object],
+            nonce: str,
+        ) -> None:
+            del config, identity, nonce
+            self._event(f"commands{session['boot_number']}")
+
+        def request_quit(self, session: dict[str, object], config: GateConfig) -> None:
+            del config
+            self._event(f"quit{session['boot_number']}")
+
+        def close_monitor(self, session: dict[str, object]) -> None:
+            self._event(f"close{session['boot_number']}")
+
+        def cleanup_process(
+            self, session: dict[str, object], config: GateConfig
+        ) -> None:
+            del config
+            self._event(f"cleanup{session['boot_number']}")
+
+        def drain_serial(self, session: dict[str, object], config: GateConfig) -> bytes:
+            del config
+            boot_number = session["boot_number"]
+            self._event(f"drain{boot_number}")
+            return f"complete boot {boot_number}\n".encode()
+
+        def hash_final_root(self, config: GateConfig, prepared: dict[str, str]) -> str:
+            del config, prepared
+            self._event("hash-final-root")
+            return "c" * 64
+
+        def publish(
+            self,
+            config: GateConfig,
+            prepared: dict[str, str] | None,
+            transcripts: tuple[bytes, bytes],
+            result: dict[str, object],
+        ) -> None:
+            del config, prepared, transcripts
+            self._event("publish")
+            self.publications.append(copy.deepcopy(result))
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        directory = Path(self.temporary_directory.name)
+        inputs = []
+        for name in (
+            "kernel",
+            "u-boot",
+            "qemu-virt.dtb",
+            "stage1-initramfs.cpio",
+            "debian-root.ext2",
+            "rootfs-manifest.json",
+            "packages.lock",
+            "package-checksums",
+        ):
+            path = directory / name
+            path.write_bytes(name.encode())
+            inputs.append(path)
+        self.config = GateConfig(*inputs, directory / "output")
+
+    def test_configuration_is_frozen_and_has_exact_four_hart_timeouts(self) -> None:
+        self.assertEqual(self.config.smp, 4)
+        self.assertGreater(self.config.boot_timeout, 0)
+        self.assertGreater(self.config.command_timeout, 0)
+        self.assertGreater(self.config.cleanup_timeout, 0)
+        with self.assertRaises(FrozenInstanceError):
+            self.config.smp = 1
+
+    def test_success_uses_exact_two_boot_lifecycle_and_same_prepared_root(self) -> None:
+        operations = self.Operations()
+
+        result = orchestrate_gate(self.config, operations, nonce=self.NONCE)
+
+        self.assertEqual(
+            operations.events,
+            [
+                "invalidate",
+                "snapshot",
+                "validate",
+                "prepare",
+                "launch1",
+                "uboot1",
+                "shell1",
+                "commands1",
+                "quit1",
+                "close1",
+                "cleanup1",
+                "drain1",
+                "launch2",
+                "uboot2",
+                "shell2",
+                "commands2",
+                "quit2",
+                "close2",
+                "cleanup2",
+                "drain2",
+                "hash-final-root",
+                "publish",
+            ],
+        )
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["reason"], "pass")
+        self.assertEqual(
+            result["nonce_sha256"], hashlib.sha256(self.NONCE.encode()).hexdigest()
+        )
+        self.assertNotIn(self.NONCE, json.dumps(result))
+        self.assertEqual(len(result["qemu_argv"]), 2)
+        self.assertEqual(
+            result["manifest_identity"],
+            {"debian_release": "13.6"},
+        )
+        self.assertEqual(result["package_identity"], (("bash", "5.2"),))
+        self.assertEqual(
+            set(result["phase_durations_seconds"]),
+            {"snapshot", "validate", "prepare", "boot1", "boot2", "hash-final-root"},
+        )
+        self.assertTrue(
+            all(
+                isinstance(duration, float) and duration >= 0
+                for duration in result["phase_durations_seconds"].values()
+            )
+        )
+
+    def test_failures_never_publish_a_passing_result_and_always_drain_launched_boot(
+        self,
+    ) -> None:
+        cases = (
+            ("prepare", []),
+            ("launch1", []),
+            ("uboot1", ["close1", "cleanup1", "drain1"]),
+            ("shell1", ["close1", "cleanup1", "drain1"]),
+            ("commands1", ["close1", "cleanup1", "drain1"]),
+            ("drain1", ["close1", "cleanup1", "drain1"]),
+            ("cleanup1", ["close1", "cleanup1", "drain1"]),
+            ("hash-final-root", ["close2", "cleanup2", "drain2"]),
+        )
+
+        for failure, required_tail in cases:
+            with self.subTest(failure=failure):
+                operations = self.Operations(failure)
+                result = orchestrate_gate(self.config, operations, nonce=self.NONCE)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["reason"], failure)
+                for event in required_tail:
+                    self.assertIn(event, operations.events)
+                self.assertFalse(
+                    any(
+                        publication["passed"] for publication in operations.publications
+                    )
+                )
+
+    def test_interrupted_publication_cannot_leave_passing_evidence(self) -> None:
+        operations = self.Operations("publish")
+
+        with self.assertRaisesRegex(GateFailure, "publish"):
+            orchestrate_gate(self.config, operations, nonce=self.NONCE)
+
+        self.assertEqual(operations.events[0], "invalidate")
+        self.assertEqual(operations.events[-1], "publish")
+        self.assertEqual(operations.publications, [])
+
+
+class DebianRootfsGateArtifactTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    def test_real_boot_image_is_64_mib_and_contains_exactly_three_files(self) -> None:
+        kernel = self.directory / "kernel"
+        dtb = self.directory / "dtb"
+        initramfs = self.directory / "initramfs"
+        kernel.write_bytes(b"kernel")
+        dtb.write_bytes(b"dtb")
+        initramfs.write_bytes(b"initramfs")
+        image = self.directory / "boot.ext4"
+
+        build_boot_image(kernel, dtb, initramfs, image)
+
+        self.assertEqual(image.stat().st_size, 64 * 1024 * 1024)
+        listing = subprocess.run(
+            ["debugfs", "-R", "ls -p /", str(image)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+        names = {
+            fields[5]
+            for line in listing.splitlines()
+            if len(fields := line.split("/")) >= 6 and fields[5] not in (".", "..", "")
+        }
+        self.assertEqual(
+            names,
+            {"asterinas.booti", "qemu-virt.dtb", "stage1-initramfs.cpio"},
+        )
+        self.assertNotIn("lost+found", listing)
+
+    def test_sparse_root_copy_uses_descriptor_and_preserves_source_identity(
+        self,
+    ) -> None:
+        source = self.directory / "base.ext2"
+        with source.open("wb") as stream:
+            stream.write(b"root")
+            stream.seek(16 * 1024 * 1024 - 1)
+            stream.write(b"\0")
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        self.addCleanup(os.close, descriptor)
+        destination = self.directory / "run.ext2"
+
+        before, after, copied = copy_sparse_root(descriptor, destination)
+
+        self.assertEqual(before, after)
+        self.assertEqual(copied, before)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+        self.assertLess(destination.stat().st_blocks * 512, destination.stat().st_size)
+
+    def test_fdtget_accepts_exactly_four_enabled_cpu_nodes(self) -> None:
+        source = self.directory / "four.dts"
+        dtb = self.directory / "four.dtb"
+        cpus = "\n".join(
+            f'cpu@{index} {{ device_type = "cpu"; reg = <{index}>; status = "okay"; }};'
+            for index in range(4)
+        )
+        source.write_text(
+            "/dts-v1/; / { #address-cells = <1>; #size-cells = <1>; "
+            f"cpus {{ #address-cells = <1>; #size-cells = <0>; {cpus} }}; }};",
+            encoding="ascii",
+        )
+        subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", dtb, source], check=True)
+
+        self.assertEqual(verify_four_hart_dtb(dtb), 4)
+
+        source.write_text(
+            source.read_text().replace('status = "okay";', 'status = "disabled";', 1),
+            encoding="ascii",
+        )
+        subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", dtb, source], check=True)
+        with self.assertRaisesRegex(GateFailure, "exactly 4"):
+            verify_four_hart_dtb(dtb)
+
+    def test_cli_requires_all_eight_inputs_and_output_without_build_mode(self) -> None:
+        required = (
+            "--kernel",
+            "--uboot",
+            "--dtb",
+            "--stage1-initramfs",
+            "--root-image",
+            "--root-manifest",
+            "--packages-lock",
+            "--package-checksums",
+            "--output-directory",
+        )
+        arguments = [
+            value for option in required for value in (option, f"/{option[2:]}")
+        ]
+
+        config = parse_gate_args(arguments)
+
+        self.assertEqual(config.smp, 4)
+        with self.assertRaises(SystemExit):
+            parse_gate_args(arguments[:-2])
+        for forbidden in ("download", "rebuild", "mirror"):
+            self.assertNotIn(forbidden, " ".join(arguments))
+        with mock.patch.object(
+            gate_backend_module, "main", return_value=7
+        ) as backend_main:
+            self.assertEqual(rootfs_gate_module.main(arguments), 7)
+        backend_main.assert_called_once_with(arguments)
+
+
+class DebianRootfsGateBackendSessionTests(unittest.TestCase):
+    def test_session_uses_hardlinked_same_root_and_removes_directory_after_drain(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            inputs = []
+            for index in range(8):
+                path = directory / f"input-{index}"
+                path.write_bytes(str(index).encode())
+                inputs.append(path)
+            output = directory / "output"
+            output.mkdir()
+            boot = output / "boot.ext4"
+            root = output / "debian-root.run.ext2"
+            boot.write_bytes(b"boot")
+            root.write_bytes(b"root")
+            config = GateConfig(*inputs, output)
+            process = mock.Mock()
+            monitor = mock.Mock()
+            serial = mock.Mock(transcript=b"")
+            serial.drain.return_value = b""
+            with (
+                mock.patch.object(
+                    gate_backend_module, "launch_process", return_value=process
+                ),
+                mock.patch.object(
+                    gate_backend_module.HmpMonitor, "connect", return_value=monitor
+                ),
+                mock.patch.object(
+                    gate_backend_module, "SerialConsole", return_value=serial
+                ),
+                gate_backend_module.ConcreteOperations(config) as operations,
+            ):
+                session = operations.launch(
+                    config, {"boot_disk": boot, "root_disk": root}, 1
+                )
+                session_directory = session["directory"]
+                self.assertTrue(os.path.samefile(root, session_directory / root.name))
+                operations.close_monitor(session)
+                operations.cleanup_process(session, config)
+                self.assertEqual(operations.drain_serial(session, config), b"")
+                self.assertFalse(session_directory.exists())
+
+    def test_shell_wait_marker_is_not_present_in_echoed_command_payload(self) -> None:
+        class EchoingSerial:
+            def __init__(self) -> None:
+                self.payload = b""
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.payload = payload
+
+            def wait_for(self, marker: bytes, deadline: float) -> bytes:
+                del deadline
+                if marker in self.payload:
+                    raise AssertionError("echoed payload matched completion marker")
+                return self.payload + marker + b"\r\n"
+
+        operations = object.__new__(gate_backend_module.ConcreteOperations)
+        session = {"boot_number": 1, "serial": EchoingSerial()}
+        operations.execute_checks(
+            session,
+            mock.Mock(command_timeout=1.0),
+            {"debian_release": "13.6", "packages": ()},
+            "0123456789abcdef" * 4,
+        )
+        self.assertIn("commands", session)
 
 
 if __name__ == "__main__":
