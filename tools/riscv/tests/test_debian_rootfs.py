@@ -3246,6 +3246,20 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
             self.assertEqual(rootfs_gate_module.main(arguments), 7)
         backend_main.assert_called_once_with(arguments)
 
+        help_result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "tools.riscv.debian.rootfs.rootfs_gate",
+                "--help",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--root-image", help_result.stdout)
+
 
 class DebianRootfsGateBackendSessionTests(unittest.TestCase):
     def test_session_uses_hardlinked_same_root_and_removes_directory_after_drain(
@@ -3315,6 +3329,83 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
             "0123456789abcdef" * 4,
         )
         self.assertIn("commands", session)
+
+
+class DebianRootfsDocumentationTests(unittest.TestCase):
+    def test_operator_guide_covers_the_frozen_offline_runtime_workflow(self) -> None:
+        guide = (REPOSITORY_ROOT / "tools/riscv/debian/rootfs/README.md").read_text(
+            encoding="utf-8"
+        )
+
+        for required in (
+            "127.0.0.1:17892",
+            "mirrors.tuna.tsinghua.edu.cn/debian",
+            "mirrors.ustc.edu.cn/debian",
+            "deb.debian.org/debian",
+            "asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached",
+            "debootstrap",
+            "qemu-user-static",
+            "binfmt-support",
+            "debian-archive-keyring",
+            "libc6-dev-riscv64-cross",
+            "linux-libc-dev-riscv64-cross",
+            "cpio",
+            "e2fsprogs",
+            "curl",
+            "gpgv",
+            "update-binfmts --enable qemu-riscv64",
+            "make test_riscv_debian_rootfs_unit",
+            "make test_riscv_debian_rootfs_gate",
+            "-nic none",
+            "rootfs-manifest.json",
+            "packages.lock",
+            "boot1.serial.log",
+            "boot2.serial.log",
+            "result.json",
+            "final_root_sha256",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guide)
+
+    def test_runtime_make_target_requires_artifacts_and_never_builds_rootfs(
+        self,
+    ) -> None:
+        missing = subprocess.run(
+            ["make", "--no-print-directory", "test_riscv_debian_rootfs_gate"],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("DEBIAN_KERNEL is required", missing.stderr)
+
+        variable_names = (
+            "DEBIAN_KERNEL",
+            "DEBIAN_UBOOT",
+            "DEBIAN_DTB",
+            "DEBIAN_STAGE1_INITRAMFS",
+            "DEBIAN_ROOT_IMAGE",
+            "DEBIAN_ROOT_MANIFEST",
+            "DEBIAN_PACKAGES_LOCK",
+            "DEBIAN_PACKAGE_CHECKSUMS",
+            "DEBIAN_GATE_OUTPUT",
+        )
+        dry_run = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-n",
+                "test_riscv_debian_rootfs_gate",
+                *(f"{name}=/tmp/{name.lower()}" for name in variable_names),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+        self.assertIn("python3 -m tools.riscv.debian.rootfs.rootfs_gate", dry_run)
+        for forbidden in ("build_rootfs.sh", "debootstrap", "http://", "https://"):
+            self.assertNotIn(forbidden, dry_run)
 
 
 if __name__ == "__main__":

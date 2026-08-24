@@ -62,6 +62,23 @@ See [the PCI xHCI keyboard operator guide](xhci/README.md) for the Sv39 build,
 private U-Boot disk, bounded QEMU command, evidence schema, verified M1 hashes,
 and the physical-board limitations.
 
+## Debian persistent root
+
+The Debian M1 gate validates a signed Trixie `riscv64` ext2 root, hands off
+from a minimal stage-1 initramfs into Debian `/bin/bash`, and boots the same
+writable root twice to prove persistence. It is an infrastructure gate: four
+harts, Sv39, two VirtIO block devices, no network, display, USB, or input.
+
+Run its local contract tests with:
+
+```bash
+make test_riscv_debian_rootfs_unit
+```
+
+See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
+the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
+explicit two-boot target, and evidence inspection commands.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
