@@ -221,15 +221,24 @@ fn validate_xhci_mmio_with(
     let max_interrupters = ((hcsparams1 >> 8) & 0x7ff) as usize;
     let max_ports = (hcsparams1 >> 24) as usize;
 
-    let port_registers_len = max_ports
+    let Some(port_registers_len) = max_ports
         .checked_mul(XHCI_PORT_REGISTER_SET_LEN)
-        .and_then(|length| XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET.checked_add(length));
-    let doorbell_registers_len = max_slots
+        .and_then(|length| XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET.checked_add(length))
+    else {
+        return Err(XhciMmioError::InvalidRegisterLayout);
+    };
+    let Some(doorbell_registers_len) = max_slots
         .checked_add(1)
-        .and_then(|count| count.checked_mul(size_of::<u32>()));
-    let interrupter_registers_len = max_interrupters
+        .and_then(|count| count.checked_mul(size_of::<u32>()))
+    else {
+        return Err(XhciMmioError::InvalidRegisterLayout);
+    };
+    let Some(interrupter_registers_len) = max_interrupters
         .checked_mul(XHCI_INTERRUPTER_REGISTER_SET_LEN)
-        .and_then(|length| XHCI_RUNTIME_INTERRUPTER_REGISTERS_OFFSET.checked_add(length));
+        .and_then(|length| XHCI_RUNTIME_INTERRUPTER_REGISTERS_OFFSET.checked_add(length))
+    else {
+        return Err(XhciMmioError::InvalidRegisterLayout);
+    };
 
     if operational_offset < XHCI_MIN_CAPLENGTH
         || !operational_offset.is_multiple_of(size_of::<u64>())
@@ -237,16 +246,31 @@ fn validate_xhci_mmio_with(
         || max_slots == 0
         || max_interrupters == 0
         || max_ports == 0
-        || !port_registers_len
-            .is_some_and(|length| region_fits(operational_offset, length, mmio_size))
+        || !region_fits(operational_offset, port_registers_len, mmio_size)
         || doorbell_offset < operational_offset
         || !doorbell_offset.is_multiple_of(size_of::<u32>())
-        || !doorbell_registers_len
-            .is_some_and(|length| region_fits(doorbell_offset, length, mmio_size))
+        || !region_fits(doorbell_offset, doorbell_registers_len, mmio_size)
         || runtime_offset < operational_offset
         || !runtime_offset.is_multiple_of(XHCI_INTERRUPTER_REGISTER_SET_LEN)
-        || !interrupter_registers_len
-            .is_some_and(|length| region_fits(runtime_offset, length, mmio_size))
+        || !region_fits(runtime_offset, interrupter_registers_len, mmio_size)
+        || regions_overlap(
+            operational_offset,
+            port_registers_len,
+            runtime_offset,
+            interrupter_registers_len,
+        )
+        || regions_overlap(
+            operational_offset,
+            port_registers_len,
+            doorbell_offset,
+            doorbell_registers_len,
+        )
+        || regions_overlap(
+            runtime_offset,
+            interrupter_registers_len,
+            doorbell_offset,
+            doorbell_registers_len,
+        )
     {
         return Err(XhciMmioError::InvalidRegisterLayout);
     }
@@ -266,7 +290,26 @@ fn validate_xhci_mmio_with(
         }
         let header = read(offset)?;
         let capability_len = extended_capability_len(offset, header, mmio_size, &mut read)?;
-        if !region_fits(offset, capability_len, mmio_size) {
+        if !region_fits(offset, capability_len, mmio_size)
+            || regions_overlap(
+                offset,
+                capability_len,
+                operational_offset,
+                port_registers_len,
+            )
+            || regions_overlap(
+                offset,
+                capability_len,
+                runtime_offset,
+                interrupter_registers_len,
+            )
+            || regions_overlap(
+                offset,
+                capability_len,
+                doorbell_offset,
+                doorbell_registers_len,
+            )
+        {
             return Err(XhciMmioError::InvalidExtendedCapability);
         }
 
@@ -339,6 +382,16 @@ fn region_fits(offset: usize, length: usize, mmio_size: usize) -> bool {
     offset
         .checked_add(length)
         .is_some_and(|end| end <= mmio_size)
+}
+
+fn regions_overlap(
+    first_offset: usize,
+    first_length: usize,
+    second_offset: usize,
+    second_length: usize,
+) -> bool {
+    first_offset < second_offset.saturating_add(second_length)
+        && second_offset < first_offset.saturating_add(first_length)
 }
 
 fn new_usb_kernel_op(dma_window: DmaWindow) -> Box<UsbKernelOp> {
@@ -762,6 +815,40 @@ mod tests {
             validate_standard_layout(0x500, hccparams1, &[(offset, 1)]),
             Err(XhciMmioError::InvalidExtendedCapability)
         );
+    }
+
+    #[ktest]
+    fn rejects_extended_capability_overlapping_operational_registers() {
+        let offset = XHCI_MIN_CAPLENGTH;
+        let hccparams1 = ((offset / size_of::<u32>()) as u32) << 16 | 1;
+
+        assert_eq!(
+            validate_standard_layout(0x500, hccparams1, &[(offset, 1)]),
+            Err(XhciMmioError::InvalidExtendedCapability)
+        );
+    }
+
+    #[ktest]
+    fn rejects_overlapping_fixed_controller_regions() {
+        let cases = [
+            (0x0420, VALID_DOORBELL_OFFSET),
+            (VALID_RUNTIME_OFFSET, 0x0460),
+        ];
+
+        for (runtime_offset, doorbell_offset) in cases {
+            assert_eq!(
+                validate_layout(
+                    0x500,
+                    VALID_CAPLENGTH_HCIVERSION,
+                    VALID_HCSPARAMS1,
+                    1,
+                    doorbell_offset,
+                    runtime_offset,
+                    &[],
+                ),
+                Err(XhciMmioError::InvalidRegisterLayout)
+            );
+        }
     }
 
     #[ktest]
