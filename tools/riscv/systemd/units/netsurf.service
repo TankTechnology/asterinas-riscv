@@ -6,6 +6,7 @@ PartOf=graphical.target
 StartLimitIntervalSec=0
 
 [Service]
+KeyringMode=inherit
 Type=simple
 Environment=DISPLAY=:0
 Environment=HOME=/root

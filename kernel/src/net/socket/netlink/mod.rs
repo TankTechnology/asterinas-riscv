@@ -39,6 +39,7 @@
 
 mod addr;
 mod common;
+mod ctrl_msg;
 mod kobject_uevent;
 mod message;
 mod options;
@@ -47,8 +48,9 @@ mod route;
 mod table;
 
 pub use addr::{GroupIdSet, NetlinkSocketAddr};
+pub(in crate::net) use ctrl_msg::NetlinkControlMessage;
 pub use kobject_uevent::NetlinkUeventSocket;
-pub use options::{AddMembership, DropMembership};
+pub use options::{AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships, PktInfo};
 pub(super) use receiver::NETLINK_DEFAULT_BUF_SIZE;
 pub use route::NetlinkRouteSocket;
 pub use table::{StandardNetlinkProtocol, is_valid_protocol};

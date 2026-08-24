@@ -1,0 +1,12 @@
+[Unit]
+Description=Journal Socket (/dev/log)
+DefaultDependencies=no
+Before=sockets.target
+IgnoreOnIsolate=yes
+
+[Socket]
+ListenDatagram=/run/systemd/journal/dev-log
+PassCredentials=yes
+Service=systemd-journald.service
+SocketMode=0666
+Symlinks=/dev/log

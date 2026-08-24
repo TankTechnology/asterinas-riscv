@@ -103,7 +103,7 @@ just never used it — it pointed at a `/tmp` boot disk that was re-packed once
   present in **both** the failing capture (481×, only because it ran 10× longer)
   and the successful M7 render capture (4×). systemd still reads the real exit
   status (`code=exited, status=1`), so the `exit(1)` is genuine, not a wait
-  mis-report.
+  misreport.
 
 ---
 

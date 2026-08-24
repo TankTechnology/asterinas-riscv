@@ -7,29 +7,45 @@ use aster_bigtcp::{
 };
 
 use crate::{
-    net::{
-        iface::{Iface, iter_all_ifaces, loopback_iface, virtio_iface},
-        socket::util::check_port_privilege,
-    },
+    net::{iface::Iface, net_ns::current_net_ns, socket::util::check_port_privilege},
     prelude::*,
 };
 
 fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
+    // The address is resolved against the interface view of the current
+    // network namespace.
+    let net_ns = current_net_ns();
     match *ip_addr {
-        IpAddress::Ipv4(ipv4_addr) => iter_all_ifaces()
-            .find(|iface| {
-                iface
-                    .ipv4_cidr()
-                    .is_some_and(|cidr| cidr.address() == ipv4_addr)
-            })
-            .map(Clone::clone),
-        IpAddress::Ipv6(ipv6_addr) => iter_all_ifaces()
-            .find(|iface| {
-                iface
-                    .ipv6_cidr()
-                    .is_some_and(|cidr| cidr.address() == ipv6_addr)
-            })
-            .map(Clone::clone),
+        IpAddress::Ipv4(ipv4_addr) => {
+            if ipv4_addr.is_unspecified() {
+                // INADDR_ANY (0.0.0.0) — bind to the default interface.
+                return Some(net_ns.default_iface().clone());
+            }
+            net_ns
+                .ifaces()
+                .iter()
+                .find(|iface| {
+                    iface
+                        .ipv4_cidr()
+                        .is_some_and(|cidr| cidr.address() == ipv4_addr)
+                })
+                .map(Clone::clone)
+        }
+        IpAddress::Ipv6(ipv6_addr) => {
+            if ipv6_addr.is_unspecified() {
+                // in6addr_any (::) — bind to the default interface with IPv6.
+                return Some(net_ns.default_iface().clone());
+            }
+            net_ns
+                .ifaces()
+                .iter()
+                .find(|iface| {
+                    iface
+                        .ipv6_cidr()
+                        .is_some_and(|cidr| cidr.address() == ipv6_addr)
+                })
+                .map(Clone::clone)
+        }
     }
 }
 
@@ -37,9 +53,12 @@ fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
 /// If the remote address is the same as that of some iface, we will use the iface.
 /// Otherwise, we will use a default interface.
 fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
+    // The interface is chosen from the interface view of the current network
+    // namespace.
+    let net_ns = current_net_ns();
     match remote_ip_addr {
         IpAddress::Ipv4(remote_ipv4_addr) => {
-            if let Some(iface) = iter_all_ifaces().find(|iface| {
+            if let Some(iface) = net_ns.ifaces().iter().find(|iface| {
                 iface
                     .ipv4_cidr()
                     .is_some_and(|cidr| cidr.address() == *remote_ipv4_addr)
@@ -49,14 +68,10 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
 
             // FIXME: Instead of hardcoding the rules here, we should choose the
             // default interface according to the routing table.
-            if let Some(virtio_iface) = virtio_iface() {
-                virtio_iface.clone()
-            } else {
-                loopback_iface().clone()
-            }
+            net_ns.default_iface().clone()
         }
         IpAddress::Ipv6(remote_ipv6_addr) => {
-            if let Some(iface) = iter_all_ifaces().find(|iface| {
+            if let Some(iface) = net_ns.ifaces().iter().find(|iface| {
                 iface
                     .ipv6_cidr()
                     .is_some_and(|cidr| cidr.address() == *remote_ipv6_addr)
@@ -65,14 +80,13 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
             }
 
             // Fall back to an interface with an IPv6 address.
-            // Prefer virtio over loopback for external traffic.
-            if let Some(virtio_iface) = virtio_iface()
-                && virtio_iface.ipv6_cidr().is_some()
-            {
-                return virtio_iface.clone();
+            // Prefer a non-loopback interface over loopback for external traffic.
+            let default_iface = net_ns.default_iface();
+            if default_iface.ipv6_cidr().is_some() {
+                return default_iface.clone();
             }
 
-            loopback_iface().clone()
+            net_ns.loopback().clone()
         }
     }
 }

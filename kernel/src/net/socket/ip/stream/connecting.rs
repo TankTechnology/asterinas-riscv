@@ -46,8 +46,9 @@ impl ConnectingStream {
                 Err((bound_port, _)) => {
                     // The only reason this method might go to this branch is because
                     // we're trying to connect to an unspecified address (i.e. 0.0.0.0).
-                    // We currently have no support for binding to,
-                    // listening on, or connecting to the unspecified address.
+                    // The caller (InitStream::connect) should have already resolved
+                    // the unspecified address to localhost. If we still reach here,
+                    // the connection genuinely failed.
                     //
                     // We assume the remote will just refuse to connect,
                     // so we return `ECONNREFUSED`.

@@ -221,8 +221,11 @@ impl AuxiliaryData {
         let mut cred = None;
 
         for ctrl_msg in ctrl_msgs.into_iter() {
-            let ControlMessage::Unix(unix_ctrl_msg) = ctrl_msg;
-            // TODO: What should we do if there are control messages of other protocols?
+            // Control messages of other protocols are not expected on UNIX
+            // sockets; ignore them.
+            let ControlMessage::Unix(unix_ctrl_msg) = ctrl_msg else {
+                continue;
+            };
 
             match unix_ctrl_msg.0 {
                 Message::Files(FileMessage {

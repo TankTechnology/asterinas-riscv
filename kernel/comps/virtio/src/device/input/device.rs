@@ -233,10 +233,14 @@ impl InputDevice {
             // EV_SYN events
             0 => match virtio_event.code {
                 0 => {
-                    // SYN_REPORT: end of event sequence, send `SynEvent::Report`
+                    // SYN_REPORT: end of event sequence, send `SynEvent::Report`.
+                    // Keep draining the queue: more events may already be batched
+                    // behind the SYN, and no new IRQ will arrive for them until the
+                    // device posts another event (or never). Stopping here strands
+                    // key releases, which Xorg answers with autorepeat storms.
                     let syn_event = InputEvent::from_sync_event(SynEvent::Report);
                     registered_device.submit_events(&[syn_event]);
-                    return false;
+                    return true;
                 }
                 _ => {
                     // Other sync events (SYN_DROPPED, SYN_CONFIG, etc.)
@@ -414,7 +418,7 @@ fn map_to_key_code(virtio_code: u16) -> Option<KeyCode> {
         126 => KeyCode::RightMeta,
         139 => KeyCode::Menu,
         // Mouse / pointer buttons (BTN_*). Without these, a tablet reports no
-        // buttons and evdev mis-configures it as a relative mouse.
+        // buttons and evdev misconfigures it as a relative mouse.
         0x110 => KeyCode::BtnLeft,
         0x111 => KeyCode::BtnRight,
         0x112 => KeyCode::BtnMiddle,

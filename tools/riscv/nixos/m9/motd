@@ -1,0 +1,9 @@
+
+  ====================================================
+   M9 lightweight NixOS — Asterinas on RISC-V (QEMU)
+   busybox init + nix profile, no systemd, no daemon
+  ====================================================
+  login: root   password: nixos
+  nix-installed binaries: hello, nixos-info, fortune,
+                          heartbeat, curl, jq
+  service: heartbeat writes /var/log/heartbeat.log

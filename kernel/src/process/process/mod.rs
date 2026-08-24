@@ -9,6 +9,7 @@ use ostd::timer::Jiffies;
 
 use self::timer_manager::PosixTimerManager;
 use super::{
+    namespace::pid_ns::PidNamespace,
     pid_table::{self, PidTable},
     posix_thread::{AsPosixThread, FIRST_POSIX_TID},
     process_vm::ProcessVmarGuard,
@@ -86,6 +87,14 @@ pub(super) fn init_on_each_cpu() {
 pub struct Process {
     // Immutable Part
     pid: Pid,
+    /// The PID namespace this process belongs to.
+    ///
+    /// The process is also visible in all ancestor namespaces under the
+    /// virtual PIDs recorded in `ns_vpids`.
+    pid_ns: Arc<PidNamespace>,
+    /// The process's virtual PID in its own PID namespace and in every
+    /// ancestor namespace, innermost first. Immutable after creation.
+    ns_vpids: Box<[(Arc<PidNamespace>, u32)]>,
 
     vmar: Mutex<Option<Arc<Vmar>>>,
     /// Wait for child status changed
@@ -234,8 +243,15 @@ impl Process {
         oom_score_adj: i16,
         sig_dispositions: Arc<Mutex<SigDispositions>>,
         user_ns: Arc<UserNamespace>,
+        pid_ns: Arc<PidNamespace>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|process_ref: &Weak<Process>| {
+            // Register the process in its PID namespace and all ancestors,
+            // allocating a virtual PID in each.
+            let ns_vpids = pid_ns
+                .register_process(process_ref, pid as u32)
+                .into_boxed_slice();
+
             // SIGCHID does not interrupt pauser. Child process will
             // resume paused parent when doing exit.
             let children_wait_queue = WaitQueue::new();
@@ -245,6 +261,8 @@ impl Process {
 
             Self {
                 pid,
+                pid_ns,
+                ns_vpids,
                 vmar: Mutex::new(Some(vmar)),
                 children_wait_queue,
                 pidfile_pollee: Pollee::new(),
@@ -289,6 +307,40 @@ impl Process {
 
     pub fn pid(&self) -> Pid {
         self.pid
+    }
+
+    /// Returns the PID namespace this process belongs to.
+    pub fn pid_ns(&self) -> &Arc<PidNamespace> {
+        &self.pid_ns
+    }
+
+    /// Returns the process's virtual PID in the given namespace, or `None`
+    /// if the process is not visible in that namespace.
+    pub fn pid_in_ns(&self, ns: &Arc<PidNamespace>) -> Option<u32> {
+        self.ns_vpids
+            .iter()
+            .find(|(entry_ns, _)| Arc::ptr_eq(entry_ns, ns))
+            .map(|(_, vpid)| *vpid)
+    }
+
+    /// Returns the process's virtual PID in its own PID namespace and in
+    /// every ancestor namespace, innermost first.
+    pub fn ns_vpids(&self) -> &[(Arc<PidNamespace>, u32)] {
+        &self.ns_vpids
+    }
+
+    /// Returns whether this process is the init process of a non-initial
+    /// PID namespace (i.e., virtual PID 1 in its own namespace).
+    pub fn is_ns_init(&self) -> bool {
+        !self.pid_ns.is_init() && self.pid_in_ns(&self.pid_ns.clone()) == Some(1)
+    }
+
+    /// Removes the process's virtual PID registrations from all PID
+    /// namespaces it was visible in. Called when the process is reaped.
+    pub(super) fn remove_from_pid_namespaces(&self) {
+        for (ns, vpid) in self.ns_vpids.iter() {
+            ns.remove_vpid(*vpid);
+        }
     }
 
     /// Gets the profiling clock of the process.

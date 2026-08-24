@@ -8,6 +8,7 @@ use super::{
     alarm::sys_alarm,
     arch_prctl::sys_arch_prctl,
     bind::sys_bind,
+    bpf::sys_bpf,
     brk::sys_brk,
     capget::sys_capget,
     capset::sys_capset,
@@ -16,9 +17,11 @@ use super::{
     chown::{sys_chown, sys_fchown, sys_fchownat, sys_lchown},
     chroot::sys_chroot,
     clock_gettime::{sys_clock_getres, sys_clock_gettime},
+    clock_settime::sys_clock_settime,
     clone::{sys_clone, sys_clone3},
     close::{sys_close, sys_close_range},
     connect::sys_connect,
+    copy_file_range::sys_copy_file_range,
     dup::{sys_dup, sys_dup2, sys_dup3},
     epoll::{
         sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2,
@@ -371,6 +374,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_TIMER_SETTIME = 223    => sys_timer_settime(args[..4]);
     SYS_TIMER_GETTIME = 224    => sys_timer_gettime(args[..2]);
     SYS_TIMER_DELETE = 226     => sys_timer_delete(args[..1]);
+    SYS_CLOCK_SETTIME = 227    => sys_clock_settime(args[..2]);
     SYS_CLOCK_GETTIME = 228    => sys_clock_gettime(args[..2]);
     SYS_CLOCK_GETRES = 229     => sys_clock_getres(args[..2]);
     SYS_CLOCK_NANOSLEEP = 230  => sys_clock_nanosleep(args[..4]);
@@ -429,8 +433,10 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_RENAMEAT2 = 316        => sys_renameat2(args[..5]);
     SYS_GETRANDOM = 318        => sys_getrandom(args[..3]);
     SYS_MEMFD_CREATE = 319     => sys_memfd_create(args[..2]);
+    SYS_BPF = 321              => sys_bpf(args[..3]);
     SYS_EXECVEAT = 322         => sys_execveat(args[..5], &mut user_ctx);
     SYS_MEMBARRIER = 324       => sys_membarrier(args[..3]);
+    SYS_COPY_FILE_RANGE = 326  => sys_copy_file_range(args[..6]);
     SYS_PREADV2 = 327          => sys_preadv2(args[..6]);
     SYS_PWRITEV2 = 328         => sys_pwritev2(args[..6]);
     SYS_STATX = 332            => sys_statx(args[..5]);

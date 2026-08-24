@@ -10,7 +10,8 @@ use aster_bigtcp::{iface::InterfaceFlags, wire::IpCidr};
 use super::util::finish_response;
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::Iface,
+        net_ns::current_net_ns,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -33,7 +34,12 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     }
 
     let requested_family = request_segment.body().family;
-    let mut addr_segments: Vec<AddrSegment> = iter_all_ifaces()
+    // Only the interfaces visible in the current network namespace are
+    // reported.
+    let net_ns = current_net_ns();
+    let mut addr_segments: Vec<AddrSegment> = net_ns
+        .ifaces()
+        .iter()
         .flat_map(|iface| iface_to_new_addrs(request_segment.header(), requested_family, iface))
         .collect();
 
@@ -49,6 +55,56 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     finish_response(request_segment.header(), dump_all, &mut response_segments);
 
     Ok(response_segments)
+}
+
+/// Handles an RTM_NEWADDR request to add an address to an interface.
+///
+/// The `Iface` trait is currently read-only, so addresses cannot actually be
+/// added. Adding an address that the interface already has (which is what
+/// systemd's loopback setup does with 127.0.0.1/8 and ::1/128) reports EEXIST
+/// like Linux; anything else fails with EOPNOTSUPP.
+pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
+    };
+
+    // Only interfaces visible in the current network namespace can be
+    // addressed.
+    let net_ns = current_net_ns();
+    let Some(iface) = net_ns.ifaces().iter().find(|iface| iface.index() == index.get()) else {
+        return_errno_with_message!(Errno::ENODEV, "no link found");
+    };
+
+    // The requested address is in the IFA_LOCAL attribute (falling back to
+    // IFA_ADDRESS, which Linux treats as the local address when no peer
+    // address is set).
+    let Some(requested) = request_segment.attrs().iter().find_map(|attr| match attr {
+        AddrAttr::Local(addr) | AddrAttr::Address(addr) => Some(*addr),
+        _ => None,
+    }) else {
+        return_errno_with_message!(Errno::EINVAL, "no address attribute specified");
+    };
+
+    let exists = match requested {
+        IpAddr::V4(_) => iface.ipv4_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+        IpAddr::V6(_) => iface.ipv6_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+    };
+    if exists {
+        return_errno_with_message!(Errno::EEXIST, "the address already exists");
+    }
+
+    return_errno_with_message!(
+        Errno::EOPNOTSUPP,
+        "adding addresses to an interface is not supported"
+    );
 }
 
 fn iface_to_new_addrs(

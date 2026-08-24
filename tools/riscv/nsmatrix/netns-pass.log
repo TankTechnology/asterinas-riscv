@@ -1,0 +1,25 @@
+ok: parent netlink socket
+ok: parent RTM_GETLINK dump
+parent sees link: lo flags=0x10049
+parent sees link: eth0 flags=0x11043
+ok: child unshare(NEWUSER)
+ok: child unshare(NEWNET)
+ok: child netlink socket
+ok: child RTM_GETLINK dump
+child sees link: lo flags=0x10008
+ok: child sees exactly one link
+ok: child sees lo
+ok: child does not see host interfaces
+ok: lo starts down in new netns
+ok: lo ifindex resolved
+ok: RTM_NEWLINK lo up (ip link set lo up)
+ok: lo is up after RTM_NEWLINK
+ok: child socket()
+ok: bind 127.0.0.1
+ok: listen on lo
+ok: accept on lo
+ok: loopback TCP payload received
+ok: loopback TCP connector exited cleanly
+ok: netns child checks passed
+ok: parent link view unchanged
+NETNS_TEST_PASS

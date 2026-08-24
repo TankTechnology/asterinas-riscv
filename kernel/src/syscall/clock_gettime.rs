@@ -41,10 +41,14 @@ pub fn sys_clock_getres(
 ) -> Result<SyscallReturn> {
     debug!("clockid = {:?}", clockid);
 
+    // Linux validates the clock ID first (EINVAL for invalid clocks), and a
+    // NULL timespec pointer is legal: the resolution is simply not copied out.
     let resolution = read_clock_resolution(clockid)?;
 
-    let timespec = timespec_t::from(resolution);
-    ctx.user_space().write_val(timespec_addr, &timespec)?;
+    if timespec_addr != 0 {
+        let timespec = timespec_t::from(resolution);
+        ctx.user_space().write_val(timespec_addr, &timespec)?;
+    }
 
     Ok(SyscallReturn::Return(0))
 }
@@ -104,7 +108,7 @@ pub enum ClockId {
 pub(super) enum DynamicClockIdInfo {
     Pid(u32, DynamicClockType),
     Tid(u32, DynamicClockType),
-    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
+    #[cfg_attr(all(target_arch = "x86_64", not(ktest)), expect(dead_code))]
     Fd(u32),
 }
 

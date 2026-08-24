@@ -36,15 +36,19 @@ canonical_repo_path() {
 
 canonical_output_dir() {
     local candidate="$1"
-    local output_root
+    local qemu_output_root
+    local ltp_output_root
     local resolved
-    output_root="$(canonical_repo_path "target/qemu-uboot")"
+    qemu_output_root="$(canonical_repo_path "target/qemu-uboot")"
+    ltp_output_root="$(canonical_repo_path "target/ltp/qemu")"
     resolved="$(canonical_repo_path "${candidate}")"
     case "${resolved}" in
-        "${output_root}"/*) printf '%s\n' "${resolved}" ;;
+        "${qemu_output_root}"/*|"${ltp_output_root}"/*)
+            printf '%s\n' "${resolved}"
+            ;;
         *)
-            printf 'QEMU_UBOOT_OUT_DIR must resolve below %s\n' \
-                "${output_root}" >&2
+            printf 'QEMU_UBOOT_OUT_DIR must resolve below %s or %s\n' \
+                "${qemu_output_root}" "${ltp_output_root}" >&2
             return 2
             ;;
     esac

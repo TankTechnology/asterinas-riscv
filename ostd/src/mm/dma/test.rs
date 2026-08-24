@@ -125,7 +125,6 @@ mod dma_window {
     }
 
     #[ktest]
-    #[expect(clippy::reversed_empty_ranges)]
     fn rejects_ranges_outside_dma_window() {
         let window = DmaWindow::new(0, 0xc000_0000, 0x2000).unwrap();
 
@@ -206,9 +205,7 @@ mod usb_kernel_op {
         assert_eq!(handle.dma_addr().as_u64() as usize % 64, 0);
         assert_eq!(op.allocation_count(), 1);
 
-        unsafe {
-            let _ = op.dealloc_coherent(handle);
-        };
+        unsafe { op.dealloc_coherent(handle) };
         assert_eq!(op.allocation_count(), 0);
     }
 

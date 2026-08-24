@@ -16,6 +16,8 @@ RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
 SCHEME ?= ""
 SMP ?= 1
+RISCV_LTP_SMP ?= 4
+RISCV_LTP_SUITE ?= syscalls
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -260,6 +262,24 @@ QEMU_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_BUILD_DIR),
 RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u)
 RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
 RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
+
+.PHONY: test_riscv_ltp_unit
+test_riscv_ltp_unit:
+	@PYTHONPATH=tools/riscv python3 -m unittest \
+		tools.riscv.tests.test_ltp_result \
+		tools.riscv.tests.test_ltp_manifest \
+		tools.riscv.tests.test_ltp_suite \
+		tools.riscv.tests.test_ltp_package \
+		tools.riscv.tests.test_ltp_gate \
+		tools.riscv.tests.test_ltp_guest_runner -v
+
+.PHONY: test_riscv_ltp
+test_riscv_ltp: test_riscv_ltp_unit
+	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
+		{ echo "ASTERINAS_RISCV_BOOTI is required" >&2; exit 2; }
+	@python3 tools/riscv/ltp_gate.py run \
+		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(RISCV_LTP_SMP)" \
+		--suite "$(RISCV_LTP_SUITE)"
 
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
@@ -515,7 +535,6 @@ format:
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
 	@git --git-dir=$$PWD/.git ls-files --no-directory | \
 		grep -v '[.]patch$$' | \
-		grep -v '[.]dtb$$' `# Binary device tree blobs are not text` | \
 		grep -v '^.claude/skills/aster-code-review$$' `# This is a symbolic link` | \
 		xargs sed -i 's/ *$$//'
 	@
@@ -531,7 +550,7 @@ check: private WORKSPACE_MEMBER_DIRS = \
 check: $(CARGO_OSDK)
 	@# Check if any git-tracked, non-patch files contain trailing whitespace
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
-	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | grep -v '[.]dtb$$' | xargs grep -I -d skip ' $$' ; then \
+	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | xargs grep -I -d skip ' $$' ; then \
 		echo "Error: Files (as listed above) contain trailing whitespaces"; \
 		exit 1; \
 	fi
