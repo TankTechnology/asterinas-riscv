@@ -9,10 +9,12 @@ import json
 import os
 import select
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import FrozenInstanceError, replace
@@ -20,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools.riscv.debian.rootfs import fsops as fsops_module
+from tools.riscv.debian.rootfs import gate_runtime as gate_runtime_module
 from tools.riscv.debian.rootfs.contract import (
     ContractError,
     GATE_IDENTITY_PACKAGES,
@@ -38,6 +41,17 @@ from tools.riscv.debian.rootfs.gate_protocol import (
     classify_boot,
     qemu_argv,
     shell_commands,
+)
+from tools.riscv.debian.rootfs.gate_runtime import (
+    EarlyProcessExit,
+    GateTermination,
+    HmpMonitor,
+    MonitorError,
+    PinnedOutputDirectory,
+    SerialConsole,
+    TerminationSignalState,
+    launch_process,
+    teardown_gate,
 )
 
 
@@ -2537,6 +2551,353 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
                 result = self._classify(transcript, commands, boot_number=2)
                 self.assertFalse(result.passed)
                 self.assertIn(reason, result.reason)
+
+
+class DebianRootfsGateRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    @staticmethod
+    def _deadline(seconds: float = 1.0) -> float:
+        return time.monotonic() + seconds
+
+    def _hmp_server(
+        self,
+        chunks: tuple[bytes, ...],
+        *,
+        receive_command: bool = False,
+        keep_open: float = 0.0,
+    ) -> tuple[Path, threading.Thread, list[bytes]]:
+        path = self.directory / f"hmp-{time.monotonic_ns()}.sock"
+        ready = threading.Event()
+        received: list[bytes] = []
+
+        def serve() -> None:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(str(path))
+                listener.listen(1)
+                ready.set()
+                connection, _ = listener.accept()
+                with connection:
+                    if receive_command:
+                        connection.sendall(b"QEMU 10.0\r\n(qemu) ")
+                        received.append(connection.recv(1024))
+                    for chunk in chunks:
+                        connection.sendall(chunk)
+                        time.sleep(0.005)
+                    if keep_open:
+                        time.sleep(keep_open)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(1.0))
+        return path, thread, received
+
+    def test_serial_console_matches_split_markers_with_one_total_deadline(self) -> None:
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        console = SerialConsole(master, max_bytes=128)
+
+        def write_split_marker() -> None:
+            for chunk in (b"boot noi", b"se\r\nROOT_", b"READY\r\n"):
+                os.write(slave, chunk)
+                time.sleep(0.01)
+
+        writer = threading.Thread(target=write_split_marker)
+        writer.start()
+        matched = console.wait_for(b"ROOT_READY", self._deadline())
+        writer.join()
+        console.send(b"echo ready\n", self._deadline())
+
+        self.assertIn(b"ROOT_READY", matched)
+        self.assertIn(b"boot noise", console.transcript)
+        self.assertEqual(os.read(slave, 128), b"echo ready\n")
+
+    def test_serial_console_bounds_prompt_boot_and_drain_deadlines(self) -> None:
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        console = SerialConsole(master, max_bytes=128)
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(TimeoutError, "serial marker"):
+            console.wait_for(b"never", started + 0.04)
+        self.assertLess(time.monotonic() - started, 0.25)
+
+        started = time.monotonic()
+        drained = console.drain(started + 0.04)
+        self.assertEqual(drained, b"")
+        self.assertLess(time.monotonic() - started, 0.25)
+        os.close(slave)
+
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        console = SerialConsole(write_fd, max_bytes=128)
+        with self.assertRaisesRegex(TimeoutError, "serial command"):
+            console.send(b"x" * (1024 * 1024), self._deadline(0.04))
+        os.close(write_fd)
+
+    def test_serial_console_caps_transcript_and_reports_early_process_exit(
+        self,
+    ) -> None:
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        process = launch_process(("/bin/sh", "-c", "exit 23"))
+        console = SerialConsole(read_fd, process=process, max_bytes=8)
+        os.write(write_fd, b"123456789")
+        os.close(write_fd)
+        with self.assertRaisesRegex(BufferError, "serial transcript"):
+            console.wait_for(b"missing", self._deadline())
+        process.wait(self._deadline())
+
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        os.close(write_fd)
+        console = SerialConsole(read_fd, process=process, max_bytes=128)
+        with self.assertRaises(EarlyProcessExit) as caught:
+            console.wait_for(b"missing", self._deadline())
+        self.assertEqual(caught.exception.returncode, 23)
+
+    def test_hmp_connect_and_prompt_deadlines_are_bounded(self) -> None:
+        missing = self.directory / "missing.sock"
+        started = time.monotonic()
+        with self.assertRaises(MonitorError):
+            HmpMonitor.connect(missing, started + 0.04, max_response_bytes=64)
+        self.assertLess(time.monotonic() - started, 0.25)
+
+        path, thread, _ = self._hmp_server((b"not-a-prompt",), keep_open=0.15)
+        started = time.monotonic()
+        with self.assertRaisesRegex(MonitorError, "prompt"):
+            HmpMonitor.connect(path, started + 0.04, max_response_bytes=64)
+        self.assertLess(time.monotonic() - started, 0.25)
+        thread.join(1.0)
+
+    def test_hmp_matches_split_prompt_and_caps_each_response(self) -> None:
+        path, thread, received = self._hmp_server(
+            (b"info sta", b"tus\r\nrunning\r\n(qe", b"mu) "),
+            receive_command=True,
+        )
+        monitor = HmpMonitor.connect(path, self._deadline(), max_response_bytes=128)
+        self.addCleanup(monitor.close)
+        response = monitor.command("info status", self._deadline())
+        thread.join(1.0)
+        self.assertIn(b"running", response)
+        self.assertEqual(received, [b"info status\n"])
+
+        path, thread, _ = self._hmp_server(
+            (b"x" * 65,), receive_command=True, keep_open=0.05
+        )
+        monitor = HmpMonitor.connect(path, self._deadline(), max_response_bytes=64)
+        with self.assertRaisesRegex(MonitorError, "exceeds"):
+            monitor.command("query", self._deadline())
+        monitor.close()
+        thread.join(1.0)
+
+    def test_pinned_output_rejects_symlink_and_survives_parent_swap(self) -> None:
+        outside = self.directory / "outside"
+        outside.mkdir()
+        symlink = self.directory / "output-link"
+        symlink.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(OSError):
+            PinnedOutputDirectory(symlink)
+
+        output = self.directory / "output"
+        output.mkdir()
+        moved = self.directory / "moved-output"
+        with PinnedOutputDirectory(output) as pinned:
+            output.rename(moved)
+            output.symlink_to(outside, target_is_directory=True)
+            pinned.atomic_write("result.json", b"safe")
+        self.assertEqual((moved / "result.json").read_bytes(), b"safe")
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_pinned_output_invalidates_stale_result_before_validation(self) -> None:
+        output = self.directory / "output"
+        output.mkdir()
+        stale = output / "result.json"
+        stale.write_bytes(b"stale pass")
+
+        with PinnedOutputDirectory(output) as pinned:
+            pinned.invalidate("result.json")
+            with self.assertRaisesRegex(ValueError, "bad input"):
+                raise ValueError("bad input")
+
+        self.assertFalse(stale.exists())
+
+    def test_pinned_output_atomic_write_copy_hash_and_directory_fsync(self) -> None:
+        output = self.directory / "output"
+        output.mkdir()
+        source = self.directory / "source"
+        source.write_bytes(b"copy contents")
+        fsync_modes: list[int] = []
+        real_fsync = gate_runtime_module.os.fsync
+
+        def record_fsync(fd: int) -> None:
+            fsync_modes.append(os.fstat(fd).st_mode)
+            real_fsync(fd)
+
+        with (
+            mock.patch.object(gate_runtime_module.os, "fsync", new=record_fsync),
+            PinnedOutputDirectory(output) as pinned,
+        ):
+            pinned.atomic_write("result.json", b"new result")
+            pinned.atomic_copy("run-root.ext2", source)
+            self.assertEqual(
+                pinned.sha256("run-root.ext2"),
+                hashlib.sha256(b"copy contents").hexdigest(),
+            )
+
+        self.assertEqual((output / "result.json").read_bytes(), b"new result")
+        self.assertTrue(any(stat.S_ISDIR(mode) for mode in fsync_modes))
+        self.assertTrue(any(stat.S_ISREG(mode) for mode in fsync_modes))
+        self.assertFalse(
+            any(path.name.startswith(".gate-") for path in output.iterdir())
+        )
+
+    def test_launch_starts_new_session_with_unblocked_termination_masks(self) -> None:
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        os.set_inheritable(slave, True)
+        previous_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK, {signal.SIGHUP, signal.SIGTERM}
+        )
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_SETMASK, previous_mask)
+        script = (
+            "import os,signal,sys; "
+            "m=signal.pthread_sigmask(signal.SIG_BLOCK, []); "
+            "inherited=1; "
+            "\ntry: os.fstat(int(sys.argv[1]))\n"
+            "except OSError: inherited=0\n"
+            "print(os.getpid(),os.getsid(0),int(signal.SIGHUP in m),"
+            "int(signal.SIGTERM in m),inherited,flush=True)"
+        )
+        process = launch_process(
+            (sys.executable, "-c", script, str(slave)), stdio_fd=slave
+        )
+        os.close(slave)
+        output = SerialConsole(master, process=process, max_bytes=256).drain(
+            self._deadline()
+        )
+        self.assertEqual(process.wait(self._deadline()), 0)
+        pid, sid, hup_blocked, term_blocked, inherited = output.decode().split()
+        self.assertEqual(pid, sid)
+        self.assertEqual((hup_blocked, term_blocked), ("0", "0"))
+        self.assertEqual(inherited, "0")
+
+    def test_cleanup_kills_group_after_leader_exit(self) -> None:
+        child_pid_file = self.directory / "child.pid"
+        script = (
+            "import ctypes,os,time\n"
+            "p=os.fork()\n"
+            "if p:\n"
+            f" open({str(child_pid_file)!r},'w').write(str(p))\n"
+            " os._exit(0)\n"
+            "ctypes.CDLL(None).prctl(15,b'gate child name',0,0,0)\n"
+            "time.sleep(30)\n"
+        )
+        process = launch_process((sys.executable, "-c", script))
+        self.assertEqual(process.wait(self._deadline()), 0)
+        child_pid = int(child_pid_file.read_text())
+
+        process.terminate_group(self._deadline(0.2), self._deadline(0.5))
+
+        child_stat = Path(f"/proc/{child_pid}/stat")
+        if child_stat.exists():
+            _, _, remainder = child_stat.read_text(encoding="ascii").rpartition(") ")
+            self.assertEqual(remainder.split()[0], "Z")
+
+    def test_cleanup_escalates_term_to_kill_for_stubborn_group(self) -> None:
+        script = (
+            "import signal,time; "
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            "print('ready',flush=True); time.sleep(30)"
+        )
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        process = launch_process((sys.executable, "-c", script), stdio_fd=slave)
+        os.close(slave)
+        SerialConsole(master, process=process, max_bytes=128).wait_for(
+            b"ready", self._deadline()
+        )
+
+        process.terminate_group(self._deadline(0.04), self._deadline(0.5))
+
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+
+    def test_teardown_orders_monitor_group_cleanup_and_serial_drain(self) -> None:
+        events: list[str] = []
+
+        class RecordingMonitor:
+            def close(self) -> None:
+                events.append("monitor")
+
+        class RecordingProcess:
+            def terminate_group(
+                self, term_deadline: float, kill_deadline: float
+            ) -> None:
+                events.append("process")
+
+        class RecordingSerial:
+            def drain(self, deadline: float) -> bytes:
+                events.append("serial")
+                return b"tail"
+
+        tail = teardown_gate(
+            RecordingMonitor(),
+            RecordingProcess(),
+            RecordingSerial(),
+            term_deadline=self._deadline(),
+            kill_deadline=self._deadline(),
+            drain_deadline=self._deadline(),
+        )
+        self.assertEqual(events, ["monitor", "process", "serial"])
+        self.assertEqual(tail, b"tail")
+
+        events.clear()
+
+        class FailingMonitor:
+            def close(self) -> None:
+                events.append("monitor")
+                raise MonitorError("close failed")
+
+        with self.assertRaisesRegex(MonitorError, "close failed"):
+            teardown_gate(
+                FailingMonitor(),
+                RecordingProcess(),
+                RecordingSerial(),
+                term_deadline=self._deadline(),
+                kill_deadline=self._deadline(),
+                drain_deadline=self._deadline(),
+            )
+        self.assertEqual(events, ["monitor", "process", "serial"])
+
+    def test_first_hup_or_term_is_deferred_through_publication_and_restored(
+        self,
+    ) -> None:
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                previous = signal.getsignal(signum)
+                result = self.directory / f"result-{signum}.json"
+                with self.assertRaises(GateTermination) as caught:
+                    with TerminationSignalState():
+                        os.kill(os.getpid(), signum)
+                        result.write_text("published", encoding="utf-8")
+                self.assertEqual(caught.exception.signum, signum)
+                self.assertEqual(result.read_text(encoding="utf-8"), "published")
+                self.assertIs(signal.getsignal(signum), previous)
+
+    def test_second_scoped_termination_signal_hard_exits(self) -> None:
+        pid = os.fork()
+        if pid == 0:
+            with TerminationSignalState():
+                os.kill(os.getpid(), signal.SIGTERM)
+                os.kill(os.getpid(), signal.SIGTERM)
+            os._exit(99)
+        _, status = os.waitpid(pid, 0)
+        self.assertTrue(os.WIFEXITED(status))
+        self.assertEqual(os.WEXITSTATUS(status), 128 + signal.SIGTERM)
 
 
 if __name__ == "__main__":
