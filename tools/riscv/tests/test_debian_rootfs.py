@@ -7,10 +7,13 @@ import copy
 import hashlib
 import json
 import os
+import select
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -34,6 +37,8 @@ ZERO_FILLED_ROOT_SHA256 = (
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
+STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
+STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
     "debootstrap",
@@ -71,6 +76,38 @@ def _lock_text(rows: tuple[tuple[str, str, str], ...] = PACKAGE_ROWS) -> str:
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _parse_newc_entries(
+    archive: bytes,
+) -> list[tuple[str, int, int, int, int, bytes]]:
+    entries = []
+    offset = 0
+    while True:
+        header = archive[offset : offset + 110]
+        if len(header) != 110 or header[:6] != b"070701":
+            raise ValueError("invalid raw newc header")
+        fields = tuple(
+            int(header[field_offset : field_offset + 8], 16)
+            for field_offset in range(6, 110, 8)
+        )
+        mode, uid, gid = fields[1:4]
+        mtime = fields[5]
+        file_size = fields[6]
+        name_size = fields[11]
+        name_start = offset + 110
+        name_end = name_start + name_size
+        if archive[name_end - 1 : name_end] != b"\0":
+            raise ValueError("newc entry name is not terminated")
+        name = archive[name_start : name_end - 1].decode("ascii")
+        data_start = (name_end + 3) & ~3
+        data_end = data_start + file_size
+        offset = (data_end + 3) & ~3
+        if name == "TRAILER!!!":
+            if any(archive[offset:]):
+                raise ValueError("nonzero bytes after newc trailer")
+            return entries
+        entries.append((name, mode, uid, gid, mtime, archive[data_start:data_end]))
 
 
 def _manifest_payload(packages_lock_sha256: str) -> dict[str, object]:
@@ -286,6 +323,214 @@ exec /usr/bin/stat "$@"
 def _package_checksums_text() -> str:
     rows = [(*row, hashlib.sha256(row[0].encode()).hexdigest()) for row in PACKAGE_ROWS]
     return "".join("\t".join(row) + "\n" for row in sorted(rows))
+
+
+class DebianStage1Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    def compile_stage1(
+        self,
+        output: Path,
+        define: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = [
+            "cc",
+            "-std=c11",
+            "-O2",
+            "-static",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+        ]
+        if define is not None:
+            command.append(f"-D{define}")
+        command.extend((str(STAGE1_SOURCE), "-o", str(output)))
+        return subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def run_builder(
+        self,
+        *arguments: str,
+        environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(STAGE1_BUILD_SCRIPT), *arguments],
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_native_self_test_covers_discovery_and_handoff_failures(self) -> None:
+        binary = self.directory / "stage1-self-test"
+        compilation = self.compile_stage1(binary, "DEBIAN_STAGE1_SELF_TEST")
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        cases = (
+            "one-valid-device",
+            "no-match",
+            "two-matching-devices",
+            "bad-ext2-magic",
+            "wrong-label",
+            "non-block-device",
+            "delayed-valid-device",
+            "root-mount-failure",
+            "dev-bind-failure",
+            "proc-mount-failure",
+            "sysfs-mount-failure",
+            "run-mount-failure",
+            "tmp-mount-failure",
+            "chroot-failure",
+            "chdir-failure",
+            "exec-failure",
+            "discovery-deadline",
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                result = subprocess.run(
+                    [binary, case],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout,
+                    f"DEBIAN_STAGE1_SELF_TEST PASS case={case}\n",
+                )
+
+    def test_normal_failure_lifecycle_flushes_one_marker_and_holds(self) -> None:
+        binary = self.directory / "stage1-lifecycle-test"
+        compilation = self.compile_stage1(binary, "DEBIAN_STAGE1_LIFECYCLE_TEST")
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+
+        with subprocess.Popen(
+            [binary],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            try:
+                self.assertIsNotNone(process.stdout)
+                readable, _, _ = select.select([process.stdout], [], [], 2.0)
+                self.assertTrue(readable, "stage1 did not flush its failure marker")
+                self.assertEqual(
+                    process.stdout.readline(),
+                    "DEBIAN_ROOTFS_FAIL reason=test-lifecycle\n",
+                )
+                readable, _, _ = select.select([process.stdout], [], [], 0.1)
+                self.assertFalse(readable, "stage1 printed more than one marker")
+                self.assertIsNone(
+                    process.poll(), "stage1 exited after terminal failure"
+                )
+            finally:
+                process.send_signal(signal.SIGTERM)
+                process.wait(timeout=2)
+
+    def test_builder_declares_exact_tools_and_entries(self) -> None:
+        tools = self.run_builder("--print-tools")
+        entries = self.run_builder("--print-entries")
+
+        self.assertEqual(tools.returncode, 0, tools.stderr)
+        self.assertEqual(tools.stdout.splitlines(), ["riscv64-linux-gnu-gcc", "cpio"])
+        self.assertEqual(entries.returncode, 0, entries.stderr)
+        self.assertEqual(entries.stdout.splitlines(), [".", "init"])
+
+    def test_builder_rejects_unknown_arguments(self) -> None:
+        result = self.run_builder("--unknown")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown option", result.stderr)
+
+    def test_builder_is_deterministic_with_exact_raw_newc_metadata(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        environment["SOURCE_DATE_EPOCH"] = "1700000000"
+        first = self.directory / "first output" / "initramfs.cpio"
+        second = self.directory / "second output" / "initramfs.cpio"
+
+        for output in (first, second):
+            result = self.run_builder(str(output), environment=environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            time.sleep(1.1)
+
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((first.parent / "init").stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((second.parent / "init").stat().st_mode), 0o755)
+        entries = _parse_newc_entries(first.read_bytes())
+        self.assertEqual(
+            [
+                (name, mode, uid, gid, mtime)
+                for name, mode, uid, gid, mtime, _ in entries
+            ],
+            [
+                (".", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                ("init", stat.S_IFREG | 0o755, 0, 0, 1700000000),
+            ],
+        )
+        self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
+        self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
+
+    def test_builder_rejects_invalid_source_date_epoch(self) -> None:
+        for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
+            with self.subTest(value=value):
+                environment = os.environ.copy()
+                environment["RISC_V_CC"] = "cc"
+                environment["SOURCE_DATE_EPOCH"] = value
+                output = self.directory / f"invalid-{value.replace('/', '_')}.cpio"
+
+                result = self.run_builder(str(output), environment=environment)
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("SOURCE_DATE_EPOCH", result.stderr)
+                self.assertFalse(output.exists())
+
+    def test_builder_rejects_directory_destination_without_mutation(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        destination = self.directory / "archive.cpio"
+        destination.mkdir()
+        sentinel = destination / "sentinel"
+        sentinel.write_bytes(b"preserve directory")
+
+        result = self.run_builder(str(destination), environment=environment)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("unsafe output path", result.stderr)
+        self.assertEqual(list(destination.iterdir()), [sentinel])
+        self.assertEqual(sentinel.read_bytes(), b"preserve directory")
+
+    def test_builder_failure_preserves_existing_archive(self) -> None:
+        failing_compiler = self.directory / "failing-compiler"
+        failing_compiler.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        failing_compiler.chmod(0o755)
+        destination = self.directory / "existing archive.cpio"
+        destination.write_bytes(b"known-good-archive")
+        destination.chmod(0o640)
+        existing_init = destination.parent / "init"
+        existing_init.write_bytes(b"known-good-init")
+        existing_init.chmod(0o750)
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = str(failing_compiler)
+
+        result = self.run_builder(str(destination), environment=environment)
+
+        self.assertEqual(result.returncode, 97, result.stderr)
+        self.assertEqual(destination.read_bytes(), b"known-good-archive")
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
+        self.assertEqual(existing_init.read_bytes(), b"known-good-init")
+        self.assertEqual(stat.S_IMODE(existing_init.stat().st_mode), 0o750)
 
 
 class DebianRootfsBuilderTests(unittest.TestCase):
