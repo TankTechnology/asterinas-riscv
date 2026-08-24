@@ -107,7 +107,18 @@ static const char *discover_root(struct Stage1Ops *ops,
     }
     deadline.tv_sec += ROOT_DISCOVERY_TIMEOUT_SECONDS;
 
+    int is_initial_scan = 1;
     for (;;) {
+        if (!is_initial_scan) {
+            struct timespec now;
+            if (ops->monotonic_now(ops->context, &now) != 0) {
+                return "root-discovery-clock";
+            }
+            if (compare_timespec(&now, &deadline) >= 0) {
+                return "root-discovery-timeout";
+            }
+        }
+
         unsigned int match_count = 0;
         char matched_path[ROOT_DEVICE_PATH_SIZE] = { 0 };
 
@@ -130,6 +141,13 @@ static const char *discover_root(struct Stage1Ops *ops,
         }
 
         if (match_count == 1) {
+            struct timespec now;
+            if (ops->monotonic_now(ops->context, &now) != 0) {
+                return "root-discovery-clock";
+            }
+            if (compare_timespec(&now, &deadline) >= 0) {
+                return "root-discovery-timeout";
+            }
             memcpy(root_device, matched_path, ROOT_DEVICE_PATH_SIZE);
             return NULL;
         }
@@ -144,6 +162,7 @@ static const char *discover_root(struct Stage1Ops *ops,
         if (ops->wait_for_retry(ops->context, &deadline) != 0) {
             return "root-discovery-wait";
         }
+        is_initial_scan = 0;
     }
 }
 
@@ -181,7 +200,16 @@ struct MockContext {
     unsigned int retry_count;
     enum HandoffStep failing_step;
     unsigned int handoff_count;
+    struct timespec injected_now;
+    unsigned int boundary_device_probe_count;
 };
+
+static int is_deadline_boundary_case(const char *case_name)
+{
+    return strcmp(case_name, "device-before-deadline") == 0 ||
+           strcmp(case_name, "device-at-deadline") == 0 ||
+           strcmp(case_name, "device-after-deadline") == 0;
+}
 
 static void make_valid_superblock(
     unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
@@ -206,6 +234,14 @@ static enum ProbeResult mock_probe_device(
         is_match = suffix == 'b' || suffix == 'd';
     } else if (strcmp(context->case_name, "delayed-valid-device") == 0) {
         is_match = suffix == 'c' && context->retry_count >= 2;
+    } else if (is_deadline_boundary_case(context->case_name) &&
+               suffix == 'c' && context->retry_count == 1) {
+        ++context->boundary_device_probe_count;
+        is_match = 1;
+        if (strcmp(context->case_name, "device-at-deadline") == 0) {
+            context->injected_now.tv_sec = 30;
+            context->injected_now.tv_nsec = 0;
+        }
     } else if (strcmp(context->case_name, "bad-ext2-magic") == 0 &&
                suffix == 'b') {
         superblock[EXT2_MAGIC_OFFSET] = 0;
@@ -229,6 +265,10 @@ static enum ProbeResult mock_probe_device(
 static int mock_monotonic_now(void *opaque, struct timespec *now)
 {
     struct MockContext *context = opaque;
+    if (is_deadline_boundary_case(context->case_name)) {
+        *now = context->injected_now;
+        return 0;
+    }
     now->tv_sec = (time_t)context->retry_count;
     now->tv_nsec = 0;
     return 0;
@@ -239,6 +279,14 @@ static int mock_wait_for_retry(void *opaque, const struct timespec *deadline)
     struct MockContext *context = opaque;
     (void)deadline;
     ++context->retry_count;
+    if (strcmp(context->case_name, "device-before-deadline") == 0 ||
+        strcmp(context->case_name, "device-at-deadline") == 0) {
+        context->injected_now.tv_sec = 29;
+        context->injected_now.tv_nsec = 999999999;
+    } else if (strcmp(context->case_name, "device-after-deadline") == 0) {
+        context->injected_now.tv_sec = 31;
+        context->injected_now.tv_nsec = 0;
+    }
     return 0;
 }
 
@@ -264,6 +312,8 @@ static int run_discovery_self_test(const char *case_name)
         .retry_count = 0,
         .failing_step = HANDOFF_EXEC,
         .handoff_count = 0,
+        .injected_now = { .tv_sec = 0, .tv_nsec = 0 },
+        .boundary_device_probe_count = 0,
     };
     struct Stage1Ops ops = {
         .context = &context,
@@ -289,6 +339,33 @@ static int run_discovery_self_test(const char *case_name)
         if (reason != NULL || strcmp(root_device, "/dev/vdc") != 0 ||
             context.retry_count != 2) {
             return fail_self_test(case_name, "delayed device was not retried");
+        }
+    } else if (strcmp(case_name, "device-before-deadline") == 0) {
+        if (reason != NULL || strcmp(root_device, "/dev/vdc") != 0 ||
+            context.retry_count != 1 ||
+            context.boundary_device_probe_count != 1 ||
+            context.injected_now.tv_sec != 29 ||
+            context.injected_now.tv_nsec != 999999999) {
+            return fail_self_test(case_name,
+                                  "pre-deadline device was not accepted");
+        }
+    } else if (strcmp(case_name, "device-at-deadline") == 0) {
+        if (reason == NULL || strcmp(reason, "root-discovery-timeout") != 0 ||
+            context.retry_count != 1 ||
+            context.boundary_device_probe_count != 1 ||
+            context.injected_now.tv_sec != 30 ||
+            context.injected_now.tv_nsec != 0) {
+            return fail_self_test(case_name,
+                                  "deadline device was not rejected");
+        }
+    } else if (strcmp(case_name, "device-after-deadline") == 0) {
+        if (reason == NULL || strcmp(reason, "root-discovery-timeout") != 0 ||
+            context.retry_count != 1 ||
+            context.boundary_device_probe_count != 0 ||
+            context.injected_now.tv_sec != 31 ||
+            context.injected_now.tv_nsec != 0) {
+            return fail_self_test(case_name,
+                                  "post-deadline scan was not rejected");
         }
     } else {
         if (reason == NULL || strcmp(reason, "root-discovery-timeout") != 0 ||
@@ -338,6 +415,8 @@ static int run_handoff_self_test(const char *case_name,
         .retry_count = 0,
         .failing_step = failing_step,
         .handoff_count = 0,
+        .injected_now = { .tv_sec = 0, .tv_nsec = 0 },
+        .boundary_device_probe_count = 0,
     };
     struct Stage1Ops ops = {
         .context = &context,
@@ -375,6 +454,9 @@ int main(int argc, char **argv)
                strcmp(case_name, "wrong-label") == 0 ||
                strcmp(case_name, "non-block-device") == 0 ||
                strcmp(case_name, "delayed-valid-device") == 0 ||
+               strcmp(case_name, "device-before-deadline") == 0 ||
+               strcmp(case_name, "device-at-deadline") == 0 ||
+               strcmp(case_name, "device-after-deadline") == 0 ||
                strcmp(case_name, "discovery-deadline") == 0) {
         result = run_discovery_self_test(case_name);
     } else {
