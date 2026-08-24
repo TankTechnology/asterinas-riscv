@@ -143,3 +143,39 @@ python3 -c 'import json; print(json.load(open("target/debian-riscv/gate/result.j
 writable root, boot disk, and `result.json`. A failed run retains the complete
 available logs and a failing result, never a stale `passed: true`, and never
 mutates the base image.
+
+## Verified M1 evidence (2026-08-24)
+
+The documented Make target passed on source commit `d50b17aef` in container
+image `sha256:4f054ba7e4d35567cd1b974506ecc6ae4a9e35e52616ca048cf302f8dfca8b23`
+with QEMU 10.2.1. The runtime container used `--network=none`.
+
+Frozen inputs:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Asterinas Sv39/SMP=4 kernel | `9b0b352bc5f3fb38c7d4ee67f3abc40785f3a26861032944a67db8a38da63b60` |
+| stage-1 initramfs | `aef46a338a158dbb9fbe4ed220167eb95c6a392c9f17de15d3877230eb740b08` |
+| four-hart QEMU DTB | `3886fd4e5e7f47e3ba1536b3a374f89d4d06cf42f9c3bb5c9038e418ebf9dec9` |
+| U-Boot | `cd1f164d4d6c3493bdceec168d2d066aaa218fe516ea9cd8cbc049427f9b55bc` |
+| immutable Debian root | `060f613281f2e77fa2232f31322213a310f48b5b18df2991ade9eb2fca7bebae` |
+| rootfs manifest | `6f246da49af0759184b47867047bec2e73d0be7228f08d0f723ce248412a14ae` |
+| package lock | `fd817c8db7bd71098113b8c2ed4f52c3d70542efaaf97ced2b81637c5528dfff` |
+| signed TUNA Trixie `InRelease` | `98b25b5cd185c59d34aa6e4c3e9b5b8f01bbe9d104fe2dcfbcd30dc0a14a59ed` |
+
+The manifest records Trixie `13.6`, `riscv64`, mirror
+`https://mirrors.tuna.tsinghua.edu.cn/debian`, and build timestamp
+`2024-01-01T00:00:00Z`. The checked identity packages were
+`base-files=13.8+deb13u6`, `libc6=2.41-12+deb13u3`,
+`bash=5.2.37-2+b9`, `coreutils=9.7-3`, and `util-linux=2.41-5`.
+
+The final result reported `passed: true`, reason `pass`, two QEMU argv vectors,
+boot-one duration 14.042 seconds, boot-two duration 13.940 seconds, and final
+writable-root SHA-256
+`f6300db673c17c038a8bdbca76f092e891d0874b6d74737e3bb766bbe7492262`.
+Both logs contain `__DEBIAN_ROOTFS_SHELL_READY__`, zero command statuses, and
+the second-boot probe; nonce plaintext is replaced by `<nonce-redacted>`.
+
+This evidence proves the generic QEMU Sv39/SMP=4 two-boot persistence
+contract. It does not claim physical Megrez operation, guest networking,
+systemd boot, display, USB, or desktop support.
