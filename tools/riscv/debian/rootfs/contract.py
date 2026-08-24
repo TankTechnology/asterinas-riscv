@@ -38,7 +38,7 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 _MANIFEST_SCHEMA_VERSION = 1
 _SUITE = "trixie"
-_DEBIAN_RELEASE_RE = re.compile(r"\A13(?:\.(?:0|[1-9][0-9]*))*\Z")
+_DEBIAN_RELEASE_RE = re.compile(r"\A13\.(?:0|[1-9][0-9]*)\Z")
 _ARCHITECTURE = "riscv64"
 _FILESYSTEM_TYPE = "ext2"
 _ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -119,7 +119,10 @@ def sha256_file(path: Path) -> str:
 def load_manifest(path: Path) -> RootfsManifest:
     """Loads a rootfs manifest after strict structural validation."""
 
-    document = path.read_text(encoding="utf-8")
+    try:
+        document = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("manifest must be UTF-8") from error
     try:
         raw = json.loads(
             document,
@@ -245,7 +248,7 @@ def validate_frozen_root(
     _require_exact(manifest.suite, _SUITE, "suite")
     if _DEBIAN_RELEASE_RE.fullmatch(manifest.debian_release) is None:
         raise ContractError(
-            f"Debian release is not a canonical Debian 13 version: "
+            f"Debian release is not a signed Debian 13 point release: "
             f"{manifest.debian_release!r}"
         )
     _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
