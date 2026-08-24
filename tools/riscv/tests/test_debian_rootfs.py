@@ -15,7 +15,6 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from unittest import mock
 
-from tools.riscv.debian.rootfs import contract as contract_module
 from tools.riscv.debian.rootfs.contract import (
     ContractError,
     GATE_IDENTITY_PACKAGES,
@@ -91,9 +90,7 @@ def _manifest_payload(packages_lock_sha256: str) -> dict[str, object]:
                 "version": version,
                 "sha256": hashlib.sha256(name.encode()).hexdigest(),
             }
-            for name in INSTALL_PACKAGES
-            for package_name, architecture, version in PACKAGE_ROWS
-            if package_name == name
+            for name, architecture, version in PACKAGE_ROWS
         ],
         "filesystem": {
             "type": "ext2",
@@ -264,11 +261,7 @@ exec /usr/bin/stat "$@"
 
 
 def _package_checksums_text() -> str:
-    rows = [
-        (*row, hashlib.sha256(row[0].encode()).hexdigest())
-        for row in PACKAGE_ROWS
-        if row[0] in INSTALL_PACKAGES
-    ]
+    rows = [(*row, hashlib.sha256(row[0].encode()).hexdigest()) for row in PACKAGE_ROWS]
     return "".join("\t".join(row) + "\n" for row in sorted(rows))
 
 
@@ -809,7 +802,7 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         manifest = load_manifest(self.output)
         validated = validate_frozen_root(self.image, manifest, self.packages_lock)
         self.assertEqual(validated.debian_release, "13.6")
-        self.assertEqual(validated.downloaded_packages[0][0], "bash")
+        self.assertEqual(validated.downloaded_packages[0][0], "base-files")
 
     def test_verify_cli_accepts_exact_plan_command_quietly(self) -> None:
         self.write_verifier_fixture()
@@ -1300,6 +1293,23 @@ class DebianRootfsContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing explicit install packages"):
             validate_frozen_root(self.image, manifest, self.packages_lock)
 
+    def test_rejects_missing_non_explicit_locked_package_download(self) -> None:
+        self.payload["downloaded_packages"] = [
+            {
+                "name": name,
+                "architecture": architecture,
+                "version": version,
+                "sha256": hashlib.sha256(name.encode()).hexdigest(),
+            }
+            for name, architecture, version in PACKAGE_ROWS
+            if name != "base-files"
+        ]
+        self.write_manifest()
+
+        manifest = load_manifest(self.manifest_path)
+        with self.assertRaisesRegex(ValueError, "packages.lock set"):
+            validate_frozen_root(self.image, manifest, self.packages_lock)
+
     def test_rejects_manifest_package_lock_version_mismatch(self) -> None:
         self.payload["gate_packages"]["bash"] = "0.invalid"
         self.write_manifest()
@@ -1338,25 +1348,26 @@ class DebianRootfsContractTests(unittest.TestCase):
         original_lock.write_text(_lock_text(), encoding="utf-8")
         replacement_text = "substituted\triscv64\t0.invalid\n"
         replacement_lock.write_text(replacement_text, encoding="utf-8")
-        self.payload["packages_lock_sha256"] = _sha256_text(replacement_text)
         self.write_manifest()
         manifest = load_manifest(self.manifest_path)
-        real_parse_packages_lock = parse_packages_lock
+        real_open = Path.open
+        callback_count = 0
 
-        def replace_after_parse(path: Path):
-            rows = real_parse_packages_lock(path)
-            replacement_lock.replace(path)
-            return rows
+        def replace_after_open(path: Path, *args, **kwargs):
+            nonlocal callback_count
+            opened_file = real_open(path, *args, **kwargs)
+            if path == original_lock:
+                callback_count += 1
+                if callback_count == 1:
+                    replacement_lock.replace(path)
+            return opened_file
 
-        with (
-            mock.patch.object(
-                contract_module,
-                "parse_packages_lock",
-                side_effect=replace_after_parse,
-            ),
-            self.assertRaisesRegex(ContractError, "package-lock SHA-256"),
-        ):
-            validate_frozen_root(self.image, manifest, original_lock)
+        with mock.patch.object(Path, "open", new=replace_after_open):
+            validated = validate_frozen_root(self.image, manifest, original_lock)
+
+        self.assertEqual(callback_count, 1)
+        self.assertEqual(validated.packages_lock_sha256, _sha256_text(_lock_text()))
+        self.assertEqual(original_lock.read_text(encoding="utf-8"), replacement_text)
 
     def test_image_validation_uses_one_open_file(self) -> None:
         image = self.directory / "swap-root.ext2"
@@ -1365,27 +1376,25 @@ class DebianRootfsContractTests(unittest.TestCase):
             image_file.truncate(ROOT_IMAGE_SIZE_BYTES)
         replacement_bytes = b"short replacement image"
         replacement_image.write_bytes(replacement_bytes)
-        self.payload["root_image_sha256"] = hashlib.sha256(
-            replacement_bytes
-        ).hexdigest()
         self.write_manifest()
         manifest = load_manifest(self.manifest_path)
-        real_sha256_file = contract_module.sha256_file
+        real_open = Path.open
+        callback_count = 0
 
-        def replace_before_hash(path: Path) -> str:
+        def replace_after_open(path: Path, *args, **kwargs):
+            nonlocal callback_count
+            opened_file = real_open(path, *args, **kwargs)
             if path == image:
-                replacement_image.replace(path)
-            return real_sha256_file(path)
+                callback_count += 1
+                if callback_count == 1:
+                    replacement_image.replace(path)
+            return opened_file
 
-        with (
-            mock.patch.object(
-                contract_module,
-                "sha256_file",
-                side_effect=replace_before_hash,
-            ),
-            self.assertRaisesRegex(ContractError, "image SHA-256"),
-        ):
+        with mock.patch.object(Path, "open", new=replace_after_open):
             validate_frozen_root(image, manifest, self.packages_lock)
+
+        self.assertEqual(callback_count, 1)
+        self.assertEqual(image.read_bytes(), replacement_bytes)
 
 
 if __name__ == "__main__":
