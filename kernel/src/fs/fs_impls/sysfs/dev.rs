@@ -12,8 +12,8 @@
 use alloc::sync::Arc;
 
 use aster_systree::{
-    AttrLessBranchNodeFields, BranchNodeFields, Error, Result, SysAttrSetBuilder, SysObj,
-    SysPerms, SysStr, inherit_sys_branch_node,
+    AttrLessBranchNodeFields, BranchNodeFields, Error, Result, SymlinkNodeFields, SysAttrSetBuilder,
+    SysObj, SysPerms, SysStr, inherit_sys_branch_node, inherit_sys_symlink_node,
 };
 use aster_util::printer::VmPrinter;
 use inherit_methods_macro::inherit_methods;
@@ -45,7 +45,9 @@ inherit_sys_branch_node!(AttrlessDir, fields, {
 });
 
 /// `/sys/dev/char/<major>:<minor>/device` with read-only `vendor`/`device`
-/// attributes.
+/// attributes plus the extra fields libdrm's `drmGetDevice2` reads to decide
+/// whether the device is render-capable: `subsystem_vendor`/`subsystem_device`
+/// (hex, separate files) and a `uevent` carrying `PCI_SLOT_NAME`.
 #[derive(Debug)]
 pub struct CharDeviceNode {
     fields: BranchNodeFields<dyn SysObj, Self>,
@@ -58,6 +60,15 @@ impl CharDeviceNode {
         let mut builder = SysAttrSetBuilder::new();
         builder.add(SysStr::from("vendor"), SysPerms::DEFAULT_RO_ATTR_PERMS);
         builder.add(SysStr::from("device"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        builder.add(
+            SysStr::from("subsystem_vendor"),
+            SysPerms::DEFAULT_RO_ATTR_PERMS,
+        );
+        builder.add(
+            SysStr::from("subsystem_device"),
+            SysPerms::DEFAULT_RO_ATTR_PERMS,
+        );
+        builder.add(SysStr::from("uevent"), SysPerms::DEFAULT_RO_ATTR_PERMS);
         let attrs = builder
             .build()
             .expect("failed to build DRM device sysfs attribute set");
@@ -83,6 +94,19 @@ inherit_sys_branch_node!(CharDeviceNode, fields, {
             "device" => {
                 writeln!(printer, "0x{:04x}", self.device)?;
             }
+            "subsystem_vendor" => {
+                // virtio vendor id
+                writeln!(printer, "0x1af4")?;
+            }
+            "subsystem_device" => {
+                writeln!(printer, "0x1100")?;
+            }
+            "uevent" => {
+                writeln!(printer, "DRIVER=virtio_gpu")?;
+                writeln!(printer, "PCI_ID=1AF4:1050")?;
+                writeln!(printer, "PCI_SUBSYS_ID=1AF4:1100")?;
+                writeln!(printer, "PCI_SLOT_NAME=0000:00:01.0")?;
+            }
             _ => return Err(Error::AttributeError),
         }
         Ok(printer.bytes_written())
@@ -97,16 +121,52 @@ inherit_sys_branch_node!(CharDeviceNode, fields, {
     }
 });
 
-/// Registers `/sys/dev/char/226:0/device` for the DRM card0 device.
+/// The `subsystem` symlink under `/sys/dev/char/226:0/device`. libdrm's
+/// `get_subsystem_type` readlink's this path and classifies the device by the
+/// last component of the target (`/pci` => DRM_BUS_PCI).
+#[derive(Debug)]
+struct SubsystemSymlink {
+    fields: SymlinkNodeFields<Self>,
+}
+
+impl SubsystemSymlink {
+    fn new(name: SysStr, target: &str) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| {
+            let fields = SymlinkNodeFields::new(
+                name,
+                alloc::string::String::from(target),
+                weak_self.clone(),
+            );
+            Self { fields }
+        })
+    }
+}
+
+inherit_sys_symlink_node!(SubsystemSymlink, fields);
+
+/// Registers `/sys/dev/char/<major>:<minor>/device` for both DRM nodes —
+/// card0 (minor 0) and renderD128 (minor 128) — so libdrm's `drmGetDevice2`
+/// enumeration sees a valid sysfs entry (and thus a render-capable device)
+/// for each node.
 pub(super) fn init() {
     DEV_CHAR_ROOT.call_once(|| {
         let dev = AttrlessDir::new(SysStr::from("dev"));
         let char_dir = AttrlessDir::new(SysStr::from("char"));
-        let card = AttrlessDir::new(SysStr::from("226:0"));
-        let device = CharDeviceNode::new(SysStr::from("device"), 0x1af4, 0x1050);
 
-        card.add_child(device).unwrap();
-        char_dir.add_child(card).unwrap();
+        for minor in ["226:0", "226:128"] {
+            let node = AttrlessDir::new(SysStr::from(minor));
+            let device = CharDeviceNode::new(SysStr::from("device"), 0x1af4, 0x1050);
+            let subsystem = SubsystemSymlink::new(SysStr::from("subsystem"), "/sys/bus/pci");
+            // libdrm's drmNodeIsDRM() stats this path to decide whether a
+            // device is a DRM node; it just needs to exist.
+            let drm_dir = AttrlessDir::new(SysStr::from("drm"));
+
+            device.fields.add_child(subsystem).unwrap();
+            device.fields.add_child(drm_dir).unwrap();
+            node.add_child(device).unwrap();
+            char_dir.add_child(node).unwrap();
+        }
+
         dev.add_child(char_dir).unwrap();
         super::systree_singleton().root().add_child(dev).unwrap();
     });
