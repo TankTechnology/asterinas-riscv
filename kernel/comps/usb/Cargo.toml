@@ -11,6 +11,7 @@ ostd.workspace = true
 spin.workspace = true
 
 [target.riscv64imac-unknown-none-elf.dependencies]
+aster-pci.workspace = true
 fdt = { version = "0.1.5", features = ["pretty-printing"] }
 
 [lints]
