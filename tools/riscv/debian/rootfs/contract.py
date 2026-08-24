@@ -364,6 +364,10 @@ def write_manifest(
     """Validates build inputs and atomically writes a canonical manifest."""
 
     _require_safe_output_path(output)
+    _require_disjoint_output(
+        output,
+        (image, packages_lock, inrelease, package_checksums),
+    )
     _require_exact(suite, _SUITE, "suite")
     _require_https(mirror_url, "mirror_url")
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
@@ -689,6 +693,16 @@ def _require_safe_output_path(path: Path) -> None:
         raise ContractError("manifest output target must be a regular file")
     if not path.parent.is_dir():
         raise ContractError("manifest output parent must be an existing directory")
+
+
+def _require_disjoint_output(output: Path, inputs: Sequence[Path]) -> None:
+    normalized_output = Path(os.path.abspath(output))
+    for input_path in inputs:
+        normalized_input = Path(os.path.abspath(input_path))
+        if normalized_output == normalized_input:
+            raise ContractError(f"manifest output aliases input: {input_path}")
+        if output.exists() and input_path.exists() and output.samefile(input_path):
+            raise ContractError(f"manifest output aliases input: {input_path}")
 
 
 def _write_validated_manifest_atomically(
