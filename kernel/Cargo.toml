@@ -16,6 +16,7 @@ aster-fuse.workspace = true
 aster-i8042.workspace = true
 aster-input.workspace = true
 aster-logger.workspace = true
+aster-mmc.workspace = true
 aster-mlsdisk.workspace = true
 aster-network.workspace = true
 aster-nvme.workspace = true

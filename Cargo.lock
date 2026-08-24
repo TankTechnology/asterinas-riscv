@@ -223,6 +223,7 @@ dependencies = [
  "aster-input",
  "aster-logger",
  "aster-mlsdisk",
+ "aster-mmc",
  "aster-network",
  "aster-nvme",
  "aster-rights",
@@ -309,6 +310,18 @@ dependencies = [
  "postcard",
  "serde",
  "zerocopy",
+]
+
+[[package]]
+name = "aster-mmc"
+version = "0.1.0"
+dependencies = [
+ "aster-block",
+ "aster-logger",
+ "component",
+ "fdt",
+ "ostd",
+ "spin 0.9.9",
 ]
 
 [[package]]
