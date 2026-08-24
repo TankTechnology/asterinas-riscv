@@ -3,13 +3,14 @@
 use core::ops::Range;
 
 use aster_input::input_dev::RegisteredInputDevice;
+use aster_pci::PciDeviceLocation;
 use fdt::node::FdtNode;
 use ostd::{
     arch::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::{PollingUsbKeyboard, UsbKeyboardError},
+    bus::usb::{PollingUsbKeyboard, UsbKeyboardError, UsbKeyboardInfo},
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -20,6 +21,7 @@ use spin::Once;
 use crate::keyboard::{HidBootKeyboard, register};
 
 mod capability;
+mod pci;
 
 const EIC7700_DWC3_MMIO_SIZE: usize = 0x1_0000;
 const EIC7700_USB0_MMIO_START: usize = 0x5048_0000;
@@ -42,11 +44,12 @@ struct Dwc3HostConfig {
 
 #[derive(Debug)]
 struct HostResources {
-    config: Dwc3HostConfig,
     mmio: IoMem,
+    dma_window: DmaWindow,
+    interrupt_source: InterruptSourceInFdt,
 }
 
-static HOST_RESOURCES: SpinLock<Option<HostResources>> = SpinLock::new(None);
+static DWC3_HOST_RESOURCES: SpinLock<Option<HostResources>> = SpinLock::new(None);
 
 fn dwc3_host_gctl(gctl: u32) -> u32 {
     (gctl & !DWC3_GCTL_PRTCAPDIR_MASK) | DWC3_GCTL_PRTCAP_HOST
@@ -222,6 +225,8 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
 }
 
 pub(super) fn init() {
+    pci::init();
+
     let device_tree = DEVICE_TREE.get().unwrap();
     let selector = device_tree
         .find_node("/chosen")
@@ -283,9 +288,16 @@ pub(super) fn init() {
         capabilities.contexts_64byte,
     );
 
-    let mut resources = HOST_RESOURCES.lock();
+    let mut resources = DWC3_HOST_RESOURCES.lock();
     if resources.is_none() {
-        *resources = Some(HostResources { config, mmio });
+        *resources = Some(HostResources {
+            mmio,
+            dma_window: config.dma_window,
+            interrupt_source: InterruptSourceInFdt {
+                interrupt_parent: config.interrupt_parent,
+                interrupt: config.interrupt,
+            },
+        });
     }
 }
 
@@ -293,15 +305,33 @@ static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
 
 struct DeferredKeyboardState {
     decoder: HidBootKeyboard,
-    registered: Option<RegisteredInputDevice>,
+    registered: RegisteredInputDevice,
 }
 
-struct EnabledKeyboardIrq<'a> {
+impl DeferredKeyboardState {
+    fn new(info: UsbKeyboardInfo) -> Self {
+        ostd::info!(
+            "USB boot keyboard registered: {:04x}:{:04x} bus=usb name=usb_boot_keyboard",
+            info.vendor_id,
+            info.product_id,
+        );
+        Self {
+            decoder: HidBootKeyboard::new(),
+            registered: register(info.vendor_id, info.product_id),
+        }
+    }
+}
+
+struct EnabledKeyboardIrqs<'a> {
     keyboard: &'a Mutex<PollingUsbKeyboard>,
+    pci_location: Option<PciDeviceLocation>,
 }
 
-impl<'a> EnabledKeyboardIrq<'a> {
-    fn new(keyboard: &'a Mutex<PollingUsbKeyboard>) -> Result<Self, UsbKeyboardError> {
+impl<'a> EnabledKeyboardIrqs<'a> {
+    fn new(
+        keyboard: &'a Mutex<PollingUsbKeyboard>,
+        pci_location: Option<PciDeviceLocation>,
+    ) -> Result<Self, UsbKeyboardError> {
         let enable_result = keyboard.lock().enable_irq();
         if let Err(error) = enable_result {
             if let Err(disable_error) = keyboard.lock().disable_irq() {
@@ -312,14 +342,23 @@ impl<'a> EnabledKeyboardIrq<'a> {
             }
             return Err(error);
         }
-        Ok(Self { keyboard })
+        if let Some(location) = pci_location {
+            pci::set_intx_enabled(location, true);
+        }
+        Ok(Self {
+            keyboard,
+            pci_location,
+        })
     }
 }
 
-impl Drop for EnabledKeyboardIrq<'_> {
+impl Drop for EnabledKeyboardIrqs<'_> {
     fn drop(&mut self) {
         if let Err(error) = self.keyboard.lock().disable_irq() {
             ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
+        }
+        if let Some(location) = self.pci_location {
+            pci::set_intx_enabled(location, false);
         }
     }
 }
@@ -329,10 +368,10 @@ fn process_deferred_keyboard(
     state: &mut DeferredKeyboardState,
 ) -> bool {
     loop {
-        let (report, info) = {
+        let report = {
             let mut keyboard = keyboard.lock();
             match keyboard.poll_report() {
-                Ok(Some(report)) => (report, keyboard.info()),
+                Ok(Some(report)) => report,
                 Ok(None) => return true,
                 Err(error) => {
                     ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
@@ -342,15 +381,7 @@ fn process_deferred_keyboard(
         };
         let events = state.decoder.decode(report);
         if !events.is_empty() {
-            let device = state.registered.get_or_insert_with(|| {
-                ostd::info!(
-                    "USB boot keyboard registered: {:04x}:{:04x}",
-                    info.vendor_id,
-                    info.product_id,
-                );
-                register(info.vendor_id, info.product_id)
-            });
-            device.submit_events(&events);
+            state.registered.submit_events(&events);
         }
     }
 }
@@ -362,7 +393,29 @@ fn process_deferred_keyboard(
 /// the event ring and emits evdev events. No polling loop runs while the
 /// keyboard is idle.
 pub fn run_polling() {
-    let Some(resources) = HOST_RESOURCES.lock().take() else {
+    if let Some(host) = pci::take_selected_host() {
+        let location = host.location;
+        ostd::info!(
+            "Starting PCI xHCI host: 0000:{:02x}:{:02x}.{}, bytes={:#x}, irq={}:{}",
+            location.bus,
+            location.device,
+            location.function,
+            host.mmio.size(),
+            host.interrupt_source.interrupt_parent,
+            host.interrupt_source.interrupt,
+        );
+        run_keyboard_interrupt_driven(
+            HostResources {
+                mmio: host.mmio,
+                dma_window: host.dma_window,
+                interrupt_source: host.interrupt_source,
+            },
+            Some(location),
+        );
+        return;
+    }
+
+    let Some(resources) = DWC3_HOST_RESOURCES.lock().take() else {
         return;
     };
     if prepare_dwc3_host(&resources.mmio).is_err() {
@@ -370,20 +423,26 @@ pub fn run_polling() {
         return;
     }
     ostd::info!(
-        "Starting interrupt-driven xHCI host: mmio={:#x?}, bytes={:#x}, irq={}:{}",
-        resources.config.mmio_range,
+        "Starting DWC3 xHCI host: bytes={:#x}, irq={}:{}",
         resources.mmio.size(),
-        resources.config.interrupt_parent,
-        resources.config.interrupt,
+        resources.interrupt_source.interrupt_parent,
+        resources.interrupt_source.interrupt,
     );
+    run_keyboard_interrupt_driven(resources, None);
+}
 
-    let keyboard = match PollingUsbKeyboard::open(resources.mmio, resources.config.dma_window) {
+fn run_keyboard_interrupt_driven(
+    resources: HostResources,
+    pci_location: Option<PciDeviceLocation>,
+) {
+    let keyboard = match PollingUsbKeyboard::open(resources.mmio, resources.dma_window) {
         Ok(keyboard) => Mutex::new(keyboard),
         Err(error) => {
             ostd::warn!("xHCI keyboard startup failed: {:?}", error);
             return;
         }
     };
+    let mut state = DeferredKeyboardState::new(keyboard.lock().info());
     KEYBOARD.call_once(|| keyboard);
     let keyboard = KEYBOARD.get().unwrap();
 
@@ -406,11 +465,8 @@ pub fn run_polling() {
             return;
         }
     };
-    let interrupt_source = InterruptSourceInFdt {
-        interrupt_parent: resources.config.interrupt_parent,
-        interrupt: resources.config.interrupt,
-    };
-    let mut mapped_irq = match irq_chip.map_fdt_pin_to_masked(interrupt_source, irq_line) {
+    let mut mapped_irq = match irq_chip.map_fdt_pin_to_masked(resources.interrupt_source, irq_line)
+    {
         Ok(mapped) => mapped,
         Err(_) => {
             ostd::warn!("failed to map USB interrupt to PLIC");
@@ -427,9 +483,9 @@ pub fn run_polling() {
         return;
     }
 
-    // Keep this guard declared after `mapped_irq`: reverse drop order disables
-    // the xHCI INTE bit before the PLIC mapping is torn down.
-    let _enabled_keyboard_irq = match EnabledKeyboardIrq::new(keyboard) {
+    // Keep this composite guard after `mapped_irq`: its explicit Drop disables
+    // controller INTE first and PCI INTx second, before the PLIC mapping drops.
+    let _enabled_keyboard_irqs = match EnabledKeyboardIrqs::new(keyboard, pci_location) {
         Ok(guard) => guard,
         Err(error) => {
             ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
@@ -439,10 +495,6 @@ pub fn run_polling() {
 
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
-    let mut state = DeferredKeyboardState {
-        decoder: HidBootKeyboard::new(),
-        registered: None,
-    };
     loop {
         if !process_deferred_keyboard(keyboard, &mut state) {
             return;
@@ -572,5 +624,27 @@ mod tests {
             dwc3_host_gctl(firmware_device_mode) & !DWC3_GCTL_PRTCAPDIR_MASK,
             firmware_device_mode & !DWC3_GCTL_PRTCAPDIR_MASK
         );
+    }
+
+    #[ktest]
+    fn usb_keyboard_is_registered_before_the_first_report() {
+        component::init_all(
+            component::InitStage::Bootstrap,
+            component::parse_metadata!(),
+        )
+        .unwrap();
+        let before = aster_input::count_devices();
+        let state = DeferredKeyboardState::new(UsbKeyboardInfo {
+            vendor_id: 0x0627,
+            product_id: 0x0001,
+        });
+
+        assert_eq!(aster_input::count_devices(), before + 1);
+        assert_eq!(
+            state.registered.device().id().bustype(),
+            aster_input::input_dev::InputId::BUS_USB
+        );
+        drop(state);
+        assert_eq!(aster_input::count_devices(), before);
     }
 }
