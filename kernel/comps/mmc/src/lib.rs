@@ -7,13 +7,36 @@
 
 extern crate alloc;
 
+use aster_block::MajorIdOwner;
 use aster_logger as _;
 use component::{ComponentInitError, init_component};
+use spin::Once;
 
+macro_rules! __log_prefix {
+    () => {
+        "mmc: "
+    };
+}
+
+#[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
+#[cfg_attr(not(target_arch = "riscv64"), path = "arch/other.rs")]
+mod arch;
+#[cfg(target_arch = "riscv64")]
+mod block;
 pub mod card;
 pub mod sdhci;
 
+static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
+
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let Some((host, card)) = arch::probe().map_err(|_| ComponentInitError::Unknown)? else {
+            return Ok(());
+        };
+        MMC_BLOCK_MAJOR_ID.call_once(|| aster_block::allocate_major().unwrap());
+        block::register(host, card).map_err(|_| ComponentInitError::Unknown)?;
+    }
     Ok(())
 }
