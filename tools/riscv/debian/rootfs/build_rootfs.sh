@@ -667,8 +667,11 @@ create_and_verify_image() {
     debugfs_require_path "$root_image" /var/lib/dpkg/status
     debugfs_require_path "$root_image" /etc/asterinas-rootfs.bashrc
     debugfs_reject_path "$root_image" /usr/bin/qemu-riscv64-static
-    debugfs -R "dump /bin/bash $dumped_bash" "$root_image" >/dev/null 2>&1
-    qemu-riscv64-static -L "$stage" "$dumped_bash" -c true
+    debugfs -R "dump /bin/bash $dumped_bash" "$root_image" >/dev/null 2>&1 ||
+        die "failed to extract Bash from root image"
+    chmod 0700 "$dumped_bash"
+    qemu-riscv64-static -L "$stage" "$dumped_bash" -c true ||
+        die "root image Bash smoke test failed"
 }
 
 debugfs_require_path() {
