@@ -300,8 +300,7 @@ fetch_and_verify_release() {
         --silent \
         --output "$inrelease" \
         "$release_url"
-    [[ -f "$DEBIAN_KEYRING" && ! -L "$DEBIAN_KEYRING" ]] ||
-        die "missing or unsafe Debian archive keyring: $DEBIAN_KEYRING"
+    require_safe_keyring_path "$DEBIAN_KEYRING"
     gpgv --keyring "$DEBIAN_KEYRING" "$inrelease"
 
     mapfile -t codenames < <(sed -n 's/^Codename: //p' "$inrelease")
@@ -312,6 +311,45 @@ fetch_and_verify_release() {
         die "verified InRelease Version must be a canonical Debian 13 point release"
     DEBIAN_RELEASE="${versions[0]}"
     readonly DEBIAN_RELEASE
+}
+
+require_safe_keyring_path() {
+    local keyring_path="$1"
+    local candidate="$keyring_path"
+    local keyring_directory
+    local link_output
+    local link_target
+    local metadata
+    local owner
+    local mode
+    local permissions
+
+    if [[ -L "$keyring_path" ]]; then
+        link_output="$({ readlink -- "$keyring_path"; printf '\034'; })"
+        [[ "$link_output" == *$'\034' ]] ||
+            die "missing or unsafe Debian archive keyring: $keyring_path"
+        link_output="${link_output%$'\034'}"
+        link_target="${link_output%$'\n'}"
+        [[ -n "$link_target" &&
+            "$link_target" != */* &&
+            "$link_target" != *..* &&
+            "$link_target" != *[[:cntrl:]]* ]] ||
+            die "missing or unsafe Debian archive keyring: $keyring_path"
+        keyring_directory="${keyring_path%/*}"
+        [[ "$keyring_directory" != "$keyring_path" ]] || keyring_directory="."
+        candidate="$keyring_directory/$link_target"
+    fi
+
+    [[ -f "$candidate" && ! -L "$candidate" ]] ||
+        die "missing or unsafe Debian archive keyring: $keyring_path"
+    metadata="$(stat -c '%u %a' -- "$candidate")" ||
+        die "missing or unsafe Debian archive keyring: $keyring_path"
+    read -r owner mode <<<"$metadata"
+    [[ "$owner" == 0 && "$mode" =~ ^[0-7]{3,4}$ ]] ||
+        die "missing or unsafe Debian archive keyring: $keyring_path"
+    permissions="${mode: -3}"
+    [[ "${permissions:1:1}" != [2367] && "${permissions:2:1}" != [2367] ]] ||
+        die "missing or unsafe Debian archive keyring: $keyring_path"
 }
 
 bootstrap_rootfs() {
