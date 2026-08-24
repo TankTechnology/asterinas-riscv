@@ -52,7 +52,6 @@ MIRROR="$DEFAULT_MIRROR"
 SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
-declare -a PUBLICATION_TEMPS=()
 
 main() {
     parse_arguments "$@"
@@ -273,11 +272,7 @@ prepare_private_workspace() {
 
 cleanup() {
     local exit_status=$?
-    local temporary_path
     trap - EXIT INT TERM HUP
-    for temporary_path in "${PUBLICATION_TEMPS[@]}"; do
-        [[ -z "$temporary_path" ]] || rm -f -- "$temporary_path"
-    done
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
         chmod -R u+w -- "$WORK_DIR" 2>/dev/null || true
         rm -rf -- "$WORK_DIR"
@@ -559,9 +554,6 @@ extract_package_index_checksums() {
 admit_downloaded_packages() {
     local archive
     local archive_sha256
-    local cache_directory
-    local cache_path
-    local cached_sha256
     local -a matching_rows=()
 
     : >"$WORK_DIR/source-metadata/package-checksums"
@@ -577,19 +569,7 @@ admit_downloaded_packages() {
         printf '%s\n' "${matching_rows[0]}" >> \
             "$WORK_DIR/source-metadata/package-checksums"
 
-        cache_directory="$CACHE_DIR/sha256/${archive_sha256:0:2}"
-        cache_path="$cache_directory/$archive_sha256.deb"
-        mkdir -p -- "$cache_directory"
-        if [[ -e "$cache_path" ]]; then
-            [[ -f "$cache_path" && ! -L "$cache_path" ]] ||
-                die "unsafe content-addressed cache entry: $cache_path"
-            cached_sha256="$(sha256sum "$cache_path")"
-            cached_sha256="${cached_sha256%% *}"
-            [[ "$cached_sha256" == "$archive_sha256" ]] ||
-                die "content-addressed cache hash mismatch: $cache_path"
-        else
-            copy_into_content_cache "$archive" "$cache_path" "$archive_sha256"
-        fi
+        copy_into_content_cache "$archive" "$archive_sha256"
     done
     LC_ALL=C sort -u \
         "$WORK_DIR/source-metadata/package-checksums" \
@@ -598,19 +578,17 @@ admit_downloaded_packages() {
 
 copy_into_content_cache() {
     local source="$1"
-    local destination="$2"
-    local expected_sha256="$3"
-    local temporary
-    local actual_sha256
+    local expected_sha256="$2"
+    local script_directory
+    local repository_root
 
-    temporary="$(mktemp "${destination}.XXXXXXXX")"
-    cp -- "$source" "$temporary"
-    actual_sha256="$(sha256sum "$temporary")"
-    actual_sha256="${actual_sha256%% *}"
-    [[ "$actual_sha256" == "$expected_sha256" ]] ||
-        die "package changed while entering content-addressed cache"
-    chmod 0444 "$temporary"
-    mv -f -- "$temporary" "$destination"
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
+        cache-admit \
+        --cache-dir "$CACHE_DIR" \
+        --source "$source" \
+        --sha256 "$expected_sha256"
 }
 
 configure_and_normalize_rootfs() {
@@ -727,47 +705,18 @@ write_rootfs_manifest() {
 }
 
 publish_artifacts() {
-    local -a sources=(
-        "$WORK_DIR/debian-root.ext2"
-        "$WORK_DIR/rootfs-manifest.json"
-        "$WORK_DIR/packages.lock"
-        "$WORK_DIR/source-metadata/InRelease"
-        "$WORK_DIR/source-metadata/package-checksums"
-    )
-    local index
-    local relative_path
-    local destination_directory
-    local destination_name
-    local temporary
+    local script_directory
+    local repository_root
 
-    if [[ ! -d "$OUTPUT_DIR" ]]; then
-        mkdir -m 0755 -- "$OUTPUT_DIR"
-    fi
-    if [[ ! -d "$OUTPUT_DIR/source-metadata" ]]; then
-        mkdir -m 0755 -- "$OUTPUT_DIR/source-metadata"
-    fi
-    for index in "${!PUBLISHED_PATHS[@]}"; do
-        relative_path="${PUBLISHED_PATHS[$index]}"
-        destination_directory="$OUTPUT_DIR/${relative_path%/*}"
-        destination_name="${relative_path##*/}"
-        [[ "$destination_directory" != "$OUTPUT_DIR/$relative_path" ]] ||
-            destination_directory="$OUTPUT_DIR"
-        temporary="$(mktemp "$destination_directory/.${destination_name}.XXXXXXXX")"
-        cp -- "${sources[$index]}" "$temporary"
-        chmod 0644 "$temporary"
-        sync -f "$temporary"
-        PUBLICATION_TEMPS+=("$temporary")
-    done
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
 
-    # Each rename is atomic and all validation precedes the first rename. The
-    # five-file set is intentionally not claimed to be crash-atomic.
-    for index in "${!PUBLISHED_PATHS[@]}"; do
-        relative_path="${PUBLISHED_PATHS[$index]}"
-        mv -f -- "${PUBLICATION_TEMPS[$index]}" "$OUTPUT_DIR/$relative_path"
-        PUBLICATION_TEMPS[$index]=""
-    done
-    sync -f "$OUTPUT_DIR/source-metadata"
-    sync -f "$OUTPUT_DIR"
+    # The helper rolls back ordinary failures and termination signals. The
+    # five-file set is intentionally not claimed to be power-loss atomic.
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
+        publish-set \
+        --output-dir "$OUTPUT_DIR" \
+        --source-root "$WORK_DIR"
 }
 
 log() {
