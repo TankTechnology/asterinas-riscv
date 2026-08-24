@@ -273,6 +273,11 @@ test_riscv_ltp_unit:
 		tools.riscv.tests.test_ltp_gate \
 		tools.riscv.tests.test_ltp_guest_runner -v
 
+.PHONY: test_riscv_debian_rootfs_unit
+test_riscv_debian_rootfs_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_debian_rootfs -v
+
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit
 	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
