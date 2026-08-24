@@ -100,7 +100,7 @@ The run has two private disks:
 ```text
 boot.ext4                         debian-root.run.ext2
 ├── asterinas.booti               └── Debian trixie riscv64 minbase
-├── qemu-virt.dtb                     label: ASTER_DEBIAN_ROOT
+├── qemu-virt.dtb                     label: ASTER_DEBIANROOT
 └── stage1-initramfs.cpio
 ```
 
@@ -116,7 +116,7 @@ The complete data path is:
 U-Boot booti
   -> Asterinas initramfs root
   -> static stage-1 /init
-  -> locate ASTER_DEBIAN_ROOT
+  -> locate ASTER_DEBIANROOT
   -> mount ext2 at /newroot
   -> bind /dev and mount proc/sysfs/tmpfs
   -> chroot /newroot
@@ -146,7 +146,9 @@ existing RISC-V test package.
 - Normalizes volatile host identity such as `/etc/machine-id` and removes
   transient package caches and build logs.
 - Creates a 1-GiB ext2 image with a fixed filesystem type, 4096-byte blocks,
-  and volume label `ASTER_DEBIAN_ROOT`.
+  and volume label `ASTER_DEBIANROOT`.
+- Uses the corrected 16-byte label because ext2 volume labels cannot exceed
+  16 bytes.
 - Does not replace an existing output until all provenance, content, and
   filesystem checks pass.
 
@@ -278,7 +280,7 @@ M1 passes only if all of the following hold in one current run:
    DTB, and stage-1 archive match the recorded identities.
 2. The DTB has exactly four enabled CPU nodes, QEMU runs with `-smp 4`, and
    the kernel is built for Sv39.
-3. Stage-1 selects exactly one `ASTER_DEBIAN_ROOT` disk and mounts it
+3. Stage-1 selects exactly one `ASTER_DEBIANROOT` disk and mounts it
    read-write as ext2.
 4. `/dev`, `/proc`, `/sys`, `/run`, and `/tmp` are available after the root
    handoff.
