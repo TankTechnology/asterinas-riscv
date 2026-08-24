@@ -79,6 +79,29 @@ See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
 the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
 explicit two-boot target, and evidence inspection commands.
 
+## Megrez SDHCI read-only evidence
+
+The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
+requires the EIC7700 removable-card controller, a nonzero SDHC capacity,
+read-only `mmcblk0` registration, and a partition-table SHA-256 marker in that
+order. Panic, fatal, probe-failure, writable, duplicate, and out-of-order
+evidence is rejected. Linux boot output is not an accepted substitute.
+
+Run the host tests with:
+
+```bash
+python3 -m unittest tools.riscv.tests.test_megrez_sdhci_gate -v
+```
+
+After a real Asterinas board run has produced the partition hash marker,
+publish the complete log and atomic JSON result with:
+
+```bash
+python3 tools/riscv/megrez_sdhci_gate.py \
+  --transcript /absolute/path/to/megrez.serial.log \
+  --output-dir /absolute/path/to/evidence
+```
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
