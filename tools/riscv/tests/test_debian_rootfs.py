@@ -440,6 +440,59 @@ class DebianStage1Tests(unittest.TestCase):
                 process.send_signal(signal.SIGTERM)
                 process.wait(timeout=2)
 
+    def test_console_duplication_clears_cloexec_for_same_number_fd(self) -> None:
+        harness_source = self.directory / "console-fd-harness.c"
+        harness_source.write_text(
+            f'''#define main stage1_production_main
+#include "{STAGE1_SOURCE}"
+#undef main
+
+int main(int argc, char **argv)
+{{
+    if (argc != 2 || argv[1][0] < '0' || argv[1][0] > '2' || argv[1][1] != '\\0')
+        return 2;
+    int target_fd = argv[1][0] - '0';
+    if (close(target_fd) != 0)
+        return 3;
+    int console_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (console_fd != target_fd)
+        return 4;
+    if (duplicate_console_fd(console_fd, target_fd) < 0)
+        return 5;
+    int flags = fcntl(target_fd, F_GETFD);
+    if (flags < 0)
+        return 6;
+    return (flags & FD_CLOEXEC) != 0;
+}}
+''',
+            encoding="utf-8",
+        )
+        binary = self.directory / "console-fd-harness"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wno-return-type",
+                harness_source,
+                "-o",
+                binary,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+
+        for target_fd in range(3):
+            with self.subTest(target_fd=target_fd):
+                result = subprocess.run([binary, str(target_fd)], check=False)
+                self.assertEqual(result.returncode, 0)
+
     def test_builder_declares_exact_tools_and_entries(self) -> None:
         tools = self.run_builder("--print-tools")
         entries = self.run_builder("--print-entries")
