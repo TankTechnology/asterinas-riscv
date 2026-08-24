@@ -4,7 +4,7 @@
 
 **Goal:** Merge the pinned downstream main into the existing RISC-V USB keyboard topic history without rewriting it, while making main's IRQ, USB, PCI, DMA, input, TTY, and build contracts the exact M0 baseline.
 
-**Architecture:** Perform a normal two-parent merge on an isolated branch created from the approved topic design. Resolve core conflicts by restoring the pinned main tree, remove the historical PCI xHCI adapter that would otherwise merge without conflict, and preserve historical tests and board tools only as separately audited artifacts. M0 adds no controller behavior; it produces the verified base for the new PCI xHCI plan.
+**Architecture:** Perform a normal two-parent merge on an isolated branch created from the approved topic design. Resolve core conflicts by restoring the pinned main tree, remove the historical PCI xHCI adapter that would otherwise merge without conflict, and preserve historical tests and board tools only as separately audited artifacts. The only approved RISC-V reboot recovery exception to main authority is the `cfg(riscv64)` crate registration and bootstrap arming needed by the retained panic hook and `boot_reboot.rs`. M0 adds no controller behavior; it produces the verified base for the new PCI xHCI plan.
 
 **Tech Stack:** Git worktrees and three-way merge, Rust nightly, Cargo/`cargo-osdk`, Python `unittest`, Docker, QEMU RISC-V, Asterinas OSTD/USB/PCI/input components.
 
@@ -31,6 +31,7 @@ DIRTY_BACKUP_SHA   2be8052f3542400424c9d5267a3e542f97408497
 | `37adeb80e` USB input to TTY | Reimplement if missing | Restore main input/TTY and test it |
 | `220d770aa` QEMU input echo | Compatibility artifact | Retain the scenario, not its init code |
 | `f6ba5c3c3` echo outside TTY lock | Reimplement if needed | Restore main TTY; retain the deadlock concern |
+| `c4ae2212c` RISC-V software reboot recovery | Retain as an approved exception | Keep `boot_reboot.rs`, its panic hook, and the two `cfg(riscv64)` wiring sites |
 | `767e27e64`, `3d45f6e73` Megrez tools | Freshly verify | Preserve only while their focused tests pass |
 
 ## Completed Isolation Record
@@ -181,14 +182,17 @@ git diff --exit-code "$INTEGRATION_MAIN" -- \
   Cargo.toml Cargo.lock Makefile Components.toml kernel/Cargo.toml \
   kernel/comps/input kernel/comps/pci kernel/comps/usb \
   kernel/src/device/evdev kernel/src/device/registry/char.rs \
-  kernel/src/device/tty kernel/src/init.rs kernel/src/lib.rs \
+  kernel/src/device/tty \
   ostd/Cargo.toml ostd/src/arch/loongarch/irq \
   ostd/src/arch/riscv/irq ostd/src/arch/x86/irq \
   ostd/src/bus/usb.rs ostd/src/bus/usb ostd/src/io/io_mem/mod.rs \
   ostd/src/irq ostd/src/mm/dma
 ```
 
-Expected: no output and exit status 0.
+Expected: no output and exit status 0. `kernel/src/init.rs` and
+`kernel/src/lib.rs` are excluded only for the approved RISC-V reboot recovery
+exception: `crate::boot_reboot::arm_if_requested()` and `mod boot_reboot;`,
+both guarded by `cfg(riscv64)`.
 
 ### Task 5: Verify preserved compatibility artifacts
 
@@ -288,6 +292,25 @@ test ! -e kernel/comps/usb/src/arch/riscv/pci.rs
 ```
 
 Expected: both checks exit zero; PCI xHCI remains an M1 requirement.
+
+### Recorded M0 quality correction: restore RISC-V reboot wiring
+
+Commit `d99ba8dc007109aee71827d20113eeced7fbeef5` restores the two approved
+`cfg(riscv64)` wiring sites after the merge had retained `boot_reboot.rs` and
+the panic hook but left the module unreachable and unarmed.
+
+The pre-fix pinned-container command
+
+```bash
+cargo osdk check --ktests -p ostd -p aster-kernel \
+  --target riscv64imac-unknown-none-elf
+```
+
+failed with `E0433` at `kernel/src/thread/oops.rs:95`. The identical command
+passed after `d99ba8dc0`; it compiled the seven existing `boot_reboot` ktests.
+No runtime reboot or QEMU ktest result is claimed by this correction: a
+focused runtime attempt stopped before launch because the generated test
+initramfs was absent.
 
 ### Task 7: Run local RISC-V build and QEMU foundation gates
 
