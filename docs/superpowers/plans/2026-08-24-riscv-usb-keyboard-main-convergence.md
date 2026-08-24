@@ -220,11 +220,17 @@ Expected: all checks exit zero.
 
 ```bash
 python3 -m unittest discover -s tools/usb-hid/tests -p 'test_*.py' -v
-PYTHONPATH=tools/riscv python3 -m unittest tools.riscv.tests.test_megrez_board_session -v
+timeout 10s env PYTHONPATH=tools/riscv python3 -m unittest \
+  tools.riscv.tests.test_megrez_board_session \
+  tools.riscv.tests.test_megrez_patch_dtb -v
 python3 -m unittest tools.riscv.tests.test_qemu_uboot_contracts tools.riscv.tests.test_qemu_uboot_booti -v
 ```
 
-Expected: 49 USB HID tests, three board-session tests, and 229 U-Boot contract tests pass; only the supported cross-compiler test skips. The increase from the 171-test topic baseline is the pinned main's added contract coverage.
+Expected: 49 USB HID tests, 18 board-session tests, four DTB patch tests,
+and 229 U-Boot contract tests pass; only the supported cross-compiler test
+skips. The increase from the 171-test topic baseline is the pinned main's
+added contract coverage. The board-tool command must finish before its
+10-second outer deadline.
 
 - [ ] **Step 3: Verify metadata and formatting**
 
