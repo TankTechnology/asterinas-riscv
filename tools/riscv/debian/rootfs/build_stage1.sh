@@ -26,7 +26,7 @@ fi
 if (( $# == 1 )); then
     case "$1" in
         --print-tools)
-            printf 'riscv64-linux-gnu-gcc\ncpio\n'
+            printf 'riscv64-linux-gnu-gcc\ncpio\npython3\n'
             exit 0
             ;;
         --print-entries)
@@ -65,6 +65,10 @@ if ! command -v "$COMPILER" >/dev/null 2>&1; then
 fi
 if ! command -v cpio >/dev/null 2>&1; then
     printf 'error: required tool not found: cpio\n' >&2
+    exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'error: required tool not found: python3\n' >&2
     exit 1
 fi
 
@@ -121,15 +125,7 @@ mkdir -p -- "$OUTPUT_DIRECTORY"
 require_safe_directory_chain "$OUTPUT_DIRECTORY"
 
 STAGE="$(mktemp -d)"
-ARCHIVE_TEMP=""
-INIT_TEMP=""
 cleanup() {
-    if [[ -n "$ARCHIVE_TEMP" ]]; then
-        rm -f -- "$ARCHIVE_TEMP"
-    fi
-    if [[ -n "$INIT_TEMP" ]]; then
-        rm -f -- "$INIT_TEMP"
-    fi
     rm -rf -- "$STAGE"
 }
 trap cleanup EXIT
@@ -142,28 +138,27 @@ trap 'exit 143' TERM
 chmod 0755 "$STAGE" "$STAGE/init"
 touch -d "@$SOURCE_DATE_EPOCH" "$STAGE" "$STAGE/init"
 
-ARCHIVE_TEMP="$(mktemp "$OUTPUT_DIRECTORY/.initramfs.cpio.tmp.XXXXXX")"
+ARCHIVE="$STAGE/initramfs.cpio"
+: >"$ARCHIVE"
+touch -d "@$SOURCE_DATE_EPOCH" "$STAGE"
 printf '.\ninit\n' |
     cpio --quiet --reproducible --owner=0:0 --create --format=newc \
-        --directory="$STAGE" >"$ARCHIVE_TEMP"
-if [[ ! -s "$ARCHIVE_TEMP" ]]; then
+        --directory="$STAGE" >"$ARCHIVE"
+if [[ ! -s "$ARCHIVE" ]]; then
     printf 'error: generated initramfs is empty\n' >&2
     exit 1
 fi
 
-ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE_TEMP")"
+ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
 if [[ "$ARCHIVE_ENTRIES" != $'.\ninit' ]]; then
     printf 'error: generated initramfs has unexpected entries\n' >&2
     exit 1
 fi
-chmod 0644 "$ARCHIVE_TEMP"
+chmod 0644 "$ARCHIVE"
 
-INIT_TEMP="$(mktemp "$OUTPUT_DIRECTORY/.init.tmp.XXXXXX")"
-cp -- "$STAGE/init" "$INIT_TEMP"
-chmod 0755 "$INIT_TEMP"
-
-# The archive is the commit artifact; publish its matching standalone ELF first.
-mv -T -- "$INIT_TEMP" "$INIT_OUTPUT"
-INIT_TEMP=""
-mv -T -- "$ARCHIVE_TEMP" "$OUTPUT"
-ARCHIVE_TEMP=""
+PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.riscv.debian.rootfs.fsops \
+    publish-stage1 \
+    --output-dir "$OUTPUT_DIRECTORY" \
+    --init-source "$STAGE/init" \
+    --archive-source "$ARCHIVE" \
+    --archive-name "$OUTPUT_BASENAME"

@@ -331,6 +331,39 @@ class DebianStage1Tests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
 
+    def make_stage1_publication_sources(self) -> tuple[Path, Path]:
+        source_directory = self.directory / "stage1 publication sources"
+        source_directory.mkdir(exist_ok=True)
+        init_source = source_directory / "init"
+        archive_source = source_directory / "initramfs.cpio"
+        init_source.write_bytes(b"new-stage1-init")
+        archive_source.write_bytes(b"new-stage1-archive")
+        return init_source, archive_source
+
+    def stage1_publication_snapshot(
+        self, output_directory: Path
+    ) -> dict[str, tuple[bytes, int] | None]:
+        snapshot = {}
+        for name in ("init", "initramfs.cpio"):
+            path = output_directory / name
+            snapshot[name] = (
+                (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                if path.exists()
+                else None
+            )
+        return snapshot
+
+    def wait_for_child(self, process_id: int) -> int:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            waited_id, status = os.waitpid(process_id, os.WNOHANG)
+            if waited_id == process_id:
+                return status
+            time.sleep(0.01)
+        os.kill(process_id, signal.SIGKILL)
+        os.waitpid(process_id, 0)
+        self.fail("stage1 publication child did not exit within two seconds")
+
     def compile_stage1(
         self,
         output: Path,
@@ -360,10 +393,11 @@ class DebianStage1Tests(unittest.TestCase):
         self,
         *arguments: str,
         environment: dict[str, str] | None = None,
+        cwd: Path = REPOSITORY_ROOT,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["/bin/bash", str(STAGE1_BUILD_SCRIPT), *arguments],
-            cwd=REPOSITORY_ROOT,
+            cwd=cwd,
             env=environment,
             check=False,
             capture_output=True,
@@ -498,7 +532,10 @@ int main(int argc, char **argv)
         entries = self.run_builder("--print-entries")
 
         self.assertEqual(tools.returncode, 0, tools.stderr)
-        self.assertEqual(tools.stdout.splitlines(), ["riscv64-linux-gnu-gcc", "cpio"])
+        self.assertEqual(
+            tools.stdout.splitlines(),
+            ["riscv64-linux-gnu-gcc", "cpio", "python3"],
+        )
         self.assertEqual(entries.returncode, 0, entries.stderr)
         self.assertEqual(entries.stdout.splitlines(), [".", "init"])
 
@@ -516,7 +553,11 @@ int main(int argc, char **argv)
         second = self.directory / "second output" / "initramfs.cpio"
 
         for output in (first, second):
-            result = self.run_builder(str(output), environment=environment)
+            result = self.run_builder(
+                str(output),
+                environment=environment,
+                cwd=self.directory,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             time.sleep(1.1)
 
@@ -587,6 +628,170 @@ int main(int argc, char **argv)
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
         self.assertEqual(existing_init.read_bytes(), b"known-good-init")
         self.assertEqual(stat.S_IMODE(existing_init.stat().st_mode), 0o750)
+
+    def test_builder_publication_failure_preserves_existing_pair(self) -> None:
+        fake_bin = self.directory / "publication-failure-bin"
+        fake_bin.mkdir()
+        fake_python = fake_bin / "python3"
+        fake_python.write_text("#!/bin/sh\nexit 96\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+        output = self.directory / "publication failure" / "initramfs.cpio"
+        output.parent.mkdir()
+        output.write_bytes(b"old-archive")
+        output.chmod(0o640)
+        init_output = output.parent / "init"
+        init_output.write_bytes(b"old-init")
+        init_output.chmod(0o750)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        environment["RISC_V_CC"] = "cc"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 96, result.stderr)
+        self.assertEqual(output.read_bytes(), b"old-archive")
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o640)
+        self.assertEqual(init_output.read_bytes(), b"old-init")
+        self.assertEqual(stat.S_IMODE(init_output.stat().st_mode), 0o750)
+
+    def test_stage1_publication_rolls_back_second_replace_failure(self) -> None:
+        init_source, archive_source = self.make_stage1_publication_sources()
+        real_replace = os.replace
+
+        for had_existing_pair in (False, True):
+            with self.subTest(had_existing_pair=had_existing_pair):
+                output = self.directory / f"replace-failure-{had_existing_pair}"
+                output.mkdir(mode=0o710)
+                if had_existing_pair:
+                    (output / "init").write_bytes(b"old-init")
+                    (output / "init").chmod(0o751)
+                    (output / "initramfs.cpio").write_bytes(b"old-archive")
+                    (output / "initramfs.cpio").chmod(0o640)
+                original = self.stage1_publication_snapshot(output)
+                replace_count = 0
+
+                def fail_second_replace(*args, **kwargs):
+                    nonlocal replace_count
+                    replace_count += 1
+                    if replace_count == 2:
+                        raise OSError("injected stage1 second replace failure")
+                    return real_replace(*args, **kwargs)
+
+                with (
+                    mock.patch.object(
+                        fsops_module.os,
+                        "replace",
+                        new=fail_second_replace,
+                    ),
+                    self.assertRaisesRegex(OSError, "injected stage1 second replace"),
+                ):
+                    fsops_module.publish_stage1(
+                        output,
+                        init_source,
+                        archive_source,
+                    )
+
+                self.assertEqual(self.stage1_publication_snapshot(output), original)
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o710)
+                self.assertEqual(
+                    sorted(path.name for path in output.iterdir()),
+                    sorted(
+                        name for name, value in original.items() if value is not None
+                    ),
+                )
+
+    def test_stage1_publication_rolls_back_hup_and_term(self) -> None:
+        init_source, archive_source = self.make_stage1_publication_sources()
+
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                output = self.directory / f"signal-{signum}"
+                output.mkdir(mode=0o711)
+                (output / "init").write_bytes(b"old-init")
+                (output / "init").chmod(0o750)
+                (output / "initramfs.cpio").write_bytes(b"old-archive")
+                (output / "initramfs.cpio").chmod(0o640)
+                original = self.stage1_publication_snapshot(output)
+                process_id = os.fork()
+                if process_id == 0:
+                    real_replace = os.replace
+                    replace_count = 0
+
+                    def signal_second_replace(*args, **kwargs):
+                        nonlocal replace_count
+                        replace_count += 1
+                        if replace_count == 2:
+                            os.kill(os.getpid(), signum)
+                        return real_replace(*args, **kwargs)
+
+                    try:
+                        with mock.patch.object(
+                            fsops_module.os,
+                            "replace",
+                            new=signal_second_replace,
+                        ):
+                            fsops_module.publish_stage1(
+                                output,
+                                init_source,
+                                archive_source,
+                            )
+                    except fsops_module.PublishInterrupted as error:
+                        os._exit(128 + error.signum)
+                    except BaseException:
+                        os._exit(99)
+                    os._exit(0)
+
+                wait_status = self.wait_for_child(process_id)
+                self.assertTrue(os.WIFEXITED(wait_status))
+                self.assertEqual(os.WEXITSTATUS(wait_status), 128 + signum)
+                self.assertEqual(self.stage1_publication_snapshot(output), original)
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o711)
+                self.assertEqual(
+                    sorted(path.name for path in output.iterdir()),
+                    ["init", "initramfs.cpio"],
+                )
+
+    def test_stage1_publication_defers_post_commit_signal(self) -> None:
+        init_source, archive_source = self.make_stage1_publication_sources()
+
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                output = self.directory / f"post-commit-{signum}"
+                output.mkdir(mode=0o711)
+                (output / "init").write_bytes(b"old-init")
+                (output / "initramfs.cpio").write_bytes(b"old-archive")
+                real_cleanup = fsops_module._cleanup_publication_files
+
+                def signal_during_cleanup(entries):
+                    os.kill(os.getpid(), signum)
+                    real_cleanup(entries)
+
+                with mock.patch.object(
+                    fsops_module,
+                    "_cleanup_publication_files",
+                    new=signal_during_cleanup,
+                ):
+                    result = fsops_module.main(
+                        [
+                            "publish-stage1",
+                            "--output-dir",
+                            str(output),
+                            "--init-source",
+                            str(init_source),
+                            "--archive-source",
+                            str(archive_source),
+                        ]
+                    )
+
+                self.assertEqual(result, 128 + signum)
+                self.assertEqual(
+                    self.stage1_publication_snapshot(output),
+                    {
+                        "init": (b"new-stage1-init", 0o755),
+                        "initramfs.cpio": (b"new-stage1-archive", 0o644),
+                    },
+                )
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o711)
 
 
 class DebianRootfsBuilderTests(unittest.TestCase):
