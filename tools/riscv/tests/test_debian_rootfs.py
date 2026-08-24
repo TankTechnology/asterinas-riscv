@@ -2223,6 +2223,14 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
         for name, architecture, version in PACKAGE_ROWS
         if name in GATE_IDENTITY_PACKAGES and architecture == "riscv64"
     )
+    MANIFEST_PACKAGES = tuple(
+        next(
+            (package_name, version)
+            for package_name, architecture, version in PACKAGE_ROWS
+            if package_name == name and architecture == "riscv64"
+        )
+        for name in GATE_IDENTITY_PACKAGES
+    )
 
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -2303,7 +2311,7 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
             commands,
             boot_number=boot_number,
             expected_debian_release="13.6",
-            expected_packages=self.EXPECTED_PACKAGES,
+            expected_packages=self.MANIFEST_PACKAGES,
             expected_nonce=self.NONCE,
         )
 
