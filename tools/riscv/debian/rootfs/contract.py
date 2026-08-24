@@ -421,7 +421,7 @@ def write_manifest(
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Runs the explicit manifest-writer command-line interface."""
+    """Runs the explicit rootfs contract command-line interface."""
 
     raw_arguments = list(sys.argv[1:] if arguments is None else arguments)
     _reject_duplicate_cli_options(raw_arguments)
@@ -429,18 +429,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
     namespace = parser.parse_args(raw_arguments)
 
     try:
-        write_manifest(
-            output=namespace.output,
-            image=namespace.image,
-            packages_lock=namespace.packages_lock,
-            inrelease=namespace.inrelease,
-            package_checksums=namespace.package_checksums,
-            mirror_url=namespace.mirror,
-            suite=namespace.suite,
-            debian_release=namespace.debian_release,
-            build_timestamp=namespace.build_timestamp,
-            tool_versions=namespace.tool_version,
-        )
+        if namespace.command == "write-manifest":
+            write_manifest(
+                output=namespace.output,
+                image=namespace.image,
+                packages_lock=namespace.packages_lock,
+                inrelease=namespace.inrelease,
+                package_checksums=namespace.package_checksums,
+                mirror_url=namespace.mirror,
+                suite=namespace.suite,
+                debian_release=namespace.debian_release,
+                build_timestamp=namespace.build_timestamp,
+                tool_versions=namespace.tool_version,
+            )
+        else:
+            manifest = load_manifest(namespace.manifest)
+            validate_frozen_root(namespace.image, manifest, namespace.packages_lock)
     except (ContractError, OSError) as error:
         parser.error(str(error))
     return 0
@@ -597,6 +601,10 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--debian-release", required=True)
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
+    verifier = subparsers.add_parser("verify")
+    verifier.add_argument("--image", required=True, type=Path)
+    verifier.add_argument("--manifest", required=True, type=Path)
+    verifier.add_argument("--packages-lock", required=True, type=Path)
     return parser
 
 
