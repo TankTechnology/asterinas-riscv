@@ -3315,6 +3315,7 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                     config, {"boot_disk": boot, "root_disk": root}, 1
                 )
                 session_directory = session["directory"]
+                self.assertEqual(session_directory.parent, output)
                 self.assertTrue(os.path.samefile(root, session_directory / root.name))
                 operations.close_monitor(session)
                 operations.cleanup_process(session, config)
