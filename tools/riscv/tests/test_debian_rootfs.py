@@ -6,6 +6,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, replace
@@ -27,6 +30,27 @@ from tools.riscv.debian.rootfs.contract import (
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
 ZERO_FILLED_ROOT_SHA256 = (
     "49bc20df15e412a64472421e13fe86ff1c5165e18b2afccf160d4dc19fe68a14"
+)
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
+CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
+REQUIRED_TOOLS = (
+    "debootstrap",
+    "qemu-riscv64-static",
+    "gpgv",
+    "dpkg-query",
+    "mke2fs",
+    "dumpe2fs",
+    "debugfs",
+    "sha256sum",
+    "curl",
+)
+PUBLISHED_ARTIFACTS = (
+    "debian-root.ext2",
+    "rootfs-manifest.json",
+    "packages.lock",
+    "source-metadata/InRelease",
+    "source-metadata/package-checksums",
 )
 
 PACKAGE_ROWS = (
@@ -91,6 +115,324 @@ def _manifest_payload(packages_lock_sha256: str) -> dict[str, object]:
             if name in GATE_IDENTITY_PACKAGES and architecture == "riscv64"
         },
     }
+
+
+def _run_builder(
+    *arguments: str,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["/bin/bash", str(BUILD_SCRIPT), *arguments],
+        cwd=cwd,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
+    bin_directory = directory / "fake-bin"
+    bin_directory.mkdir()
+    for tool in REQUIRED_TOOLS:
+        tool_path = bin_directory / tool
+        exit_status = 97 if tool == failing_tool else 0
+        tool_path.write_text(
+            f"#!/bin/sh\nexit {exit_status}\n",
+            encoding="utf-8",
+        )
+        tool_path.chmod(0o755)
+    return bin_directory
+
+
+def _package_checksums_text() -> str:
+    rows = [
+        (*row, hashlib.sha256(row[0].encode()).hexdigest())
+        for row in PACKAGE_ROWS
+        if row[0] in INSTALL_PACKAGES
+    ]
+    return "".join("\t".join(row) + "\n" for row in sorted(rows))
+
+
+class DebianRootfsBuilderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    def test_prints_exact_required_tool_contract(self) -> None:
+        result = _run_builder("--print-tools", cwd=self.directory)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(REQUIRED_TOOLS))
+        self.assertEqual(result.stderr, "")
+
+    def test_prints_exact_explicit_package_contract(self) -> None:
+        result = _run_builder("--print-packages", cwd=self.directory)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(INSTALL_PACKAGES))
+        self.assertEqual(result.stderr, "")
+
+    def test_rejects_unknown_argument(self) -> None:
+        result = _run_builder("--not-an-option", cwd=self.directory)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown argument", result.stderr)
+
+    def test_rejects_non_https_mirror(self) -> None:
+        result = _run_builder(
+            "--mirror",
+            "http://deb.debian.org/debian",
+            cwd=self.directory,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HTTPS", result.stderr)
+
+    def test_rejects_unsupported_suite(self) -> None:
+        result = _run_builder("--suite", "bookworm", cwd=self.directory)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported suite", result.stderr)
+
+    def test_rejects_missing_required_tool(self) -> None:
+        bin_directory = _make_fake_tools(self.directory)
+        (bin_directory / "mke2fs").unlink()
+        environment = os.environ.copy()
+        environment["PATH"] = str(bin_directory)
+
+        result = _run_builder(cwd=self.directory, environment=environment)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing required tool: mke2fs", result.stderr)
+
+    def test_rejects_unsafe_output_and_cache_paths(self) -> None:
+        real_directory = self.directory / "real"
+        real_directory.mkdir()
+        symlink_path = self.directory / "symlink"
+        symlink_path.symlink_to(real_directory, target_is_directory=True)
+        cases = (
+            ("--output-dir", str(symlink_path)),
+            ("--cache-dir", str(symlink_path)),
+            (
+                "--output-dir",
+                str(real_directory),
+                "--cache-dir",
+                str(real_directory),
+            ),
+            (
+                "--output-dir",
+                str(real_directory),
+                "--cache-dir",
+                str(symlink_path / "cache"),
+            ),
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = _run_builder(*arguments, cwd=self.directory)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsafe", result.stderr)
+
+    def test_rejects_symlinked_publication_directory(self) -> None:
+        output_directory = self.directory / "output"
+        metadata_directory = self.directory / "metadata"
+        output_directory.mkdir()
+        metadata_directory.mkdir()
+        (output_directory / "source-metadata").symlink_to(
+            metadata_directory,
+            target_is_directory=True,
+        )
+
+        result = _run_builder(
+            "--output-dir",
+            str(output_directory),
+            "--cache-dir",
+            str(self.directory / "cache"),
+            cwd=self.directory,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe", result.stderr)
+
+    def test_rejects_invalid_source_date_epoch(self) -> None:
+        for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
+            with self.subTest(value=value):
+                environment = os.environ.copy()
+                environment["SOURCE_DATE_EPOCH"] = value
+                result = _run_builder(cwd=self.directory, environment=environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SOURCE_DATE_EPOCH", result.stderr)
+
+    def test_command_failure_preserves_every_published_artifact(self) -> None:
+        output_directory = self.directory / "output"
+        output_directory.mkdir()
+        original_contents: dict[str, bytes] = {}
+        for index, artifact in enumerate(PUBLISHED_ARTIFACTS):
+            artifact_path = output_directory / artifact
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            contents = f"existing artifact {index}\n".encode()
+            artifact_path.write_bytes(contents)
+            original_contents[artifact] = contents
+
+        bin_directory = _make_fake_tools(self.directory, failing_tool="curl")
+        environment = os.environ.copy()
+        environment["PATH"] = f"{bin_directory}:{environment['PATH']}"
+        result = _run_builder(
+            "--output-dir",
+            str(output_directory),
+            "--cache-dir",
+            str(self.directory / "cache"),
+            cwd=self.directory,
+            environment=environment,
+        )
+
+        self.assertEqual(result.returncode, 97)
+        for artifact, contents in original_contents.items():
+            self.assertEqual((output_directory / artifact).read_bytes(), contents)
+
+
+class DebianRootfsManifestWriterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary_directory = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary_directory.cleanup)
+        cls.directory = Path(cls.temporary_directory.name)
+        cls.image = cls.directory / "writer-root.ext2"
+        with cls.image.open("wb") as image_file:
+            image_file.truncate(ROOT_IMAGE_SIZE_BYTES)
+
+    def setUp(self) -> None:
+        self.packages_lock = self.directory / "writer-packages.lock"
+        self.inrelease = self.directory / "writer-InRelease"
+        self.package_checksums = self.directory / "writer-package-checksums"
+        self.output = self.directory / "writer-manifest.json"
+        self.packages_lock.write_text(_lock_text(), encoding="utf-8")
+        self.inrelease.write_bytes(b"InRelease")
+        self.package_checksums.write_text(
+            _package_checksums_text(),
+            encoding="utf-8",
+        )
+        self.output.unlink(missing_ok=True)
+
+    def writer_arguments(self) -> list[str]:
+        return [
+            "write-manifest",
+            "--output",
+            str(self.output),
+            "--image",
+            str(self.image),
+            "--packages-lock",
+            str(self.packages_lock),
+            "--inrelease",
+            str(self.inrelease),
+            "--package-checksums",
+            str(self.package_checksums),
+            "--mirror",
+            "https://deb.debian.org/debian",
+            "--suite",
+            "trixie",
+            "--debian-release",
+            "13.6",
+            "--build-timestamp",
+            "2026-08-24T00:00:00Z",
+            "--tool-version",
+            "debootstrap=1.0.141",
+            "--tool-version",
+            "mke2fs=1.47.2",
+            "--tool-version",
+            "qemu-riscv64-static=10.0.2",
+        ]
+
+    def run_writer(
+        self,
+        arguments: list[str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                CONTRACT_MODULE,
+                *(self.writer_arguments() if arguments is None else arguments),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_writes_canonical_exact_manifest_consumable_by_task1_contract(
+        self,
+    ) -> None:
+        result = self.run_writer()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+        payload = _manifest_payload(_sha256_text(_lock_text()))
+        payload["signed_metadata"]["sha256"] = hashlib.sha256(b"InRelease").hexdigest()
+        payload["root_image_sha256"] = ZERO_FILLED_ROOT_SHA256
+        expected = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        self.assertEqual(self.output.read_text(encoding="utf-8"), expected)
+        self.assertEqual(set(json.loads(expected)), set(_manifest_payload("0" * 64)))
+
+        manifest = load_manifest(self.output)
+        validated = validate_frozen_root(self.image, manifest, self.packages_lock)
+        self.assertEqual(validated.debian_release, "13.6")
+        self.assertEqual(validated.downloaded_packages[0][0], "bash")
+
+    def test_rejects_missing_duplicate_unknown_and_invalid_cli_inputs(self) -> None:
+        valid = self.writer_arguments()
+        cases = (
+            ("missing", [valid[0], *valid[3:]]),
+            ("duplicate", [*valid, "--suite", "trixie"]),
+            ("unknown", [*valid, "--unknown", "value"]),
+            (
+                "invalid",
+                [
+                    (
+                        "http://deb.debian.org/debian"
+                        if value == "https://deb.debian.org/debian"
+                        else value
+                    )
+                    for value in valid
+                ],
+            ),
+        )
+
+        for name, arguments in cases:
+            with self.subTest(name=name):
+                result = self.run_writer(arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    def test_rejects_invalid_package_checksum_rows(self) -> None:
+        valid_row = _package_checksums_text().splitlines()[0]
+        cases = (
+            f"{valid_row}\n{valid_row}\n",
+            "bash\triscv64\t5.2.37-2+b5\tnot-a-hash\n",
+            "bash\triscv64\t5.2.37-2+b5\n",
+        )
+
+        for contents in cases:
+            with self.subTest(contents=contents):
+                self.package_checksums.write_text(contents, encoding="utf-8")
+                result = self.run_writer()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    def test_refuses_symlink_output_without_changing_target(self) -> None:
+        target = self.directory / "existing-manifest.json"
+        target.write_text("preserve me\n", encoding="utf-8")
+        self.output.symlink_to(target)
+
+        result = self.run_writer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(target.read_text(encoding="utf-8"), "preserve me\n")
 
 
 class DebianRootfsContractTests(unittest.TestCase):
