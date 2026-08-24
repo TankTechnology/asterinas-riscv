@@ -45,6 +45,8 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
 mod arch;
 
+#[cfg(target_arch = "riscv64")]
+mod boot_reboot;
 mod context;
 mod cpu;
 mod device;
