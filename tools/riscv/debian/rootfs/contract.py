@@ -8,11 +8,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 
@@ -37,7 +38,7 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 _MANIFEST_SCHEMA_VERSION = 1
 _SUITE = "trixie"
-_DEBIAN_RELEASE = "13"
+_DEBIAN_RELEASE_RE = re.compile(r"\A13(?:\.(?:0|[1-9][0-9]*))*\Z")
 _ARCHITECTURE = "riscv64"
 _FILESYSTEM_TYPE = "ext2"
 _ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -111,20 +112,24 @@ class RootfsManifest:
 def sha256_file(path: Path) -> str:
     """Returns the lowercase SHA-256 digest of a file using bounded reads."""
 
-    digest = hashlib.sha256()
     with path.open("rb") as input_file:
-        for chunk in iter(
-            lambda: input_file.read(_HASH_CHUNK_SIZE_BYTES),
-            b"",
-        ):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return _sha256_stream(input_file)
 
 
 def load_manifest(path: Path) -> RootfsManifest:
     """Loads a rootfs manifest after strict structural validation."""
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    document = path.read_text(encoding="utf-8")
+    try:
+        raw = json.loads(
+            document,
+            object_pairs_hook=_unique_json_object,
+        )
+    except json.JSONDecodeError as error:
+        raise ContractError(
+            f"invalid manifest JSON at line {error.lineno}, "
+            f"column {error.colno}: {error.msg}"
+        ) from error
     manifest = _mapping(raw, "manifest")
     _exact_keys(manifest, _MANIFEST_KEYS, "manifest")
 
@@ -208,11 +213,13 @@ def load_manifest(path: Path) -> RootfsManifest:
 def parse_packages_lock(path: Path) -> tuple[PackageLockRow, ...]:
     """Parses immutable name, architecture, and version lock rows."""
 
+    rows, _ = _load_packages_lock(path)
+    return rows
+
+
+def _parse_packages_lock_text(value: str) -> tuple[PackageLockRow, ...]:
     rows: list[PackageLockRow] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(),
-        start=1,
-    ):
+    for line_number, line in enumerate(value.splitlines(), start=1):
         fields = line.split("\t")
         if len(fields) != 3 or any(not field for field in fields):
             raise ContractError(
@@ -236,7 +243,11 @@ def validate_frozen_root(
     _require_integer(manifest.schema_version, "schema_version")
     _require_exact(manifest.schema_version, _MANIFEST_SCHEMA_VERSION, "schema version")
     _require_exact(manifest.suite, _SUITE, "suite")
-    _require_exact(manifest.debian_release, _DEBIAN_RELEASE, "Debian release")
+    if _DEBIAN_RELEASE_RE.fullmatch(manifest.debian_release) is None:
+        raise ContractError(
+            f"Debian release is not a canonical Debian 13 version: "
+            f"{manifest.debian_release!r}"
+        )
     _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
     _require_https(manifest.mirror_url, "mirror_url")
     _require_https(manifest.signed_metadata_url, "signed_metadata.url")
@@ -258,9 +269,37 @@ def validate_frozen_root(
         "filesystem block size",
     )
 
-    rows = parse_packages_lock(packages_lock)
+    rows, actual_lock_sha256 = _load_packages_lock(packages_lock)
     if rows != tuple(sorted(rows)) or len(rows) != len(set(rows)):
         raise ContractError("packages.lock rows must be sorted and unique")
+    package_identities = tuple((name, architecture) for name, architecture, _ in rows)
+    if len(package_identities) != len(set(package_identities)):
+        raise ContractError("packages.lock package identities must be unique")
+
+    downloaded_packages = manifest.downloaded_packages
+    if downloaded_packages != tuple(sorted(downloaded_packages)):
+        raise ContractError("downloaded package identities must be sorted")
+    downloaded_identities = tuple(
+        (name, architecture) for name, architecture, _, _ in downloaded_packages
+    )
+    if len(downloaded_identities) != len(set(downloaded_identities)):
+        raise ContractError("downloaded package identities must be unique")
+
+    locked_rows = set(rows)
+    for name, architecture, version, _ in downloaded_packages:
+        if (name, architecture, version) not in locked_rows:
+            raise ContractError(
+                f"downloaded package {name}/{architecture}/{version} "
+                "does not match packages.lock"
+            )
+
+    downloaded_names = {name for name, _, _, _ in downloaded_packages}
+    missing_install_packages = set(INSTALL_PACKAGES) - downloaded_names
+    if missing_install_packages:
+        raise ContractError(
+            "downloaded package identities are missing explicit install packages: "
+            f"{sorted(missing_install_packages)}"
+        )
 
     gate_versions = dict(manifest.gate_packages)
     for package_name in GATE_IDENTITY_PACKAGES:
@@ -279,21 +318,20 @@ def validate_frozen_root(
                 f"gate package {package_name} version does not match packages.lock"
             )
 
-    actual_lock_sha256 = sha256_file(packages_lock)
     if not hmac.compare_digest(
         manifest.packages_lock_sha256,
         actual_lock_sha256,
     ):
         raise ContractError("package-lock SHA-256 does not match packages.lock")
 
-    actual_image_size_bytes = image.stat().st_size
-    if actual_image_size_bytes != _ROOT_IMAGE_SIZE_BYTES:
-        raise ContractError(
-            f"image size is {actual_image_size_bytes}, expected "
-            f"{_ROOT_IMAGE_SIZE_BYTES}"
-        )
-
-    actual_image_sha256 = sha256_file(image)
+    with image.open("rb") as image_file:
+        actual_image_size_bytes = os.fstat(image_file.fileno()).st_size
+        if actual_image_size_bytes != _ROOT_IMAGE_SIZE_BYTES:
+            raise ContractError(
+                f"image size is {actual_image_size_bytes}, expected "
+                f"{_ROOT_IMAGE_SIZE_BYTES}"
+            )
+        actual_image_sha256 = _sha256_stream(image_file)
     if not hmac.compare_digest(
         manifest.root_image_sha256,
         actual_image_sha256,
@@ -308,6 +346,43 @@ def _mapping(value: object, path: str) -> Mapping[str, Any]:
         raise ContractError(f"{path} must be an object")
     if not all(isinstance(key, str) for key in value):
         raise ContractError(f"{path} keys must be strings")
+    return value
+
+
+def _sha256_stream(input_file: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(
+        lambda: input_file.read(_HASH_CHUNK_SIZE_BYTES),
+        b"",
+    ):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_packages_lock(path: Path) -> tuple[tuple[PackageLockRow, ...], str]:
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    with path.open("rb") as input_file:
+        for chunk in iter(
+            lambda: input_file.read(_HASH_CHUNK_SIZE_BYTES),
+            b"",
+        ):
+            chunks.append(chunk)
+            digest.update(chunk)
+
+    try:
+        text = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("packages.lock must be UTF-8") from error
+    return _parse_packages_lock_text(text), digest.hexdigest()
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ContractError(f"duplicate JSON key: {key!r}")
+        value[key] = item
     return value
 
 
@@ -388,8 +463,13 @@ def _string_mapping(value: object, path: str) -> tuple[tuple[str, str], ...]:
 
 
 def _require_https(value: str, path: str) -> None:
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.netloc:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as error:
+        raise ContractError(f"{path} must be an HTTPS URL: {error}") from error
+    if parsed.scheme != "https" or not parsed.netloc or hostname is None:
         raise ContractError(f"{path} must be an HTTPS URL")
 
 
