@@ -22,11 +22,18 @@ The baseline recorded on 2026-08-24 is:
 - the topic worktree has pre-existing uncommitted USB reconciliation changes
   and generated logs that must not be overwritten or accidentally committed.
 
+Before implementation begins, fetch `origin` once and record the resulting
+`origin/main` object as `INTEGRATION_MAIN` in the implementation plan.
+All uses of "current main" below mean that immutable object, not a moving
+remote-tracking ref.
+If `origin/main` advances later, absorbing the newer object is a separate,
+reviewed merge rather than an implicit change to this milestone.
+
 ## Decisions
 
 ### Preserve history without preserving obsolete implementation
 
-Use a normal merge of `origin/main` into an isolated synchronization branch
+Use a normal merge of `INTEGRATION_MAIN` into an isolated synchronization branch
 created from the topic history.
 Do not rebase, squash, or force-push the topic branch.
 
@@ -41,13 +48,17 @@ non-equivalent.
 
 This milestone supports USB HID Boot Protocol keyboards with interface class
 3, subclass 1, and protocol 1.
-It covers standard keys, modifiers, lock LEDs, key repeat, disconnect, and
-reconnect.
+It accepts a selected configuration containing exactly one interface that
+satisfies that tuple and exposes exactly one interrupt-IN endpoint.
+It covers every usage from the Boot Keyboard Keyboard/Keypad page that maps to
+the checked-in Linux keycode oracle, the eight modifier bits, six-key rollover,
+lock LEDs, key repeat, disconnect, and reconnect.
 
 Generic HID report descriptors, NKRO keyboards, media keys, vendor controls,
-and composite-device policy are out of scope.
-The implementation may enumerate past unsupported interfaces, but it need not
-drive them.
+composite devices with additional interfaces, and alternate endpoint layouts
+are out of scope.
+Enumeration skips such devices without preventing other supported devices from
+being examined.
 
 ### Make QEMU PCI xHCI the executable platform gate
 
@@ -79,6 +90,13 @@ Current main is authoritative for:
 - unsafe MSI capability rejection;
 - fail-closed PCI BAR discovery and allocation;
 - input-device and evdev unregister support.
+
+The concrete authorities are `ostd/src/bus/usb.rs` and its report queue,
+`ostd/src/arch/riscv/irq/`, `kernel/comps/usb/`, `kernel/comps/pci/`,
+`kernel/comps/input/`, and `kernel/src/device/evdev/` as they exist at
+`INTEGRATION_MAIN`.
+The implementation plan may name a narrower API from those modules, but may not
+replace their ownership model with a topic-side variant.
 
 The topic implementations of these behaviors are historical references only.
 They must not be restored over main.
@@ -206,14 +224,23 @@ Initialization follows this order:
 1. validate MMIO, DMA, and interrupt resources;
 2. map the RISC-V interrupt in a masked state;
 3. install the deferred callback and its teardown ownership;
-4. initialize xHCI and enumerate the keyboard while controller IRQs are off;
+4. initialize xHCI and enumerate the keyboard while controller IRQs are off,
+   using the existing synchronous event pump;
 5. enable xHCI interrupt generation;
 6. rearm the platform interrupt.
 
+The synchronous event pump is permitted only during startup and control
+operations that precede runtime IRQ ownership.
+It polls the future, handles pending controller events, yields task context,
+and uses main's five-second host-operation timeout and 30-second discovery
+timeout.
+After runtime IRQs are enabled, an idle keyboard must not be serviced by a
+polling loop.
+
 The top half masks and acknowledges the source, records bounded work, and
 wakes task context.
-Task context drains bounded controller events and input reports, then rearms
-the mapping.
+Task context drains at most 64 completed input reports per wake, then either
+reschedules remaining work or rearms the mapping.
 No enumeration, allocation, input registration, or blocking lock acquisition
 runs in interrupt context.
 
@@ -235,8 +262,10 @@ events exactly once.
 Modifier changes are emitted as ordinary Linux-compatible key events.
 
 Boot Protocol rollover/error usages do not become keys.
-They trigger bounded diagnostic accounting and preserve a coherent pressed-key
-state until a valid report permits recovery.
+The decoder records one diagnostic only when a device session enters rollover,
+records no additional diagnostic for repeated rollover reports, and rearms the
+diagnostic only after a valid report permits recovery.
+It preserves a coherent pressed-key state during that interval.
 A malformed or stalled device disables only that device session.
 
 ### Lock LEDs
@@ -251,20 +280,31 @@ Keyboard LED bitmap, and sent through the HID output-report path in sleepable
 context.
 Output failure is reported and bounded; it does not block input delivery or
 panic the kernel.
-The software state remains queryable through evdev.
+The desired software state remains queryable through evdev.
+Only a successful HID transfer updates the separately tracked
+last-confirmed-device state; QEMU or physical evidence must not claim that the
+LED changed from desired state alone.
 
 ### Key repeat
 
 Repeat is an input policy, not an xHCI or HID transport event.
-The USB driver emits one press and one release for the physical transition.
-The input/keyboard policy layer schedules repeat after the configured delay
-and rate, cancels it on release, disconnect, or focus-independent device
-teardown, and never repeats modifiers or lock keys.
+The USB driver emits one press and one release for each physical transition.
 
-The design must not create two repeat sources when an Xorg consumer also
-implements repeat.
-The implementation plan therefore establishes the existing TTY and Xorg
-contracts before selecting the narrowest shared repeat owner.
+The Asterinas input core is the single repeat owner for devices that advertise
+`EV_REP`.
+It defaults to a 250-ms delay and a 33-ms period, emits Linux-compatible
+`EV_KEY` value 2 events, supports `EVIOCGREP` and `EVIOCSREP`, and cancels the
+timer on release, disconnect, or device teardown.
+Modifiers, lock keys, and keys no longer present in the current physical report
+are not repeated.
+
+TTY and evdev consume this one stream.
+The isolated QEMU Xorg gate disables the server-wide repeat source with
+`xset r off`; the gate attaches no other keyboard.
+With the default input-core settings, holding one printable key for one second
+must produce one initial character and 20 to 26 repeated characters in xterm;
+the tolerance covers scheduler and display timing without allowing a doubled
+repeat stream.
 
 ### Disconnect and reconnect
 
@@ -297,6 +337,35 @@ SMP.
 - test disconnect cleanup and fresh reconnect state;
 - test PCI BAR, DMA-window, and interrupt-route rejection cases.
 
+For this design, "bounded" has the following executable meaning:
+
+- startup host operations time out after five seconds and keyboard discovery
+  after 30 seconds, matching the pinned main constants;
+- one deferred wake handles at most 64 reports before yielding;
+- one LED transfer uses the five-second host-operation timeout and is not
+  retried indefinitely;
+- the idle-runtime test observes the USB worker for one second and requires no
+  top-half or worker-count increase after the controller has settled;
+- the burst test injects 256 press/release pairs, or 512 reports, and requires
+  exactly 256 presses, 256 releases, and ordered synchronization markers;
+- the hotplug test completes 20 remove/add cycles and requires input-device,
+  evdev-node, controller-slot, IRQ-worker, and DMA-allocation counts to return
+  to their pre-cycle baselines;
+- the synthetic IRQ-pressure test keeps work pending beyond one 64-report
+  budget and proves that another task turn is scheduled without an unbounded
+  top half or diagnostic loop;
+- the top half performs one claim/mask/acknowledge/wake sequence and no logging
+  loop per delivered interrupt;
+- 100 consecutive wakes that produce neither a completed report nor lifecycle
+  progress disable that controller session as a storm, with at most one warning
+  per second;
+- disconnect cleanup and HID control operations share the five-second host
+  operation timeout, while a reconnect gets a fresh 30-second discovery
+  deadline.
+
+Test-only counters may expose these invariants to kernel tests, but they are not
+part of the user-visible ABI.
+
 ### QEMU PCI xHCI gate
 
 Boot QEMU RISC-V `virt` with a four-hart Device Tree, `qemu-xhci`, and
@@ -304,6 +373,10 @@ Boot QEMU RISC-V `virt` with a four-hart Device Tree, `qemu-xhci`, and
 Do not attach a VirtIO keyboard or another input source.
 The test must assert the discovered controller bus and USB device identity so
 input from a fallback device cannot produce a false pass.
+
+Concretely, the gate checks the QEMU command line, the xHCI PCI class/BDF marker,
+the evdev device's `BUS_USB` identifier and USB Boot Keyboard name, and the
+absence of any other keyboard-capable evdev node before injecting input.
 
 Exercise:
 
@@ -336,6 +409,15 @@ remain the authoritative pass/fail evidence.
 
 Run the existing Device Tree, Sv39/Sv48, DMA-window, invalid-selector, and board
 session checks that do not require hardware.
+The reproducible entry points are `tools/riscv/verify_megrez_sim.sh`,
+`tools/riscv/megrez_patch_dtb.py`, and
+`python3 -m unittest tools.riscv.tests.test_megrez_board_session` when those
+artifacts survive the main-authoritative merge audit.
+If an entry point is rejected as obsolete, the same milestone must add and
+document its main-compatible replacement before claiming the corresponding
+gate.
+Removing the behavior or waiving the gate requires separate user approval; it
+cannot happen implicitly during conflict resolution.
 Record physical DWC3, real keyboard LED, port power, cache, reset, and reconnect
 behavior as pending until the board is available.
 
@@ -344,7 +426,7 @@ behavior as pending until the board is available.
 ### M0: Main convergence
 
 - preserve the dirty worktree and create an isolated merge candidate;
-- merge current `origin/main` without rewriting history;
+- merge `INTEGRATION_MAIN` without rewriting history;
 - resolve conflicts with the main-authoritative policy;
 - remove duplicate or superseded USB/IRQ variants;
 - restore a clean build and existing USB unit baseline.
@@ -364,7 +446,7 @@ behavior as pending until the board is available.
 ### M3: LEDs and repeat
 
 - connect evdev LED state to HID output reports;
-- establish one repeat owner for TTY and Xorg;
+- implement the input-core `EV_REP` owner for TTY and Xorg;
 - prove cancellation and output-failure behavior.
 
 ### M4: TTY and graphical acceptance
@@ -387,7 +469,7 @@ dependent code changed.
 ## Failure Handling
 
 - A merge-induced failure is fixed before adding new keyboard behavior.
-- A failure reproduced unchanged on `origin/main` is recorded as a baseline
+- A failure reproduced unchanged on `INTEGRATION_MAIN` is recorded as a baseline
   issue and is not hidden by unrelated USB changes.
 - Unsupported PCI DMA or interrupt topology fails closed and disables only the
   PCI USB controller.
@@ -402,7 +484,7 @@ dependent code changed.
 
 The software milestone is complete when:
 
-- the synchronization branch contains current `origin/main` and the topic
+- the synchronization branch contains `INTEGRATION_MAIN` and the topic
   history without rewriting either;
 - final USB and IRQ code follows current main contracts rather than historical
   implementations;
