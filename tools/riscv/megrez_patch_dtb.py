@@ -53,17 +53,15 @@ def is_host_mode(dtb: Path, node: str) -> bool:
     try:
         mode = run(["fdtget", "-t", "s", str(dtb), node, "dr_mode"])
     except RuntimeError:
-        mode = ""
-    if mode in ("host",):
-        return True
-    # EIC7700 DWC3 nodes may omit dr_mode; the expected MMIO bases
-    # disambiguate the two on-SoC controllers.
-    try:
-        reg = run(["fdtget", "-t", "x", str(dtb), node, "reg"])
-        first = int(reg.split()[0], 16)
-    except (RuntimeError, IndexError, ValueError):
-        return False
-    return first in EXPECTED_MMIO_STARTS
+        # EIC7700 DWC3 nodes may omit dr_mode; the expected MMIO bases
+        # disambiguate the two on-SoC controllers only in that case.
+        try:
+            reg = run(["fdtget", "-t", "x", str(dtb), node, "reg"])
+            first = int(reg.split()[0], 16)
+        except (RuntimeError, IndexError, ValueError):
+            return False
+        return first in EXPECTED_MMIO_STARTS
+    return mode == "host"
 
 
 def patch(dtb: Path, output: Path) -> int:
@@ -77,7 +75,10 @@ def patch(dtb: Path, output: Path) -> int:
 
     nodes = find_dwc3_nodes(output)
     if not nodes:
-        print(f"no {DWC3_COMPATIBLE} node found; is this a Megrez/EIC7700 DTB?", file=sys.stderr)
+        print(
+            f"no {DWC3_COMPATIBLE} node found; is this a Megrez/EIC7700 DTB?",
+            file=sys.stderr,
+        )
         return 2
     host_nodes = [n for n in nodes if is_host_mode(output, n)]
     if not host_nodes:
