@@ -106,11 +106,11 @@ The 2026-08-24 QEMU 10.2.1 run completed with `passed: true`, `smp: 4`, and
 
 | Item | SHA-256 |
 | --- | --- |
-| Kernel Image | `ca43d09445f7a9e717661742454ac4169eaeada3569ab091e9f3a50c17df31b4` |
-| DTB | `dbf0dcb409786d3ffc626ac9aaef6f280a8bfa4fec4b92a021bb473ce1bd7074` |
+| Kernel Image | `8ab7647295e6bfa25a671871feb782f9f2a964d7c4df7705c9c66ecfdf627fb5` |
+| DTB | `c9ef7d7b2bb81003e70f577588719d293d2b43e94e329b78ff176e21845ed148` |
 | Input initramfs | `9fcc82709ac613e6adc41d31c9c9b2484d48837b588b5dbbee25a6523a519058` |
-| Serial log | `8316587e32b44af93c9378644086adccaac969f5c6a421949e5a31feba03f2cc` |
-| Result JSON | `1699de4ea1859e9089460e8ddee192ed590baf13beb4ed352fc7b74a80d1f209` |
+| Serial log | `eb466ad61c0a69eff3296c140b18541a3819c548c227691dc3b25e73acdbd87b` |
+| Result JSON | `907a9dd544f5c1ff59efed78982ef69287cc7a45be57641d04f92571ea09744b` |
 
 The ignored evidence files remain under `target/riscv-xhci-input/` in the
 worktree that performed the run.
