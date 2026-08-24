@@ -1,0 +1,17 @@
+[Unit]
+Description=D-Bus system bus smoke test
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+KeyringMode=inherit
+Type=oneshot
+# The daemon is Type=simple, so systemd only waits for the process to spawn;
+# the socket may not be ready yet. A short sleep handles the race.
+ExecStartPre=/bin/sleep 1
+# Prints the well-known name list owned on the system bus; a method reply
+# proves the daemon accepted a client connection and answered over
+# /run/dbus/system_bus_socket.
+ExecStart=/usr/bin/dbus-send --system --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames
+StandardOutput=tty
+StandardError=tty

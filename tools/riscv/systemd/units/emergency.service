@@ -3,6 +3,7 @@ Description=Emergency Shell
 DefaultDependencies=no
 
 [Service]
+KeyringMode=inherit
 ExecStart=-/bin/sh
 StandardInput=tty
 StandardOutput=tty

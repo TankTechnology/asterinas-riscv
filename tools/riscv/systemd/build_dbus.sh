@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
 # Cross-compile the classic D-Bus reference daemon (dbus-daemon) + libdbus-1.a
 # for riscv64 glibc into target/riscv-cross/usr.
 #

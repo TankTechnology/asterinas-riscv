@@ -37,10 +37,6 @@ impl<'a> CapableContext<'a> {
     }
 
     /// Returns the user namespace against which the capability is checked.
-    #[expect(
-        dead_code,
-        reason = "Asterinas currently has only the initial user namespace"
-    )]
     pub const fn target_user_ns(&self) -> &UserNamespace {
         self.target_user_ns
     }

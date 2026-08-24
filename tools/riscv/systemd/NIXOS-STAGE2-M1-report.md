@@ -175,7 +175,7 @@ systemd; the nix units run *before* `graphical.target` and don't disturb it).
 | `Failed to start device monitor: Protocol not available` | AF_NETLINK unimplemented | kernel (session A) |
 | `Unimplemented syscall 258/264/293` (`riscv_hwprobe`/…/`rseq`) | glibc/musl startup probes | kernel (future) |
 | `FBIOBLANK: Invalid argument` | fbdev blanking ioctl unsupported | kernel (future) |
-| `StandardOutput=console` unparseable | not a valid value; use `tty`/`journal+console` | fixed in-tree |
+| `StandardOutput=console` unparsable | not a valid value; use `tty`/`journal+console` | fixed in-tree |
 
 ## Reproduce
 

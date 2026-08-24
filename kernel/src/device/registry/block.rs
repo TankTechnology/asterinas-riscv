@@ -8,7 +8,7 @@ use ostd::mm::VmIo;
 
 use crate::{
     context::current_userspace,
-    device::{Device, DeviceType, DevtmpfsInodeMeta, add_node},
+    device::{Device, DeviceType, DevtmpfsInodeMeta, add_node, r#loop},
     events::IoEvents,
     fs::{
         file::{PerOpenFileOps, SettableStatusFlags, StatusFlags},
@@ -120,6 +120,11 @@ impl Device for BlockFile {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        // Loop devices need their own ioctl_with_table handler (LOOP_SET_FD, etc.).
+        if self.0.downcast_ref::<r#loop::LoopDevice>().is_some() {
+            let loop_file = r#loop::LoopFile::new(self.0.clone());
+            return loop_file.open();
+        }
         Ok(Box::new(OpenBlockFile(self.0.clone())))
     }
 }

@@ -7,7 +7,10 @@ use crate::{
     prelude::*,
     process::{
         credentials::{
-            c_types::{CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_3},
+            c_types::{
+                CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_1,
+                LINUX_CAPABILITY_VERSION_2, LINUX_CAPABILITY_VERSION_3,
+            },
             capabilities::CapSet,
         },
         posix_thread::ContextPthreadAdminApi,
@@ -23,12 +26,16 @@ pub fn sys_capset(
     let user_space = ctx.user_space();
     let cap_user_header = user_space.read_val::<CUserCapHeader>(cap_user_header_addr)?;
 
-    if cap_user_header.version != LINUX_CAPABILITY_VERSION_3 {
+    // Accept V1, V2, and V3.
+    if cap_user_header.version != LINUX_CAPABILITY_VERSION_3
+        && cap_user_header.version != LINUX_CAPABILITY_VERSION_2
+        && cap_user_header.version != LINUX_CAPABILITY_VERSION_1
+    {
         // Write the supported version back to userspace.
         user_space.write_val(cap_user_header_addr, &LINUX_CAPABILITY_VERSION_3)?;
         return_errno_with_message!(
             Errno::EINVAL,
-            "capability versions other than v3 are not supported"
+            "capability versions other than v1, v2, v3 are not supported"
         );
     };
 

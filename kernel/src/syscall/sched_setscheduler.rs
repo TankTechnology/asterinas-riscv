@@ -20,8 +20,14 @@ pub fn sys_sched_setscheduler(
 
     let prio = ctx.user_space().read_val(addr)?;
 
+    // The legacy `sched_setscheduler` API folds `SCHED_RESET_ON_FORK` into the
+    // `policy` argument's high bit (see `<linux/sched.h>`). Strip it before
+    // interpreting the policy code and record the flag separately.
+    const SCHED_RESET_ON_FORK: u32 = 0x4000_0000;
+    let reset_on_fork = (policy as u32) & SCHED_RESET_ON_FORK != 0;
+
     let attr = LinuxSchedAttr {
-        sched_policy: policy as u32,
+        sched_policy: (policy as u32) & !SCHED_RESET_ON_FORK,
         sched_priority: prio,
         ..Default::default()
     };
@@ -29,6 +35,7 @@ pub fn sys_sched_setscheduler(
     let policy = attr.try_into()?;
     access_sched_attr_with(tid, ctx, |attr| {
         attr.set_policy(policy);
+        attr.set_reset_on_fork(reset_on_fork);
         Ok(())
     })?;
 

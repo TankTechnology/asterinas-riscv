@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
 use core::ops::Range;
 
 use aster_input::input_dev::RegisteredInputDevice;
@@ -10,18 +9,17 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::PollingUsbKeyboard,
+    bus::usb::{PollingUsbKeyboard, UsbKeyboardError},
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
-    sync::{Mutex, Waiter, Waker},
+    sync::{Mutex, SpinLock, Waiter},
 };
 use spin::Once;
 
 use crate::keyboard::{HidBootKeyboard, register};
 
 mod capability;
-mod pci;
 
 const EIC7700_DWC3_MMIO_SIZE: usize = 0x1_0000;
 const EIC7700_USB0_MMIO_START: usize = 0x5048_0000;
@@ -30,9 +28,6 @@ const EIC7700_DRAM_START: usize = 0x8000_0000;
 const EIC7700_DRAM_SIZE: usize = 0x4_0000_0000;
 const PAGE_SIZE: usize = 0x1000;
 const USB_HOST_SELECTOR: &str = "asterinas,usb-host";
-const XHCI_CAPLENGTH: usize = 0x00;
-const XHCI_HCSPARAMS1: usize = 0x04;
-const XHCI_PORTSC_1: usize = 0x400;
 const DWC3_GCTL: usize = 0xc110;
 const DWC3_GCTL_PRTCAPDIR_MASK: u32 = 0x3 << 12;
 const DWC3_GCTL_PRTCAP_HOST: u32 = 0x1 << 12;
@@ -51,7 +46,7 @@ struct HostResources {
     mmio: IoMem,
 }
 
-static HOST_RESOURCES: Once<HostResources> = Once::new();
+static HOST_RESOURCES: SpinLock<Option<HostResources>> = SpinLock::new(None);
 
 fn dwc3_host_gctl(gctl: u32) -> u32 {
     (gctl & !DWC3_GCTL_PRTCAPDIR_MASK) | DWC3_GCTL_PRTCAP_HOST
@@ -227,10 +222,6 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
 }
 
 pub(super) fn init() {
-    // Register the PCI xHCI driver so PCI-host machines (QEMU virt, x86)
-    // can enumerate the controller. The DWC3 MMIO path below is selected
-    // only when the DTB chooses it via /chosen/asterinas,usb-host.
-    pci::init();
     let device_tree = DEVICE_TREE.get().unwrap();
     let selector = device_tree
         .find_node("/chosen")
@@ -292,59 +283,66 @@ pub(super) fn init() {
         capabilities.contexts_64byte,
     );
 
-    HOST_RESOURCES.call_once(|| HostResources { config, mmio });
+    let mut resources = HOST_RESOURCES.lock();
+    if resources.is_none() {
+        *resources = Some(HostResources { config, mmio });
+    }
 }
 
 static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
-static KEYBOARD_WAKER: Once<Arc<Waker>> = Once::new();
-static IRQ_LINE: Once<ostd::arch::irq::MappedIrqLine> = Once::new();
 
-/// Persistent state for the deferred keyboard task.
-///
-/// The decoder must remember the previous report (modifiers, usages) so that
-/// a key release arriving in a later interrupt batch still emits a release
-/// event, and the input device is registered exactly once for the lifetime
-/// of the keyboard.
 struct DeferredKeyboardState {
     decoder: HidBootKeyboard,
     registered: Option<RegisteredInputDevice>,
 }
 
-static DEFERRED_KEYBOARD: Once<Mutex<DeferredKeyboardState>> = Once::new();
+struct EnabledKeyboardIrq<'a> {
+    keyboard: &'a Mutex<PollingUsbKeyboard>,
+}
 
-fn process_deferred_keyboard() {
-    let Some(keyboard) = KEYBOARD.get() else {
-        return;
-    };
-    let deferred = DEFERRED_KEYBOARD.call_once(|| {
-        Mutex::new(DeferredKeyboardState {
-            decoder: HidBootKeyboard::new(),
-            registered: None,
-        })
-    });
-    loop {
-        let mut keyboard_guard = keyboard.lock();
-        let report = match keyboard_guard.poll_report() {
-            Ok(Some(report)) => report,
-            Ok(None) => {
-                // No report ready; the interrupt will schedule us again.
-                return;
+impl<'a> EnabledKeyboardIrq<'a> {
+    fn new(keyboard: &'a Mutex<PollingUsbKeyboard>) -> Result<Self, UsbKeyboardError> {
+        let enable_result = keyboard.lock().enable_irq();
+        if let Err(error) = enable_result {
+            if let Err(disable_error) = keyboard.lock().disable_irq() {
+                ostd::warn!(
+                    "failed to restore disabled xHCI interrupts after enable error: {:?}",
+                    disable_error
+                );
             }
-            Err(error) => {
-                ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
-                return;
+            return Err(error);
+        }
+        Ok(Self { keyboard })
+    }
+}
+
+impl Drop for EnabledKeyboardIrq<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.keyboard.lock().disable_irq() {
+            ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
+        }
+    }
+}
+
+fn process_deferred_keyboard(
+    keyboard: &Mutex<PollingUsbKeyboard>,
+    state: &mut DeferredKeyboardState,
+) -> bool {
+    loop {
+        let (report, info) = {
+            let mut keyboard = keyboard.lock();
+            match keyboard.poll_report() {
+                Ok(Some(report)) => (report, keyboard.info()),
+                Ok(None) => return true,
+                Err(error) => {
+                    ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
+                    return false;
+                }
             }
         };
-        let mut deferred_guard = deferred.lock();
-        let events = deferred_guard.decoder.decode(report);
-        ostd::debug!(
-            "USB boot keyboard report {:02x?}: {} events",
-            report,
-            events.len()
-        );
+        let events = state.decoder.decode(report);
         if !events.is_empty() {
-            let device = deferred_guard.registered.get_or_insert_with(|| {
-                let info = keyboard_guard.info();
+            let device = state.registered.get_or_insert_with(|| {
                 ostd::info!(
                     "USB boot keyboard registered: {:04x}:{:04x}",
                     info.vendor_id,
@@ -357,65 +355,29 @@ fn process_deferred_keyboard() {
     }
 }
 
-/// Logs the xHCI root-hub PORTSC registers (one per port) for bring-up.
-fn log_port_status(mmio: &IoMem) {
-    // Read the whole 32-bit capability word; bit 0-7 is CAPLENGTH.
-    let Ok(cap_word) = mmio.read_once::<u32>(XHCI_CAPLENGTH) else {
-        ostd::warn!("failed to read xHCI capability");
-        return;
-    };
-    let operational = (cap_word & 0xFF) as usize;
-    // MaxPorts is bits 31:24 of HCSPARAMS1 (offset 0x04), matching the
-    // xHCI spec (Linux's HCS_MAX_PORTS) and QEMU's qemu-xhci.
-    let Ok(hcsparams1) = mmio.read_once::<u32>(XHCI_HCSPARAMS1) else {
-        ostd::warn!("failed to read xHCI HCSPARAMS1");
-        return;
-    };
-    let max_ports = (hcsparams1 >> 24) & 0xFF;
-    for i in 0..max_ports {
-        let offset = operational + XHCI_PORTSC_1 + (i as usize) * 4;
-        match mmio.read_once::<u32>(offset) {
-            Ok(portsc) => {
-                ostd::info!(
-                    "xHCI PORTSC{}: connected={}, enabled={}, reset={}, speed={}",
-                    i + 1,
-                    portsc & 0x1,
-                    (portsc >> 1) & 0x1,
-                    (portsc >> 4) & 0x1,
-                    (portsc >> 10) & 0xF,
-                );
-            }
-            Err(error) => {
-                ostd::warn!("xHCI PORTSC{} read failed at {offset:#x}: {error:?}", i + 1);
-            }
-        }
-    }
-}
-
-/// Starts the interrupt-driven keyboard loop for one xHCI host.
+/// Interrupt-driven USB boot keyboard loop.
 ///
-/// Opens the boot keyboard over the given MMIO window and DMA window, then
-/// wires the xHCI event-ring interrupt (from `interrupt_parent`/`interrupt`)
-/// to a deferred task that reads completed reports and emits evdev events.
-/// Both the DWC3 MMIO host (from `/chosen/asterinas,usb-host`) and the PCI
-/// xHCI adapter call this. No polling loop runs while the keyboard is idle.
-pub(crate) fn run_keyboard_interrupt_driven(
-    mmio: IoMem,
-    dma_window: ostd::mm::dma::DmaWindow,
-    interrupt_source: InterruptSourceInFdt,
-) {
-    if KEYBOARD.get().is_some() {
-        ostd::warn!("USB keyboard already running");
+/// The xHCI event ring interrupt (from the DTB `interrupt-parent`/`interrupt`
+/// properties) drives the keyboard: the handler wakes this task, which drains
+/// the event ring and emits evdev events. No polling loop runs while the
+/// keyboard is idle.
+pub fn run_polling() {
+    let Some(resources) = HOST_RESOURCES.lock().take() else {
+        return;
+    };
+    if prepare_dwc3_host(&resources.mmio).is_err() {
+        ostd::warn!("failed to select the DWC3 host role");
         return;
     }
     ostd::info!(
-        "Starting interrupt-driven xHCI host: mmio size={:#x}, irq={}:{}",
-        mmio.size(),
-        interrupt_source.interrupt_parent,
-        interrupt_source.interrupt,
+        "Starting interrupt-driven xHCI host: mmio={:#x?}, bytes={:#x}, irq={}:{}",
+        resources.config.mmio_range,
+        resources.mmio.size(),
+        resources.config.interrupt_parent,
+        resources.config.interrupt,
     );
 
-    let keyboard = match PollingUsbKeyboard::open(mmio.clone(), dma_window) {
+    let keyboard = match PollingUsbKeyboard::open(resources.mmio, resources.config.dma_window) {
         Ok(keyboard) => Mutex::new(keyboard),
         Err(error) => {
             ostd::warn!("xHCI keyboard startup failed: {:?}", error);
@@ -423,23 +385,19 @@ pub(crate) fn run_keyboard_interrupt_driven(
         }
     };
     KEYBOARD.call_once(|| keyboard);
+    let keyboard = KEYBOARD.get().unwrap();
 
-    // Register the xHCI event-ring interrupt with the PLIC. The handler
-    // only wakes the keyboard task; all report processing happens in the
-    // task, which runs in task context (device registration, evdev dispatch
-    // and tty input all require it).
-    let mut irq_line = match IrqLine::alloc() {
+    let (waiter, waker) = Waiter::new_pair();
+
+    // Map the xHCI event-ring interrupt while both the PLIC source and the
+    // controller IRQ are disabled.
+    let irq_line = match IrqLine::alloc() {
         Ok(line) => line,
         Err(_) => {
             ostd::warn!("failed to allocate USB IRQ line");
             return;
         }
     };
-    irq_line.on_active(move |_| {
-        if let Some(waker) = KEYBOARD_WAKER.get() {
-            waker.wake_up();
-        }
-    });
 
     let irq_chip = match arch_irq::IRQ_CHIP.get() {
         Some(chip) => chip,
@@ -448,59 +406,53 @@ pub(crate) fn run_keyboard_interrupt_driven(
             return;
         }
     };
-    let mapped = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
+    let interrupt_source = InterruptSourceInFdt {
+        interrupt_parent: resources.config.interrupt_parent,
+        interrupt: resources.config.interrupt,
+    };
+    let mut mapped_irq = match irq_chip.map_fdt_pin_to_masked(interrupt_source, irq_line) {
         Ok(mapped) => mapped,
         Err(_) => {
             ostd::warn!("failed to map USB interrupt to PLIC");
             return;
         }
     };
-    IRQ_LINE.call_once(|| mapped);
+    if mapped_irq
+        .on_active_and_mask(move |_| {
+            waker.wake_up();
+        })
+        .is_err()
+    {
+        ostd::warn!("failed to register exclusive USB IRQ callback");
+        return;
+    }
 
-    // This thread becomes the keyboard thread: it drains the report queue
-    // in task context (device registration, evdev dispatch and tty input
-    // all require it) and sleeps until the interrupt wakes it again.
-    let (waiter, waker) = Waiter::new_pair();
-    KEYBOARD_WAKER.call_once(|| waker);
-
-    // Diagnostics: report the root-hub port status so a missing keyboard
-    // connection or stalled reset is visible before the discovery loop.
-    log_port_status(&mmio);
+    // Keep this guard declared after `mapped_irq`: reverse drop order disables
+    // the xHCI INTE bit before the PLIC mapping is torn down.
+    let _enabled_keyboard_irq = match EnabledKeyboardIrq::new(keyboard) {
+        Ok(guard) => guard,
+        Err(error) => {
+            ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
+            return;
+        }
+    };
 
     ostd::info!("USB boot keyboard interrupt-driven loop started");
 
+    let mut state = DeferredKeyboardState {
+        decoder: HidBootKeyboard::new(),
+        registered: None,
+    };
     loop {
-        process_deferred_keyboard();
+        if !process_deferred_keyboard(keyboard, &mut state) {
+            return;
+        }
+        if mapped_irq.rearm().is_err() {
+            ostd::warn!("USB IRQ rearm rejected by mapping state");
+            return;
+        }
         waiter.wait();
     }
-}
-
-/// Interrupt-driven USB boot keyboard loop.
-///
-/// Prefers the PCI-discovered xHCI host (QEMU virt, x86); falls back to the
-/// DWC3 MMIO host selected by `/chosen/asterinas,usb-host` (Megrez).
-pub fn run_polling() {
-    if let Some(host) = pci::pci_host_config() {
-        ostd::info!("Using PCI xHCI host for USB keyboard");
-        run_keyboard_interrupt_driven(host.mmio.clone(), host.dma_window, host.interrupt_source);
-        return;
-    }
-
-    let Some(resources) = HOST_RESOURCES.get() else {
-        return;
-    };
-    if prepare_dwc3_host(&resources.mmio).is_err() {
-        ostd::warn!("failed to select the DWC3 host role");
-        return;
-    }
-    run_keyboard_interrupt_driven(
-        resources.mmio.clone(),
-        resources.config.dma_window,
-        InterruptSourceInFdt {
-            interrupt_parent: resources.config.interrupt_parent,
-            interrupt: resources.config.interrupt,
-        },
-    );
 }
 
 #[cfg(ktest)]

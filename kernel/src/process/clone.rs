@@ -20,13 +20,14 @@ use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
     fs::{
-        cgroupfs::{CgroupMembership, CgroupSysNode},
+        cgroupfs::{CgroupMembership, CgroupSysNode, cgroup_node_from_fd},
         file::file_table::{FdFlags, FileTable, RawFileDesc},
         thread_info::ThreadFsInfo,
     },
     prelude::*,
     process::{
-        NsProxy, UserNamespace,
+        NsProxy, PidNamespace, UserNamespace,
+        credentials::capabilities::CapSet,
         pid_file::PidFile,
         posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
         stats::PROCESS_CREATION_COUNTER,
@@ -113,7 +114,7 @@ pub struct CloneArgs {
     pub tls: u64,
     pub _set_tid: Option<u64>,
     pub _set_tid_size: Option<u64>,
-    pub _cgroup: Option<u64>,
+    pub cgroup: Option<u64>,
 }
 
 impl CloneArgs {
@@ -226,6 +227,13 @@ impl CloneArgs {
                     "`CLONE_THREAD` cannot be used together with `CLONE_PIDFD` or `CLONE_NEWUSER`"
                 );
             }
+
+            if clone_flags.contains(CloneFlags::CLONE_NEWPID) {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "`CLONE_THREAD` cannot be used together with `CLONE_NEWPID`"
+                );
+            }
         }
 
         // Reject invalid argument combinations related to the CLONE_SIGHAND flag.
@@ -309,12 +317,19 @@ pub fn clone_child(
         // won't change during the charge and the subsequent move operation.
         let cgroup_read_guard = CgroupMembership::read_lock();
 
+        // Resolve the target cgroup: the `CLONE_INTO_CGROUP` directory fd if the
+        // caller passed one (via `clone3`), otherwise the parent's current cgroup.
+        let target_cgroup = if let Some(cgroup_fd) = clone_args.cgroup {
+            Some(cgroup_node_from_fd(cgroup_fd, ctx)?)
+        } else {
+            ctx.process.cgroup().get().map(|cgroup| cgroup.clone())
+        };
+
         // Pre-charge the pids sub-controller before creating the child process.
         // This enforces `pids.max` at fork time per cgroupv2 semantics.
         // The charge must happen before process creation so that on failure
         // we can return EAGAIN without leaving an orphaned process.
-        let parent_cgroup = ctx.process.cgroup().get().map(|cgroup| cgroup.clone());
-        let pids_charge = if let Some(ref cgroup) = parent_cgroup {
+        let pids_charge = if let Some(ref cgroup) = target_cgroup {
             let pids_charge = cgroup
                 .controller()
                 .pre_charge_pids(&cgroup_read_guard)
@@ -330,7 +345,7 @@ pub fn clone_child(
 
         // Use the same cgroup snapshot that was charged above to avoid
         // a mismatch if the parent migrates concurrently.
-        if let Some(ref cgroup) = parent_cgroup {
+        if let Some(ref cgroup) = target_cgroup {
             cgroup_read_guard.move_forked_process_to_node(
                 child_process.clone(),
                 cgroup,
@@ -360,6 +375,17 @@ pub fn clone_child(
         }
 
         let child_pid = child_process.pid();
+        // Report the child's virtual PID in the caller's PID namespace, as
+        // in Linux: with `CLONE_NEWPID` (or after `unshare(CLONE_NEWPID)`)
+        // the child is a member of a nested namespace, in which the caller
+        // sees it under the virtual PID. The caller's namespace is always
+        // an ancestor of (or the same as) the child's, so the lookup cannot
+        // fail.
+        let caller_pid_ns = ctx.process.pid_ns().clone();
+        let child_pid = child_process
+            .pid_in_ns(&caller_pid_ns)
+            .map(|vpid| vpid as Tid)
+            .unwrap_or(child_pid);
         Ok(child_pid)
     }
 }
@@ -534,7 +560,7 @@ fn clone_child_process(
     let child_fpu_context = thread_local.supp_user_context().fpu().get();
 
     // Clone the namespaces
-    let child_user_ns = clone_user_ns(clone_flags, thread_local)?;
+    let child_user_ns = clone_user_ns(clone_flags, thread_local, ctx)?;
     let child_ns_proxy = clone_ns_proxy(
         thread_local.borrow_ns_proxy().unwrap(),
         &child_user_ns,
@@ -542,6 +568,11 @@ fn clone_child_process(
         posix_thread,
         clone_flags,
     )?;
+
+    // The child process joins the proxy's PID namespace for children: with
+    // `CLONE_NEWPID` (or after `unshare(CLONE_NEWPID)`) that is the new
+    // namespace, and the child becomes its init process.
+    let child_pid_ns = child_ns_proxy.pid_ns_for_children().clone();
 
     // Clone default timer slack
     let default_timer_slack_ns = posix_thread.timer_slack_ns();
@@ -576,7 +607,15 @@ fn clone_child_process(
 
             let credentials = {
                 let credentials = ctx.posix_thread.credentials();
-                Credentials::new_from(&credentials)
+                let child_credentials = Credentials::new_from(&credentials);
+                if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
+                    // A process that creates a new user namespace is granted
+                    // all capabilities within the new namespace.
+                    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/fork.c#L2315>.
+                    child_credentials.set_permitted_capset(CapSet::all());
+                    child_credentials.set_effective_capset(CapSet::all());
+                }
+                child_credentials
             };
 
             PosixThreadBuilder::new(
@@ -595,6 +634,7 @@ fn clone_child_process(
             .default_timer_slack_ns(default_timer_slack_ns)
             .seccomp_mode(posix_thread.seccomp_mode())
             .seccomp_filter(posix_thread.seccomp_filter())
+            .sched_policy(ctx.thread.sched_attr().fork_child_policy())
         };
         #[cfg(target_arch = "x86_64")]
         {
@@ -618,6 +658,7 @@ fn clone_child_process(
             child_oom_score_adj,
             child_sig_dispositions,
             child_user_ns,
+            child_pid_ns,
             child_thread_builder,
         )
     };
@@ -764,7 +805,10 @@ fn clone_sighand(
 
 fn clone_sysvsem(clone_flags: CloneFlags) -> Result<()> {
     if clone_flags.contains(CloneFlags::CLONE_SYSVSEM) {
-        warn!("CLONE_SYSVSEM is not supported now");
+        // Sharing the System V semaphore undo list is a no-op: `SEM_UNDO`
+        // itself is not supported yet, so there is no undo list whose
+        // sharing semantics could be observed.
+        debug!("CLONE_SYSVSEM is accepted as a no-op (SEM_UNDO is not supported)");
     }
     Ok(())
 }
@@ -811,12 +855,14 @@ fn clone_pidfd(
 fn clone_user_ns(
     clone_flags: CloneFlags,
     thread_local: &ThreadLocal,
+    ctx: &Context,
 ) -> Result<Arc<UserNamespace>> {
     if clone_flags.contains(CloneFlags::CLONE_NEWUSER) {
-        return_errno_with_message!(
-            Errno::EINVAL,
-            "cloning a new user namespace is not supported"
-        );
+        // The new user namespace is owned by the creator's effective UID.
+        // Following Linux, the child process will be granted all capabilities
+        // within the new namespace (see `clone_child_process`).
+        let creator_euid = ctx.posix_thread.credentials().euid();
+        Ok(thread_local.borrow_user_ns().new_child(creator_euid))
     } else {
         Ok(thread_local.borrow_user_ns().clone())
     }
@@ -841,6 +887,7 @@ fn create_child_process(
     oom_score_adj: i16,
     sig_dispositions: Arc<Mutex<SigDispositions>>,
     user_ns: Arc<UserNamespace>,
+    pid_ns: Arc<PidNamespace>,
     thread_builder: PosixThreadBuilder,
 ) -> Arc<Process> {
     let child_proc = Process::new(
@@ -851,6 +898,7 @@ fn create_child_process(
         oom_score_adj,
         sig_dispositions,
         user_ns,
+        pid_ns,
     );
 
     let child_task = thread_builder.process(Arc::downgrade(&child_proc)).build();

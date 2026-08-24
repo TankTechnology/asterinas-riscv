@@ -19,8 +19,6 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv/mod.rs")]
 #[cfg_attr(not(target_arch = "riscv64"), path = "arch/other.rs")]
 mod arch;
-// Only the RISC-V USB host stack drives a boot keyboard for now.
-#[cfg(target_arch = "riscv64")]
 mod keyboard;
 
 #[init_component]

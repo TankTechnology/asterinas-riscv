@@ -163,6 +163,11 @@ impl PosixThreadBuilder {
         self
     }
 
+    pub fn sched_policy(mut self, sched_policy: SchedPolicy) -> Self {
+        self.sched_policy = sched_policy;
+        self
+    }
+
     pub fn build(self) -> Arc<Task> {
         let Self {
             tid,

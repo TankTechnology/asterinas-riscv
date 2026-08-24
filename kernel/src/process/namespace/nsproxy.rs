@@ -2,25 +2,35 @@
 
 use spin::Once;
 
+use super::pid_ns::PidNamespace;
 use crate::{
     fs::{cgroupfs::CgroupNamespace, vfs::path::MountNamespace},
     ipc::IpcNamespace,
-    net::uts_ns::UtsNamespace,
+    net::{net_ns::NetNamespace, uts_ns::UtsNamespace},
     prelude::*,
-    process::{CloneFlags, Process, UserNamespace, posix_thread::PosixThread},
+    process::{
+        CloneFlags, Process, UserNamespace, credentials::capabilities::CapSet,
+        posix_thread::PosixThread,
+    },
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// A struct that acts as a per-thread proxy to give access to most namespaces.
 ///
 /// Each `PosixThread` owns an instance of `NsProxy`
 /// and keeps a local copy in `ThreadLocal` for fast access.
-/// `NsProxy` contains all types of namespaces except
-/// 1. The user namespace, which is included in the `Process` struct.
-/// 2. The PID namespace, which is included in the `Process` struct (TODO).
+/// `NsProxy` contains all types of namespaces except the user namespace,
+/// which is included in the `Process` struct.
+///
+/// Note that `pid_ns` is the PID namespace *for children* (as in Linux's
+/// `nsproxy`): a process's own PID namespace is determined at fork time and
+/// is recorded in the `Process` struct.
 pub struct NsProxy {
     cgroup_ns: Arc<CgroupNamespace>,
     ipc_ns: Arc<IpcNamespace>,
     mnt_ns: Arc<MountNamespace>,
+    net_ns: Arc<NetNamespace>,
+    pid_ns: Arc<PidNamespace>,
     uts_ns: Arc<UtsNamespace>,
 }
 
@@ -33,6 +43,8 @@ impl NsProxy {
                 cgroup_ns: CgroupNamespace::get_init_singleton().clone(),
                 ipc_ns: IpcNamespace::get_init_singleton().clone(),
                 mnt_ns: MountNamespace::get_init_singleton().clone(),
+                net_ns: NetNamespace::get_init_singleton().clone(),
+                pid_ns: PidNamespace::get_init_singleton().clone(),
                 uts_ns: UtsNamespace::get_init_singleton().clone(),
             })
         })
@@ -91,6 +103,34 @@ impl NsProxy {
             builder.uts_ns(new_uts_ns);
         }
 
+        if clone_ns_flags.contains(CloneFlags::CLONE_NEWPID) {
+            // Both `clone()` and `unshare()` only switch the PID namespace
+            // *for children*: with `clone()`, the child process created by
+            // this call becomes the init of the new namespace (handled by
+            // the caller), and with `unshare()` only subsequently forked
+            // children join it.
+            //
+            // Creating a PID namespace requires `CAP_SYS_ADMIN` in the
+            // current (possibly newly created) user namespace, as in Linux.
+            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                user_ns.as_ref(),
+                posix_thread,
+                CapSet::SYS_ADMIN,
+            ))?;
+            builder.pid_ns(self.pid_ns.new_child(user_ns.clone()));
+        }
+
+        if clone_ns_flags.contains(CloneFlags::CLONE_NEWNET) {
+            // Creating a network namespace requires `CAP_SYS_ADMIN` in the
+            // current (possibly newly created) user namespace, as in Linux.
+            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                user_ns.as_ref(),
+                posix_thread,
+                CapSet::SYS_ADMIN,
+            ))?;
+            builder.net_ns(NetNamespace::new_child(user_ns.clone()));
+        }
+
         // TODO: Support other namespaces.
 
         Ok(Arc::new(builder.build()))
@@ -111,6 +151,17 @@ impl NsProxy {
         &self.mnt_ns
     }
 
+    /// Returns the associated network namespace.
+    pub fn net_ns(&self) -> &Arc<NetNamespace> {
+        &self.net_ns
+    }
+
+    /// Returns the PID namespace that children of the associated thread will
+    /// be placed in.
+    pub fn pid_ns_for_children(&self) -> &Arc<PidNamespace> {
+        &self.pid_ns
+    }
+
     /// Returns the associated UTS namespace.
     pub fn uts_ns(&self) -> &Arc<UtsNamespace> {
         &self.uts_ns
@@ -126,6 +177,8 @@ pub struct NsProxyBuilder<'a> {
     cgroup_ns: Option<Arc<CgroupNamespace>>,
     ipc_ns: Option<Arc<IpcNamespace>>,
     mnt_ns: Option<Arc<MountNamespace>>,
+    net_ns: Option<Arc<NetNamespace>>,
+    pid_ns: Option<Arc<PidNamespace>>,
     uts_ns: Option<Arc<UtsNamespace>>,
 }
 
@@ -137,6 +190,8 @@ impl<'a> NsProxyBuilder<'a> {
             cgroup_ns: None,
             ipc_ns: None,
             mnt_ns: None,
+            net_ns: None,
+            pid_ns: None,
             uts_ns: None,
         }
     }
@@ -159,9 +214,21 @@ impl<'a> NsProxyBuilder<'a> {
         self
     }
 
+    /// Sets the new network namespace for the context being built.
+    pub fn net_ns(&mut self, net_ns: Arc<NetNamespace>) -> &mut Self {
+        self.net_ns = Some(net_ns);
+        self
+    }
+
     /// Sets the new UTS namespace for the context being built.
     pub fn uts_ns(&mut self, uts_ns: Arc<UtsNamespace>) -> &mut Self {
         self.uts_ns = Some(uts_ns);
+        self
+    }
+
+    /// Sets the new PID namespace (for children) for the context being built.
+    pub fn pid_ns(&mut self, pid_ns: Arc<PidNamespace>) -> &mut Self {
+        self.pid_ns = Some(pid_ns);
         self
     }
 
@@ -172,18 +239,24 @@ impl<'a> NsProxyBuilder<'a> {
             cgroup_ns: new_cgroup,
             ipc_ns: new_ipc,
             mnt_ns: new_mnt,
+            net_ns: new_net,
+            pid_ns: new_pid,
             uts_ns: new_uts,
         } = self;
 
         let new_cgroup = new_cgroup.unwrap_or_else(|| old_proxy.cgroup_ns.clone());
         let new_ipc = new_ipc.unwrap_or_else(|| old_proxy.ipc_ns.clone());
         let new_mnt = new_mnt.unwrap_or_else(|| old_proxy.mnt_ns.clone());
+        let new_net = new_net.unwrap_or_else(|| old_proxy.net_ns.clone());
+        let new_pid = new_pid.unwrap_or_else(|| old_proxy.pid_ns.clone());
         let new_uts = new_uts.unwrap_or_else(|| old_proxy.uts_ns.clone());
 
         NsProxy {
             cgroup_ns: new_cgroup,
             ipc_ns: new_ipc,
             mnt_ns: new_mnt,
+            net_ns: new_net,
+            pid_ns: new_pid,
             uts_ns: new_uts,
         }
     }
@@ -196,6 +269,8 @@ pub fn check_unsupported_ns_flags(flags: CloneFlags) -> Result<()> {
     const SUPPORTED_FLAGS: CloneFlags = CloneFlags::CLONE_NEWCGROUP
         .union(CloneFlags::CLONE_NEWIPC)
         .union(CloneFlags::CLONE_NEWNS)
+        .union(CloneFlags::CLONE_NEWNET)
+        .union(CloneFlags::CLONE_NEWPID)
         .union(CloneFlags::CLONE_NEWUTS);
 
     let unsupported_flags =

@@ -6,7 +6,10 @@ use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::{
-        credentials::c_types::{CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_3},
+        credentials::c_types::{
+            CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_1,
+            LINUX_CAPABILITY_VERSION_2, LINUX_CAPABILITY_VERSION_3,
+        },
         pid_table,
         posix_thread::AsPosixThread,
     },
@@ -20,7 +23,14 @@ pub fn sys_capget(
     let user_space = ctx.user_space();
     let cap_user_header = user_space.read_val::<CUserCapHeader>(cap_user_header_addr)?;
 
-    if cap_user_header.version != LINUX_CAPABILITY_VERSION_3 {
+    // Accept V1, V2, and V3. V1 and V2 are legacy 32-bit structs; the kernel
+    // internally uses V3 (64-bit capabilities) and splits them into two
+    // CUserCapData structs (lo/hi halves). Linux accepts all three versions and
+    // upconverts transparently.
+    if cap_user_header.version != LINUX_CAPABILITY_VERSION_3
+        && cap_user_header.version != LINUX_CAPABILITY_VERSION_2
+        && cap_user_header.version != LINUX_CAPABILITY_VERSION_1
+    {
         // Write the supported version back to userspace.
         user_space.write_val(cap_user_header_addr, &LINUX_CAPABILITY_VERSION_3)?;
         // If the data pointer is null, return success per Linux behavior.
@@ -29,7 +39,7 @@ pub fn sys_capget(
         }
         return_errno_with_message!(
             Errno::EINVAL,
-            "capability versions other than v3 are not supported"
+            "capability versions other than v1, v2, v3 are not supported"
         );
     };
 

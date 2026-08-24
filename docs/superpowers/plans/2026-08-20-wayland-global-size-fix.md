@@ -163,7 +163,8 @@ is absent.
 Run:
 
 ```bash
-python3 -m unittest discover -s tools/riscv/tests -p 'test_*.py'
+PYTHONPATH=tools/riscv \
+  python3 -m unittest discover -s tools/riscv/tests -p 'test_*.py'
 git diff --check
 ```
 
@@ -331,4 +332,3 @@ git log -3 --oneline --decorate
 
 Expected: no unexpected tracked modifications; ignored QEMU evidence remains
 under `target/`; the design commit and source-fix commit are at the branch tip.
-

@@ -18,6 +18,33 @@ make test_riscv_uboot_booti_unit
 
 These tests validate immutable profile definitions, address ranges, generated commands, DTB policy, milestone accounting, result classification, cleanup, and artifact identity checks.
 
+## Linux Test Project syscall gate
+
+The isolated LTP gate cross-builds the pinned LTP `20260529` syscall suite,
+boots it through the guarded U-Boot runner,
+and stores its evidence below `target/ltp/`.
+It does not reuse `target/qemu-uboot/current`,
+so running it cannot replace the prepared desktop boot disk.
+
+Run its host tests with:
+
+```bash
+make test_riscv_ltp_unit
+```
+
+After building the RISC-V kernel and LTP initramfs,
+record a baseline with:
+
+```bash
+python3 tools/riscv/ltp_gate.py run \
+  --kernel target/osdk/aster-kernel-osdk-bin.Image \
+  --smp 1 --run-id baseline-m1-smp1 --skip-build --baseline
+```
+
+See [the LTP gate operator guide](ltp/README.md)
+for the exact containers, strict mode, SMP=4 runs, result schema,
+and evidence-provenance rules.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.

@@ -98,26 +98,51 @@ impl Attribute for AddrAttr {
         Self: Sized,
     {
         let payload_len = header.payload_len();
-        reader.skip_some(payload_len);
 
-        // GETADDR only supports dump requests. These requests do not have any attributes.
-        // According to the Linux behavior, we should just ignore all the attributes.
+        // TODO: Currently, `IS_NET_BYTEORDER_MASK` and `IS_NESTED_MASK` are ignored.
+        let Ok(class) = AddrAttrClass::try_from(header.type_()) else {
+            // Unknown attributes should be ignored.
+            // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#unknown-attributes>.
+            reader.skip_some(payload_len);
+            return Ok(ContinueRead::Skipped);
+        };
 
-        Ok(ContinueRead::Skipped)
+        let res = match (class, payload_len) {
+            // IPv4 address attributes carry 4 bytes, IPv6 ones 16 bytes.
+            (AddrAttrClass::ADDRESS, 4) => Self::Address(IpAddr::from(read_ipv4_addr(reader)?)),
+            (AddrAttrClass::ADDRESS, 16) => Self::Address(read_ipv6_addr(reader)?),
+            (AddrAttrClass::LOCAL, 4) => Self::Local(IpAddr::from(read_ipv4_addr(reader)?)),
+            (AddrAttrClass::LOCAL, 16) => Self::Local(read_ipv6_addr(reader)?),
+
+            (AddrAttrClass::ADDRESS | AddrAttrClass::LOCAL, _) => {
+                warn!("addr attribute `{:?}` contains invalid payload", class);
+                reader.skip_some(payload_len);
+                return Ok(ContinueRead::skipped_with_error(
+                    Errno::EINVAL,
+                    "the addr attribute is invalid",
+                ));
+            }
+
+            (_, _) => {
+                // Known attributes that we do not use (e.g. IFA_FLAGS) are
+                // ignored silently, like unknown ones.
+                reader.skip_some(payload_len);
+                return Ok(ContinueRead::Skipped);
+            }
+        };
+
+        Ok(ContinueRead::Parsed(res))
     }
+}
 
-    fn read_all_from(
-        reader: &mut dyn MultiRead,
-        total_len: usize,
-    ) -> Result<ContinueRead<Vec<Self>>>
-    where
-        Self: Sized,
-    {
-        reader.skip_some(total_len);
+/// Reads an IPv4 address from the reader (in network byte order).
+fn read_ipv4_addr(reader: &mut dyn MultiRead) -> Result<Ipv4Addr> {
+    let bytes = reader.read_val_opt::<[u8; 4]>()?.unwrap();
+    Ok(Ipv4Addr::from(bytes))
+}
 
-        // GETADDR only supports dump requests. These requests do not have any attributes.
-        // According to the Linux behavior, we should just ignore all the attributes.
-
-        Ok(ContinueRead::Skipped)
-    }
+/// Reads an IPv6 address from the reader (in network byte order).
+fn read_ipv6_addr(reader: &mut dyn MultiRead) -> Result<IpAddr> {
+    let bytes = reader.read_val_opt::<[u8; 16]>()?.unwrap();
+    Ok(IpAddr::from(bytes))
 }
