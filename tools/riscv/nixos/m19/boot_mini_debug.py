@@ -56,7 +56,7 @@ def build_bootdisk():
     subprocess.run(["cp", str(DTB), str(stage / "qemu-virt.dtb")], check=True)
     if BOOTDISK.exists():
         BOOTDISK.unlink()
-    subprocess.run(["truncate", "-s", "64M", str(BOOTDISK)], check=True)
+    subprocess.run(["truncate", "-s", "256M", str(BOOTDISK)], check=True)
     subprocess.run(["mkfs.ext4", "-q", "-F", "-d", str(stage), str(BOOTDISK)], check=True)
     subprocess.run(["rm", "-rf", str(stage)])
     print(f"[boot] boot disk repacked: {BOOTDISK} (initramfs = {MINI_CPIO.name})")

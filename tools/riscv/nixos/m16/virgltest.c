@@ -17,6 +17,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +47,9 @@
 
 #define VIRTIO_GPU_CAPSET_VIRGL 1
 #define VIRTIO_GPU_CAPSET_VIRGL2 2
+
+#define VIRTGPU_EXECBUF_FENCE_FD_IN  0x01
+#define VIRTGPU_EXECBUF_FENCE_FD_OUT 0x02
 
 #define PIPE_TEXTURE_2D 2
 #define PIPE_FORMAT_B8G8R8X8_UNORM 1
@@ -276,6 +280,28 @@ int main(void) {
         }
     }
     CHECK(mismatch == 0, "pixel round-trip mismatch=%d", mismatch);
+
+    /* Fenced EXECBUFFER: request an out-fence and poll it. The kernel fences
+     * the SUBMIT_3D (deferred response until completion) and returns a
+     * pre-signaled fence_fd, so the poll must return POLLIN immediately. */
+    {
+        uint32_t nop2 = 0;
+        struct drm_virtgpu_execbuffer feb = {
+            .flags = VIRTGPU_EXECBUF_FENCE_FD_OUT,
+            .size = 4,
+            .command = (uint64_t)&nop2,
+            .fence_fd = -1,
+        };
+        rc = ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &feb);
+        CHECK(rc == 0 && feb.fence_fd >= 0, "EXECBUFFER fenced fence_fd=%d", feb.fence_fd);
+        if (feb.fence_fd >= 0) {
+            struct pollfd pfd = { .fd = feb.fence_fd, .events = POLLIN };
+            int prc = poll(&pfd, 1, 5000);
+            CHECK(prc > 0 && (pfd.revents & POLLIN), "fence poll signaled revents=0x%x",
+                  pfd.revents);
+            close(feb.fence_fd);
+        }
+    }
 
     close(fd);
     if (failures == 0) {

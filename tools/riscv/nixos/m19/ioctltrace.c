@@ -3,10 +3,14 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 static int (*real_ioctl)(int, unsigned long, ...) = NULL;
@@ -20,6 +24,15 @@ static void init(void) {
     if (!real_open) real_open = dlsym(RTLD_NEXT, "open");
     if (!real_open64) real_open64 = dlsym(RTLD_NEXT, "open64");
     if (!real_dlopen) real_dlopen = dlsym(RTLD_NEXT, "dlopen");
+}
+
+/* DRM device nodes are char devices with major 226. Detecting by fstat catches
+ * dup()'d fds (GBM/EGL dup the card0 fd internally), which open-tracking misses. */
+static int is_drm_fd(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) return 0;
+    if (!S_ISCHR(st.st_mode)) return 0;
+    return major(st.st_rdev) == 226;
 }
 
 /* Mesa loads DRI drivers via dlopen; log those paths. */
@@ -47,7 +60,7 @@ static const char *drm_cmd_name(unsigned long cmd) {
     case 0xc02c6446: return "VIRTGPU_TRANSFER_FROM_HOST";
     case 0xc02c6447: return "VIRTGPU_TRANSFER_TO_HOST";
     case 0xc0086448: return "VIRTGPU_WAIT";
-    case 0xc0206449: return "VIRTGPU_GET_CAPS";
+    case 0xc0186449: return "VIRTGPU_GET_CAPS";
     case 0xc010644b: return "VIRTGPU_CONTEXT_INIT";
     case 0xc04064a0: return "MODE_GETRESOURCES";
     case 0xc03864a1: return "MODE_GETCRTC";
@@ -65,7 +78,7 @@ static const char *drm_cmd_name(unsigned long cmd) {
     case 0xc02064b9: return "MODE_OBJ_GETPROPERTIES";
     case 0xc04064aa: return "MODE_GETPROPERTY";
     case 0xc01064ac: return "MODE_GETPROPBLOB";
-    case 0xc00864bd: return "MODE_CREATEPROPBLOB";
+    case 0xc01064bd: return "MODE_CREATEPROPBLOB";
     case 0xc05064bc: return "MODE_ATOMIC";
     case 0xc0086409: return "GEM_CLOSE";
     case 0xc008640a: return "GEM_FLINK";
@@ -82,12 +95,12 @@ int ioctl(int fd, unsigned long request, ...) {
     va_end(ap);
     init();
     int ret = real_ioctl(fd, request, arg);
-    if (fd >= 0 && fd < 64 && is_drm[fd]) {
+    if (is_drm_fd(fd)) {
         const char *name = drm_cmd_name(request);
         if (name)
-            fprintf(stderr, "IOCTL %s -> %d\n", name, ret);
+            fprintf(stderr, "IOCTL[%d] %s -> %d\n", fd, name, ret);
         else
-            fprintf(stderr, "IOCTL 0x%lx -> %d (errno?)\n", request, ret);
+            fprintf(stderr, "IOCTL[%d] 0x%lx -> %d\n", fd, request, ret);
     }
     return ret;
 }
@@ -158,4 +171,35 @@ int close(int fd) {
     init();
     int (*real_close)(int) = dlsym(RTLD_NEXT, "close");
     return real_close(fd);
+}
+
+/* Log blocking poll/ppoll so we can see what the render path waits on. */
+static int (*real_poll)(struct pollfd *, nfds_t, int) = NULL;
+static int (*real_ppoll)(struct pollfd *, nfds_t, const struct timespec *,
+                         const sigset_t *) = NULL;
+
+static void log_poll(const char *which, struct pollfd *fds, nfds_t nfds, int timeout) {
+    char buf[512];
+    int off = snprintf(buf, sizeof(buf), "%s nfds=%d timeout=%d",
+                       which, (int)nfds, timeout);
+    for (nfds_t i = 0; i < nfds && off < (int)sizeof(buf) - 48; i++) {
+        off += snprintf(buf + off, sizeof(buf) - off, " [fd=%d ev=0x%x]",
+                        fds[i].fd, fds[i].events);
+    }
+    fprintf(stderr, "%s\n", buf);
+}
+
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    init();
+    if (!real_poll) real_poll = dlsym(RTLD_NEXT, "poll");
+    log_poll("POLL", fds, nfds, timeout);
+    return real_poll(fds, nfds, timeout);
+}
+
+int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout_ts,
+          const sigset_t *sigmask) {
+    init();
+    if (!real_ppoll) real_ppoll = dlsym(RTLD_NEXT, "ppoll");
+    log_poll("PPOLL", fds, nfds, timeout_ts ? -2 : -1);
+    return real_ppoll(fds, nfds, timeout_ts, sigmask);
 }
