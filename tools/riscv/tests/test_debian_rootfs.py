@@ -672,6 +672,38 @@ printf 'QEMU_SMOKE_EXECUTED\n'
         self.assertEqual(existing_output.stat().st_mode & 0o777, 0o700)
         self.assertEqual(existing_metadata.stat().st_mode & 0o777, 0o700)
 
+    def test_main_propagates_publication_failure_without_success_log(self) -> None:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                """source "$1"
+parse_arguments() { :; }
+validate_configuration() { :; }
+require_tools() { :; }
+prepare_private_workspace() { :; }
+fetch_and_verify_release() { :; }
+bootstrap_rootfs() { :; }
+install_rootfs_packages() { :; }
+audit_packages() { :; }
+configure_and_normalize_rootfs() { :; }
+create_and_verify_image() { :; }
+write_rootfs_manifest() { :; }
+publish_artifacts() { return 143; }
+main
+""",
+                "builder-publication-failure-test",
+                str(BUILD_SCRIPT),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 143)
+        self.assertNotIn("published signed Debian rootfs", result.stderr)
+
     def test_workspace_permissions_separate_public_and_private_paths(self) -> None:
         public_root = self.directory / "new-public"
         output_directory = public_root / "nested" / "rootfs"
@@ -833,9 +865,34 @@ class DebianRootfsFsOpsTests(unittest.TestCase):
         self.assertEqual(os.WEXITSTATUS(wait_status), 143)
         self.assertEqual(self.output_snapshot(output), original)
 
-    def test_publish_set_absorbs_sigterm_after_commit(self) -> None:
+    def test_publish_set_defers_sigterm_until_after_commit_cleanup(self) -> None:
         output = self.make_existing_output()
         previous_handler = signal.getsignal(signal.SIGTERM)
+        real_cleanup = fsops_module._cleanup_publication_files
+
+        def signal_during_cleanup(entries):
+            os.kill(os.getpid(), signal.SIGTERM)
+            real_cleanup(entries)
+
+        with (
+            mock.patch.object(
+                fsops_module,
+                "_cleanup_publication_files",
+                new=signal_during_cleanup,
+            ),
+            self.assertRaises(fsops_module.PublishInterrupted) as caught,
+        ):
+            fsops_module.publish_set(output, self.source)
+
+        self.assertEqual(caught.exception.signum, signal.SIGTERM)
+        self.assertEqual(
+            self.output_snapshot(output),
+            self.output_snapshot(self.source),
+        )
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
+
+    def test_publish_cli_returns_sigterm_status_after_commit_cleanup(self) -> None:
+        output = self.make_existing_output()
         real_cleanup = fsops_module._cleanup_publication_files
 
         def signal_during_cleanup(entries):
@@ -847,13 +904,21 @@ class DebianRootfsFsOpsTests(unittest.TestCase):
             "_cleanup_publication_files",
             new=signal_during_cleanup,
         ):
-            fsops_module.publish_set(output, self.source)
+            result = fsops_module.main(
+                [
+                    "publish-set",
+                    "--output-dir",
+                    str(output),
+                    "--source-root",
+                    str(self.source),
+                ]
+            )
 
+        self.assertEqual(result, 143)
         self.assertEqual(
             self.output_snapshot(output),
             self.output_snapshot(self.source),
         )
-        self.assertIs(signal.getsignal(signal.SIGTERM), previous_handler)
 
     def test_publish_set_rejects_symlinked_or_swapped_output(self) -> None:
         outside = self.directory / "outside"

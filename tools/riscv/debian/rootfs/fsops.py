@@ -336,11 +336,16 @@ def publish_set(output_directory: Path, source_root: Path) -> None:
     previous_handlers: dict[int, signal.Handlers] = {}
     rolling_back = False
     committed = False
+    pending_signal: int | None = None
 
     def handle_signal(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
         if rolling_back:
             os._exit(128 + signum)
         if committed:
+            if pending_signal is not None:
+                os._exit(128 + signum)
+            pending_signal = signum
             return
         raise PublishInterrupted(signum)
 
@@ -398,6 +403,8 @@ def publish_set(output_directory: Path, source_root: Path) -> None:
                     _cleanup_publication_files(entries)
                     for signum, handler in previous_handlers.items():
                         signal.signal(signum, handler)
+                if pending_signal is not None:
+                    raise PublishInterrupted(pending_signal)
             finally:
                 os.close(metadata)
     finally:
