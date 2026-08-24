@@ -363,7 +363,7 @@ def qemu_argv(
         "-device",
         "virtio-blk-device,drive=bootdisk",
         "-device",
-        "qemu-xhci,id=xhci",
+        "qemu-xhci,id=xhci,msi=off,msix=off",
         "-device",
         "usb-kbd,id=usb-kbd,bus=xhci.0",
         "-display",
