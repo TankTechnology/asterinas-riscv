@@ -387,7 +387,7 @@ def classify_boot(
         if len(fields) != 2 or not all(fields):
             return _failed("package identity output is malformed")
         package_rows.append((fields[0], fields[1]))
-    expected_package_tuple = tuple(expected_packages)
+    expected_package_tuple = tuple(sorted(expected_packages))
     if tuple(package_rows) != expected_package_tuple:
         return _failed("package versions do not match the frozen manifest")
     if extracted["root-filesystem"] not in ("ext2", "ext2/ext3"):
