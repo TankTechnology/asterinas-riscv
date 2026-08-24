@@ -10,6 +10,7 @@ extern crate alloc;
 use aster_logger as _;
 use component::{ComponentInitError, init_component};
 
+pub mod card;
 pub mod sdhci;
 
 #[init_component]
