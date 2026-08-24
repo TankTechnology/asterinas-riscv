@@ -472,7 +472,7 @@ mkdir -p target/riscv-xhci-input
 docker run --rm --network=host -v "$PWD:/root/asterinas" -w /root/asterinas \
   asterinas/asterinas:0.18.0-20260702 sh -lc '
     tools/riscv/xhci/build_input_gate.sh target/riscv-xhci-input/initramfs.cpio &&
-    make kernel TARGET_ARCH=riscv64 SMP=4'
+    make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode'
 ```
 
 Expected: a static RISC-V `/init` archive and nonempty normal kernel artifacts. Do not
@@ -486,7 +486,7 @@ overwritten:
 ```bash
 ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
 ASTERINAS_INITRAMFS="$PWD/target/riscv-xhci-input/initramfs.cpio" \
-QEMU_UBOOT_PROFILE=generic-sv39 \
+QEMU_UBOOT_PROFILE=generic-sv39-ltp-smp4 \
 QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/xhci-input" \
 QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
   tools/riscv/prepare_qemu_uboot_booti.sh prepare

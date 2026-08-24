@@ -39,7 +39,7 @@ from qemu_uboot_artifacts import (  # noqa: E402
 )
 from qemu_uboot_commands import BootCommand as RegisteredBootCommand  # noqa: E402
 from qemu_uboot_commands import boot_commands as registered_boot_commands  # noqa: E402
-from qemu_uboot_profiles import GENERIC_SV39  # noqa: E402
+from qemu_uboot_profiles import GENERIC_SV39_LTP_SMP4  # noqa: E402
 
 
 QEMU_CPU = "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"
@@ -829,12 +829,12 @@ def _validate_artifacts(
         directory = Path(temporary)
         payloads = {
             "kernel": directory / "asterinas.booti",
-            "dtb": directory / GENERIC_SV39.machine.dtb_filename,
+            "dtb": directory / GENERIC_SV39_LTP_SMP4.machine.dtb_filename,
             "initrd": directory / "initramfs.cpio.gz",
         }
         for source, destination in (
             ("asterinas.booti", payloads["kernel"]),
-            (GENERIC_SV39.machine.dtb_filename, payloads["dtb"]),
+            (GENERIC_SV39_LTP_SMP4.machine.dtb_filename, payloads["dtb"]),
             ("initramfs.cpio.gz", payloads["initrd"]),
         ):
             subprocess.run(
@@ -852,15 +852,46 @@ def _validate_artifacts(
         actual = artifact_expectations_from_paths(
             kernel=payloads["kernel"], dtb=payloads["dtb"], initrd=payloads["initrd"]
         )
+        _validate_dtb_cpu_count(payloads["dtb"])
     if actual != expected:
         raise ValueError("boot disk payloads do not match the artifact manifest")
     return expected
 
 
+def _validate_dtb_cpu_count(dtb: Path) -> None:
+    """Require the payload DTB to describe the four launched harts."""
+
+    result = subprocess.run(
+        ["fdtget", "-l", os.fspath(dtb), "/cpus"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    cpu_nodes = tuple(
+        node for node in result.stdout.splitlines() if node.startswith("cpu@")
+    )
+    enabled = 0
+    for node in cpu_nodes:
+        status = subprocess.run(
+            ["fdtget", "-t", "s", os.fspath(dtb), f"/cpus/{node}", "status"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if status.returncode != 0 or status.stdout.strip() in ("okay", "ok"):
+            enabled += 1
+    if enabled != 4:
+        raise ValueError(
+            f"payload DTB must describe exactly 4 enabled CPU nodes, got {enabled}"
+        )
+
+
 def _registered_commands(artifacts: ArtifactExpectations) -> tuple[BootCommand, ...]:
     commands: tuple[RegisteredBootCommand, ...] = registered_boot_commands(
         artifacts,
-        profile=GENERIC_SV39,
+        profile=GENERIC_SV39_LTP_SMP4,
         bootargs_override="console=ttyS0 loglevel=info init=/init",
     )
     return tuple(
