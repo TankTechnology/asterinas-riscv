@@ -759,6 +759,38 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
             text=True,
         )
 
+    def run_verifier(
+        self,
+        arguments: list[str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        exact_arguments = [
+            "verify",
+            "--image",
+            str(self.image),
+            "--manifest",
+            str(self.output),
+            "--packages-lock",
+            str(self.packages_lock),
+        ]
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                CONTRACT_MODULE,
+                *(exact_arguments if arguments is None else arguments),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def write_verifier_fixture(self) -> None:
+        self.output.write_text(
+            json.dumps(_manifest_payload(_sha256_text(_lock_text()))),
+            encoding="utf-8",
+        )
+
     def test_writes_canonical_exact_manifest_consumable_by_task1_contract(
         self,
     ) -> None:
@@ -778,6 +810,65 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         validated = validate_frozen_root(self.image, manifest, self.packages_lock)
         self.assertEqual(validated.debian_release, "13.6")
         self.assertEqual(validated.downloaded_packages[0][0], "bash")
+
+    def test_verify_cli_accepts_exact_plan_command_quietly(self) -> None:
+        self.write_verifier_fixture()
+
+        result = self.run_verifier()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+    def test_verify_cli_rejects_tampered_artifacts(self) -> None:
+        cases = ("image", "manifest", "packages-lock")
+        for case in cases:
+            with self.subTest(case=case):
+                self.reset_inputs()
+                self.write_verifier_fixture()
+                if case == "image":
+                    with self.image.open("r+b") as image_file:
+                        image_file.write(b"X")
+                elif case == "manifest":
+                    payload = _manifest_payload(_sha256_text(_lock_text()))
+                    payload["suite"] = "bookworm"
+                    self.output.write_text(json.dumps(payload), encoding="utf-8")
+                else:
+                    self.packages_lock.write_text(
+                        _lock_text().replace(
+                            "bash\triscv64\t5.2.37-2+b5",
+                            "bash\triscv64\t5.2.37-2+b6",
+                        ),
+                        encoding="utf-8",
+                    )
+
+                result = self.run_verifier()
+
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("contract: error:", result.stderr)
+
+    def test_verify_cli_rejects_missing_and_unknown_arguments(self) -> None:
+        self.write_verifier_fixture()
+        exact = [
+            "verify",
+            "--image",
+            str(self.image),
+            "--manifest",
+            str(self.output),
+            "--packages-lock",
+            str(self.packages_lock),
+        ]
+        cases = (
+            exact[:-2],
+            [*exact, "--unknown", "value"],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_verifier(arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("error:", result.stderr)
 
     def test_rejects_missing_duplicate_unknown_and_invalid_cli_inputs(self) -> None:
         valid = self.writer_arguments()
