@@ -76,6 +76,7 @@ class XhciGuestProbeTests(unittest.TestCase):
             "zero-keyboards",
             "two-keyboards",
             "virtio-keyboard",
+            "delayed-keyboard",
             "missing-release",
             "reordered",
             "syn-dropped",
@@ -240,7 +241,7 @@ class XhciHostGateTests(unittest.TestCase):
         joined = " ".join(argv)
         self.assertIn("-smp 4", joined)
         self.assertLess(
-            argv.index("qemu-xhci,id=xhci"),
+            argv.index("qemu-xhci,id=xhci,msi=off,msix=off"),
             argv.index("usb-kbd,id=usb-kbd,bus=xhci.0"),
         )
         self.assertEqual(sum(item.startswith("usb-kbd,") for item in argv), 1)
