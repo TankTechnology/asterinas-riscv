@@ -2934,6 +2934,26 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
 
+    def test_serial_console_wait_can_start_after_a_transcript_checkpoint(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(reader, max_bytes=1024)
+        os.write(writer, b"repeat-marker\n")
+        console.wait_for(b"repeat-marker", time.monotonic() + 1.0)
+        checkpoint = console.checkpoint()
+
+        delayed = threading.Thread(
+            target=lambda: (time.sleep(0.02), os.write(writer, b"repeat-marker\n"))
+        )
+        delayed.start()
+        self.addCleanup(delayed.join)
+        transcript = console.wait_for(
+            b"repeat-marker", time.monotonic() + 1.0, start=checkpoint
+        )
+
+        self.assertEqual(transcript.count(b"repeat-marker"), 2)
+
     @staticmethod
     def _deadline(seconds: float = 1.0) -> float:
         return time.monotonic() + seconds
@@ -4003,14 +4023,19 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                 self.waited: list[bytes] = []
                 self.sent: list[bytes] = []
 
-            def wait_for(self, marker: bytes, deadline: float) -> bytes:
-                del deadline
+            def wait_for(
+                self, marker: bytes, deadline: float, *, start: int = 0
+            ) -> bytes:
+                del deadline, start
                 self.waited.append(marker)
-                return marker
+                return b"\n".join(self.waited)
 
             def send(self, payload: bytes, deadline: float) -> None:
                 del deadline
                 self.sent.append(payload)
+
+            def checkpoint(self) -> int:
+                return len(b"\n".join(self.waited))
 
         serial = FakeSerial()
         operations = object.__new__(SystemdM2Operations)

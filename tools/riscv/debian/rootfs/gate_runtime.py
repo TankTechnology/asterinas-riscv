@@ -319,6 +319,11 @@ class SerialConsole:
     def transcript(self) -> bytes:
         return bytes(self._transcript)
 
+    def checkpoint(self) -> int:
+        """Return a stable offset for waits that must ignore older markers."""
+
+        return len(self._transcript)
+
     def send(self, payload: bytes, deadline: float) -> None:
         if not payload:
             raise ValueError("serial command must not be empty")
@@ -352,10 +357,12 @@ class SerialConsole:
             raise BufferError("serial transcript exceeds byte cap")
         self._transcript.extend(chunk)
 
-    def wait_for(self, marker: bytes, deadline: float) -> bytes:
+    def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
         if not marker:
             raise ValueError("serial marker must not be empty")
-        while marker not in self._transcript:
+        if isinstance(start, bool) or not 0 <= start <= len(self._transcript):
+            raise ValueError("serial marker start offset is out of range")
+        while self._transcript.find(marker, start) < 0:
             if self.process is not None and self.process.poll() is not None:
                 raise EarlyProcessExit(self.process.returncode or 0)
             try:
