@@ -36,10 +36,8 @@ _FATAL_TRANSCRIPT_MARKERS = (
 _SYSTEMD_READY_RE = re.compile(
     r"\ADEBIAN_SYSTEMD_M2_READY boot=([0-9]+) arch=([^ ]+) release=([^ ]+)\Z"
 )
-_SYSTEMD_REQUIRED_MOUNTS = (
-    ("run-lock.mount", "Mounted run-lock.mount - Legacy Locks Directory /run/lock."),
-    ("tmp.mount", "Mounted tmp.mount - Temporary Directory /tmp."),
-)
+_SYSTEMD_TMPFS_RE = re.compile(r"\ADEBIAN_SYSTEMD_M2_TMPFS boot=([0-9]+)\Z")
+_SYSTEMD_RUN_LOCK_MARKER = "Mounted run-lock.mount - Legacy Locks Directory /run/lock."
 
 
 @dataclass(frozen=True)
@@ -341,9 +339,17 @@ def classify_systemd_m2(
     )
     for boot_number, start, ready_position in boot_windows:
         boot_lines = lines[start + 1 : ready_position]
-        for unit, marker in _SYSTEMD_REQUIRED_MOUNTS:
-            if not any(marker in line for line in boot_lines):
-                return _failed(f"missing successful {unit} mount in boot {boot_number}")
+        if not any(_SYSTEMD_RUN_LOCK_MARKER in line for line in boot_lines):
+            return _failed(
+                f"missing successful run-lock.mount mount in boot {boot_number}"
+            )
+        tmpfs_boots = [
+            int(match.group(1), 10)
+            for line in boot_lines
+            if (match := _SYSTEMD_TMPFS_RE.fullmatch(line)) is not None
+        ]
+        if tmpfs_boots != [boot_number]:
+            return _failed(f"missing exact tmpfs evidence in boot {boot_number}")
     return GateResult(True, "pass", None)
 
 

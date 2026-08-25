@@ -28,6 +28,9 @@ debian_release="$(/bin/cat -- "$DEBIAN_VERSION_FILE")" || fail debian-release
 filesystem_type="$(stat -f -c '%T' /)" || fail root-filesystem
 [[ "$filesystem_type" == ext2/ext3 ]] || fail root-filesystem
 
+tmp_filesystem_type="$(stat -f -c '%T' /tmp)" || fail tmp-filesystem
+[[ "$tmp_filesystem_type" == tmpfs ]] || fail tmp-filesystem
+
 package_versions="$(
     dpkg-query -W -f='${Package}\t${Version}\n' systemd systemd-sysv
 )" || fail systemd-packages
@@ -48,6 +51,7 @@ chmod 0644 "$temporary" || fail boot-count-write
 mv -f -- "$temporary" "$COUNTER" || fail boot-count-write
 sync || fail sync
 
+emit "DEBIAN_SYSTEMD_M2_TMPFS boot=$next"
 emit "DEBIAN_SYSTEMD_M2_READY boot=$next arch=$architecture release=$debian_release"
 if ((next == 1)); then
     reboot -f || fail reboot
