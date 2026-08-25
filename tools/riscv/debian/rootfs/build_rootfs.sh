@@ -6,14 +6,13 @@ set -euo pipefail
 umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
+readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
 readonly DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
-readonly ROOT_LABEL="ASTER_DEBIANROOT"
-readonly ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
 readonly ROOT_SIZE_BYTES="1073741824"
 readonly ROOT_BLOCK_SIZE_BYTES="4096"
 readonly MAX_SOURCE_DATE_EPOCH="4294967295"
@@ -31,13 +30,6 @@ readonly -a REQUIRED_TOOLS=(
     sha256sum
     curl
 )
-readonly -a INSTALL_PACKAGES=(
-    bash
-    ca-certificates
-    coreutils
-    procps
-    util-linux
-)
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
     rootfs-manifest.json
@@ -52,6 +44,16 @@ MIRROR="$DEFAULT_MIRROR"
 SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
+PROFILE="minimal-m1"
+ROOT_LABEL="ASTER_DEBIANROOT"
+ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
+declare -a INSTALL_PACKAGES=(
+    bash
+    ca-certificates
+    coreutils
+    procps
+    util-linux
+)
 
 main() {
     parse_arguments "$@"
@@ -77,6 +79,7 @@ parse_arguments() {
     local has_cache_dir=0
     local has_mirror=0
     local has_suite=0
+    local has_profile=0
 
     while (($# > 0)); do
         case "$1" in
@@ -108,6 +111,13 @@ parse_arguments() {
                 SUITE="$2"
                 shift 2
                 ;;
+            --profile)
+                require_option_value "$1" "$#"
+                ((has_profile == 0)) || die "duplicate argument: $1"
+                has_profile=1
+                PROFILE="$2"
+                shift 2
+                ;;
             --print-tools | --print-packages)
                 [[ -z "$print_mode" ]] || die "duplicate print argument: $1"
                 print_mode="$1"
@@ -119,6 +129,8 @@ parse_arguments() {
         esac
     done
 
+    configure_profile "$has_output_dir"
+
     if [[ -n "$print_mode" ]]; then
         ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 && has_suite == 0)) ||
             die "$print_mode does not accept build options"
@@ -128,6 +140,34 @@ parse_arguments() {
             printf '%s\n' "${INSTALL_PACKAGES[@]}"
         fi
         exit 0
+    fi
+}
+
+configure_profile() {
+    local has_output_dir="$1"
+    local script_directory
+    local repository_root
+    local -a profile_fields=()
+
+    case "$PROFILE" in
+        minimal-m1 | systemd-m2) ;;
+        *) die "unknown rootfs profile: $PROFILE" ;;
+    esac
+    if [[ "$PROFILE" == minimal-m1 ]]; then
+        return
+    fi
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    mapfile -t profile_fields < <(
+        PYTHONPATH="$repository_root" python3 -m \
+            tools.riscv.debian.rootfs.profiles --profile "$PROFILE"
+    )
+    ((${#profile_fields[@]} >= 3)) || die "invalid rootfs profile data: $PROFILE"
+    ROOT_LABEL="${profile_fields[0]}"
+    ROOT_UUID="${profile_fields[1]}"
+    INSTALL_PACKAGES=("${profile_fields[@]:2}")
+    if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
     fi
 }
 
@@ -593,6 +633,7 @@ copy_into_content_cache() {
 
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
+    local script_directory
 
     log "phase 7/8: configuring and normalizing rootfs"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
@@ -601,6 +642,30 @@ if [[ $- == *i* ]]; then
     PS1='asterinas-debian# '
 fi
 EOF
+    if [[ "$PROFILE" == systemd-m2 ]]; then
+        script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        install -D -m 0755 -- \
+            "$script_directory/systemd_m2_evidence.sh" \
+            "$stage/usr/lib/asterinas/systemd-m2-evidence"
+        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M2 evidence
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/systemd-m2-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
+        ln -s -- \
+            ../asterinas-debian-m2.service \
+            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+    fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
     rm -f -- "$stage/var/lib/dbus/machine-id"
@@ -698,6 +763,7 @@ write_rootfs_manifest() {
         --mirror "$MIRROR" \
         --suite "$SUITE" \
         --debian-release "$DEBIAN_RELEASE" \
+        --profile "$PROFILE" \
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
