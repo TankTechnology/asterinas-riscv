@@ -32,6 +32,9 @@ _FATAL_TRANSCRIPT_MARKERS = (
     ("end_request: i/o error", "block I/O error"),
     ("debian_rootfs_fail reason=", "stage1 failure"),
 )
+_SYSTEMD_READY_RE = re.compile(
+    r"\ADEBIAN_SYSTEMD_M2_READY boot=([0-9]+) arch=([^ ]+) release=([^ ]+)\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ def qemu_argv(
     monitor_socket: Path,
     smp: int = 4,
     dtb_enabled_cpu_count: int = 4,
+    allow_reboot: bool = False,
 ) -> tuple[str, ...]:
     """Construct the frozen no-network SMP=4 two-disk QEMU contract."""
 
@@ -125,7 +129,7 @@ def qemu_argv(
     ):
         raise ValueError("QEMU monitor socket parent must be a non-symlink directory")
 
-    return (
+    arguments = (
         "qemu-system-riscv64",
         "-machine",
         "virt",
@@ -141,7 +145,6 @@ def qemu_argv(
         "none",
         "-serial",
         "stdio",
-        "-no-reboot",
         "-kernel",
         os.fspath(uboot),
         "-drive",
@@ -155,6 +158,10 @@ def qemu_argv(
         "-monitor",
         f"unix:{monitor_socket},server=on,wait=off",
     )
+    if allow_reboot:
+        return arguments
+    kernel_index = arguments.index("-kernel")
+    return (*arguments[:kernel_index], "-no-reboot", *arguments[kernel_index:])
 
 
 def _framed_command(
@@ -244,6 +251,79 @@ def shell_commands(*, boot_number: int, nonce: str) -> tuple[ShellCommand, ...]:
 
 def _failed(reason: str) -> GateResult:
     return GateResult(False, reason, None)
+
+
+def classify_systemd_m2(
+    transcript: str | bytes, *, expected_debian_release: str
+) -> GateResult:
+    """Classify one complete serial transcript spanning two systemd boots."""
+
+    normalized = _normalize_transcript(transcript)
+    if isinstance(normalized, GateResult):
+        return normalized
+    text, lines = normalized
+    lowered = text.lower()
+    if "debian_systemd_m2_fail reason=" in lowered:
+        return _failed("systemd M2 failure marker")
+    for marker, description in _FATAL_TRANSCRIPT_MARKERS:
+        if marker in lowered:
+            return _failed(f"fatal transcript marker: {description}")
+    if "oops:" in lowered:
+        return _failed("fatal transcript marker: kernel oops")
+
+    starts = [
+        index for index, line in enumerate(lines) if line == "Starting kernel ..."
+    ]
+    ready: dict[int, list[tuple[int, str, str]]] = {1: [], 2: []}
+    for index, line in enumerate(lines):
+        match = _SYSTEMD_READY_RE.fullmatch(line)
+        if match is None:
+            continue
+        boot = int(match.group(1), 10)
+        if boot not in ready:
+            return _failed("third systemd boot marker")
+        ready[boot].append((index, match.group(2), match.group(3)))
+    pass_positions = [
+        index
+        for index, line in enumerate(lines)
+        if line == "DEBIAN_SYSTEMD_M2_PASS boot=2"
+    ]
+    firmware_positions = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("OpenSBI ") or line.startswith("U-Boot ")
+    ]
+
+    if len(ready[1]) != 1:
+        qualifier = "duplicate" if len(ready[1]) > 1 else "missing"
+        return _failed(f"{qualifier} boot 1 READY marker")
+    if len(ready[2]) != 1:
+        qualifier = "duplicate" if len(ready[2]) > 1 else "missing"
+        return _failed(f"{qualifier} boot 2 READY marker")
+    if len(pass_positions) != 1:
+        qualifier = "duplicate" if len(pass_positions) > 1 else "missing"
+        return _failed(f"{qualifier} PASS marker")
+    if len(starts) != 2:
+        return _failed("normal reboot evidence requires exactly two kernel starts")
+
+    boot1_position, boot1_arch, boot1_release = ready[1][0]
+    boot2_position, boot2_arch, boot2_release = ready[2][0]
+    if not (
+        starts[0] < boot1_position < starts[1] < boot2_position < pass_positions[0]
+    ):
+        return _failed("systemd M2 markers are reordered")
+    if not any(
+        boot1_position < position < starts[1] for position in firmware_positions
+    ):
+        return _failed("firmware restart evidence is missing")
+    if boot1_arch != "riscv64" or boot2_arch != "riscv64":
+        return _failed("systemd M2 architecture identity mismatch")
+    if (
+        boot1_release != expected_debian_release
+        or boot2_release != expected_debian_release
+    ):
+        return _failed("systemd M2 Debian release identity mismatch")
+    return GateResult(True, "pass", None)
 
 
 def _normalize_transcript(
