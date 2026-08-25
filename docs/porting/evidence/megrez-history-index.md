@@ -17,6 +17,7 @@ QEMU results are not treated as Megrez board results.
 | Direct QEMU 16 GiB `70734c14e` | [Local evidence identity](#tracked-summaries-and-local-raw-evidence) | Four-hart Sv48/Svade reached the userspace marker in direct QEMU; this did not use U-Boot and is not Megrez board evidence. |
 | QEMU software recovery `7f691c479` | [Frozen timer and panic evidence](2026-07-18-riscv-software-reboot-qemu.md) | Timer and panic each requested SBI cold reboot and returned through a new OpenSBI/U-Boot firmware cycle. |
 | Megrez PID 1 and recovery `3ef99e6bd` | [Controlled board evidence](2026-07-20-megrez-pid1-recovery.md) | PID 1 entered userspace and completed a 50-byte `write`; the UART log contained no ordinary hello and Asterinas received no framebuffer; a later complete OpenSBI/U-Boot epoch reached the prompt without an external reset during the controlled window. |
+| Megrez Sv39 paging contract `b48cfeea3` | [Sv39/Sv48 fault history and Linux comparison](2026-08-25-riscv-sv39-sv48-lessons.md) | A compiled-Sv39 kernel faulted because assembly independently selected Sv48; the single-mode fix subsequently reached OSTD, four harts, MMC, and rootfs on Megrez. |
 
 ## Tracked summaries and local raw evidence
 
