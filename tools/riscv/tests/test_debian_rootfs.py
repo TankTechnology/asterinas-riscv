@@ -34,6 +34,13 @@ from tools.riscv.debian.rootfs.contract import (
     parse_packages_lock,
     validate_frozen_root,
 )
+from tools.riscv.debian.rootfs.desktop_m3_gate import (
+    DESKTOP_M3_MILESTONES,
+    DesktopM3Operations,
+    classify_desktop_m3,
+    desktop_m3_qemu_argv,
+    inspect_ppm,
+)
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
     MAX_TRANSCRIPT_BYTES,
@@ -1215,7 +1222,7 @@ WantedBy=multi-user.target
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(
                         evidence,
-                        "DEBIAN_DESKTOP_M3_READY user=asterinas display=:0\n",
+                        "\n".join(DESKTOP_M3_MILESTONES) + "\n",
                     )
                 else:
                     self.assertNotEqual(result.returncode, 0)
@@ -4019,6 +4026,75 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
             "0123456789abcdef" * 4,
         )
         self.assertIn("commands", session)
+
+
+class DebianDesktopM3GateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.uboot = self.directory / "u-boot"
+        self.boot = self.directory / "boot.ext4"
+        self.root = self.directory / "root.ext2"
+        for path in (self.uboot, self.boot, self.root):
+            path.write_bytes(path.name.encode())
+
+    def test_graphical_qemu_contract_adds_only_display_and_input_devices(self) -> None:
+        arguments = desktop_m3_qemu_argv(
+            uboot=self.uboot,
+            boot_disk=self.boot,
+            root_disk=self.root,
+            monitor_socket=self.directory / "monitor.sock",
+        )
+
+        self.assertIn("bochs-display", arguments)
+        self.assertIn("virtio-keyboard-device", arguments)
+        self.assertIn("virtio-tablet-device", arguments)
+        self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
+        self.assertEqual(arguments[arguments.index("-m") + 1], "2G")
+        self.assertEqual(arguments[arguments.index("-display") + 1], "none")
+        self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
+        self.assertNotIn("-netdev", arguments)
+
+    def test_classifier_requires_ordered_complete_desktop_evidence(self) -> None:
+        transcript = ("boot noise\n" + "\n".join(DESKTOP_M3_MILESTONES) + "\n").encode()
+
+        result = classify_desktop_m3(transcript, expected_debian_release="13.6")
+
+        self.assertTrue(result.passed, result.reason)
+        reversed_result = classify_desktop_m3(
+            ("\n".join(reversed(DESKTOP_M3_MILESTONES)) + "\n").encode(),
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(reversed_result.passed)
+        self.assertEqual(reversed_result.reason, "desktop milestones out of order")
+
+        fatal = classify_desktop_m3(
+            transcript + b"(EE) no screens found\n",
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(fatal.passed)
+        self.assertEqual(fatal.reason, "Xorg has no screens")
+
+    def test_ppm_inspection_rejects_blank_and_accepts_rendered_pixels(self) -> None:
+        blank = b"P6\n4 2\n255\n" + b"\xff\xff\xff" * 8
+        rendered = b"P6\n# QEMU\n4 2\n255\n" + (
+            b"\xff\xff\xff" * 4 + b"\x20\x20\x28" * 4
+        )
+
+        with self.assertRaisesRegex(GateFailure, "single color"):
+            inspect_ppm(blank, expected_width=4, expected_height=2)
+        metadata = inspect_ppm(rendered, expected_width=4, expected_height=2)
+
+        self.assertEqual(metadata["width"], 4)
+        self.assertEqual(metadata["height"], 2)
+        self.assertEqual(metadata["pixel_count"], 8)
+        self.assertGreaterEqual(metadata["distinct_sampled_colors"], 2)
+
+    def test_desktop_adapter_binds_schema_three_profile(self) -> None:
+        self.assertTrue(
+            issubclass(DesktopM3Operations, gate_backend_module.ConcreteOperations)
+        )
 
 
 class DebianRootfsDocumentationTests(unittest.TestCase):

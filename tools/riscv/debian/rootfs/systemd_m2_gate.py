@@ -9,7 +9,7 @@ import json
 import secrets
 import sys
 import time
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from tools.riscv.debian.rootfs.gate_protocol import (
     classify_systemd_m2,
@@ -90,7 +90,10 @@ def _reason(error: BaseException, fallback: str) -> str:
 
 
 def orchestrate_systemd_m2_gate(
-    config: Any, operations: Operations
+    config: Any,
+    operations: Operations,
+    *,
+    classifier: Callable[..., Any] = classify_systemd_m2,
 ) -> dict[str, object]:
     """Run one QEMU process across two boots and publish fail-closed evidence."""
 
@@ -153,7 +156,7 @@ def orchestrate_systemd_m2_gate(
                     reason = _reason(error, phase)
 
     if reason is None:
-        classified = classify_systemd_m2(
+        classified = classifier(
             transcript,
             expected_debian_release=str(identity.get("debian_release", "")),
         )

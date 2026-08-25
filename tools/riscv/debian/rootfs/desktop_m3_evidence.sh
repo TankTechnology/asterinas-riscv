@@ -62,4 +62,10 @@ while ! ready; do
     sleep 1
 done
 
+emit "DEBIAN_DESKTOP_M3_UDEV state=active"
+emit "DEBIAN_DESKTOP_M3_LOGIND state=active"
+emit "DEBIAN_DESKTOP_M3_SESSION user=asterinas tty=tty1"
+emit "DEBIAN_DESKTOP_M3_INPUT keyboard=evdev pointer=evdev"
+emit "DEBIAN_DESKTOP_M3_XORG framebuffer=fbdev display=:0"
+emit "DEBIAN_DESKTOP_M3_CLIENTS window-manager=matchbox terminal=xterm"
 emit "DEBIAN_DESKTOP_M3_READY user=$USER_NAME display=:0"
