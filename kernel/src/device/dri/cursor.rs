@@ -58,7 +58,7 @@ pub(super) struct CursorBuffer {
     pub size: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct CursorPosition {
     pub x: i32,
     pub y: i32,
@@ -80,6 +80,43 @@ pub(super) enum CursorImage {
 pub(super) struct CursorUpdate {
     pub position: Option<CursorPosition>,
     pub image: Option<CursorImage>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct CursorState {
+    pub active_handle: Option<u32>,
+    pub resource_id: Option<u32>,
+    pub position: CursorPosition,
+}
+
+impl CursorState {
+    pub fn position_for(&self, update: CursorUpdate) -> CursorPosition {
+        update.position.unwrap_or(self.position)
+    }
+
+    /// Commits an update after its device operation has succeeded.
+    pub fn commit(&mut self, update: CursorUpdate, resource_id: Option<u32>) {
+        if let Some(position) = update.position {
+            self.position = position;
+        }
+        match update.image {
+            Some(CursorImage::Buffer { handle, .. }) => {
+                debug_assert!(resource_id.is_some());
+                self.active_handle = Some(handle);
+                self.resource_id = resource_id;
+            }
+            Some(CursorImage::Hide) => {
+                debug_assert!(resource_id.is_none());
+                self.active_handle = None;
+                self.resource_id = None;
+            }
+            None => debug_assert!(resource_id.is_none()),
+        }
+    }
+
+    pub fn uses_handle(&self, handle: u32) -> bool {
+        self.active_handle == Some(handle)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -350,5 +387,39 @@ mod tests {
             validate_cursor(req, Some(bad), CRTC),
             Err(CursorValidationError::InvalidBuffer)
         );
+    }
+
+    #[ktest]
+    fn committed_state_tracks_set_move_and_hide() {
+        let mut state = CursorState::default();
+        let set = validate_cursor(
+            request(MODE_CURSOR_BO | MODE_CURSOR_MOVE),
+            Some(buffer()),
+            CRTC,
+        )
+        .unwrap();
+        assert_eq!(state.position_for(set), CursorPosition { x: -9, y: 17 });
+        state.commit(set, Some(41));
+        assert_eq!(state.active_handle, Some(11));
+        assert_eq!(state.resource_id, Some(41));
+        assert!(state.uses_handle(11));
+
+        let mut move_req = request(MODE_CURSOR_MOVE);
+        move_req.x = 23;
+        move_req.y = -4;
+        let move_only = validate_cursor(move_req, None, CRTC).unwrap();
+        state.commit(move_only, None);
+        assert_eq!(state.position, CursorPosition { x: 23, y: -4 });
+        assert_eq!(state.active_handle, Some(11));
+        assert_eq!(state.resource_id, Some(41));
+
+        let mut hide_req = request(MODE_CURSOR_BO);
+        hide_req.handle = 0;
+        let hide = validate_cursor(hide_req, None, CRTC).unwrap();
+        assert_eq!(state.position_for(hide), CursorPosition { x: 23, y: -4 });
+        state.commit(hide, None);
+        assert_eq!(state.active_handle, None);
+        assert_eq!(state.resource_id, None);
+        assert!(!state.uses_handle(11));
     }
 }
