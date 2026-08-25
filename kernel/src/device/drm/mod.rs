@@ -246,7 +246,6 @@ struct GemObject {
 struct DumbBuffer {
     offset: usize,
     size: usize,
-    pitch: u32,
     width: u32,
     height: u32,
     bpp: u32,

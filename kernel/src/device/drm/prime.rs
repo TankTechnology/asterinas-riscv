@@ -16,6 +16,7 @@
 
 use core::fmt::Display;
 
+use super::{DriHandle, DumbBuffer, GemObject};
 use crate::{
     events::IoEvents,
     fs::{
@@ -29,8 +30,6 @@ use crate::{
     process::signal::{PollHandle, Pollable},
     vm::page_cache::Vmo,
 };
-
-use super::{DriHandle, DumbBuffer, GemObject};
 
 /// A dma-buf file wrapping an exported GEM/dumb buffer.
 pub(super) struct DmaBufFile {
@@ -138,10 +137,7 @@ pub(super) fn handle_to_fd(
 /// Imports a dma-buf fd as a per-file GEM handle.
 ///
 /// Returns the new handle (and the buffer size, for completeness).
-pub(super) fn fd_to_handle(
-    handle: &DriHandle,
-    file: &DmaBufFile,
-) -> Result<(u32, u64)> {
+pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<(u32, u64)> {
     let buffer = file.buffer();
 
     // Register a fresh GEM object backed by the same pool sub-range.

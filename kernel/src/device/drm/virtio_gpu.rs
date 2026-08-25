@@ -245,8 +245,16 @@ pub(super) fn virtgpu_resource_create(
     } else {
         // Allocate a dumb buffer from the shared pool to back this resource.
         let bpp = 32;
-        let pitch = req.width.saturating_mul(bpp / 8);
-        let size = (pitch as usize).saturating_mul(req.height as usize);
+        let pitch = if req.stride == 0 {
+            req.width.saturating_mul(bpp / 8)
+        } else {
+            req.stride
+        };
+        let size = if req.size == 0 {
+            (pitch as usize).saturating_mul(req.height as usize)
+        } else {
+            req.size as usize
+        };
         handle.gpu_manager.ensure_pool()?;
 
         let mut offset_guard = handle.gpu_manager.next_offset.lock();
@@ -270,7 +278,6 @@ pub(super) fn virtgpu_resource_create(
             buffer: DumbBuffer {
                 offset,
                 size,
-                pitch,
                 width: req.width,
                 height: req.height,
                 bpp,
@@ -387,9 +394,7 @@ pub(super) fn virtgpu_get_caps(
     let req = cmd.read()?;
 
     // Only virgl and virgl2 capsets are supported
-    if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL
-        && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2
-    {
+    if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2 {
         return_errno_with_message!(Errno::EINVAL, "unsupported capset id");
     }
     let cap_set_id = req.cap_set_id;

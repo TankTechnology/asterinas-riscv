@@ -14,9 +14,7 @@ use core::fmt::Display;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{
-            AccessMode, CreationFlags, FileCommon, FileLike, StatusFlags, file_table::FdFlags,
-        },
+        file::{AccessMode, CreationFlags, FileCommon, FileLike, StatusFlags, file_table::FdFlags},
         pseudofs::AnonInodeFs,
     },
     prelude::*,

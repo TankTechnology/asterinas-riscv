@@ -57,7 +57,6 @@ pub(super) fn create_dumb(
         buffer: DumbBuffer {
             offset,
             size,
-            pitch,
             width: req.width,
             height: req.height,
             bpp: req.bpp,

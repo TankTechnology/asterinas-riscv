@@ -24,20 +24,44 @@ use crate::{
 pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u32> {
     let object_id = {
         let inner = handle.inner.lock();
-        let object_id = *inner
-            .handles
-            .get(&req.handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
+        let Some(&object_id) = inner.handles.get(&req.handle) else {
+            ostd::warn!(
+                "drm: ADDFB unknown handle={} size={}x{} pitch={} bpp={} depth={}",
+                req.handle,
+                req.width,
+                req.height,
+                req.pitch,
+                req.bpp,
+                req.depth,
+            );
+            return_errno_with_message!(Errno::EINVAL, "unknown GEM handle");
+        };
         let guard = handle.gpu_manager.gem_objects.lock();
-        let obj = guard
-            .get(&object_id)
-            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        let Some(obj) = guard.get(&object_id) else {
+            ostd::warn!("drm: ADDFB stale GEM object={}", object_id);
+            return_errno_with_message!(Errno::ENOENT, "stale GEM object");
+        };
         let buf = &obj.buffer;
         // The framebuffer may be smaller than the backing buffer (drivers
         // over-allocate, e.g. llvmpipe aligns the height up); the fb only
         // needs to fit within the buffer.
-        let needed = buf.pitch * (req.height - 1) + req.width * (req.bpp + 7) / 8;
+        let bytes_per_pixel = req.bpp.div_ceil(8);
+        let needed = req.pitch * (req.height - 1) + req.width * bytes_per_pixel;
         if req.bpp != buf.bpp || needed as usize > buf.size {
+            ostd::warn!(
+                "drm: ADDFB handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} bpp={}/{} depth={} buffer={:?}",
+                req.handle,
+                object_id,
+                needed,
+                buf.size,
+                req.width,
+                req.height,
+                req.pitch,
+                req.bpp,
+                buf.bpp,
+                req.depth,
+                buf,
+            );
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
         }
         object_id
@@ -65,14 +89,23 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
 pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
     let object_id = {
         let inner = handle.inner.lock();
-        let object_id = *inner
-            .handles
-            .get(&req.handles[0])
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
+        let Some(&object_id) = inner.handles.get(&req.handles[0]) else {
+            ostd::warn!(
+                "drm: ADDFB2 unknown handle={} size={}x{} pitch={} offset={} format={:#x}",
+                req.handles[0],
+                req.width,
+                req.height,
+                req.pitches[0],
+                req.offsets[0],
+                req.pixel_format,
+            );
+            return_errno_with_message!(Errno::EINVAL, "unknown GEM handle");
+        };
         let guard = handle.gpu_manager.gem_objects.lock();
-        let obj = guard
-            .get(&object_id)
-            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        let Some(obj) = guard.get(&object_id) else {
+            ostd::warn!("drm: ADDFB2 stale GEM object={}", object_id);
+            return_errno_with_message!(Errno::ENOENT, "stale GEM object");
+        };
         let buf = &obj.buffer;
         // The framebuffer may be smaller than the backing buffer (drivers
         // over-allocate, e.g. llvmpipe aligns the height to 32); it only
@@ -81,6 +114,18 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
         let bytes_per_pixel = 4usize;
         let needed = pitch * (req.height as usize - 1) + req.width as usize * bytes_per_pixel;
         if needed > buf.size {
+            ostd::warn!(
+                "drm: ADDFB2 handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} offset={} buffer={:?}",
+                req.handles[0],
+                object_id,
+                needed,
+                buf.size,
+                req.width,
+                req.height,
+                req.pitches[0],
+                req.offsets[0],
+                buf,
+            );
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
         }
         // Accept any pitch — ADDFB2 allows explicit pitches

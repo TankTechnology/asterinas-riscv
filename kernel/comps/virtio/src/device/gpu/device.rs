@@ -98,14 +98,19 @@ impl GpuDevice {
         // The cursor queue is allowed (and in QEMU, is) much smaller than the
         // control queue (16 vs 256). Clamp each queue to what the device
         // actually offers instead of assuming both are `QUEUE_SIZE`.
-        let control_queue_size = QUEUE_SIZE
-            .min(device_transport.max_queue_size(VQ_CONTROL).unwrap_or(QUEUE_SIZE));
-        let cursor_queue_size = QUEUE_SIZE
-            .min(device_transport.max_queue_size(VQ_CURSOR).unwrap_or(QUEUE_SIZE));
+        let control_queue_size = QUEUE_SIZE.min(
+            device_transport
+                .max_queue_size(VQ_CONTROL)
+                .unwrap_or(QUEUE_SIZE),
+        );
+        let cursor_queue_size = QUEUE_SIZE.min(
+            device_transport
+                .max_queue_size(VQ_CURSOR)
+                .unwrap_or(QUEUE_SIZE),
+        );
         let mut control_queue =
             VirtQueue::new(VQ_CONTROL, control_queue_size, device_transport.as_mut())?;
-        let cursor_queue =
-            VirtQueue::new(VQ_CURSOR, cursor_queue_size, device_transport.as_mut())?;
+        let cursor_queue = VirtQueue::new(VQ_CURSOR, cursor_queue_size, device_transport.as_mut())?;
         let control_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
         let cursor_buf =
@@ -631,21 +636,22 @@ impl GpuDevice {
         };
         let req_len = size_of::<VirtioGpuCmdSubmit>();
         let total_len = req_len + size as usize;
+        let resp_len = size_of::<VirtioGpuCtrlHdr>();
+        let buffer_len = total_len + resp_len;
+        let submit_buf = Arc::new(
+            DmaStream::alloc(buffer_len.div_ceil(PAGE_SIZE), false)
+                .map_err(VirtioDeviceError::ResourceAlloc)?,
+        );
 
         let req_slice = Slice::new(
-            self.control_buf.clone(),
+            submit_buf.clone(),
             CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
         );
         req_slice.write_val(0, &req).unwrap();
         req_slice.write_bytes(req_len, data).unwrap();
 
         let mut queue = self.control_queue.lock();
-        let (code, _) = submit_control(
-            &mut queue,
-            &self.control_buf,
-            total_len,
-            size_of::<VirtioGpuCtrlHdr>(),
-        )?;
+        let (code, _) = submit_control_at(&mut queue, &submit_buf, total_len, total_len, resp_len)?;
         check_ok(code)
     }
 
@@ -852,10 +858,25 @@ fn submit_control(
     req_len: usize,
     resp_len: usize,
 ) -> Result<(u32, usize), VirtioDeviceError> {
+    submit_control_at(queue, buf, req_len, CTRL_RESP_OFFSET, resp_len)
+}
+
+/// Like [`submit_control`], but places the response at a caller-selected offset.
+///
+/// Variable-sized `SUBMIT_3D` requests use an offset immediately after the
+/// command stream so they are not constrained by the fixed small-command
+/// layout in [`GpuDevice::control_buf`].
+fn submit_control_at(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+    resp_offset: usize,
+    resp_len: usize,
+) -> Result<(u32, usize), VirtioDeviceError> {
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.sync_to_device().unwrap();
 
-    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
+    let resp_slice = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
     queue
         .add_dma_bufs(&[&req_slice], &[&resp_slice])
         .expect("add control queue buffers");
