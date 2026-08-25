@@ -709,8 +709,18 @@ configure_desktop_m3() {
         "$script_directory/desktop_m3_session.sh" \
         "$stage/usr/lib/asterinas/desktop-m3-session"
     install -D -m 0755 -- \
+        "$script_directory/desktop_m3_device_access.sh" \
+        "$stage/usr/lib/asterinas/desktop-m3-device-access"
+    install -D -m 0755 -- \
         "$script_directory/desktop_m3_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m3-evidence"
+    install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
+    cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
+[Service]
+Type=simple
+EOF
+    chmod 0644 -- \
+        "$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf"
     cat >"$stage/etc/systemd/system/asterinas-desktop-m3.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian desktop session
@@ -721,6 +731,7 @@ Conflicts=getty@tty1.service
 [Service]
 Type=simple
 User=asterinas
+SupplementaryGroups=video input
 PAMName=login
 TTYPath=/dev/tty1
 StandardInput=tty
@@ -730,6 +741,7 @@ TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
 Environment=HOME=/home/asterinas
+ExecStartPre=+/usr/lib/asterinas/desktop-m3-device-access
 ExecStart=/usr/lib/asterinas/desktop-m3-session
 Restart=on-failure
 RestartSec=2s
@@ -737,12 +749,13 @@ RestartSec=2s
 [Install]
 WantedBy=graphical.target
 EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-desktop-m3.service"
     rm -f -- \
         "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
     cat >"$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian desktop evidence
-After=asterinas-desktop-m3.service
+After=basic.target
 Wants=asterinas-desktop-m3.service
 
 [Service]
@@ -753,6 +766,8 @@ RemainAfterExit=yes
 [Install]
 WantedBy=graphical.target
 EOF
+    chmod 0644 -- \
+        "$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service"
     mkdir -p -- "$stage/etc/systemd/system/graphical.target.wants"
     ln -s -- \
         ../asterinas-desktop-m3.service \
@@ -764,7 +779,7 @@ EOF
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
 
-    mkdir -p -- "$stage/etc/X11/xorg.conf.d"
+    install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
@@ -772,25 +787,39 @@ Section "Device"
     Option "fbdev" "/dev/fb0"
 EndSection
 
-Section "InputClass"
-    Identifier "Asterinas evdev keyboard"
-    MatchIsKeyboard "on"
-    Driver "evdev"
+Section "Screen"
+    Identifier "Asterinas screen"
+    Device "Asterinas framebuffer"
 EndSection
 
-Section "InputClass"
-    Identifier "Asterinas evdev pointer"
-    MatchIsPointer "on"
+Section "InputDevice"
+    Identifier "Asterinas keyboard"
     Driver "evdev"
+    Option "Device" "/dev/input/event0"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas pointer"
+    Driver "evdev"
+    Option "Device" "/dev/input/event1"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Asterinas layout"
+    Screen 0 "Asterinas screen"
+    InputDevice "Asterinas keyboard" "CoreKeyboard"
+    InputDevice "Asterinas pointer" "CorePointer"
 EndSection
 
 Section "ServerFlags"
+    Option "AutoAddDevices" "false"
     Option "BlankTime" "0"
     Option "StandbyTime" "0"
     Option "SuspendTime" "0"
     Option "OffTime" "0"
 EndSection
 EOF
+    chmod 0644 -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
 }
 
 create_and_verify_image() {

@@ -37,6 +37,7 @@ from tools.riscv.debian.rootfs.contract import (
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     DESKTOP_M3_MILESTONES,
     DesktopM3Operations,
+    capture_rendered_ppm,
     classify_desktop_m3,
     desktop_m3_qemu_argv,
     inspect_ppm,
@@ -536,6 +537,7 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-unknown",
             "root-init-control-character",
             "systemd-root-label",
+            "systemd-desktop-root-label",
             "systemd-handoff-sequence",
             "systemd-exec",
         )
@@ -951,6 +953,7 @@ class DebianRootfsBuilderTests(unittest.TestCase):
             result.stdout.splitlines(),
             list(get_profile("desktop-m3").requested_packages),
         )
+        self.assertIn("x11-utils", result.stdout.splitlines())
         self.assertEqual(result.stderr, "")
 
     def test_rejects_unknown_and_duplicate_profiles_before_tools(self) -> None:
@@ -1149,18 +1152,52 @@ WantedBy=multi-user.target
         evidence = stage / "usr/lib/asterinas/desktop-m3-evidence"
         self.assertEqual(session.read_bytes(), DESKTOP_M3_SESSION_SCRIPT.read_bytes())
         self.assertEqual(evidence.read_bytes(), DESKTOP_M3_EVIDENCE_SCRIPT.read_bytes())
+        self.assertIn("desktop-m3-session.log", session.read_text())
+        self.assertIn("DESKTOP_M3_DEVICE", session.read_text())
+        self.assertIn("/usr/bin/stat -c", session.read_text())
+        self.assertIn("exec 9<>/dev/fb0", session.read_text())
+        self.assertIn("-extension GLX", session.read_text())
+        self.assertIn("framebuffer-open-rw=ok", session.read_text())
+        self.assertIn("framebuffer-open-rw=failed", session.read_text())
+        self.assertIn("desktop-m3-session.log", evidence.read_text())
+        self.assertIn(
+            'TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M3_TIMEOUT_SECONDS:-240}"',
+            evidence.read_text(),
+        )
         self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o755)
         desktop_unit = stage / "etc/systemd/system/asterinas-desktop-m3.service"
         unit_text = desktop_unit.read_text()
+        self.assertEqual(stat.S_IMODE(desktop_unit.stat().st_mode), 0o644)
         for directive in (
             "User=asterinas",
             "PAMName=login",
             "TTYPath=/dev/tty1",
+            "SupplementaryGroups=video input",
+            "ExecStartPre=+/usr/lib/asterinas/desktop-m3-device-access",
             "ExecStart=/usr/lib/asterinas/desktop-m3-session",
             "Conflicts=getty@tty1.service",
         ):
             self.assertIn(directive, unit_text)
+        device_access = stage / "usr/lib/asterinas/desktop-m3-device-access"
+        self.assertEqual(stat.S_IMODE(device_access.stat().st_mode), 0o755)
+        self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
+        self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
+        self.assertIn("chown asterinas:input", device_access.read_text())
         self.assertFalse((getty_wants / "getty@tty1.service").exists())
+        evidence_unit = (
+            stage / "etc/systemd/system/asterinas-desktop-m3-evidence.service"
+        )
+        self.assertEqual(stat.S_IMODE(evidence_unit.stat().st_mode), 0o644)
+        evidence_unit = evidence_unit.read_text()
+        self.assertIn("After=basic.target", evidence_unit)
+        self.assertIn("Wants=asterinas-desktop-m3.service", evidence_unit)
+        self.assertNotIn("After=asterinas-desktop-m3.service", evidence_unit)
+        dbus_dropin_path = (
+            stage / "etc/systemd/system/dbus.service.d/asterinas-readiness.conf"
+        )
+        self.assertEqual(stat.S_IMODE(dbus_dropin_path.stat().st_mode), 0o644)
+        dbus_dropin = dbus_dropin_path.read_text()
+        self.assertIn("Type=simple", dbus_dropin)
         self.assertTrue(
             (
                 stage
@@ -1168,9 +1205,20 @@ WantedBy=multi-user.target
                 / "asterinas-desktop-m3.service"
             ).is_symlink()
         )
-        xorg_config = (stage / "etc/X11/xorg.conf.d/20-asterinas.conf").read_text()
+        xorg_directory = stage / "etc/X11/xorg.conf.d"
+        self.assertEqual(stat.S_IMODE(xorg_directory.stat().st_mode), 0o755)
+        xorg_config_path = xorg_directory / "20-asterinas.conf"
+        self.assertEqual(stat.S_IMODE(xorg_config_path.stat().st_mode), 0o644)
+        xorg_config = xorg_config_path.read_text()
         self.assertIn('Driver "fbdev"', xorg_config)
         self.assertIn('Driver "evdev"', xorg_config)
+        self.assertIn('Identifier "Asterinas keyboard"', xorg_config)
+        self.assertIn('Option "Device" "/dev/input/event0"', xorg_config)
+        self.assertIn('Identifier "Asterinas pointer"', xorg_config)
+        self.assertIn('Option "Device" "/dev/input/event1"', xorg_config)
+        self.assertIn('Identifier "Asterinas layout"', xorg_config)
+        self.assertIn('InputDevice "Asterinas keyboard" "CoreKeyboard"', xorg_config)
+        self.assertIn('InputDevice "Asterinas pointer" "CorePointer"', xorg_config)
         self.assertEqual(
             os.readlink(stage / "etc/systemd/system/default.target"),
             "/lib/systemd/system/graphical.target",
@@ -1183,8 +1231,8 @@ WantedBy=multi-user.target
         (input_directory / "event1").touch()
         xorg_log = self.directory / "Xorg.0.log"
         complete_xorg_log = """(II) FBDEV(0): using shadow framebuffer
-(II) XINPUT: Adding extended input device \"keyboard\"
-(II) XINPUT: Adding extended input device \"pointer\"
+(II) XINPUT: Adding extended input device \"Asterinas keyboard\"
+(II) XINPUT: Adding extended input device \"Asterinas pointer\"
 """
         fake_bin = self._make_desktop_m3_evidence_tools()
 
@@ -1196,10 +1244,19 @@ WantedBy=multi-user.target
             "keyboard",
             "pointer",
             "xorg-log",
+            "mapped-window",
             "matchbox-window-manager",
             "xterm",
         ):
             with self.subTest(missing=missing or "none"):
+                keyboard = input_directory / "event0"
+                pointer = input_directory / "event1"
+                keyboard.touch()
+                pointer.touch()
+                if missing == "keyboard":
+                    keyboard.unlink()
+                if missing == "pointer":
+                    pointer.unlink()
                 console = self.directory / f"desktop-console-{missing or 'complete'}"
                 console.write_text("", encoding="utf-8")
                 xorg_log.write_text(
@@ -1233,10 +1290,13 @@ WantedBy=multi-user.target
                     )
                 else:
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(
+                    self.assertTrue(
+                        evidence.endswith(
+                            "DEBIAN_DESKTOP_M3_FAIL reason=desktop-timeout\n",
+                        ),
                         evidence,
-                        "DEBIAN_DESKTOP_M3_FAIL reason=desktop-timeout\n",
                     )
+                    self.assertIn("--- Xorg log ---\n", evidence)
 
     def _make_desktop_m3_evidence_tools(self) -> Path:
         fake_bin = self.directory / "desktop-evidence-tools"
@@ -1255,18 +1315,6 @@ esac
 [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = login-session ] && exit 0
 printf '1 1000 asterinas seat0 tty1\n'
 """,
-            "udevadm": """#!/bin/sh
-case "$*" in
-  *event0*)
-    [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = keyboard ] || \
-      printf 'ID_INPUT=1\nID_INPUT_KEYBOARD=1\n'
-    ;;
-  *event1*)
-    [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = pointer ] || \
-      printf 'ID_INPUT=1\nID_INPUT_MOUSE=1\n'
-    ;;
-esac
-""",
             "pgrep": """#!/bin/sh
 case "$ASTERINAS_DESKTOP_M3_TEST_MISSING:$*" in
   'matchbox-window-manager:'*matchbox-window-manager*|\
@@ -1274,6 +1322,13 @@ case "$ASTERINAS_DESKTOP_M3_TEST_MISSING:$*" in
   *'-x matchbox-window-manager') exit 2 ;;
   *) exit 0 ;;
 esac
+""",
+            "xwininfo": """#!/bin/sh
+if [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = mapped-window ]; then
+  printf 'xwininfo: Window id: 0x1 (the root window)\n'
+else
+  printf '0x200001 "Asterinas Debian": ("xterm" "XTerm") 100x30+48+72\n'
+fi
 """,
         }
         for name, script in scripts.items():
@@ -2290,6 +2345,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "udev",
                 "util-linux",
                 "xauth",
+                "x11-utils",
                 "xfonts-base",
                 "xinit",
                 "xserver-xorg-core",
@@ -2376,6 +2432,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("matchbox-window-manager", "riscv64", "1.2.2-2"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("x11-utils", "riscv64", "7.7+7"),
                     ("xfonts-base", "all", "1:1.0.5+nmu1"),
                     ("xinit", "riscv64", "1.4.2-1"),
                     ("xserver-xorg-core", "riscv64", "2:21.1.16-1"),
@@ -3257,6 +3314,22 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transcript.count(b"repeat-marker"), 2)
 
+    def test_serial_console_wait_for_any_returns_the_first_observed_marker(
+        self,
+    ) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(reader, max_bytes=1024)
+        os.write(writer, b"boot noise\nDEBIAN_DESKTOP_M3_FAIL reason=xorg\n")
+
+        marker = console.wait_for_any(
+            (b"DEBIAN_DESKTOP_M3_READY", b"DEBIAN_DESKTOP_M3_FAIL"),
+            time.monotonic() + 1.0,
+        )
+
+        self.assertEqual(marker, b"DEBIAN_DESKTOP_M3_FAIL")
+
     @staticmethod
     def _deadline(seconds: float = 1.0) -> float:
         return time.monotonic() + seconds
@@ -4085,17 +4158,51 @@ class DebianDesktopM3GateTests(unittest.TestCase):
 
     def test_ppm_inspection_rejects_blank_and_accepts_rendered_pixels(self) -> None:
         blank = b"P6\n4 2\n255\n" + b"\xff\xff\xff" * 8
+        cursor_only = b"P6\n100 100\n255\n" + (
+            b"\x00\x00\x00" * 9_999 + b"\xff\xff\xff"
+        )
         rendered = b"P6\n# QEMU\n4 2\n255\n" + (
             b"\xff\xff\xff" * 4 + b"\x20\x20\x28" * 4
         )
 
         with self.assertRaisesRegex(GateFailure, "single color"):
             inspect_ppm(blank, expected_width=4, expected_height=2)
+        with self.assertRaisesRegex(GateFailure, "insufficient rendered content"):
+            inspect_ppm(cursor_only, expected_width=100, expected_height=100)
         metadata = inspect_ppm(rendered, expected_width=4, expected_height=2)
 
         self.assertEqual(metadata["width"], 4)
         self.assertEqual(metadata["height"], 2)
         self.assertEqual(metadata["pixel_count"], 8)
+        self.assertGreaterEqual(metadata["distinct_sampled_colors"], 2)
+        self.assertEqual(metadata["non_background_pixels"], 4)
+
+    def test_screenshot_waits_for_first_rendered_frame(self) -> None:
+        screenshot = self.directory / "desktop.ppm"
+        blank = b"P6\n4 2\n255\n" + b"\xff\xff\xff" * 8
+        rendered = b"P6\n4 2\n255\n" + (b"\xff\xff\xff" * 4 + b"\x20\x20\x28" * 4)
+
+        class Monitor:
+            calls = 0
+
+            def command(self, command: str, deadline: float) -> bytes:
+                del command, deadline
+                screenshot.write_bytes((blank, rendered)[self.calls])
+                self.calls += 1
+                return b""
+
+        monitor = Monitor()
+        contents, metadata = capture_rendered_ppm(
+            monitor,
+            screenshot,
+            time.monotonic() + 1.0,
+            expected_width=4,
+            expected_height=2,
+            retry_interval=0.0,
+        )
+
+        self.assertEqual(monitor.calls, 2)
+        self.assertEqual(contents, rendered)
         self.assertGreaterEqual(metadata["distinct_sampled_colors"], 2)
 
     def test_desktop_adapter_binds_schema_three_profile(self) -> None:
