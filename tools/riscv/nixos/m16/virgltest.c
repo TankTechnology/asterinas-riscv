@@ -281,6 +281,62 @@ int main(void) {
     }
     CHECK(mismatch == 0, "pixel round-trip mismatch=%d", mismatch);
 
+    /* Real-render test: drive an actual virgl render (CREATE_SURFACE +
+     * SET_FRAMEBUFFER_STATE + CLEAR) targeting the backed resource, then
+     * TRANSFER_FROM_HOST and verify the clear color landed in guest memory.
+     * This exercises the render->backing path that the NOP execbuffer above
+     * does not — the exact path that matters for eglrender2's glReadPixels. */
+    {
+        /* virgl command stream encoding (virgl_protocol.h):
+         *   header = VIRGL_CMD0(cmd, obj, len) = cmd | obj<<8 | len<<16
+         *   len = payload dwords (excluding the header dword). */
+        uint32_t surf = 100;      /* surface (render-target view) object id */
+        uint32_t res = rc3d.res_handle;
+        uint32_t red = 0x3f800000u; /* 1.0f */
+        uint32_t zero = 0;
+        uint32_t cmds[] = {
+            /* CREATE_OBJECT(SURFACE): surf -> res, B8G8R8X8, level 0, layers 0..0 */
+            (1u) | (7u << 8) | (5u << 16),
+            surf, res, 1 /* PIPE_FORMAT_B8G8R8X8_UNORM */, 0, 0,
+            /* SET_FRAMEBUFFER_STATE: nr_cbufs=1, zsurf=0, cbuf0=surf */
+            (5u) | (0u << 8) | (3u << 16),
+            1, 0, surf,
+            /* CLEAR: buffers=COLOR0, RGBA=(1,0,0,1), depth=0, stencil=0 */
+            (7u) | (0u << 8) | (8u << 16),
+            1, red, zero, zero, red, 0, 0, 0,
+        };
+        uint32_t render_bo = cd.handle;
+        struct drm_virtgpu_execbuffer eb = {
+            .flags = VIRTGPU_EXECBUF_FENCE_FD_OUT,
+            .size = sizeof(cmds),
+            .command = (uint64_t)cmds,
+            .bo_handles = (uint64_t)&render_bo,
+            .num_bo_handles = 1,
+            .fence_fd = -1,
+        };
+        rc = ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
+        CHECK(rc == 0 && eb.fence_fd >= 0,
+              "EXECBUFFER fenced render fence_fd=%d", eb.fence_fd);
+        if (eb.fence_fd >= 0) {
+            struct pollfd pfd = { .fd = eb.fence_fd, .events = POLLIN };
+            int prc = poll(&pfd, 1, 5000);
+            CHECK(prc > 0 && (pfd.revents & POLLIN),
+                  "render fence poll signaled revents=0x%x", pfd.revents);
+            close(eb.fence_fd);
+        }
+
+        memset(pixels, 0, cd.size);
+        CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &up) == 0,
+              "TRANSFER_FROM_HOST after render");
+        /* B8G8R8X8 little-endian: bytes B,G,R,X = 0,0,255,0 -> 0x00ff0000. */
+        uint32_t px0 = pixels[0];
+        uint32_t pxmid = pixels[(TEX_W * TEX_H) / 2];
+        printf("M16_VIRGL_RENDER px0=%08x pxmid=%08x (want 00ff0000 for red)\n",
+               px0, pxmid);
+        CHECK(px0 == 0x00ff0000u && pxmid == 0x00ff0000u,
+              "render reached backing (red clear)");
+    }
+
     /* Fenced EXECBUFFER: request an out-fence and poll it. The kernel fences
      * the SUBMIT_3D (deferred response until completion) and returns a
      * pre-signaled fence_fd, so the poll must return POLLIN immediately. */
@@ -301,6 +357,67 @@ int main(void) {
                   pfd.revents);
             close(feb.fence_fd);
         }
+    }
+
+    /* Double-buffered transfer test: two backed resources A/B, alternating
+     * upload + download rounds with round-unique patterns. This mimics the
+     * GBM double-buffering reuse pattern and verifies the kernel's
+     * resource->backing tracking never crosses the two buffers. */
+    {
+        struct drm_mode_create_dumb cd2 = { .width = TEX_W, .height = TEX_H, .bpp = 32 };
+        CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd2) == 0, "CREATE_DUMB B");
+        struct drm_mode_map_dumb md2 = { .handle = cd2.handle };
+        CHECK(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &md2) == 0, "MAP_DUMB B");
+        uint32_t *pixels_b = mmap(NULL, cd2.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                                  fd, md2.offset);
+        CHECK(pixels_b != MAP_FAILED, "mmap dumb B");
+
+        struct drm_virtgpu_resource_create rcB = {
+            .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+            .bind = PIPE_BIND_RENDER_TARGET, .width = TEX_W, .height = TEX_H,
+            .depth = 1, .array_size = 1, .last_level = 1,
+            .bo_handle = cd2.handle,
+        };
+        rc = ioctl(fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &rcB);
+        CHECK(rc == 0 && rcB.res_handle != 0 && rcB.res_handle != rc3d.res_handle,
+              "RESOURCE_CREATE B res=%u (A=%u)", rcB.res_handle, rc3d.res_handle);
+
+        /* pixels (A) has handle cd.handle, pixels_b (B) has cd2.handle. */
+        int db_mismatch = 0;
+        for (int round = 0; round < 4; round++) {
+            /* Pick buffer by parity, like GBM double buffering. */
+            int use_b = round & 1;
+            uint32_t *buf = use_b ? pixels_b : pixels;
+            uint32_t bo = use_b ? cd2.handle : cd.handle;
+            uint32_t pitch = use_b ? cd2.pitch : cd.pitch;
+            uint32_t tag = 0xd0000000u | ((uint32_t)round << 16);
+
+            /* Upload a round-unique pattern. */
+            for (int i = 0; i < TEX_W * TEX_H; i++) buf[i] = tag | (uint32_t)i;
+            struct drm_virtgpu_3d_transfer x = {
+                .bo_handle = bo,
+                .box = { .x = 0, .y = 0, .z = 0, .w = TEX_W, .h = TEX_H, .d = 1 },
+                .level = 0, .offset = 0, .stride = pitch, .layer_stride = 0,
+            };
+            CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &x) == 0,
+                  "DB round %d TRANSFER_TO_HOST", round);
+
+            /* Wipe local copy, download, verify we get back this round's tag. */
+            memset(buf, 0, TEX_W * TEX_H * 4);
+            CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &x) == 0,
+                  "DB round %d TRANSFER_FROM_HOST", round);
+            int bad = 0;
+            for (int i = 0; i < TEX_W * TEX_H; i++) {
+                if (buf[i] != (tag | (uint32_t)i)) {
+                    if (bad < 2)
+                        printf("M16_VIRGL_DB_MISMATCH round=%d px=%d got=%08x want=%08x\n",
+                               round, i, buf[i], tag | (uint32_t)i);
+                    bad++;
+                }
+            }
+            if (bad) db_mismatch += bad;
+        }
+        CHECK(db_mismatch == 0, "double-buffer transfer mismatch=%d", db_mismatch);
     }
 
     close(fd);

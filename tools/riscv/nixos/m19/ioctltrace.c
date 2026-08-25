@@ -88,6 +88,36 @@ static const char *drm_cmd_name(unsigned long cmd) {
     }
 }
 
+/* Decode the parameters that reveal Mesa's buffer lifecycle:
+ * which GEM handles back which virgl resources, and which resource each
+ * transfer targets. This is what distinguishes a buffer-tracking bug from
+ * a data-sync bug. */
+static void log_ioctl_args(unsigned long cmd, void *arg, int ret) {
+    if (!arg) return;
+    unsigned int *u32 = (unsigned int *)arg;
+    switch (cmd) {
+    case 0xc0386444: /* VIRTGPU_RESOURCE_CREATE: bo_handle@40, res_handle@44, w@12, h@16 */
+        fprintf(stderr, "  ARGS resource_create bo=%u res=%u %ux%u\n",
+                u32[10], u32[11], u32[3], u32[4]);
+        break;
+    case 0xc02c6446: /* VIRTGPU_TRANSFER_FROM_HOST: bo_handle@0 */
+        fprintf(stderr, "  ARGS transfer_from_host bo=%u\n", u32[0]);
+        break;
+    case 0xc02c6447: /* VIRTGPU_TRANSFER_TO_HOST: bo_handle@0 */
+        fprintf(stderr, "  ARGS transfer_to_host bo=%u\n", u32[0]);
+        break;
+    case 0xc02064b2: /* MODE_CREATE_DUMB: handle@16, pitch@20, size@24 (ret) */
+        if (ret == 0)
+            fprintf(stderr, "  ARGS create_dumb handle=%u pitch=%u size=%llu\n",
+                    u32[4], u32[5], (unsigned long long)*(unsigned long long *)&u32[6]);
+        break;
+    case 0xc06864b8: /* MODE_ADDFB2: fb_id@0, handle[0]@20 */
+        if (ret == 0)
+            fprintf(stderr, "  ARGS addfb2 fb=%u handle=%u\n", u32[0], u32[5]);
+        break;
+    }
+}
+
 int ioctl(int fd, unsigned long request, ...) {
     va_list ap;
     va_start(ap, request);
@@ -101,6 +131,7 @@ int ioctl(int fd, unsigned long request, ...) {
             fprintf(stderr, "IOCTL[%d] %s -> %d\n", fd, name, ret);
         else
             fprintf(stderr, "IOCTL[%d] 0x%lx -> %d\n", fd, request, ret);
+        log_ioctl_args(request, arg, ret);
     }
     return ret;
 }

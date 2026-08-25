@@ -106,6 +106,7 @@ os.makedirs(os.path.join(DST, "bin"), exist_ok=True)
 shutil.copy2(os.path.join(SRC, "usr/bin/busybox"), os.path.join(DST, "bin/busybox"))
 os.makedirs(os.path.join(DST, "root"), exist_ok=True)
 shutil.copy2(os.path.join(SRC, "root/eglrender2"), os.path.join(DST, "root/eglrender2"))
+shutil.copy2(os.path.join(SRC, "root/virgltest"), os.path.join(DST, "root/virgltest"))
 shutil.copy2(os.path.join(SRC, "root/ioctltrace.so"), os.path.join(DST, "root/ioctltrace.so"))
 
 init = """#!/bin/busybox sh
@@ -117,8 +118,12 @@ echo MINI_VIRGL_START
 ls -l /dev/dri 2>&1
 echo "SYSFS_VENDOR=$(/bin/busybox cat /sys/dev/char/226:0/device/vendor 2>&1)"
 echo "SYSFS_DEVICE=$(/bin/busybox cat /sys/dev/char/226:0/device/device 2>&1)"
+echo MINI_RAW_BEGIN
+LD_PRELOAD=/root/ioctltrace.so /root/virgltest 2>&1
+echo "MINI_RAW_RC=$?"
 export EGL_LOG_LEVEL=debug
 export LIBGL_DEBUG=verbose
+echo MINI_EGL_BEGIN
 LD_PRELOAD=/root/ioctltrace.so /root/eglrender2 2>&1
 echo "MINI_EGL_RC=$?"
 exec /bin/busybox sh

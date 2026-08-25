@@ -149,6 +149,25 @@ static GLuint make_shader(GLenum type, const char *src) {
     return sh;
 }
 
+/* Read back the current render target and print probe pixels + a checksum.
+ * `tag` identifies the read point within a frame (preread / postrender /
+ * clearprobe) so a single boot distinguishes buffer-tracking bugs from
+ * data-sync bugs. */
+static uint32_t probe(const char *tag, int frame, uint8_t *px,
+                      uint32_t width, uint32_t height) {
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    uint32_t csum = 0;
+    for (uint32_t i = 0; i < width * height * 4; i += 97)
+        csum = csum * 31 + px[i];
+    printf("M19_PROBE %s frame=%d csum=%08x bg=(%u,%u,%u) center=(%u,%u,%u)\n",
+           tag, frame, csum,
+           px[0], px[1], px[2],
+           px[(height / 2 * width + width / 2) * 4],
+           px[(height / 2 * width + width / 2) * 4 + 1],
+           px[(height / 2 * width + width / 2) * 4 + 2]);
+    return csum;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -250,7 +269,6 @@ int main(void) {
     uint8_t *pixels = malloc(width * height * 4);
     uint32_t csums[NUM_FRAMES];
     struct gbm_bo *pending_bo = NULL;
-    uint32_t pending_fb = 0;
 
     for (int frame = 0; frame < NUM_FRAMES; frame++) {
         float t = (float)frame * 0.7f;
@@ -259,6 +277,13 @@ int main(void) {
             {  0.6f - t * 0.03f, -0.4f, 0, 1, 0 },
             {  0.0f,  0.5f + t * 0.07f, 0, 0, 1 },
         };
+
+        /* PreRead: what does the back buffer still hold from its last use?
+         * With double buffering, frame N reuses frame N-2's buffer, so a
+         * correct pipeline shows frame N-2's pixels here. */
+        glFinish();
+        probe("preread", frame, pixels, width, height);
+
         glViewport(0, 0, width, height);
         glClearColor(0.1f, 0.1f, 0.12f + t * 0.02f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -269,11 +294,25 @@ int main(void) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glFinish();
 
-        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        uint32_t csum = 0;
-        for (uint32_t i = 0; i < width * height * 4; i += 97)
-            csum = csum * 31 + pixels[i];
-        csums[frame] = csum;
+        /* PostRender: the rendered frame (this is the official checksum). */
+        csums[frame] = probe("postrender", frame, pixels, width, height);
+
+        /* ClearProbe: overwrite the whole target with a frame-unique solid
+         * color and read back immediately. If this shows the solid color,
+         * glReadPixels tracks the current render target correctly (so any
+         * staleness above is a data-sync problem in the kernel/host path).
+         * If it shows old content, the read path is bound to a stale buffer
+         * (a Mesa/GBM buffer-tracking problem). */
+        glClearColor(0.2f + 0.2f * frame, 0.05f + 0.2f * frame, 0.3f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFinish();
+        probe("clearprobe", frame, pixels, width, height);
+
+        /* Re-render the real frame so the presented image is the triangle. */
+        glClearColor(0.1f, 0.1f, 0.12f + t * 0.02f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
 
         if (!eglSwapBuffers(dpy, surf)) fail("swap_buffers");
 
@@ -281,6 +320,7 @@ int main(void) {
         if (!bo) fail("lock_front_buffer");
         uint32_t handle = gbm_bo_get_handle(bo).u32;
         uint32_t stride = gbm_bo_get_stride(bo);
+        printf("M19_BO frame=%d handle=%u stride=%u\n", frame, handle, stride);
 
         struct drm_mode_fb_cmd2 fb2 = {0};
         fb2.width = width; fb2.height = height;
@@ -328,7 +368,7 @@ int main(void) {
             ev.user_data != (uint64_t)frame + 100)
             fail("flip_event");
 
-        printf("M19_FRAME %d csum=%08x fb=%u seq=%u\n", frame, csum, fb2.fb_id,
+        printf("M19_FRAME %d csum=%08x fb=%u seq=%u\n", frame, csums[frame], fb2.fb_id,
                ev.sequence);
 
         /* Release the previous front buffer now that its flip completed. */
@@ -336,21 +376,6 @@ int main(void) {
             gbm_surface_release_buffer(gsurf, pending_bo);
         }
         pending_bo = bo;
-        pending_fb = fb2.fb_id;
-
-        if (frame == NUM_FRAMES - 1) {
-            FILE *out = fopen("/m19_frame.ppm", "wb");
-            if (out) {
-                fprintf(out, "P6\n%u %u\n255\n", width, height);
-                for (uint32_t y = 0; y < height; y++)
-                    for (uint32_t x = 0; x < width; x++) {
-                        uint8_t *p = pixels + ((height - 1 - y) * width + x) * 4;
-                        fputc(p[0], out); fputc(p[1], out); fputc(p[2], out);
-                    }
-                fclose(out);
-                printf("M19_FRAME_SAVED /m19_frame.ppm %u\n", width * height * 3 + 17);
-            }
-        }
     }
 
     int distinct = 0;
