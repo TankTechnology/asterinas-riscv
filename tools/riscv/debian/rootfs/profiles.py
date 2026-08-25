@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import argparse
+from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -74,3 +76,23 @@ def get_profile(name: str) -> RootfsProfile:
         return _PROFILES[name]
     except KeyError as error:
         raise ValueError(f"unknown rootfs profile: {name}") from error
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Prints one profile as newline-delimited fields for the shell builder."""
+
+    parser = argparse.ArgumentParser(prog="profiles")
+    parser.add_argument("--profile", required=True)
+    values = parser.parse_args(arguments)
+    try:
+        profile = get_profile(values.profile)
+    except ValueError as error:
+        parser.error(str(error))
+    print(profile.root_label)
+    print(profile.root_uuid)
+    print(*profile.requested_packages, sep="\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

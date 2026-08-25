@@ -73,6 +73,9 @@ ZERO_FILLED_ROOT_SHA256 = (
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
+SYSTEMD_M2_EVIDENCE_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/systemd_m2_evidence.sh"
+)
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
@@ -367,9 +370,37 @@ exec /usr/bin/stat "$@"
     return bin_directory
 
 
-def _package_checksums_text() -> str:
-    rows = [(*row, hashlib.sha256(row[0].encode()).hexdigest()) for row in PACKAGE_ROWS]
+def _package_checksums_text(
+    package_rows: tuple[tuple[str, str, str], ...] = PACKAGE_ROWS,
+) -> str:
+    rows = [(*row, hashlib.sha256(row[0].encode()).hexdigest()) for row in package_rows]
     return "".join("\t".join(row) + "\n" for row in sorted(rows))
+
+
+def _run_configure_rootfs(
+    work_directory: Path,
+    profile: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            """source "$1"
+PROFILE="$3"
+configure_profile 1
+WORK_DIR="$2"
+configure_and_normalize_rootfs
+""",
+            "builder-configure-test",
+            str(BUILD_SCRIPT),
+            str(work_directory),
+            profile,
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 class DebianStage1Tests(unittest.TestCase):
@@ -862,6 +893,196 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), list(INSTALL_PACKAGES))
         self.assertEqual(result.stderr, "")
+
+    def test_prints_exact_systemd_m2_package_contract(self) -> None:
+        result = _run_builder(
+            "--profile",
+            "systemd-m2",
+            "--print-packages",
+            cwd=self.directory,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            list(get_profile("systemd-m2").requested_packages),
+        )
+        self.assertEqual(result.stderr, "")
+
+    def test_rejects_unknown_and_duplicate_profiles_before_tools(self) -> None:
+        environment = os.environ.copy()
+        environment["PATH"] = "/missing-tools"
+        cases = (
+            (("--profile", "desktop"), "unknown rootfs profile"),
+            (
+                ("--profile", "systemd-m2", "--profile", "minimal-m1"),
+                "duplicate argument: --profile",
+            ),
+        )
+
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                result = _run_builder(
+                    *arguments,
+                    cwd=self.directory,
+                    environment=environment,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn("missing required tool", result.stderr)
+
+    def test_systemd_m2_evidence_reboots_once_then_passes(self) -> None:
+        state_directory = self.directory / "state"
+        console = self.directory / "console"
+        debian_version = self.directory / "debian_version"
+        reboot_log = self.directory / "reboot.log"
+        sync_log = self.directory / "sync.log"
+        console.write_text("", encoding="utf-8")
+        debian_version.write_text("13.6\n", encoding="utf-8")
+        fake_bin = self._make_systemd_m2_evidence_tools(reboot_log, sync_log)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_M2_STATE_DIRECTORY=str(state_directory),
+            ASTERINAS_M2_CONSOLE=str(console),
+            ASTERINAS_M2_DEBIAN_VERSION_FILE=str(debian_version),
+        )
+
+        first = subprocess.run(
+            ["/bin/bash", str(SYSTEMD_M2_EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        second = subprocess.run(
+            ["/bin/bash", str(SYSTEMD_M2_EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual((state_directory / "boot-count").read_text(), "2\n")
+        self.assertEqual(reboot_log.read_text(), "-f\n")
+        self.assertEqual(sync_log.read_text(), "sync\nsync\n")
+        evidence = console.read_text()
+        self.assertIn("DEBIAN_SYSTEMD_M2_READY boot=1", evidence)
+        self.assertIn("DEBIAN_SYSTEMD_M2_READY boot=2", evidence)
+        self.assertIn("DEBIAN_SYSTEMD_M2_PASS", evidence)
+        self.assertNotIn("DEBIAN_SYSTEMD_M2_FAIL", evidence)
+
+    def test_systemd_m2_evidence_rejects_invalid_counter(self) -> None:
+        state_directory = self.directory / "bad-state"
+        state_directory.mkdir()
+        (state_directory / "boot-count").write_text("9\n", encoding="utf-8")
+        console = self.directory / "bad-console"
+        debian_version = self.directory / "bad-debian-version"
+        reboot_log = self.directory / "bad-reboot.log"
+        sync_log = self.directory / "bad-sync.log"
+        console.write_text("", encoding="utf-8")
+        debian_version.write_text("13.6\n", encoding="utf-8")
+        fake_bin = self._make_systemd_m2_evidence_tools(reboot_log, sync_log)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_M2_STATE_DIRECTORY=str(state_directory),
+            ASTERINAS_M2_CONSOLE=str(console),
+            ASTERINAS_M2_DEBIAN_VERSION_FILE=str(debian_version),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SYSTEMD_M2_EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "DEBIAN_SYSTEMD_M2_FAIL reason=invalid-boot-count", console.read_text()
+        )
+        self.assertFalse(reboot_log.exists())
+
+    def test_configures_only_systemd_m2_profile_units(self) -> None:
+        expected_unit = """[Unit]
+Description=Asterinas Debian M2 evidence
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/systemd-m2-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+        for profile in ("minimal-m1", "systemd-m2"):
+            with self.subTest(profile=profile):
+                work_directory = self.directory / f"configure-{profile}"
+                stage = work_directory / "stage"
+                for relative in (
+                    "etc",
+                    "etc/systemd/system",
+                    "usr/bin",
+                    "var/lib/dbus",
+                    "var/lib/dpkg",
+                    "var/cache/apt/archives",
+                    "var/lib/apt/lists",
+                    "var/log",
+                    "tmp",
+                    "var/tmp",
+                ):
+                    (stage / relative).mkdir(parents=True, exist_ok=True)
+
+                result = _run_configure_rootfs(work_directory, profile)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                evidence = stage / "usr/lib/asterinas/systemd-m2-evidence"
+                unit = stage / "etc/systemd/system/asterinas-debian-m2.service"
+                wants = stage / "etc/systemd/system/multi-user.target.wants" / unit.name
+                if profile == "minimal-m1":
+                    self.assertFalse(evidence.exists())
+                    self.assertFalse(unit.exists())
+                    self.assertFalse(wants.exists())
+                else:
+                    self.assertEqual(
+                        evidence.read_bytes(),
+                        SYSTEMD_M2_EVIDENCE_SCRIPT.read_bytes(),
+                    )
+                    self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o755)
+                    self.assertEqual(unit.read_text(), expected_unit)
+                    self.assertTrue(wants.is_symlink())
+                    self.assertEqual(
+                        os.readlink(wants),
+                        "../asterinas-debian-m2.service",
+                    )
+
+    def _make_systemd_m2_evidence_tools(
+        self,
+        reboot_log: Path,
+        sync_log: Path,
+    ) -> Path:
+        fake_bin = (
+            self.directory / f"evidence-tools-{len(list(self.directory.iterdir()))}"
+        )
+        fake_bin.mkdir()
+        scripts = {
+            "uname": "#!/bin/sh\nprintf 'riscv64\\n'\n",
+            "stat": "#!/bin/sh\nprintf 'ext2/ext3\\n'\n",
+            "dpkg-query": "#!/bin/sh\nprintf 'systemd\\t257.8-1\\nsystemd-sysv\\t257.8-1\\n'\n",
+            "sync": f"#!/bin/sh\nprintf 'sync\\n' >>'{sync_log}'\n",
+            "reboot": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >>'{reboot_log}'\n",
+        }
+        for name, script in scripts.items():
+            path = fake_bin / name
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+        return fake_bin
 
     def test_rejects_unknown_argument(self) -> None:
         result = _run_builder("--not-an-option", cwd=self.directory)
@@ -1744,6 +1965,27 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("symlink", result.stderr)
         self.assertEqual(self.packages_lock.read_text(encoding="utf-8"), _lock_text())
+
+    def test_writes_schema_v2_systemd_profile_manifest(self) -> None:
+        lock_text = _lock_text(SYSTEMD_M2_PACKAGE_ROWS)
+        self.packages_lock.write_text(lock_text, encoding="utf-8")
+        self.package_checksums.write_text(
+            _package_checksums_text(SYSTEMD_M2_PACKAGE_ROWS),
+            encoding="utf-8",
+        )
+        arguments = self.writer_arguments()
+        arguments.extend(("--profile", "systemd-m2"))
+
+        result = self.run_writer(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(self.output.read_text())
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["profile"], "systemd-m2")
+        self.assertEqual(payload["filesystem"]["label"], "ASTER_DEBIANM2")
+        manifest = load_manifest(self.output)
+        validated = validate_frozen_root(self.image, manifest, self.packages_lock)
+        self.assertEqual(validated.profile, "systemd-m2")
 
     def test_refuses_output_equal_to_any_input(self) -> None:
         input_paths = (
