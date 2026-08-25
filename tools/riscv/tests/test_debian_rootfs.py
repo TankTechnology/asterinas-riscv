@@ -64,6 +64,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
     parse_gate_args,
     verify_four_hart_dtb,
 )
+from tools.riscv.debian.rootfs.profiles import get_profile
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -102,6 +103,17 @@ PACKAGE_ROWS = (
     ("libc6", "riscv64", "2.41-12"),
     ("procps", "riscv64", "2:4.0.4-9"),
     ("util-linux", "riscv64", "2.41-5"),
+)
+
+SYSTEMD_M2_PACKAGE_ROWS = tuple(
+    sorted(
+        PACKAGE_ROWS
+        + (
+            ("dbus", "riscv64", "1.16.2-2"),
+            ("systemd", "riscv64", "257.8-1"),
+            ("systemd-sysv", "riscv64", "257.8-1"),
+        )
+    )
 )
 
 
@@ -1758,6 +1770,90 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("alias", result.stderr)
         self.assertEqual(self.packages_lock.read_text(encoding="utf-8"), _lock_text())
+
+
+class DebianSystemdM2ProfileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temporary_directory = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary_directory.cleanup)
+        cls.directory = Path(cls.temporary_directory.name)
+        cls.image = cls.directory / "debian-systemd-m2.ext2"
+        with cls.image.open("wb") as image_file:
+            image_file.truncate(ROOT_IMAGE_SIZE_BYTES)
+
+    def test_profile_has_exact_immutable_identity(self) -> None:
+        profile = get_profile("systemd-m2")
+
+        self.assertEqual(profile.root_label, "ASTER_DEBIANM2")
+        self.assertEqual(profile.root_uuid, "4a5d8b91-2189-44fa-a908-ae88dc76f2a1")
+        self.assertEqual(
+            profile.requested_packages,
+            (
+                "bash",
+                "ca-certificates",
+                "coreutils",
+                "dbus",
+                "procps",
+                "systemd-sysv",
+                "util-linux",
+            ),
+        )
+        self.assertEqual(profile.schema_version, 2)
+        with self.assertRaises(FrozenInstanceError):
+            profile.root_label = "mutable"
+
+    def test_rejects_unknown_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown rootfs profile"):
+            get_profile("desktop")
+
+    def test_schema_v1_remains_profile_free_and_valid(self) -> None:
+        payload = _manifest_payload(_sha256_text(_lock_text()))
+        manifest_path = self.directory / "m1-manifest.json"
+        packages_lock = self.directory / "m1-packages.lock"
+        packages_lock.write_text(_lock_text(), encoding="utf-8")
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertNotIn("profile", payload)
+        manifest = load_manifest(manifest_path)
+        validated = validate_frozen_root(self.image, manifest, packages_lock)
+        self.assertEqual(validated.schema_version, 1)
+        self.assertEqual(validated.profile, "minimal-m1")
+
+    def test_schema_v2_binds_systemd_profile_and_packages(self) -> None:
+        packages_lock = self.directory / "m2-packages.lock"
+        lock_text = _lock_text(SYSTEMD_M2_PACKAGE_ROWS)
+        packages_lock.write_text(lock_text, encoding="utf-8")
+        payload = _manifest_payload(_sha256_text(lock_text))
+        profile = get_profile("systemd-m2")
+        payload.update(schema_version=2, profile=profile.name)
+        payload["downloaded_packages"] = [
+            {
+                "name": name,
+                "architecture": architecture,
+                "version": version,
+                "sha256": hashlib.sha256(name.encode()).hexdigest(),
+            }
+            for name, architecture, version in SYSTEMD_M2_PACKAGE_ROWS
+        ]
+        payload["filesystem"]["label"] = profile.root_label
+        payload["filesystem"]["uuid"] = profile.root_uuid
+        payload["gate_packages"] = {
+            name: version
+            for name, architecture, version in SYSTEMD_M2_PACKAGE_ROWS
+            if name in profile.identity_packages and architecture == "riscv64"
+        }
+        manifest_path = self.directory / "m2-manifest.json"
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        manifest = load_manifest(manifest_path)
+        validated = validate_frozen_root(self.image, manifest, packages_lock)
+        self.assertEqual(validated.profile, "systemd-m2")
+        self.assertEqual(validated.filesystem.label, profile.root_label)
+        self.assertEqual(
+            dict(validated.gate_packages)["systemd-sysv"],
+            "257.8-1",
+        )
 
 
 class DebianRootfsContractTests(unittest.TestCase):
