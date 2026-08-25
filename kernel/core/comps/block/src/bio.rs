@@ -475,6 +475,19 @@ impl BioSegment {
     pub fn dma_slice(&self) -> &Slice<DmaBuffer<FromAndToDevice>> {
         self.inner.dma_slice()
     }
+
+    /// Copies bytes produced by a PIO device into a read BIO segment.
+    pub fn write_from_device(&self, offset: usize, buf: &[u8]) -> Result<(), Error> {
+        if self.inner.direction != BioDirection::FromDevice {
+            return Err(Error::AccessDenied);
+        }
+        let mut writer = self.inner.dma_slice().writer()?;
+        writer.skip(offset);
+        let mut reader = VmReader::from(buf).to_fallible();
+        writer.write_fallible(&mut reader);
+        Ok(())
+    }
+    }
 }
 
 impl HasVmReaderWriter for BioSegment {
