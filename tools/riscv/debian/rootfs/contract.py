@@ -31,7 +31,6 @@ GATE_IDENTITY_PACKAGES = _M1_PROFILE.identity_packages
 
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
-_MANIFEST_SCHEMA_VERSION = 1
 _SUITE = "trixie"
 _DEBIAN_RELEASE_RE = re.compile(r"\A13\.(?:0|[1-9][0-9]*)\Z")
 _ARCHITECTURE = "riscv64"
@@ -373,6 +372,7 @@ def write_manifest(
     debian_release: str,
     build_timestamp: str,
     tool_versions: Sequence[str],
+    profile_name: str = "minimal-m1",
 ) -> None:
     """Validates build inputs and atomically writes a canonical manifest."""
 
@@ -386,11 +386,15 @@ def write_manifest(
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
         raise ContractError("debian_release must be a signed Debian 13 point release")
     _require_build_timestamp(build_timestamp)
+    try:
+        profile = get_profile(profile_name)
+    except ValueError as error:
+        raise ContractError(str(error)) from error
 
     lock_rows = parse_packages_lock(packages_lock)
     downloaded_packages = _load_package_checksums(package_checksums)
     parsed_tool_versions = _parse_tool_versions(tool_versions)
-    gate_versions = _gate_versions(lock_rows)
+    gate_versions = _gate_versions(lock_rows, profile)
 
     manifest = {
         "architecture": _ARCHITECTURE,
@@ -407,16 +411,16 @@ def write_manifest(
         ],
         "filesystem": {
             "block_size_bytes": _FILESYSTEM_BLOCK_SIZE_BYTES,
-            "label": ROOT_LABEL,
+            "label": profile.root_label,
             "size_bytes": _ROOT_IMAGE_SIZE_BYTES,
             "type": _FILESYSTEM_TYPE,
-            "uuid": ROOT_UUID,
+            "uuid": profile.root_uuid,
         },
         "gate_packages": gate_versions,
         "mirror_url": mirror_url,
         "packages_lock_sha256": sha256_file(packages_lock),
         "root_image_sha256": sha256_file(image),
-        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "schema_version": profile.schema_version,
         "signed_metadata": {
             "sha256": sha256_file(inrelease),
             "url": f"{mirror_url.rstrip('/')}/dists/{suite}/InRelease",
@@ -424,6 +428,8 @@ def write_manifest(
         "suite": suite,
         "tool_versions": parsed_tool_versions,
     }
+    if profile.schema_version >= 2:
+        manifest["profile"] = profile.name
     serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     _write_validated_manifest_atomically(
         output,
@@ -454,6 +460,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 debian_release=namespace.debian_release,
                 build_timestamp=namespace.build_timestamp,
                 tool_versions=namespace.tool_version,
+                profile_name=namespace.profile,
             )
         else:
             manifest = load_manifest(namespace.manifest)
@@ -623,6 +630,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--debian-release", required=True)
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
+    writer.add_argument("--profile", default="minimal-m1")
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--image", required=True, type=Path)
     verifier.add_argument("--manifest", required=True, type=Path)
@@ -698,9 +706,12 @@ def _parse_tool_versions(values: Sequence[str]) -> dict[str, str]:
     return dict(sorted(versions.items()))
 
 
-def _gate_versions(rows: Sequence[PackageLockRow]) -> dict[str, str]:
+def _gate_versions(
+    rows: Sequence[PackageLockRow],
+    profile: RootfsProfile,
+) -> dict[str, str]:
     versions: dict[str, str] = {}
-    for package_name in GATE_IDENTITY_PACKAGES:
+    for package_name in profile.identity_packages:
         matches = [
             version
             for name, architecture, version in rows
