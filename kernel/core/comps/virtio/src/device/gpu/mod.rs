@@ -169,6 +169,28 @@ pub struct VirtioGpuResourceUnref {
     pub padding: u32,
 }
 
+/// Cursor location carried on the cursor virtqueue (5.7.6.7).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCursorPos {
+    pub scanout_id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub padding: u32,
+}
+
+/// `UPDATE_CURSOR` and `MOVE_CURSOR` request (5.7.6.7).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuUpdateCursor {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub pos: VirtioGpuCursorPos,
+    pub resource_id: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub padding: u32,
+}
+
 /// One scanout entry of a display-info response (5.7.6.6.1).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
@@ -176,4 +198,41 @@ pub struct VirtioGpuDisplayOne {
     pub r: VirtioGpuRect,
     pub enabled: u32,
     pub flags: u32,
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn cursor_wire_layout_matches_virtio_gpu() {
+        assert_eq!(size_of::<VirtioGpuCursorPos>(), 16);
+        assert_eq!(size_of::<VirtioGpuUpdateCursor>(), 56);
+
+        let request = VirtioGpuUpdateCursor {
+            hdr: VirtioGpuCtrlHdr {
+                type_: VIRTIO_GPU_CMD_UPDATE_CURSOR,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            pos: VirtioGpuCursorPos {
+                scanout_id: 3,
+                x: 17,
+                y: 29,
+                padding: 0,
+            },
+            resource_id: 41,
+            hot_x: 5,
+            hot_y: 7,
+            padding: 0,
+        };
+        assert_eq!(request.hdr.type_, VIRTIO_GPU_CMD_UPDATE_CURSOR);
+        assert_eq!(request.pos.scanout_id, 3);
+        assert_eq!(request.resource_id, 41);
+        assert_eq!((request.hot_x, request.hot_y), (5, 7));
+    }
 }
