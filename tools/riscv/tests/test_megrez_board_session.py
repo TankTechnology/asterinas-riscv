@@ -35,6 +35,7 @@ def _make_session() -> board.BoardSession:
     session.milestones = {}
     session._milestone_tail = ""
     session._next_milestone = 0
+    session._markers = dict(board.MILESTONES)
     session._log = mock.Mock()
     return session
 
@@ -65,6 +66,18 @@ class MilestoneDetectionTests(unittest.TestCase):
     def test_uboot_gate_pattern(self):
         match = board.GATE_PATTERN.search("U-Boot 2024.01-gdbb5f9e3 (Mar 2024)")
         self.assertEqual(match.group(1), "2024.01-gdbb5f9e3")
+
+    def test_framebuffer_profile_uses_the_kernel_registration_marker(self):
+        session = _make_session()
+        session._markers["userspace"] = board.FINAL_MILESTONE_MARKERS[
+            "firmware-framebuffer"
+        ]
+        session.note_milestone(
+            "Enter riscv_boot\n"
+            "Presented by the Asterinas developers\n"
+            "Registered firmware framebuffer: base=0xfd800000, size=0x7e9000\n"
+        )
+        self.assertEqual(tuple(session.milestones), tuple(board.MILESTONES))
 
 
 class ArgumentContractTests(unittest.TestCase):
@@ -156,6 +169,94 @@ class ArgumentContractTests(unittest.TestCase):
                 _parse_fails(
                     _required_args() + ["--mock-qemu", "--mock-timeout", value]
                 )
+
+    def test_final_profile_is_closed(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        args = board.parse_args(
+            _required_args() + crc_args + ["--final-profile", "firmware-framebuffer"]
+        )
+        self.assertEqual(args.final_profile, "firmware-framebuffer")
+        _parse_fails(
+            _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
+        )
+
+    def test_firmware_framebuffer_requires_tty0_before_serial_open(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        invalid_bootargs = (
+            "init=/init",
+            "console=ttyS0 console=tty0 init=/init",
+        )
+        for bootargs in invalid_bootargs:
+            with (
+                self.subTest(bootargs=bootargs),
+                mock.patch.object(
+                    board, "open_serial", side_effect=AssertionError("serial opened")
+                ) as open_serial,
+            ):
+                _parse_fails(
+                    _required_args()
+                    + crc_args
+                    + ["--firmware-framebuffer", "--bootargs", bootargs]
+                )
+            open_serial.assert_not_called()
+
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--firmware-framebuffer",
+                "--bootargs",
+                "console=tty0 console=ttyS0 init=/init",
+            ]
+        )
+        self.assertTrue(args.firmware_framebuffer)
+
+
+class FirmwareFramebufferContractTests(unittest.TestCase):
+    def test_megrez_contract_matches_the_physically_verified_scanout(self):
+        framebuffer = board.MEGREZ_FRAMEBUFFER
+        self.assertEqual(framebuffer.address, 0xFD80_0000)
+        self.assertEqual(framebuffer.size, 0x7E9000)
+        self.assertEqual(framebuffer.width, 1920)
+        self.assertEqual(framebuffer.height, 1080)
+        self.assertEqual(framebuffer.stride, 7680)
+        self.assertEqual(framebuffer.pixel_format, "x8r8g8b8")
+
+        invalid = (
+            {"address": True},
+            {"address": 0},
+            {"size": 1920 * 1080 * 4 - 1},
+            {"stride": 1920 * 4 - 1},
+            {"pixel_format": "a8r8g8b8"},
+            {"address": (1 << 64) - 1},
+        )
+        values = {
+            "address": 0xFD80_0000,
+            "size": 0x7E9000,
+            "width": 1920,
+            "height": 1080,
+            "stride": 7680,
+            "pixel_format": "x8r8g8b8",
+        }
+        for override in invalid:
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                board.FramebufferHandoff(**(values | override))
+
+    def test_commands_are_ram_only_and_use_64_bit_reg_cells(self):
+        commands = board.MEGREZ_FRAMEBUFFER.commands()
+        self.assertEqual(commands[0], "fdt mknode / framebuffer@fd800000")
+        self.assertIn(
+            "fdt set /framebuffer@fd800000 reg <0x0 0xfd800000 0x0 0x7e9000>",
+            commands,
+        )
+        self.assertEqual(commands[-1], "fdt print /framebuffer@fd800000")
+        self.assertFalse(any("saveenv" in command for command in commands))
 
 
 class MockQemuContractTests(unittest.TestCase):
@@ -427,6 +528,7 @@ class BootTransactionTests(unittest.TestCase):
                 "dtb": "89abcdef",
                 "initrd": "00000001",
             },
+            firmware_framebuffer=False,
         )
 
         output = board.boot_loaded_artifacts(session, args)
@@ -486,6 +588,44 @@ class BootTransactionTests(unittest.TestCase):
             )
         self.assertEqual(result, 0)
         physical_session.note_milestone.assert_called_once_with(current_boot)
+
+    def test_framebuffer_handoff_is_complete_before_booti(self):
+        events: list[str] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+        session.command.side_effect = lambda command, **_kwargs: (
+            events.append(command) or "boot output"
+        )
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="console=tty0 init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=True,
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        resize_index = events.index("fdt resize 0x1000")
+        booti_index = next(
+            index
+            for index, command in enumerate(events)
+            if command.startswith("booti ")
+        )
+        framebuffer_commands = list(board.MEGREZ_FRAMEBUFFER.commands())
+        self.assertEqual(
+            events[resize_index + 1 : resize_index + 1 + len(framebuffer_commands)],
+            framebuffer_commands,
+        )
+        self.assertLess(resize_index, booti_index)
+        self.assertTrue(
+            all(events.index(command) < booti_index for command in framebuffer_commands)
+        )
 
 
 if __name__ == "__main__":
