@@ -2070,6 +2070,54 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown rootfs profile"):
             get_profile("desktop")
 
+    def test_desktop_profile_has_exact_immutable_identity(self) -> None:
+        profile = get_profile("desktop-m3")
+
+        self.assertEqual(profile.schema_version, 3)
+        self.assertEqual(profile.root_label, "ASTER_DEBIANM3")
+        self.assertEqual(profile.root_uuid, "87dc62d5-cd0b-47a3-a82b-32b24f2ed9d3")
+        self.assertEqual(
+            profile.requested_packages,
+            (
+                "bash",
+                "ca-certificates",
+                "coreutils",
+                "dbus",
+                "libpam-systemd",
+                "matchbox-window-manager",
+                "procps",
+                "systemd-sysv",
+                "udev",
+                "util-linux",
+                "xauth",
+                "xfonts-base",
+                "xinit",
+                "xserver-xorg-core",
+                "xserver-xorg-input-evdev",
+                "xserver-xorg-video-fbdev",
+                "xterm",
+            ),
+        )
+        self.assertEqual(
+            profile.identity_packages,
+            (
+                "base-files",
+                "libc6",
+                "bash",
+                "coreutils",
+                "util-linux",
+                "systemd",
+                "systemd-sysv",
+                "dbus",
+                "udev",
+                "libpam-systemd",
+                "xserver-xorg-core",
+                "xterm",
+            ),
+        )
+        with self.assertRaises(FrozenInstanceError):
+            profile.root_uuid = "mutable"
+
     def test_schema_v1_remains_profile_free_and_valid(self) -> None:
         payload = _manifest_payload(_sha256_text(_lock_text()))
         manifest_path = self.directory / "m1-manifest.json"
@@ -2117,6 +2165,56 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
             dict(validated.gate_packages)["systemd-sysv"],
             "257.8-1",
         )
+
+    def test_schema_v3_binds_desktop_profile_and_packages(self) -> None:
+        profile = get_profile("desktop-m3")
+        desktop_rows = tuple(
+            sorted(
+                SYSTEMD_M2_PACKAGE_ROWS
+                + (
+                    ("libpam-systemd", "riscv64", "257.13-1"),
+                    ("matchbox-window-manager", "riscv64", "1.2.2-2"),
+                    ("udev", "riscv64", "257.13-1"),
+                    ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("xfonts-base", "all", "1:1.0.5+nmu1"),
+                    ("xinit", "riscv64", "1.4.2-1"),
+                    ("xserver-xorg-core", "riscv64", "2:21.1.16-1"),
+                    ("xserver-xorg-input-evdev", "riscv64", "1:2.11.0-1"),
+                    ("xserver-xorg-video-fbdev", "riscv64", "1:0.5.0-2"),
+                    ("xterm", "riscv64", "398-1"),
+                )
+            )
+        )
+        lock_text = _lock_text(desktop_rows)
+        packages_lock = self.directory / "m3-packages.lock"
+        packages_lock.write_text(lock_text, encoding="utf-8")
+        payload = _manifest_payload(_sha256_text(lock_text))
+        payload.update(schema_version=profile.schema_version, profile=profile.name)
+        payload["downloaded_packages"] = [
+            {
+                "name": name,
+                "architecture": architecture,
+                "version": version,
+                "sha256": hashlib.sha256(name.encode()).hexdigest(),
+            }
+            for name, architecture, version in desktop_rows
+        ]
+        payload["filesystem"]["label"] = profile.root_label
+        payload["filesystem"]["uuid"] = profile.root_uuid
+        payload["gate_packages"] = {
+            name: version
+            for name, architecture, version in desktop_rows
+            if name in profile.identity_packages and architecture == "riscv64"
+        }
+        manifest_path = self.directory / "m3-manifest.json"
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        manifest = load_manifest(manifest_path)
+        validated = validate_frozen_root(self.image, manifest, packages_lock)
+
+        self.assertEqual(validated.schema_version, 3)
+        self.assertEqual(validated.profile, "desktop-m3")
+        self.assertEqual(dict(validated.gate_packages)["udev"], "257.13-1")
 
 
 class DebianRootfsContractTests(unittest.TestCase):
