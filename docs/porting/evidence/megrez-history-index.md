@@ -20,6 +20,7 @@ QEMU results are not treated as Megrez board results.
 | Megrez Sv39 paging contract `b48cfeea3` | [Sv39/Sv48 fault history and Linux comparison](2026-08-25-riscv-sv39-sv48-lessons.md) | A compiled-Sv39 kernel faulted because assembly independently selected Sv48; the single-mode fix subsequently reached OSTD, four harts, MMC, and rootfs on Megrez. |
 | Megrez Debian partition install `b48cfeea3` | [Asterinas Debian install evidence](2026-08-25-megrez-debian-install.md) | Asterinas wrote five mismatching 32 MiB chunks to eMMC partition 2, verified them after reboot, then read the full 1 GiB partition and matched the frozen Debian image SHA-256. Debian userspace boot remains the next gate. |
 | Megrez Debian two-boot root `b48cfeea3` | [Asterinas Debian two-boot evidence](2026-08-25-megrez-debian-two-boot.md) | Stage1 entered a Debian 13.6 riscv64 Bash root twice; the second Asterinas boot recovered the first boot's synced nonce and created a second-boot probe on the ext2 root. |
+| Megrez Debian systemd M2 `6576d661f` | [Asterinas Debian systemd M2 evidence](2026-08-25-megrez-debian-systemd-m2.md) | Asterinas installed and verified the signed 1 GiB root on eMMC partition 2; systemd 257.13 then reached boot 1, requested a userspace reboot, recovered through a new firmware epoch, and produced the persistent boot-2 PASS. |
 
 ## Tracked summaries and local raw evidence
 
