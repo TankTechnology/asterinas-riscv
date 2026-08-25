@@ -23,7 +23,7 @@ DEBS="${WORK}/debs"
 INDEX="${WORK}/Packages"
 MIRROR="https://deb.debian.org/debian"
 
-SEEDS="${SEEDS:-kmscube libegl1 libgbm1 libegl-mesa0 libgl1-mesa-dri mesa-libgallium libgles2 busybox-static}"
+SEEDS="${SEEDS:-kmscube libegl1 libgbm1 libegl-mesa0 libgl1-mesa-dri mesa-libgallium libgles2 busybox-static xserver-xorg-core xserver-xorg-input-evdev libx11-6}"
 
 mkdir -p "${ROOTFS}" "${DEBS}"
 

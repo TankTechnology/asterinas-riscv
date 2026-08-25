@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[Unit]
+Description=Asterinas DRM Xfce Desktop
+Requires=multi-user.target
+Wants=dbus-smoke.service xorg.service xfce-session.service
+After=multi-user.target
+AllowIsolate=yes

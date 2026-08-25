@@ -1,0 +1,22 @@
+[Unit]
+Description=Xorg display server on virtio-gpu DRM
+After=multi-user.target
+Before=xfce-session.service
+Conflicts=rescue.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib
+Environment=LIBGL_DRIVERS_PATH=/usr/lib/riscv64-linux-gnu/dri
+Environment=GBM_BACKENDS_PATH=/usr/lib/riscv64-linux-gnu/gbm
+Environment=LIBGL_DEBUG=verbose
+ExecStart=/usr/lib/xorg/Xorg -config /etc/xorg.conf -modulepath /usr/lib/xorg/modules -xkbdir /usr/share/X11/xkb -logfile /dev/ttyS0 -noreset
+ExecStartPost=/bin/sh -c 'until /usr/bin/x11-ready >/dev/ttyS0 2>&1; do /bin/sleep 1; done; echo XFCE_DRM_XORG_READY >/dev/ttyS0'
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=12min
+KeyringMode=inherit
+StandardInput=null
+StandardOutput=tty
+StandardError=tty

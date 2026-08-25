@@ -219,3 +219,14 @@ git cherry -v origin/main track/drm
 
 Always record the compared commit IDs when updating this note,
 because ahead/behind counts change as main advances.
+
+## Integration outcome
+
+The audit was acted on later on 2026-08-25. The dedicated
+`codex/drm-main-sync` branch merged `origin/main` while retaining the mature DRM
+and virtio-gpu implementations. The persistent-root systemd/Xfce pipeline now
+boots on that converged kernel and reaches an accelerated virgl/glamor desktop.
+
+The end-to-end result, commands, kernel defects found by Xorg, and current TCG
+performance limit are recorded in
+[`../xfce/XFCE-DRM-M1-report.md`](../xfce/XFCE-DRM-M1-report.md).
