@@ -35,8 +35,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
     serial::init_in_first_process()?;
     device::init_in_first_process()?;
     vt::init_in_first_process()?;
-
     Ok(())
+}
+
+pub(super) fn active_vt_index() -> u32 {
+    vt::active_vt().index()
 }
 
 const IO_CAPACITY: usize = 4096;
@@ -519,6 +522,12 @@ mod tests {
         fn notify_input(&self) {}
 
         fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
+    }
+
+    #[ktest]
+    fn active_vt_sysfs_value_uses_linux_tty_name() {
+        assert_eq!(crate::device::sysfs::active_vt_attr_value(1), "tty1\n");
+        assert_eq!(crate::device::sysfs::active_vt_attr_value(12), "tty12\n");
     }
 
     #[ktest]

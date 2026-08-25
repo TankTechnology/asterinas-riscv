@@ -10,6 +10,7 @@ mod pty;
 mod registry;
 mod shm;
 mod snd;
+mod sysfs;
 pub mod tty;
 
 use alloc::borrow::Cow;
@@ -198,6 +199,7 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     )?;
 
     tty::init_in_first_process()?;
+    sysfs::init_in_first_process()?;
     pty::init_in_first_process(&path_resolver, ctx)?;
     shm::init_in_first_process(&path_resolver, ctx)?;
     registry::init_in_first_process(&path_resolver)?;
