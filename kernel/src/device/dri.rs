@@ -19,6 +19,8 @@
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+mod cursor;
+
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
