@@ -12,7 +12,7 @@ use aster_block::{
     bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
 };
 use device_id::{DeviceId, MinorId};
-use ostd::{mm::VmIo, sync::SpinLock};
+use ostd::sync::SpinLock;
 
 use crate::{MMC_BLOCK_MAJOR_ID, arch::MmioHost, card::Card};
 
@@ -126,7 +126,7 @@ impl ReadOnlyMmcBlock {
             }
             for offset in (0..segment.nbytes()).step_by(512) {
                 if card.read_sector(host, lba, &mut sector).is_err()
-                    || segment.write_bytes(offset, &sector).is_err()
+                    || segment.write_from_device(offset, &sector).is_err()
                 {
                     return BioStatus::IoError;
                 }
