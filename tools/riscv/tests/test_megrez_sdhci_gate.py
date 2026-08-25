@@ -12,6 +12,7 @@ CONTROLLER = "[mmc] controller 0x50460000 irq=81 bounded-pio"
 CARD = "[mmc] SDHC rca=43690 sectors=249737216 sector0=55aa"
 BLOCK = "[mmc] mmcblk0 registered read-only"
 HASH = "[mmc] partition-table sha256=" + "a" * 64
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
 class MegrezSdhciGateTests(unittest.TestCase):
@@ -72,6 +73,20 @@ class MegrezSdhciGateTests(unittest.TestCase):
             self.assertEqual(payload["sectors"], 249737216)
             self.assertEqual(payload["partition_sha256"], "a" * 64)
             self.assertEqual(list(output.glob(".*.tmp")), [])
+
+    def test_boot_assembly_uses_the_compiled_paging_mode(self):
+        boot = (REPOSITORY_ROOT / "ostd/src/arch/riscv/boot/mod.rs").read_text()
+        smp = (REPOSITORY_ROOT / "ostd/src/arch/riscv/boot/smp.rs").read_text()
+        bsp = (REPOSITORY_ROOT / "ostd/src/arch/riscv/boot/bsp_boot.S").read_text()
+        ap = (REPOSITORY_ROOT / "ostd/src/arch/riscv/boot/ap_boot.S").read_text()
+
+        self.assertIn('cfg!(feature = "riscv_sv39_mode")', boot)
+        self.assertIn("SATP_MODE = const BOOT_SATP_MODE", boot)
+        self.assertIn("SATP_MODE = const super::BOOT_SATP_MODE", smp)
+        for assembly in (bsp, ap):
+            self.assertIn("li", assembly)
+            self.assertIn("{SATP_MODE}", assembly)
+            self.assertNotIn("SATP_MODE_SV48", assembly)
 
 
 if __name__ == "__main__":

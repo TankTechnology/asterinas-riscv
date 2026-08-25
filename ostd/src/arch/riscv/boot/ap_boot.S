@@ -2,8 +2,6 @@
 
 // The boot routine executed by application processors (APs) on RISC-V.
 
-SATP_MODE_SV39         = 8 << 60
-SATP_MODE_SV48         = 9 << 60
 SATP_PPN_SHIFT         = 0
 PAGE_SHIFT             = 12
 KERNEL_VMA_OFFSET      = 0xffffffff00000000
@@ -24,32 +22,18 @@ ap_boot_start:
     # Save hart ID in t4 for later use (t4 is caller-saved but we'll be careful).
     mv      t4, a0
 
-    # Load the page table address in Sv48 mode and set SATP.
+    # Load the kernel page table using the paging mode selected by the build.
     lla     t0, __ap_boot_page_table_pointer - KERNEL_VMA_OFFSET
     ld      t1, 0(t0)                   # Load page table physical address.
-    li      t2, SATP_MODE_SV48          # Sv48 mode.
+    li      t2, {SATP_MODE}
     srli    t1, t1, PAGE_SHIFT - SATP_PPN_SHIFT
     or      t1, t1, t2
     csrw    satp, t1
 
-    # Check if the write to satp succeeds.
+    # The BSP and APs must use the same compiled paging mode.
     # Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#satp>.
     csrr    t3, satp
     beq     t3, t1, ap_flush_tlb
-
-    # This AP doesn't support Sv48. So the `__ap_boot_page_table_pointer` must
-    # point to a Sv39 page table since we assume that all harts support a same
-    # paging mode.
-    xor     t1, t1, t2                  # Clear previous mode bits.
-    li      t2, SATP_MODE_SV39          # Sv39 mode.
-    or      t1, t1, t2
-    csrw    satp, t1
-
-    # Check again if the write to satp succeeds.
-    csrr    t0, satp
-    beq     t0, t1, ap_flush_tlb
-
-    # If the CPU doesn't support either Sv48 or Sv39 this is actually reachable.
 ap_unreachable_pa:
     j       ap_unreachable_pa
 

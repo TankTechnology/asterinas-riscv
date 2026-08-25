@@ -2,8 +2,6 @@
 
 // The boot routine executed by the bootstrap processor (BSP) on RISC-V.
 
-SATP_MODE_SV39         = 8 << 60
-SATP_MODE_SV48         = 9 << 60
 SATP_PPN_SHIFT         = 0
 
 PTE_V                  = 0x01
@@ -51,7 +49,7 @@ bsp_boot_entry:
     #   a1 = device tree paddr
     # We do not touch them here. They are passed to the Rust entrypoint `riscv_boot`.
 
-    # Set up the Sv48 page table.
+    # Set up the Sv48 page table. It is ignored by Sv39 builds.
     #   sv48_boot_l4pt[511] = (PPN(sv48_boot_l3pt) << PTE_PPN_SHIFT) | PTE_V
     lla    t1, sv48_boot_l4pt
     li     t0, 511 * PTE_SIZE
@@ -61,30 +59,24 @@ bsp_boot_entry:
     ori    t0, t0, PTE_V
     sd     t0, 0(t1)
 
-    # Try loading the Sv48 page table.
+    # Load the page table mode selected by the Rust build. Probing Sv48 first
+    # is incorrect for an Sv39 build on hardware that implements both modes:
+    # Rust uses the Sv39 linear-map base while the active table is then Sv48.
     lla    t0, sv48_boot_l4pt
-    li     t1, SATP_MODE_SV48
+    li     t1, {SATP_MODE}
+    li     t2, 8 << 60
+    bne    t1, t2, bsp_write_satp
+    lla    t0, sv39_boot_l3pt
+bsp_write_satp:
     srli   t0, t0, PAGE_SHIFT - SATP_PPN_SHIFT
     or     t0, t0, t1
     csrw   satp, t0
 
-    # Check if the write to satp succeeds. If not, try Sv39.
+    # The compiled paging mode is a kernel ABI requirement, not a runtime
+    # preference. Stop if the hart does not implement it.
     # Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#satp>.
     csrr   t1, satp
     beq    t0, t1, bsp_flush_tlb
-
-    # Try loading the Sv39 page table.
-    lla     t0, sv39_boot_l3pt
-    li     t1, SATP_MODE_SV39
-    srli   t0, t0, PAGE_SHIFT - SATP_PPN_SHIFT
-    or     t0, t0, t1
-    csrw   satp, t0
-
-    # Check again if the write to satp succeeds.
-    csrr   t1, satp
-    beq    t0, t1, bsp_flush_tlb
-
-    # If the CPU doesn't support either Sv48 or Sv39 this is actually reachable.
 bsp_unreachable_pa:
     j      bsp_unreachable_pa
 
