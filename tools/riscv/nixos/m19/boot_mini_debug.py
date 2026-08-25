@@ -131,7 +131,7 @@ def run() -> bytes:
             output += data
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
-            if b"MINI_EGL_RC" in output:
+            if b"MINI_EGL_RC=0" in output or b"MINI_EGL_RC=1" in output:
                 break
             if b"panic" in output or b"Panic" in output:
                 print("[boot] PANIC detected")
