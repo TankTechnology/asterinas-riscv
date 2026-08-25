@@ -60,6 +60,7 @@ pub struct Command {
     pub argument: u32,
     pub response: ResponseType,
     pub data: Option<DataDirection>,
+    block_count: u16,
 }
 
 impl Command {
@@ -87,6 +88,14 @@ impl Command {
         Self::new(24, lba, ResponseType::Short, Some(DataDirection::Write))
     }
 
+    pub const fn read_multiple_blocks(lba: u32, block_count: u16) -> Self {
+        Self::new_data(18, lba, DataDirection::Read, block_count)
+    }
+
+    pub const fn write_multiple_blocks(lba: u32, block_count: u16) -> Self {
+        Self::new_data(25, lba, DataDirection::Write, block_count)
+    }
+
     pub const fn new(
         index: u8,
         argument: u32,
@@ -98,7 +107,47 @@ impl Command {
             argument,
             response,
             data,
+            block_count: if data.is_some() { 1 } else { 0 },
         }
+    }
+
+    const fn new_data(
+        index: u8,
+        argument: u32,
+        direction: DataDirection,
+        block_count: u16,
+    ) -> Self {
+        Self {
+            index,
+            argument,
+            response: ResponseType::Short,
+            data: Some(direction),
+            block_count,
+        }
+    }
+
+    pub const fn block_count(self) -> usize {
+        self.block_count as usize
+    }
+
+    pub const fn has_valid_block_count(self) -> bool {
+        match self.data {
+            Some(_) => self.block_count != 0,
+            None => self.block_count == 0,
+        }
+    }
+
+    pub const fn transfer_mode_bits(self) -> u16 {
+        let direction = match self.data {
+            Some(DataDirection::Read) => 1 << 4,
+            Some(DataDirection::Write) | None => 0,
+        };
+        let multiple = if self.block_count > 1 {
+            (1 << 5) | (1 << 2) | (1 << 1)
+        } else {
+            0
+        };
+        direction | multiple
     }
 
     /// Encodes the SDHCI command register value.
@@ -264,6 +313,27 @@ mod tests {
             Command::app_op_cond(0x40ff_8000).command_bits(),
             (41 << 8) | 0x02
         );
+
+        let cmd18 = Command::read_multiple_blocks(11, 8);
+        assert_eq!(cmd18.index, 18);
+        assert_eq!(cmd18.argument, 11);
+        assert_eq!(cmd18.data, Some(DataDirection::Read));
+        assert_eq!(cmd18.block_count(), 8);
+        assert_eq!(cmd18.command_bits(), (18 << 8) | 0x3a);
+        assert_eq!(cmd18.transfer_mode_bits(), 0x36);
+
+        let cmd25 = Command::write_multiple_blocks(19, 8);
+        assert_eq!(cmd25.index, 25);
+        assert_eq!(cmd25.argument, 19);
+        assert_eq!(cmd25.data, Some(DataDirection::Write));
+        assert_eq!(cmd25.block_count(), 8);
+        assert_eq!(cmd25.command_bits(), (25 << 8) | 0x3a);
+        assert_eq!(cmd25.transfer_mode_bits(), 0x26);
+        assert_eq!(cmd17.transfer_mode_bits(), 0x10);
+        assert_eq!(cmd24.transfer_mode_bits(), 0);
+        assert!(cmd18.has_valid_block_count());
+        assert!(!Command::read_multiple_blocks(0, 0).has_valid_block_count());
+        assert!(Command::idle().has_valid_block_count());
     }
 
     #[ktest]

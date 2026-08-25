@@ -11,6 +11,7 @@ const OCR_BUSY: u32 = 1 << 31;
 const OCR_CCS: u32 = 1 << 30;
 const OCR_ARGUMENT: u32 = OCR_CCS | 0x00ff_8000;
 const SECTOR_SIZE: usize = 512;
+const MAX_BLOCKS_PER_COMMAND: usize = u16::MAX as usize;
 
 /// A response returned by the SD host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,8 +165,37 @@ impl Card {
         if end > self.nr_sectors {
             return Err(HostError::Unsupported);
         }
-        for (offset, sector) in out.as_chunks_mut::<SECTOR_SIZE>().0.iter_mut().enumerate() {
-            self.read_sector(host, first_lba + offset as u64, sector)?;
+        if end > u32::MAX as u64 + 1 {
+            return Err(HostError::Unsupported);
+        }
+        let mut lba = first_lba;
+        for blocks in out.chunks_mut(MAX_BLOCKS_PER_COMMAND * SECTOR_SIZE) {
+            let block_count = blocks.len() / SECTOR_SIZE;
+            if block_count == 1 {
+                let sector: &mut [u8; SECTOR_SIZE] =
+                    blocks.try_into().map_err(|_| HostError::Unsupported)?;
+                self.read_sector(host, lba, sector)?;
+            } else if block_count != 0 {
+                let result = (|| {
+                    host.command(Command::read_multiple_blocks(
+                        lba as u32,
+                        block_count as u16,
+                    ))?
+                    .short()?;
+                    for sector in blocks.as_chunks_mut::<SECTOR_SIZE>().0 {
+                        host.wait_buffer_read_ready()?;
+                        for word in sector.as_chunks_mut::<4>().0 {
+                            word.copy_from_slice(&host.read_data_word()?.to_le_bytes());
+                        }
+                    }
+                    host.wait_transfer_complete()
+                })();
+                if result.is_err() {
+                    host.reset_data_line();
+                }
+                result?;
+            }
+            lba += block_count as u64;
         }
         Ok(())
     }
@@ -193,6 +223,53 @@ impl Card {
             host.reset_data_line();
         }
         result
+    }
+
+    /// Writes a whole number of sectors using bounded CMD24/CMD25 transfers.
+    pub fn write_sectors(
+        self,
+        host: &mut impl HostController,
+        first_lba: u64,
+        data: &[u8],
+    ) -> Result<(), HostError> {
+        if !data.len().is_multiple_of(SECTOR_SIZE) {
+            return Err(HostError::Unsupported);
+        }
+        let count = (data.len() / SECTOR_SIZE) as u64;
+        let end = first_lba.checked_add(count).ok_or(HostError::Unsupported)?;
+        if end > self.nr_sectors || end > u32::MAX as u64 + 1 {
+            return Err(HostError::Unsupported);
+        }
+        let mut lba = first_lba;
+        for blocks in data.chunks(MAX_BLOCKS_PER_COMMAND * SECTOR_SIZE) {
+            let block_count = blocks.len() / SECTOR_SIZE;
+            if block_count == 1 {
+                let sector: &[u8; SECTOR_SIZE] =
+                    blocks.try_into().map_err(|_| HostError::Unsupported)?;
+                self.write_sector(host, lba, sector)?;
+            } else if block_count != 0 {
+                let result = (|| {
+                    host.command(Command::write_multiple_blocks(
+                        lba as u32,
+                        block_count as u16,
+                    ))?
+                    .short()?;
+                    for sector in blocks.as_chunks::<SECTOR_SIZE>().0 {
+                        host.wait_buffer_write_ready()?;
+                        for word in sector.as_chunks::<4>().0 {
+                            host.write_data_word(u32::from_le_bytes(*word))?;
+                        }
+                    }
+                    host.wait_transfer_complete()
+                })();
+                if result.is_err() {
+                    host.reset_data_line();
+                }
+                result?;
+            }
+            lba += block_count as u64;
+        }
+        Ok(())
     }
 }
 
@@ -237,6 +314,7 @@ mod tests {
         Reset,
         Clock(u32),
         Command(u8, u32, Response),
+        DataCommand(u8, u32, u16, Response),
         Width4,
     }
 
@@ -304,11 +382,19 @@ mod tests {
         }
 
         fn command(&mut self, command: Command) -> Result<Response, HostError> {
-            let Some(Step::Command(index, argument, response)) = self.steps.pop_front() else {
-                panic!("unexpected command {command:?}");
-            };
-            assert_eq!((command.index, command.argument), (index, argument));
-            Ok(response)
+            match self.steps.pop_front() {
+                Some(Step::Command(index, argument, response)) => {
+                    assert_eq!((command.index, command.argument), (index, argument));
+                    assert_eq!(command.block_count(), usize::from(command.data.is_some()));
+                    Ok(response)
+                }
+                Some(Step::DataCommand(index, argument, blocks, response)) => {
+                    assert_eq!((command.index, command.argument), (index, argument));
+                    assert_eq!(command.block_count(), blocks as usize);
+                    Ok(response)
+                }
+                step => panic!("unexpected command {command:?}, expected {step:?}"),
+            }
         }
 
         fn set_bus_width_4(&mut self) -> Result<(), HostError> {
@@ -410,6 +496,23 @@ mod tests {
     }
 
     #[ktest]
+    fn reads_multiple_sectors_with_one_bounded_command() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::DataCommand(18, 2, 2, Response::Short(0))].into();
+        host.words = (0..256).collect();
+        let mut sectors = [0u8; 2 * SECTOR_SIZE];
+        card.read_sectors(&mut host, 2, &mut sectors).unwrap();
+        assert_eq!(&sectors[0..8], &[0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(&sectors[SECTOR_SIZE..SECTOR_SIZE + 4], &[128, 0, 0, 0]);
+        assert_eq!(host.data_resets, 0);
+        host.assert_done();
+    }
+
+    #[ktest]
     fn writes_one_sector_as_little_endian_words() {
         let card = Card {
             rca: 1,
@@ -448,5 +551,24 @@ mod tests {
             card.write_sector(&mut host, 2, &sector),
             Err(HostError::Unsupported)
         );
+    }
+
+    #[ktest]
+    fn writes_multiple_sectors_with_one_bounded_command() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::DataCommand(25, 2, 2, Response::Short(0))].into();
+        let mut sectors = [0u8; 2 * SECTOR_SIZE];
+        sectors[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sectors[SECTOR_SIZE..SECTOR_SIZE + 4].copy_from_slice(&2u32.to_le_bytes());
+        card.write_sectors(&mut host, 2, &sectors).unwrap();
+        assert_eq!(host.written_words.len(), 256);
+        assert_eq!(host.written_words[0], 1);
+        assert_eq!(host.written_words[128], 2);
+        assert_eq!(host.data_resets, 0);
+        host.assert_done();
     }
 }

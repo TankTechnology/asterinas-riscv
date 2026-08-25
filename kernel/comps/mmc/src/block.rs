@@ -20,6 +20,8 @@ use ostd::sync::{Mutex, SpinLock};
 use crate::{MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2, arch::MmioHost, card::Card};
 
 const DEVICE_MINORS: u32 = 16;
+const PIO_TRANSFER_SECTORS: usize = 8;
+const PIO_TRANSFER_BYTES: usize = PIO_TRANSFER_SECTORS * 512;
 const P2_START_LBA: u64 = 0x000f_a022;
 const P2_NR_SECTORS: u64 = 0x0080_0000;
 const P2_END_LBA: u64 = P2_START_LBA + P2_NR_SECTORS;
@@ -175,18 +177,23 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(logical_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut sector = [0u8; 512];
+        let mut transfer = [0u8; PIO_TRANSFER_BYTES];
         for segment in bio.segments() {
             if !segment.nbytes().is_multiple_of(512) {
                 return BioStatus::IoError;
             }
-            for offset in (0..segment.nbytes()).step_by(512) {
-                if card.read_sector(host, lba, &mut sector).is_err()
-                    || segment.write_from_device(offset, &sector).is_err()
+            for offset in (0..segment.nbytes()).step_by(PIO_TRANSFER_BYTES) {
+                let length = (segment.nbytes() - offset).min(PIO_TRANSFER_BYTES);
+                if card
+                    .read_sectors(host, lba, &mut transfer[..length])
+                    .is_err()
+                    || segment
+                        .write_from_device(offset, &transfer[..length])
+                        .is_err()
                 {
                     return BioStatus::IoError;
                 }
-                lba += 1;
+                lba += (length / 512) as u64;
             }
         }
         BioStatus::Complete
@@ -210,18 +217,21 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(first_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut sector = [0u8; 512];
+        let mut transfer = [0u8; PIO_TRANSFER_BYTES];
         for segment in bio.segments() {
             if !segment.nbytes().is_multiple_of(512) {
                 return BioStatus::IoError;
             }
-            for offset in (0..segment.nbytes()).step_by(512) {
-                if segment.read_for_device(offset, &mut sector).is_err()
-                    || card.write_sector(host, lba, &sector).is_err()
+            for offset in (0..segment.nbytes()).step_by(PIO_TRANSFER_BYTES) {
+                let length = (segment.nbytes() - offset).min(PIO_TRANSFER_BYTES);
+                if segment
+                    .read_for_device(offset, &mut transfer[..length])
+                    .is_err()
+                    || card.write_sectors(host, lba, &transfer[..length]).is_err()
                 {
                     return BioStatus::IoError;
                 }
-                lba += 1;
+                lba += (length / 512) as u64;
             }
         }
         BioStatus::Complete

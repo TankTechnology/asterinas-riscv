@@ -8,8 +8,8 @@ use ostd::{arch::boot::DEVICE_TREE, io::IoMem, mm::io::VmIoOnce};
 use crate::{
     card::{Card, HostController, Response},
     sdhci::{
-        Command, DataDirection, HostError, Register, ResponseType, decode_command_failure,
-        decode_data_failure, eic7700_core_clock_config,
+        Command, HostError, Register, ResponseType, decode_command_failure, decode_data_failure,
+        eic7700_core_clock_config,
     },
 };
 
@@ -481,6 +481,9 @@ impl HostController for MmioHost {
     }
 
     fn command(&mut self, command: Command) -> Result<Response, HostError> {
+        if !command.has_valid_block_count() {
+            return Err(HostError::Unsupported);
+        }
         let inhibit = PRESENT_COMMAND_INHIBIT
             | if command.data.is_some() {
                 PRESENT_DATA_INHIBIT
@@ -491,13 +494,11 @@ impl HostController for MmioHost {
         self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
         if command.data.is_some() {
             self.write16(Register::BlockSize.offset(), 512)?;
-            self.write16(BLOCK_COUNT, 1)?;
-            let transfer_mode = if command.data == Some(DataDirection::Read) {
-                1 << 4
-            } else {
-                0
-            };
-            self.write16(Register::TransferMode.offset(), transfer_mode)?;
+            self.write16(BLOCK_COUNT, command.block_count() as u16)?;
+            self.write16(
+                Register::TransferMode.offset(),
+                command.transfer_mode_bits(),
+            )?;
         } else {
             self.write16(Register::TransferMode.offset(), 0)?;
         }
