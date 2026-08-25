@@ -209,12 +209,17 @@ class SystemdM2Operations(ConcreteOperations):
         return super().launch(config, prepared, 1)
 
     def _boot_once(
-        self, session: Mapping[str, Any], config: GateConfig, *, wait_prompt: bool
+        self,
+        session: Mapping[str, Any],
+        config: GateConfig,
+        *,
+        wait_prompt: bool,
+        start: int = 0,
     ) -> None:
         deadline = time.monotonic() + config.boot_timeout
         serial = session["serial"]
         if wait_prompt:
-            serial.wait_for(b"=> ", deadline)
+            serial.wait_for(b"=> ", deadline, start=start)
         commands = (
             "virtio scan",
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
@@ -238,20 +243,30 @@ class SystemdM2Operations(ConcreteOperations):
             deadline,
         )
         serial.wait_for(marker.encode(), deadline)
-        serial.wait_for(b"Starting kernel ...", deadline)
+        serial.wait_for(b"Starting kernel ...", deadline, start=start)
 
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
         self._boot_once(session, config, wait_prompt=True)
         serial = session["serial"]
-        serial.wait_for(
-            b"DEBIAN_SYSTEMD_M2_READY boot=1",
+        ready1 = b"DEBIAN_SYSTEMD_M2_READY boot=1"
+        transcript = serial.wait_for(
+            ready1,
             time.monotonic() + config.boot_timeout,
         )
+        restart_start = transcript.rfind(ready1) + len(ready1)
         reboot_deadline = time.monotonic() + config.boot_timeout
-        serial.wait_for(b"Hit any key to stop autoboot", reboot_deadline)
+        autoboot = b"Hit any key to stop autoboot"
+        transcript = serial.wait_for(autoboot, reboot_deadline, start=restart_start)
+        prompt_start = transcript.rfind(autoboot) + len(autoboot)
         serial.send(b" \n", reboot_deadline)
-        serial.wait_for(b"=> ", reboot_deadline)
-        self._boot_once(session, config, wait_prompt=False)
+        serial.wait_for(b"=> ", reboot_deadline, start=prompt_start)
+        second_boot_start = serial.checkpoint()
+        self._boot_once(
+            session,
+            config,
+            wait_prompt=False,
+            start=second_boot_start,
+        )
         serial.wait_for(
             b"DEBIAN_SYSTEMD_M2_PASS boot=2",
             time.monotonic() + config.boot_timeout,
