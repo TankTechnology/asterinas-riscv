@@ -22,6 +22,7 @@ _NONCE_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _BASH_VERSION_RE = re.compile(r"\A[0-9]+\.[0-9]+(?:\.[0-9]+)?")
 _PROTOCOL_MARKER_RE = re.compile(r"\A__ASTERINAS_DEBIAN_GATE_[A-Z0-9_]+__(?:[0-9]+)?\Z")
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FATAL_TRANSCRIPT_MARKERS = (
     ("kernel panic", "kernel panic"),
     ("reboot: restarting system", "unexpected reboot"),
@@ -366,6 +367,11 @@ def _normalize_transcript(
         return _failed("transcript must be bytes or text")
     if raw_size > MAX_TRANSCRIPT_BYTES:
         return _failed("serial transcript exceeds 8 MiB")
+    # Agetty may emit OSC palette resets and CSI terminal setup on the same
+    # physical serial line as the first program output.  Strip only complete
+    # terminal-control sequences; ordinary printable prefixes still prevent an
+    # evidence marker from matching exactly.
+    text = _OSC_ESCAPE_RE.sub("", text)
     text = _ANSI_ESCAPE_RE.sub("", text)
     return text, tuple(line.rstrip("\r") for line in text.splitlines())
 
