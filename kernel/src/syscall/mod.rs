@@ -28,6 +28,7 @@ mod alarm;
 #[cfg(target_arch = "x86_64")]
 mod arch_prctl;
 mod bind;
+mod bpf;
 mod brk;
 mod capget;
 mod capset;
@@ -36,10 +37,12 @@ mod chmod;
 mod chown;
 mod chroot;
 mod clock_gettime;
+mod clock_settime;
 mod clone;
 mod close;
 mod connect;
 mod constants;
+mod copy_file_range;
 mod dup;
 mod epoll;
 mod eventfd;
@@ -86,6 +89,7 @@ mod inotify;
 mod ioctl;
 mod keyctl;
 mod kill;
+mod landlock;
 mod link;
 mod listen;
 mod listmount;
@@ -122,6 +126,7 @@ mod prctl;
 mod pread64;
 mod preadv;
 mod prlimit64;
+mod process_madvise;
 mod pselect6;
 mod ptrace;
 mod pwrite64;
@@ -133,14 +138,16 @@ mod recvfrom;
 mod recvmsg;
 mod removexattr;
 mod rename;
+mod riscv_flush_icache;
+mod riscv_hwprobe;
 mod rmdir;
+mod rseq;
 mod rt_sigaction;
 mod rt_sigpending;
 mod rt_sigprocmask;
 mod rt_sigreturn;
 mod rt_sigsuspend;
 mod rt_sigtimedwait;
-mod rseq;
 mod sched_affinity;
 mod sched_get_priority_max;
 mod sched_get_priority_min;
@@ -180,6 +187,7 @@ mod setresuid;
 mod setreuid;
 mod setsid;
 mod setsockopt;
+mod settimeofday;
 mod setuid;
 mod setxattr;
 mod shmat;
@@ -446,7 +454,7 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
 
 macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
-        if ostd::log_enabled!(ostd::log::Level::Info) {
+        if ostd::log_enabled!(ostd::log::Level::Debug) {
             let syscall_name_str = stringify!($syscall_name);
             let pid = $crate::context::current!().pid();
             let tid = {
@@ -456,7 +464,7 @@ macro_rules! log_syscall_entry {
                     .unwrap()
                     .tid()
             };
-            ostd::info!(
+            ostd::debug!(
                 "[pid={}][tid={}][id={}][{}]",
                 pid,
                 tid,

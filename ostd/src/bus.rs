@@ -2,6 +2,9 @@
 
 //! Bus probe error
 
+#[cfg(target_arch = "riscv64")]
+pub mod usb;
+
 // TODO: Implement a bus component and move the `BusProbeError` into the module.
 
 /// An error that occurs during bus probing.

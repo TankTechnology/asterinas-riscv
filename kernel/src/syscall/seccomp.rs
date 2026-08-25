@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::mm::VmIo;
-
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    },
 };
 
 /// Seccomp modes (values of the per-thread `seccomp_mode` field).
@@ -16,6 +17,9 @@ pub const SECCOMP_MODE_FILTER: u32 = 2;
 // --- `seccomp(2)` operations (`linux/seccomp.h`) ---
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
+
+/// `SECCOMP_FILTER_FLAG_TSYNC`: synchronize the filter across all threads.
+const SECCOMP_FILTER_FLAG_TSYNC: u32 = 0x1;
 
 /// `si_code` value for a seccomp-generated `SIGSYS` (`asm-generic/siginfo.h`).
 const SYS_SECCOMP: i32 = 1;
@@ -32,9 +36,6 @@ const STRICT_ALLOWED: &[u64] = &[
     139, /* rt_sigreturn */
 ];
 
-/// The maximum number of instructions in a seccomp BPF filter (`BPF_MAXINSNS`).
-const BPF_MAXINSNS: usize = 4096;
-
 // --- seccomp filter return values (`linux/seccomp.h`) ---
 const SECCOMP_RET_KILL_THREAD: u32 = 0x0000_0000;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
@@ -48,13 +49,6 @@ const SECCOMP_RET_DATA: u32 = 0x0000_ffff;
 /// `AUDIT_ARCH_RISCV64` = `EM_RISCV | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE`.
 const AUDIT_ARCH_RISCV64: u32 = 0xc000_00f3;
 
-// --- classic BPF opcodes (`linux/filter.h`) ---
-const BPF_LD: u16 = 0x00;
-const BPF_LDX: u16 = 0x01;
-const BPF_ALU: u16 = 0x04;
-const BPF_JMP: u16 = 0x05;
-const BPF_RET: u16 = 0x06;
-
 /// The outcome of evaluating a thread's seccomp policy for a syscall.
 #[derive(Debug, PartialEq)]
 pub enum SeccompDecision {
@@ -67,14 +61,7 @@ pub enum SeccompDecision {
 }
 
 /// A classic BPF instruction (`struct sock_filter` in `linux/filter.h`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod)]
-pub struct SockFilter {
-    pub code: u16,
-    pub jt: u8,
-    pub jf: u8,
-    pub k: u32,
-}
+pub use crate::util::bpf::SockFilter;
 
 /// Returns whether the calling thread's seccomp policy blocks `syscall_number`.
 ///
@@ -138,105 +125,11 @@ fn seccomp_action_to_decision(action: u32) -> SeccompDecision {
 
 /// Runs a classic-BPF program against `data` and returns the `RET` value.
 ///
-/// This implements the subset of classic BPF that libseccomp emits for syscall
-/// filtering: `LD` (immediate and absolute word load), `LDX`, the `ALU`
-/// arithmetic/logic ops, the `JMP` comparisons and `RET`. Any unrecognized or
+/// The interpreter is shared with socket filters (`crate::util::bpf`);
+/// `seccomp_data` is read in native byte order. Any malformed or
 /// out-of-bounds instruction yields `SECCOMP_RET_KILL_THREAD` (fail secure).
 fn run_filter(prog: &[SockFilter], data: &[u8; 64]) -> u32 {
-    let mut a: u32 = 0;
-    let mut x: u32 = 0;
-    let mut pc: usize = 0;
-
-    while pc < prog.len() {
-        let ins = prog[pc];
-        let code = ins.code;
-        let k = ins.k;
-
-        match code & 0x07 {
-            BPF_LD => match code & 0xe0 {
-                // `LD | W | IMM`: a = k
-                0x00 => a = k,
-                // `LD | W | ABS`: a = *(u32 *)(data + k)
-                0x20 => match load_word(data, k) {
-                    Some(word) => a = word,
-                    None => return SECCOMP_RET_KILL_THREAD,
-                },
-                _ => return SECCOMP_RET_KILL_THREAD,
-            },
-            BPF_LDX => match code & 0xe0 {
-                0x00 => x = k,
-                0x20 => match load_word(data, k) {
-                    Some(word) => x = word,
-                    None => return SECCOMP_RET_KILL_THREAD,
-                },
-                _ => return SECCOMP_RET_KILL_THREAD,
-            },
-            BPF_ALU => {
-                // bit 3 selects the source: K (immediate) or X (index register).
-                let src = if code & 0x08 != 0 { x } else { k };
-                a = match code & 0xf0 {
-                    0x00 => a.wrapping_add(src), // ADD
-                    0x10 => a.wrapping_sub(src), // SUB
-                    0x20 => a.wrapping_mul(src), // MUL
-                    0x30 if src != 0 => a / src, // DIV
-                    0x40 => a | src,             // OR
-                    0x50 => a & src,             // AND
-                    0x60 => a.wrapping_shl(src), // LSH
-                    0x70 => a.wrapping_shr(src), // RSH
-                    0x80 => a.wrapping_neg(),    // NEG
-                    0x90 if src != 0 => a % src, // MOD
-                    0xa0 => a ^ src,             // XOR
-                    _ => return SECCOMP_RET_KILL_THREAD,
-                };
-            }
-            BPF_JMP => {
-                let jmp_op = code & 0xf0;
-                if jmp_op == 0x00 {
-                    // `JMP | JA`: unconditional jump by k instructions.
-                    pc = pc.wrapping_add(k as usize + 1);
-                    continue;
-                }
-                let src = if code & 0x08 != 0 { x } else { k };
-                let taken = match jmp_op {
-                    0x10 => a == src,       // JEQ
-                    0x20 => a > src,        // JGT
-                    0x30 => a >= src,       // JGE
-                    0x40 => (a & src) != 0, // JSET
-                    _ => return SECCOMP_RET_KILL_THREAD,
-                };
-                let offset = if taken { ins.jt } else { ins.jf } as usize;
-                pc = pc.wrapping_add(offset + 1);
-                continue;
-            }
-            BPF_RET => {
-                return match code & 0x18 {
-                    0x00 => k, // `RET | K`
-                    0x10 => a, // `RET | A`
-                    _ => SECCOMP_RET_KILL_THREAD,
-                };
-            }
-            _ => return SECCOMP_RET_KILL_THREAD,
-        }
-
-        pc += 1;
-    }
-
-    // The program fell off the end without a `RET`; fail secure.
-    SECCOMP_RET_KILL_THREAD
-}
-
-/// Loads a 32-bit little-endian word from `data` at byte offset `k`.
-fn load_word(data: &[u8; 64], k: u32) -> Option<u32> {
-    let offset = k as usize;
-    if offset.checked_add(4)? > data.len() {
-        return None;
-    }
-    Some(u32::from_ne_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ]))
+    crate::util::bpf::run_filter(prog, data, false).unwrap_or(SECCOMP_RET_KILL_THREAD)
 }
 
 /// A `SIGSYS` signal raised by seccomp.
@@ -291,61 +184,32 @@ pub fn sys_seccomp(
             Ok(SyscallReturn::Return(0))
         }
         SECCOMP_SET_MODE_FILTER => {
-            // `SECCOMP_FILTER_FLAG_TSYNC` / `SECCOMP_FILTER_FLAG_NEW_LISTENER` /
-            // `SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV` are not supported yet.
-            if flags != 0 {
+            // Only `TSYNC` is supported; `LOG`/`SPEC_ALLOW`/`NEW_LISTENER`/
+            // `TSYNC_ESRCH`/`WAIT_KILLABLE_RECV` are not yet.
+            if flags & !SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 return_errno_with_message!(Errno::EINVAL, "unsupported seccomp filter flags");
             }
             if args == 0 {
                 return_errno_with_message!(Errno::EFAULT, "null sock_fprog pointer");
             }
 
-            let user_space = ctx.user_space();
-            // `struct sock_fprog` is `{ u16 len; struct sock_filter *filter }`;
-            // on riscv64 the pointer is 8-byte aligned, so `filter` sits at
-            // offset 8. Read the two fields separately to avoid reading the
-            // struct's implicit padding.
-            let len = user_space.read_val::<u16>(args)? as usize;
-            let filter_addr =
-                user_space
-                    .read_val::<Vaddr>(args.checked_add(8).ok_or_else(|| {
-                        Error::with_message(Errno::EFAULT, "sock_fprog overflow")
-                    })?)?;
-            if len == 0 || len > BPF_MAXINSNS {
-                return_errno_with_message!(Errno::EINVAL, "invalid filter length");
-            }
+            let filters = crate::util::bpf::read_prog_from_user(args)?;
+            let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
 
-            let mut filters = Vec::with_capacity(len);
-            for i in 0..len {
-                let addr = filter_addr
-                    .checked_add(i * size_of::<SockFilter>())
-                    .ok_or_else(|| Error::with_message(Errno::EFAULT, "filter address overflow"))?;
-                filters.push(user_space.read_val::<SockFilter>(addr)?);
-            }
-
-            // Validate jumps stay in-bounds (the interpreter also fails secure on
-            // out-of-bounds jumps, but reject obvious malformed programs up front
-            // like Linux's verifier does).
-            for (i, ins) in filters.iter().enumerate() {
-                if ins.code & 0x07 != BPF_JMP {
-                    continue;
+            if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
+                // Synchronize the filter across every thread in the process,
+                // including the caller. Collect the tasks first so we do not
+                // hold the task-set lock while locking per-thread seccomp state.
+                let tasks: Vec<_> = ctx.process.tasks().lock().as_slice().to_vec();
+                for task in &tasks {
+                    let posix_thread = task.as_posix_thread().unwrap();
+                    posix_thread.set_seccomp_filter(filter.clone());
+                    posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
                 }
-                let offsets: &[usize] = if ins.code & 0xf0 == 0x00 {
-                    // `JMP | JA`: offset is in `k`.
-                    &[ins.k as usize]
-                } else {
-                    &[ins.jt as usize, ins.jf as usize]
-                };
-                for &offset in offsets {
-                    if i.checked_add(offset + 1).is_none_or(|t| t > len) {
-                        return_errno_with_message!(Errno::EINVAL, "BPF jump out of bounds");
-                    }
-                }
+            } else {
+                ctx.posix_thread.set_seccomp_filter(filter);
+                ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
             }
-
-            ctx.posix_thread
-                .set_seccomp_filter(Arc::from(filters.into_boxed_slice()));
-            ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
             Ok(SyscallReturn::Return(0))
         }
         _ => return_errno_with_message!(Errno::EINVAL, "unknown seccomp operation"),

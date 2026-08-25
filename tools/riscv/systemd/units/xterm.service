@@ -1,0 +1,25 @@
+[Unit]
+Description=XTerm terminal emulator
+After=xorg.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+KeyringMode=inherit
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+# Start after the other session clients so xterm maps last and matchbox
+# gives it keyboard focus — the terminal is the primary demo interaction
+# point, and deterministic focus makes automated input tests reliable.
+ExecStartPre=/bin/sleep 5
+# backarrowKey=false: Backspace sends DEL (0x7f), matching the kernel's
+# default VERASE. The app-defaults file in the rootfs is the stock one and
+# does NOT set this, so force it on the command line (cannot be missed).
+ExecStart=/usr/bin/xterm -xrm "XTerm*backarrowKey: false"
+Restart=always
+RestartSec=2s
+StandardOutput=null
+StandardError=null

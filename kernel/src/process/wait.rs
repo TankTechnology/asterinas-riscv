@@ -8,7 +8,7 @@ use super::{
 use crate::{
     prelude::*,
     process::{
-        ReapedChildrenStats, Uid, pid_table,
+        PidNamespace, ReapedChildrenStats, Uid, pid_table,
         posix_thread::{AsPosixThread, PosixThread, ptrace::PtraceWaitStatus},
         signal::sig_num::SigNum,
         status::StopWaitStatus,
@@ -134,6 +134,18 @@ impl WaitStatus {
         match self.source() {
             WaitStatusSource::Process(process) => process.pid(),
             WaitStatusSource::Thread(thread) => thread.tid(),
+        }
+    }
+
+    /// Returns the virtual PID of the waited process in the given PID
+    /// namespace, or `None` if the process is not visible there.
+    ///
+    /// For thread sources (ptrace), the global TID is kept; PID namespace
+    /// translation for ptrace is not supported yet.
+    pub fn pid_in_ns(&self, ns: &Arc<PidNamespace>) -> Option<u32> {
+        match self.source() {
+            WaitStatusSource::Process(process) => process.pid_in_ns(ns),
+            WaitStatusSource::Thread(_) => None,
         }
     }
 
@@ -365,6 +377,9 @@ fn reap_zombie_child(
 
     // Remove the process from the global table
     pid_table.remove_process(child_process.pid());
+
+    // Remove the process's virtual PID registrations from all PID namespaces
+    child_process.remove_from_pid_namespaces();
 
     // Remove the process group and the session from global table, if necessary
     let mut child_group_mut = child_process.process_group.lock();

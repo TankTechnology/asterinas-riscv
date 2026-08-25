@@ -47,6 +47,9 @@ impl InodeHandle {
             // object itself".
             // Reference: <https://man7.org/linux/man-pages/man2/openat.2.html>
             inode.check_permission(access_mode.into())?;
+            if status_flags.contains(StatusFlags::O_NOATIME) {
+                inode.check_noatime_permission()?;
+            }
         }
 
         Self::new_unchecked_access(path, access_mode, status_flags)
@@ -63,7 +66,22 @@ impl InodeHandle {
         } else if inode.type_() == InodeType::Dir && access_mode.is_writable() {
             return_errno_with_message!(Errno::EISDIR, "a directory cannot be opened writable");
         } else {
-            let open_file = inode.open(access_mode, status_flags).transpose()?;
+            // Track opens for writing so that `execve` can deny executing a
+            // file that is being written to (ETXTBSY), mirroring Linux's
+            // `i_writecount`. The count is released when the handle is dropped.
+            let write_tracked = access_mode.is_writable() && inode.type_().is_regular_file();
+            if write_tracked {
+                inode.write_access_tracker_or_init().acquire_write()?;
+            }
+            let open_file = match inode.open(access_mode, status_flags).transpose() {
+                Ok(open_file) => open_file,
+                Err(err) => {
+                    if write_tracked {
+                        inode.write_access_tracker_or_init().release_write();
+                    }
+                    return Err(err);
+                }
+            };
             let rights = Rights::from(access_mode);
             (open_file, rights)
         };
@@ -521,6 +539,18 @@ impl FileLike for InodeHandle {
 impl Drop for InodeHandle {
     fn drop(&mut self) {
         let _ = self.unlock_flock();
+
+        // Release the write-access tracking registered at open time.
+        // The predicate mirrors the one in `new_unchecked_access`
+        // (`O_PATH` handles have empty rights and thus never match).
+        if self.access_mode().is_writable()
+            && self.path().inode().type_().is_regular_file()
+        {
+            self.path()
+                .inode()
+                .write_access_tracker_or_init()
+                .release_write();
+        }
     }
 }
 

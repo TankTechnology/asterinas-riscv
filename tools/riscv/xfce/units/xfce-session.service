@@ -1,0 +1,19 @@
+[Unit]
+Description=Xfce desktop session (xfce4-session inside dbus-run-session)
+Documentation=https://docs.xfce.org/xfce/xfce4-session/start
+After=xorg.service dbus.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+KeyringMode=inherit
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+# Xorg (fbdev + shadow dlopen) takes a while to come up; same settle delay as
+# the matchbox unit used.
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/xfce-session-start
+Restart=on-failure
+RestartSec=2s

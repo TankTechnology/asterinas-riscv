@@ -17,6 +17,8 @@ use crate::{
     util::{MultiRead, MultiWrite},
 };
 
+use crate::util::ioctl::RawIoctl;
+
 pub mod ip;
 pub mod netlink;
 pub mod options;
@@ -202,5 +204,67 @@ impl<T: Socket + 'static> FileLike for T {
             flags,
             ino: self.common().path().inode().ino(),
         })
+    }
+
+    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        use crate::{
+            net::{iface::Iface, net_ns::current_net_ns},
+            util::ioctl::{InData, InOutData, dispatch_ioctl, ioc},
+        };
+
+        use aster_bigtcp::iface::InterfaceFlags;
+
+        /// The legacy `SIOCGIFFLAGS`/`SIOCSIFFLAGS` argument: the interface
+        /// name (16 bytes) followed by the flags (a 16-bit `short`).
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, Pod)]
+        struct Ifreq {
+            name: [u8; 16],
+            flags: i16,
+        }
+
+        /// `SIOCGIFFLAGS` (0x8913): get interface flags.
+        type GetIfaceFlags = ioc!(SIOCGIFFLAGS, 0x8913, InOutData<Ifreq>);
+        /// `SIOCSIFFLAGS` (0x8914): set interface flags.
+        type SetIfaceFlags = ioc!(SIOCSIFFLAGS, 0x8914, InData<Ifreq>);
+
+        /// Resolves an interface in the current network namespace by its
+        /// NUL-terminated `ifr_name`.
+        fn lookup_iface(name: &[u8; 16]) -> Result<Arc<Iface>> {
+            let target = CStr::from_bytes_until_nul(name)
+                .map_err(|_| Error::with_message(Errno::ENODEV, "invalid interface name"))?;
+            current_net_ns()
+                .ifaces()
+                .iter()
+                .find(|iface| iface.name() == target)
+                .cloned()
+                .ok_or_else(|| Error::with_message(Errno::ENODEV, "no interface with that name"))
+        }
+
+        dispatch_ioctl!(match raw_ioctl {
+            cmd @ GetIfaceFlags => {
+                let mut ifreq = cmd.read()?;
+                let iface = lookup_iface(&ifreq.name)?;
+                // `ifr_flags` is 16 bits wide, so only the low 16 bits of the
+                // interface flags are visible through this legacy ioctl.
+                ifreq.flags = iface.flags().bits() as i16;
+                cmd.write(&ifreq)?;
+            }
+            cmd @ SetIfaceFlags => {
+                let ifreq = cmd.read()?;
+                let iface = lookup_iface(&ifreq.name)?;
+                // Mirror `do_new_link`'s no-change-mask semantics: only `UP`
+                // and `RUNNING` are togglable, everything else is preserved.
+                let incoming = InterfaceFlags::from_bits_truncate(ifreq.flags as u16 as u32);
+                let old_flags = iface.flags();
+                let new_flags = (old_flags & !(InterfaceFlags::UP | InterfaceFlags::RUNNING))
+                    | (incoming & (InterfaceFlags::UP | InterfaceFlags::RUNNING));
+                iface.set_flags(new_flags);
+            }
+            _ => {
+                return_errno_with_message!(Errno::ENOTTY, "ioctl is not supported for sockets");
+            }
+        });
+        Ok(0)
     }
 }

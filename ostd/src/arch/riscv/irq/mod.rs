@@ -7,14 +7,17 @@ pub(super) mod ipi;
 mod ops;
 mod remapping;
 
-pub use chip::{IRQ_CHIP, InterruptSourceInFdt, IrqChip, MappedIrqLine};
+pub use chip::{DeferredMappedIrqLine, IRQ_CHIP, InterruptSourceInFdt, IrqChip, MappedIrqLine};
 pub(crate) use ipi::{HwCpuId, send_ipi};
 pub(crate) use ops::{
     disable_local, disable_local_and_halt, enable_local, enable_local_and_halt, is_local_enabled,
 };
 pub(crate) use remapping::IrqRemapping;
 
-use crate::arch::irq::chip::InterruptSourceOnChip;
+use crate::{
+    arch::irq::chip::InterruptSourceOnChip,
+    irq::{PhasedCallbackSnapshot, snapshot_phased_callback},
+};
 
 pub(crate) const IRQ_NUM_MIN: u8 = 0;
 pub(crate) const IRQ_NUM_MAX: u8 = 255;
@@ -29,6 +32,7 @@ pub(crate) const IRQ_NUM_MAX: u8 = 255;
 pub(crate) struct HwIrqLine {
     irq_num: u8,
     source: InterruptSource,
+    phased_callback_snapshot: PhasedCallbackSnapshot,
 }
 
 pub(super) enum InterruptSource {
@@ -40,11 +44,27 @@ pub(super) enum InterruptSource {
 
 impl HwIrqLine {
     pub(super) fn new(irq_num: u8, source: InterruptSource) -> Self {
-        Self { irq_num, source }
+        Self {
+            irq_num,
+            source,
+            phased_callback_snapshot: PhasedCallbackSnapshot::empty(),
+        }
+    }
+
+    fn new_external(irq_num: u8, interrupt_source_on_chip: InterruptSourceOnChip) -> Self {
+        Self {
+            irq_num,
+            source: InterruptSource::External(interrupt_source_on_chip),
+            phased_callback_snapshot: snapshot_phased_callback(irq_num),
+        }
     }
 
     pub(crate) fn irq_num(&self) -> u8 {
         self.irq_num
+    }
+
+    pub(crate) fn phased_callback_snapshot(&self) -> &PhasedCallbackSnapshot {
+        &self.phased_callback_snapshot
     }
 
     pub(crate) fn ack(&self) {

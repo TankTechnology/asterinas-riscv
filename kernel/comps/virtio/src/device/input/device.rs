@@ -418,7 +418,7 @@ fn map_to_key_code(virtio_code: u16) -> Option<KeyCode> {
         126 => KeyCode::RightMeta,
         139 => KeyCode::Menu,
         // Mouse / pointer buttons (BTN_*). Without these, a tablet reports no
-        // buttons and evdev mis-configures it as a relative mouse.
+        // buttons and evdev misconfigures it as a relative mouse.
         0x110 => KeyCode::BtnLeft,
         0x111 => KeyCode::BtnRight,
         0x112 => KeyCode::BtnMiddle,
