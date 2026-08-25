@@ -66,6 +66,41 @@ _PROFILES = {
             "dbus",
         ),
     ),
+    "desktop-m3": RootfsProfile(
+        name="desktop-m3",
+        schema_version=3,
+        root_label="ASTER_DEBIANM3",
+        root_uuid="87dc62d5-cd0b-47a3-a82b-32b24f2ed9d3",
+        requested_packages=(
+            "bash",
+            "ca-certificates",
+            "coreutils",
+            "dbus",
+            "libpam-systemd",
+            "matchbox-window-manager",
+            "procps",
+            "systemd-sysv",
+            "udev",
+            "util-linux",
+            "xauth",
+            "xfonts-base",
+            "xinit",
+            "xserver-xorg-core",
+            "xserver-xorg-input-evdev",
+            "xserver-xorg-video-fbdev",
+            "xterm",
+        ),
+        identity_packages=_M1_IDENTITY_PACKAGES
+        + (
+            "systemd",
+            "systemd-sysv",
+            "dbus",
+            "udev",
+            "libpam-systemd",
+            "xserver-xorg-core",
+            "xterm",
+        ),
+    ),
 }
 
 
