@@ -353,6 +353,27 @@ test_riscv_xhci_input_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_xhci_input_gate -v
 
+.PHONY: test_riscv_drm_cursor_unit
+test_riscv_drm_cursor_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_cursor_gate -v
+
+.PHONY: test_riscv_drm_cursor
+test_riscv_drm_cursor: test_riscv_drm_cursor_unit
+	@test -n "$(DRM_CURSOR_UBOOT)" || \
+		{ echo "DRM_CURSOR_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_BOOT_DISK)" || \
+		{ echo "DRM_CURSOR_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_MANIFEST)" || \
+		{ echo "DRM_CURSOR_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_GATE_OUTPUT)" || \
+		{ echo "DRM_CURSOR_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.cursor_gate \
+		--uboot "$(DRM_CURSOR_UBOOT)" \
+		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
+		--manifest "$(DRM_CURSOR_MANIFEST)" \
+		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
