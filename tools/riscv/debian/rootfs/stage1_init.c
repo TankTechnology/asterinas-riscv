@@ -45,7 +45,31 @@ enum {
     ROOT_DISCOVERY_TIMEOUT_SECONDS = 30,
 };
 
-#define ROOT_LABEL "ASTER_DEBIANROOT"
+static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_DEBIANROOT";
+static const unsigned char SYSTEMD_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_DEBIANM2";
+
+enum RootInitMode {
+    ROOT_INIT_INTERACTIVE,
+    ROOT_INIT_SYSTEMD,
+};
+
+struct ProductionContext {
+    enum RootInitMode root_init_mode;
+};
+
+static char *const INTERACTIVE_ROOT_INIT_ARGV[] = {
+    "/bin/bash", "--noprofile", "--rcfile",
+    "/etc/asterinas-rootfs.bashrc", "-i", NULL,
+};
+static char *const SYSTEMD_ROOT_INIT_ARGV[] = { "/sbin/init", NULL };
+
+static char *const *root_init_arguments(enum RootInitMode mode)
+{
+    return mode == ROOT_INIT_SYSTEMD ? SYSTEMD_ROOT_INIT_ARGV
+                                     : INTERACTIVE_ROOT_INIT_ARGV;
+}
 
 enum ProbeResult {
     PROBE_NO_MATCH,
@@ -63,6 +87,7 @@ enum HandoffStep {
     HANDOFF_CHROOT,
     HANDOFF_CHDIR,
     HANDOFF_EXEC,
+    HANDOFF_PREPARE_API_DIRS,
 };
 
 struct Stage1Ops {
@@ -73,6 +98,11 @@ struct Stage1Ops {
     int (*wait_for_retry)(void *context, const struct timespec *deadline);
     int (*perform_handoff)(void *context, enum HandoffStep step,
                            const char *root_device);
+};
+
+struct HandoffAction {
+    enum HandoffStep step;
+    const char *reason;
 };
 
 static int root_candidate_path(size_t index,
@@ -110,14 +140,43 @@ static int compare_timespec(const struct timespec *left,
     return 0;
 }
 
+static const unsigned char *root_label(enum RootInitMode mode)
+{
+    return mode == ROOT_INIT_SYSTEMD ? SYSTEMD_ROOT_LABEL
+                                     : INTERACTIVE_ROOT_LABEL;
+}
+
+static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
+{
+    *mode = ROOT_INIT_INTERACTIVE;
+    int selector_seen = 0;
+    for (int index = 1; index < argc; ++index) {
+        enum RootInitMode selected_mode;
+        if (strcmp(argv[index], "--root-init=interactive") == 0) {
+            selected_mode = ROOT_INIT_INTERACTIVE;
+        } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
+            selected_mode = ROOT_INIT_SYSTEMD;
+        } else {
+            return -1;
+        }
+        if (selector_seen) {
+            return -1;
+        }
+        selector_seen = 1;
+        *mode = selected_mode;
+    }
+    return 0;
+}
+
 static int ext2_superblock_matches(
-    const unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
+    const unsigned char superblock[EXT2_SUPERBLOCK_SIZE],
+    const unsigned char expected_label[EXT2_LABEL_LENGTH])
 {
     const int has_ext2_magic =
         superblock[EXT2_MAGIC_OFFSET] == 0x53 &&
         superblock[EXT2_MAGIC_OFFSET + 1] == 0xef;
     const int has_root_label =
-        memcmp(superblock + EXT2_LABEL_OFFSET, ROOT_LABEL,
+        memcmp(superblock + EXT2_LABEL_OFFSET, expected_label,
                EXT2_LABEL_LENGTH) == 0;
 
     return has_ext2_magic && has_root_label;
@@ -195,12 +254,10 @@ static const char *discover_root(struct Stage1Ops *ops,
     }
 }
 
-static const char *handoff_root(struct Stage1Ops *ops, const char *root_device)
+static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
+                                enum RootInitMode mode)
 {
-    static const struct {
-        enum HandoffStep step;
-        const char *reason;
-    } steps[] = {
+    static const struct HandoffAction interactive_steps[] = {
         { HANDOFF_MOUNT_ROOT, "root-mount" },
         { HANDOFF_BIND_DEV, "dev-bind" },
         { HANDOFF_MOUNT_PROC, "proc-mount" },
@@ -211,8 +268,26 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device)
         { HANDOFF_CHDIR, "chdir" },
         { HANDOFF_EXEC, "exec" },
     };
+    static const struct HandoffAction systemd_steps[] = {
+        { HANDOFF_MOUNT_ROOT, "root-mount" },
+        { HANDOFF_BIND_DEV, "dev-bind" },
+        { HANDOFF_PREPARE_API_DIRS, "api-directories" },
+        { HANDOFF_MOUNT_RUN, "run-mount" },
+        { HANDOFF_MOUNT_TMP, "tmp-mount" },
+        { HANDOFF_CHROOT, "chroot" },
+        { HANDOFF_CHDIR, "chdir" },
+        { HANDOFF_EXEC, "exec" },
+    };
 
-    for (size_t index = 0; index < sizeof(steps) / sizeof(steps[0]); ++index) {
+    const struct HandoffAction *steps = interactive_steps;
+    size_t step_count =
+        sizeof(interactive_steps) / sizeof(interactive_steps[0]);
+    if (mode == ROOT_INIT_SYSTEMD) {
+        steps = systemd_steps;
+        step_count = sizeof(systemd_steps) / sizeof(systemd_steps[0]);
+    }
+
+    for (size_t index = 0; index < step_count; ++index) {
         if (ops->perform_handoff(ops->context, steps[index].step,
                                  root_device) != 0) {
             return steps[index].reason;
@@ -231,6 +306,7 @@ struct MockContext {
     unsigned int handoff_count;
     struct timespec injected_now;
     unsigned int boundary_device_probe_count;
+    enum HandoffStep handoff_steps[16];
 };
 
 static int is_deadline_boundary_case(const char *case_name)
@@ -241,12 +317,13 @@ static int is_deadline_boundary_case(const char *case_name)
 }
 
 static void make_valid_superblock(
-    unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
+    unsigned char superblock[EXT2_SUPERBLOCK_SIZE],
+    const unsigned char label[EXT2_LABEL_LENGTH])
 {
     memset(superblock, 0, EXT2_SUPERBLOCK_SIZE);
     superblock[EXT2_MAGIC_OFFSET] = 0x53;
     superblock[EXT2_MAGIC_OFFSET + 1] = 0xef;
-    memcpy(superblock + EXT2_LABEL_OFFSET, ROOT_LABEL, EXT2_LABEL_LENGTH);
+    memcpy(superblock + EXT2_LABEL_OFFSET, label, EXT2_LABEL_LENGTH);
 }
 
 static enum ProbeResult mock_probe_device(
@@ -255,7 +332,7 @@ static enum ProbeResult mock_probe_device(
 {
     struct MockContext *context = opaque;
     unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-    make_valid_superblock(superblock);
+    make_valid_superblock(superblock, INTERACTIVE_ROOT_LABEL);
 
     int is_match = 0;
     if (strcmp(context->case_name, "one-valid-device") == 0) {
@@ -284,11 +361,13 @@ static enum ProbeResult mock_probe_device(
     } else if (strcmp(context->case_name, "bad-ext2-magic") == 0 &&
                strcmp(candidate_path, "/dev/vdb") == 0) {
         superblock[EXT2_MAGIC_OFFSET] = 0;
-        is_match = ext2_superblock_matches(superblock);
+        is_match =
+            ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL);
     } else if (strcmp(context->case_name, "wrong-label") == 0 &&
                strcmp(candidate_path, "/dev/vdb") == 0) {
         superblock[EXT2_LABEL_OFFSET] = 'X';
-        is_match = ext2_superblock_matches(superblock);
+        is_match =
+            ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL);
     } else if (strcmp(context->case_name, "non-block-device") == 0 &&
                strcmp(candidate_path, "/dev/vdb") == 0) {
         is_match = 0;
@@ -334,6 +413,10 @@ static int mock_perform_handoff(void *opaque, enum HandoffStep step,
 {
     struct MockContext *context = opaque;
     (void)root_device;
+    if (context->handoff_count <
+        sizeof(context->handoff_steps) / sizeof(context->handoff_steps[0])) {
+        context->handoff_steps[context->handoff_count] = step;
+    }
     ++context->handoff_count;
     return step == context->failing_step ? -1 : 0;
 }
@@ -476,11 +559,96 @@ static int run_handoff_self_test(const char *case_name,
         .wait_for_retry = mock_wait_for_retry,
         .perform_handoff = mock_perform_handoff,
     };
-    const char *reason = handoff_root(&ops, "/dev/vdb");
+    const char *reason =
+        handoff_root(&ops, "/dev/vdb", ROOT_INIT_INTERACTIVE);
 
     if (strcmp(reason, expected_reason) != 0 ||
         context.handoff_count != (unsigned int)failing_step + 1) {
         return fail_self_test(case_name, "handoff failure boundary was wrong");
+    }
+    return 0;
+}
+
+static int run_root_init_self_test(const char *case_name)
+{
+    enum RootInitMode mode = ROOT_INIT_INTERACTIVE;
+    char *default_argv[] = { "init", NULL };
+    char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
+    char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *duplicate_argv[] = {
+        "init", "--root-init=interactive", "--root-init=systemd", NULL,
+    };
+    char *unknown_argv[] = { "init", "--root-init=other", NULL };
+    char *control_argv[] = { "init", "--root-init=systemd\n", NULL };
+
+    if (strcmp(case_name, "root-init-default-interactive") == 0) {
+        if (parse_root_init(1, default_argv, &mode) != 0 ||
+            mode != ROOT_INIT_INTERACTIVE) {
+            return fail_self_test(case_name, "default mode was not interactive");
+        }
+    } else if (strcmp(case_name, "root-init-explicit-interactive") == 0) {
+        if (parse_root_init(2, interactive_argv, &mode) != 0 ||
+            mode != ROOT_INIT_INTERACTIVE) {
+            return fail_self_test(case_name,
+                                  "explicit interactive mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-systemd") == 0) {
+        if (parse_root_init(2, systemd_argv, &mode) != 0 ||
+            mode != ROOT_INIT_SYSTEMD) {
+            return fail_self_test(case_name, "systemd mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-duplicate") == 0) {
+        if (parse_root_init(3, duplicate_argv, &mode) == 0) {
+            return fail_self_test(case_name, "duplicate selector was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-unknown") == 0) {
+        if (parse_root_init(2, unknown_argv, &mode) == 0) {
+            return fail_self_test(case_name, "unknown selector was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-control-character") == 0) {
+        if (parse_root_init(2, control_argv, &mode) == 0) {
+            return fail_self_test(case_name,
+                                  "control character was accepted");
+        }
+    } else if (strcmp(case_name, "systemd-root-label") == 0) {
+        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
+        make_valid_superblock(superblock, root_label(ROOT_INIT_SYSTEMD));
+        if (!ext2_superblock_matches(superblock,
+                                     root_label(ROOT_INIT_SYSTEMD)) ||
+            ext2_superblock_matches(superblock,
+                                    root_label(ROOT_INIT_INTERACTIVE))) {
+            return fail_self_test(case_name, "M2 root label was not isolated");
+        }
+    } else if (strcmp(case_name, "systemd-handoff-sequence") == 0) {
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = (enum HandoffStep)-1,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .perform_handoff = mock_perform_handoff,
+        };
+        static const enum HandoffStep expected[] = {
+            HANDOFF_MOUNT_ROOT, HANDOFF_BIND_DEV,
+            HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_RUN,
+            HANDOFF_MOUNT_TMP, HANDOFF_CHROOT, HANDOFF_CHDIR, HANDOFF_EXEC,
+        };
+        const char *reason =
+            handoff_root(&ops, "/dev/vdb", ROOT_INIT_SYSTEMD);
+        if (strcmp(reason, "exec-returned") != 0 ||
+            context.handoff_count != sizeof(expected) / sizeof(expected[0]) ||
+            memcmp(context.handoff_steps, expected, sizeof(expected)) != 0) {
+            return fail_self_test(case_name,
+                                  "systemd handoff sequence was incorrect");
+        }
+    } else if (strcmp(case_name, "systemd-exec") == 0) {
+        char *const *arguments = root_init_arguments(ROOT_INIT_SYSTEMD);
+        if (strcmp(arguments[0], "/sbin/init") != 0 ||
+            arguments[1] != NULL) {
+            return fail_self_test(case_name, "systemd argv was not exact");
+        }
+    } else {
+        return fail_self_test(case_name, "unknown root init case");
     }
     return 0;
 }
@@ -498,6 +666,10 @@ int main(int argc, char **argv)
     const char *expected_reason;
     if (handoff_case(case_name, &failing_step, &expected_reason)) {
         result = run_handoff_self_test(case_name, failing_step, expected_reason);
+    } else if (strncmp(case_name, "root-init-", sizeof("root-init-") - 1) ==
+                   0 ||
+               strncmp(case_name, "systemd-", sizeof("systemd-") - 1) == 0) {
+        result = run_root_init_self_test(case_name);
     } else if (strcmp(case_name, "one-valid-device") == 0 ||
                strcmp(case_name, "one-valid-mmc-device") == 0 ||
                strcmp(case_name, "no-match") == 0 ||
@@ -548,7 +720,7 @@ static enum ProbeResult production_probe_device(
     void *context, const char *candidate_path,
     char path[ROOT_DEVICE_PATH_SIZE])
 {
-    (void)context;
+    const struct ProductionContext *production_context = context;
 
     int fd;
     do {
@@ -573,7 +745,8 @@ static enum ProbeResult production_probe_device(
         pread_complete(fd, superblock, sizeof(superblock), EXT2_SUPERBLOCK_OFFSET);
     (void)close(fd);
     if (bytes_read != (ssize_t)sizeof(superblock) ||
-        !ext2_superblock_matches(superblock)) {
+        !ext2_superblock_matches(
+            superblock, root_label(production_context->root_init_mode))) {
         return PROBE_NO_MATCH;
     }
 
@@ -629,7 +802,7 @@ static int ensure_directory(const char *path)
 static int production_perform_handoff(void *context, enum HandoffStep step,
                                       const char *root_device)
 {
-    (void)context;
+    const struct ProductionContext *production_context = context;
     switch (step) {
     case HANDOFF_MOUNT_ROOT:
         return mount(root_device, "/newroot", "ext2", 0, NULL);
@@ -658,15 +831,20 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         return mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
+    case HANDOFF_PREPARE_API_DIRS:
+        if (ensure_directory("/newroot/proc") != 0 ||
+            ensure_directory("/newroot/sys") != 0 ||
+            ensure_directory("/newroot/sys/fs") != 0) {
+            return -1;
+        }
+        return ensure_directory("/newroot/sys/fs/cgroup");
     case HANDOFF_CHROOT:
         return chroot("/newroot");
     case HANDOFF_CHDIR:
         return chdir("/");
     case HANDOFF_EXEC: {
-        char *const arguments[] = {
-            "/bin/bash", "--noprofile", "--rcfile",
-            "/etc/asterinas-rootfs.bashrc", "-i", NULL,
-        };
+        char *const *arguments =
+            root_init_arguments(production_context->root_init_mode);
         return execv(arguments[0], arguments);
     }
     }
@@ -723,14 +901,19 @@ static int configure_console(void)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    struct ProductionContext context;
+    int root_init_result = parse_root_init(argc, argv, &context.root_init_mode);
     if (configure_console() != 0) {
         fail_and_hold("console-open");
     }
+    if (root_init_result != 0) {
+        fail_and_hold("root-init-argument");
+    }
 
     struct Stage1Ops ops = {
-        .context = NULL,
+        .context = &context,
         .probe_device = production_probe_device,
         .monotonic_now = production_monotonic_now,
         .wait_for_retry = production_wait_for_retry,
@@ -745,7 +928,7 @@ int main(void)
         fail_and_hold("newroot-directory");
     }
 
-    reason = handoff_root(&ops, root_device);
+    reason = handoff_root(&ops, root_device, context.root_init_mode);
     fail_and_hold(reason);
 }
 

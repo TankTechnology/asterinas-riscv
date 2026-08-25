@@ -509,6 +509,15 @@ class DebianStage1Tests(unittest.TestCase):
             "chdir-failure",
             "exec-failure",
             "discovery-deadline",
+            "root-init-default-interactive",
+            "root-init-explicit-interactive",
+            "root-init-systemd",
+            "root-init-duplicate",
+            "root-init-unknown",
+            "root-init-control-character",
+            "systemd-root-label",
+            "systemd-handoff-sequence",
+            "systemd-exec",
         )
 
         for case in cases:
