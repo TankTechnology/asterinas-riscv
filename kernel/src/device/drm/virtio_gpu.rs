@@ -6,17 +6,12 @@
 //! These are the kernel-side entry points for Mesa's virgl driver. They
 //! translate DRM ioctl structs into virtio-gpu control queue commands.
 
-use crate::prelude::*;
-
-use align_ext::AlignExt;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{
-    fs::file::file_table::FdFlags,
-    process::posix_thread::FileTableRefMut,
-};
+use align_ext::AlignExt;
 
 use super::{DUMB_POOL_SIZE, DumbBuffer, GemObject};
+use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
 
 // ---------------------------------------------------------------------------
 // Wire types (matching Linux include/uapi/drm/virtgpu_drm.h)
@@ -92,14 +87,6 @@ pub(super) struct DrmVirtgpuGetCaps {
     pub pad: u32,
 }
 
-/// `struct drm_virtgpu_context_set_param`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-pub(super) struct DrmVirtgpuContextSetParam {
-    pub param: u64,
-    pub value: u64,
-}
-
 /// `struct drm_virtgpu_context_init`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -173,11 +160,6 @@ const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
 const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
 const VIRTGPU_PARAM_BLOB_ALIGNMENT: u64 = 9;
 
-// Context init param constants
-const VIRTGPU_CONTEXT_PARAM_CAPSET_ID: u64 = 0x0001;
-const VIRTGPU_CONTEXT_PARAM_NUM_RINGS: u64 = 0x0002;
-const VIRTGPU_CONTEXT_PARAM_DEBUG_NAME: u64 = 0x0004;
-
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -235,6 +217,7 @@ pub(super) fn virtgpu_resource_create(
     >,
 ) -> Result<i32> {
     let mut req = cmd.read()?;
+    let ctx_id = handle.ensure_virgl_context()?;
 
     // Allocate a new virtio-gpu resource id
     let res_handle = handle
@@ -346,14 +329,13 @@ pub(super) fn virtgpu_resource_create(
         req.size = req.width.saturating_mul(req.height).saturating_mul(4);
     }
 
-    // Attach the resource to the virgl context
-    if req.target != 0 {
-        handle
-            .gpu_manager
-            .gpu
-            .ctx_attach_resource(res_handle)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-    }
+    // Every 3D resource, including Gallium buffer resources (`target == 0`),
+    // must be visible to the context that submits commands referencing it.
+    handle
+        .gpu_manager
+        .gpu
+        .ctx_attach_resource(ctx_id, res_handle)
+        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 
     req.res_handle = res_handle;
     req.stride = req.width.saturating_mul(4);
@@ -507,6 +489,7 @@ pub(super) fn virtgpu_execbuffer(
             }
         }
 
+        let ctx_id = handle.ensure_virgl_context()?;
         let mut resp = req;
 
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
@@ -518,18 +501,21 @@ pub(super) fn virtgpu_execbuffer(
             handle
                 .gpu_manager
                 .gpu
-                .submit_3d_fenced(req.size, &cmd_buf, fence_id)
+                .submit_3d_fenced(ctx_id, req.size, &cmd_buf, fence_id)
                 .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 
             // The fence is already signaled; hand back a pollable fd.
             let fence_file = Arc::new(super::fence::FenceFile::new());
-            let fd = file_table.unwrap().write().insert(fence_file, FdFlags::empty());
+            let fd = file_table
+                .unwrap()
+                .write()
+                .insert(fence_file, FdFlags::empty());
             resp.fence_fd = u32::from(fd) as i32;
         } else {
             handle
                 .gpu_manager
                 .gpu
-                .submit_3d(req.size, &cmd_buf)
+                .submit_3d(ctx_id, req.size, &cmd_buf)
                 .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
             resp.fence_fd = -1;
         }
@@ -539,12 +525,10 @@ pub(super) fn virtgpu_execbuffer(
     })())
 }
 
-/// CONTEXT_INIT: create a 3D context (virgl context) on the virtio-gpu device.
-///
-/// Mesa calls this to initialize the virgl rendering context. The capset
-/// id determines which virgl version (virgl or virgl2) is used.
+/// CONTEXT_INIT: reject explicit context initialization when the corresponding
+/// virtio-gpu feature was not negotiated.
 pub(super) fn virtgpu_context_init(
-    handle: &super::DriHandle,
+    _handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
         b'd',
         0x4b,
@@ -552,59 +536,11 @@ pub(super) fn virtgpu_context_init(
         crate::util::ioctl::InOutData<DrmVirtgpuContextInit>,
     >,
 ) -> Result<i32> {
-    let req = cmd.read()?;
-
-    // Parse context parameters
-    let mut capset_id = VIRTIO_GPU_CAPSET_VIRGL; // default to virgl
-    let mut _num_rings = 1u32;
-    let mut _debug_name: [u8; 64] = [0; 64];
-
-    if req.num_params > 0 && req.ctx_set_params != 0 {
-        let param_count = req.num_params as usize;
-        let mut params = vec![DrmVirtgpuContextSetParam::default(); param_count];
-        let param_size = size_of::<DrmVirtgpuContextSetParam>();
-        let mut raw = vec![0u8; param_count * param_size];
-        current_userspace!().read_bytes(req.ctx_set_params as usize, &mut raw)?;
-        for (i, chunk) in raw.chunks_exact(param_size).enumerate() {
-            // DrmVirtgpuContextSetParam is { param: u64, value: u64 } = 16 bytes
-            let param = u64::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-            ]);
-            let value = u64::from_le_bytes([
-                chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
-                chunk[15],
-            ]);
-            params[i] = DrmVirtgpuContextSetParam { param, value };
-        }
-
-        for param in &params {
-            match param.param {
-                VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
-                    capset_id = param.value as u32;
-                }
-                VIRTGPU_CONTEXT_PARAM_NUM_RINGS => {
-                    _num_rings = param.value as u32;
-                }
-                VIRTGPU_CONTEXT_PARAM_DEBUG_NAME if param.value != 0 => {
-                    // Copy debug name from userspace
-                    let _ = current_userspace!().read_bytes(param.value as usize, &mut _debug_name);
-                }
-                _ => {
-                    // Ignore unknown context params
-                }
-            }
-        }
-    }
-
-    // Create the virgl context on the virtio-gpu device
-    handle
-        .gpu_manager
-        .gpu
-        .ctx_create(capset_id, &_debug_name)
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-
-    cmd.write(&req)?;
-    Ok(0)
+    let _ = cmd.read()?;
+    return_errno_with_message!(
+        Errno::EINVAL,
+        "virtio-gpu context init extension is not negotiated"
+    );
 }
 
 /// TRANSFER_TO_HOST: transfer data from guest to host for a 3D resource.
@@ -618,23 +554,27 @@ pub(super) fn virtgpu_transfer_to_host(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
+    let ctx_id = handle.ensure_virgl_context()?;
 
-    let inner = handle.inner.lock();
-    let object_id = *inner
-        .handles
-        .get(&req.bo_handle)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-    let resource_id = *handle
-        .gpu_manager
-        .gem_resources
-        .lock()
-        .get(&object_id)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    let object_id = {
+        let inner = handle.inner.lock();
+        *inner
+            .handles
+            .get(&req.bo_handle)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
+    };
+    let resource_id = {
+        let resources = handle.gpu_manager.gem_resources.lock();
+        *resources
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?
+    };
 
     handle
         .gpu_manager
         .gpu
         .transfer_to_host_3d(
+            ctx_id,
             resource_id,
             req.box_.x,
             req.box_.y,
@@ -664,23 +604,27 @@ pub(super) fn virtgpu_transfer_from_host(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
+    let ctx_id = handle.ensure_virgl_context()?;
 
-    let inner = handle.inner.lock();
-    let object_id = *inner
-        .handles
-        .get(&req.bo_handle)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-    let resource_id = *handle
-        .gpu_manager
-        .gem_resources
-        .lock()
-        .get(&object_id)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    let object_id = {
+        let inner = handle.inner.lock();
+        *inner
+            .handles
+            .get(&req.bo_handle)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
+    };
+    let resource_id = {
+        let resources = handle.gpu_manager.gem_resources.lock();
+        *resources
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?
+    };
 
     handle
         .gpu_manager
         .gpu
         .transfer_from_host_3d(
+            ctx_id,
             resource_id,
             req.box_.x,
             req.box_.y,

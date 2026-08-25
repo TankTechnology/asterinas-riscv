@@ -164,6 +164,8 @@ struct GpuManager {
     /// GEM object_id → virtio-gpu 3D resource id (set by `RESOURCE_CREATE`).
     gem_resources: SpinLock<BTreeMap<u32, u32>>,
     next_gem_id: AtomicU32,
+    /// Monotonic virgl context id allocator (context id 0 is reserved).
+    next_context_id: AtomicU32,
     /// Property manager for atomic modesetting.
     property_manager: property::PropertyManager,
     /// Monotonic page-flip sequence number (our "vblank counter").
@@ -182,6 +184,7 @@ impl GpuManager {
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
             next_gem_id: AtomicU32::new(1),
+            next_context_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
             next_fence_id: AtomicU64::new(1),
@@ -344,9 +347,17 @@ impl Device for DriRender {
 struct DriHandle {
     gpu_manager: Arc<GpuManager>,
     node_type: DriNodeType,
+    /// Legacy virgl context associated with this open DRM file.
+    context: Mutex<VirglContext>,
     inner: SpinLock<DriInner>,
     /// Notifies readers/pollers when page-flip events are queued.
     pollee: Pollee,
+}
+
+#[derive(Debug)]
+struct VirglContext {
+    id: u32,
+    is_created: bool,
 }
 
 #[derive(Debug)]
@@ -372,9 +383,14 @@ impl DriHandle {
         current_width: u32,
         current_height: u32,
     ) -> Self {
+        let context_id = gpu_manager.next_context_id.fetch_add(1, Ordering::Relaxed);
         Self {
             gpu_manager,
             node_type,
+            context: Mutex::new(VirglContext {
+                id: context_id,
+                is_created: false,
+            }),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -393,6 +409,21 @@ impl DriHandle {
     /// Returns true if KMS ioctls are forbidden on this handle.
     fn is_render_node(&self) -> bool {
         matches!(self.node_type, DriNodeType::Render)
+    }
+
+    /// Creates the per-file legacy virgl context on first 3D use.
+    fn ensure_virgl_context(&self) -> Result<u32> {
+        let mut context = self.context.lock();
+        if !context.is_created {
+            // `VIRTIO_GPU_F_CONTEXT_INIT` is not negotiated, so the legacy
+            // context-create payload must leave `context_init` at zero.
+            self.gpu_manager
+                .gpu
+                .ctx_create(context.id, 0, b"asterinas-drm")
+                .map_err(|_| Error::with_message(Errno::EIO, "cannot create virgl context"))?;
+            context.is_created = true;
+        }
+        Ok(context.id)
     }
 
     /// Queues a page-flip completion event for this file.
@@ -439,6 +470,17 @@ impl DriHandle {
             return_errno_with_message!(Errno::EAGAIN, "no pending DRM events");
         }
         Ok(bytes)
+    }
+}
+
+impl Drop for DriHandle {
+    fn drop(&mut self) {
+        let context = self.context.get_mut();
+        if context.is_created
+            && let Err(error) = self.gpu_manager.gpu.ctx_destroy(context.id)
+        {
+            warn!("cannot destroy virgl context {}: {:?}", context.id, error);
+        }
     }
 }
 

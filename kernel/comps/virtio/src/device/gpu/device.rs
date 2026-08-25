@@ -532,16 +532,17 @@ impl GpuDevice {
     /// 3D: create a virgl rendering context.
     pub fn ctx_create(
         &self,
-        capset_id: u32,
-        debug_name: &[u8; 64],
+        ctx_id: u32,
+        context_init: u32,
+        debug_name: &[u8],
     ) -> Result<(), VirtioDeviceError> {
         let mut name = [0u8; 64];
         let copy_len = debug_name.len().min(64);
         name[..copy_len].copy_from_slice(&debug_name[..copy_len]);
         let req = super::VirtioGpuCtxCreate {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_CREATE),
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_CREATE, ctx_id),
             nlen: copy_len as u32,
-            context_init: capset_id & 0xff,
+            context_init,
             debug_name: name,
         };
         let mut queue = self.control_queue.lock();
@@ -555,9 +556,9 @@ impl GpuDevice {
     }
 
     /// 3D: destroy a virgl rendering context.
-    pub fn ctx_destroy(&self) -> Result<(), VirtioDeviceError> {
+    pub fn ctx_destroy(&self, ctx_id: u32) -> Result<(), VirtioDeviceError> {
         let req = super::VirtioGpuCtxDestroy {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_DESTROY),
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_DESTROY, ctx_id),
         };
         let mut queue = self.control_queue.lock();
         let code = control_cmd(
@@ -570,9 +571,13 @@ impl GpuDevice {
     }
 
     /// 3D: attach a resource to the virgl context.
-    pub fn ctx_attach_resource(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
+    pub fn ctx_attach_resource(
+        &self,
+        ctx_id: u32,
+        resource_id: u32,
+    ) -> Result<(), VirtioDeviceError> {
         let req = super::VirtioGpuCtxResource {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE),
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, ctx_id),
             resource_id,
             padding: 0,
         };
@@ -588,8 +593,8 @@ impl GpuDevice {
 
     /// 3D: submit a virgl command buffer to the host (unfenced — the response
     /// acknowledges receipt, not completion).
-    pub fn submit_3d(&self, size: u32, data: &[u8]) -> Result<(), VirtioDeviceError> {
-        self.submit_3d_with_fence(size, data, 0, 0)
+    pub fn submit_3d(&self, ctx_id: u32, size: u32, data: &[u8]) -> Result<(), VirtioDeviceError> {
+        self.submit_3d_with_fence(ctx_id, size, data, 0, 0)
     }
 
     /// 3D: submit a virgl command buffer with `VIRTIO_GPU_FLAG_FENCE` set.
@@ -599,22 +604,24 @@ impl GpuDevice {
     /// finishes. This is how the render→scanout path synchronizes.
     pub fn submit_3d_fenced(
         &self,
+        ctx_id: u32,
         size: u32,
         data: &[u8],
         fence_id: u64,
     ) -> Result<(), VirtioDeviceError> {
-        self.submit_3d_with_fence(size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)
+        self.submit_3d_with_fence(ctx_id, size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)
     }
 
     fn submit_3d_with_fence(
         &self,
+        ctx_id: u32,
         size: u32,
         data: &[u8],
         flags: u32,
         fence_id: u64,
     ) -> Result<(), VirtioDeviceError> {
         use super::VirtioGpuCmdSubmit;
-        let mut hdr = ctrl_hdr(super::VIRTIO_GPU_CMD_SUBMIT_3D);
+        let mut hdr = ctrl_hdr_3d(super::VIRTIO_GPU_CMD_SUBMIT_3D, ctx_id);
         hdr.flags = flags;
         hdr.fence_id = fence_id;
         let req = VirtioGpuCmdSubmit {
@@ -715,6 +722,7 @@ impl GpuDevice {
     #[expect(clippy::too_many_arguments)]
     pub fn transfer_to_host_3d(
         &self,
+        ctx_id: u32,
         resource_id: u32,
         x: u32,
         y: u32,
@@ -728,7 +736,7 @@ impl GpuDevice {
         layer_stride: u32,
     ) -> Result<(), VirtioDeviceError> {
         let req = super::VirtioGpuTransferHost3d {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D),
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, ctx_id),
             box_: super::VirtioGpuBox { x, y, z, w, h, d },
             offset,
             resource_id,
@@ -750,6 +758,7 @@ impl GpuDevice {
     #[expect(clippy::too_many_arguments)]
     pub fn transfer_from_host_3d(
         &self,
+        ctx_id: u32,
         resource_id: u32,
         x: u32,
         y: u32,
@@ -763,7 +772,7 @@ impl GpuDevice {
         layer_stride: u32,
     ) -> Result<(), VirtioDeviceError> {
         let req = super::VirtioGpuTransferHost3d {
-            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D),
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, ctx_id),
             box_: super::VirtioGpuBox { x, y, z, w, h, d },
             offset,
             resource_id,
@@ -809,6 +818,14 @@ fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
         fence_id: 0,
         ctx_id: 0,
         padding: 0,
+    }
+}
+
+/// Builds a 3D control header for the given virgl context.
+fn ctrl_hdr_3d(type_: u32, ctx_id: u32) -> VirtioGpuCtrlHdr {
+    VirtioGpuCtrlHdr {
+        ctx_id,
+        ..ctrl_hdr(type_)
     }
 }
 
