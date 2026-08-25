@@ -52,6 +52,11 @@ mv -f -- "$temporary" "$COUNTER" || fail boot-count-write
 sync || fail sync
 
 emit "DEBIAN_SYSTEMD_M2_TMPFS boot=$next"
+if ((next == 1)); then
+    systemctl start systemd-logind.service || fail logind-service
+    systemctl is-active --quiet systemd-logind.service || fail logind-service
+    emit "DEBIAN_SYSTEMD_M2_LOGIND boot=1 state=active"
+fi
 emit "DEBIAN_SYSTEMD_M2_READY boot=$next arch=$architecture release=$debian_release"
 if ((next == 1)); then
     reboot -f || fail reboot

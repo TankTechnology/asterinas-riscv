@@ -987,6 +987,8 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         evidence = console.read_text()
         self.assertIn("DEBIAN_SYSTEMD_M2_TMPFS boot=1", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_TMPFS boot=2", evidence)
+        self.assertIn("DEBIAN_SYSTEMD_M2_LOGIND boot=1 state=active", evidence)
+        self.assertNotIn("DEBIAN_SYSTEMD_M2_LOGIND boot=2", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_READY boot=1", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_READY boot=2", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_PASS", evidence)
@@ -1093,6 +1095,7 @@ WantedBy=multi-user.target
             "uname": "#!/bin/sh\nprintf 'riscv64\\n'\n",
             "stat": "#!/bin/sh\ncase \"$*\" in\n  *' /tmp') printf 'tmpfs\\n' ;;\n  *) printf 'ext2/ext3\\n' ;;\nesac\n",
             "dpkg-query": "#!/bin/sh\nprintf 'systemd\\t257.8-1\\nsystemd-sysv\\t257.8-1\\n'\n",
+            "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'start systemd-logind.service'|'is-active --quiet systemd-logind.service') exit 0 ;;\n  *) exit 1 ;;\nesac\n",
             "sync": f"#!/bin/sh\nprintf 'sync\\n' >>'{sync_log}'\n",
             "reboot": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >>'{reboot_log}'\n",
         }
@@ -3821,6 +3824,7 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                 b"Starting kernel ...",
                 b"[\x1b[0;32m  OK  \x1b[0m] Mounted \x1b[0;1;39mrun-lock.mount\x1b[0m - Legacy Locks Directory /run/lock.",
                 b"DEBIAN_SYSTEMD_M2_TMPFS boot=1",
+                b"DEBIAN_SYSTEMD_M2_LOGIND boot=1 state=active",
                 b"DEBIAN_SYSTEMD_M2_READY boot=1 arch=riscv64 release=13.6",
                 b"OpenSBI v1.7",
                 b"U-Boot 2025.07",
@@ -3883,6 +3887,14 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                     1,
                 ),
                 "tmpfs",
+            ),
+            (
+                good.replace(
+                    b"DEBIAN_SYSTEMD_M2_LOGIND boot=1 state=active\n",
+                    b"",
+                    1,
+                ),
+                "logind",
             ),
             (
                 good.replace(
