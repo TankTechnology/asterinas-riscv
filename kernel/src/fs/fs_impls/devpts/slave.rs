@@ -31,15 +31,17 @@ pub struct PtySlaveInode {
 }
 
 impl PtySlaveInode {
-    pub fn new(device: Arc<PtySlave>, fs: Weak<DevPts>) -> Arc<Self> {
+    pub fn new(device: Arc<PtySlave>, fs: Weak<DevPts>, owner: Uid, group: Gid) -> Arc<Self> {
         let devpts = fs.upgrade().unwrap();
-        let metadata = Metadata::new_device(
+        let mut metadata = Metadata::new_device(
             device.index() as u64 + FIRST_SLAVE_INO,
             mkmod!(u+rw, g+w),
             BLOCK_SIZE,
             device.as_ref(),
             devpts.sb().container_dev_id,
         );
+        metadata.uid = owner;
+        metadata.gid = group;
         Arc::new(Self {
             device,
             metadata: RwLock::new(metadata),
