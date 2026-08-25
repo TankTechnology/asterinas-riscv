@@ -42,11 +42,12 @@ class FakeSectorOperations:
 
 
 class MegrezSdhciWriteGateTests(unittest.TestCase):
-    def test_uses_last_sector_inside_exact_partition_two(self):
-        self.assertEqual(TEST_PARTITION_SECTOR, P2_NR_SECTORS - 1)
+    def test_uses_last_page_inside_exact_partition_two(self):
+        sectors_per_page = 4096 // 512
+        self.assertEqual(TEST_PARTITION_SECTOR, P2_NR_SECTORS - sectors_per_page)
         self.assertEqual(
             P2_START_LBA + TEST_PARTITION_SECTOR,
-            P2_START_LBA + P2_NR_SECTORS - 1,
+            P2_START_LBA + P2_NR_SECTORS - sectors_per_page,
         )
 
     def test_success_restores_original_sector(self):
