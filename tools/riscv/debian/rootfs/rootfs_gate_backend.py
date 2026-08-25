@@ -278,7 +278,7 @@ class ConcreteOperations:
                 follow_symlinks=False,
             )
             monitor_path = directory / "monitor.sock"
-            argv = qemu_argv(
+            argv = self._qemu_argv(
                 uboot=uboot,
                 boot_disk=boot,
                 root_disk=root,
@@ -320,6 +320,10 @@ class ConcreteOperations:
                 os.close(master)
             shutil.rmtree(directory, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
+        return qemu_argv(**arguments)
 
     @staticmethod
     def _send_uboot(
