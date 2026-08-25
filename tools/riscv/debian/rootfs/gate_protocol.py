@@ -109,6 +109,7 @@ def qemu_argv(
     smp: int = 4,
     dtb_enabled_cpu_count: int = 4,
     allow_reboot: bool = False,
+    graphical: bool = False,
 ) -> tuple[str, ...]:
     """Construct the frozen no-network SMP=4 two-disk QEMU contract."""
 
@@ -119,6 +120,8 @@ def qemu_argv(
         or dtb_enabled_cpu_count != 4
     ):
         raise ValueError("QEMU and the DTB must expose exactly 4 enabled CPUs")
+    if not isinstance(graphical, bool):
+        raise ValueError("QEMU graphical mode must be a boolean")
     _validate_regular_input(uboot, role="U-Boot")
     _validate_regular_input(boot_disk, role="boot disk")
     _validate_regular_input(root_disk, role="root disk")
@@ -136,6 +139,18 @@ def qemu_argv(
     ):
         raise ValueError("QEMU monitor socket parent must be a non-symlink directory")
 
+    graphics_devices = (
+        (
+            "-device",
+            "bochs-display",
+            "-device",
+            "virtio-keyboard-device",
+            "-device",
+            "virtio-tablet-device",
+        )
+        if graphical
+        else ()
+    )
     arguments = (
         "qemu-system-riscv64",
         "-machine",
@@ -156,6 +171,7 @@ def qemu_argv(
         os.fspath(uboot),
         "-drive",
         f"if=none,format=raw,file={boot_disk},id=bootdisk,readonly=on",
+        *graphics_devices,
         "-device",
         "virtio-blk-device,drive=bootdisk",
         "-drive",
