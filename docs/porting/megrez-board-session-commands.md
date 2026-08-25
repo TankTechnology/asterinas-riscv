@@ -75,6 +75,24 @@ fdt set /chosen asterinas,usb-host /soc/usb@50480000    # 路径以板端 fdt pr
 fdt print /chosen                                        # 核对
 ```
 
+### 5.1 current-main HDMI framebuffer 候选
+
+若本轮目标是复用 U-Boot 已初始化的 1920x1080 HDMI scanout，优先使用
+`tools/riscv/megrez_board_session.py --firmware-framebuffer`，不要手工改写
+环境。该选项只修改本次加载到 RAM 的 DTB，注入的冻结合同为：
+
+- 地址 `0xfd800000`；可见长度 `0x7e9000`；
+- width `1920`、height `1080`、stride `7680`；
+- format `x8r8g8b8`、status `okay`；
+- 运行 `fdt print /framebuffer@fd800000` 后才允许 `booti`。
+
+current-main 目前只把第一个 `console=` 用作 `/dev/console`。要让 Debian
+systemd/Xorg 的控制台路径真正落到 HDMI，bootargs 必须以
+`console=tty0` 作为第一个 console。串口自动门禁应使用
+`--final-profile firmware-framebuffer`，只把内核的
+`Registered firmware framebuffer` 当作这一步的 PASS；它不把这个 PASS
+外推成桌面已经启动。
+
 ## 6. bootargs 与 booti
 
 ```text
