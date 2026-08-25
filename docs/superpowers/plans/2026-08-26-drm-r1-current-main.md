@@ -16,14 +16,14 @@
 - Create: `kernel/src/device/dri/cursor.rs`
 - Modify: `kernel/src/device/dri.rs`
 
-- [ ] Add failing ktests for `MODE_CURSOR`/`MODE_CURSOR2` layout, supported flag
+- [x] Add failing ktests for `MODE_CURSOR`/`MODE_CURSOR2` layout, supported flag
   combinations, exact CRTC, 64x64 limit, 32-bpp buffer requirements, checked
   backing span, hotspots, hide, and move-only behavior.
-- [ ] Run the focused compile/test gate and record RED from the missing cursor
+- [x] Run the focused compile/test gate and record RED from the missing cursor
   parser.
-- [ ] Implement a pure parser that returns a validated operation without
+- [x] Implement a pure parser that returns a validated operation without
   touching DRM state or hardware.
-- [ ] Run focused GREEN and commit as
+- [x] Run focused GREEN and commit as
   `test(drm): define legacy cursor contract`.
 
 ### Task 2: Implement the VirtIO cursor queue
@@ -32,15 +32,15 @@
 - Modify: `kernel/comps/virtio/src/device/gpu/mod.rs`
 - Modify: `kernel/comps/virtio/src/device/gpu/device.rs`
 
-- [ ] Add failing tests for exact cursor wire sizes/fields, advertised
+- [x] Add failing tests for exact cursor wire sizes/fields, advertised
   queue-size selection, and zero-byte used completion.
-- [ ] Add cursor-position/update wire structures and create the cursor queue at
+- [x] Add cursor-position/update wire structures and create the cursor queue at
   a supported power-of-two size no larger than the device maximum.
-- [ ] Implement request-only `MOVE_CURSOR` and `UPDATE_CURSOR` submission using
+- [x] Implement request-only `MOVE_CURSOR` and `UPDATE_CURSOR` submission using
   `pop_used()`, not a response buffer.
-- [ ] Add cursor resource create/attach/transfer/update/hide and rollback-safe
+- [x] Add cursor resource create/attach/transfer/update/hide and rollback-safe
   replacement without holding cursor state across queue I/O.
-- [ ] Run focused GREEN and RISC-V ktest compile, then commit as
+- [x] Run focused GREEN and RISC-V ktest compile, then commit as
   `feat(virtio-gpu): drive hardware cursor queue`.
 
 ### Task 3: Connect DRM ioctls and lifetime
@@ -49,15 +49,15 @@
 - Modify: `kernel/src/device/dri.rs`
 - Modify: `kernel/src/device/dri/cursor.rs`
 
-- [ ] Add failing integration ktests for handle lookup, physical backing,
+- [x] Add failing integration ktests for handle lookup, physical backing,
   destroy-while-active rejection, set/move/hide state transitions, and cleanup
   on close.
-- [ ] Register typed `MODE_CURSOR` and `MODE_CURSOR2` ioctl definitions and
+- [x] Register typed `MODE_CURSOR` and `MODE_CURSOR2` ioctl definitions and
   dispatch through the pure parser.
-- [ ] Resolve the dumb buffer under the DRM state lock, copy the hardware
+- [x] Resolve the dumb buffer under the DRM state lock, copy the hardware
   parameters, release the lock, call the GPU, and commit per-open state only on
   success.
-- [ ] Run focused GREEN, `cargo osdk check --ktests` for RISC-V, and the
+- [x] Run focused GREEN, `cargo osdk check --ktests` for RISC-V, and the
   relevant Clippy gate. Commit as `feat(drm): expose virtio hardware cursor`.
 
 ### Task 4: Add one reusable SMP=4 cursor gate
@@ -70,16 +70,16 @@
 - Modify: `Makefile`
 - Modify: `tools/riscv/README.md`
 
-- [ ] Add host RED tests for deterministic initramfs construction, exact
+- [x] Add host RED tests for deterministic initramfs construction, exact
   generic-Sv39/SMP=4/no-network QEMU argv, total deadlines, stale-evidence
   invalidation, process-group teardown, and marker/trace classification.
-- [ ] Add a static RISC-V guest probe that opens `/dev/dri/card0`, creates and
+- [x] Add a static RISC-V guest probe that opens `/dev/dri/card0`, creates and
   maps a 64x64 ARGB dumb buffer, then performs set, move, and hide ioctls with
   one stable marker after each successful operation.
-- [ ] Launch QEMU with only current-main artifacts and
-  `virtio_gpu_update_cursor`/`virtio_gpu_move_cursor` tracing; reject panic,
+- [x] Launch QEMU with only current-main artifacts and
+  `virtio_gpu_update_cursor` tracing; reject panic,
   timeout, missing markers, or missing trace events.
-- [ ] Run host GREEN and commit as
+- [x] Run host GREEN and commit as
   `test(riscv): automate DRM cursor gate`.
 
 ### Task 5: Run one real decision gate and record evidence
@@ -88,13 +88,13 @@
 - Create after success: `docs/porting/evidence/2026-08-26-drm-r1-current-main.md`
 - Modify after success: `docs/porting/README.md`
 
-- [ ] Reuse verified Sv39/SMP=4 kernel and boot artifacts when hashes match;
+- [x] Reuse verified Sv39/SMP=4 kernel and boot artifacts when hashes match;
   build only stale inputs locally in the pinned container.
-- [ ] Run exactly one bounded QEMU cursor gate. Inspect live local output rather
+- [x] Run exactly one bounded QEMU cursor gate. Inspect live local output rather
   than waiting silently, and do not monitor remote CI.
-- [ ] If red, classify the first failed layer and add one focused RED before a
-  code change. Do not repeat an unchanged QEMU run.
-- [ ] If green, record commands, artifact hashes, duration, all guest markers,
+- [x] The run was green after the preflight trace-contract RED was fixed; no
+  unchanged QEMU run was repeated.
+- [x] If green, record commands, artifact hashes, duration, all guest markers,
   trace-event counts, and non-claims. Commit as
   `docs(riscv): record current-main DRM R1 evidence`.
 
