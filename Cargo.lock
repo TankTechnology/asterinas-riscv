@@ -317,6 +317,7 @@ name = "aster-mmc"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-cmdline",
  "aster-logger",
  "component",
  "device-id",

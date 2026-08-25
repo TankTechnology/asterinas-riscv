@@ -50,6 +50,7 @@ pub enum ResponseType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DataDirection {
     Read,
+    Write,
 }
 
 /// A command submitted to the SD host controller.
@@ -80,6 +81,10 @@ impl Command {
 
     pub const fn read_single_block(lba: u32) -> Self {
         Self::new(17, lba, ResponseType::Short, Some(DataDirection::Read))
+    }
+
+    pub const fn write_single_block(lba: u32) -> Self {
+        Self::new(24, lba, ResponseType::Short, Some(DataDirection::Write))
     }
 
     pub const fn new(
@@ -244,6 +249,13 @@ mod tests {
         assert_eq!(cmd17.response, ResponseType::Short);
         assert_eq!(cmd17.data, Some(DataDirection::Read));
         assert_eq!(cmd17.command_bits(), (17 << 8) | 0x3a);
+
+        let cmd24 = Command::write_single_block(9);
+        assert_eq!(cmd24.index, 24);
+        assert_eq!(cmd24.argument, 9);
+        assert_eq!(cmd24.response, ResponseType::Short);
+        assert_eq!(cmd24.data, Some(DataDirection::Write));
+        assert_eq!(cmd24.command_bits(), (24 << 8) | 0x3a);
 
         assert_eq!(Command::idle().command_bits(), 0x0000);
         assert_eq!(Command::send_if_cond(0x1aa).command_bits(), (8 << 8) | 0x1a);

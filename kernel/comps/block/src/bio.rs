@@ -485,6 +485,14 @@ impl BioSegment {
         self.inner.dma_slice.write_bytes(offset, buf)
     }
 
+    /// Copies bytes from a write BIO segment into a PIO device buffer.
+    pub fn read_for_device(&self, offset: usize, buf: &mut [u8]) -> Result<(), Error> {
+        if self.inner.direction != BioDirection::ToDevice {
+            return Err(Error::AccessDenied);
+        }
+        self.inner.dma_slice.read_bytes(offset, buf)
+    }
+
     /// Returns the inner DMA object.
     ///
     /// Note that the slicing will be ignored. This is only for testing.
@@ -716,6 +724,12 @@ mod tests {
 
         let write_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         assert!(write_segment.write_from_device(0, &expected).is_err());
+
+        write_segment.write_bytes(0, &expected).unwrap();
+        let mut device_buf = [0u8; SECTOR_SIZE];
+        write_segment.read_for_device(0, &mut device_buf).unwrap();
+        assert_eq!(device_buf, expected);
+        assert!(segment.read_for_device(0, &mut device_buf).is_err());
     }
 }
 

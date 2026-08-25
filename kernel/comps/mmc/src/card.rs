@@ -47,6 +47,8 @@ pub trait HostController {
     fn set_bus_width_4(&mut self) -> Result<(), HostError>;
     fn wait_buffer_read_ready(&mut self) -> Result<(), HostError>;
     fn read_data_word(&mut self) -> Result<u32, HostError>;
+    fn wait_buffer_write_ready(&mut self) -> Result<(), HostError>;
+    fn write_data_word(&mut self, value: u32) -> Result<(), HostError>;
     fn wait_transfer_complete(&mut self) -> Result<(), HostError>;
     fn reset_data_line(&mut self);
 }
@@ -167,6 +169,31 @@ impl Card {
         }
         Ok(())
     }
+
+    /// Writes one 512-byte sector with CMD24 and bounded host waits.
+    pub fn write_sector(
+        self,
+        host: &mut impl HostController,
+        lba: u64,
+        sector: &[u8; SECTOR_SIZE],
+    ) -> Result<(), HostError> {
+        if lba >= self.nr_sectors || lba > u32::MAX as u64 {
+            return Err(HostError::Unsupported);
+        }
+        let result = (|| {
+            host.command(Command::write_single_block(lba as u32))?
+                .short()?;
+            host.wait_buffer_write_ready()?;
+            for chunk in sector.as_chunks::<4>().0 {
+                host.write_data_word(u32::from_le_bytes(*chunk))?;
+            }
+            host.wait_transfer_complete()
+        })();
+        if result.is_err() {
+            host.reset_data_line();
+        }
+        result
+    }
 }
 
 fn app_command(host: &mut impl HostController, rca: u16) -> Result<(), HostError> {
@@ -199,7 +226,7 @@ fn csd_v2_nr_sectors(csd: u128) -> Result<u64, HostError> {
 
 #[cfg(ktest)]
 mod tests {
-    use alloc::{collections::VecDeque, vec};
+    use alloc::{collections::VecDeque, vec, vec::Vec};
 
     use ostd::prelude::ktest;
 
@@ -217,6 +244,8 @@ mod tests {
         steps: VecDeque<Step>,
         words: VecDeque<u32>,
         buffer_ready: Result<(), HostError>,
+        write_ready: Result<(), HostError>,
+        written_words: Vec<u32>,
         transfer_complete: Result<(), HostError>,
         data_resets: usize,
     }
@@ -251,6 +280,8 @@ mod tests {
                 .into(),
                 words: VecDeque::new(),
                 buffer_ready: Ok(()),
+                write_ready: Ok(()),
+                written_words: Vec::new(),
                 transfer_complete: Ok(()),
                 data_resets: 0,
             }
@@ -291,6 +322,15 @@ mod tests {
 
         fn read_data_word(&mut self) -> Result<u32, HostError> {
             self.words.pop_front().ok_or(HostError::Timeout)
+        }
+
+        fn wait_buffer_write_ready(&mut self) -> Result<(), HostError> {
+            self.write_ready
+        }
+
+        fn write_data_word(&mut self, value: u32) -> Result<(), HostError> {
+            self.written_words.push(value);
+            Ok(())
         }
 
         fn wait_transfer_complete(&mut self) -> Result<(), HostError> {
@@ -365,6 +405,47 @@ mod tests {
         );
         assert_eq!(
             card.read_sectors(&mut host, 1, &mut [0u8; 1024]),
+            Err(HostError::Unsupported)
+        );
+    }
+
+    #[ktest]
+    fn writes_one_sector_as_little_endian_words() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::Command(24, 3, Response::Short(0))].into();
+        let mut sector = [0u8; SECTOR_SIZE];
+        sector[0..8].copy_from_slice(&[0, 0, 0, 0, 1, 0, 0, 0]);
+        card.write_sector(&mut host, 3, &sector).unwrap();
+        assert_eq!(host.written_words.len(), 128);
+        assert_eq!(&host.written_words[0..2], &[0, 1]);
+        assert_eq!(host.data_resets, 0);
+        host.assert_done();
+    }
+
+    #[ktest]
+    fn write_failure_resets_data_and_bounds_before_commands() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 2,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::Command(24, 1, Response::Short(0))].into();
+        host.write_ready = Err(HostError::Timeout);
+        let sector = [0u8; SECTOR_SIZE];
+        assert_eq!(
+            card.write_sector(&mut host, 1, &sector),
+            Err(HostError::Timeout)
+        );
+        assert_eq!(host.data_resets, 1);
+        host.assert_done();
+
+        host.steps.clear();
+        assert_eq!(
+            card.write_sector(&mut host, 2, &sector),
             Err(HostError::Unsupported)
         );
     }
