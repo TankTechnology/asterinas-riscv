@@ -42,6 +42,7 @@ const PRESENT_COMMAND_INHIBIT: u32 = 1 << 0;
 const PRESENT_DATA_INHIBIT: u32 = 1 << 1;
 const INTERRUPT_COMMAND_COMPLETE: u32 = 1 << 0;
 const INTERRUPT_TRANSFER_COMPLETE: u32 = 1 << 1;
+const INTERRUPT_BUFFER_WRITE_READY: u32 = 1 << 4;
 const INTERRUPT_BUFFER_READ_READY: u32 = 1 << 5;
 const INTERRUPT_ERROR: u32 = 1 << 15;
 const CLOCK_INTERNAL_ENABLE: u16 = 1 << 0;
@@ -252,7 +253,7 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
     let mut host = MmioHost { mmio, clock_mmio };
     host.validate_handoff().map_err(ProbeError::Host)?;
     ostd::info!(
-        "[mmc] controller {:#x} irq={} read-only",
+        "[mmc] controller {:#x} irq={} bounded-pio",
         config.mmio_range.start,
         config.interrupt
     );
@@ -488,10 +489,15 @@ impl HostController for MmioHost {
             };
         self.wait_clear(Register::PresentState.offset(), inhibit)?;
         self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
-        if command.data == Some(DataDirection::Read) {
+        if command.data.is_some() {
             self.write16(Register::BlockSize.offset(), 512)?;
             self.write16(BLOCK_COUNT, 1)?;
-            self.write16(Register::TransferMode.offset(), 1 << 4)?;
+            let transfer_mode = if command.data == Some(DataDirection::Read) {
+                1 << 4
+            } else {
+                0
+            };
+            self.write16(Register::TransferMode.offset(), transfer_mode)?;
         } else {
             self.write16(Register::TransferMode.offset(), 0)?;
         }
@@ -518,6 +524,14 @@ impl HostController for MmioHost {
 
     fn read_data_word(&mut self) -> Result<u32, HostError> {
         self.read32(Register::BufferData.offset())
+    }
+
+    fn wait_buffer_write_ready(&mut self) -> Result<(), HostError> {
+        self.wait_interrupt(INTERRUPT_BUFFER_WRITE_READY)
+    }
+
+    fn write_data_word(&mut self, value: u32) -> Result<(), HostError> {
+        self.write32(Register::BufferData.offset(), value)
     }
 
     fn wait_transfer_complete(&mut self) -> Result<(), HostError> {
