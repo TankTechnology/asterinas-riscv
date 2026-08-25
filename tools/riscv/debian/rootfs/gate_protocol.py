@@ -21,6 +21,7 @@ GATE_PACKAGE_NAMES = ("base-files", "libc6", "bash", "coreutils", "util-linux")
 _NONCE_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _BASH_VERSION_RE = re.compile(r"\A[0-9]+\.[0-9]+(?:\.[0-9]+)?")
 _PROTOCOL_MARKER_RE = re.compile(r"\A__ASTERINAS_DEBIAN_GATE_[A-Z0-9_]+__(?:[0-9]+)?\Z")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _FATAL_TRANSCRIPT_MARKERS = (
     ("kernel panic", "kernel panic"),
     ("reboot: restarting system", "unexpected reboot"),
@@ -34,6 +35,10 @@ _FATAL_TRANSCRIPT_MARKERS = (
 )
 _SYSTEMD_READY_RE = re.compile(
     r"\ADEBIAN_SYSTEMD_M2_READY boot=([0-9]+) arch=([^ ]+) release=([^ ]+)\Z"
+)
+_SYSTEMD_REQUIRED_MOUNTS = (
+    ("run-lock.mount", "Mounted run-lock.mount - Legacy Locks Directory /run/lock."),
+    ("tmp.mount", "Mounted tmp.mount - Temporary Directory /tmp."),
 )
 
 
@@ -265,6 +270,13 @@ def classify_systemd_m2(
     lowered = text.lower()
     if "debian_systemd_m2_fail reason=" in lowered:
         return _failed("systemd M2 failure marker")
+    if (
+        "failed to acquire watch file descriptor" in lowered
+        or "failed to drain libmount events" in lowered
+    ):
+        return _failed("systemd mount monitor failure")
+    if "mount process finished, but there is no mount" in lowered:
+        return _failed("systemd mount protocol failure")
     for marker, description in _FATAL_TRANSCRIPT_MARKERS:
         if marker in lowered:
             return _failed(f"fatal transcript marker: {description}")
@@ -323,6 +335,15 @@ def classify_systemd_m2(
         or boot2_release != expected_debian_release
     ):
         return _failed("systemd M2 Debian release identity mismatch")
+    boot_windows = (
+        (1, starts[0], boot1_position),
+        (2, starts[1], boot2_position),
+    )
+    for boot_number, start, ready_position in boot_windows:
+        boot_lines = lines[start + 1 : ready_position]
+        for unit, marker in _SYSTEMD_REQUIRED_MOUNTS:
+            if not any(marker in line for line in boot_lines):
+                return _failed(f"missing successful {unit} mount in boot {boot_number}")
     return GateResult(True, "pass", None)
 
 
@@ -339,6 +360,7 @@ def _normalize_transcript(
         return _failed("transcript must be bytes or text")
     if raw_size > MAX_TRANSCRIPT_BYTES:
         return _failed("serial transcript exceeds 8 MiB")
+    text = _ANSI_ESCAPE_RE.sub("", text)
     return text, tuple(line.rstrip("\r") for line in text.splitlines())
 
 
