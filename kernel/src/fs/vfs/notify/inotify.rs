@@ -654,6 +654,7 @@ bitflags! {
         const UNMOUNT       = 1 << 13; // Backing fs was unmounted
         const Q_OVERFLOW    = 1 << 14; // Event queue overflowed
         const IGNORED       = 1 << 15; // File was ignored
+        const ISDIR         = 1 << 30; // Event occurred against a directory
         const CLOSE         = Self::CLOSE_WRITE.bits() | Self::CLOSE_NOWRITE.bits(); // Close events
         const MOVE          = Self::MOVED_FROM.bits() | Self::MOVED_TO.bits();       // Move events
         const ALL_EVENTS    = Self::ACCESS.bits() | Self::MODIFY.bits() | Self::ATTRIB.bits() |
