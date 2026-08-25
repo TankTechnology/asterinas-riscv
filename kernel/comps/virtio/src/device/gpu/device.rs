@@ -2,11 +2,8 @@
 
 //! Implements virtio-gpu device instances (device ID 16).
 //!
-//! This MVP targets the 2D control-queue path: create a single 2D resource,
-//! attach guest memory as its backing store, present it as scanout 0, then push
-//! a test pattern to the host via `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH`.
-//! The cursor queue, EDID, and the virgl 3D path are deliberately left dormant,
-//! mirroring the scope of the initial DRM bring-up.
+//! The driver covers the 2D control-queue and hardware-cursor paths. EDID and
+//! the virgl 3D path remain outside this milestone.
 
 use alloc::{format, sync::Arc, vec::Vec};
 use core::{
@@ -210,7 +207,7 @@ impl GpuDevice {
         hot_y: u32,
         x: i32,
         y: i32,
-    ) -> Result<(), VirtioDeviceError> {
+    ) -> Result<u32, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
         let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
         let mut created = false;
@@ -253,7 +250,7 @@ impl GpuDevice {
         if previous != 0 {
             let _ = self.resource_unref(previous);
         }
-        Ok(())
+        Ok(resource_id)
     }
 
     /// Moves the active hardware cursor without replacing its image.
@@ -271,6 +268,26 @@ impl GpuDevice {
             let _ = self.resource_unref(previous);
         }
         Ok(())
+    }
+
+    /// Hides the cursor only if `resource_id` is still active.
+    ///
+    /// A closing DRM file uses this to avoid hiding a newer cursor installed
+    /// by another file.
+    pub fn clear_cursor(
+        &self,
+        resource_id: u32,
+        x: i32,
+        y: i32,
+    ) -> Result<bool, VirtioDeviceError> {
+        let _operation = self.cursor_operation.lock();
+        if self.cursor_resource.load(Ordering::Acquire) != resource_id {
+            return Ok(false);
+        }
+        self.submit_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, x, y)?;
+        self.cursor_resource.store(0, Ordering::Release);
+        let _ = self.resource_unref(resource_id);
+        Ok(true)
     }
 
     /// Renders the test pattern and presents it on scanout 0.
