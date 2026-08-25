@@ -296,14 +296,14 @@ int main(void) {
         uint32_t zero = 0;
         uint32_t cmds[] = {
             /* CREATE_OBJECT(SURFACE): surf -> res, B8G8R8X8, level 0, layers 0..0 */
-            (1u) | (7u << 8) | (5u << 16),
+            (1u) | (8u << 8) | (5u << 16),
             surf, res, 1 /* PIPE_FORMAT_B8G8R8X8_UNORM */, 0, 0,
             /* SET_FRAMEBUFFER_STATE: nr_cbufs=1, zsurf=0, cbuf0=surf */
             (5u) | (0u << 8) | (3u << 16),
             1, 0, surf,
             /* CLEAR: buffers=COLOR0, RGBA=(1,0,0,1), depth=0, stencil=0 */
             (7u) | (0u << 8) | (8u << 16),
-            1, red, zero, zero, red, 0, 0, 0,
+            1u << 2, red, zero, zero, red, 0, 0, 0,
         };
         uint32_t render_bo = cd.handle;
         struct drm_virtgpu_execbuffer eb = {
@@ -328,12 +328,13 @@ int main(void) {
         memset(pixels, 0, cd.size);
         CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &up) == 0,
               "TRANSFER_FROM_HOST after render");
-        /* B8G8R8X8 little-endian: bytes B,G,R,X = 0,0,255,0 -> 0x00ff0000. */
+        /* B8G8R8X8 little-endian: compare B, G, and R; the X byte is undefined. */
         uint32_t px0 = pixels[0];
         uint32_t pxmid = pixels[(TEX_W * TEX_H) / 2];
-        printf("M16_VIRGL_RENDER px0=%08x pxmid=%08x (want 00ff0000 for red)\n",
+        printf("M16_VIRGL_RENDER px0=%08x pxmid=%08x (want RGB=ff0000)\n",
                px0, pxmid);
-        CHECK(px0 == 0x00ff0000u && pxmid == 0x00ff0000u,
+        CHECK((px0 & 0x00ffffffu) == 0x00ff0000u &&
+                  (pxmid & 0x00ffffffu) == 0x00ff0000u,
               "render reached backing (red clear)");
     }
 
