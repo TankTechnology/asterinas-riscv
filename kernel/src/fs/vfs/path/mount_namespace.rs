@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::sync::UniqueArc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use spin::Once;
 
@@ -9,13 +10,19 @@ use super::{
     try_get_mnt_ns_inode,
 };
 use crate::{
+    events::IoEvents,
     fs::{
         fs_impls::ramfs::RamFs,
         pseudofs::{NsCommonOps, NsType, StashedDentry},
         vfs::path::{Dentry, Mount, Path, PathResolver},
     },
     prelude::*,
-    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread},
+    process::{
+        UserNamespace,
+        credentials::capabilities::CapSet,
+        posix_thread::PosixThread,
+        signal::{PollHandle, Pollee},
+    },
     security::lsm::hooks as lsm_hooks,
 };
 
@@ -40,6 +47,9 @@ pub struct MountNamespace {
     stashed_dentry: StashedDentry,
     /// Live mounts that belong to this namespace, keyed by [`Mount::unique_id`].
     mounts: SpinLock<BTreeMap<u64, Weak<Mount>>>,
+    /// Sequence number and wait queue for `/proc/*/mountinfo` pollers.
+    mount_event: AtomicU64,
+    mount_pollee: Pollee,
 }
 
 impl PartialEq for MountNamespace {
@@ -77,6 +87,8 @@ impl MountNamespace {
             owner,
             stashed_dentry: StashedDentry::new(),
             mounts: SpinLock::new(BTreeMap::new()),
+            mount_event: AtomicU64::new(0),
+            mount_pollee: Pollee::new(),
         });
         let root = build_root_fn(&UniqueArc::downgrade(&new_ns))?;
         new_ns.root = Some(root);
@@ -158,6 +170,42 @@ impl MountNamespace {
     /// Removes `unique_id` from this namespace's lookup table.
     pub(super) fn deregister_mount(&self, unique_id: u64) {
         self.mounts.lock().remove(&unique_id);
+    }
+
+    /// Returns the current mount-topology event sequence.
+    pub(in crate::fs) fn mount_event(&self) -> u64 {
+        self.mount_event.load(Ordering::Acquire)
+    }
+
+    /// Polls mount-topology changes relative to one open procfs file.
+    ///
+    /// This mirrors Linux's per-open `poll_event` comparison in `mounts_poll`.
+    /// See <https://github.com/torvalds/linux/blob/master/fs/proc_namespace.c>.
+    pub(in crate::fs) fn poll_mount_changes(
+        &self,
+        observed_event: &AtomicU64,
+        mask: IoEvents,
+        poller: Option<&mut PollHandle>,
+    ) -> IoEvents {
+        if let Some(poller) = poller {
+            self.mount_pollee
+                .register_poller(poller, mask | IoEvents::ALWAYS_POLL);
+        }
+
+        let current_event = self.mount_event();
+        let previous_event = observed_event.swap(current_event, Ordering::AcqRel);
+        let mut events = IoEvents::IN | IoEvents::RDNORM;
+        if previous_event != current_event {
+            events |= IoEvents::ERR | IoEvents::PRI;
+        }
+        events & (mask | IoEvents::ALWAYS_POLL)
+    }
+
+    /// Notifies procfs pollers after a mount-topology mutation commits.
+    pub(super) fn notify_mount_change(&self) {
+        self.mount_event.fetch_add(1, Ordering::Release);
+        self.mount_pollee
+            .notify(IoEvents::IN | IoEvents::RDNORM | IoEvents::ERR | IoEvents::PRI);
     }
 
     /// Looks up a live mount in this namespace by its unique 64-bit ID.

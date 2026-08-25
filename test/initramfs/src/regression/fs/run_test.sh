@@ -126,6 +126,7 @@ echo "All mount bind file test passed."
 
 ./mount/listmount
 ./mount/mount_api
+./mount/mountinfo_poll
 ./mount/mount_move
 
 ./overlayfs/ovl_test
