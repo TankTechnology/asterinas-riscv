@@ -24,7 +24,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{Gid, Uid},
+    process::{Gid, Uid, posix_thread::AsPosixThread},
 };
 
 mod ptmx;
@@ -79,7 +79,17 @@ impl DevPts {
 
         let (master, slave) = crate::device::new_pty_pair(index as u32, self.root.ptmx.clone())?;
 
-        let slave_inode = PtySlaveInode::new(slave, self.this.clone());
+        let current_thread = current_thread!();
+        let posix_thread = current_thread.as_posix_thread().ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "the PTY opener is not a POSIX thread")
+        })?;
+        let credentials = posix_thread.credentials();
+        let slave_inode = PtySlaveInode::new(
+            slave,
+            self.this.clone(),
+            credentials.fsuid(),
+            credentials.fsgid(),
+        );
         self.root
             .slaves
             .write()
@@ -385,5 +395,25 @@ impl Inode for RootInode {
 
     fn revalidate_absent(&self, _name: &str) -> bool {
         false
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn pty_slave_is_owned_by_the_opening_user() {
+        let devpts = DevPts::new();
+        let (_, slave) = crate::device::new_pty_pair(0, devpts.root.ptmx.clone()).unwrap();
+        let owner = Uid::new(1000);
+        let group = Gid::new(1000);
+        let inode = PtySlaveInode::new(slave, devpts.this.clone(), owner, group);
+
+        assert_eq!(inode.owner().unwrap(), owner);
+        assert_eq!(inode.group().unwrap(), group);
+        assert_eq!(inode.mode().unwrap(), mkmod!(u+rw, g+w));
     }
 }
