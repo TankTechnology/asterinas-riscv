@@ -7,6 +7,8 @@
 
 extern crate alloc;
 
+use core::sync::atomic::AtomicBool;
+
 use aster_block::MajorIdOwner;
 use aster_logger as _;
 use component::{ComponentInitError, init_component};
@@ -27,6 +29,8 @@ pub mod card;
 pub mod sdhci;
 
 static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
+static MMC_WRITE_PARTITION2: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.mmc_write_partition2", MMC_WRITE_PARTITION2);
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {

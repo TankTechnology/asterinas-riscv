@@ -8,7 +8,7 @@ from pathlib import Path
 from tools.riscv.megrez_sdhci_gate import MAX_TRANSCRIPT_BYTES, classify, publish
 
 
-CONTROLLER = "[mmc] controller 0x50460000 irq=81 read-only"
+CONTROLLER = "[mmc] controller 0x50460000 irq=81 bounded-pio"
 CARD = "[mmc] SDHC rca=43690 sectors=249737216 sector0=55aa"
 BLOCK = "[mmc] mmcblk0 registered read-only"
 HASH = "[mmc] partition-table sha256=" + "a" * 64

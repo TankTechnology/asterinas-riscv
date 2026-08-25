@@ -15,7 +15,7 @@ from pathlib import Path
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_CONTROLLER = re.compile(r"\[mmc\] controller 0x50460000 irq=81 read-only")
+_CONTROLLER = re.compile(r"\[mmc\] controller 0x50460000 irq=81 bounded-pio")
 _CARD = re.compile(
     r"\[mmc\] SDHC rca=(?P<rca>[1-9][0-9]*) sectors=(?P<sectors>[1-9][0-9]*)"
     r"(?: sector0=[0-9a-fA-F]{4})?"

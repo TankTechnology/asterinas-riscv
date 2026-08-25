@@ -131,6 +131,26 @@ Notes:
   It does not sync filesystems, unmount storage,
   or run userspace shutdown handlers.
 
+### `asterinas.mmc_write_partition2`
+
+On RISC-V Megrez systems, opt in to writes through the SD card's second
+partition node. The MMC driver still rejects writes to the whole card and to
+other partitions, and it enables the write path only when partition 2 matches
+the recorded start LBA and sector count.
+
+Example:
+```text
+asterinas.mmc_write_partition2
+```
+
+Notes:
+- This parameter is disabled by default and is intended only for the bounded
+  Megrez Debian provisioning gates.
+- It does not authorize writes when the live partition-2 geometry differs from
+  the frozen Megrez disk contract.
+- Partition-table validation and a recoverable backup are still required before
+  a real-card write test.
+
 ### `i8042.exist`
 
 Override ACPI's indication of whether a PS/2 (i8042) controller exists.
