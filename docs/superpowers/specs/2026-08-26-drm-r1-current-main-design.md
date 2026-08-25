@@ -102,7 +102,8 @@ R1 has three layers:
    zero-length used-buffer completion rule;
 3. one local QEMU generic-Sv39/SMP=4 gate that creates a dumb cursor, issues
    set/move/hide ioctls, and requires guest markers plus QEMU
-   `virtio_gpu_update_cursor`/`virtio_gpu_move_cursor` trace evidence.
+   `virtio_gpu_update_cursor` trace evidence. QEMU uses this single event for
+   both commands and records `update` or `move` in the event payload.
 
 The QEMU gate uses total deadlines, process-group cleanup, complete serial and
 trace capture, and invalidates stale success before launch. A screenshot is

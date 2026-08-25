@@ -35,6 +35,11 @@ Asterinas 已正式支持 Megrez**，也不代表 HDMI 桌面已可用。
 
 ## 最近 QEMU 边界
 
+- current-main DRM R1 已在 QEMU 10.2.1、compiled Sv39、4 hart、2 GiB、
+  无网络环境通过硬件光标 set/move/hide 门禁；用户态 marker 与 VirtIO-GPU
+  host trace 严格对应。见
+  [DRM R1 证据](evidence/2026-08-26-drm-r1-current-main.md)。这证明的是
+  VirtIO-GPU 软件路径，不代表 EIC7700/Megrez HDMI。
 - 相同的 Debian systemd M2 产物已在 QEMU `virt`、compiled Sv39、4 hart、
   2 GiB、无网络、无显示条件下通过两次启动和持久 boot-count gate。见
   [M2 构建与 QEMU 证据](evidence/2026-08-25-debian-systemd-m2-build.md)。
