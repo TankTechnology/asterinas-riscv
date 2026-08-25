@@ -145,6 +145,35 @@ python3 tools/riscv/megrez_sdhci_gate.py \
   --output-dir /absolute/path/to/evidence
 ```
 
+## Megrez firmware framebuffer handoff
+
+`megrez_board_session.py` can add the physically established 1920x1080
+scanout at `0xfd800000` to the live DTB before `booti`. The change is RAM-only:
+the tool never runs `saveenv`, and the default serial-only path remains
+unchanged unless `--firmware-framebuffer` is present.
+
+Asterinas currently selects only the first `console=` value for `/dev/console`.
+The framebuffer gate therefore requires `console=tty0` to be first. The closed
+`firmware-framebuffer` final profile returns success when the serial log has
+observed the kernel register the handoff; Debian/systemd output after that is
+expected on HDMI rather than on the serial console.
+
+```bash
+PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 loglevel=info init=/init asterinas.reboot_after=600 -- --root-init=systemd" \
+  --firmware-framebuffer \
+  --final-profile firmware-framebuffer \
+  --yes \
+  --log /absolute/path/to/megrez-framebuffer.serial.log
+```
+
+This proves the current-main firmware framebuffer registration boundary. It
+does not by itself prove Xorg, a desktop session, or native EIC7700 DRM.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
