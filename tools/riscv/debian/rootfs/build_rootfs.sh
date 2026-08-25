@@ -716,6 +716,7 @@ configure_desktop_m3() {
 Description=Asterinas Debian desktop session
 After=local-fs.target dbus.service systemd-udevd.service systemd-logind.service
 Wants=dbus.service systemd-udevd.service systemd-logind.service
+Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
@@ -736,6 +737,8 @@ RestartSec=2s
 [Install]
 WantedBy=graphical.target
 EOF
+    rm -f -- \
+        "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
     cat >"$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian desktop evidence
