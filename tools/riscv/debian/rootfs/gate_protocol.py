@@ -38,6 +38,9 @@ _SYSTEMD_READY_RE = re.compile(
     r"\ADEBIAN_SYSTEMD_M2_READY boot=([0-9]+) arch=([^ ]+) release=([^ ]+)\Z"
 )
 _SYSTEMD_TMPFS_RE = re.compile(r"\ADEBIAN_SYSTEMD_M2_TMPFS boot=([0-9]+)\Z")
+_SYSTEMD_LOGIND_RE = re.compile(
+    r"\ADEBIAN_SYSTEMD_M2_LOGIND boot=([0-9]+) state=active\Z"
+)
 _SYSTEMD_RUN_LOCK_MARKER = "Mounted run-lock.mount - Legacy Locks Directory /run/lock."
 
 
@@ -351,6 +354,14 @@ def classify_systemd_m2(
         ]
         if tmpfs_boots != [boot_number]:
             return _failed(f"missing exact tmpfs evidence in boot {boot_number}")
+        logind_boots = [
+            int(match.group(1), 10)
+            for line in boot_lines
+            if (match := _SYSTEMD_LOGIND_RE.fullmatch(line)) is not None
+        ]
+        expected_logind_boots = [1] if boot_number == 1 else []
+        if logind_boots != expected_logind_boots:
+            return _failed(f"invalid logind evidence in boot {boot_number}")
     return GateResult(True, "pass", None)
 
 

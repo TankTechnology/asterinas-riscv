@@ -87,10 +87,17 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/systemd-m2/rootfs/packages.lock
 ```
 
-The M2 profile installs Debian's packaged systemd as PID 1, a deterministic
-serial evidence service, and no `qemu-riscv64-static` guest binary. Stage1 must
-receive the exact init argument `--root-init=systemd`; the gate places it after
-the kernel command-line `--` separator so Asterinas forwards it as init argv.
+The M2 profile installs Debian's packaged systemd as PID 1, requires
+`systemd-logind` to reach its active state on the first cold boot, provides a
+deterministic serial evidence service, and contains no `qemu-riscv64-static`
+guest binary. The logind check is the first desktop-session foundation gate:
+it verifies the service responsible for seats, sessions, and device ownership.
+The second boot remains a persistence and normal-reboot check; it intentionally
+does not duplicate the logind check. Neither marker claims that a display
+server or desktop session has started.
+Stage1 must receive the exact init argument `--root-init=systemd`; the gate
+places it after the kernel command-line `--` separator so Asterinas forwards it
+as init argv.
 
 ## Build current-main boot artifacts
 
