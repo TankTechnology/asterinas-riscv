@@ -83,6 +83,12 @@ BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 SYSTEMD_M2_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/systemd_m2_evidence.sh"
 )
+DESKTOP_M3_EVIDENCE_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_evidence.sh"
+)
+DESKTOP_M3_SESSION_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_session.sh"
+)
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
@@ -925,6 +931,21 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         )
         self.assertEqual(result.stderr, "")
 
+    def test_prints_exact_desktop_m3_package_contract(self) -> None:
+        result = _run_builder(
+            "--profile",
+            "desktop-m3",
+            "--print-packages",
+            cwd=self.directory,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            list(get_profile("desktop-m3").requested_packages),
+        )
+        self.assertEqual(result.stderr, "")
+
     def test_rejects_unknown_and_duplicate_profiles_before_tools(self) -> None:
         environment = os.environ.copy()
         environment["PATH"] = "/missing-tools"
@@ -1081,6 +1102,171 @@ WantedBy=multi-user.target
                         os.readlink(wants),
                         "../asterinas-debian-m2.service",
                     )
+
+    def test_configures_desktop_m3_non_root_pam_session(self) -> None:
+        work_directory = self.directory / "configure-desktop-m3"
+        stage = work_directory / "stage"
+        for relative in (
+            "etc",
+            "etc/systemd/system",
+            "etc/X11/xorg.conf.d",
+            "home",
+            "usr/bin",
+            "var/lib/dbus",
+            "var/lib/dpkg",
+            "var/cache/apt/archives",
+            "var/lib/apt/lists",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ):
+            (stage / relative).mkdir(parents=True, exist_ok=True)
+        (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+        (stage / "etc/group").write_text("root:x:0:\n")
+        (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+        (stage / "etc/gshadow").write_text("root:!::\n")
+
+        result = _run_configure_rootfs(work_directory, "desktop-m3")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash\n",
+            (stage / "etc/passwd").read_text(),
+        )
+        session = stage / "usr/lib/asterinas/desktop-m3-session"
+        evidence = stage / "usr/lib/asterinas/desktop-m3-evidence"
+        self.assertEqual(session.read_bytes(), DESKTOP_M3_SESSION_SCRIPT.read_bytes())
+        self.assertEqual(evidence.read_bytes(), DESKTOP_M3_EVIDENCE_SCRIPT.read_bytes())
+        self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o755)
+        desktop_unit = stage / "etc/systemd/system/asterinas-desktop-m3.service"
+        unit_text = desktop_unit.read_text()
+        for directive in (
+            "User=asterinas",
+            "PAMName=login",
+            "TTYPath=/dev/tty1",
+            "ExecStart=/usr/lib/asterinas/desktop-m3-session",
+        ):
+            self.assertIn(directive, unit_text)
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/graphical.target.wants"
+                / "asterinas-desktop-m3.service"
+            ).is_symlink()
+        )
+        xorg_config = (stage / "etc/X11/xorg.conf.d/20-asterinas.conf").read_text()
+        self.assertIn('Driver "fbdev"', xorg_config)
+        self.assertIn('Driver "evdev"', xorg_config)
+        self.assertEqual(
+            os.readlink(stage / "etc/systemd/system/default.target"),
+            "/lib/systemd/system/graphical.target",
+        )
+
+    def test_desktop_m3_evidence_requires_complete_session(self) -> None:
+        input_directory = self.directory / "desktop-input"
+        input_directory.mkdir()
+        (input_directory / "event0").touch()
+        (input_directory / "event1").touch()
+        xorg_log = self.directory / "Xorg.0.log"
+        complete_xorg_log = """(II) FBDEV(0): using shadow framebuffer
+(II) XINPUT: Adding extended input device \"keyboard\"
+(II) XINPUT: Adding extended input device \"pointer\"
+"""
+        fake_bin = self._make_desktop_m3_evidence_tools()
+
+        for missing in (
+            "",
+            "udev",
+            "logind",
+            "login-session",
+            "keyboard",
+            "pointer",
+            "xorg-log",
+            "matchbox-window-manager",
+            "xterm",
+        ):
+            with self.subTest(missing=missing or "none"):
+                console = self.directory / f"desktop-console-{missing or 'complete'}"
+                console.write_text("", encoding="utf-8")
+                xorg_log.write_text(
+                    "" if missing == "xorg-log" else complete_xorg_log,
+                    encoding="utf-8",
+                )
+                environment = os.environ.copy()
+                environment.update(
+                    PATH=f"{fake_bin}:/usr/bin:/bin",
+                    ASTERINAS_DESKTOP_M3_CONSOLE=str(console),
+                    ASTERINAS_DESKTOP_M3_INPUT_DIRECTORY=str(input_directory),
+                    ASTERINAS_DESKTOP_M3_XORG_LOG=str(xorg_log),
+                    ASTERINAS_DESKTOP_M3_TIMEOUT_SECONDS="0",
+                    ASTERINAS_DESKTOP_M3_TEST_MISSING=missing,
+                )
+
+                result = subprocess.run(
+                    ["/bin/bash", str(DESKTOP_M3_EVIDENCE_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                evidence = console.read_text(encoding="utf-8")
+                if not missing:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        evidence,
+                        "DEBIAN_DESKTOP_M3_READY user=asterinas display=:0\n",
+                    )
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(
+                        evidence,
+                        "DEBIAN_DESKTOP_M3_FAIL reason=desktop-timeout\n",
+                    )
+
+    def _make_desktop_m3_evidence_tools(self) -> Path:
+        fake_bin = self.directory / "desktop-evidence-tools"
+        fake_bin.mkdir()
+        scripts = {
+            "systemctl": """#!/bin/sh
+case "$ASTERINAS_DESKTOP_M3_TEST_MISSING:$*" in
+  'udev:is-active --quiet systemd-udevd.service'|\
+  'logind:is-active --quiet systemd-logind.service') exit 1 ;;
+  *':is-active --quiet systemd-udevd.service'|\
+  *':is-active --quiet systemd-logind.service') exit 0 ;;
+  *) exit 1 ;;
+esac
+""",
+            "loginctl": """#!/bin/sh
+[ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = login-session ] && exit 0
+printf '1 1000 asterinas seat0 tty1\n'
+""",
+            "udevadm": """#!/bin/sh
+case "$*" in
+  *event0*)
+    [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = keyboard ] || \
+      printf 'ID_INPUT=1\nID_INPUT_KEYBOARD=1\n'
+    ;;
+  *event1*)
+    [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = pointer ] || \
+      printf 'ID_INPUT=1\nID_INPUT_MOUSE=1\n'
+    ;;
+esac
+""",
+            "pgrep": """#!/bin/sh
+case "$ASTERINAS_DESKTOP_M3_TEST_MISSING:$*" in
+  'matchbox-window-manager:'*matchbox-window-manager*|\
+  'xterm:'*xterm*) exit 1 ;;
+  *'-x matchbox-window-manager') exit 2 ;;
+  *) exit 0 ;;
+esac
+""",
+        }
+        for name, script in scripts.items():
+            path = fake_bin / name
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+        return fake_bin
 
     def _make_systemd_m2_evidence_tools(
         self,
