@@ -345,6 +345,40 @@ LTP_SYSCALL_GATE = ValidationScenario(
     post_terminal_timeout=2.0,
 )
 
+DRM_CURSOR_READY_LINE = b"ASTERINAS_DRM_CURSOR_R1_READY"
+DRM_CURSOR_GATE = ValidationScenario(
+    name="asterinas-drm-cursor-r1",
+    bootargs="console=ttyS0 loglevel=info init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(
+            BootMilestone.ROOTFS_READY,
+            b"[kernel] rootfs is ready",
+        ),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            DRM_CURSOR_READY_LINE,
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=DRM_CURSOR_READY_LINE,
+    forbidden_markers=(
+        b"Uncaught panic",
+        b"unexpected exception",
+        b"virtio-gpu cursor update failed",
+    ),
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=90.0,
+    post_terminal_timeout=0.25,
+)
+
 MEGREZ_USERSPACE_SMOKE = ValidationScenario(
     name="megrez-userspace-smoke",
     bootargs="cpu_no_boost_1_6ghz loglevel=info init=/init",
@@ -568,6 +602,13 @@ GENERIC_SV39_LTP_SMP4 = QemuUbootProfile(
     validation=LTP_SYSCALL_GATE,
 )
 
+GENERIC_SV39_DRM_CURSOR_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-cursor-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_CURSOR_GATE,
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -682,6 +723,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39,
             GENERIC_SV39_LTP_SMP1,
             GENERIC_SV39_LTP_SMP4,
+            GENERIC_SV39_DRM_CURSOR_SMP4,
             MEGREZ_SV48_SVADE_FAST,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,

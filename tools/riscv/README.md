@@ -79,6 +79,49 @@ See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
 the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
 explicit two-boot target, and evidence inspection commands.
 
+## VirtIO-GPU hardware cursor gate
+
+The DRM R1 gate boots current-main Asterinas with the generic Sv39, SMP=4
+profile and one `virtio-gpu-device`. Its guest performs a 64x64 Cursor2 set,
+legacy cursor move, and cursor hide. A pass requires the guest markers and the
+QEMU VirtIO cursor traces in the exact order; networking, USB, and input-device
+fallbacks are absent.
+
+Run the host contract tests with:
+
+```bash
+make test_riscv_drm_cursor_unit
+```
+
+Build the dedicated initramfs and a matching Sv39 kernel, then prepare a
+private U-Boot disk:
+
+```bash
+tools/riscv/drm/build_cursor_gate.sh \
+  target/qemu-uboot/drm-cursor/initramfs.cpio.gz
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-cursor/initramfs.cpio.gz" \
+QEMU_UBOOT_PROFILE=generic-sv39-drm-cursor-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-cursor/prepared" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+```
+
+Run the bounded evidence gate:
+
+```bash
+make test_riscv_drm_cursor \
+  DRM_CURSOR_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_CURSOR_BOOT_DISK="$PWD/target/qemu-uboot/drm-cursor/prepared/boot.ext4" \
+  DRM_CURSOR_MANIFEST="$PWD/target/qemu-uboot/drm-cursor/prepared/artifacts.json" \
+  DRM_CURSOR_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-cursor/evidence"
+```
+
+This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
+it is not evidence for the Megrez display controller or physical scanout.
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It

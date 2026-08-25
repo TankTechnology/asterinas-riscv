@@ -60,11 +60,16 @@ MEGREZ_BASIC = QemuDeviceSet(
     (DeviceKind.BOCHS_DISPLAY,),
     BOCHS_XRGB8888,
 )
+DRM_CURSOR = QemuDeviceSet(
+    "drm-cursor",
+    (DeviceKind.VIRTIO_GPU,),
+)
 
 _DEVICE_SETS = MappingProxyType(
     {
         HEADLESS.name: HEADLESS,
         MEGREZ_BASIC.name: MEGREZ_BASIC,
+        DRM_CURSOR.name: DRM_CURSOR,
     }
 )
 
@@ -162,6 +167,17 @@ def render_device_argv(
             )
         elif device is DeviceKind.VIRTIO_KEYBOARD:
             argv.extend(("-device", "virtio-keyboard-device"))
+        elif device is DeviceKind.VIRTIO_GPU:
+            argv.extend(
+                (
+                    "-nic",
+                    "none",
+                    "-device",
+                    "virtio-gpu-device",
+                    "-trace",
+                    "enable=virtio_gpu_update_cursor",
+                )
+            )
         else:
             raise ValueError(f"device kind is not rendered in this increment: {device}")
     if device_set.framebuffer is not None:
