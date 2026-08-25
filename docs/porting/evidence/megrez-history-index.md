@@ -19,6 +19,7 @@ QEMU results are not treated as Megrez board results.
 | Megrez PID 1 and recovery `3ef99e6bd` | [Controlled board evidence](2026-07-20-megrez-pid1-recovery.md) | PID 1 entered userspace and completed a 50-byte `write`; the UART log contained no ordinary hello and Asterinas received no framebuffer; a later complete OpenSBI/U-Boot epoch reached the prompt without an external reset during the controlled window. |
 | Megrez Sv39 paging contract `b48cfeea3` | [Sv39/Sv48 fault history and Linux comparison](2026-08-25-riscv-sv39-sv48-lessons.md) | A compiled-Sv39 kernel faulted because assembly independently selected Sv48; the single-mode fix subsequently reached OSTD, four harts, MMC, and rootfs on Megrez. |
 | Megrez Debian partition install `b48cfeea3` | [Asterinas Debian install evidence](2026-08-25-megrez-debian-install.md) | Asterinas wrote five mismatching 32 MiB chunks to eMMC partition 2, verified them after reboot, then read the full 1 GiB partition and matched the frozen Debian image SHA-256. Debian userspace boot remains the next gate. |
+| Megrez Debian two-boot root `b48cfeea3` | [Asterinas Debian two-boot evidence](2026-08-25-megrez-debian-two-boot.md) | Stage1 entered a Debian 13.6 riscv64 Bash root twice; the second Asterinas boot recovered the first boot's synced nonce and created a second-boot probe on the ext2 root. |
 
 ## Tracked summaries and local raw evidence
 
