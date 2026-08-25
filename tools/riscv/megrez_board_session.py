@@ -30,6 +30,7 @@ import select
 import sys
 import termios
 import time
+from dataclasses import dataclass
 
 BAUD = 115200
 TX_DELAY = 0.02
@@ -38,6 +39,10 @@ MILESTONES = {
     "kernel_enter": "Enter riscv_boot",
     "banner": "Presented by the Asterinas developers",
     "userspace": "Hello from RISC-V userspace",
+}
+FINAL_MILESTONE_MARKERS = {
+    "generic": MILESTONES["userspace"],
+    "firmware-framebuffer": "Registered firmware framebuffer",
 }
 MILESTONE_SEQUENCE = tuple(MILESTONES)
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
@@ -61,6 +66,71 @@ ARTIFACT_NAME_PATTERN = re.compile(
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = (
     "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
+)
+
+
+@dataclass(frozen=True)
+class FramebufferHandoff:
+    """Validated simple-framebuffer metadata written into the live DTB."""
+
+    address: int
+    size: int
+    width: int
+    height: int
+    stride: int
+    pixel_format: str
+
+    def __post_init__(self) -> None:
+        scalars = (self.address, self.size, self.width, self.height, self.stride)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in scalars
+        ):
+            raise ValueError("framebuffer scalar values must be positive integers")
+        if self.pixel_format != "x8r8g8b8":
+            raise ValueError("unsupported simple-framebuffer format")
+        row_size = self.width * 4
+        visible_size = (self.height - 1) * self.stride + row_size
+        if self.stride < row_size or visible_size > self.size:
+            raise ValueError("framebuffer range cannot contain the visible scanout")
+        if self.address >= 1 << 64 or self.size >= 1 << 64:
+            raise ValueError("framebuffer range must fit in 64 bits")
+        if self.address + self.size > 1 << 64:
+            raise ValueError("framebuffer physical range overflows")
+
+    @property
+    def node_name(self) -> str:
+        return f"framebuffer@{self.address:x}"
+
+    @property
+    def node_path(self) -> str:
+        return f"/{self.node_name}"
+
+    def commands(self) -> tuple[str, ...]:
+        address_hi, address_lo = self.address >> 32, self.address & 0xFFFF_FFFF
+        size_hi, size_lo = self.size >> 32, self.size & 0xFFFF_FFFF
+        path = self.node_path
+        return (
+            f"fdt mknode / {self.node_name}",
+            f'fdt set {path} compatible "simple-framebuffer"',
+            f"fdt set {path} reg <{address_hi:#x} {address_lo:#x} "
+            f"{size_hi:#x} {size_lo:#x}>",
+            f"fdt set {path} width <{self.width:#x}>",
+            f"fdt set {path} height <{self.height:#x}>",
+            f"fdt set {path} stride <{self.stride:#x}>",
+            f'fdt set {path} format "{self.pixel_format}"',
+            f'fdt set {path} status "okay"',
+            f"fdt print {path}",
+        )
+
+
+MEGREZ_FRAMEBUFFER = FramebufferHandoff(
+    address=0xFD80_0000,
+    size=1920 * 1080 * 4,
+    width=1920,
+    height=1080,
+    stride=1920 * 4,
+    pixel_format="x8r8g8b8",
 )
 
 
@@ -105,7 +175,10 @@ def read_available(fd: int, timeout: float) -> str:
 
 
 def observe_milestones(
-    next_index: int, tail: str, text: str
+    next_index: int,
+    tail: str,
+    text: str,
+    markers: dict[str, str] = MILESTONES,
 ) -> tuple[list[str], int, str]:
     """Advance a strict milestone sequence and retain a split-marker tail."""
     window = tail + text
@@ -114,7 +187,7 @@ def observe_milestones(
     while next_index < len(MILESTONE_SEQUENCE):
         occurrences = [
             (position, name)
-            for name, marker in MILESTONES.items()
+            for name, marker in markers.items()
             if (position := window.find(marker, cursor)) >= 0
         ]
         if not occurrences:
@@ -127,19 +200,28 @@ def observe_milestones(
             )
         found.append(name)
         next_index += 1
-        cursor = position + len(MILESTONES[name])
-    tail = window[cursor:][-MILESTONE_TAIL_LENGTH:]
+        cursor = position + len(markers[name])
+    tail_length = max(len(marker) for marker in markers.values()) - 1
+    tail = window[cursor:][-tail_length:]
     return found, next_index, tail
 
 
 class BoardSession:
-    def __init__(self, device: str, log_path: str, confirm: bool = True):
+    def __init__(
+        self,
+        device: str,
+        log_path: str,
+        confirm: bool = True,
+        final_marker: str = MILESTONES["userspace"],
+    ):
         self.fd = open_serial(device)
         self.log = open(log_path, "a", buffering=1)
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
         self._milestone_tail = ""
         self._next_milestone = 0
+        self._markers = dict(MILESTONES)
+        self._markers["userspace"] = final_marker
 
     def _log(self, text: str) -> None:
         self.log.write(text)
@@ -219,7 +301,7 @@ class BoardSession:
 
     def note_milestone(self, text: str) -> None:
         found, next_index, tail = observe_milestones(
-            self._next_milestone, self._milestone_tail, text
+            self._next_milestone, self._milestone_tail, text, self._markers
         )
         self._next_milestone = next_index
         self._milestone_tail = tail
@@ -296,6 +378,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--dtb", required=True, type=safe_artifact_name)
     p.add_argument("--bootargs", type=safe_bootargs, default=DEFAULT_BOOTARGS)
     p.add_argument(
+        "--final-profile",
+        choices=tuple(FINAL_MILESTONE_MARKERS),
+        default="generic",
+        help="closed final milestone profile (default: generic)",
+    )
+    p.add_argument(
+        "--firmware-framebuffer",
+        action="store_true",
+        help="hand the verified Megrez 1080p scanout to Asterinas (requires console=tty0)",
+    )
+    p.add_argument(
         "--expected-crc32",
         type=parse_expected_crc32,
         help="booti=8hex,dtb=8hex,initrd=8hex (required outside mock mode)",
@@ -312,6 +405,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not args.mock_qemu and args.expected_crc32 is None:
         p.error("--expected-crc32 is required outside --mock-qemu mode")
+    if args.mock_qemu and args.firmware_framebuffer:
+        p.error("--firmware-framebuffer is only supported in physical mode")
+    consoles = [
+        token.removeprefix("console=")
+        for token in args.bootargs.split()
+        if token.startswith("console=")
+    ]
+    if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
+        p.error("--firmware-framebuffer requires console=tty0 as the first console")
     return args
 
 
@@ -368,6 +470,9 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     session.load_artifact("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
+    if args.firmware_framebuffer:
+        for command in MEGREZ_FRAMEBUFFER.commands():
+            session.command(command)
     session.load_artifact(
         "initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"]
     )
@@ -388,7 +493,12 @@ def main(argv: list[str]) -> int:
     if args.mock_qemu:
         return run_mock_qemu(args.device, args.mock_timeout)
 
-    session = BoardSession(args.device, args.log, confirm=not args.yes)
+    session = BoardSession(
+        args.device,
+        args.log,
+        confirm=not args.yes,
+        final_marker=FINAL_MILESTONE_MARKERS[args.final_profile],
+    )
     try:
         boot = session.wait_for(PROMPT, timeout=60)
         gate = GATE_PATTERN.search(boot)
