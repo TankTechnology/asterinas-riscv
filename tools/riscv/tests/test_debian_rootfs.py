@@ -3826,6 +3826,7 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                 b"U-Boot 2025.07",
                 b"Starting kernel ...",
                 b"[  OK  ] Mounted run-lock.mount - Legacy Locks Directory /run/lock.",
+                b"\x1b[!p\x1b]104\x07\x1b[?7h\x1b[6n\x1b[32766;32766H\x1b[6n"
                 b"DEBIAN_SYSTEMD_M2_TMPFS boot=2",
                 b"DEBIAN_SYSTEMD_M2_READY boot=2 arch=riscv64 release=13.6",
                 b"DEBIAN_SYSTEMD_M2_PASS boot=2",
