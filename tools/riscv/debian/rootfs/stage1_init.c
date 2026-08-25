@@ -39,7 +39,9 @@ enum {
     EXT2_MAGIC_OFFSET = 56,
     EXT2_LABEL_OFFSET = 120,
     EXT2_LABEL_LENGTH = 16,
-    ROOT_DEVICE_PATH_SIZE = sizeof("/dev/vda"),
+    ROOT_DEVICE_PATH_SIZE = sizeof("/dev/mmcblk0p3"),
+    VIRTIO_CANDIDATE_COUNT = 26,
+    ROOT_DEVICE_CANDIDATE_COUNT = VIRTIO_CANDIDATE_COUNT + 3,
     ROOT_DISCOVERY_TIMEOUT_SECONDS = 30,
 };
 
@@ -65,13 +67,36 @@ enum HandoffStep {
 
 struct Stage1Ops {
     void *context;
-    enum ProbeResult (*probe_device)(void *context, char suffix,
+    enum ProbeResult (*probe_device)(void *context, const char *candidate_path,
                                      char path[ROOT_DEVICE_PATH_SIZE]);
     int (*monotonic_now)(void *context, struct timespec *now);
     int (*wait_for_retry)(void *context, const struct timespec *deadline);
     int (*perform_handoff)(void *context, enum HandoffStep step,
                            const char *root_device);
 };
+
+static int root_candidate_path(size_t index,
+                               char path[ROOT_DEVICE_PATH_SIZE])
+{
+    if (index < VIRTIO_CANDIDATE_COUNT) {
+        (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "/dev/vd%c",
+                       (char)('a' + index));
+        return 0;
+    }
+
+    static const char *const mmc_partitions[] = {
+        "/dev/mmcblk0p1",
+        "/dev/mmcblk0p2",
+        "/dev/mmcblk0p3",
+    };
+    size_t mmc_index = index - VIRTIO_CANDIDATE_COUNT;
+    if (mmc_index >= sizeof(mmc_partitions) / sizeof(mmc_partitions[0])) {
+        return -1;
+    }
+    (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "%s",
+                   mmc_partitions[mmc_index]);
+    return 0;
+}
 
 static int compare_timespec(const struct timespec *left,
                             const struct timespec *right)
@@ -122,10 +147,14 @@ static const char *discover_root(struct Stage1Ops *ops,
         unsigned int match_count = 0;
         char matched_path[ROOT_DEVICE_PATH_SIZE] = { 0 };
 
-        for (char suffix = 'a'; suffix <= 'z'; ++suffix) {
+        for (size_t index = 0; index < ROOT_DEVICE_CANDIDATE_COUNT; ++index) {
             char candidate_path[ROOT_DEVICE_PATH_SIZE] = { 0 };
-            enum ProbeResult result =
-                ops->probe_device(ops->context, suffix, candidate_path);
+            if (root_candidate_path(index, candidate_path) != 0) {
+                return "root-device-candidate";
+            }
+            char matched_candidate[ROOT_DEVICE_PATH_SIZE] = { 0 };
+            enum ProbeResult result = ops->probe_device(
+                ops->context, candidate_path, matched_candidate);
             if (result == PROBE_FATAL) {
                 return "root-device-probe";
             }
@@ -137,7 +166,7 @@ static const char *discover_root(struct Stage1Ops *ops,
             if (match_count > 1) {
                 return "root-device-ambiguous";
             }
-            memcpy(matched_path, candidate_path, sizeof(matched_path));
+            memcpy(matched_path, matched_candidate, sizeof(matched_path));
         }
 
         if (match_count == 1) {
@@ -221,7 +250,8 @@ static void make_valid_superblock(
 }
 
 static enum ProbeResult mock_probe_device(
-    void *opaque, char suffix, char path[ROOT_DEVICE_PATH_SIZE])
+    void *opaque, const char *candidate_path,
+    char path[ROOT_DEVICE_PATH_SIZE])
 {
     struct MockContext *context = opaque;
     unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
@@ -229,13 +259,22 @@ static enum ProbeResult mock_probe_device(
 
     int is_match = 0;
     if (strcmp(context->case_name, "one-valid-device") == 0) {
-        is_match = suffix == 'b';
+        is_match = strcmp(candidate_path, "/dev/vdb") == 0;
+    } else if (strcmp(context->case_name, "one-valid-mmc-device") == 0) {
+        is_match = strcmp(candidate_path, "/dev/mmcblk0p2") == 0;
     } else if (strcmp(context->case_name, "two-matching-devices") == 0) {
-        is_match = suffix == 'b' || suffix == 'd';
+        is_match = strcmp(candidate_path, "/dev/vdb") == 0 ||
+                   strcmp(candidate_path, "/dev/vdd") == 0;
+    } else if (strcmp(context->case_name, "virtio-and-mmc-ambiguous") ==
+               0) {
+        is_match = strcmp(candidate_path, "/dev/vdb") == 0 ||
+                   strcmp(candidate_path, "/dev/mmcblk0p2") == 0;
     } else if (strcmp(context->case_name, "delayed-valid-device") == 0) {
-        is_match = suffix == 'c' && context->retry_count >= 2;
+        is_match = strcmp(candidate_path, "/dev/vdc") == 0 &&
+                   context->retry_count >= 2;
     } else if (is_deadline_boundary_case(context->case_name) &&
-               suffix == 'c' && context->retry_count == 1) {
+               strcmp(candidate_path, "/dev/vdc") == 0 &&
+               context->retry_count == 1) {
         ++context->boundary_device_probe_count;
         is_match = 1;
         if (strcmp(context->case_name, "device-at-deadline") == 0) {
@@ -243,22 +282,22 @@ static enum ProbeResult mock_probe_device(
             context->injected_now.tv_nsec = 0;
         }
     } else if (strcmp(context->case_name, "bad-ext2-magic") == 0 &&
-               suffix == 'b') {
+               strcmp(candidate_path, "/dev/vdb") == 0) {
         superblock[EXT2_MAGIC_OFFSET] = 0;
         is_match = ext2_superblock_matches(superblock);
     } else if (strcmp(context->case_name, "wrong-label") == 0 &&
-               suffix == 'b') {
+               strcmp(candidate_path, "/dev/vdb") == 0) {
         superblock[EXT2_LABEL_OFFSET] = 'X';
         is_match = ext2_superblock_matches(superblock);
     } else if (strcmp(context->case_name, "non-block-device") == 0 &&
-               suffix == 'b') {
+               strcmp(candidate_path, "/dev/vdb") == 0) {
         is_match = 0;
     }
 
     if (!is_match) {
         return PROBE_NO_MATCH;
     }
-    (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "/dev/vd%c", suffix);
+    (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "%s", candidate_path);
     return PROBE_MATCH;
 }
 
@@ -330,10 +369,22 @@ static int run_discovery_self_test(const char *case_name)
             context.retry_count != 0) {
             return fail_self_test(case_name, "valid device was not selected");
         }
+    } else if (strcmp(case_name, "one-valid-mmc-device") == 0) {
+        if (reason != NULL || strcmp(root_device, "/dev/mmcblk0p2") != 0 ||
+            context.retry_count != 0) {
+            return fail_self_test(case_name,
+                                  "valid MMC partition was not selected");
+        }
     } else if (strcmp(case_name, "two-matching-devices") == 0) {
         if (reason == NULL || strcmp(reason, "root-device-ambiguous") != 0 ||
             context.retry_count != 0) {
             return fail_self_test(case_name, "ambiguity was not immediate");
+        }
+    } else if (strcmp(case_name, "virtio-and-mmc-ambiguous") == 0) {
+        if (reason == NULL || strcmp(reason, "root-device-ambiguous") != 0 ||
+            context.retry_count != 0) {
+            return fail_self_test(case_name,
+                                  "cross-bus ambiguity was not immediate");
         }
     } else if (strcmp(case_name, "delayed-valid-device") == 0) {
         if (reason != NULL || strcmp(root_device, "/dev/vdc") != 0 ||
@@ -448,8 +499,10 @@ int main(int argc, char **argv)
     if (handoff_case(case_name, &failing_step, &expected_reason)) {
         result = run_handoff_self_test(case_name, failing_step, expected_reason);
     } else if (strcmp(case_name, "one-valid-device") == 0 ||
+               strcmp(case_name, "one-valid-mmc-device") == 0 ||
                strcmp(case_name, "no-match") == 0 ||
                strcmp(case_name, "two-matching-devices") == 0 ||
+               strcmp(case_name, "virtio-and-mmc-ambiguous") == 0 ||
                strcmp(case_name, "bad-ext2-magic") == 0 ||
                strcmp(case_name, "wrong-label") == 0 ||
                strcmp(case_name, "non-block-device") == 0 ||
@@ -492,11 +545,10 @@ static ssize_t pread_complete(int fd, void *buffer, size_t size, off_t offset)
 }
 
 static enum ProbeResult production_probe_device(
-    void *context, char suffix, char path[ROOT_DEVICE_PATH_SIZE])
+    void *context, const char *candidate_path,
+    char path[ROOT_DEVICE_PATH_SIZE])
 {
     (void)context;
-    char candidate_path[ROOT_DEVICE_PATH_SIZE];
-    (void)snprintf(candidate_path, sizeof(candidate_path), "/dev/vd%c", suffix);
 
     int fd;
     do {
@@ -525,7 +577,7 @@ static enum ProbeResult production_probe_device(
         return PROBE_NO_MATCH;
     }
 
-    memcpy(path, candidate_path, sizeof(candidate_path));
+    (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "%s", candidate_path);
     return PROBE_MATCH;
 }
 

@@ -445,8 +445,10 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertEqual(compilation.returncode, 0, compilation.stderr)
         cases = (
             "one-valid-device",
+            "one-valid-mmc-device",
             "no-match",
             "two-matching-devices",
+            "virtio-and-mmc-ambiguous",
             "bad-ext2-magic",
             "wrong-label",
             "non-block-device",
