@@ -20,23 +20,14 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
+from tools.riscv.debian.rootfs.profiles import RootfsProfile, get_profile
 
-ROOT_LABEL = "ASTER_DEBIANROOT"
-ROOT_UUID = "7b7ad749-77d0-4e59-89e4-e117244a70aa"
-INSTALL_PACKAGES = (
-    "bash",
-    "ca-certificates",
-    "coreutils",
-    "procps",
-    "util-linux",
-)
-GATE_IDENTITY_PACKAGES = (
-    "base-files",
-    "libc6",
-    "bash",
-    "coreutils",
-    "util-linux",
-)
+
+_M1_PROFILE = get_profile("minimal-m1")
+ROOT_LABEL = _M1_PROFILE.root_label
+ROOT_UUID = _M1_PROFILE.root_uuid
+INSTALL_PACKAGES = _M1_PROFILE.requested_packages
+GATE_IDENTITY_PACKAGES = _M1_PROFILE.identity_packages
 
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
@@ -49,7 +40,7 @@ _ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
 _FILESYSTEM_BLOCK_SIZE_BYTES = 4096
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 
-_MANIFEST_KEYS = {
+_MANIFEST_V1_KEYS = {
     "schema_version",
     "suite",
     "debian_release",
@@ -64,6 +55,7 @@ _MANIFEST_KEYS = {
     "root_image_sha256",
     "gate_packages",
 }
+_MANIFEST_V2_KEYS = _MANIFEST_V1_KEYS | {"profile"}
 _SIGNED_METADATA_KEYS = {"url", "sha256"}
 _DOWNLOADED_PACKAGE_KEYS = {"name", "architecture", "version", "sha256"}
 _FILESYSTEM_KEYS = {
@@ -98,6 +90,7 @@ class RootfsManifest:
     """The immutable provenance and content identity of a Debian rootfs."""
 
     schema_version: int
+    profile: str
     suite: str
     debian_release: str
     mirror_url: str
@@ -138,7 +131,20 @@ def load_manifest(path: Path) -> RootfsManifest:
             f"column {error.colno}: {error.msg}"
         ) from error
     manifest = _mapping(raw, "manifest")
-    _exact_keys(manifest, _MANIFEST_KEYS, "manifest")
+    if "schema_version" not in manifest:
+        raise ContractError("missing manifest fields: ['schema_version']")
+    schema_version = _integer(manifest["schema_version"], "schema_version")
+    if schema_version == 1:
+        _exact_keys(manifest, _MANIFEST_V1_KEYS, "manifest")
+        profile = _M1_PROFILE
+    elif schema_version == 2:
+        _exact_keys(manifest, _MANIFEST_V2_KEYS, "manifest")
+        profile = _profile_for_manifest(
+            schema_version,
+            _string(manifest["profile"], "profile"),
+        )
+    else:
+        raise ContractError(f"unsupported manifest schema version: {schema_version}")
 
     signed_metadata = _mapping(
         manifest["signed_metadata"],
@@ -162,12 +168,13 @@ def load_manifest(path: Path) -> RootfsManifest:
     gate_packages = _mapping(manifest["gate_packages"], "gate_packages")
     _exact_keys(
         gate_packages,
-        set(GATE_IDENTITY_PACKAGES),
+        set(profile.identity_packages),
         "gate_packages",
     )
 
     return RootfsManifest(
-        schema_version=_integer(manifest["schema_version"], "schema_version"),
+        schema_version=schema_version,
+        profile=profile.name,
         suite=_string(manifest["suite"], "suite"),
         debian_release=_string(
             manifest["debian_release"],
@@ -212,7 +219,7 @@ def load_manifest(path: Path) -> RootfsManifest:
         ),
         gate_packages=tuple(
             (name, _string(gate_packages[name], f"gate_packages.{name}"))
-            for name in GATE_IDENTITY_PACKAGES
+            for name in profile.identity_packages
         ),
     )
 
@@ -248,7 +255,7 @@ def validate_frozen_root(
     """Validates a base image and its complete frozen-build identity."""
 
     _require_integer(manifest.schema_version, "schema_version")
-    _require_exact(manifest.schema_version, _MANIFEST_SCHEMA_VERSION, "schema version")
+    profile = _profile_for_manifest(manifest.schema_version, manifest.profile)
     _require_exact(manifest.suite, _SUITE, "suite")
     if _DEBIAN_RELEASE_RE.fullmatch(manifest.debian_release) is None:
         raise ContractError(
@@ -263,8 +270,8 @@ def validate_frozen_root(
     _require_integer(filesystem.size_bytes, "filesystem.size_bytes")
     _require_integer(filesystem.block_size_bytes, "filesystem.block_size_bytes")
     _require_exact(filesystem.filesystem_type, _FILESYSTEM_TYPE, "filesystem type")
-    _require_exact(filesystem.label, ROOT_LABEL, "filesystem label")
-    _require_exact(filesystem.uuid, ROOT_UUID, "filesystem UUID")
+    _require_exact(filesystem.label, profile.root_label, "filesystem label")
+    _require_exact(filesystem.uuid, profile.root_uuid, "filesystem UUID")
     _require_exact(
         filesystem.size_bytes,
         _ROOT_IMAGE_SIZE_BYTES,
@@ -301,7 +308,7 @@ def validate_frozen_root(
             )
 
     downloaded_names = {name for name, _, _, _ in downloaded_packages}
-    missing_install_packages = set(INSTALL_PACKAGES) - downloaded_names
+    missing_install_packages = set(profile.requested_packages) - downloaded_names
     if missing_install_packages:
         raise ContractError(
             "downloaded package identities are missing explicit install packages: "
@@ -315,7 +322,7 @@ def validate_frozen_root(
         raise ContractError("downloaded package set does not equal packages.lock set")
 
     gate_versions = dict(manifest.gate_packages)
-    for package_name in GATE_IDENTITY_PACKAGES:
+    for package_name in profile.identity_packages:
         locked_versions = [
             version
             for name, architecture, version in rows
@@ -591,6 +598,15 @@ def _require_https(value: str, path: str) -> None:
 def _require_exact(actual: object, expected: object, path: str) -> None:
     if actual != expected:
         raise ContractError(f"unexpected {path}: {actual!r}; expected {expected!r}")
+
+
+def _profile_for_manifest(schema_version: int, name: str) -> RootfsProfile:
+    try:
+        profile = get_profile(name)
+    except ValueError as error:
+        raise ContractError(str(error)) from error
+    _require_exact(profile.schema_version, schema_version, "profile schema version")
+    return profile
 
 
 def _argument_parser() -> argparse.ArgumentParser:
