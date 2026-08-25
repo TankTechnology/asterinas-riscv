@@ -7,6 +7,7 @@ umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
+readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SUPPORTED_SUITE="trixie"
@@ -150,7 +151,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2) ;;
+        minimal-m1 | systemd-m2 | desktop-m3) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -168,6 +169,8 @@ configure_profile() {
     INSTALL_PACKAGES=("${profile_fields[@]:2}")
     if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
     fi
 }
 
@@ -665,6 +668,8 @@ EOF
         ln -s -- \
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+    elif [[ "$PROFILE" == desktop-m3 ]]; then
+        configure_desktop_m3 "$stage"
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -681,6 +686,108 @@ EOF
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+configure_desktop_m3() {
+    local stage="$1"
+    local script_directory
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    grep -q '^asterinas:' "$stage/etc/passwd" ||
+        printf '%s\n' \
+            'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \
+            >>"$stage/etc/passwd"
+    grep -q '^asterinas:' "$stage/etc/group" ||
+        printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"
+    grep -q '^asterinas:' "$stage/etc/shadow" ||
+        printf '%s\n' 'asterinas:!:19793:0:99999:7:::' >>"$stage/etc/shadow"
+    grep -q '^asterinas:' "$stage/etc/gshadow" ||
+        printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
+    install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m3_session.sh" \
+        "$stage/usr/lib/asterinas/desktop-m3-session"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m3_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m3-evidence"
+    cat >"$stage/etc/systemd/system/asterinas-desktop-m3.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian desktop session
+After=local-fs.target dbus.service systemd-udevd.service systemd-logind.service
+Wants=dbus.service systemd-udevd.service systemd-logind.service
+
+[Service]
+Type=simple
+User=asterinas
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Environment=HOME=/home/asterinas
+ExecStart=/usr/lib/asterinas/desktop-m3-session
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical.target
+EOF
+    cat >"$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian desktop evidence
+After=asterinas-desktop-m3.service
+Wants=asterinas-desktop-m3.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/desktop-m3-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    mkdir -p -- "$stage/etc/systemd/system/graphical.target.wants"
+    ln -s -- \
+        ../asterinas-desktop-m3.service \
+        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m3.service"
+    ln -s -- \
+        ../asterinas-desktop-m3-evidence.service \
+        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m3-evidence.service"
+    rm -f -- "$stage/etc/systemd/system/default.target"
+    ln -s -- /lib/systemd/system/graphical.target \
+        "$stage/etc/systemd/system/default.target"
+
+    mkdir -p -- "$stage/etc/X11/xorg.conf.d"
+    cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
+Section "Device"
+    Identifier "Asterinas framebuffer"
+    Driver "fbdev"
+    Option "fbdev" "/dev/fb0"
+EndSection
+
+Section "InputClass"
+    Identifier "Asterinas evdev keyboard"
+    MatchIsKeyboard "on"
+    Driver "evdev"
+EndSection
+
+Section "InputClass"
+    Identifier "Asterinas evdev pointer"
+    MatchIsPointer "on"
+    Driver "evdev"
+EndSection
+
+Section "ServerFlags"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
 }
 
 create_and_verify_image() {
