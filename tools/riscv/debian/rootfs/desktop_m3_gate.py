@@ -10,6 +10,7 @@ import re
 import secrets
 import sys
 import time
+from pathlib import Path
 from typing import Any, Mapping
 
 from tools.riscv.debian.rootfs.contract import load_manifest
@@ -137,18 +138,60 @@ def inspect_ppm(
         raise GateFailure("PPM pixel payload has the wrong size")
     first = pixels[:3]
     distinct = {first}
+    non_background_pixels = 0
     for index in range(3, len(pixels), 3):
-        distinct.add(pixels[index : index + 3])
-        if len(distinct) >= 256:
-            break
+        pixel = pixels[index : index + 3]
+        if pixel != first:
+            non_background_pixels += 1
+        if len(distinct) < 256:
+            distinct.add(pixel)
     if len(distinct) < 2:
         raise GateFailure("PPM framebuffer contains a single color")
+    if non_background_pixels < max(1, width * height // 100):
+        raise GateFailure("PPM framebuffer has insufficient rendered content")
     return {
         "width": width,
         "height": height,
         "pixel_count": width * height,
         "distinct_sampled_colors": len(distinct),
+        "non_background_pixels": non_background_pixels,
     }
+
+
+def capture_rendered_ppm(
+    monitor: Any,
+    screenshot: Path,
+    deadline: float,
+    *,
+    expected_width: int = 1280,
+    expected_height: int = 1024,
+    retry_interval: float = 1.0,
+) -> tuple[bytes, dict[str, int]]:
+    """Capture until the first non-blank frame, within one total deadline."""
+
+    quoted = str(screenshot).replace("\\", "\\\\").replace('"', '\\"')
+    while True:
+        if time.monotonic() >= deadline:
+            raise GateFailure("PPM framebuffer contains a single color")
+        monitor.command(f'screendump "{quoted}"', deadline)
+        contents = screenshot.read_bytes()
+        try:
+            metadata = inspect_ppm(
+                contents,
+                expected_width=expected_width,
+                expected_height=expected_height,
+            )
+            return contents, metadata
+        except GateFailure as error:
+            if error.reason not in (
+                "PPM framebuffer contains a single color",
+                "PPM framebuffer has insufficient rendered content",
+            ):
+                raise
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GateFailure("PPM framebuffer contains a single color")
+        time.sleep(min(retry_interval, remaining))
 
 
 class DesktopM3Operations(ConcreteOperations):
@@ -233,19 +276,22 @@ class DesktopM3Operations(ConcreteOperations):
         )
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
-        serial.wait_for(
-            DESKTOP_M3_MILESTONES[-1].encode(),
+        completion = serial.wait_for_any(
+            (
+                DESKTOP_M3_MILESTONES[-1].encode(),
+                b"DEBIAN_DESKTOP_M3_FAIL reason=",
+            ),
             time.monotonic() + config.boot_timeout,
         )
+        if completion.startswith(b"DEBIAN_DESKTOP_M3_FAIL"):
+            raise GateFailure("guest reported desktop failure")
 
         screenshot = session["directory"] / "desktop-m3.ppm"
-        quoted = str(screenshot).replace("\\", "\\\\").replace('"', '\\"')
-        session["monitor"].command(
-            f'screendump "{quoted}"',
+        self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
+            session["monitor"],
+            screenshot,
             time.monotonic() + config.command_timeout,
         )
-        self._screenshot = screenshot.read_bytes()
-        self._screenshot_metadata = inspect_ppm(self._screenshot)
 
     def publish(
         self,

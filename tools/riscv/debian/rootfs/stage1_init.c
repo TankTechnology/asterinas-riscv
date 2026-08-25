@@ -49,6 +49,8 @@ static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANROOT";
 static const unsigned char SYSTEMD_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM2";
+static const unsigned char DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_DEBIANM3";
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -140,12 +142,6 @@ static int compare_timespec(const struct timespec *left,
     return 0;
 }
 
-static const unsigned char *root_label(enum RootInitMode mode)
-{
-    return mode == ROOT_INIT_SYSTEMD ? SYSTEMD_ROOT_LABEL
-                                     : INTERACTIVE_ROOT_LABEL;
-}
-
 static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
 {
     *mode = ROOT_INIT_INTERACTIVE;
@@ -180,6 +176,17 @@ static int ext2_superblock_matches(
                EXT2_LABEL_LENGTH) == 0;
 
     return has_ext2_magic && has_root_label;
+}
+
+static int ext2_superblock_matches_mode(
+    const unsigned char superblock[EXT2_SUPERBLOCK_SIZE],
+    enum RootInitMode mode)
+{
+    if (mode == ROOT_INIT_INTERACTIVE) {
+        return ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL);
+    }
+    return ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, DESKTOP_ROOT_LABEL);
 }
 
 static const char *discover_root(struct Stage1Ops *ops,
@@ -612,12 +619,18 @@ static int run_root_init_self_test(const char *case_name)
         }
     } else if (strcmp(case_name, "systemd-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, root_label(ROOT_INIT_SYSTEMD));
-        if (!ext2_superblock_matches(superblock,
-                                     root_label(ROOT_INIT_SYSTEMD)) ||
-            ext2_superblock_matches(superblock,
-                                    root_label(ROOT_INIT_INTERACTIVE))) {
+        make_valid_superblock(superblock, SYSTEMD_ROOT_LABEL);
+        if (!ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL) ||
+            ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL)) {
             return fail_self_test(case_name, "M2 root label was not isolated");
+        }
+    } else if (strcmp(case_name, "systemd-desktop-root-label") == 0) {
+        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
+        make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
+        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
+            ext2_superblock_matches_mode(superblock,
+                                         ROOT_INIT_INTERACTIVE)) {
+            return fail_self_test(case_name, "M3 root label was not isolated");
         }
     } else if (strcmp(case_name, "systemd-handoff-sequence") == 0) {
         struct MockContext context = {
@@ -745,8 +758,8 @@ static enum ProbeResult production_probe_device(
         pread_complete(fd, superblock, sizeof(superblock), EXT2_SUPERBLOCK_OFFSET);
     (void)close(fd);
     if (bytes_read != (ssize_t)sizeof(superblock) ||
-        !ext2_superblock_matches(
-            superblock, root_label(production_context->root_init_mode))) {
+        !ext2_superblock_matches_mode(superblock,
+                                      production_context->root_init_mode)) {
         return PROBE_NO_MATCH;
     }
 

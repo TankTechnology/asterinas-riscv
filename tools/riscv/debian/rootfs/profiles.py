@@ -83,6 +83,7 @@ _PROFILES = {
             "udev",
             "util-linux",
             "xauth",
+            "x11-utils",
             "xfonts-base",
             "xinit",
             "xserver-xorg-core",

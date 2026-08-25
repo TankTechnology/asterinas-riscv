@@ -378,6 +378,40 @@ class SerialConsole:
             self._append(chunk)
         return self.transcript
 
+    def wait_for_any(
+        self, markers: Sequence[bytes], deadline: float, *, start: int = 0
+    ) -> bytes:
+        """Return the first marker observed after a transcript checkpoint."""
+
+        candidates = tuple(markers)
+        if not candidates or any(not marker for marker in candidates):
+            raise ValueError("serial markers must not be empty")
+        if isinstance(start, bool) or not 0 <= start <= len(self._transcript):
+            raise ValueError("serial marker start offset is out of range")
+
+        while True:
+            matches = (
+                (position, marker)
+                for marker in candidates
+                if (position := self._transcript.find(marker, start)) >= 0
+            )
+            first = min(matches, default=None, key=lambda match: match[0])
+            if first is not None:
+                return first[1]
+            if self.process is not None and self.process.poll() is not None:
+                raise EarlyProcessExit(self.process.returncode or 0)
+            try:
+                chunk = self._read(deadline)
+            except TimeoutError as error:
+                raise TimeoutError("no serial completion marker was seen") from error
+            if chunk is None:
+                continue
+            if not chunk:
+                if self.process is not None and self.process.poll() is not None:
+                    raise EarlyProcessExit(self.process.returncode or 0)
+                raise EOFError("serial console closed before marker")
+            self._append(chunk)
+
     def drain(self, deadline: float) -> bytes:
         initial_length = len(self._transcript)
         while True:
