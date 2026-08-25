@@ -1132,6 +1132,11 @@ WantedBy=multi-user.target
         (stage / "etc/group").write_text("root:x:0:\n")
         (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
         (stage / "etc/gshadow").write_text("root:!::\n")
+        getty_wants = stage / "etc/systemd/system/getty.target.wants"
+        getty_wants.mkdir()
+        (getty_wants / "getty@tty1.service").symlink_to(
+            "/lib/systemd/system/getty@.service"
+        )
 
         result = _run_configure_rootfs(work_directory, "desktop-m3")
 
@@ -1152,8 +1157,10 @@ WantedBy=multi-user.target
             "PAMName=login",
             "TTYPath=/dev/tty1",
             "ExecStart=/usr/lib/asterinas/desktop-m3-session",
+            "Conflicts=getty@tty1.service",
         ):
             self.assertIn(directive, unit_text)
+        self.assertFalse((getty_wants / "getty@tty1.service").exists())
         self.assertTrue(
             (
                 stage
