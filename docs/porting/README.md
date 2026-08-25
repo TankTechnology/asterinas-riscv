@@ -35,6 +35,11 @@ Asterinas 已正式支持 Megrez**，也不代表 HDMI 桌面已可用。
 
 ## 最近 QEMU 边界
 
+- current-main 的签名 Debian Desktop M3 已在 QEMU、compiled Sv39、4 hart、
+  2 GiB、无网络环境通过非 root Xorg fbdev + evdev + Matchbox + xterm 门禁，
+  并保存 1280x1024 非空截图。见
+  [Desktop M3 current-main 证据](evidence/2026-08-26-debian-desktop-m3-current-main.md)。
+  这不代表 Megrez 物理 framebuffer、HDMI 或 xHCI 已通过。
 - current-main DRM R1 已在 QEMU 10.2.1、compiled Sv39、4 hart、2 GiB、
   无网络环境通过硬件光标 set/move/hide 门禁；用户态 marker 与 VirtIO-GPU
   host trace 严格对应。见
