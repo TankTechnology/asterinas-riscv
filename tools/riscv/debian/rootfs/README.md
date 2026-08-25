@@ -75,6 +75,23 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
 
+Build the separate schema-v2 systemd profile only when the M1 artifact is not
+the intended input. It has a distinct label, UUID, and output directory, so it
+cannot alias the interactive root:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile systemd-m2
+python3 -m tools.riscv.debian.rootfs.contract verify \
+  --image target/debian-riscv/systemd-m2/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/systemd-m2/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/systemd-m2/rootfs/packages.lock
+```
+
+The M2 profile installs Debian's packaged systemd as PID 1, a deterministic
+serial evidence service, and no `qemu-riscv64-static` guest binary. Stage1 must
+receive the exact init argument `--root-init=systemd`; the gate places it after
+the kernel command-line `--` separator so Asterinas forwards it as init argv.
+
 ## Build current-main boot artifacts
 
 Build the current Sv39/SMP=4 kernel and deterministic stage-1 handoff archive:
@@ -119,6 +136,23 @@ make test_riscv_debian_rootfs_gate \
   DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/rootfs/packages.lock" \
   DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/rootfs/source-metadata/package-checksums" \
   DEBIAN_GATE_OUTPUT="$PWD/target/debian-riscv/gate"
+```
+
+For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
+one QEMU process alive across the guest's normal reboot, interrupts the second
+U-Boot autoboot, and launches Asterinas a second time without `saveenv`:
+
+```bash
+make test_riscv_debian_systemd_m2_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/systemd-m2/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/systemd-m2/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/systemd-m2/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/systemd-m2/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/systemd-m2/rootfs/source-metadata/package-checksums" \
+  DEBIAN_SYSTEMD_M2_GATE_OUTPUT="$PWD/target/debian-riscv/systemd-m2/gate"
 ```
 
 The target requires every frozen artifact and never invokes debootstrap, a
