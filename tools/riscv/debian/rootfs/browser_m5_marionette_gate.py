@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import socket
@@ -25,7 +26,7 @@ PENDING_MARKERS = (
     ("video-canplay-result", "Local silent video pending"),
     ("video-ended-result", "Local silent video completion pending"),
 )
-PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network=offline"
+PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=firefox-offline source=file"
 MAX_MESSAGE_BYTES = 1024 * 1024
 
 _EXPRESSION = r"""return JSON.stringify({
@@ -199,7 +200,20 @@ def validate_snapshot(snapshot: object) -> None:
 
 def run_gate(host: str, port: int, timeout: float) -> None:
     deadline = time.monotonic() + timeout
-    client = Marionette(host, port, timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GateError("Marionette endpoint did not become ready before deadline")
+        try:
+            client = Marionette(host, port, remaining)
+            break
+        except OSError as error:
+            if error.errno != errno.ECONNREFUSED:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GateError("Marionette endpoint did not become ready before deadline") from error
+            time.sleep(min(0.1, remaining))
     try:
         session = client.command("WebDriver:NewSession", {"strictFileInteractability": True})
         if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):

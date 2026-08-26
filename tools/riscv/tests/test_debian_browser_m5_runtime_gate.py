@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 import socket
@@ -213,6 +214,36 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             ],
         )
 
+    @mock.patch.object(gate.time, "sleep", return_value=None)
+    def test_runner_retries_only_loopback_connection_refused(self, _sleep: mock.Mock) -> None:
+        snapshot = self._snapshot()
+        _Client.responses = [
+            {"sessionId": "session", "capabilities": {}},
+            ["probe"], None, {"value": json.dumps(snapshot)}, {"value": None},
+        ]
+        attempts = [ConnectionRefusedError(errno.ECONNREFUSED, "not ready"), _Client]
+
+        def connect(host: str, port: int, timeout: float) -> _Client:
+            attempt = attempts.pop(0)
+            if isinstance(attempt, BaseException):
+                raise attempt
+            return attempt(host, port, timeout)
+
+        with mock.patch.object(gate, "Marionette", side_effect=connect):
+            gate.run_gate("127.0.0.1", 2828, 5)
+        self.assertEqual(_sleep.call_count, 1)
+        self.assertTrue(_Client.instance.closed)
+
+        with (
+            mock.patch.object(gate, "Marionette", side_effect=ConnectionResetError()),
+            self.assertRaises(ConnectionResetError),
+        ):
+            gate.run_gate("127.0.0.1", 2828, 5)
+        malformed = mock.Mock(side_effect=gate.GateError("unexpected greeting"))
+        with mock.patch.object(gate, "Marionette", malformed), self.assertRaises(gate.GateError):
+            gate.run_gate("127.0.0.1", 2828, 5)
+        malformed.assert_called_once()
+
     @mock.patch.object(gate, "Marionette", _Client)
     @mock.patch.object(gate.time, "sleep", return_value=None)
     def test_runner_polls_from_pending_to_pass(self, _sleep: mock.Mock) -> None:
@@ -276,6 +307,10 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("video.currentTime", client)
         self.assertNotIn("script.evaluate", client)
         self.assertIn("browser-m5-marionette-gate", evidence)
+        self.assertIn('remaining=$((deadline - SECONDS))', evidence)
+        self.assertIn('gate_timeout="$remaining"', evidence)
+        self.assertIn("network_mode=firefox-offline source=file", gate.PASS_LINE)
+        self.assertNotIn("network=offline", gate.PASS_LINE)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
 
     def test_profile_guarantees_small_stdlib_client_runtime(self) -> None:

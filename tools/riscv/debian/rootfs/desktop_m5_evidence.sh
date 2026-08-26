@@ -43,9 +43,13 @@ while ! ready; do
     sleep 1
 done
 
-content_evidence="$(/usr/lib/asterinas/browser-m5-marionette-gate --timeout 30 2>>"$CONSOLE")" ||
+remaining=$((deadline - SECONDS))
+((remaining > 0)) || fail browser-timeout
+gate_timeout="$remaining"
+((gate_timeout <= 30)) || gate_timeout=30
+content_evidence="$(/usr/lib/asterinas/browser-m5-marionette-gate --timeout "$gate_timeout" 2>>"$CONSOLE")" ||
     fail browser-content
-[[ "$content_evidence" == "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network=offline" ]] ||
+[[ "$content_evidence" == "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=firefox-offline source=file" ]] ||
     fail browser-content-output
 
 emit "DEBIAN_BROWSER_M5_UDEV state=active"
