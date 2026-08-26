@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Build an Xfce initramfs that uses Asterinas DRM and Mesa virgl."""
+"""Build an Xfce persistent root for DRM or fbdev display validation."""
 
 from __future__ import annotations
 
@@ -266,7 +266,15 @@ def main() -> int:
         action="store_true",
         help="use the CPU-rendered modesetting fallback instead of glamor",
     )
+    parser.add_argument(
+        "--fbdev-display",
+        action="store_true",
+        help="use Xorg fbdev on a firmware simple-framebuffer instead of DRM",
+    )
     args = parser.parse_args()
+
+    if args.software_display and args.fbdev_display:
+        parser.error("--software-display and --fbdev-display are mutually exclusive")
 
     for path in (args.base, args.runtime / "usr/lib/xorg/Xorg"):
         if not path.exists():
@@ -278,9 +286,12 @@ def main() -> int:
     install_drm_runtime(args.runtime, ROOTFS)
     install_x11_ready_probe(args.runtime, ROOTFS)
 
-    xorg_config = (
-        "xorg-drm-software.conf" if args.software_display else "xorg-drm.conf"
-    )
+    if args.fbdev_display:
+        xorg_config = "xorg-fbdev.conf"
+    elif args.software_display:
+        xorg_config = "xorg-drm-software.conf"
+    else:
+        xorg_config = "xorg-drm.conf"
     shutil.copy2(Path(__file__).with_name(xorg_config), ROOTFS / "etc/xorg.conf")
     shutil.copy2(
         Path(__file__).with_name("units") / "xorg-drm.service",

@@ -1,5 +1,5 @@
 [Unit]
-Description=Xorg display server on virtio-gpu DRM
+Description=Xorg display server for the Asterinas Xfce desktop
 After=multi-user.target
 Before=xfce-session.service
 Conflicts=rescue.service
