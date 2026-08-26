@@ -671,8 +671,8 @@ EOF
         ln -s -- \
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
-    elif [[ "$PROFILE" == desktop-m3 ]]; then
-        configure_desktop_m3 "$stage"
+    elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
+        configure_desktop "$stage" "${PROFILE#desktop-}"
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -691,11 +691,17 @@ EOF
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 }
 
-configure_desktop_m3() {
+configure_desktop() {
     local stage="$1"
+    local generation="$2"
     local script_directory
+    local session_source
+    local evidence_source
+    local service_name="asterinas-desktop-$generation"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    session_source="$script_directory/desktop_${generation}_session.sh"
+    evidence_source="$script_directory/desktop_${generation}_evidence.sh"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
             'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \
@@ -707,16 +713,23 @@ configure_desktop_m3() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+    if [[ "$generation" == m4 ]]; then
+        install -d -m 0755 -o 1000 -g 1000 -- \
+            "$stage/home/asterinas/Asterinas Files"
+        install -D -m 0644 -- \
+            "$script_directory/desktop_m4_welcome.html" \
+            "$stage/usr/share/asterinas/desktop-m4-welcome.html"
+    fi
 
     install -D -m 0755 -- \
-        "$script_directory/desktop_m3_session.sh" \
-        "$stage/usr/lib/asterinas/desktop-m3-session"
+        "$session_source" \
+        "$stage/usr/lib/asterinas/desktop-$generation-session"
     install -D -m 0755 -- \
         "$script_directory/desktop_m3_device_access.sh" \
-        "$stage/usr/lib/asterinas/desktop-m3-device-access"
+        "$stage/usr/lib/asterinas/desktop-$generation-device-access"
     install -D -m 0755 -- \
-        "$script_directory/desktop_m3_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m3-evidence"
+        "$evidence_source" \
+        "$stage/usr/lib/asterinas/desktop-$generation-evidence"
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]
@@ -724,7 +737,7 @@ Type=simple
 EOF
     chmod 0644 -- \
         "$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf"
-    cat >"$stage/etc/systemd/system/asterinas-desktop-m3.service" <<'EOF'
+    cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop session
 After=local-fs.target dbus.service systemd-udevd.service systemd-logind.service
@@ -744,40 +757,40 @@ TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
 Environment=HOME=/home/asterinas
-ExecStartPre=+/usr/lib/asterinas/desktop-m3-device-access
-ExecStart=/usr/lib/asterinas/desktop-m3-session
+ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
+ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
 RestartSec=2s
 
 [Install]
 WantedBy=graphical.target
 EOF
-    chmod 0644 -- "$stage/etc/systemd/system/asterinas-desktop-m3.service"
+    chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
     rm -f -- \
         "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
-    cat >"$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service" <<'EOF'
+    cat >"$stage/etc/systemd/system/$service_name-evidence.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop evidence
 After=basic.target
-Wants=asterinas-desktop-m3.service
+Wants=$service_name.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/lib/asterinas/desktop-m3-evidence
+ExecStart=/usr/lib/asterinas/desktop-$generation-evidence
 RemainAfterExit=yes
 
 [Install]
 WantedBy=graphical.target
 EOF
     chmod 0644 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m3-evidence.service"
+        "$stage/etc/systemd/system/$service_name-evidence.service"
     mkdir -p -- "$stage/etc/systemd/system/graphical.target.wants"
     ln -s -- \
-        ../asterinas-desktop-m3.service \
-        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m3.service"
+        ../$service_name.service \
+        "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
     ln -s -- \
-        ../asterinas-desktop-m3-evidence.service \
-        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m3-evidence.service"
+        ../$service_name-evidence.service \
+        "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
     rm -f -- "$stage/etc/systemd/system/default.target"
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
