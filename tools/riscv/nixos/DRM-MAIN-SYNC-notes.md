@@ -345,12 +345,14 @@ Failure drops the pending transaction, releases the object, and rolls back the s
 If the host cannot confirm resource destruction, the allocation is quarantined so its pages cannot be reused while the host may still access them.
 Cleanup-only resources are hidden from normal ioctls.
 Resource ids that outlive their GEM object remain in a device-level retry queue and are retried before later resource creation.
+Each retry pass visits every resource that was queued when the pass began without allocating a snapshot or letting one persistent failure starve later resources.
 This prevents another thread sharing the DRM file from observing and using a handle that the creating ioctl later tries to roll back,
 or from interleaving a later allocation that would make rollback leak pool space.
 
 Focused real-guest validation passed:
 
 - deterministic kernel tests confirmed both pending-allocation serialization and the rollback-versus-quarantine policy;
+- a deterministic kernel test confirmed that failed cleanup does not block later resources and that resources queued during a pass remain for the next pass;
 - read-only ioctl response pages forced concurrent `CREATE_DUMB` copyouts to return `EFAULT`;
   every reserved handle remained unqueryable and the next valid allocation still mapped at offset zero
   (`M20_PRIME_UNPUBLISHED_HANDLE_OK`);
