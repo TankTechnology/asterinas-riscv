@@ -296,10 +296,12 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         repository = Path(__file__).resolve().parents[3]
         rootfs = repository / "tools/riscv/debian/rootfs"
         session = (rootfs / "desktop_m5_session.sh").read_text()
+        firefox = (rootfs / "browser_m5_firefox.sh").read_text()
         evidence = (rootfs / "desktop_m5_evidence.sh").read_text()
         client = (rootfs / "browser_m5_marionette_gate.py").read_text()
-        self.assertIn("--marionette", session)
-        self.assertNotIn("--remote-debugging-port", session)
+        self.assertNotIn("firefox-esr", session)
+        self.assertIn("--marionette", firefox)
+        self.assertNotIn("--remote-debugging-port", firefox)
         self.assertIn('"WebDriver:ExecuteScript"', client)
         self.assertIn("video.currentSrc", client)
         self.assertIn("video.readyState", client)
@@ -309,9 +311,25 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("browser-m5-marionette-gate", evidence)
         self.assertIn('remaining=$((deadline - SECONDS))', evidence)
         self.assertIn('gate_timeout="$remaining"', evidence)
-        self.assertIn("network_mode=firefox-offline source=file", gate.PASS_LINE)
+        self.assertIn("network_mode=private-loopback source=file", gate.PASS_LINE)
+        self.assertIn("direct_nonloopback_ip=unavailable", gate.PASS_LINE)
         self.assertNotIn("network=offline", gate.PASS_LINE)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
+
+    def test_network_namespace_contract_accepts_only_same_loopback_namespace(self) -> None:
+        with mock.patch.object(gate.os, "readlink", side_effect=["net:[7]", "net:[7]"]), \
+             mock.patch.object(gate.socket, "if_nameindex", return_value=[(1, "lo")]):
+            gate.validate_network_namespace(123)
+
+        with mock.patch.object(gate.os, "readlink", side_effect=["net:[7]", "net:[8]"]), \
+             mock.patch.object(gate.socket, "if_nameindex", return_value=[(1, "lo")]):
+            with self.assertRaisesRegex(gate.GateError, "did not join"):
+                gate.validate_network_namespace(123)
+
+        with mock.patch.object(gate.os, "readlink", side_effect=["net:[7]", "net:[7]"]), \
+             mock.patch.object(gate.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]):
+            with self.assertRaisesRegex(gate.GateError, "loopback-only"):
+                gate.validate_network_namespace(123)
 
     def test_profile_guarantees_small_stdlib_client_runtime(self) -> None:
         profile = get_profile("browser-m5")

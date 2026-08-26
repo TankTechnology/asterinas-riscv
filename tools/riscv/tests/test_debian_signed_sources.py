@@ -308,6 +308,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         rootfs = Path(__file__).parents[1] / "debian/rootfs"
         builder = (rootfs / "build_rootfs.sh").read_text()
         session = (rootfs / "desktop_m5_session.sh").read_text()
+        firefox = (rootfs / "browser_m5_firefox.sh").read_text()
         evidence = (rootfs / "desktop_m5_evidence.sh").read_text()
         self.assertIn("$SECURITY_MIRROR/dists/trixie-security/InRelease", builder)
         self.assertIn("verify_m5_releases_are_unchanged", builder)
@@ -318,15 +319,16 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertIn("browser_m5.webm.base64", builder)
         self.assertIn("probe_video_file", builder)
         self.assertIn("install -m 0644", builder)
-        self.assertIn("--offline", session)
-        self.assertIn('"$PROBE_URL"', session)
-        self.assertIn('--profile "$FIREFOX_PROFILE"', session)
-        self.assertEqual(session.count("file:///"), 1)
-        self.assertNotIn("http://", session)
-        self.assertNotIn("https://", session)
+        self.assertNotIn("firefox-esr", session)
+        self.assertIn("--offline", firefox)
+        self.assertIn('"$PROBE_URL"', firefox)
+        self.assertIn('--profile "$PROFILE"', firefox)
+        self.assertEqual(firefox.count("file:///"), 1)
+        self.assertNotIn("http://", firefox)
+        self.assertNotIn("https://", firefox)
         for baseline in ("UDEV", "LOGIND", "SESSION", "INPUT", "XORG", "CLIENTS"):
             self.assertIn(f"DEBIAN_BROWSER_M5_{baseline}", evidence)
-        self.assertIn("DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file", evidence)
+        self.assertIn("DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file network=private-loopback", evidence)
         self.assertIn("browser-m5-marionette-gate", evidence)
         self.assertIn('emit "$content_evidence"', evidence)
         self.assertNotIn("VIDEO_CANPLAY", evidence)
@@ -466,6 +468,11 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             session = stage / "usr/lib/asterinas/desktop-m5-session"
             evidence = stage / "usr/lib/asterinas/desktop-m5-evidence"
             content_gate = stage / "usr/lib/asterinas/browser-m5-marionette-gate"
+            firefox_launcher = stage / "usr/lib/asterinas/browser-m5-firefox"
+            observer = stage / "usr/lib/asterinas/browser-m5-network-observer"
+            firefox_unit = stage / "etc/systemd/system/asterinas-browser-m5.service"
+            observer_unit = stage / "etc/systemd/system/asterinas-browser-m5-network-observer.service"
+            evidence_unit = stage / "etc/systemd/system/asterinas-desktop-m5-evidence.service"
             network_evidence = (
                 stage / "usr/lib/asterinas/desktop-m5-network-evidence"
             )
@@ -479,6 +486,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertEqual(session.stat().st_mode & 0o777, 0o755)
             self.assertEqual(evidence.stat().st_mode & 0o777, 0o755)
             self.assertEqual(content_gate.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(firefox_launcher.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(observer.stat().st_mode & 0o777, 0o755)
             self.assertIn('"WebDriver:ExecuteScript"', content_gate.read_text())
             self.assertEqual(network_evidence.stat().st_mode & 0o777, 0o755)
             self.assertIn(
@@ -491,11 +500,22 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertTrue(policies["DontCheckDefaultBrowser"])
             self.assertEqual(policies["OverrideFirstRunPage"], "")
             self.assertEqual(video.read_bytes()[:4], bytes.fromhex("1a45dfa3"))
-            self.assertIn("--offline", session.read_text())
+            self.assertNotIn("firefox-esr", session.read_text())
+            self.assertIn("--offline", firefox_launcher.read_text())
             self.assertIn(
                 "file:///usr/share/asterinas/browser-m5/index.html",
-                session.read_text(),
+                firefox_launcher.read_text(),
             )
+            firefox_unit_text = firefox_unit.read_text()
+            observer_unit_text = observer_unit.read_text()
+            evidence_unit_text = evidence_unit.read_text()
+            self.assertIn("PrivateNetwork=yes", firefox_unit_text)
+            self.assertIn("User=asterinas", firefox_unit_text)
+            self.assertNotIn("PrivateNetwork", observer_unit_text)
+            self.assertIn("JoinsNamespaceOf=asterinas-browser-m5.service", evidence_unit_text)
+            self.assertLess(evidence_unit_text.index("JoinsNamespaceOf="), evidence_unit_text.index("[Service]"))
+            self.assertIn("PrivateNetwork=yes", evidence_unit_text)
+            self.assertIn("Requires=asterinas-browser-m5.service", evidence_unit_text)
 
     def test_builder_rejects_custom_m5_mirror_before_tools_or_network(self) -> None:
         repository = Path(__file__).resolve().parents[3]

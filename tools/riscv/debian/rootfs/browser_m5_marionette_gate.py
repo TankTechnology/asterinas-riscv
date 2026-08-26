@@ -9,6 +9,7 @@ import argparse
 import errno
 import json
 import math
+import os
 import socket
 import time
 from collections.abc import Sequence
@@ -26,7 +27,7 @@ PENDING_MARKERS = (
     ("video-canplay-result", "Local silent video pending"),
     ("video-ended-result", "Local silent video completion pending"),
 )
-PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=firefox-offline source=file"
+PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=private-loopback source=file direct_nonloopback_ip=unavailable"
 MAX_MESSAGE_BYTES = 1024 * 1024
 
 _EXPRESSION = r"""return JSON.stringify({
@@ -198,6 +199,24 @@ def validate_snapshot(snapshot: object) -> None:
         raise GateError("browser content markers are still pending")
 
 
+def validate_network_namespace(firefox_pid: int) -> None:
+    if firefox_pid <= 1:
+        raise GateError("Firefox PID is outside the valid contract")
+    try:
+        gate_namespace = os.readlink("/proc/self/ns/net")
+        firefox_namespace = os.readlink(f"/proc/{firefox_pid}/ns/net")
+    except OSError as error:
+        raise GateError("cannot inspect Firefox network namespace") from error
+    if gate_namespace != firefox_namespace:
+        raise GateError("content gate did not join the Firefox network namespace")
+    try:
+        interfaces = [name for _, name in socket.if_nameindex()]
+    except OSError as error:
+        raise GateError("cannot inspect private network interfaces") from error
+    if interfaces != ["lo"]:
+        raise GateError("Firefox network namespace is not loopback-only")
+
+
 def run_gate(host: str, port: int, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while True:
@@ -264,10 +283,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--firefox-pid", type=int, required=True)
     values = parser.parse_args(arguments)
     if not 1 <= values.port <= 65535 or not 0 < values.timeout <= 300:
         parser.error("port or timeout is outside the bounded contract")
     try:
+        validate_network_namespace(values.firefox_pid)
         run_gate(values.host, values.port, values.timeout)
     except (GateError, OSError, TimeoutError) as error:
         parser.error(str(error))
