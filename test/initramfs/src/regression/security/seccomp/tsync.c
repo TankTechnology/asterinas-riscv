@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <linux/filter.h>
+#include <linux/capability.h>
 #include <linux/seccomp.h>
 #include <pthread.h>
 #include <stddef.h>
@@ -159,6 +160,77 @@ static int run_isolated(int (*test)(void), const char *name)
 	return 0;
 }
 
+static int run_isolated_without_nnp(int (*test)(void), const char *name)
+{
+	pid_t child = fork();
+	int status;
+
+	if (child == 0)
+		_exit(test());
+	if (child < 0 || waitpid(child, &status, 0) != child ||
+	    !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "seccomp TSYNC: %s failed\n", name);
+		return 1;
+	}
+	printf("seccomp TSYNC: %s passed\n", name);
+	return 0;
+}
+
+static int test_filter_requires_privilege(void)
+{
+	struct __user_cap_header_struct header = {
+		.version = _LINUX_CAPABILITY_VERSION_3,
+		.pid = 0,
+	};
+	struct __user_cap_data_struct data[2] = { 0 };
+
+	if (syscall(SYS_capset, &header, data) != 0)
+		return 1;
+	errno = 0;
+	return install_errno_filter(SYS_getpid, 0) == -1 && errno == EACCES ?
+		0 : 1;
+}
+
+static void *nnp_probe_worker(void *arg)
+{
+	struct worker *worker = arg;
+
+	worker->result = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+	pthread_barrier_wait(&worker->ready);
+	pthread_barrier_wait(&worker->done);
+	worker->result = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+	return NULL;
+}
+
+static int test_tsync_propagates_nnp(void)
+{
+	struct worker worker = { 0 };
+	pthread_t thread;
+	int failed = 1;
+
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, nnp_probe_worker, &worker) != 0)
+		goto out;
+	pthread_barrier_wait(&worker.ready);
+	if (worker.result != 0 ||
+	    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+	    install_errno_filter(SYS_getpid, SECCOMP_FILTER_FLAG_TSYNC) != 0)
+		goto release;
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	thread = 0;
+	failed = worker.result == 1 ? 0 : 1;
+out:
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return failed;
+release:
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	goto out;
+}
+
 static int test_tsync(void)
 {
 	return run_sync_case(SECCOMP_FILTER_FLAG_TSYNC, 1);
@@ -246,6 +318,10 @@ int main(void)
 	int failures = 0;
 
 	failures += run_isolated(test_tsync, "sibling synchronization");
+	failures += run_isolated_without_nnp(test_filter_requires_privilege,
+					   "filter privilege requirement");
+	failures += run_isolated_without_nnp(test_tsync_propagates_nnp,
+					   "TSYNC propagates no_new_privs");
 	failures += run_isolated(test_thread_local, "thread-local install");
 	failures += run_isolated(test_unknown_flags, "unknown flags");
 	failures += run_isolated(test_clone_inherits_filter,
