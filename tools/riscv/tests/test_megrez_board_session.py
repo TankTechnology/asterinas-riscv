@@ -187,12 +187,18 @@ class ArgumentContractTests(unittest.TestCase):
                 "10.100.19.216",
                 "--tftp-netmask",
                 "255.255.248.0",
+                "--uboot-timeout",
+                "43200",
+                "--milestone-timeout",
+                "150",
             ]
         )
         self.assertEqual(args.load_transport, "tftp")
         self.assertEqual(args.tftp_board_address, "10.100.19.200")
         self.assertEqual(args.tftp_server_address, "10.100.19.216")
         self.assertEqual(args.tftp_netmask, "255.255.248.0")
+        self.assertEqual(args.uboot_timeout, 43200)
+        self.assertEqual(args.milestone_timeout, 150)
 
         for flag, value in (
             ("--tftp-board-address", "10.100.19.200; reset"),

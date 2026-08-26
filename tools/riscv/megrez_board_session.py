@@ -501,6 +501,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=60.0,
         help="physical U-Boot prompt/autoboot deadline in seconds (default: 60)",
     )
+    p.add_argument(
+        "--milestone-timeout",
+        type=positive_finite_seconds,
+        default=60.0,
+        help="physical post-boot milestone deadline in seconds (default: 60)",
+    )
     args = p.parse_args(argv)
     if not args.mock_qemu and args.expected_crc32 is None:
         p.error("--expected-crc32 is required outside --mock-qemu mode")
@@ -613,8 +619,7 @@ def main(argv: list[str]) -> int:
 
         session.note_milestone(boot_loaded_artifacts(session, args))
 
-        # Watch for remaining milestones for up to 60s.
-        end = time.monotonic() + 60
+        end = time.monotonic() + args.milestone_timeout
         while time.monotonic() < end and len(session.milestones) != len(MILESTONES):
             text = read_available(session.fd, min(5, end - time.monotonic()))
             if text:
