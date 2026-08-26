@@ -8,7 +8,7 @@
 //! [`PendingGemHandle`] stages a per-file handle until its creating ioctl copies the response.
 
 use core::{
-    mem::forget,
+    mem,
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -27,23 +27,25 @@ impl<'a> GemObjectRef<'a> {
         manager: &'a super::GpuManager,
         buffer: super::DumbBuffer,
     ) -> Result<Self> {
-        let mut objects = manager.gem_objects.lock();
-        let object_id = manager
-            .next_gem_id
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| Error::with_message(Errno::ENOSPC, "GEM object space is exhausted"))?;
-        if objects.contains_key(&object_id) {
-            return_errno_with_message!(Errno::ENOSPC, "GEM object id is already allocated");
-        }
-        objects.insert(
-            object_id,
-            Arc::new(super::GemObject {
-                name: AtomicU32::new(0),
-                ref_count: AtomicU32::new(1),
-                buffer,
-            }),
-        );
-        drop(objects);
+        let object_id = {
+            let mut objects = manager.gem_objects.lock();
+            let object_id = manager
+                .next_gem_id
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| Error::with_message(Errno::ENOSPC, "GEM object space is exhausted"))?;
+            if objects.contains_key(&object_id) {
+                return_errno_with_message!(Errno::ENOSPC, "GEM object id is already allocated");
+            }
+            objects.insert(
+                object_id,
+                Arc::new(super::GemObject {
+                    name: AtomicU32::new(0),
+                    ref_count: AtomicU32::new(1),
+                    buffer,
+                }),
+            );
+            object_id
+        };
         Ok(Self {
             manager,
             object_id,
@@ -72,7 +74,7 @@ impl<'a> GemObjectRef<'a> {
     /// Transfers the owned reference into another lifetime container.
     fn into_raw(self) -> u32 {
         let object_id = self.object_id;
-        forget(self);
+        mem::forget(self);
         object_id
     }
 }
@@ -133,6 +135,15 @@ impl<'a> PendingGemHandle<'a> {
         let object_id = object.into_raw();
         let previous = owner.inner.lock().handles.insert(gem_handle, object_id);
         debug_assert!(previous.is_none());
+    }
+
+    /// Discards the reserved handle and reports final host-resource cleanup.
+    pub(super) fn discard(self) -> Result<bool> {
+        let Self { owner, object, .. } = self;
+        let object_id = object.into_raw();
+        owner
+            .gpu_manager
+            .release_gem_object_and_report_cleanup(object_id)
     }
 }
 

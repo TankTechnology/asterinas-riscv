@@ -294,11 +294,16 @@ pub(super) fn virtgpu_resource_create(
 
     let backing_object_id = backing.map(|(object_id, _, _)| object_id);
     if let Some(object_id) = backing_object_id
-        && handle
+        && (handle
             .gpu_manager
             .gem_resources
             .lock()
             .contains_key(&object_id)
+            || handle
+                .gpu_manager
+                .orphaned_resources
+                .lock()
+                .contains_key(&object_id))
     {
         let _ = handle
             .gpu_manager
@@ -330,17 +335,12 @@ pub(super) fn virtgpu_resource_create(
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
         resource_created = true;
 
-        if let Some((object_id, addr, size)) = backing {
+        if let Some((_, addr, size)) = backing {
             handle
                 .gpu_manager
                 .gpu
                 .attach_backing(res_handle, addr as u64, size)
                 .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-            handle
-                .gpu_manager
-                .gem_resources
-                .lock()
-                .insert(object_id, res_handle);
             req.size = size;
         } else {
             // Host-only resource: report a sensible size estimate.
@@ -373,23 +373,42 @@ pub(super) fn virtgpu_resource_create(
         }
         let resource_released =
             !resource_created || handle.gpu_manager.gpu.resource_unref(res_handle).is_ok();
-        if let Some(object_id) = backing_object_id {
-            let mut resources = handle.gpu_manager.gem_resources.lock();
-            if resource_released && resources.get(&object_id) == Some(&res_handle) {
-                resources.remove(&object_id);
-            } else if !resource_released {
-                resources.insert(object_id, res_handle);
-            }
+        if !resource_released && let Some(object_id) = backing_object_id {
+            handle
+                .gpu_manager
+                .orphaned_resources
+                .lock()
+                .insert(object_id, res_handle);
         }
-        if !resource_released && let Some(pending_buffer) = new_dumb_buffer.take() {
-            // The host may still access this backing. Publish its allocation so
-            // a later buffer cannot reuse the pages while cleanup is retried.
-            pending_buffer.publish_allocation_only();
-        }
-        let _ = handle
+        let transaction_release = handle
             .gpu_manager
             .release_gem_object(retained_backing_object);
+        let pending_release = new_dumb_buffer
+            .take()
+            .map(PendingDumbBuffer::discard_after_failed_resource)
+            .transpose();
+        if let Err(release_error) = transaction_release {
+            ostd::warn!(
+                "cannot release failed resource transaction for GEM object {}: {:?}",
+                retained_backing_object,
+                release_error
+            );
+        }
+        if let Err(release_error) = pending_release {
+            ostd::warn!(
+                "cannot discard unpublished GEM resource after failure: {:?}",
+                release_error
+            );
+        }
         return Err(error);
+    }
+    if let Some(object_id) = backing_object_id {
+        let previous = handle
+            .gpu_manager
+            .gem_resources
+            .lock()
+            .insert(object_id, res_handle);
+        debug_assert!(previous.is_none());
     }
     handle
         .gpu_manager

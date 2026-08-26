@@ -156,8 +156,8 @@ struct GpuManager {
     pool: SpinLock<Option<Arc<Vmo>>>,
     /// Serialized bump-allocator cursor into the pool (page-aligned).
     ///
-    /// A pending allocation holds this sleeping mutex until its creating ioctl publishes the
-    /// returned handle or rolls the cursor back.
+    /// A pending allocation holds this sleeping mutex
+    /// until its creating ioctl publishes the returned handle or rolls the cursor back.
     next_offset: Mutex<usize>,
     /// GEM objects by id. `object_id` is a monotonically increasing counter.
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
@@ -165,6 +165,8 @@ struct GpuManager {
     gem_names: SpinLock<BTreeMap<u32, u32>>,
     /// GEM object_id → virtio-gpu 3D resource id (set by `RESOURCE_CREATE`).
     gem_resources: SpinLock<BTreeMap<u32, u32>>,
+    /// GEM object_id → incomplete host resource that is visible only to cleanup.
+    orphaned_resources: SpinLock<BTreeMap<u32, u32>>,
     /// Serializes the global GEM-object to host-resource transaction.
     resource_creation: Mutex<()>,
     next_gem_id: AtomicU32,
@@ -257,6 +259,7 @@ impl GpuManager {
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
+            orphaned_resources: SpinLock::new(BTreeMap::new()),
             resource_creation: Mutex::new(()),
             next_gem_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
@@ -318,6 +321,12 @@ impl GpuManager {
 
     /// Drops one GEM owner and destroys global state after the final reference.
     fn release_gem_object(&self, object_id: u32) -> Result<()> {
+        self.release_gem_object_and_report_cleanup(object_id)
+            .map(|_| ())
+    }
+
+    /// Drops one GEM owner and reports whether final host cleanup was confirmed.
+    fn release_gem_object_and_report_cleanup(&self, object_id: u32) -> Result<bool> {
         let released = {
             let mut objects = self.gem_objects.lock();
             let object = objects
@@ -329,7 +338,7 @@ impl GpuManager {
             }
             if references > 1 {
                 object.ref_count.store(references - 1, Ordering::Relaxed);
-                return Ok(());
+                return Ok(true);
             }
             objects.remove(&object_id).unwrap()
         };
@@ -342,16 +351,19 @@ impl GpuManager {
             }
         }
 
-        let resource_id = self.gem_resources.lock().remove(&object_id);
-        if let Some(resource_id) = resource_id
-            && let Err(error) = self.gpu.resource_unref(resource_id)
-        {
-            warn!(
-                "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
-                resource_id, object_id, error
-            );
+        let active_resource = self.gem_resources.lock().remove(&object_id);
+        let orphaned_resource = self.orphaned_resources.lock().remove(&object_id);
+        let mut cleanup_confirmed = true;
+        for resource_id in [active_resource, orphaned_resource].into_iter().flatten() {
+            if let Err(error) = self.gpu.resource_unref(resource_id) {
+                warn!(
+                    "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
+                    resource_id, object_id, error
+                );
+                cleanup_confirmed = false;
+            }
         }
-        Ok(())
+        Ok(cleanup_confirmed)
     }
 }
 

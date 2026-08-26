@@ -42,11 +42,19 @@ impl<'a> PendingDumbBuffer<'a> {
         self.allocation.publish();
     }
 
-    /// Keeps the pool span quarantined while discarding an unpublished handle.
-    pub(super) fn publish_allocation_only(self) {
+    /// Discards the handle and rolls back or quarantines its pool span.
+    pub(super) fn discard_after_failed_resource(self) -> Result<()> {
         let Self { handle, allocation } = self;
-        allocation.publish();
-        drop(handle);
+        match handle.discard() {
+            Ok(cleanup_confirmed) => {
+                allocation.finish_cleanup(cleanup_confirmed);
+                Ok(())
+            }
+            Err(error) => {
+                allocation.finish_cleanup(false);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -78,6 +86,14 @@ impl<'a> PendingPoolAllocation<'a> {
 
     pub(super) fn publish(mut self) {
         self.published = true;
+    }
+
+    fn finish_cleanup(self, cleanup_confirmed: bool) {
+        if cleanup_confirmed {
+            drop(self);
+        } else {
+            self.publish();
+        }
     }
 }
 
@@ -138,23 +154,6 @@ pub(super) fn create_dumb<'a>(
     ))
 }
 
-#[cfg(ktest)]
-mod tests {
-    use ostd::prelude::ktest;
-
-    use super::*;
-
-    #[ktest]
-    fn pending_pool_allocation_excludes_interleaving_before_rollback() {
-        let cursor = Mutex::new(0);
-        let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
-
-        assert!(cursor.try_lock().is_none());
-        drop(pending);
-        assert_eq!(*cursor.lock(), 0);
-    }
-}
-
 /// Returns the byte offset of a dumb buffer within the pool for mmap.
 pub(super) fn map_dumb(handle: &super::DriHandle, req: &DrmModeMapDumb) -> Result<DrmModeMapDumb> {
     let inner = handle.inner.lock();
@@ -175,4 +174,31 @@ pub(super) fn map_dumb(handle: &super::DriHandle, req: &DrmModeMapDumb) -> Resul
 /// Destroys a dumb buffer (removes the per-file handle, drops the GEM object).
 pub(super) fn destroy_dumb(handle: &super::DriHandle, req: &DrmModeDestroyDumb) -> Result<()> {
     super::gem::gem_close(handle, req.handle)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn pending_pool_allocation_excludes_interleaving_before_rollback() {
+        let cursor = Mutex::new(0);
+        let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
+
+        assert!(cursor.try_lock().is_none());
+        pending.finish_cleanup(true);
+        assert_eq!(*cursor.lock(), 0);
+    }
+
+    #[ktest]
+    fn pending_pool_allocation_quarantines_unconfirmed_host_cleanup() {
+        // Regression for reusing pages after a failed virtio-gpu RESOURCE_UNREF.
+        let cursor = Mutex::new(0);
+        let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
+
+        pending.finish_cleanup(false);
+        assert_eq!(*cursor.lock(), PAGE_SIZE);
+    }
 }
