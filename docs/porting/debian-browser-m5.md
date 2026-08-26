@@ -33,8 +33,14 @@ version-3 length-prefixed TCP protocol.  The repository-owned Python stdlib
 client creates a WebDriver session, examines every browser window, and accepts
 exactly one whose live document has the probe `file://` URL.  It then requires
 the three permanent DOM markers in exact order and requires resource timing to
-contain only the repository-owned WebM `file://` URL.  Missing, duplicated,
-reordered, forged, or externally sourced evidence fails closed.
+contain no URL except the repository-owned WebM when Firefox exposes an entry.
+Firefox does not necessarily expose `file://` media in Resource Timing, so the
+required decode evidence instead comes directly from the live media element:
+its `currentSrc` must be the repository-owned WebM, it must be ended with
+sufficient ready state, no media error, and a finite positive duration.
+Missing, duplicated, reordered, forged, or externally sourced evidence fails
+closed.  This page-level observation does not claim that Firefox made no other
+background network connections; socket-level isolation/evidence is separate.
 
 This deliberately does not use CDP: Mozilla removed CDP support after Firefox
 140.  It also does not require geckodriver or Selenium.  The gate retains the

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import socket
 import time
 from collections.abc import Sequence
@@ -32,6 +33,16 @@ _EXPRESSION = r"""return JSON.stringify({
   markers: Array.from(document.querySelectorAll(
     '#js-result, #video-canplay-result, #video-ended-result'
   )).map(node => [node.id, node.textContent]),
+  media: (() => {
+    const video = document.querySelector('video');
+    return video === null ? null : {
+      currentSrc: video.currentSrc,
+      ended: video.ended,
+      readyState: video.readyState,
+      error: video.error === null ? null : video.error.code,
+      duration: Number.isFinite(video.duration) ? video.duration : null
+    };
+  })(),
   resources: performance.getEntriesByType('resource').map(entry => entry.name)
 });"""
 
@@ -111,7 +122,7 @@ class Marionette:
 
 
 def snapshot_complete(snapshot: object) -> bool:
-    if not isinstance(snapshot, dict) or set(snapshot) != {"url", "markers", "resources"}:
+    if not isinstance(snapshot, dict) or set(snapshot) != {"url", "markers", "media", "resources"}:
         raise GateError("browser snapshot has unexpected fields")
     if snapshot["url"] != PROBE_URL:
         raise GateError("browser snapshot is not the repository-owned probe")
@@ -135,8 +146,34 @@ def snapshot_complete(snapshot: object) -> bool:
     if any(resource != VIDEO_URL for resource in resources) or len(resources) > 1:
         raise GateError("browser workload used an unexpected or external resource")
     complete = passed == len(EXPECTED_MARKERS)
-    if complete and resources != [VIDEO_URL]:
-        raise GateError("completed browser workload lacks the local video resource")
+    media = snapshot["media"]
+    expected_media_keys = {"currentSrc", "ended", "readyState", "error", "duration"}
+    if not isinstance(media, dict) or set(media) != expected_media_keys:
+        raise GateError("browser media evidence is malformed")
+    current_src = media["currentSrc"]
+    ended = media["ended"]
+    ready_state = media["readyState"]
+    error = media["error"]
+    duration = media["duration"]
+    if not isinstance(current_src, str) or current_src not in {"", VIDEO_URL}:
+        raise GateError("browser media used an unexpected or external source")
+    if not isinstance(ended, bool):
+        raise GateError("browser media ended state is malformed")
+    if isinstance(ready_state, bool) or not isinstance(ready_state, int) or not 0 <= ready_state <= 4:
+        raise GateError("browser media ready state is malformed")
+    if error is not None:
+        raise GateError("browser media reported a decode error")
+    if duration is not None and (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
+        raise GateError("browser media duration is malformed")
+    if complete and (
+        current_src != VIDEO_URL or not ended or ready_state < 3 or duration is None
+    ):
+        raise GateError("completed markers disagree with live media state")
     return complete
 
 
