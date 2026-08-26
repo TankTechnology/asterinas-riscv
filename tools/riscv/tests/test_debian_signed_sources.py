@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools.riscv.debian.rootfs.profiles import get_profile
+from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.signed_sources import (
     BASE_SOURCE,
     M5_SOURCES,
@@ -115,6 +116,96 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(rows[1]["suite"], "trixie-security")
         self.assertEqual(rows[1]["inrelease_sha256"], hashlib.sha256(b"security signed").hexdigest())
 
+    def _m5_payload(self) -> dict[str, object]:
+        profile = get_profile("browser-m5")
+        zero = "0" * 64
+        return {
+            "schema_version": 5,
+            "profile": "browser-m5",
+            "suite": "trixie",
+            "debian_release": "13.6",
+            "architecture": "riscv64",
+            "signed_sources": [
+                {
+                    "role": source.role,
+                    "mirror_url": source.mirror_url,
+                    "suite": source.suite,
+                    "inrelease_url": source.inrelease_url,
+                    "inrelease_sha256": zero,
+                }
+                for source in M5_SOURCES
+            ],
+            "packages_lock_sha256": zero,
+            "downloaded_packages": [
+                {
+                    "name": "firefox-esr",
+                    "architecture": "riscv64",
+                    "version": "140.14.0esr-1~deb13u1",
+                    "sha256": zero,
+                    "source_role": "security",
+                }
+            ],
+            "filesystem": {
+                "type": "ext2",
+                "label": profile.root_label,
+                "uuid": profile.root_uuid,
+                "size_bytes": 1073741824,
+                "block_size_bytes": 4096,
+            },
+            "tool_versions": {"debootstrap": "test"},
+            "build_timestamp": "2026-08-26T00:00:00Z",
+            "root_image_sha256": zero,
+            "gate_packages": {name: "1" for name in profile.identity_packages},
+        }
+
+    def test_schema_five_loads_exact_sources_and_package_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "manifest.json"
+            manifest_path.write_text(json.dumps(self._m5_payload()))
+            manifest = load_manifest(manifest_path)
+        self.assertEqual([row[0] for row in manifest.signed_sources], ["base", "security"])
+        self.assertEqual(manifest.downloaded_packages[0][4], "security")
+        self.assertEqual(manifest.signed_metadata_url, "")
+
+    def test_schema_five_rejects_missing_extra_or_replaced_source_contract(self) -> None:
+        mutations = (
+            lambda rows: rows.pop(),
+            lambda rows: rows.append(dict(rows[0])),
+            lambda rows: rows[0].update(mirror_url="https://example.invalid/debian"),
+            lambda rows: rows[1].update(suite="sid-security"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            for mutate in mutations:
+                payload = self._m5_payload()
+                mutate(payload["signed_sources"])
+                path.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(ContractError, "source contract"):
+                    load_manifest(path)
+
+    def test_schema_five_requires_source_role_exact_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            for role in (None, "updates"):
+                payload = self._m5_payload()
+                package = payload["downloaded_packages"][0]
+                if role is None:
+                    package.pop("source_role")
+                else:
+                    package["source_role"] = role
+                path.write_text(json.dumps(payload))
+                with self.assertRaises(ContractError):
+                    load_manifest(path)
+
+    def test_signed_sources_writer_rejects_partial_source_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            base.write_bytes(b"base")
+            with self.assertRaisesRegex(ValueError, "browser-m5 contract"):
+                signed_sources_manifest((BASE_SOURCE,), {"base": base})
+
 
 if __name__ == "__main__":
     unittest.main()
+import json
