@@ -162,8 +162,12 @@ dependencies = [
 name = "aster-dwmac"
 version = "0.1.0"
 dependencies = [
+ "aster-logger",
+ "aster-time",
  "component",
+ "fdt",
  "ostd",
+ "spin 0.9.9",
 ]
 
 [[package]]
