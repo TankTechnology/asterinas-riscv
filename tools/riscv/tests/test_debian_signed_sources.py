@@ -327,7 +327,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         for baseline in ("UDEV", "LOGIND", "SESSION", "INPUT", "XORG", "CLIENTS"):
             self.assertIn(f"DEBIAN_BROWSER_M5_{baseline}", evidence)
         self.assertIn("DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file", evidence)
-        self.assertNotIn("DEBIAN_BROWSER_M5_CONTENT", evidence)
+        self.assertIn("browser-m5-marionette-gate", evidence)
+        self.assertIn('emit "$content_evidence"', evidence)
         self.assertNotIn("VIDEO_CANPLAY", evidence)
         self.assertNotIn("VIDEO_ENDED", evidence)
 
@@ -464,6 +465,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             video = stage / "usr/share/asterinas/browser-m5/browser-m5.webm"
             session = stage / "usr/lib/asterinas/desktop-m5-session"
             evidence = stage / "usr/lib/asterinas/desktop-m5-evidence"
+            content_gate = stage / "usr/lib/asterinas/browser-m5-marionette-gate"
             network_evidence = (
                 stage / "usr/lib/asterinas/desktop-m5-network-evidence"
             )
@@ -476,6 +478,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertEqual(video.stat().st_mode & 0o777, 0o644)
             self.assertEqual(session.stat().st_mode & 0o777, 0o755)
             self.assertEqual(evidence.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(content_gate.stat().st_mode & 0o777, 0o755)
+            self.assertIn('"WebDriver:ExecuteScript"', content_gate.read_text())
             self.assertEqual(network_evidence.stat().st_mode & 0o777, 0o755)
             self.assertIn(
                 "After=asterinas-desktop-m5-evidence.service",
