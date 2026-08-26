@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::ops::Range;
+use core::{ops::Range, str};
 
 use aster_input::input_dev::RegisteredInputDevice;
 use aster_pci::PciDeviceLocation;
@@ -52,7 +52,10 @@ struct HostResources {
     interrupt_source: InterruptSourceInFdt,
 }
 
-static DWC3_HOST_RESOURCES: SpinLock<Option<HostResources>> = SpinLock::new(None);
+const MAX_SELECTED_DWC3_HOSTS: usize = 2;
+
+static DWC3_HOST_RESOURCES: SpinLock<[Option<HostResources>; MAX_SELECTED_DWC3_HOSTS]> =
+    SpinLock::new([None, None]);
 
 fn dwc3_host_gctl(gctl: u32) -> u32 {
     (gctl & !DWC3_GCTL_PRTCAPDIR_MASK) | DWC3_GCTL_PRTCAP_HOST
@@ -188,6 +191,24 @@ fn resolve_selected<T>(
         .and_then(resolve)
 }
 
+fn selected_host_paths(value: &[u8]) -> Option<[Option<&str>; MAX_SELECTED_DWC3_HOSTS]> {
+    let strings = value.strip_suffix(&[0])?;
+    if strings.is_empty() {
+        return None;
+    }
+
+    let mut paths = [None; MAX_SELECTED_DWC3_HOSTS];
+    let mut count = 0;
+    for bytes in strings.split(|byte| *byte == 0) {
+        if bytes.is_empty() || count == MAX_SELECTED_DWC3_HOSTS {
+            return None;
+        }
+        paths[count] = Some(str::from_utf8(bytes).ok()?);
+        count += 1;
+    }
+    Some(paths)
+}
+
 fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError> {
     let status = match node.property("status") {
         Some(property) => Some(property.as_str().ok_or(ConfigError::Disabled)?),
@@ -237,63 +258,74 @@ pub(super) fn init() {
     let Some(selector) = selector else {
         return;
     };
-    let Some(selector) = selector.as_str() else {
+    let Some(selectors) = selected_host_paths(selector.value) else {
         ostd::warn!("invalid '/chosen/{}' property", USB_HOST_SELECTOR);
         return;
     };
-    let Some(node) = resolve_selected(Some(selector), |path| device_tree.find_node(path)) else {
-        ostd::warn!(
-            "failed to resolve USB host selected by '/chosen/{}'",
-            USB_HOST_SELECTOR
-        );
-        return;
-    };
-    let config = match config_from_node(node) {
-        Ok(config) => config,
-        Err(error) => {
-            ostd::warn!("rejected selected USB host: {:?}", error);
-            return;
-        }
-    };
-
-    ostd::info!(
-        "Selected DWC3 USB host: mmio={:#x?}, interrupt={}:{}, DMA={:#x}+{:#x}->{:#x}",
-        config.mmio_range,
-        config.interrupt_parent,
-        config.interrupt,
-        config.dma_window.device_start(),
-        config.dma_window.size(),
-        config.dma_window.cpu_start(),
-    );
-
-    let mmio = match IoMem::acquire(config.mmio_range.clone()) {
-        Ok(mmio) => mmio,
-        Err(_) => {
-            ostd::warn!("failed to retain selected xHCI MMIO range");
-            return;
-        }
-    };
-
-    let capabilities = match capability::probe(&mmio) {
-        Ok(capabilities) => capabilities,
-        Err(error) => {
-            ostd::warn!("xHCI capability probe failed: {:?}", error);
-            return;
-        }
-    };
-    ostd::info!(
-        "Detected xHCI {:#06x}: slots={}, ports={}, interrupters={}, AC64={}, CSZ64={}",
-        capabilities.version,
-        capabilities.max_slots,
-        capabilities.max_ports,
-        capabilities.max_interrupters,
-        capabilities.addresses_64bit,
-        capabilities.contexts_64byte,
-    );
-
     let mut resources = DWC3_HOST_RESOURCES.lock();
-    if resources.is_none() {
-        *resources = Some(HostResources {
+    for (index, selector) in selectors.into_iter().flatten().enumerate() {
+        let Some(node) = resolve_selected(Some(selector), |path| device_tree.find_node(path))
+        else {
+            ostd::warn!(
+                "failed to resolve USB host {} selected by '/chosen/{}'",
+                index,
+                USB_HOST_SELECTOR
+            );
+            continue;
+        };
+        let config = match config_from_node(node) {
+            Ok(config) => config,
+            Err(error) => {
+                ostd::warn!("rejected selected USB host {}: {:?}", index, error);
+                continue;
+            }
+        };
+
+        ostd::info!(
+            "Selected DWC3 USB host {}: mmio={:#x?}, interrupt={}:{}, DMA={:#x}+{:#x}->{:#x}",
+            index,
+            config.mmio_range,
+            config.interrupt_parent,
+            config.interrupt,
+            config.dma_window.device_start(),
+            config.dma_window.size(),
+            config.dma_window.cpu_start(),
+        );
+
+        let mmio = match IoMem::acquire(config.mmio_range.clone()) {
+            Ok(mmio) => mmio,
+            Err(_) => {
+                ostd::warn!(
+                    "failed to retain selected xHCI MMIO range for host {}",
+                    index
+                );
+                continue;
+            }
+        };
+
+        let capabilities = match capability::probe(&mmio) {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                ostd::warn!(
+                    "xHCI capability probe failed for host {}: {:?}",
+                    index,
+                    error
+                );
+                continue;
+            }
+        };
+        ostd::info!(
+            "Detected xHCI {} {:#06x}: slots={}, ports={}, interrupters={}, AC64={}, CSZ64={}",
+            index,
+            capabilities.version,
+            capabilities.max_slots,
+            capabilities.max_ports,
+            capabilities.max_interrupters,
+            capabilities.addresses_64bit,
+            capabilities.contexts_64byte,
+        );
+
+        resources[index] = Some(HostResources {
             mmio,
             dma_window: config.dma_window,
             interrupt_source: InterruptSourceInFdt {
@@ -304,7 +336,8 @@ pub(super) fn init() {
     }
 }
 
-static HID_HOST: Once<Mutex<PollingUsbHidHost>> = Once::new();
+static HID_HOSTS: [Once<Mutex<PollingUsbHidHost>>; MAX_SELECTED_DWC3_HOSTS] =
+    [Once::new(), Once::new()];
 
 struct DeferredKeyboardState {
     decoder: HidBootKeyboard,
@@ -461,27 +494,42 @@ pub fn run_polling() {
                 interrupt_source: host.interrupt_source,
             },
             Some(location),
+            &HID_HOSTS[0],
         );
         return;
     }
 
-    let Some(resources) = DWC3_HOST_RESOURCES.lock().take() else {
+    run_dwc3_hid_worker(0);
+}
+
+/// Runs the second firmware-selected DWC3/xHCI HID worker, when present.
+pub fn run_polling_secondary() {
+    run_dwc3_hid_worker(1);
+}
+
+fn run_dwc3_hid_worker(index: usize) {
+    let Some(resources) = DWC3_HOST_RESOURCES.lock()[index].take() else {
         return;
     };
     if prepare_dwc3_host(&resources.mmio).is_err() {
-        ostd::warn!("failed to select the DWC3 host role");
+        ostd::warn!("failed to select DWC3 host {} role", index);
         return;
     }
     ostd::info!(
-        "Starting DWC3 xHCI host: bytes={:#x}, irq={}:{}",
+        "Starting DWC3 xHCI host {}: bytes={:#x}, irq={}:{}",
+        index,
         resources.mmio.size(),
         resources.interrupt_source.interrupt_parent,
         resources.interrupt_source.interrupt,
     );
-    run_hid_interrupt_driven(resources, None);
+    run_hid_interrupt_driven(resources, None, &HID_HOSTS[index]);
 }
 
-fn run_hid_interrupt_driven(resources: HostResources, pci_location: Option<PciDeviceLocation>) {
+fn run_hid_interrupt_driven(
+    resources: HostResources,
+    pci_location: Option<PciDeviceLocation>,
+    host_slot: &'static Once<Mutex<PollingUsbHidHost>>,
+) {
     let host = match PollingUsbHidHost::open(resources.mmio, resources.dma_window) {
         Ok(host) => Mutex::new(host),
         Err(error) => {
@@ -490,8 +538,8 @@ fn run_hid_interrupt_driven(resources: HostResources, pci_location: Option<PciDe
         }
     };
     let mut state = DeferredHidState::new(host.lock().info());
-    HID_HOST.call_once(|| host);
-    let host = HID_HOST.get().unwrap();
+    host_slot.call_once(|| host);
+    let host = host_slot.get().unwrap();
 
     let (waiter, waker) = Waiter::new_pair();
 
@@ -660,6 +708,25 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(resolve_selected(None, |_| Some(0x5048_0000)), None);
         assert_eq!(resolve_selected(Some(""), |_| Some(0x5048_0000)), None);
+    }
+
+    #[ktest]
+    fn parses_one_or_two_explicit_host_selectors() {
+        assert_eq!(
+            selected_host_paths(b"/soc/usb0/dwc3\0"),
+            Some([Some("/soc/usb0/dwc3"), None])
+        );
+        assert_eq!(
+            selected_host_paths(b"/soc/usb0/dwc3\0/soc/usb1/dwc3\0"),
+            Some([Some("/soc/usb0/dwc3"), Some("/soc/usb1/dwc3")])
+        );
+        assert_eq!(selected_host_paths(b""), None);
+        assert_eq!(selected_host_paths(b"/soc/usb0/dwc3"), None);
+        assert_eq!(selected_host_paths(b"/soc/usb0/dwc3\0\0"), None);
+        assert_eq!(
+            selected_host_paths(b"/soc/usb0/dwc3\0/soc/usb1/dwc3\0/third\0"),
+            None
+        );
     }
 
     #[ktest]

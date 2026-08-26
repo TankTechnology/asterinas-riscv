@@ -573,6 +573,16 @@ class BootTransactionTests(unittest.TestCase):
                 if event[0] == "load"
             )
         )
+        self.assertIn(
+            (
+                "command",
+                "fdt set /chosen asterinas,usb-host "
+                "/soc/usb0@50480000/dwc3@50480000 "
+                "/soc/usb1@50490000/dwc3@50490000",
+                {},
+            ),
+            events,
+        )
         self.assertEqual(events[booti_index - 1], ("start",))
         session.start_boot_attempt.assert_called_once_with()
 
