@@ -21,6 +21,18 @@ PARTITION_SIZE = 4 * 1024 * 1024 * 1024
 BLOCK_SIZE = 4096
 _NEWC_HEADER_SIZE = 110
 _NEWC_MAGIC = b"070701"
+_INSTALLER_COMMANDS = (
+    "blockdev",
+    "cat",
+    "dd",
+    "gzip",
+    "mkdir",
+    "mount",
+    "sha256sum",
+    "sleep",
+    "sync",
+)
+_INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
 class InstallerError(RuntimeError):
@@ -172,6 +184,65 @@ def _encode_archive(entries: Sequence[NewcEntry]) -> bytes:
     return body + b"\0" * (-len(body) % 512)
 
 
+def _resolve_entry(entries: dict[str, NewcEntry], path: str) -> NewcEntry | None:
+    pending = list(PurePosixPath(path.lstrip("/")).parts)
+    resolved: list[str] = []
+    symlink_hops = 0
+    while pending:
+        component = pending.pop(0)
+        if component in ("", "."):
+            continue
+        if component == "..":
+            if not resolved:
+                return None
+            resolved.pop()
+            continue
+
+        candidate = "/".join((*resolved, component))
+        entry = entries.get(candidate)
+        if entry is None:
+            return None
+        if stat.S_ISLNK(entry.mode):
+            symlink_hops += 1
+            if symlink_hops > len(entries):
+                return None
+            try:
+                target = entry.data.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            if not target or "\0" in target:
+                return None
+            if target.startswith("/"):
+                resolved.clear()
+            pending = list(PurePosixPath(target.lstrip("/")).parts) + pending
+            continue
+        if pending and not stat.S_ISDIR(entry.mode):
+            return None
+        resolved.append(component)
+    return entry
+
+
+def _validate_installer_runtime(entries: Sequence[NewcEntry]) -> None:
+    by_name = {entry.name: entry for entry in entries}
+
+    shell = _resolve_entry(by_name, "/bin/sh")
+    if shell is None or not stat.S_ISREG(shell.mode) or not shell.mode & 0o111:
+        raise InstallerError("missing executable installer runtime: /bin/sh")
+
+    for command in _INSTALLER_COMMANDS:
+        candidates = (
+            _resolve_entry(by_name, f"/{directory}/{command}")
+            for directory in _INSTALLER_PATH
+        )
+        if not any(
+            entry is not None and stat.S_ISREG(entry.mode) and bool(entry.mode & 0o111)
+            for entry in candidates
+        ):
+            raise InstallerError(
+                f"missing executable installer runtime command: {command}"
+            )
+
+
 def plan_chunks(image: Path, *, chunk_size: int = CHUNK_SIZE) -> tuple[Chunk, ...]:
     if chunk_size <= 0 or chunk_size % BLOCK_SIZE:
         raise InstallerError("chunk size must be a positive multiple of 4096")
@@ -283,11 +354,12 @@ def build_archive(
     *,
     chunk_size: int = CHUNK_SIZE,
 ) -> None:
+    entries = list(parse_newc(base_cpio.read_bytes()))
+    _validate_installer_runtime(entries)
     actual_hash = sha256_file(root_image)
     if actual_hash != root_sha256:
         raise InstallerError("root image SHA-256 mismatch")
     chunks = plan_chunks(root_image, chunk_size=chunk_size)
-    entries = list(parse_newc(base_cpio.read_bytes()))
     names = {entry.name for entry in entries}
     if "init" not in names:
         raise InstallerError("base initramfs has no init")
