@@ -479,6 +479,53 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 session.read_text(),
             )
 
+    def test_builder_rejects_custom_m5_mirror_before_tools_or_network(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = subprocess.run(
+                [
+                    str(builder),
+                    "--profile", "browser-m5",
+                    "--mirror", "https://example.invalid/debian",
+                    "--output-dir", str(root / "output"),
+                    "--cache-dir", str(root / "cache"),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("base mirror must be exactly", result.stderr)
+        self.assertNotIn("missing required tool", result.stderr)
+        self.assertNotIn("phase 1/8", result.stderr)
+
+    def test_manifest_cli_rejects_custom_m5_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            sources = inputs["signed_source_files"]
+            arguments = [
+                "write-manifest",
+                "--output", str(inputs["output"]),
+                "--image", str(inputs["image"]),
+                "--packages-lock", str(inputs["packages_lock"]),
+                "--inrelease", str(inputs["inrelease"]),
+                "--package-checksums", str(inputs["package_checksums"]),
+                "--mirror", "https://example.invalid/debian",
+                "--suite", "trixie",
+                "--debian-release", "13.6",
+                "--build-timestamp", "2026-08-26T00:00:00Z",
+                "--tool-version", "debootstrap=test",
+                "--profile", "browser-m5",
+                "--signed-source", f"base={sources['base']}",
+                "--signed-source", f"security={sources['security']}",
+            ]
+            with self.assertRaises(SystemExit) as caught:
+                contract_module.main(arguments)
+        self.assertEqual(caught.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
