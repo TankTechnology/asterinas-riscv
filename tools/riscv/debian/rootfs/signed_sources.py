@@ -130,7 +130,7 @@ def authenticate_packages(index: bytes, release_path: str, inrelease: bytes) -> 
 
 
 def signed_sources_manifest(sources: tuple[SignedSource, ...], files: dict[str, Path]) -> list[dict[str, str]]:
-    """Return a deterministic schema-5 signed_sources fragment."""
+    """Return a deterministic schema-6 signed_sources fragment."""
 
     expected_sources = {source.role: source for source in M5_SOURCES}
     supplied_sources = {source.role: source for source in sources}
