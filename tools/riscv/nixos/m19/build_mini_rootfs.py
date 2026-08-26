@@ -6,9 +6,11 @@ their shared-library closure (plus the runtime-dlopen'd DRI/GBM/vendor files and
 glvnd/driconf config), and adds busybox + eglrender2 + ioctltrace + an init.
 Output is written to a target dir (default /tmp/mini-virgl).
 """
-import os, subprocess, shutil, sys
+import os, shutil, subprocess, sys
+from pathlib import Path
 
-SRC = "/home/arch-anjie/Program/asterinas-riscv-drm/target/m19/rootfs"
+REPO = Path(__file__).resolve().parents[4]
+SRC = str(REPO / "target/m19/rootfs")
 DST = sys.argv[1] if len(sys.argv) > 1 else "/tmp/mini-virgl"
 LIB = "usr/lib/riscv64-linux-gnu"
 
@@ -107,6 +109,7 @@ shutil.copy2(os.path.join(SRC, "usr/bin/busybox"), os.path.join(DST, "bin/busybo
 os.makedirs(os.path.join(DST, "root"), exist_ok=True)
 shutil.copy2(os.path.join(SRC, "root/eglrender2"), os.path.join(DST, "root/eglrender2"))
 shutil.copy2(os.path.join(SRC, "root/virgltest"), os.path.join(DST, "root/virgltest"))
+shutil.copy2(os.path.join(SRC, "root/primetest"), os.path.join(DST, "root/primetest"))
 shutil.copy2(os.path.join(SRC, "root/ioctltrace.so"), os.path.join(DST, "root/ioctltrace.so"))
 
 init = """#!/bin/busybox sh
@@ -118,6 +121,9 @@ echo MINI_VIRGL_START
 ls -l /dev/dri 2>&1
 echo "SYSFS_VENDOR=$(/bin/busybox cat /sys/dev/char/226:0/device/vendor 2>&1)"
 echo "SYSFS_DEVICE=$(/bin/busybox cat /sys/dev/char/226:0/device/device 2>&1)"
+echo MINI_PRIME_BEGIN
+/root/primetest 2>&1
+echo "MINI_PRIME_RC=$?"
 echo MINI_RAW_BEGIN
 LD_PRELOAD=/root/ioctltrace.so /root/virgltest 2>&1
 echo "MINI_RAW_RC=$?"

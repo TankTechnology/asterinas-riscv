@@ -19,6 +19,8 @@
 #define DRM_IOCTL_MODE_DESTROY_DUMB DRM_IOWR(0xb4, struct drm_mode_destroy_dumb)
 #define DRM_IOCTL_PRIME_HANDLE_TO_FD DRM_IOWR(0x2d, struct drm_prime_handle)
 #define DRM_IOCTL_PRIME_FD_TO_HANDLE DRM_IOWR(0x2e, struct drm_prime_handle)
+#define DRM_CLOEXEC O_CLOEXEC
+#define DRM_RDWR O_RDWR
 
 struct drm_mode_create_dumb {
     uint32_t height, width, bpp, flags;
@@ -43,6 +45,17 @@ int main(void) {
     int card = open("/dev/dri/card0", O_RDWR);
     if (card < 0) { printf("M20_PRIME_FAIL open card0 errno=%d\n", errno); return 1; }
 
+    /* Consume the first pool span so that dma-buf offset zero must be
+     * translated to a nonzero VMO offset for the object under test. */
+    struct drm_mode_create_dumb sacrificial = { .width = 1, .height = 1, .bpp = 32 };
+    if (ioctl(card, DRM_IOCTL_MODE_CREATE_DUMB, &sacrificial) != 0) {
+        printf("M20_PRIME_FAIL sacrificial CREATE_DUMB errno=%d\n", errno); return 1;
+    }
+    struct drm_mode_destroy_dumb destroy = { .handle = sacrificial.handle };
+    if (ioctl(card, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy) != 0) {
+        printf("M20_PRIME_FAIL sacrificial DESTROY_DUMB errno=%d\n", errno); return 1;
+    }
+
     struct drm_mode_create_dumb cdb = {0};
     cdb.width = 64; cdb.height = 64; cdb.bpp = 32;
     if (ioctl(card, DRM_IOCTL_MODE_CREATE_DUMB, &cdb) != 0) {
@@ -50,13 +63,43 @@ int main(void) {
     }
     printf("M20_PRIME_CREATE_DUMB handle=%u size=%llu\n", cdb.handle, (unsigned long long)cdb.size);
 
-    struct drm_prime_handle export = { .handle = cdb.handle, .flags = 0, .fd = -1 };
+    struct drm_mode_map_dumb map = { .handle = cdb.handle };
+    if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        printf("M20_PRIME_FAIL MAP_DUMB errno=%d\n", errno); return 1;
+    }
+    uint32_t *pixels = mmap(NULL, cdb.size, PROT_READ | PROT_WRITE, MAP_SHARED, card, map.offset);
+    if (pixels == MAP_FAILED) {
+        printf("M20_PRIME_FAIL mmap errno=%d\n", errno); return 1;
+    }
+    pixels[0] = 0x51a7c0de;
+
+    struct drm_prime_handle export = {
+        .handle = cdb.handle,
+        .flags = DRM_CLOEXEC | DRM_RDWR,
+        .fd = -1,
+    };
     if (ioctl(card, DRM_IOCTL_PRIME_HANDLE_TO_FD, &export) != 0) {
         printf("M20_PRIME_FAIL HANDLE_TO_FD errno=%d\n", errno); return 1;
     }
     if (export.fd < 0) { printf("M20_PRIME_FAIL bad fd\n"); return 1; }
+    if (!(fcntl(export.fd, F_GETFD) & FD_CLOEXEC)) {
+        printf("M20_PRIME_FAIL missing FD_CLOEXEC\n"); return 1;
+    }
     printf("M20_PRIME_HANDLE_TO_FD fd=%d\n", export.fd);
 
+    uint32_t *dma_pixels = mmap(NULL, cdb.size, PROT_READ | PROT_WRITE,
+                                MAP_SHARED, export.fd, 0);
+    if (dma_pixels == MAP_FAILED || dma_pixels[0] != 0x51a7c0de) {
+        printf("M20_PRIME_FAIL dma-buf offset-zero mmap errno=%d pixel=%08x\n",
+               errno, dma_pixels == MAP_FAILED ? 0 : dma_pixels[0]);
+        return 1;
+    }
+
+    /* The exported fd alone must keep the object alive across handle close. */
+    destroy.handle = cdb.handle;
+    if (ioctl(card, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy) != 0) {
+        printf("M20_PRIME_FAIL destroy original errno=%d\n", errno); return 1;
+    }
     struct drm_prime_handle import = { .handle = 0, .flags = 0, .fd = export.fd };
     if (ioctl(card, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import) != 0) {
         printf("M20_PRIME_FAIL FD_TO_HANDLE errno=%d\n", errno); return 1;
@@ -65,8 +108,21 @@ int main(void) {
     printf("M20_PRIME_FD_TO_HANDLE handle=%u\n", import.handle);
 
     close(export.fd);
-    struct drm_mode_destroy_dumb ddb = { .handle = cdb.handle };
-    ioctl(card, DRM_IOCTL_MODE_DESTROY_DUMB, &ddb);
+
+    struct drm_mode_map_dumb imported_map = { .handle = import.handle };
+    if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &imported_map) != 0 ||
+        imported_map.offset != map.offset || pixels[0] != 0x51a7c0de) {
+        printf("M20_PRIME_FAIL imported object lifetime errno=%d offset=%llu/%llu pixel=%08x\n",
+               errno, (unsigned long long)imported_map.offset,
+               (unsigned long long)map.offset, pixels[0]);
+        return 1;
+    }
+    destroy.handle = import.handle;
+    if (ioctl(card, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy) != 0) {
+        printf("M20_PRIME_FAIL destroy import errno=%d\n", errno); return 1;
+    }
+    munmap(dma_pixels, cdb.size);
+    munmap(pixels, cdb.size);
     close(card);
     printf("M20_PRIME_PASS\n");
     return 0;

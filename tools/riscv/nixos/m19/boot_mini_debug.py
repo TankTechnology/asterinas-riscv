@@ -22,6 +22,7 @@ KERNEL = REPO / "target/osdk/aster-kernel-osdk-bin.Image"
 DTB = REPO / "target/drm-m19/qemu-virt.dtb"
 UBOOT = REPO / "target/drm-m19/u-boot"
 MINI_CPIO = Path("/tmp/mini-virgl2.cpio.gz")
+RAW_ONLY = "--raw-only" in sys.argv
 
 BOOT_DIR = Path("/tmp/mini-boot")
 BOOTDISK = BOOT_DIR / "boot.ext4"
@@ -87,6 +88,7 @@ def run() -> bytes:
 
     def read_until(pattern, timeout=10):
         nonlocal output
+        start = len(output)
         deadline = time.time() + timeout
         while time.time() < deadline:
             r, _, _ = select.select([master_fd], [], [], 0.2)
@@ -100,15 +102,28 @@ def run() -> bytes:
                 output += data
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
-                if pattern in output:
+                if pattern in output[start:]:
                     return True
         return False
 
     def send(cmd):
         os.write(master_fd, cmd + b"\r\n")
 
+    def cleanup():
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait()
+
     if not read_until(b"=>", 60):
         print("[boot] U-Boot timeout")
+        cleanup()
         return output
 
     for cmd, expected, to in CMDS:
@@ -131,22 +146,15 @@ def run() -> bytes:
             output += data
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
-            if b"MINI_EGL_RC=0" in output or b"MINI_EGL_RC=1" in output:
+            completion_marker = b"MINI_RAW_RC=" if RAW_ONLY else b"MINI_EGL_RC="
+            if completion_marker in output:
                 break
             if b"panic" in output or b"Panic" in output:
                 print("[boot] PANIC detected")
                 break
 
     time.sleep(1)
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()
+    cleanup()
     return output
 
 
@@ -162,10 +170,16 @@ def main() -> int:
         s = line.strip()
         if ("MESA-DBG" in s or "M19_GL_" in s or "MINI_EGL_RC" in s
                 or "MESA-LOADER" in s or "using driver" in s
-                or "pipe_loader" in s or "VIRTGPU" in s):
+                or "pipe_loader" in s or "VIRTGPU" in s or "MINI_PRIME" in s
+                or "M20_PRIME" in s or "MINI_RAW_RC" in s):
             print(f"  {s}")
     print(f"\n[full log] {LOG}")
-    return 0
+    required_markers = ["MINI_PRIME_RC=0", "MINI_RAW_RC=0"]
+    if not RAW_ONLY:
+        required_markers.extend(("MINI_EGL_RC=0", "M19_GL_RENDERER virgl"))
+    passed = all(marker in text for marker in required_markers)
+    print("MINI_VIRGL_PASS" if passed else "MINI_VIRGL_FAIL")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

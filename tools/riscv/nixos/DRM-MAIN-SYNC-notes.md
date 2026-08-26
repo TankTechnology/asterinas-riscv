@@ -273,11 +273,50 @@ gate. The ktest workflow updates generic OSDK artifact links, so packaging
 immediately after a ktest can accidentally select the test kernel rather than
 the normal run kernel.
 
-Two non-blocking follow-ups remain: reclaim final-reference GEM/host resources
-through one shared lifetime path, and implement asynchronous virgl fence
-tracking so `VIRTGPU_WAIT` no longer relies on the current provisional behavior.
-The oversized virtio-gpu and DRM dispatch modules should also be split in a
-separate structural change.
+The final-reference GEM/host-resource cleanup and blocking virgl wait path were
+completed on 2026-08-27; see the update below. Asynchronous `NOWAIT` support and
+IRQ-driven fence completion remain separate follow-ups. The oversized
+virtio-gpu and DRM dispatch modules should also be split in a separate
+structural change.
+
+## 2026-08-27 GEM lifetime and blocking wait completion
+
+The DRM object lifetime now has one final-reference cleanup path. GEM handles,
+framebuffers, PRIME dma-buf files, and resource-creation transactions each hold
+an explicit reference. Dropping the last reference removes the FLINK name and
+virtio-gpu resource mapping, then sends `RESOURCE_UNREF` after releasing DRM
+spinlocks. Closing a DRI file also drains its framebuffer and handle ownership
+and disables active scanout/cursor/context state before releasing DRM master.
+
+PRIME export/import now keeps the same global GEM object alive across closing
+the original handle. A dma-buf maps file offset zero to the object's actual
+window within the shared VMO, including nonzero pool offsets, and honors the
+Linux `DRM_CLOEXEC` and `DRM_RDWR` flag values. The shared VMO remains a bump
+allocator intentionally: an mmap can outlive its DRM handle or dma-buf fd, so
+reusing a freed span without a separate VMA lifetime reference could alias a
+new object into an old mapping.
+
+Blocking `VIRTGPU_WAIT` is no longer a no-op. It submits a fenced virgl NOP on
+the same context timeline and waits for the fenced response, which makes all
+earlier context commands complete before the ioctl returns. `NOWAIT` is
+explicitly rejected with `EOPNOTSUPP` until the control queue can expose an
+asynchronous completion query. `EXECBUFFER` likewise rejects syncobj/ring
+dependency fields that the current driver cannot honor instead of silently
+ignoring them.
+
+Focused mini-root validation passed with the final kernel:
+
+- PRIME export/mmap/close-original/import: `M20_PRIME_PASS` and
+  `MINI_PRIME_RC=0`;
+- raw virgl creation, transfer, fenced wait, and double buffering:
+  `M16_VIRGL_RAW_PASS` and `MINI_RAW_RC=0`;
+- Mesa virgl renderer: OpenGL ES 3.2, four changing frame checksums,
+  `M19_EGL_DONE`, and `MINI_EGL_RC=0`.
+
+The remaining synchronization work is performance and API completeness:
+IRQ-driven used-ring draining, per-resource fence state, and nonblocking
+`NOWAIT`. Device-global KMS state serialization and bounded page-flip event
+queues are also still required before treating this as production-ready DRM.
 
 ## Integration outcome
 

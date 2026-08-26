@@ -1,14 +1,23 @@
-# DRM-M21 — virtio-gpu fence signaling: implementation plan
+# DRM-M21 — virtio-gpu fence signaling
 
-Status: **implemented + verified** (2026-08-24). Branch `track/drm`.
+Status: **blocking paths implemented + verified** (updated 2026-08-27).
+Branch `codex/drm-main-sync`.
 
 > **Result:** eglrender2 now runs to completion — `M19_FRAME 0..3` with distinct checksums,
 > `M19_FRAME_SAVED` (1280×800 PPM), `M19_EGL_DONE`, `MINI_EGL_RC=0`. ioctltrace shows
 > `POLL [fd=7/8]` (valid fence fds, never `-1`). One simplification vs. the design below:
 > the device **defers** a fenced command's response until the render completes, so the
 > existing synchronous `submit_control` busy-wait already blocks until done — no separate
-> `drain_fence_signals()` was needed. `virtgpu_wait` remains a no-op (Mesa's virgl uses
-> `fence_fd`, not `WAIT`).
+> `drain_fence_signals()` was needed. `virtgpu_wait` now submits a fenced virgl NOP on
+> the context timeline, so blocking waits cover all earlier commands. `NOWAIT` remains
+> unsupported until the transport has an asynchronous used-ring query.
+
+The design discussion below records how the working fence-fd path was reached.
+Its proposed two-response/IRQ machinery was not needed by the synchronous
+transport: a fenced command's one response is delayed until the requested
+timeline work completes. The current implementation deliberately prefers a
+correct blocking result over reporting unsupported asynchronous semantics as
+successful.
 
 ## 1. Problem
 
