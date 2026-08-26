@@ -32,9 +32,11 @@ the same invariant, not a special exception for Firefox:
 
 1. Define immutable source records for `trixie` and `trixie-security`, each with
    its own HTTPS mirror, suite, expected Codename, retained `InRelease`, and
-   Debian archive keyring verification.  Security has no Debian point-release
-   `Version`, so validation must use its exact Codename rather than weakening
-   the base-release check.
+   Debian archive keyring verification.  Base requires `Suite: stable`, a
+   canonical `Version: 13.x`, and `Codename: trixie`; security requires the
+   distinct exact tuple `Suite: stable-security`, `Version: 13`, and
+   `Codename: trixie-security`.  Both must advertise `riscv64` and their exact
+   expected Components lists.
 2. Write both apt source lines only after both signatures pass.  During audit,
    map each apt list filename to exactly one source record and authenticate the
    decompressed Packages bytes against that source's retained `InRelease`.
@@ -49,3 +51,8 @@ the same invariant, not a special exception for Firefox:
 
 This requires a new manifest schema rather than overloading schema 4.  Existing
 M1-M4 manifests and gates should remain byte-for-byte compatible.
+
+The security InRelease advertises the component as `updates/main`, while the
+authenticated checksum paths and apt list remain `main/binary-riscv64/Packages`.
+The source validator checks the former metadata field exactly; index admission
+continues to bind the latter path and must not rewrite one into the other.
