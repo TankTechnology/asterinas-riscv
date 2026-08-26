@@ -176,6 +176,37 @@ static int test_unknown_flags(void)
 	return errno == EINVAL ? 0 : 1;
 }
 
+static int test_clone_inherits_filter(void)
+{
+	struct worker worker = { .nr = SYS_getppid };
+	pthread_t thread;
+
+	if (install_errno_filter(SYS_getppid, 0) != 0)
+		return 1;
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, probe_worker, &worker) != 0)
+		return 1;
+	pthread_barrier_wait(&worker.ready);
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return worker.result == -BLOCK_ERRNO ? 0 : 1;
+}
+
+static int test_strict_cannot_replace_filter(void)
+{
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	errno = 0;
+	if (syscall(SYS_seccomp, SECCOMP_SET_MODE_STRICT, 0, NULL) != -1 ||
+	    errno != EINVAL)
+		return 1;
+	errno = 0;
+	return syscall(SYS_getpid) == -1 && errno == BLOCK_ERRNO ? 0 : 1;
+}
+
 int main(void)
 {
 	int failures = 0;
@@ -183,6 +214,10 @@ int main(void)
 	failures += run_isolated(test_tsync, "sibling synchronization");
 	failures += run_isolated(test_thread_local, "thread-local install");
 	failures += run_isolated(test_unknown_flags, "unknown flags");
+	failures += run_isolated(test_clone_inherits_filter,
+				 "clone inherits filter");
+	failures += run_isolated(test_strict_cannot_replace_filter,
+				 "strict cannot replace filter");
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;

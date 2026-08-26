@@ -497,16 +497,24 @@ fn clone_child_task(
         thread_builder.build()
     };
 
-    process
-        .tasks()
-        .lock()
-        .insert(child_task.clone())
-        .map_err(|_| {
-            Error::with_message(
-                Errno::EINTR,
-                "the process has exited or has already executed a new program",
-            )
-        })?;
+    // Seccomp TSYNC uses the process task-set lock to make policy preflight
+    // and commit atomic with respect to thread creation and exit.  Inherit the
+    // parent's policy and publish the new task in the same critical section:
+    // otherwise a clone could read the old policy, wait behind TSYNC, and then
+    // publish an unsynchronized thread after TSYNC returns.
+    let mut tasks = process.tasks().lock();
+    let child_posix_thread = child_task.as_posix_thread().unwrap();
+    if let Some(filter) = posix_thread.seccomp_filter() {
+        child_posix_thread.set_seccomp_filter(filter);
+    }
+    child_posix_thread.set_seccomp_mode(posix_thread.seccomp_mode());
+    tasks.insert(child_task.clone()).map_err(|_| {
+        Error::with_message(
+            Errno::EINTR,
+            "the process has exited or has already executed a new program",
+        )
+    })?;
+    drop(tasks);
 
     let child_thread = child_task.as_thread().unwrap();
     pid_table::pid_table_mut().insert_thread(child_tid, child_thread);
