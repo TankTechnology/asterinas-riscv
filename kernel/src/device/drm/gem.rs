@@ -3,13 +3,14 @@
 //! GEM (Graphics Execution Manager) object operations.
 //!
 //! Each GEM object wraps a dumb-buffer allocation.
-//! Objects live in the global [`super::GpuManager`] table and are referenced
-//! by per-file handles.
+//! Objects live in the global [`super::GpuManager`] table and are referenced by per-file handles.
 //! GEM_FLINK uses the object's own id as its global name.
-//! [`PendingGemHandle`] stages a per-file handle until its creating ioctl
-//! copies the response to userspace successfully.
+//! [`PendingGemHandle`] stages a per-file handle until its creating ioctl copies the response.
 
-use core::sync::atomic::Ordering;
+use core::{
+    mem::forget,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use crate::prelude::*;
 
@@ -18,28 +19,36 @@ pub(super) struct GemObjectRef<'a> {
     manager: &'a super::GpuManager,
     object_id: u32,
     buffer: super::DumbBuffer,
-    owned: bool,
 }
 
 impl<'a> GemObjectRef<'a> {
-    /// Inserts a new object and takes ownership of its initial reference.
+    /// Allocates and inserts a new object, taking its initial reference.
     pub(super) fn insert_new(
         manager: &'a super::GpuManager,
-        object_id: u32,
-        object: super::GemObject,
-    ) -> Self {
-        let buffer = object.buffer;
-        let previous = manager
-            .gem_objects
-            .lock()
-            .insert(object_id, Arc::new(object));
-        debug_assert!(previous.is_none());
-        Self {
+        buffer: super::DumbBuffer,
+    ) -> Result<Self> {
+        let mut objects = manager.gem_objects.lock();
+        let object_id = manager
+            .next_gem_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "GEM object space is exhausted"))?;
+        if objects.contains_key(&object_id) {
+            return_errno_with_message!(Errno::ENOSPC, "GEM object id is already allocated");
+        }
+        objects.insert(
+            object_id,
+            Arc::new(super::GemObject {
+                name: AtomicU32::new(0),
+                ref_count: AtomicU32::new(1),
+                buffer,
+            }),
+        );
+        drop(objects);
+        Ok(Self {
             manager,
             object_id,
             buffer,
-            owned: true,
-        }
+        })
     }
 
     /// Retains an existing object and owns the new reference.
@@ -49,8 +58,11 @@ impl<'a> GemObjectRef<'a> {
             manager,
             object_id,
             buffer,
-            owned: true,
         })
+    }
+
+    pub(super) fn object_id(&self) -> u32 {
+        self.object_id
     }
 
     pub(super) fn buffer(&self) -> super::DumbBuffer {
@@ -58,17 +70,16 @@ impl<'a> GemObjectRef<'a> {
     }
 
     /// Transfers the owned reference into another lifetime container.
-    fn into_raw(mut self) -> u32 {
-        self.owned = false;
-        self.object_id
+    fn into_raw(self) -> u32 {
+        let object_id = self.object_id;
+        forget(self);
+        object_id
     }
 }
 
 impl Drop for GemObjectRef<'_> {
     fn drop(&mut self) {
-        if self.owned
-            && let Err(error) = self.manager.release_gem_object(self.object_id)
-        {
+        if let Err(error) = self.manager.release_gem_object(self.object_id) {
             ostd::warn!(
                 "cannot release unpublished GEM object {}: {:?}",
                 self.object_id,
@@ -86,7 +97,7 @@ impl Drop for GemObjectRef<'_> {
 pub(super) struct PendingGemHandle<'a> {
     owner: &'a super::DriHandle,
     gem_handle: u32,
-    object: Option<GemObjectRef<'a>>,
+    object: GemObjectRef<'a>,
 }
 
 impl<'a> PendingGemHandle<'a> {
@@ -104,7 +115,7 @@ impl<'a> PendingGemHandle<'a> {
         Ok(Self {
             owner,
             gem_handle,
-            object: Some(object),
+            object,
         })
     }
 
@@ -113,14 +124,14 @@ impl<'a> PendingGemHandle<'a> {
     }
 
     /// Makes the reserved handle visible and transfers its object reference.
-    pub(super) fn publish(mut self) {
-        let object_id = self.object.take().unwrap().into_raw();
-        let previous = self
-            .owner
-            .inner
-            .lock()
-            .handles
-            .insert(self.gem_handle, object_id);
+    pub(super) fn publish(self) {
+        let Self {
+            owner,
+            gem_handle,
+            object,
+        } = self;
+        let object_id = object.into_raw();
+        let previous = owner.inner.lock().handles.insert(gem_handle, object_id);
         debug_assert!(previous.is_none());
     }
 }

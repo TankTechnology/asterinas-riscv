@@ -156,8 +156,8 @@ struct GpuManager {
     pool: SpinLock<Option<Arc<Vmo>>>,
     /// Serialized bump-allocator cursor into the pool (page-aligned).
     ///
-    /// A pending allocation holds this sleeping mutex until its creating ioctl
-    /// publishes the returned handle or rolls the cursor back.
+    /// A pending allocation holds this sleeping mutex until its creating ioctl publishes the
+    /// returned handle or rolls the cursor back.
     next_offset: Mutex<usize>,
     /// GEM objects by id. `object_id` is a monotonically increasing counter.
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,

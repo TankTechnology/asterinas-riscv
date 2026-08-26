@@ -6,8 +6,6 @@
 //! Each allocation is wrapped in a [`super::GemObject`] and assigned a
 //! per-file handle.
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use align_ext::AlignExt;
 
 use super::{
@@ -29,17 +27,36 @@ pub(super) struct PendingDumbBuffer<'a> {
     allocation: PendingPoolAllocation<'a>,
 }
 
-impl PendingDumbBuffer<'_> {
+impl<'a> PendingDumbBuffer<'a> {
+    pub(super) fn new(handle: PendingGemHandle<'a>, allocation: PendingPoolAllocation<'a>) -> Self {
+        PendingDumbBuffer { handle, allocation }
+    }
+
+    pub(super) fn id(&self) -> u32 {
+        self.handle.id()
+    }
+
     /// Publishes the handle and commits its pool allocation.
     pub(super) fn publish(self) {
         self.handle.publish();
         self.allocation.publish();
     }
+
+    /// Keeps the pool span quarantined while discarding an unpublished handle.
+    pub(super) fn publish_allocation_only(self) {
+        let Self { handle, allocation } = self;
+        allocation.publish();
+        drop(handle);
+    }
 }
 
 impl<'a> PendingPoolAllocation<'a> {
     pub(super) fn new(manager: &'a super::GpuManager, size: usize) -> Result<Self> {
-        let mut cursor = manager.next_offset.lock();
+        Self::reserve(&manager.next_offset, size)
+    }
+
+    fn reserve(cursor: &'a Mutex<usize>, size: usize) -> Result<Self> {
+        let mut cursor = cursor.lock();
         let offset = cursor.align_up(PAGE_SIZE);
         let end = offset
             .checked_add(size)
@@ -98,22 +115,16 @@ pub(super) fn create_dumb<'a>(
     let allocation = PendingPoolAllocation::new(&handle.gpu_manager, size)?;
     let offset = allocation.offset();
 
-    let object_id = handle
-        .gpu_manager
-        .next_gem_id
-        .fetch_add(1, Ordering::Relaxed);
-    let gem_obj = super::GemObject {
-        name: AtomicU32::new(0),
-        ref_count: AtomicU32::new(1),
-        buffer: DumbBuffer {
+    let object = GemObjectRef::insert_new(
+        &handle.gpu_manager,
+        DumbBuffer {
             offset,
             size,
             width: req.width,
             height: req.height,
             bpp: req.bpp,
         },
-    };
-    let object = GemObjectRef::insert_new(&handle.gpu_manager, object_id, gem_obj);
+    )?;
     let pending = PendingGemHandle::new(handle, object)?;
 
     Ok((
@@ -123,11 +134,25 @@ pub(super) fn create_dumb<'a>(
             size: size as u64,
             ..*req
         },
-        PendingDumbBuffer {
-            handle: pending,
-            allocation,
-        },
+        PendingDumbBuffer::new(pending, allocation),
     ))
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn pending_pool_allocation_excludes_interleaving_before_rollback() {
+        let cursor = Mutex::new(0);
+        let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
+
+        assert!(cursor.try_lock().is_none());
+        drop(pending);
+        assert_eq!(*cursor.lock(), 0);
+    }
 }
 
 /// Returns the byte offset of a dumb buffer within the pool for mmap.

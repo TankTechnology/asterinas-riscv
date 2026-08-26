@@ -6,11 +6,11 @@
 //! These are the kernel-side entry points for Mesa's virgl driver. They
 //! translate DRM ioctl structs into virtio-gpu control queue commands.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use super::{
-    DumbBuffer, GemObject,
-    dumb::PendingPoolAllocation,
+    DumbBuffer,
+    dumb::{PendingDumbBuffer, PendingPoolAllocation},
     gem::{GemObjectRef, PendingGemHandle},
 };
 use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
@@ -234,8 +234,7 @@ pub(super) fn virtgpu_resource_create(
     // If a GEM buffer handle is provided, look up the backing memory.
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM
     // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
-    let mut new_gem_handle: Option<PendingGemHandle<'_>> = None;
-    let mut new_pool_allocation: Option<PendingPoolAllocation<'_>> = None;
+    let mut new_dumb_buffer: Option<PendingDumbBuffer<'_>> = None;
     let retained_backing_object: u32;
     let backing = if req.bo_handle != 0 {
         let inner = handle.inner.lock();
@@ -273,29 +272,22 @@ pub(super) fn virtgpu_resource_create(
         let allocation = PendingPoolAllocation::new(&handle.gpu_manager, size)?;
         let offset = allocation.offset();
 
-        let object_id = handle
-            .gpu_manager
-            .next_gem_id
-            .fetch_add(1, Ordering::Relaxed);
-        let gem_obj = GemObject {
-            name: AtomicU32::new(0),
-            // This reference belongs to the pending handle below. A second
-            // reference pins the object during the host-resource transaction.
-            ref_count: AtomicU32::new(1),
-            buffer: DumbBuffer {
+        let object = GemObjectRef::insert_new(
+            &handle.gpu_manager,
+            DumbBuffer {
                 offset,
                 size,
                 width: req.width,
                 height: req.height,
                 bpp,
             },
-        };
-        let object = GemObjectRef::insert_new(&handle.gpu_manager, object_id, gem_obj);
+        )?;
+        let object_id = object.object_id();
         let pending = PendingGemHandle::new(handle, object)?;
+        // Pin the object separately while the host-resource transaction runs.
         handle.gpu_manager.retain_gem_object(object_id)?;
         retained_backing_object = object_id;
-        new_gem_handle = Some(pending);
-        new_pool_allocation = Some(allocation);
+        new_dumb_buffer = Some(PendingDumbBuffer::new(pending, allocation));
 
         Some((object_id, base + offset, size as u32))
     };
@@ -366,8 +358,8 @@ pub(super) fn virtgpu_resource_create(
 
         req.res_handle = res_handle;
         req.stride = req.width.saturating_mul(4);
-        if let Some(pending) = new_gem_handle.as_ref() {
-            req.bo_handle = pending.id();
+        if let Some(pending_buffer) = new_dumb_buffer.as_ref() {
+            req.bo_handle = pending_buffer.id();
         }
         cmd.write(&req)
     })();
@@ -379,14 +371,20 @@ pub(super) fn virtgpu_resource_create(
                 .gpu
                 .ctx_detach_resource(ctx_id, res_handle);
         }
-        if resource_created {
-            let _ = handle.gpu_manager.gpu.resource_unref(res_handle);
-        }
+        let resource_released =
+            !resource_created || handle.gpu_manager.gpu.resource_unref(res_handle).is_ok();
         if let Some(object_id) = backing_object_id {
             let mut resources = handle.gpu_manager.gem_resources.lock();
-            if resources.get(&object_id) == Some(&res_handle) {
+            if resource_released && resources.get(&object_id) == Some(&res_handle) {
                 resources.remove(&object_id);
+            } else if !resource_released {
+                resources.insert(object_id, res_handle);
             }
+        }
+        if !resource_released && let Some(pending_buffer) = new_dumb_buffer.take() {
+            // The host may still access this backing. Publish its allocation so
+            // a later buffer cannot reuse the pages while cleanup is retried.
+            pending_buffer.publish_allocation_only();
         }
         let _ = handle
             .gpu_manager
@@ -396,11 +394,8 @@ pub(super) fn virtgpu_resource_create(
     handle
         .gpu_manager
         .release_gem_object(retained_backing_object)?;
-    if let Some(pending) = new_gem_handle {
-        pending.publish();
-    }
-    if let Some(allocation) = new_pool_allocation {
-        allocation.publish();
+    if let Some(pending_buffer) = new_dumb_buffer {
+        pending_buffer.publish();
     }
     Ok(0)
 }
