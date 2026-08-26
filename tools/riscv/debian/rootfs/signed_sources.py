@@ -21,7 +21,9 @@ class SignedSource:
     mirror_url: str
     suite: str
     codename: str
-    require_point_release: bool
+    release_suite: str
+    version_pattern: str
+    components: tuple[str, ...]
 
     @property
     def inrelease_url(self) -> str:
@@ -33,19 +35,28 @@ BASE_SOURCE = SignedSource(
     mirror_url="https://mirrors.tuna.tsinghua.edu.cn/debian",
     suite="trixie",
     codename="trixie",
-    require_point_release=True,
+    release_suite="stable",
+    version_pattern=r"13\.(?:0|[1-9][0-9]*)",
+    components=("main", "contrib", "non-free-firmware", "non-free"),
 )
 SECURITY_SOURCE = SignedSource(
     role="security",
     mirror_url="https://security.debian.org/debian-security",
     suite="trixie-security",
     codename="trixie-security",
-    require_point_release=False,
+    release_suite="stable-security",
+    version_pattern=r"13",
+    components=(
+        "updates/main",
+        "updates/contrib",
+        "updates/non-free-firmware",
+        "updates/non-free",
+    ),
 )
 M5_SOURCES = (BASE_SOURCE, SECURITY_SOURCE)
 
 
-def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> str | None:
+def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> str:
     """Verify one signature and its exact release identity."""
 
     subprocess.run(
@@ -53,15 +64,22 @@ def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> st
         check=True,
         capture_output=True,
     )
-    fields = _single_fields(inrelease.read_text(encoding="utf-8"), ("Codename", "Version"))
+    fields = _single_fields(
+        inrelease.read_text(encoding="utf-8"),
+        ("Suite", "Version", "Codename", "Architectures", "Components"),
+    )
+    if fields.get("Suite") != source.release_suite:
+        raise ValueError(f"unexpected {source.role} Suite")
     if fields.get("Codename") != source.codename:
         raise ValueError(f"unexpected {source.role} Codename")
     version = fields.get("Version")
-    if source.require_point_release:
-        if version is None or re.fullmatch(r"13\.(?:0|[1-9][0-9]*)", version) is None:
-            raise ValueError("base release lacks a canonical Debian 13 point version")
-    elif version is not None:
-        raise ValueError("security release unexpectedly declares Version")
+    if version is None or re.fullmatch(source.version_pattern, version) is None:
+        raise ValueError(f"unexpected {source.role} Version")
+    architectures = fields.get("Architectures", "").split()
+    if "riscv64" not in architectures or len(architectures) != len(set(architectures)):
+        raise ValueError(f"unexpected {source.role} Architectures")
+    if tuple(fields.get("Components", "").split()) != source.components:
+        raise ValueError(f"unexpected {source.role} Components")
     return version
 
 

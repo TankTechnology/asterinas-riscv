@@ -20,6 +20,19 @@ from tools.riscv.debian.rootfs.signed_sources import (
 
 
 class DebianSignedSourcesTests(unittest.TestCase):
+    BASE_HEADER = """Suite: stable
+Version: 13.6
+Codename: trixie
+Architectures: all amd64 arm64 riscv64
+Components: main contrib non-free-firmware non-free
+"""
+    SECURITY_HEADER = """Suite: stable-security
+Version: 13
+Codename: trixie-security
+Architectures: amd64 arm64 riscv64
+Components: updates/main updates/contrib updates/non-free-firmware updates/non-free
+"""
+
     def test_browser_m5_profile_replaces_netsurf_with_firefox(self) -> None:
         profile = get_profile("browser-m5")
         self.assertEqual(profile.schema_version, 5)
@@ -34,30 +47,33 @@ class DebianSignedSourcesTests(unittest.TestCase):
             keyring = root / "archive.gpg"
             keyring.touch()
             base = root / "base.InRelease"
-            base.write_text("Codename: trixie\nVersion: 13.0\n")
+            base.write_text(self.BASE_HEADER)
             security = root / "security.InRelease"
-            security.write_text("Codename: trixie-security\n")
-            self.assertEqual(verify_inrelease(BASE_SOURCE, base, keyring), "13.0")
-            self.assertIsNone(verify_inrelease(SECURITY_SOURCE, security, keyring))
+            security.write_text(self.SECURITY_HEADER)
+            self.assertEqual(verify_inrelease(BASE_SOURCE, base, keyring), "13.6")
+            self.assertEqual(verify_inrelease(SECURITY_SOURCE, security, keyring), "13")
         self.assertEqual(run.call_count, 2)
         for call in run.call_args_list:
             self.assertEqual(call.args[0][:2], ["gpgv", "--keyring"])
             self.assertTrue(call.kwargs["check"])
 
     @mock.patch("subprocess.run")
-    def test_rejects_wrong_duplicate_and_security_version_fields(self, _: mock.Mock) -> None:
+    def test_rejects_wrong_duplicate_and_security_metadata(self, _: mock.Mock) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "InRelease"
             keyring = Path(directory) / "keyring"
             for document, reason in (
-                ("Codename: trixie\nCodename: trixie\nVersion: 13.0\n", "duplicate"),
-                ("Codename: bookworm\nVersion: 13.0\n", "Codename"),
-                ("Codename: trixie-security\nVersion: 13.0\n", "unexpectedly"),
+                (self.SECURITY_HEADER + "Codename: trixie-security\n", "duplicate"),
+                (self.SECURITY_HEADER.replace("trixie-security", "bookworm-security"), "Codename"),
+                (self.SECURITY_HEADER.replace("Version: 13\n", ""), "Version"),
+                (self.SECURITY_HEADER.replace("Version: 13\n", "Version: 13.0\n"), "Version"),
+                (self.SECURITY_HEADER.replace("Suite: stable-security", "Suite: testing-security"), "Suite"),
+                (self.SECURITY_HEADER.replace(" arm64 riscv64", " arm64"), "Architectures"),
+                (self.SECURITY_HEADER.replace("updates/main", "main"), "Components"),
             ):
                 path.write_text(document)
-                source = SECURITY_SOURCE if "security" in document else BASE_SOURCE
                 with self.assertRaisesRegex(ValueError, reason):
-                    verify_inrelease(source, path, keyring)
+                    verify_inrelease(SECURITY_SOURCE, path, keyring)
 
     def test_drift_and_unknown_or_ambiguous_list_ownership_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
