@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +41,28 @@ struct drm_prime_handle {
     int32_t fd;
 };
 
+enum {
+    FIRST_GEM_HANDLE = 1,
+    FAILED_CREATE_THREADS = 8,
+};
+
+struct failed_create_task {
+    int card;
+    struct drm_mode_create_dumb *request;
+    pthread_barrier_t *barrier;
+    int result;
+    int error;
+};
+
+static void *run_failed_create(void *opaque) {
+    struct failed_create_task *task = opaque;
+    pthread_barrier_wait(task->barrier);
+    errno = 0;
+    task->result = ioctl(task->card, DRM_IOCTL_MODE_CREATE_DUMB, task->request);
+    task->error = errno;
+    return NULL;
+}
+
 int main(void) {
     printf("M20_PRIME_BEGIN\n");
     int card = open("/dev/dri/card0", O_RDWR);
@@ -63,7 +86,7 @@ int main(void) {
                errno, unpublished->handle);
         return 1;
     }
-    struct drm_mode_map_dumb unpublished_map = { .handle = 1 };
+    struct drm_mode_map_dumb unpublished_map = { .handle = FIRST_GEM_HANDLE };
     errno = 0;
     if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &unpublished_map) != -1 || errno != EINVAL) {
         printf("M20_PRIME_FAIL unpublished handle visible errno=%d offset=%llu\n",
@@ -71,7 +94,56 @@ int main(void) {
         return 1;
     }
     munmap(unpublished, page_size);
-    printf("M20_PRIME_UNPUBLISHED_HANDLE_OK\n");
+
+    /* Launch several failed copyouts together. The pool cursor must remain at
+     * zero even when threads share the same DRM file description. */
+    pthread_t threads[FAILED_CREATE_THREADS];
+    struct failed_create_task tasks[FAILED_CREATE_THREADS] = {0};
+    pthread_barrier_t barrier;
+    if (pthread_barrier_init(&barrier, NULL, FAILED_CREATE_THREADS + 1) != 0) {
+        printf("M20_PRIME_FAIL barrier init\n"); return 1;
+    }
+    for (int i = 0; i < FAILED_CREATE_THREADS; i++) {
+        tasks[i].card = card;
+        tasks[i].barrier = &barrier;
+        tasks[i].request = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (tasks[i].request == MAP_FAILED) {
+            printf("M20_PRIME_FAIL concurrent mmap i=%d errno=%d\n", i, errno);
+            return 1;
+        }
+        *tasks[i].request = (struct drm_mode_create_dumb){
+            .width = 1, .height = 1, .bpp = 32
+        };
+        if (mprotect(tasks[i].request, page_size, PROT_READ) != 0 ||
+            pthread_create(&threads[i], NULL, run_failed_create, &tasks[i]) != 0) {
+            printf("M20_PRIME_FAIL concurrent setup i=%d errno=%d\n", i, errno);
+            return 1;
+        }
+    }
+    pthread_barrier_wait(&barrier);
+    for (int i = 0; i < FAILED_CREATE_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+        if (tasks[i].result != -1 || tasks[i].error != EFAULT) {
+            printf("M20_PRIME_FAIL concurrent CREATE_DUMB i=%d result=%d errno=%d\n",
+                   i, tasks[i].result, tasks[i].error);
+            return 1;
+        }
+        munmap(tasks[i].request, page_size);
+    }
+    pthread_barrier_destroy(&barrier);
+    for (uint32_t handle = FIRST_GEM_HANDLE;
+         handle <= FIRST_GEM_HANDLE + FAILED_CREATE_THREADS; handle++) {
+        unpublished_map = (struct drm_mode_map_dumb){ .handle = handle };
+        errno = 0;
+        if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &unpublished_map) != -1 ||
+            errno != EINVAL) {
+            printf("M20_PRIME_FAIL concurrent handle visible handle=%u errno=%d\n",
+                   handle, errno);
+            return 1;
+        }
+    }
+    printf("M20_PRIME_UNPUBLISHED_HANDLE_OK threads=%d\n", FAILED_CREATE_THREADS);
 
     /* Consume the first pool span so that dma-buf offset zero must be
      * translated to a nonzero VMO offset for the object under test. */

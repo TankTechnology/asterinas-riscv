@@ -8,9 +8,11 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use align_ext::AlignExt;
-
-use super::{DUMB_POOL_SIZE, DumbBuffer, GemObject, gem::PendingGemHandle};
+use super::{
+    DumbBuffer, GemObject,
+    dumb::PendingPoolAllocation,
+    gem::{GemObjectRef, PendingGemHandle},
+};
 use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
 
 // ---------------------------------------------------------------------------
@@ -233,6 +235,7 @@ pub(super) fn virtgpu_resource_create(
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM
     // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
     let mut new_gem_handle: Option<PendingGemHandle<'_>> = None;
+    let mut new_pool_allocation: Option<PendingPoolAllocation<'_>> = None;
     let retained_backing_object: u32;
     let backing = if req.bo_handle != 0 {
         let inner = handle.inner.lock();
@@ -267,18 +270,8 @@ pub(super) fn virtgpu_resource_create(
         };
         handle.gpu_manager.ensure_pool()?;
         let base = handle.gpu_manager.pool_paddr()?;
-
-        let mut offset_guard = handle.gpu_manager.next_offset.lock();
-        let offset = offset_guard.align_up(PAGE_SIZE);
-        let end = offset
-            .checked_add(size)
-            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
-        if end > DUMB_POOL_SIZE {
-            return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
-        }
-        let next_offset = end.align_up(PAGE_SIZE);
-        *offset_guard = next_offset;
-        drop(offset_guard);
+        let allocation = PendingPoolAllocation::new(&handle.gpu_manager, size)?;
+        let offset = allocation.offset();
 
         let object_id = handle
             .gpu_manager
@@ -297,16 +290,12 @@ pub(super) fn virtgpu_resource_create(
                 bpp,
             },
         };
-        handle
-            .gpu_manager
-            .gem_objects
-            .lock()
-            .insert(object_id, Arc::new(gem_obj));
-
-        let pending = PendingGemHandle::new_allocated(handle, object_id, offset, next_offset)?;
+        let object = GemObjectRef::insert_new(&handle.gpu_manager, object_id, gem_obj);
+        let pending = PendingGemHandle::new(handle, object)?;
         handle.gpu_manager.retain_gem_object(object_id)?;
         retained_backing_object = object_id;
         new_gem_handle = Some(pending);
+        new_pool_allocation = Some(allocation);
 
         Some((object_id, base + offset, size as u32))
     };
@@ -404,12 +393,15 @@ pub(super) fn virtgpu_resource_create(
             .release_gem_object(retained_backing_object);
         return Err(error);
     }
-    if let Some(pending) = new_gem_handle {
-        pending.publish();
-    }
     handle
         .gpu_manager
         .release_gem_object(retained_backing_object)?;
+    if let Some(pending) = new_gem_handle {
+        pending.publish();
+    }
+    if let Some(allocation) = new_pool_allocation {
+        allocation.publish();
+    }
     Ok(0)
 }
 

@@ -16,7 +16,10 @@
 
 use core::fmt::Display;
 
-use super::{DriHandle, DumbBuffer, GpuManager, gem::PendingGemHandle};
+use super::{
+    DriHandle, DumbBuffer, GpuManager,
+    gem::{GemObjectRef, PendingGemHandle},
+};
 use crate::{
     events::IoEvents,
     fs::{
@@ -190,7 +193,7 @@ pub(super) fn fd_to_handle<'a>(
     }
     let buffer = file.buffer();
     let object_id = file.object_id;
-    handle.gpu_manager.retain_gem_object(object_id)?;
-    let pending = PendingGemHandle::new_owned(handle, object_id)?;
+    let object = GemObjectRef::retain(&handle.gpu_manager, object_id)?;
+    let pending = PendingGemHandle::new(handle, object)?;
     Ok((pending, buffer.size as u64))
 }

@@ -2,61 +2,100 @@
 
 //! GEM (Graphics Execution Manager) object operations.
 //!
-//! Each GEM object wraps a dumb-buffer allocation. Objects live in the
-//! global [`super::GpuManager`] table and are referenced by per-file
-//! handles. GEM_FLINK uses the object's own id as its global name.
+//! Each GEM object wraps a dumb-buffer allocation.
+//! Objects live in the global [`super::GpuManager`] table and are referenced
+//! by per-file handles.
+//! GEM_FLINK uses the object's own id as its global name.
+//! [`PendingGemHandle`] stages a per-file handle until its creating ioctl
+//! copies the response to userspace successfully.
 
 use core::sync::atomic::Ordering;
 
 use crate::prelude::*;
 
+/// An owned reference to a global GEM object.
+pub(super) struct GemObjectRef<'a> {
+    manager: &'a super::GpuManager,
+    object_id: u32,
+    buffer: super::DumbBuffer,
+    owned: bool,
+}
+
+impl<'a> GemObjectRef<'a> {
+    /// Inserts a new object and takes ownership of its initial reference.
+    pub(super) fn insert_new(
+        manager: &'a super::GpuManager,
+        object_id: u32,
+        object: super::GemObject,
+    ) -> Self {
+        let buffer = object.buffer;
+        let previous = manager
+            .gem_objects
+            .lock()
+            .insert(object_id, Arc::new(object));
+        debug_assert!(previous.is_none());
+        Self {
+            manager,
+            object_id,
+            buffer,
+            owned: true,
+        }
+    }
+
+    /// Retains an existing object and owns the new reference.
+    pub(super) fn retain(manager: &'a super::GpuManager, object_id: u32) -> Result<Self> {
+        let buffer = manager.retain_gem_object(object_id)?;
+        Ok(Self {
+            manager,
+            object_id,
+            buffer,
+            owned: true,
+        })
+    }
+
+    pub(super) fn buffer(&self) -> super::DumbBuffer {
+        self.buffer
+    }
+
+    /// Transfers the owned reference into another lifetime container.
+    fn into_raw(mut self) -> u32 {
+        self.owned = false;
+        self.object_id
+    }
+}
+
+impl Drop for GemObjectRef<'_> {
+    fn drop(&mut self) {
+        if self.owned
+            && let Err(error) = self.manager.release_gem_object(self.object_id)
+        {
+            ostd::warn!(
+                "cannot release unpublished GEM object {}: {:?}",
+                self.object_id,
+                error
+            );
+        }
+    }
+}
+
 /// A GEM handle whose number is reserved but not visible to other ioctl calls.
 ///
-/// The owned object reference is transferred to the per-file handle table by
-/// [`Self::publish`]. Dropping an unpublished handle releases that reference,
-/// which makes userspace copyout failure transactional.
+/// [`Self::publish`] transfers the owned object reference to the per-file table.
+/// Dropping an unpublished handle releases its object reference.
+/// This makes userspace copyout failure transactional.
 pub(super) struct PendingGemHandle<'a> {
     owner: &'a super::DriHandle,
     gem_handle: u32,
-    object_id: u32,
-    allocation: Option<(usize, usize)>,
-    published: bool,
+    object: Option<GemObjectRef<'a>>,
 }
 
 impl<'a> PendingGemHandle<'a> {
-    /// Reserves a handle number for an object reference already owned by the caller.
-    pub(super) fn new_owned(owner: &'a super::DriHandle, object_id: u32) -> Result<Self> {
-        Self::new_owned_inner(owner, object_id, None)
-    }
-
-    /// Reserves a handle and owns a new bump allocation until publication.
-    pub(super) fn new_allocated(
-        owner: &'a super::DriHandle,
-        object_id: u32,
-        offset: usize,
-        next_offset: usize,
-    ) -> Result<Self> {
-        Self::new_owned_inner(owner, object_id, Some((offset, next_offset)))
-    }
-
-    fn new_owned_inner(
-        owner: &'a super::DriHandle,
-        object_id: u32,
-        allocation: Option<(usize, usize)>,
-    ) -> Result<Self> {
+    /// Reserves a handle number for an owned object reference.
+    pub(super) fn new(owner: &'a super::DriHandle, object: GemObjectRef<'a>) -> Result<Self> {
         let gem_handle = {
             let mut inner = owner.inner.lock();
             let gem_handle = inner.next_handle;
             let Some(next_handle) = gem_handle.checked_add(1) else {
-                drop(inner);
-                Self::rollback_allocation(owner, allocation);
-                if let Err(error) = owner.gpu_manager.release_gem_object(object_id) {
-                    ostd::warn!(
-                        "cannot release GEM object {} after handle exhaustion: {:?}",
-                        object_id,
-                        error
-                    );
-                }
                 return_errno_with_message!(Errno::ENOSPC, "GEM handle space is exhausted");
             };
             inner.next_handle = next_handle;
@@ -65,19 +104,8 @@ impl<'a> PendingGemHandle<'a> {
         Ok(Self {
             owner,
             gem_handle,
-            object_id,
-            allocation,
-            published: false,
+            object: Some(object),
         })
-    }
-
-    fn rollback_allocation(owner: &super::DriHandle, allocation: Option<(usize, usize)>) {
-        if let Some((offset, next_offset)) = allocation {
-            let mut allocation_cursor = owner.gpu_manager.next_offset.lock();
-            if *allocation_cursor == next_offset {
-                *allocation_cursor = offset;
-            }
-        }
     }
 
     pub(super) fn id(&self) -> u32 {
@@ -86,30 +114,14 @@ impl<'a> PendingGemHandle<'a> {
 
     /// Makes the reserved handle visible and transfers its object reference.
     pub(super) fn publish(mut self) {
+        let object_id = self.object.take().unwrap().into_raw();
         let previous = self
             .owner
             .inner
             .lock()
             .handles
-            .insert(self.gem_handle, self.object_id);
+            .insert(self.gem_handle, object_id);
         debug_assert!(previous.is_none());
-        self.published = true;
-    }
-}
-
-impl Drop for PendingGemHandle<'_> {
-    fn drop(&mut self) {
-        if self.published {
-            return;
-        }
-        Self::rollback_allocation(self.owner, self.allocation);
-        if let Err(error) = self.owner.gpu_manager.release_gem_object(self.object_id) {
-            ostd::warn!(
-                "cannot release unpublished GEM handle {}: {:?}",
-                self.gem_handle,
-                error
-            );
-        }
     }
 }
 
@@ -169,7 +181,8 @@ pub(super) fn gem_open<'a>(
     let object_id = *object_id;
     drop(names);
 
-    let size = handle.gpu_manager.retain_gem_object(object_id)?.size as u64;
-    let pending = PendingGemHandle::new_owned(handle, object_id)?;
+    let object = GemObjectRef::retain(&handle.gpu_manager, object_id)?;
+    let size = object.buffer().size as u64;
+    let pending = PendingGemHandle::new(handle, object)?;
     Ok((pending, size))
 }

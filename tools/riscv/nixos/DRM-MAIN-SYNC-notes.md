@@ -340,18 +340,22 @@ publishes an id from another file's private namespace.
 
 GEM handles returned by `GEM_OPEN`, `CREATE_DUMB`, PRIME import, and implicit
 `VIRTGPU_RESOURCE_CREATE` allocation are now staged as `PendingGemHandle`
-transactions. A handle number and object reference are reserved without adding
-the handle to the per-file lookup table. Successful userspace copyout publishes
-the handle; failure drops the pending transaction, releases the object, and
-rewinds a still-last bump allocation. This prevents another thread sharing the
-DRM file from observing and using a handle that the creating ioctl later tries
-to roll back.
+transactions.
+A handle number and object reference are reserved without adding the handle to
+the per-file lookup table.
+Successful userspace copyout publishes the handle.
+Failure drops the pending transaction, releases the object, and rolls back the
+serialized bump allocation.
+This prevents another thread sharing the DRM file from observing and using a
+handle that the creating ioctl later tries to roll back, or from interleaving a
+later allocation that would make rollback leak pool space.
 
 Focused real-guest validation passed:
 
-- a read-only ioctl response page forced `CREATE_DUMB` copyout to return
-  `EFAULT`; handle 1 remained unqueryable and the next valid allocation still
-  mapped at offset zero (`M20_PRIME_UNPUBLISHED_HANDLE_OK`);
+- read-only ioctl response pages forced concurrent `CREATE_DUMB` copyouts to
+  return `EFAULT`; every reserved handle remained unqueryable and the next valid
+  allocation still mapped at offset zero
+  (`M20_PRIME_UNPUBLISHED_HANDLE_OK`);
 - PRIME export, close-original, import, and mmap lifetime remained operational
   (`M20_PRIME_PASS`);
 - raw virgl resource creation, transfer, fenced render, wait, and double-buffer

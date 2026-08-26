@@ -144,6 +144,11 @@ Supported functionality in SCML:
 {{#include ioctl.scml}}
 ```
 
+DRM handle-creating operations publish a new GEM handle only after the ioctl
+response has been copied to userspace successfully.
+If copying the response fails, the handle remains inaccessible and any new
+dumb-buffer pool reservation is rolled back.
+
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/ioctl.2.html).
 

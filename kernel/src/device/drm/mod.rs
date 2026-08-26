@@ -154,8 +154,11 @@ struct GpuManager {
     gpu: Arc<GpuDevice>,
     /// The contiguous pool all dumb buffers are carved out of.
     pool: SpinLock<Option<Arc<Vmo>>>,
-    /// Bump-allocator cursor into the pool (page-aligned).
-    next_offset: SpinLock<usize>,
+    /// Serialized bump-allocator cursor into the pool (page-aligned).
+    ///
+    /// A pending allocation holds this sleeping mutex until its creating ioctl
+    /// publishes the returned handle or rolls the cursor back.
+    next_offset: Mutex<usize>,
     /// GEM objects by id. `object_id` is a monotonically increasing counter.
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
     /// Global FLINK name → object_id.
@@ -250,7 +253,7 @@ impl GpuManager {
         Self {
             gpu,
             pool: SpinLock::new(None),
-            next_offset: SpinLock::new(0),
+            next_offset: Mutex::new(0),
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
@@ -974,9 +977,9 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeCreateDumb => {
                 let req = cmd.read()?;
-                let (response, pending) = dumb::create_dumb(self, &req)?;
+                let (response, pending_buffer) = dumb::create_dumb(self, &req)?;
                 cmd.write(&response)?;
-                pending.publish();
+                pending_buffer.publish();
                 Ok(0)
             }
             cmd @ ModeMapDumb => {

@@ -12,16 +12,72 @@ use align_ext::AlignExt;
 
 use super::{
     DUMB_POOL_SIZE, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DumbBuffer,
-    gem::PendingGemHandle,
+    gem::{GemObjectRef, PendingGemHandle},
 };
 use crate::prelude::*;
+
+/// A serialized dumb-pool reservation that is not yet visible to userspace.
+pub(super) struct PendingPoolAllocation<'a> {
+    cursor: MutexGuard<'a, usize>,
+    offset: usize,
+    published: bool,
+}
+
+/// A dumb buffer whose handle and pool span are not yet visible to userspace.
+pub(super) struct PendingDumbBuffer<'a> {
+    handle: PendingGemHandle<'a>,
+    allocation: PendingPoolAllocation<'a>,
+}
+
+impl PendingDumbBuffer<'_> {
+    /// Publishes the handle and commits its pool allocation.
+    pub(super) fn publish(self) {
+        self.handle.publish();
+        self.allocation.publish();
+    }
+}
+
+impl<'a> PendingPoolAllocation<'a> {
+    pub(super) fn new(manager: &'a super::GpuManager, size: usize) -> Result<Self> {
+        let mut cursor = manager.next_offset.lock();
+        let offset = cursor.align_up(PAGE_SIZE);
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
+        if end > DUMB_POOL_SIZE {
+            return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
+        }
+        *cursor = end.align_up(PAGE_SIZE);
+        Ok(Self {
+            cursor,
+            offset,
+            published: false,
+        })
+    }
+
+    pub(super) fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub(super) fn publish(mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for PendingPoolAllocation<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            *self.cursor = self.offset;
+        }
+    }
+}
 
 /// Creates a dumb buffer, allocating from the global pool and wrapping it
 /// in a GEM object.
 pub(super) fn create_dumb<'a>(
     handle: &'a super::DriHandle,
     req: &DrmModeCreateDumb,
-) -> Result<(DrmModeCreateDumb, PendingGemHandle<'a>)> {
+) -> Result<(DrmModeCreateDumb, PendingDumbBuffer<'a>)> {
     if req.flags != 0 {
         return_errno_with_message!(Errno::EINVAL, "unsupported dumb buffer flags");
     }
@@ -39,17 +95,8 @@ pub(super) fn create_dumb<'a>(
 
     handle.gpu_manager.ensure_pool()?;
 
-    let mut offset_guard = handle.gpu_manager.next_offset.lock();
-    let offset = offset_guard.align_up(PAGE_SIZE);
-    let end = offset
-        .checked_add(size)
-        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
-    if end > DUMB_POOL_SIZE {
-        return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
-    }
-    let next_offset = end.align_up(PAGE_SIZE);
-    *offset_guard = next_offset;
-    drop(offset_guard);
+    let allocation = PendingPoolAllocation::new(&handle.gpu_manager, size)?;
+    let offset = allocation.offset();
 
     let object_id = handle
         .gpu_manager
@@ -66,13 +113,8 @@ pub(super) fn create_dumb<'a>(
             bpp: req.bpp,
         },
     };
-    handle
-        .gpu_manager
-        .gem_objects
-        .lock()
-        .insert(object_id, Arc::new(gem_obj));
-
-    let pending = PendingGemHandle::new_allocated(handle, object_id, offset, next_offset)?;
+    let object = GemObjectRef::insert_new(&handle.gpu_manager, object_id, gem_obj);
+    let pending = PendingGemHandle::new(handle, object)?;
 
     Ok((
         DrmModeCreateDumb {
@@ -81,7 +123,10 @@ pub(super) fn create_dumb<'a>(
             size: size as u64,
             ..*req
         },
-        pending,
+        PendingDumbBuffer {
+            handle: pending,
+            allocation,
+        },
     ))
 }
 
