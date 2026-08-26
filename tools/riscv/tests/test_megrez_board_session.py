@@ -170,6 +170,42 @@ class ArgumentContractTests(unittest.TestCase):
                     _required_args() + ["--mock-qemu", "--mock-timeout", value]
                 )
 
+    def test_tftp_transport_requires_safe_ipv4_configuration(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--load-transport",
+                "tftp",
+                "--tftp-board-address",
+                "10.100.19.200",
+                "--tftp-server-address",
+                "10.100.19.216",
+                "--tftp-netmask",
+                "255.255.248.0",
+            ]
+        )
+        self.assertEqual(args.load_transport, "tftp")
+        self.assertEqual(args.tftp_board_address, "10.100.19.200")
+        self.assertEqual(args.tftp_server_address, "10.100.19.216")
+        self.assertEqual(args.tftp_netmask, "255.255.248.0")
+
+        for flag, value in (
+            ("--tftp-board-address", "10.100.19.200; reset"),
+            ("--tftp-server-address", "2001:db8::1"),
+            ("--tftp-netmask", "255.255.999.0"),
+        ):
+            with self.subTest(flag=flag, value=value):
+                _parse_fails(
+                    _required_args()
+                    + crc_args
+                    + ["--load-transport", "tftp", flag, value]
+                )
+
     def test_final_profile_is_closed(self):
         crc_args = [
             "--expected-crc32",
@@ -179,6 +215,13 @@ class ArgumentContractTests(unittest.TestCase):
             _required_args() + crc_args + ["--final-profile", "firmware-framebuffer"]
         )
         self.assertEqual(args.final_profile, "firmware-framebuffer")
+        installer = board.parse_args(
+            _required_args() + crc_args + ["--final-profile", "installer"]
+        )
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS[installer.final_profile],
+            "DEBIAN_INSTALL_PASS",
+        )
         _parse_fails(
             _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
         )
@@ -442,6 +485,21 @@ class SerialContractTests(unittest.TestCase):
         self.assertEqual("".join(logged), "pty-marker")
         self.assertLess(time.monotonic() - started, 0.5)
 
+    def test_wait_for_uboot_prompt_interrupts_split_autoboot_once(self):
+        session = self._session()
+        with (
+            mock.patch.object(
+                board,
+                "read_available",
+                side_effect=["Hit any key to stop auto", "boot:  2\n", "=> "],
+            ),
+            mock.patch.object(board.os, "write", return_value=1) as write,
+        ):
+            output = session.wait_for_uboot_prompt(timeout=0.2)
+
+        self.assertEqual(output, "Hit any key to stop autoboot:  2\n=> ")
+        write.assert_called_once_with(-1, b" ")
+
     def test_command_rejects_an_address_from_the_wrong_echo(self):
         session = self._session()
         command = "ext4load mmc 1:1 0x80200000 /kernel"
@@ -527,6 +585,29 @@ class SerialContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "CRC32"):
                     session.load_artifact("booti", "kernel", 0x80200000, "0123abcd")
 
+    def test_tftp_load_requires_transfer_size_and_exact_crc(self):
+        session = self._session()
+        load = "tftpboot 0x80200000 kernel"
+        crc = "crc32 0x80200000 ${filesize}"
+        session.command = mock.Mock(
+            side_effect=[
+                f"{load}\r\nBytes transferred = 14288192 (da0600 hex)\r\n=> ",
+                f"{crc}\r\nCRC32 for 80200000 ... ==> e5a5fac5\r\n=> ",
+            ]
+        )
+
+        size = session.load_tftp_artifact("booti", "kernel", 0x80200000, "e5a5fac5")
+
+        self.assertEqual(size, 14288192)
+        self.assertEqual(
+            session.command.call_args_list,
+            [mock.call(load, timeout=120), mock.call(crc)],
+        )
+
+        session.command = mock.Mock(return_value=f"{load}\r\n=> ")
+        with self.assertRaisesRegex(RuntimeError, "positive transfer"):
+            session.load_tftp_artifact("booti", "kernel", 0x80200000, "e5a5fac5")
+
 
 class BootTransactionTests(unittest.TestCase):
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
@@ -589,7 +670,7 @@ class BootTransactionTests(unittest.TestCase):
         current_boot = "Enter riscv_boot\nPresented by the Asterinas developers\nHello from RISC-V userspace\n"
         stale_preload = f"{current_boot}{board.PROMPT}"
         physical_session = mock.Mock()
-        physical_session.wait_for.return_value = stale_preload
+        physical_session.wait_for_uboot_prompt.return_value = stale_preload
         physical_session.milestones = {}
         physical_session.log = mock.Mock()
         physical_session.fd = -1
@@ -620,7 +701,7 @@ class BootTransactionTests(unittest.TestCase):
         self.assertLess(
             physical_session.mock_calls.index(mock.call.send("")),
             physical_session.mock_calls.index(
-                mock.call.wait_for(board.PROMPT, timeout=60)
+                mock.call.wait_for_uboot_prompt(timeout=60.0)
             ),
         )
         physical_session.note_milestone.assert_called_once_with(current_boot)
@@ -662,6 +743,52 @@ class BootTransactionTests(unittest.TestCase):
         self.assertTrue(
             all(events.index(command) < booti_index for command in framebuffer_commands)
         )
+
+    def test_tftp_transport_is_configured_without_persistent_environment(self):
+        events: list[tuple] = []
+        session = mock.Mock()
+        session.load_tftp_artifact.side_effect = lambda *args: events.append(
+            ("tftp", *args)
+        )
+        session.command.side_effect = lambda command, **kwargs: (
+            events.append(("command", command, kwargs)) or "boot output"
+        )
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="init=/init asterinas.reboot_after=180",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+            load_transport="tftp",
+            tftp_board_address="10.100.19.200",
+            tftp_server_address="10.100.19.216",
+            tftp_netmask="255.255.248.0",
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        self.assertEqual(
+            events[:3],
+            [
+                ("command", "setenv ipaddr 10.100.19.200", {}),
+                ("command", "setenv serverip 10.100.19.216", {}),
+                ("command", "setenv netmask 255.255.248.0", {}),
+            ],
+        )
+        self.assertEqual(
+            [event for event in events if event[0] == "tftp"],
+            [
+                ("tftp", "booti", "kernel", 0x80200000, "0123abcd"),
+                ("tftp", "dtb", "board.dtb", 0xF0000000, "89abcdef"),
+                ("tftp", "initrd", "initrd", 0x83000000, "00000001"),
+            ],
+        )
+        self.assertFalse(any("saveenv" in str(event) for event in events))
 
 
 if __name__ == "__main__":

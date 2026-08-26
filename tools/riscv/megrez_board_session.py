@@ -22,6 +22,7 @@ are optional, and --mock-timeout sets the finite milestone deadline.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import math
 import os
@@ -43,10 +44,14 @@ MILESTONES = {
 FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
     "firmware-framebuffer": "Registered firmware framebuffer",
+    "installer": "DEBIAN_INSTALL_PASS",
 }
 MILESTONE_SEQUENCE = tuple(MILESTONES)
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
+TFTP_LOAD_RESULT_PATTERN = re.compile(
+    r"(?im)^\s*Bytes transferred\s*=\s*(\d+)\s+\([0-9a-f]+ hex\)\s*$"
+)
 CRC_RESULT_PATTERN = re.compile(
     r"(?im)^\s*CRC32 for\s+(0x)?([0-9a-f]+)\b[^\r\n]*==>\s*([0-9a-f]{8})\s*$"
 )
@@ -63,6 +68,8 @@ MILESTONE_TAIL_LENGTH = max(len(marker) for marker in MILESTONES.values()) - 1
 ARTIFACT_NAME_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
 )
+AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
+MAX_UBOOT_WAIT_BYTES = 256 * 1024
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = (
     "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
@@ -243,10 +250,31 @@ class BoardSession:
             if not chunk:
                 continue
             self._log(chunk)
-            buf += chunk
+            buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
             if pattern in buf:
                 return buf
         raise TimeoutError(f"timed out waiting for {pattern!r}; last: {buf[-200:]!r}")
+
+    def wait_for_uboot_prompt(self, timeout: float) -> str:
+        """Wait for U-Boot and interrupt a newly observed autoboot once."""
+        buf = ""
+        interrupted = False
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            chunk = read_available(self.fd, min(1.0, remaining))
+            if not chunk:
+                continue
+            self._log(chunk)
+            buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
+            if not interrupted and any(marker in buf for marker in AUTOBOOT_MARKERS):
+                os.write(self.fd, b" ")
+                interrupted = True
+            if PROMPT in buf:
+                return buf
+        raise TimeoutError(f"timed out waiting for U-Boot prompt; last: {buf[-200:]!r}")
 
     def send(self, command: str) -> None:
         for i, byte in enumerate(command.encode()):
@@ -259,7 +287,7 @@ class BoardSession:
         self, command: str, expect: str | None = None, timeout: float = 15
     ) -> str:
         if self.confirm and command.startswith(
-            ("ext4load", "booti", "setenv bootargs")
+            ("ext4load", "tftpboot", "booti", "setenv bootargs")
         ):
             answer = input(f"send {command!r}? [y/N] ").strip().lower()
             if answer != "y":
@@ -291,9 +319,33 @@ class BoardSession:
         """Load one artifact and verify U-Boot's size and CRC32 evidence."""
         load_command = f"ext4load mmc 1:1 0x{address:x} /{filename}"
         load_output = self.command(load_command)
-        load_result = LOAD_RESULT_PATTERN.search(load_output)
+        return self._verify_loaded_artifact(
+            name, address, expected_crc32, load_output, LOAD_RESULT_PATTERN
+        )
+
+    def load_tftp_artifact(
+        self, name: str, filename: str, address: int, expected_crc32: str
+    ) -> int:
+        """Load one artifact over TFTP and verify its size, address, and CRC32."""
+        load_command = f"tftpboot 0x{address:x} {filename}"
+        load_output = self.command(load_command, timeout=120)
+        return self._verify_loaded_artifact(
+            name, address, expected_crc32, load_output, TFTP_LOAD_RESULT_PATTERN
+        )
+
+    def _verify_loaded_artifact(
+        self,
+        name: str,
+        address: int,
+        expected_crc32: str,
+        load_output: str,
+        load_pattern: re.Pattern[str],
+    ) -> int:
+        load_result = load_pattern.search(load_output)
         if load_result is None or int(load_result.group(1)) <= 0:
-            raise RuntimeError(f"{name}: no positive 'bytes read' result")
+            raise RuntimeError(
+                f"{name}: no positive transfer size ('bytes read' for MMC)"
+            )
 
         crc_command = f"crc32 0x{address:x} ${{filesize}}"
         crc_output = self.command(crc_command)
@@ -372,6 +424,28 @@ def safe_bootargs(value: str) -> str:
     return value
 
 
+def safe_ipv4(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected an IPv4 address") from error
+    if address.version != 4:
+        raise argparse.ArgumentTypeError("expected an IPv4 address")
+    return str(address)
+
+
+def safe_ipv4_netmask(value: str) -> str:
+    try:
+        network = ipaddress.IPv4Network(f"0.0.0.0/{value}")
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as error:
+        raise argparse.ArgumentTypeError(
+            "expected a contiguous IPv4 netmask"
+        ) from error
+    if str(network.netmask) != value:
+        raise argparse.ArgumentTypeError("expected a canonical IPv4 netmask")
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -387,6 +461,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--initrd", required=True, type=safe_artifact_name)
     p.add_argument("--dtb", required=True, type=safe_artifact_name)
     p.add_argument("--bootargs", type=safe_bootargs, default=DEFAULT_BOOTARGS)
+    p.add_argument(
+        "--load-transport",
+        choices=("mmc", "tftp"),
+        default="mmc",
+        help="artifact source (default: mmc)",
+    )
+    p.add_argument("--tftp-board-address", type=safe_ipv4, default="10.100.19.200")
+    p.add_argument("--tftp-server-address", type=safe_ipv4, default="10.100.19.216")
+    p.add_argument("--tftp-netmask", type=safe_ipv4_netmask, default="255.255.248.0")
     p.add_argument(
         "--final-profile",
         choices=tuple(FINAL_MILESTONE_MARKERS),
@@ -411,6 +494,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=positive_finite_seconds,
         default=120.0,
         help="mock milestone deadline in seconds (default: 120)",
+    )
+    p.add_argument(
+        "--uboot-timeout",
+        type=positive_finite_seconds,
+        default=60.0,
+        help="physical U-Boot prompt/autoboot deadline in seconds (default: 60)",
     )
     args = p.parse_args(argv)
     if not args.mock_qemu and args.expected_crc32 is None:
@@ -476,16 +565,21 @@ def run_mock_qemu(device: str, timeout: float) -> int:
 
 def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> str:
     """Run the exact guarded U-Boot load, patch, and boot transaction."""
-    session.load_artifact("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
-    session.load_artifact("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
+    transport = getattr(args, "load_transport", "mmc")
+    loader = session.load_artifact
+    if transport == "tftp":
+        session.command(f"setenv ipaddr {args.tftp_board_address}")
+        session.command(f"setenv serverip {args.tftp_server_address}")
+        session.command(f"setenv netmask {args.tftp_netmask}")
+        loader = session.load_tftp_artifact
+    loader("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
+    loader("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
     if args.firmware_framebuffer:
         for command in MEGREZ_FRAMEBUFFER.commands():
             session.command(command)
-    session.load_artifact(
-        "initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"]
-    )
+    loader("initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"])
     session.command("setenv initrd_size ${filesize}")
     session.command(f'setenv bootargs "{args.bootargs}"')
     session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
@@ -513,7 +607,7 @@ def main(argv: list[str]) -> int:
         # A board already stopped at U-Boot is silent after the serial port is
         # reopened. Wake the prompt before waiting for evidence from this session.
         session.send("")
-        boot = session.wait_for(PROMPT, timeout=60)
+        boot = session.wait_for_uboot_prompt(timeout=args.uboot_timeout)
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
 
