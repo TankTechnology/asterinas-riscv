@@ -220,6 +220,53 @@ git cherry -v origin/main track/drm
 Always record the compared commit IDs when updating this note,
 because ahead/behind counts change as main advances.
 
+## 2026-08-26 current-main convergence
+
+The integration branch was refreshed again against the active team main line,
+`tank/main` at `ffb1bd062`. The merge keeps the modular DRM/GEM/KMS and virgl
+implementation while porting main's hardware-cursor work into that newer
+architecture. It also brings the current Debian, MMC, USB, PCI, and RISC-V
+platform work into the same history instead of maintaining a parallel baseline.
+
+The pre-merge DRM work was split into two reviewable commits:
+
+- `41710d370` — reuse the active 2D scanout resource for repeated updates;
+- `af8664810` — add the stable RISC-V software-display/Xfce acceptance path.
+
+Conflict resolution and review added several hardening changes:
+
+- serialize the complete virtio-gpu DMA request/queue transaction with sleeping
+  mutexes and roll back partially created host resources;
+- enumerate capsets by index and match their returned ids;
+- validate framebuffer arithmetic, layouts, modifiers, offsets, pitches, and
+  userspace enumeration capacities;
+- restrict DRM mmap to GEM ranges owned by the open file;
+- bound EXECBUFFER allocations and roll back PRIME/fence descriptors when
+  userspace copyout fails;
+- implement exclusive DRM-master ownership for global KMS/cursor operations and
+  prevent render-node clients from enumerating legacy FLINK names.
+
+Validation on the converged tree:
+
+- RISC-V Sv39 `cargo osdk build`: pass;
+- kernel ktests `framebuffer_extent`, `mmap_range`, and `cursor`: pass;
+- virtio-gpu ktests `framebuffer_length` and `cursor`: pass;
+- host cursor-gate unit tests: 10/10 pass;
+- real U-Boot/QEMU cursor gate: pass, with two `UPDATE_CURSOR` traces and one
+  `MOVE_CURSOR` trace. Evidence is generated under
+  `target/qemu-uboot/drm-cursor/evidence/`.
+
+Run the formal kernel build again after OSDK ktests and before packaging a QEMU
+gate. The ktest workflow updates generic OSDK artifact links, so packaging
+immediately after a ktest can accidentally select the test kernel rather than
+the normal run kernel.
+
+Two non-blocking follow-ups remain: reclaim final-reference GEM/host resources
+through one shared lifetime path, and implement asynchronous virgl fence
+tracking so `VIRTGPU_WAIT` no longer relies on the current provisional behavior.
+The oversized virtio-gpu and DRM dispatch modules should also be split in a
+separate structural change.
+
 ## Integration outcome
 
 The audit was acted on later on 2026-08-25. The dedicated

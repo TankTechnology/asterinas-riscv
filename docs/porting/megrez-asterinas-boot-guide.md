@@ -224,15 +224,10 @@ U-Boot 不理解 Asterinas 内部逻辑。
 flowchart TD
     A[Image 入口 0x80200000] --> B[跳过 64 字节 Image 头]
     B --> C[保存 a0 hart ID 与 a1 DTB]
-    C --> D[准备 Sv48 根页表]
-    D --> E{satp 接受 Sv48?}
-    E -->|是| F[启用 Sv48]
-    E -->|否| G[尝试 Sv39]
-    G --> H{satp 接受 Sv39?}
-    H -->|否| X[早期死循环]
-    H -->|是| I[启用 Sv39]
+    C --> D[读取编译期唯一 BOOT_SATP_MODE]
+    D --> E[按同一 mode 准备启动根页表]
+    E --> F[启用编译期 Sv39 或 Sv48]
     F --> J[sfence.vma]
-    I --> J
     J --> K[切换高半 SP 与 PC]
     K --> L[riscv_boot]
     L --> M[打印 Enter riscv_boot]
@@ -244,15 +239,16 @@ flowchart TD
     R --> S[PID 1]
 ```
 
-当前启动汇编仍先尝试 Sv48。
-它通过读回 `satp` 判断写入是否被硬件接受，
-只有读回值不一致时才回退到 Sv39。
+自 `b48cfeea3` 起，启动汇编不再独立执行 Sv48-first fallback。BSP、AP、
+Rust `PagingConsts` 和最终页表必须遵循同一个编译期 paging mode。此前的
+独立 fallback 曾在 Sv39 编译的内核上成功启用 Sv48，并在第一次 DTB 读取
+时制造跨布局 page fault。
 
 `ae38e6c6` 曾在 U-Boot 跳转后完全无输出，因而当时合理怀疑第一次地址
 空间切换。后续 `6df0f28f` 使用默认 Sv48 在真机打印 `Enter riscv_boot`，
 完成 OSTD、三个 AP、组件和 rootfs，已经证明该假设不是当前主阻塞点。
-Sv39-first 仍可作为有 marker 证据时的诊断变体，但不能再作为 Megrez
-默认构建或下一次实验的起点。
+默认 Sv48 仍有历史真机证据；当前 Debian 存储路径则明确构建为 Sv39。
+两种模式必须是独立产物和独立门禁，不能在同一 Image 内由汇编自行切换。
 
 ## 4. 四类启动产物
 
@@ -441,9 +437,10 @@ flowchart TD
 所有构建应在项目规定的开发容器中完成，
 并使用仓库 `rust-toolchain.toml` 固定的工具链。
 
-Megrez 当前主路径是**默认 Sv48**，不启用 `riscv_sv39_mode`。
-`6df0f28f` 已在真机证明该路径可到 rootfs。Sv39 feature 只保留为通用
-回归和证据指向分页 mode 时的诊断变体。
+Megrez 的历史通用启动路径以默认 Sv48 到达过 rootfs；当前持久 Debian/MMC
+路径则显式启用 `riscv_sv39_mode`。这两条证据都有效，但产物不得混用。
+构建必须在文件名、manifest 和启动日志中标明 paging mode，并由
+`BOOT_SATP_MODE` 保证 BSP/AP 与 Rust layout 一致。
 
 标准 ELF 位于：
 
@@ -453,8 +450,8 @@ target/osdk/aster-kernel-osdk-bin.qemu_elf
 
 ### 7.2 生成 `booti` Image
 
-Image 必须由链接后的默认 Sv48 ELF 生成，并通过 header、偏移、根页表、
-长度和哈希门禁。精确构建、转换与测试命令只维护在
+Image 必须由已明确 paging mode 的链接后 ELF 生成，并通过 header、偏移、
+对应模式根页表、长度和哈希门禁。精确构建、转换与测试命令只维护在
 [`tools/riscv/README.md`](../../tools/riscv/README.md)，避免本指南再次漂移。
 
 ### 7.3 QEMU 门禁
@@ -911,7 +908,7 @@ U-Boot 启动序列并回到 `=>`。因此当前边界已经越过 PID 1 与第�
 详细 provenance 与边界见
 [PID 1 与恢复证据](evidence/2026-07-20-megrez-pid1-recovery.md)。
 
-## 12. Sv48-first：保留的历史假设，不是当前结论
+## 12. Sv48-first：已撤销的独立汇编策略
 
 ### 12.1 为什么当时优先怀疑它
 
@@ -971,12 +968,11 @@ sequenceDiagram
     end
 ```
 
-这套决策树保留为回归规则，但已不是当前工作路径：`3ef99e6bd` 在默认
-Sv48 下进入 PID 1，分页 mode 不再是显示 console 阶段的配置变量。
-`593d5bb19` 和 `codex/riscv-software-reboot` 只保留作历史 provenance。
-只有未来候选重新在 `Enter riscv_boot` 之前静默，并且 pre/post-`satp`
-marker 把故障指向分页切换时，才构建受控 Sv39-first 变体。该变体必须
-通过明确配置启用，避免无证据地改变所有 RISC-V 平台默认行为。
+该决策树只保留为历史诊断记录。`b48cfeea3` 已证明“汇编探测模式、Rust
+编译另一模式”本身就是错误架构。未来若候选重新在 `Enter riscv_boot`
+之前静默，应构建显式 Sv39 和显式 Sv48 两个受控产物，而不是恢复运行时
+Sv48-first fallback。完整故障链、Linux 的动态降级条件和防复发约束见
+[Sv39/Sv48 故障复盘](evidence/2026-08-25-riscv-sv39-sv48-lessons.md)。
 
 ## 13. 随机种子在流程中的位置
 
@@ -1563,6 +1559,7 @@ flowchart LR
 
 - [最新 Megrez PID 1 与软件恢复证据](evidence/2026-07-20-megrez-pid1-recovery.md)
 - [默认 Sv48 真机、bootargs 根因与 clean preflight 证据](evidence/2026-07-16-megrez-sv48-bootargs.md)
+- [Sv39/Sv48 故障复盘、Linux 对照与防复发约束](evidence/2026-08-25-riscv-sv39-sv48-lessons.md)
 - [冻结提交 `7f691c479` 的 QEMU 软件恢复证据元数据](evidence/2026-07-18-riscv-software-reboot-qemu.md)
 - [RISC-V U-Boot Image 与复现命令](../../tools/riscv/README.md)
 - [Megrez 高保真 preflight 设计](../superpowers/specs/2026-07-17-megrez-preflight-simulation-design.md)

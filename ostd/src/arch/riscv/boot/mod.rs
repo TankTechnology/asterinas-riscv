@@ -19,7 +19,16 @@ use crate::{
     mm::paddr_to_vaddr,
 };
 
-global_asm!(include_str!("bsp_boot.S"));
+pub(super) const BOOT_SATP_MODE: usize = if cfg!(feature = "riscv_sv39_mode") {
+    8 << 60
+} else {
+    9 << 60
+};
+
+global_asm!(
+    include_str!("bsp_boot.S"),
+    SATP_MODE = const BOOT_SATP_MODE,
+);
 
 /// The Flattened Device Tree of the platform.
 pub static DEVICE_TREE: Once<Fdt> = Once::new();

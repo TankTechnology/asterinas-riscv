@@ -13,7 +13,7 @@ use io_util::{
 use ostd::{
     Error,
     mm::{
-        HasSize, Infallible, USegment, VmReader, VmWriter,
+        HasSize, Infallible, USegment, VmIo, VmReader, VmWriter,
         dma::DmaStream,
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
@@ -477,6 +477,22 @@ impl BioSegment {
         &self.inner.dma_slice
     }
 
+    /// Copies bytes produced by a PIO device into a read BIO segment.
+    pub fn write_from_device(&self, offset: usize, buf: &[u8]) -> Result<(), Error> {
+        if self.inner.direction != BioDirection::FromDevice {
+            return Err(Error::AccessDenied);
+        }
+        self.inner.dma_slice.write_bytes(offset, buf)
+    }
+
+    /// Copies bytes from a write BIO segment into a PIO device buffer.
+    pub fn read_for_device(&self, offset: usize, buf: &mut [u8]) -> Result<(), Error> {
+        if self.inner.direction != BioDirection::ToDevice {
+            return Err(Error::AccessDenied);
+        }
+        self.inner.dma_slice.read_bytes(offset, buf)
+    }
+
     /// Returns the inner DMA object.
     ///
     /// Note that the slicing will be ignored. This is only for testing.
@@ -688,6 +704,33 @@ fn target_pool(direction: BioDirection) -> Option<&'static Arc<BioSegmentPool>> 
 /// Checks if the given offset is aligned to sector.
 pub fn is_sector_aligned(offset: usize) -> bool {
     offset.is_multiple_of(SECTOR_SIZE)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn device_fills_only_from_device_segments() {
+        let segment = BioSegment::alloc(1, BioDirection::FromDevice);
+        let expected = [0x5au8; SECTOR_SIZE];
+        segment.write_from_device(0, &expected).unwrap();
+
+        let mut actual = [0u8; SECTOR_SIZE];
+        segment.read_bytes(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+
+        let write_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+        assert!(write_segment.write_from_device(0, &expected).is_err());
+
+        write_segment.write_bytes(0, &expected).unwrap();
+        let mut device_buf = [0u8; SECTOR_SIZE];
+        write_segment.read_for_device(0, &mut device_buf).unwrap();
+        assert_eq!(device_buf, expected);
+        assert!(segment.read_for_device(0, &mut device_buf).is_err());
+    }
 }
 
 /// An aligned unsigned integer number.

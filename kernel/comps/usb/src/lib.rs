@@ -20,6 +20,7 @@ macro_rules! __log_prefix {
 #[cfg_attr(not(target_arch = "riscv64"), path = "arch/other.rs")]
 mod arch;
 mod keyboard;
+mod mouse;
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
@@ -30,4 +31,9 @@ fn init() -> Result<(), ComponentInitError> {
 /// Runs the architecture-specific USB host polling worker.
 pub fn run_polling() {
     arch::run_polling();
+}
+
+/// Runs a second firmware-selected USB host worker when the architecture provides one.
+pub fn run_polling_secondary() {
+    arch::run_polling_secondary();
 }

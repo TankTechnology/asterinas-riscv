@@ -391,6 +391,8 @@ impl Path {
             source,
             &mut topology_guard,
         )?;
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
 
         Ok(child_mount)
     }
@@ -428,6 +430,8 @@ impl Path {
         };
         let parent_mount = self.mount.parent().unwrap().upgrade().unwrap();
         let child_mount = parent_mount.do_unmount(&mountpoint, &mut topology_guard)?;
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
 
         Ok(child_mount)
     }
@@ -461,7 +465,10 @@ impl Path {
 
         let mut topology_guard = MountTopology::write_lock();
         self.mount
-            .remount(mount_flags, fs_flags, data, ctx, &mut topology_guard)
+            .remount(mount_flags, fs_flags, data, ctx, &mut topology_guard)?;
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
+        Ok(())
     }
 
     /// Creates a bind mount from the current path to the destination path.
@@ -519,6 +526,8 @@ impl Path {
             &topology_guard,
         )?;
         new_mount.graft_mount_tree(dst_path, &mut topology_guard);
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
         Ok(())
     }
 
@@ -615,6 +624,8 @@ impl Path {
         }
 
         self.mount.graft_mount_tree(dst_path, &mut topology_guard);
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
 
         Ok(())
     }
@@ -639,6 +650,8 @@ impl Path {
         let mut topology_guard = MountTopology::write_lock();
         self.mount
             .set_propagation(prop, recursive, &mut topology_guard);
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
 
         Ok(())
     }

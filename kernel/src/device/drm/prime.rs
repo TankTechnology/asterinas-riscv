@@ -73,7 +73,14 @@ impl FileLike for DmaBufFile {
     }
 
     fn mappable(&self) -> Result<Mappable> {
-        Ok(Mappable::Vmo(self.pool.clone()))
+        let range = self
+            .buffer
+            .mapped_range()
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "dma-buf mapping range overflows"))?;
+        Ok(Mappable::VmoRanges {
+            vmo: self.pool.clone(),
+            ranges: vec![range],
+        })
     }
 
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
@@ -162,4 +169,12 @@ pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<(u32
     inner.handles.insert(gem_handle, object_id);
 
     Ok((gem_handle, buffer.size as u64))
+}
+
+/// Rolls back a just-created dma-buf import that was not published to userspace.
+pub(super) fn rollback_fd_to_handle(handle: &DriHandle, gem_handle: u32) {
+    let object_id = handle.inner.lock().handles.remove(&gem_handle);
+    if let Some(object_id) = object_id {
+        handle.gpu_manager.gem_objects.lock().remove(&object_id);
+    }
 }

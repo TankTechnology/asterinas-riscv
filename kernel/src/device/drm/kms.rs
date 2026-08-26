@@ -10,9 +10,10 @@
 use ostd::mm::VmIo;
 
 use super::{
-    CONNECTOR_ID, CRTC_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL, DRM_MODE_CURSOR_BO,
-    DRM_MODE_CURSOR_MOVE, DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2,
-    DrmModeGetConnector, DrmModeGetEncoder, ENCODER_ID, Framebuffer, build_mode,
+    CONNECTOR_ID, CRTC_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL,
+    DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2, DrmModeGetConnector,
+    DrmModeGetEncoder, ENCODER_ID, Framebuffer, build_mode,
+    cursor::{CursorBuffer, CursorImage, DrmModeCursor2, MODE_CURSOR_BO, validate_cursor},
 };
 use crate::{
     context::current_userspace,
@@ -20,8 +21,44 @@ use crate::{
     util::ioctl::{InOutData, Ioctl},
 };
 
+const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
+const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+fn framebuffer_extent(
+    offset: u32,
+    pitch: u32,
+    width: u32,
+    height: u32,
+    bits_per_pixel: u32,
+) -> Option<usize> {
+    if width == 0 || height == 0 || bits_per_pixel == 0 {
+        return None;
+    }
+    let bytes_per_pixel = bits_per_pixel.checked_add(7)? / 8;
+    let row_bytes = (width as usize).checked_mul(bytes_per_pixel as usize)?;
+    let pitch = pitch as usize;
+    if pitch < row_bytes {
+        return None;
+    }
+    (offset as usize)
+        .checked_add(pitch.checked_mul(height as usize - 1)?)?
+        .checked_add(row_bytes)
+}
+
 /// ADDFB: register a framebuffer backed by a GEM/dumb-buffer handle.
 pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u32> {
+    let tight_pitch = req
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer pitch overflows"))?;
+    if req.bpp != 32 || req.pitch != tight_pitch {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "only tightly packed 32-bpp framebuffers work"
+        );
+    }
     let object_id = {
         let inner = handle.inner.lock();
         let Some(&object_id) = inner.handles.get(&req.handle) else {
@@ -45,9 +82,9 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
         // The framebuffer may be smaller than the backing buffer (drivers
         // over-allocate, e.g. llvmpipe aligns the height up); the fb only
         // needs to fit within the buffer.
-        let bytes_per_pixel = req.bpp.div_ceil(8);
-        let needed = req.pitch * (req.height - 1) + req.width * bytes_per_pixel;
-        if req.bpp != buf.bpp || needed as usize > buf.size {
+        let needed = framebuffer_extent(0, req.pitch, req.width, req.height, req.bpp)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid framebuffer extent"))?;
+        if req.bpp != buf.bpp || needed > buf.size {
             ostd::warn!(
                 "drm: ADDFB handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} bpp={}/{} depth={} buffer={:?}",
                 req.handle,
@@ -76,6 +113,9 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
             object_id,
             width: req.width,
             height: req.height,
+            offset: 0,
+            pitch: req.pitch,
+            pixel_format: DRM_FORMAT_XRGB8888,
         },
     );
     Ok(fb_id)
@@ -87,6 +127,27 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
 /// virtio-gpu 2D path uses linear scanout. We validate that the framebuffer
 /// fits within the GEM object (the buffer may be larger than the fb).
 pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
+    let tight_pitch = req
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer pitch overflows"))?;
+    if req.pitches[0] != tight_pitch
+        || !matches!(req.pixel_format, DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888)
+    {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "only tightly packed XRGB8888/ARGB8888 framebuffers work"
+        );
+    }
+    if req.flags & !DRM_MODE_FB_MODIFIERS != 0
+        || req.modifier[0] != DRM_FORMAT_MOD_LINEAR
+        || req.handles[1..].iter().any(|&value| value != 0)
+        || req.pitches[1..].iter().any(|&value| value != 0)
+        || req.offsets[1..].iter().any(|&value| value != 0)
+        || req.modifier[1..].iter().any(|&value| value != 0)
+    {
+        return_errno_with_message!(Errno::EINVAL, "unsupported framebuffer layout or modifier");
+    }
     let object_id = {
         let inner = handle.inner.lock();
         let Some(&object_id) = inner.handles.get(&req.handles[0]) else {
@@ -110,9 +171,8 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
         // The framebuffer may be smaller than the backing buffer (drivers
         // over-allocate, e.g. llvmpipe aligns the height to 32); it only
         // needs to fit: last-row start + one row of pixels within the buffer.
-        let pitch = req.pitches[0] as usize;
-        let bytes_per_pixel = 4usize;
-        let needed = pitch * (req.height as usize - 1) + req.width as usize * bytes_per_pixel;
+        let needed = framebuffer_extent(req.offsets[0], req.pitches[0], req.width, req.height, 32)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid framebuffer extent"))?;
         if needed > buf.size {
             ostd::warn!(
                 "drm: ADDFB2 handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} offset={} buffer={:?}",
@@ -128,7 +188,6 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
             );
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
         }
-        // Accept any pitch — ADDFB2 allows explicit pitches
         object_id
     };
 
@@ -141,6 +200,9 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
             object_id,
             width: req.width,
             height: req.height,
+            offset: req.offsets[0],
+            pitch: req.pitches[0],
+            pixel_format: req.pixel_format,
         },
     );
     Ok(fb_id)
@@ -164,6 +226,12 @@ pub(super) fn set_crtc(handle: &super::DriHandle, req: &DrmModeCrtc) -> Result<(
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
     if req.fb_id == 0 {
+        handle
+            .gpu_manager
+            .gpu
+            .disable_scanout()
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+        handle.inner.lock().current_fb_id = None;
         return Ok(());
     }
     present_fb(handle, req.fb_id)
@@ -182,18 +250,24 @@ pub(super) fn present_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
             .get(&fb.object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
         let base = handle.gpu_manager.pool_paddr()?;
-        (
-            base + obj.buffer.offset,
-            obj.buffer.size,
-            fb.width,
-            fb.height,
-        )
+        debug_assert!(matches!(
+            fb.pixel_format,
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888
+        ));
+        let size = framebuffer_extent(0, fb.pitch, fb.width, fb.height, 32)
+            .and_then(|size| u32::try_from(size).ok())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer size overflows"))?;
+        let addr = base
+            .checked_add(obj.buffer.offset)
+            .and_then(|addr| addr.checked_add(fb.offset as usize))
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer address overflows"))?;
+        (addr, size, fb.width, fb.height)
     };
 
     handle
         .gpu_manager
         .gpu
-        .present_framebuffer(addr as u64, size as u32, width, height)
+        .present_framebuffer(addr as u64, size, width, height)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
 
     let mut inner = handle.inner.lock();
@@ -216,7 +290,7 @@ pub(super) fn get_crtc(
     cmd.write(&DrmModeCrtc {
         crtc_id: CRTC_ID,
         fb_id: inner.current_fb_id.unwrap_or(0),
-        mode_valid: 1,
+        mode_valid: u32::from(inner.current_fb_id.is_some()),
         mode: build_mode(inner.current_width, inner.current_height),
         ..Default::default()
     })?;
@@ -232,7 +306,8 @@ pub(super) fn get_connector(
     if conn.connector_id != CONNECTOR_ID {
         return_errno_with_message!(Errno::EINVAL, "unknown connector id");
     }
-    let capacity = conn.count_modes;
+    let mode_capacity = conn.count_modes;
+    let encoder_capacity = conn.count_encoders;
     conn.count_modes = 1;
     conn.count_props = 0;
     conn.count_encoders = 1;
@@ -244,14 +319,14 @@ pub(super) fn get_connector(
     conn.mm_height = 0;
     conn.subpixel = 0;
     conn.pad = 0;
-    if conn.modes_ptr != 0 && capacity >= 1 {
+    if conn.modes_ptr != 0 && mode_capacity >= 1 {
         let mode = build_mode(
             handle.gpu_manager.gpu.width(),
             handle.gpu_manager.gpu.height(),
         );
         current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
     }
-    if conn.encoders_ptr != 0 {
+    if conn.encoders_ptr != 0 && encoder_capacity >= 1 {
         current_userspace!().write_val(conn.encoders_ptr as usize, &ENCODER_ID)?;
     }
     cmd.write(&conn)?;
@@ -274,69 +349,115 @@ pub(super) fn get_encoder(
     Ok(0)
 }
 
-/// CURSOR / CURSOR2: set or move the hardware cursor.
-#[expect(clippy::too_many_arguments)]
-pub(super) fn set_cursor(
-    handle: &super::DriHandle,
-    flags: u32,
-    crtc_id: u32,
-    x: i32,
-    y: i32,
-    gem_handle: u32,
-    hot_x: i32,
-    hot_y: i32,
-) -> Result<()> {
-    if crtc_id != CRTC_ID {
-        return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
-    }
-
-    if flags & DRM_MODE_CURSOR_BO != 0 {
-        if gem_handle == 0 {
-            handle
-                .gpu_manager
-                .gpu
-                .hide_cursor()
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed"))?;
+/// CURSOR / CURSOR2: validate and apply one hardware-cursor update.
+pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> Result<()> {
+    let _cursor_operation = handle.cursor_operation.lock();
+    let (update, position, backing) = {
+        let inner = handle.inner.lock();
+        let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
+            let object_id = inner.handles.get(&request.handle);
+            object_id.and_then(|object_id| {
+                let objects = handle.gpu_manager.gem_objects.lock();
+                objects.get(object_id).map(|object| {
+                    let bytes_per_pixel = object.buffer.bpp.div_ceil(8);
+                    CursorBuffer {
+                        width: object.buffer.width,
+                        height: object.buffer.height,
+                        pitch: object.buffer.width.saturating_mul(bytes_per_pixel),
+                        bpp: object.buffer.bpp,
+                        size: object.buffer.size,
+                    }
+                })
+            })
         } else {
-            let (addr, size, width, height) = {
-                let inner = handle.inner.lock();
-                let object_id = inner
-                    .handles
-                    .get(&gem_handle)
-                    .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-                let guard = handle.gpu_manager.gem_objects.lock();
-                let obj = guard
+            None
+        };
+        let update = validate_cursor(request, buffer, CRTC_ID)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
+        let position = inner.cursor.position_for(update);
+        let backing = match update.image {
+            Some(CursorImage::Buffer {
+                handle: gem_handle, ..
+            }) => {
+                let object_id = inner.handles.get(&gem_handle).ok_or_else(|| {
+                    Error::with_message(Errno::EINVAL, "unknown cursor buffer handle")
+                })?;
+                let objects = handle.gpu_manager.gem_objects.lock();
+                let object = objects
                     .get(object_id)
-                    .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+                    .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale cursor GEM object"))?;
                 let base = handle.gpu_manager.pool_paddr()?;
-                (
-                    base + obj.buffer.offset,
-                    obj.buffer.size,
-                    obj.buffer.width,
-                    obj.buffer.height,
-                )
-            };
+                Some((
+                    (base + object.buffer.offset) as u64,
+                    u32::try_from(object.buffer.size).map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "cursor buffer is too large")
+                    })?,
+                ))
+            }
+            _ => None,
+        };
+        (update, position, backing)
+    };
+
+    let resource_id = match update.image {
+        Some(CursorImage::Buffer {
+            width,
+            height,
+            hot_x,
+            hot_y,
+            ..
+        }) => {
+            let (addr, size) = backing.ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
+            })?;
+            Some(
+                handle
+                    .gpu_manager
+                    .gpu
+                    .update_cursor(
+                        addr, size, width, height, hot_x, hot_y, position.x, position.y,
+                    )
+                    .map_err(|_| {
+                        Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")
+                    })?,
+            )
+        }
+        Some(CursorImage::Hide) => {
             handle
                 .gpu_manager
                 .gpu
-                .present_cursor(
-                    addr as u64,
-                    size as u32,
-                    width,
-                    height,
-                    hot_x as u32,
-                    hot_y as u32,
-                )
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor present failed"))?;
+                .hide_cursor(position.x, position.y)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed"))?;
+            None
         }
+        None => {
+            handle
+                .gpu_manager
+                .gpu
+                .move_cursor(position.x, position.y)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor move failed"))?;
+            None
+        }
+    };
+
+    handle.inner.lock().cursor.commit(update, resource_id);
+    Ok(())
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::framebuffer_extent;
+
+    #[ktest]
+    fn framebuffer_extent_rejects_empty_or_overlapping_rows() {
+        assert_eq!(framebuffer_extent(0, 256, 64, 0, 32), None);
+        assert_eq!(framebuffer_extent(0, 255, 64, 64, 32), None);
     }
 
-    if flags & DRM_MODE_CURSOR_MOVE != 0 {
-        handle
-            .gpu_manager
-            .gpu
-            .move_cursor(x as u32, y as u32)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor move failed"))?;
+    #[ktest]
+    fn framebuffer_extent_includes_pitch_and_offset() {
+        assert_eq!(framebuffer_extent(128, 512, 64, 2, 32), Some(896));
     }
-    Ok(())
 }

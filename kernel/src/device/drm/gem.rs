@@ -12,7 +12,11 @@ use crate::prelude::*;
 
 /// GEM_CLOSE: drop a per-file handle, decrementing the object's ref count.
 pub(super) fn gem_close(handle: &super::DriHandle, gem_handle: u32) -> Result<()> {
+    let _cursor_operation = handle.cursor_operation.lock();
     let mut inner = handle.inner.lock();
+    if inner.cursor.uses_handle(gem_handle) {
+        return_errno_with_message!(Errno::EBUSY, "GEM object is active as the cursor");
+    }
     let object_id = inner
         .handles
         .remove(&gem_handle)

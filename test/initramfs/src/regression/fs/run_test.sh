@@ -116,6 +116,7 @@ echo "All mount bind file test passed."
 ./getcwd/getcwd
 
 ./inotify/inotify_align
+./inotify/inotify_isdir
 ./inotify/inotify_o_path
 ./inotify/inotify_poll
 ./inotify/inotify_unlink
@@ -125,6 +126,7 @@ echo "All mount bind file test passed."
 
 ./mount/listmount
 ./mount/mount_api
+./mount/mountinfo_poll
 ./mount/mount_move
 
 ./overlayfs/ovl_test

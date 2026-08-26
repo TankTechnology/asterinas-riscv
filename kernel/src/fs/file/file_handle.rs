@@ -4,7 +4,7 @@
 
 //! Opened File Handle
 
-use core::fmt::Display;
+use core::{fmt::Display, ops::Range};
 
 use ostd::io::IoMem;
 
@@ -273,7 +273,6 @@ impl dyn FileLike {
         self.read_at(offset, &mut writer)
     }
 
-    #[expect(dead_code)]
     pub fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let mut reader = VmReader::from(buf).to_fallible();
         self.write_at(offset, &mut reader)
@@ -354,6 +353,11 @@ impl StatusFlagsUpdate {
 pub enum Mappable {
     /// A VMO (i.e., page cache).
     Vmo(Arc<Vmo>),
+    /// A VMO whose file mapping is limited to the listed byte ranges.
+    VmoRanges {
+        vmo: Arc<Vmo>,
+        ranges: Vec<Range<usize>>,
+    },
     /// An MMIO region.
     IoMem(IoMem),
 }

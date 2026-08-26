@@ -100,7 +100,11 @@ pub(super) fn map_dumb(handle: &super::DriHandle, req: &DrmModeMapDumb) -> Resul
 
 /// Destroys a dumb buffer (removes the per-file handle, drops the GEM object).
 pub(super) fn destroy_dumb(handle: &super::DriHandle, req: &DrmModeDestroyDumb) -> Result<()> {
+    let _cursor_operation = handle.cursor_operation.lock();
     let mut inner = handle.inner.lock();
+    if inner.cursor.uses_handle(req.handle) {
+        return_errno_with_message!(Errno::EBUSY, "dumb buffer is active as the cursor");
+    }
     if inner.handles.remove(&req.handle).is_none() {
         return_errno_with_message!(Errno::EINVAL, "unknown dumb buffer handle");
     }

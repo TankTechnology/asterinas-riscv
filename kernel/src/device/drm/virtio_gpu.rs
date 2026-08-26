@@ -160,6 +160,10 @@ const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
 const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
 const VIRTGPU_PARAM_BLOB_ALIGNMENT: u64 = 9;
 
+/// Upper bounds for one userspace-provided virgl submission.
+const MAX_EXECBUFFER_SIZE: usize = 16 * 1024 * 1024;
+const MAX_EXECBUFFER_HANDLES: usize = 4096;
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -171,7 +175,7 @@ use crate::context::current_userspace;
 
 /// GETPARAM: return device parameters queried by Mesa.
 pub(super) fn virtgpu_getparam(
-    _handle: &super::DriHandle,
+    handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
         b'd',
         0x43,
@@ -181,16 +185,18 @@ pub(super) fn virtgpu_getparam(
 ) -> Result<i32> {
     let req = cmd.read()?;
     let value: u64 = match req.param {
-        VIRTGPU_PARAM_3D_FEATURES => 1,      // virgl 3D is supported
+        VIRTGPU_PARAM_3D_FEATURES => u64::from(handle.gpu_manager.gpu.supports_virgl()),
         VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1, // GET_CAPS handles non-zero versions
         VIRTGPU_PARAM_RESOURCE_BLOB => 0,    // no blob resources
         VIRTGPU_PARAM_HOST_VISIBLE => 0,     // no host-visible resources
         VIRTGPU_PARAM_CROSS_DEVICE => 0,     // no cross-device sharing
         VIRTGPU_PARAM_CONTEXT_INIT => 0,     // no context init extension
         // Bitmask of supported capsets: bit 1 = virgl, bit 2 = virgl2.
-        VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
-            (1u64 << VIRTIO_GPU_CAPSET_VIRGL) | (1u64 << VIRTIO_GPU_CAPSET_VIRGL2)
-        }
+        VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => handle
+            .gpu_manager
+            .gpu
+            .supported_capset_ids()
+            .map_err(|_| Error::with_message(Errno::EIO, "cannot enumerate virgl capsets"))?,
         VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME => 0, // no debug name support
         VIRTGPU_PARAM_BLOB_ALIGNMENT => 0,      // no blob alignment
         _ => {
@@ -218,18 +224,16 @@ pub(super) fn virtgpu_resource_create(
 ) -> Result<i32> {
     let mut req = cmd.read()?;
     let ctx_id = handle.ensure_virgl_context()?;
+    let _resource_creation = handle.gpu_manager.resource_creation.lock();
 
     // Allocate a new virtio-gpu resource id
-    let res_handle = handle
-        .gpu_manager
-        .gpu
-        .next_resource_id
-        .fetch_add(1, Ordering::Relaxed);
+    let res_handle = handle.gpu_manager.gpu.allocate_resource_id();
 
     // If a GEM buffer handle is provided, look up the backing memory.
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM
     // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
     let mut new_gem_handle: Option<u32> = None;
+    let mut new_allocation: Option<(usize, usize)> = None;
     let backing = if req.bo_handle != 0 {
         let inner = handle.inner.lock();
         let object_id = *inner
@@ -241,7 +245,9 @@ pub(super) fn virtgpu_resource_create(
             .get(&object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
         let base = handle.gpu_manager.pool_paddr()?;
-        Some((object_id, base + obj.buffer.offset, obj.buffer.size as u32))
+        let size = u32::try_from(obj.buffer.size)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
+        Some((object_id, base + obj.buffer.offset, size))
     } else {
         // Allocate a dumb buffer from the shared pool to back this resource.
         let bpp = 32;
@@ -265,8 +271,10 @@ pub(super) fn virtgpu_resource_create(
         if end > DUMB_POOL_SIZE {
             return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
         }
-        *offset_guard = end.align_up(PAGE_SIZE);
+        let next_offset = end.align_up(PAGE_SIZE);
+        *offset_guard = next_offset;
         drop(offset_guard);
+        new_allocation = Some((offset, next_offset));
 
         let object_id = handle
             .gpu_manager
@@ -299,57 +307,105 @@ pub(super) fn virtgpu_resource_create(
         Some((object_id, base + offset, size as u32))
     };
 
-    // Create the 3D resource on the virtio-gpu device. The gallium pipe
-    // target (0 = buffer, 2 = 2D texture, ...) is passed through as-is.
-    handle
-        .gpu_manager
-        .gpu
-        .resource_create_3d(
-            res_handle,
-            req.target,
-            req.format,
-            req.bind,
-            req.width,
-            req.height,
-            req.depth,
-            req.array_size,
-            req.last_level,
-            req.nr_samples,
-            req.flags,
-        )
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-
-    if let Some((object_id, addr, size)) = backing {
-        handle
-            .gpu_manager
-            .gpu
-            .attach_backing(res_handle, addr as u64, size)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-        handle
+    let backing_object_id = backing.map(|(object_id, _, _)| object_id);
+    if let Some(object_id) = backing_object_id
+        && handle
             .gpu_manager
             .gem_resources
             .lock()
-            .insert(object_id, res_handle);
-        req.size = size;
-    } else {
-        // Host-only resource: report a sensible size estimate.
-        req.size = req.width.saturating_mul(req.height).saturating_mul(4);
+            .contains_key(&object_id)
+    {
+        return_errno_with_message!(Errno::EBUSY, "GEM object already has a 3D resource");
     }
 
-    // Every 3D resource, including Gallium buffer resources (`target == 0`),
-    // must be visible to the context that submits commands referencing it.
-    handle
-        .gpu_manager
-        .gpu
-        .ctx_attach_resource(ctx_id, res_handle)
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+    let mut resource_created = false;
+    let mut context_attached = false;
+    let operation = (|| -> Result<()> {
+        // The gallium pipe target (0 = buffer, 2 = 2D texture, ...) is passed
+        // through as-is.
+        handle
+            .gpu_manager
+            .gpu
+            .resource_create_3d(
+                res_handle,
+                req.target,
+                req.format,
+                req.bind,
+                req.width,
+                req.height,
+                req.depth,
+                req.array_size,
+                req.last_level,
+                req.nr_samples,
+                req.flags,
+            )
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+        resource_created = true;
 
-    req.res_handle = res_handle;
-    req.stride = req.width.saturating_mul(4);
-    if let Some(gh) = new_gem_handle {
-        req.bo_handle = gh;
+        if let Some((object_id, addr, size)) = backing {
+            handle
+                .gpu_manager
+                .gpu
+                .attach_backing(res_handle, addr as u64, size)
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+            handle
+                .gpu_manager
+                .gem_resources
+                .lock()
+                .insert(object_id, res_handle);
+            req.size = size;
+        } else {
+            // Host-only resource: report a sensible size estimate.
+            req.size = req.width.saturating_mul(req.height).saturating_mul(4);
+        }
+
+        // Every 3D resource, including Gallium buffer resources (`target ==
+        // 0`), must be visible to the submitting context.
+        handle
+            .gpu_manager
+            .gpu
+            .ctx_attach_resource(ctx_id, res_handle)
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+        context_attached = true;
+
+        req.res_handle = res_handle;
+        req.stride = req.width.saturating_mul(4);
+        if let Some(gh) = new_gem_handle {
+            req.bo_handle = gh;
+        }
+        cmd.write(&req)
+    })();
+
+    if let Err(error) = operation {
+        if context_attached {
+            let _ = handle
+                .gpu_manager
+                .gpu
+                .ctx_detach_resource(ctx_id, res_handle);
+        }
+        if resource_created {
+            let _ = handle.gpu_manager.gpu.resource_unref(res_handle);
+        }
+        if let Some(object_id) = backing_object_id {
+            let mut resources = handle.gpu_manager.gem_resources.lock();
+            if resources.get(&object_id) == Some(&res_handle) {
+                resources.remove(&object_id);
+            }
+        }
+        if let Some(gem_handle) = new_gem_handle {
+            let object_id = handle.inner.lock().handles.remove(&gem_handle);
+            if let Some(object_id) = object_id {
+                handle.gpu_manager.gem_objects.lock().remove(&object_id);
+            }
+        }
+        if let Some((offset, next_offset)) = new_allocation {
+            let mut allocation_cursor = handle.gpu_manager.next_offset.lock();
+            if *allocation_cursor == next_offset {
+                *allocation_cursor = offset;
+            }
+        }
+        return Err(error);
     }
-    cmd.write(&req)?;
     Ok(0)
 }
 
@@ -364,15 +420,24 @@ pub(super) fn virtgpu_resource_info(
     >,
 ) -> Result<i32> {
     let mut req = cmd.read()?;
-    // For now, return the GEM buffer size as the resource size.
-    // The blob_mem field is 0 for non-blob resources.
     let inner = handle.inner.lock();
-    if let Some(object_id) = inner.handles.get(&req.bo_handle) {
-        let guard = handle.gpu_manager.gem_objects.lock();
-        if let Some(obj) = guard.get(object_id) {
-            req.size = obj.buffer.size as u32;
-        }
-    }
+    let object_id = inner
+        .handles
+        .get(&req.bo_handle)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
+    let guard = handle.gpu_manager.gem_objects.lock();
+    let obj = guard
+        .get(object_id)
+        .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+    req.size = u32::try_from(obj.buffer.size)
+        .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
+    req.res_handle = *handle
+        .gpu_manager
+        .gem_resources
+        .lock()
+        .get(object_id)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    // The blob_mem field is 0 for non-blob resources.
     req.blob_mem = 0;
     cmd.write(&req)?;
     Ok(0)
@@ -468,25 +533,42 @@ pub(super) fn virtgpu_execbuffer(
             return_errno_with_message!(Errno::EINVAL, "empty command buffer");
         }
 
-        let mut cmd_buf = vec![0u8; req.size as usize];
+        let command_size = req.size as usize;
+        if command_size > MAX_EXECBUFFER_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "command buffer is too large");
+        }
+        let mut cmd_buf = Vec::new();
+        cmd_buf
+            .try_reserve_exact(command_size)
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate command buffer"))?;
+        cmd_buf.resize(command_size, 0);
         current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
 
         // Validate the GEM buffer handles in the resource list
-        if req.num_bo_handles > 0 && req.bo_handles != 0 {
-            let handle_count = req.num_bo_handles as usize;
-            let mut bo_handles = vec![0u32; handle_count];
-            let mut raw = vec![0u8; handle_count * 4];
-            current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
-            for (i, chunk) in raw.as_chunks::<4>().0.iter().enumerate() {
-                bo_handles[i] = u32::from_le_bytes(*chunk);
+        if req.num_bo_handles > 0 {
+            if req.bo_handles == 0 {
+                return_errno_with_message!(Errno::EINVAL, "missing execbuffer handle list");
             }
+            let handle_count = req.num_bo_handles as usize;
+            if handle_count > MAX_EXECBUFFER_HANDLES {
+                return_errno_with_message!(Errno::EINVAL, "too many execbuffer handles");
+            }
+            let byte_count = handle_count
+                .checked_mul(size_of::<u32>())
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "handle list overflows"))?;
+            let mut raw = Vec::new();
+            raw.try_reserve_exact(byte_count)
+                .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate handle list"))?;
+            raw.resize(byte_count, 0);
+            current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
 
             let inner = handle.inner.lock();
             let guard = handle.gpu_manager.gem_objects.lock();
-            for bo_h in &bo_handles {
+            for chunk in raw.as_chunks::<4>().0 {
+                let bo_h = u32::from_le_bytes(*chunk);
                 let valid = inner
                     .handles
-                    .get(bo_h)
+                    .get(&bo_h)
                     .is_some_and(|object_id| guard.contains_key(object_id));
                 if !valid {
                     return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
@@ -497,6 +579,7 @@ pub(super) fn virtgpu_execbuffer(
         let ctx_id = handle.ensure_virgl_context()?;
         let mut resp = req;
 
+        let mut installed_fence_fd = None;
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
             // Fenced submit: blocks until the host finishes the command.
             let fence_id = handle
@@ -516,6 +599,7 @@ pub(super) fn virtgpu_execbuffer(
                 .write()
                 .insert(fence_file, FdFlags::empty());
             resp.fence_fd = u32::from(fd) as i32;
+            installed_fence_fd = Some(fd);
         } else {
             handle
                 .gpu_manager
@@ -525,7 +609,13 @@ pub(super) fn virtgpu_execbuffer(
             resp.fence_fd = -1;
         }
 
-        cmd.write(&resp)?;
+        if let Err(error) = cmd.write(&resp) {
+            if let Some(fd) = installed_fence_fd {
+                let closed = file_table.unwrap().write().close_file(fd);
+                drop(closed);
+            }
+            return Err(error);
+        }
         Ok(0)
     })())
 }

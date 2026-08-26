@@ -15,6 +15,7 @@
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
 mod atomic;
+mod cursor;
 mod dumb;
 mod fence;
 mod gem;
@@ -32,6 +33,7 @@ use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
 
+use self::cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -76,11 +78,6 @@ const DRM_MODE_CONNECTED: u32 = 1;
 /// `DRM_MODE_TYPE_PREFERRED`.
 const DRM_MODE_TYPE_PREFERRED: u32 = 8;
 
-/// `DRM_MODE_CURSOR_BO` — set the cursor buffer (a GEM/dumb-buffer handle).
-const DRM_MODE_CURSOR_BO: u32 = 0x01;
-/// `DRM_MODE_CURSOR_MOVE` — reposition the cursor to (`x`, `y`).
-const DRM_MODE_CURSOR_MOVE: u32 = 0x02;
-
 /// `DRM_CAP_DUMB_BUFFER` etc. (include/uapi/drm/drm.h).
 const DRM_CAP_DUMB_BUFFER: u64 = 1;
 const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 3;
@@ -91,10 +88,6 @@ const DRM_CAP_CURSOR_HEIGHT: u64 = 9;
 const DRM_CAP_PRIME: u64 = 0x5;
 /// `DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT`.
 const DRM_PRIME_CAP_IMPORT_EXPORT: u64 = 0x3;
-
-/// Hardware cursor dimensions reported via `DRM_CAP_CURSOR_WIDTH`/`HEIGHT`.
-/// 64x64 matches virtio-gpu's cursor resource limit and the X server default.
-const CURSOR_SIZE: u64 = 64;
 
 /// `DRM_CLIENT_CAP_*` values accepted by `SET_CLIENT_CAP`.
 const DRM_CLIENT_CAP_STEREO_3D: u64 = 1;
@@ -163,6 +156,8 @@ struct GpuManager {
     gem_names: SpinLock<BTreeMap<u32, u32>>,
     /// GEM object_id → virtio-gpu 3D resource id (set by `RESOURCE_CREATE`).
     gem_resources: SpinLock<BTreeMap<u32, u32>>,
+    /// Serializes the global GEM-object to host-resource transaction.
+    resource_creation: Mutex<()>,
     next_gem_id: AtomicU32,
     /// Monotonic virgl context id allocator (context id 0 is reserved).
     next_context_id: AtomicU32,
@@ -172,6 +167,9 @@ struct GpuManager {
     flip_sequence: AtomicU32,
     /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
     next_fence_id: AtomicU64,
+    /// Primary-node file id that currently owns DRM master, or zero.
+    master_id: AtomicU64,
+    next_file_id: AtomicU64,
 }
 
 impl GpuManager {
@@ -183,11 +181,14 @@ impl GpuManager {
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
+            resource_creation: Mutex::new(()),
             next_gem_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
             next_fence_id: AtomicU64::new(1),
+            master_id: AtomicU64::new(0),
+            next_file_id: AtomicU64::new(1),
         }
     }
 
@@ -251,12 +252,26 @@ struct DumbBuffer {
     bpp: u32,
 }
 
+impl DumbBuffer {
+    fn mapped_range(self) -> Option<core::ops::Range<usize>> {
+        let mapped_size = self
+            .size
+            .checked_add(PAGE_SIZE - 1)?
+            .checked_div(PAGE_SIZE)?
+            .checked_mul(PAGE_SIZE)?;
+        Some(self.offset..self.offset.checked_add(mapped_size)?)
+    }
+}
+
 /// A registered framebuffer referencing a dumb buffer.
 #[derive(Debug, Clone, Copy)]
 struct Framebuffer {
     object_id: u32,
     width: u32,
     height: u32,
+    offset: u32,
+    pitch: u32,
+    pixel_format: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +361,11 @@ impl Device for DriRender {
 struct DriHandle {
     gpu_manager: Arc<GpuManager>,
     node_type: DriNodeType,
+    file_id: u64,
     /// Legacy virgl context associated with this open DRM file.
     context: Mutex<VirglContext>,
+    /// Serializes validation, device updates, and per-file cursor state.
+    cursor_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
     /// Notifies readers/pollers when page-flip events are queued.
     pollee: Pollee,
@@ -373,6 +391,8 @@ struct DriInner {
     mode_blob: Option<u32>,
     /// Pending page-flip completion events, readable via `read()`.
     events: VecDeque<DrmEventVblank>,
+    /// Cursor resource and position owned by this open DRM file.
+    cursor: CursorState,
 }
 
 impl DriHandle {
@@ -383,13 +403,24 @@ impl DriHandle {
         current_height: u32,
     ) -> Self {
         let context_id = gpu_manager.next_context_id.fetch_add(1, Ordering::Relaxed);
+        let file_id = gpu_manager.next_file_id.fetch_add(1, Ordering::Relaxed);
+        if matches!(node_type, DriNodeType::Primary) {
+            let _ = gpu_manager.master_id.compare_exchange(
+                0,
+                file_id,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
         Self {
             gpu_manager,
             node_type,
+            file_id,
             context: Mutex::new(VirglContext {
                 id: context_id,
                 is_created: false,
             }),
+            cursor_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -400,6 +431,7 @@ impl DriHandle {
                 current_height,
                 mode_blob: None,
                 events: VecDeque::new(),
+                cursor: CursorState::default(),
             }),
             pollee: Pollee::new(),
         }
@@ -408,6 +440,44 @@ impl DriHandle {
     /// Returns true if KMS ioctls are forbidden on this handle.
     fn is_render_node(&self) -> bool {
         matches!(self.node_type, DriNodeType::Render)
+    }
+
+    fn is_master(&self) -> bool {
+        !self.is_render_node() && self.gpu_manager.master_id.load(Ordering::Acquire) == self.file_id
+    }
+
+    fn require_master(&self) -> Result<()> {
+        if self.is_render_node() {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
+        }
+        if !self.is_master() {
+            return_errno_with_message!(Errno::EACCES, "DRM master is owned by another file");
+        }
+        Ok(())
+    }
+
+    fn set_master(&self) -> Result<()> {
+        if self.is_render_node() {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "render nodes cannot become DRM master");
+        }
+        match self.gpu_manager.master_id.compare_exchange(
+            0,
+            self.file_id,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(owner) if owner == self.file_id => Ok(()),
+            Err(_) => return_errno_with_message!(Errno::EBUSY, "DRM master is already owned"),
+        }
+    }
+
+    fn drop_master(&self) -> Result<()> {
+        self.gpu_manager
+            .master_id
+            .compare_exchange(self.file_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| Error::with_message(Errno::EINVAL, "file does not own DRM master"))
     }
 
     /// Creates the per-file legacy virgl context on first 3D use.
@@ -459,10 +529,11 @@ impl DriHandle {
         let mut inner = self.inner.lock();
         let mut bytes = 0;
         while bytes / size_of::<DrmEventVblank>() < max_events {
-            let Some(event) = inner.events.pop_front() else {
+            let Some(event) = inner.events.front().copied() else {
                 break;
             };
             writer.write_val(&event)?;
+            inner.events.pop_front();
             bytes += size_of::<DrmEventVblank>();
         }
         if bytes == 0 {
@@ -474,6 +545,24 @@ impl DriHandle {
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
+        let _ = self.gpu_manager.master_id.compare_exchange(
+            self.file_id,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        let _cursor_operation = self.cursor_operation.lock();
+        let (resource_id, position) = {
+            let inner = self.inner.lock();
+            (inner.cursor.resource_id, inner.cursor.position)
+        };
+        if let Some(resource_id) = resource_id {
+            let _ = self
+                .gpu_manager
+                .gpu
+                .clear_cursor(resource_id, position.x, position.y);
+        }
+
         let context = self.context.get_mut();
         if context.is_created
             && let Err(error) = self.gpu_manager.gpu.ctx_destroy(context.id)
@@ -538,11 +627,23 @@ impl PerOpenFileOps for DriHandle {
     }
 
     fn mappable(&self) -> Result<Mappable> {
-        let guard = self.gpu_manager.pool.lock();
-        let pool = guard.as_ref().ok_or_else(|| {
-            Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
-        })?;
-        Ok(Mappable::Vmo(pool.clone()))
+        let pool = self
+            .gpu_manager
+            .pool
+            .lock()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
+            })?;
+        let inner = self.inner.lock();
+        let objects = self.gpu_manager.gem_objects.lock();
+        let ranges = inner
+            .handles
+            .values()
+            .filter_map(|object_id| objects.get(object_id)?.buffer.mapped_range())
+            .collect();
+        Ok(Mappable::VmoRanges { vmo: pool, ranges })
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -578,8 +679,8 @@ impl PerOpenFileOps for DriHandle {
                     DRM_CAP_DUMB_BUFFER => 1,
                     DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
                     DRM_CAP_DUMB_PREFER_SHADOW => 0,
-                    DRM_CAP_CURSOR_WIDTH => CURSOR_SIZE,
-                    DRM_CAP_CURSOR_HEIGHT => CURSOR_SIZE,
+                    DRM_CAP_CURSOR_WIDTH => u64::from(CURSOR_SIZE),
+                    DRM_CAP_CURSOR_HEIGHT => u64::from(CURSOR_SIZE),
                     DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT_EXPORT,
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
@@ -607,12 +708,14 @@ impl PerOpenFileOps for DriHandle {
                 gem::gem_close(self, req.handle).map(|_| 0)
             }
             cmd @ GemFlink => {
+                self.require_master()?;
                 let mut req = cmd.read()?;
                 req.name = gem::gem_flink(self, req.handle)?;
                 cmd.write(&req)?;
                 Ok(0)
             }
             cmd @ GemOpen => {
+                self.require_master()?;
                 let mut req = cmd.read()?;
                 let (handle, size) = gem::gem_open(self, req.name)?;
                 req.handle = handle;
@@ -628,6 +731,9 @@ impl PerOpenFileOps for DriHandle {
                     );
                 }
                 let mut res = cmd.read()?;
+                let crtc_capacity = res.count_crtcs;
+                let connector_capacity = res.count_connectors;
+                let encoder_capacity = res.count_encoders;
                 res.count_fbs = 0;
                 res.count_crtcs = 1;
                 res.count_connectors = 1;
@@ -636,13 +742,13 @@ impl PerOpenFileOps for DriHandle {
                 res.max_width = MAX_RESOLUTION;
                 res.min_height = 0;
                 res.max_height = MAX_RESOLUTION;
-                if res.crtc_id_ptr != 0 {
+                if res.crtc_id_ptr != 0 && crtc_capacity >= 1 {
                     current_userspace!().write_val(res.crtc_id_ptr as usize, &CRTC_ID)?;
                 }
-                if res.connector_id_ptr != 0 {
+                if res.connector_id_ptr != 0 && connector_capacity >= 1 {
                     current_userspace!().write_val(res.connector_id_ptr as usize, &CONNECTOR_ID)?;
                 }
-                if res.encoder_id_ptr != 0 {
+                if res.encoder_id_ptr != 0 && encoder_capacity >= 1 {
                     current_userspace!().write_val(res.encoder_id_ptr as usize, &ENCODER_ID)?;
                 }
                 cmd.write(&res)?;
@@ -676,45 +782,21 @@ impl PerOpenFileOps for DriHandle {
                 kms::get_crtc(self, cmd)
             }
             cmd @ ModeSetCrtc => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 let req = cmd.read()?;
                 kms::set_crtc(self, &req)?;
                 Ok(0)
             }
             cmd @ ModeCursor => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 let req = cmd.read()?;
-                kms::set_cursor(self, req.flags, req.crtc_id, req.x, req.y, req.handle, 0, 0)?;
+                kms::set_cursor(self, req.into())?;
                 Ok(0)
             }
             cmd @ ModeCursor2 => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 let req = cmd.read()?;
-                kms::set_cursor(
-                    self,
-                    req.flags,
-                    req.crtc_id,
-                    req.x,
-                    req.y,
-                    req.handle,
-                    req.hot_x,
-                    req.hot_y,
-                )?;
+                kms::set_cursor(self, req)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
@@ -745,10 +827,10 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             _cmd @ SetMaster => {
-                Ok(0)
+                self.set_master().map(|_| 0)
             }
             _cmd @ DropMaster => {
-                Ok(0)
+                self.drop_master().map(|_| 0)
             }
             cmd @ ModeObjGetProperties => {
                 if self.is_render_node() {
@@ -796,12 +878,7 @@ impl PerOpenFileOps for DriHandle {
                 plane::get_plane(cmd)
             }
             cmd @ ModeAtomic => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 atomic::mode_atomic(self, cmd)
             }
             cmd @ ModeCreatePropertyBlob => {
@@ -835,12 +912,7 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModePageFlip => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 let req = cmd.read()?;
                 if req.crtc_id != CRTC_ID {
                     return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
@@ -858,12 +930,7 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModeDirtyFb => {
-                if self.is_render_node() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "KMS ioctl not available on render node"
-                    );
-                }
+                self.require_master()?;
                 let req = cmd.read()?;
                 if req.fb_id == 0 {
                     return Ok(0);
@@ -932,6 +999,8 @@ impl PerOpenFileOps for DriHandle {
                 let fd: FileDesc = file_table.unwrap().write().insert(file, fd_flags);
                 req.fd = RawFileDesc::from(fd);
                 if let Err(e) = cmd.write(&req) {
+                    let closed = file_table.unwrap().write().close_file(fd);
+                    drop(closed);
                     return Some(Err(e));
                 }
                 Some(Ok(0))
@@ -965,6 +1034,7 @@ impl PerOpenFileOps for DriHandle {
                 let mut resp = req;
                 resp.handle = handle;
                 if let Err(e) = cmd.write(&resp) {
+                    prime::rollback_fd_to_handle(self, handle);
                     return Some(Err(e));
                 }
                 Some(Ok(0))
@@ -1324,38 +1394,6 @@ struct DrmModeFbDirtyCmd {
     color: u32,
     num_clips: u32,
     clips_ptr: u64,
-}
-
-/// `struct drm_mode_cursor` (the legacy cursor ioctl).
-///
-/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1193>.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-struct DrmModeCursor {
-    flags: u32,
-    crtc_id: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    handle: u32,
-}
-
-/// `struct drm_mode_cursor2` (adds a hotspot to the legacy cursor ioctl).
-///
-/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1205>.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-struct DrmModeCursor2 {
-    flags: u32,
-    crtc_id: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    handle: u32,
-    hot_x: i32,
-    hot_y: i32,
 }
 
 /// `struct drm_mode_atomic`.
