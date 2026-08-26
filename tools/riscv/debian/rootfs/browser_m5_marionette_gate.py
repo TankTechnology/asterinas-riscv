@@ -40,7 +40,8 @@ _EXPRESSION = r"""return JSON.stringify({
       ended: video.ended,
       readyState: video.readyState,
       error: video.error === null ? null : video.error.code,
-      duration: Number.isFinite(video.duration) ? video.duration : null
+      duration: Number.isFinite(video.duration) ? video.duration : null,
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : null
     };
   })(),
   resources: performance.getEntriesByType('resource').map(entry => entry.name)
@@ -147,7 +148,7 @@ def snapshot_complete(snapshot: object) -> bool:
         raise GateError("browser workload used an unexpected or external resource")
     complete = passed == len(EXPECTED_MARKERS)
     media = snapshot["media"]
-    expected_media_keys = {"currentSrc", "ended", "readyState", "error", "duration"}
+    expected_media_keys = {"currentSrc", "ended", "readyState", "error", "duration", "currentTime"}
     if not isinstance(media, dict) or set(media) != expected_media_keys:
         raise GateError("browser media evidence is malformed")
     current_src = media["currentSrc"]
@@ -155,6 +156,7 @@ def snapshot_complete(snapshot: object) -> bool:
     ready_state = media["readyState"]
     error = media["error"]
     duration = media["duration"]
+    current_time = media["currentTime"]
     if not isinstance(current_src, str) or current_src not in {"", VIDEO_URL}:
         raise GateError("browser media used an unexpected or external source")
     if not isinstance(ended, bool):
@@ -170,8 +172,21 @@ def snapshot_complete(snapshot: object) -> bool:
         or duration <= 0
     ):
         raise GateError("browser media duration is malformed")
+    if current_time is not None and (
+        isinstance(current_time, bool)
+        or not isinstance(current_time, (int, float))
+        or not math.isfinite(current_time)
+        or current_time < 0
+    ):
+        raise GateError("browser media current time is malformed")
     if complete and (
-        current_src != VIDEO_URL or not ended or ready_state < 3 or duration is None
+        current_src != VIDEO_URL
+        or not ended
+        or ready_state < 2
+        or duration is None
+        or current_time is None
+        or current_time <= 0
+        or abs(current_time - duration) > max(0.05, duration * 0.05)
     ):
         raise GateError("completed markers disagree with live media state")
     return complete

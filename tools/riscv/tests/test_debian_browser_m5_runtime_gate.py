@@ -71,6 +71,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "readyState": 4,
                 "error": None,
                 "duration": 0.2,
+                "currentTime": 0.2,
             },
             # Firefox file:// playback may not expose media in Resource Timing.
             "resources": [],
@@ -90,6 +91,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "readyState": 4,
                 "error": None,
                 "duration": 0.2,
+                "currentTime": 0.1,
             },
             "resources": [],
         }
@@ -122,17 +124,31 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         not_ended["media"]["ended"] = False
         mutations.append(not_ended)
         insufficient_data = self._snapshot()
-        insufficient_data["media"]["readyState"] = 2
+        insufficient_data["media"]["readyState"] = 1
         mutations.append(insufficient_data)
         decode_error = self._snapshot()
         decode_error["media"]["error"] = 3
         mutations.append(decode_error)
+        incomplete_playback = self._snapshot()
+        incomplete_playback["media"]["currentTime"] = 0.1
+        mutations.append(incomplete_playback)
         wrong_page = self._snapshot()
         wrong_page["url"] = "https://example.invalid/index.html"
         mutations.append(wrong_page)
         for snapshot in mutations:
             with self.subTest(snapshot=snapshot), self.assertRaises(gate.GateError):
                 gate.validate_snapshot(snapshot)
+
+    def test_accepts_observed_firefox_esr_ended_media_shape(self) -> None:
+        observed = self._snapshot()
+        observed["media"].update({
+            "ended": True,
+            "readyState": 2,
+            "duration": 1,
+            "currentTime": 1,
+        })
+        observed["resources"] = []
+        gate.validate_snapshot(observed)
 
     def test_protocol_requires_v3_greeting_and_exact_response_id(self) -> None:
         transport = _Socket(
@@ -257,6 +273,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("video.currentSrc", client)
         self.assertIn("video.readyState", client)
         self.assertIn("video.error", client)
+        self.assertIn("video.currentTime", client)
         self.assertNotIn("script.evaluate", client)
         self.assertIn("browser-m5-marionette-gate", evidence)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
