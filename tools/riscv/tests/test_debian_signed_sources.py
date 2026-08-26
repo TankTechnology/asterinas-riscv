@@ -37,7 +37,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
 
     def test_browser_m5_profile_replaces_netsurf_with_firefox(self) -> None:
         profile = get_profile("browser-m5")
-        self.assertEqual(profile.schema_version, 5)
+        self.assertEqual(profile.schema_version, 6)
+        self.assertEqual(profile.root_label, "ASTER_BROWSERM5")
         self.assertLessEqual(len(profile.root_label.encode("ascii")), 16)
         self.assertIn("firefox-esr", profile.requested_packages)
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
@@ -135,7 +136,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         profile = get_profile("browser-m5")
         zero = "0" * 64
         return {
-            "schema_version": 5,
+            "schema_version": 6,
             "profile": "browser-m5",
             "suite": "trixie",
             "debian_release": "13.6",
@@ -173,7 +174,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             "gate_packages": {name: "1" for name in profile.identity_packages},
         }
 
-    def test_schema_five_loads_exact_sources_and_package_roles(self) -> None:
+    def test_schema_six_loads_exact_sources_and_package_roles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest_path = Path(directory) / "manifest.json"
             manifest_path.write_text(json.dumps(self._m5_payload()))
@@ -182,7 +183,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(manifest.downloaded_packages[0][4], "security")
         self.assertEqual(manifest.signed_metadata_url, "")
 
-    def test_schema_five_rejects_missing_extra_or_replaced_source_contract(self) -> None:
+    def test_schema_six_rejects_missing_extra_or_replaced_source_contract(self) -> None:
         mutations = (
             lambda rows: rows.pop(),
             lambda rows: rows.append(dict(rows[0])),
@@ -198,7 +199,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 with self.assertRaisesRegex(ContractError, "source contract"):
                     load_manifest(path)
 
-    def test_schema_five_requires_source_role_exact_key(self) -> None:
+    def test_schema_six_requires_source_role_exact_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
             for role in (None, "updates"):
@@ -255,7 +256,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         }
 
     @mock.patch("tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically")
-    def test_schema_five_writer_emits_exact_sources_and_package_roles(self, publish: mock.Mock) -> None:
+    def test_schema_six_writer_emits_exact_sources_and_package_roles(self, publish: mock.Mock) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inputs = self._writer_inputs(Path(directory))
             write_manifest(**inputs)
@@ -272,7 +273,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             with self.assertRaisesRegex(ContractError, "firefox-esr"):
                 write_manifest(**inputs)
 
-    def test_writer_rejects_a_base_mirror_not_named_in_schema_five(self) -> None:
+    def test_writer_rejects_a_base_mirror_not_named_in_schema_six(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inputs = self._writer_inputs(Path(directory))
             inputs["mirror_url"] = "https://example.invalid/debian"
