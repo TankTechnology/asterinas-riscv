@@ -315,12 +315,13 @@ pub(super) fn get_crtc(
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
     let kms_state = handle.gpu_manager.kms_state.lock();
-    let fb_id = kms_state.scanout.map(|scanout| scanout.fb_id);
+    let (fb_id, mode_valid, current_width, current_height) =
+        kms_state.crtc_snapshot_for(handle.file_id);
     cmd.write(&DrmModeCrtc {
         crtc_id: CRTC_ID,
         fb_id: fb_id.unwrap_or(0),
-        mode_valid: u32::from(fb_id.is_some()),
-        mode: build_mode(kms_state.current_width, kms_state.current_height),
+        mode_valid: u32::from(mode_valid),
+        mode: build_mode(current_width, current_height),
         ..Default::default()
     })?;
     Ok(0)
@@ -508,5 +509,7 @@ mod tests {
             })
         );
         assert_eq!((state.current_width, state.current_height), (640, 480));
+        assert_eq!(state.crtc_snapshot_for(11), (Some(7), true, 640, 480));
+        assert_eq!(state.crtc_snapshot_for(12), (None, true, 640, 480));
     }
 }

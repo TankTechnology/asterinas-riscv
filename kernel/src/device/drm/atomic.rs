@@ -235,7 +235,7 @@ fn commit_atomic_state(
     if flags & DRM_MODE_ATOMIC_ALLOW_MODESET != 0
         && let Some(blob_id) = new_mode_blob
     {
-        apply_mode_blob(kms_state, prop_mgr, blob_id)?;
+        validate_mode_blob(prop_mgr, blob_id)?;
     }
 
     // If we have a FB_ID, present it
@@ -249,17 +249,12 @@ fn commit_atomic_state(
     Ok(0)
 }
 
-/// Apply a mode blob (drm_mode_modeinfo) to the CRTC.
-fn apply_mode_blob(
-    kms_state: &mut super::KmsState,
-    prop_mgr: &PropertyManager,
-    blob_id: u32,
-) -> Result<()> {
+/// Checks that a mode blob contains a complete `drm_mode_modeinfo`.
+fn validate_mode_blob(prop_mgr: &PropertyManager, blob_id: u32) -> Result<()> {
     let blob = prop_mgr.lookup_blob(blob_id)?;
     // The blob data is a `struct drm_mode_modeinfo` (68 bytes on RISC-V).
     if blob.data.len() < 68 {
         return_errno_with_message!(Errno::EINVAL, "mode blob too small");
     }
-    kms_state.mode_blob = Some(blob_id);
     Ok(())
 }

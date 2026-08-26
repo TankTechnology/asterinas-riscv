@@ -173,7 +173,7 @@ struct GpuManager {
     flip_sequence: AtomicU32,
     /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
     next_fence_id: AtomicU64,
-    /// Serializes DRM-master transitions with device-wide KMS state changes.
+    /// Device-wide DRM-master and KMS transaction state.
     kms_state: Mutex<KmsState>,
     next_file_id: AtomicU64,
 }
@@ -186,8 +186,6 @@ struct KmsState {
     scanout: Option<ActiveFramebuffer>,
     current_width: u32,
     current_height: u32,
-    /// Current mode blob id (set via atomic MODE_ID property).
-    mode_blob: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,7 +201,6 @@ impl KmsState {
             scanout: None,
             current_width: width,
             current_height: height,
-            mode_blob: None,
         }
     }
 
@@ -222,6 +219,19 @@ impl KmsState {
     fn scanout_owned_by(&self, file_id: u64) -> bool {
         self.scanout
             .is_some_and(|scanout| scanout.owner_file_id == file_id)
+    }
+
+    fn crtc_snapshot_for(&self, file_id: u64) -> (Option<u32>, bool, u32, u32) {
+        let fb_id = self
+            .scanout
+            .filter(|scanout| scanout.owner_file_id == file_id)
+            .map(|scanout| scanout.fb_id);
+        (
+            fb_id,
+            self.scanout.is_some(),
+            self.current_width,
+            self.current_height,
+        )
     }
 
     fn commit_scanout(&mut self, file_id: u64, fb_id: u32, width: u32, height: u32) {
