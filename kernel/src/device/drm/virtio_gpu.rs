@@ -9,7 +9,7 @@
 use core::sync::atomic::Ordering;
 
 use super::{
-    DumbBuffer,
+    DumbBuffer, GemResourceState,
     dumb::{PendingDumbBuffer, PendingPoolAllocation},
     gem::{GemObjectRef, PendingGemHandle},
 };
@@ -227,6 +227,7 @@ pub(super) fn virtgpu_resource_create(
     let mut req = cmd.read()?;
     let ctx_id = handle.ensure_virgl_context()?;
     let _resource_creation = handle.gpu_manager.resource_creation.lock();
+    handle.gpu_manager.drain_pending_resource_cleanup();
 
     // Allocate a new virtio-gpu resource id
     let res_handle = handle.gpu_manager.gpu.allocate_resource_id();
@@ -294,16 +295,7 @@ pub(super) fn virtgpu_resource_create(
 
     let backing_object_id = backing.map(|(object_id, _, _)| object_id);
     if let Some(object_id) = backing_object_id
-        && (handle
-            .gpu_manager
-            .gem_resources
-            .lock()
-            .contains_key(&object_id)
-            || handle
-                .gpu_manager
-                .orphaned_resources
-                .lock()
-                .contains_key(&object_id))
+        && handle.gpu_manager.has_gem_resource(object_id)
     {
         let _ = handle
             .gpu_manager
@@ -376,9 +368,7 @@ pub(super) fn virtgpu_resource_create(
         if !resource_released && let Some(object_id) = backing_object_id {
             handle
                 .gpu_manager
-                .orphaned_resources
-                .lock()
-                .insert(object_id, res_handle);
+                .insert_gem_resource(object_id, GemResourceState::CleanupOnly(res_handle));
         }
         let transaction_release = handle
             .gpu_manager
@@ -403,12 +393,9 @@ pub(super) fn virtgpu_resource_create(
         return Err(error);
     }
     if let Some(object_id) = backing_object_id {
-        let previous = handle
+        handle
             .gpu_manager
-            .gem_resources
-            .lock()
-            .insert(object_id, res_handle);
-        debug_assert!(previous.is_none());
+            .insert_gem_resource(object_id, GemResourceState::Live(res_handle));
     }
     handle
         .gpu_manager
@@ -447,11 +434,9 @@ pub(super) fn virtgpu_resource_info(
     };
     req.size = u32::try_from(buffer_size)
         .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
-    req.res_handle = *handle
+    req.res_handle = handle
         .gpu_manager
-        .gem_resources
-        .lock()
-        .get(&object_id)
+        .live_gem_resource(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
     // The blob_mem field is 0 for non-blob resources.
     req.blob_mem = 0;
@@ -684,12 +669,10 @@ pub(super) fn virtgpu_transfer_to_host(
             .get(&req.bo_handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
-    let resource_id = {
-        let resources = handle.gpu_manager.gem_resources.lock();
-        *resources
-            .get(&object_id)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?
-    };
+    let resource_id = handle
+        .gpu_manager
+        .live_gem_resource(object_id)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
 
     handle
         .gpu_manager
@@ -734,12 +717,10 @@ pub(super) fn virtgpu_transfer_from_host(
             .get(&req.bo_handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
-    let resource_id = {
-        let resources = handle.gpu_manager.gem_resources.lock();
-        *resources
-            .get(&object_id)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?
-    };
+    let resource_id = handle
+        .gpu_manager
+        .live_gem_resource(object_id)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
 
     handle
         .gpu_manager
@@ -819,12 +800,7 @@ pub(super) fn virtgpu_wait(
             .get(&req.handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
-    if !handle
-        .gpu_manager
-        .gem_resources
-        .lock()
-        .contains_key(&object_id)
-    {
+    if handle.gpu_manager.live_gem_resource(object_id).is_none() {
         return_errno_with_message!(Errno::EINVAL, "GEM object has no 3D resource");
     }
 

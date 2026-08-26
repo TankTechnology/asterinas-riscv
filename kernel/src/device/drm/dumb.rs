@@ -46,12 +46,12 @@ impl<'a> PendingDumbBuffer<'a> {
     pub(super) fn discard_after_failed_resource(self) -> Result<()> {
         let Self { handle, allocation } = self;
         match handle.discard() {
-            Ok(cleanup_confirmed) => {
-                allocation.finish_cleanup(cleanup_confirmed);
+            Ok(cleanup_status) => {
+                allocation.finish_cleanup(cleanup_status);
                 Ok(())
             }
             Err(error) => {
-                allocation.finish_cleanup(false);
+                allocation.finish_cleanup(super::HostCleanupStatus::Unconfirmed);
                 Err(error)
             }
         }
@@ -88,11 +88,10 @@ impl<'a> PendingPoolAllocation<'a> {
         self.published = true;
     }
 
-    fn finish_cleanup(self, cleanup_confirmed: bool) {
-        if cleanup_confirmed {
-            drop(self);
-        } else {
-            self.publish();
+    fn finish_cleanup(self, cleanup_status: super::HostCleanupStatus) {
+        match cleanup_status {
+            super::HostCleanupStatus::Confirmed => drop(self),
+            super::HostCleanupStatus::Unconfirmed => self.publish(),
         }
     }
 }
@@ -181,6 +180,7 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::*;
+    use crate::device::drm::HostCleanupStatus;
 
     #[ktest]
     fn pending_pool_allocation_excludes_interleaving_before_rollback() {
@@ -188,7 +188,7 @@ mod tests {
         let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
 
         assert!(cursor.try_lock().is_none());
-        pending.finish_cleanup(true);
+        pending.finish_cleanup(HostCleanupStatus::Confirmed);
         assert_eq!(*cursor.lock(), 0);
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let cursor = Mutex::new(0);
         let pending = PendingPoolAllocation::reserve(&cursor, PAGE_SIZE).unwrap();
 
-        pending.finish_cleanup(false);
+        pending.finish_cleanup(HostCleanupStatus::Unconfirmed);
         assert_eq!(*cursor.lock(), PAGE_SIZE);
     }
 }

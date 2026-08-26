@@ -163,10 +163,10 @@ struct GpuManager {
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
     /// Global FLINK name → object_id.
     gem_names: SpinLock<BTreeMap<u32, u32>>,
-    /// GEM object_id → virtio-gpu 3D resource id (set by `RESOURCE_CREATE`).
-    gem_resources: SpinLock<BTreeMap<u32, u32>>,
-    /// GEM object_id → incomplete host resource that is visible only to cleanup.
-    orphaned_resources: SpinLock<BTreeMap<u32, u32>>,
+    /// GEM `object_id` → live or cleanup-only virtio-gpu resource.
+    gem_resources: SpinLock<BTreeMap<u32, GemResourceState>>,
+    /// Host resources whose GEM objects are gone but whose cleanup must be retried.
+    pending_resource_cleanup: SpinLock<BTreeSet<u32>>,
     /// Serializes the global GEM-object to host-resource transaction.
     resource_creation: Mutex<()>,
     next_gem_id: AtomicU32,
@@ -259,7 +259,7 @@ impl GpuManager {
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
-            orphaned_resources: SpinLock::new(BTreeMap::new()),
+            pending_resource_cleanup: SpinLock::new(BTreeSet::new()),
             resource_creation: Mutex::new(()),
             next_gem_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
@@ -326,7 +326,7 @@ impl GpuManager {
     }
 
     /// Drops one GEM owner and reports whether final host cleanup was confirmed.
-    fn release_gem_object_and_report_cleanup(&self, object_id: u32) -> Result<bool> {
+    fn release_gem_object_and_report_cleanup(&self, object_id: u32) -> Result<HostCleanupStatus> {
         let released = {
             let mut objects = self.gem_objects.lock();
             let object = objects
@@ -338,7 +338,7 @@ impl GpuManager {
             }
             if references > 1 {
                 object.ref_count.store(references - 1, Ordering::Relaxed);
-                return Ok(true);
+                return Ok(HostCleanupStatus::Confirmed);
             }
             objects.remove(&object_id).unwrap()
         };
@@ -351,19 +351,49 @@ impl GpuManager {
             }
         }
 
-        let active_resource = self.gem_resources.lock().remove(&object_id);
-        let orphaned_resource = self.orphaned_resources.lock().remove(&object_id);
-        let mut cleanup_confirmed = true;
-        for resource_id in [active_resource, orphaned_resource].into_iter().flatten() {
+        let resource = self.gem_resources.lock().remove(&object_id);
+        let mut cleanup_status = HostCleanupStatus::Confirmed;
+        if let Some(resource_id) = resource.map(GemResourceState::resource_id) {
             if let Err(error) = self.gpu.resource_unref(resource_id) {
                 warn!(
                     "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
                     resource_id, object_id, error
                 );
-                cleanup_confirmed = false;
+                cleanup_status = HostCleanupStatus::Unconfirmed;
+                self.pending_resource_cleanup.lock().insert(resource_id);
             }
         }
-        Ok(cleanup_confirmed)
+        Ok(cleanup_status)
+    }
+
+    fn has_gem_resource(&self, object_id: u32) -> bool {
+        self.gem_resources.lock().contains_key(&object_id)
+    }
+
+    fn live_gem_resource(&self, object_id: u32) -> Option<u32> {
+        self.gem_resources
+            .lock()
+            .get(&object_id)
+            .and_then(|state| state.live_resource_id())
+    }
+
+    fn insert_gem_resource(&self, object_id: u32, state: GemResourceState) {
+        let previous = self.gem_resources.lock().insert(object_id, state);
+        debug_assert!(previous.is_none());
+    }
+
+    /// Retries resources that outlived their GEM objects without holding a spinlock.
+    fn drain_pending_resource_cleanup(&self) {
+        loop {
+            let resource_id = self.pending_resource_cleanup.lock().iter().next().copied();
+            let Some(resource_id) = resource_id else {
+                return;
+            };
+            if self.gpu.resource_unref(resource_id).is_err() {
+                return;
+            }
+            self.pending_resource_cleanup.lock().remove(&resource_id);
+        }
     }
 }
 
@@ -380,6 +410,33 @@ struct GemObject {
     name: AtomicU32, // 0 = not flinked
     ref_count: AtomicU32,
     buffer: DumbBuffer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GemResourceState {
+    Live(u32),
+    CleanupOnly(u32),
+}
+
+impl GemResourceState {
+    fn resource_id(self) -> u32 {
+        match self {
+            Self::Live(resource_id) | Self::CleanupOnly(resource_id) => resource_id,
+        }
+    }
+
+    fn live_resource_id(self) -> Option<u32> {
+        match self {
+            Self::Live(resource_id) => Some(resource_id),
+            Self::CleanupOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostCleanupStatus {
+    Confirmed,
+    Unconfirmed,
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.

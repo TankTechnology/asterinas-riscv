@@ -138,7 +138,7 @@ impl<'a> PendingGemHandle<'a> {
     }
 
     /// Discards the reserved handle and reports final host-resource cleanup.
-    pub(super) fn discard(self) -> Result<bool> {
+    pub(super) fn discard(self) -> Result<super::HostCleanupStatus> {
         let Self { owner, object, .. } = self;
         let object_id = object.into_raw();
         owner
