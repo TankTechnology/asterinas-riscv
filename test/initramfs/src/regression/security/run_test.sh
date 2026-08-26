@@ -23,3 +23,5 @@ set -e
 ./namespace/setns
 ./namespace/unshare
 ./namespace/user_ns_ids
+
+./seccomp/tsync
