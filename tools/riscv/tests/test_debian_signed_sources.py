@@ -272,6 +272,13 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             with self.assertRaisesRegex(ContractError, "firefox-esr"):
                 write_manifest(**inputs)
 
+    def test_writer_rejects_a_base_mirror_not_named_in_schema_five(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            inputs["mirror_url"] = "https://example.invalid/debian"
+            with self.assertRaisesRegex(ContractError, "mirror_url"):
+                write_manifest(**inputs)
+
     def test_writer_output_cannot_alias_either_signed_inrelease(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inputs = self._writer_inputs(Path(directory))
