@@ -94,6 +94,9 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(bootargs.split()[0:2], ["console=tty0", "console=ttyS0"])
         self.assertNotIn("saveenv", bootargs)
         self.assertNotIn("reboot_after", bootargs)
+        recovery_bootargs = physical_bootargs(180)
+        self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
+        self.assertNotIn("saveenv", recovery_bootargs)
 
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)

@@ -32,6 +32,8 @@ from tools.riscv.megrez_board_session import (
     positive_finite_seconds,
     read_available,
     safe_artifact_name,
+    safe_ipv4,
+    safe_ipv4_netmask,
 )
 
 
@@ -142,13 +144,24 @@ class GateOperations(Protocol):
     def publish(self, transcript: bytes, result: dict[str, object]) -> None: ...
 
 
-def physical_bootargs() -> str:
+def physical_bootargs(reboot_after: int | None = None) -> str:
     """Return the volatile Asterinas/Desktop M5 command line."""
 
+    restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
     return (
         "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz loglevel=info "
-        f"init=/init {NETWORK_BOOTARG} -- --root-init=systemd"
+        f"init=/init {NETWORK_BOOTARG}{restart} -- --root-init=systemd"
     )
+
+
+def bounded_reboot_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("reboot delay must be an integer") from error
+    if seconds < 30 or seconds > 3600:
+        raise argparse.ArgumentTypeError("reboot delay must be between 30 and 3600")
+    return seconds
 
 
 def classify_physical_transcript(transcript: bytes) -> GateResult:
@@ -333,14 +346,18 @@ class PhysicalGateOperations:
     def boot(self) -> bytes:
         session = self._session()
         session.send("")
-        prompt = session.wait_for("=> ", timeout=60)
+        prompt = session.wait_for_uboot_prompt(timeout=self.arguments.uboot_timeout)
         boot_arguments = argparse.Namespace(
             booti=self.arguments.booti,
             dtb=self.arguments.dtb,
             initrd=self.arguments.initrd,
             expected_crc32=self.arguments.expected_crc32,
             firmware_framebuffer=True,
-            bootargs=physical_bootargs(),
+            bootargs=physical_bootargs(self.arguments.reboot_after),
+            load_transport=self.arguments.load_transport,
+            tftp_board_address=self.arguments.tftp_board_address,
+            tftp_server_address=self.arguments.tftp_server_address,
+            tftp_netmask=self.arguments.tftp_netmask,
         )
         entered = boot_loaded_artifacts(session, boot_arguments)
         return (prompt + entered).encode(errors="replace")
@@ -380,6 +397,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtb", required=True, type=safe_artifact_name)
     parser.add_argument("--expected-crc32", required=True, type=parse_expected_crc32)
     parser.add_argument("--host-interface", required=True)
+    parser.add_argument("--load-transport", choices=("mmc", "tftp"), default="mmc")
+    parser.add_argument("--tftp-board-address", type=safe_ipv4, default=BOARD_ADDRESS)
+    parser.add_argument("--tftp-server-address", type=safe_ipv4, default=HOST_ADDRESS)
+    parser.add_argument(
+        "--tftp-netmask", type=safe_ipv4_netmask, default="255.255.248.0"
+    )
+    parser.add_argument("--uboot-timeout", type=positive_finite_seconds, default=60.0)
+    parser.add_argument("--reboot-after", type=bounded_reboot_seconds)
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--boot-timeout", type=positive_finite_seconds, default=300.0)
     parser.add_argument("--drain-timeout", type=positive_finite_seconds, default=2.0)
