@@ -276,7 +276,8 @@ test_riscv_ltp_unit:
 .PHONY: test_riscv_debian_rootfs_unit
 test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_debian_rootfs -v
+		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_m5_network -v
 
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
