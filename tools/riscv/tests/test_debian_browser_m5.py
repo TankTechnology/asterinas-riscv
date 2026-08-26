@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 
+import base64
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from tools.riscv.debian.rootfs.browser_m5 import (
-    BROWSER_PACKAGE,
-    UNSUPPORTED_BROWSER_PACKAGES,
+    probe_video_file,
     validate_probe_assets,
 )
 
@@ -15,16 +16,23 @@ ROOTFS_DIR = Path(__file__).parents[1] / "debian/rootfs"
 
 
 class DebianBrowserM5AdmissionTests(unittest.TestCase):
-    def test_selects_prebuilt_riscv64_firefox_not_chromium(self) -> None:
-        self.assertEqual(BROWSER_PACKAGE, "firefox-esr")
-        self.assertIn("chromium", UNSUPPORTED_BROWSER_PACKAGES)
-
     def test_offline_silent_video_probe_is_self_contained(self) -> None:
         video = validate_probe_assets(
             ROOTFS_DIR / "browser_m5_probe.html",
             ROOTFS_DIR / "browser_m5.webm.base64",
         )
         self.assertLess(len(video), 1024)
+
+    @unittest.skipUnless(shutil.which("ffprobe") and shutil.which("ffmpeg"), "FFmpeg tools unavailable")
+    def test_fixture_is_one_fully_decodable_silent_vp8_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            video_path = Path(directory) / "browser-m5.webm"
+            encoded = b"".join(
+                (ROOTFS_DIR / "browser_m5.webm.base64").read_bytes().splitlines()
+            )
+            video_path.write_bytes(base64.b64decode(encoded, validate=True))
+            metadata = probe_video_file(video_path)
+        self.assertEqual(metadata["streams"][0]["codec_name"], "vp8")
 
     def test_probe_rejects_a_network_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

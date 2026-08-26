@@ -22,3 +22,30 @@ only the configured base mirror and has a fixed one-GiB image contract.
 
 This milestone does not claim network playback, audio, hardware decoding,
 Direct Rendering Manager acceleration, or encrypted-media DRM support.
+
+## Minimal signed-security-source design
+
+The current builder retains and verifies one base `InRelease`, re-fetches that
+same document before publication, maps every apt list to it, and publishes a
+manifest containing one signed-metadata identity.  M5 needs a two-source form of
+the same invariant, not a special exception for Firefox:
+
+1. Define immutable source records for `trixie` and `trixie-security`, each with
+   its own HTTPS mirror, suite, expected Codename, retained `InRelease`, and
+   Debian archive keyring verification.  Security has no Debian point-release
+   `Version`, so validation must use its exact Codename rather than weakening
+   the base-release check.
+2. Write both apt source lines only after both signatures pass.  During audit,
+   map each apt list filename to exactly one source record and authenticate the
+   decompressed Packages bytes against that source's retained `InRelease`.
+3. Re-fetch and byte-hash-check both signed releases immediately before package
+   admission.  A change to either release aborts the build.
+4. Replace the manifest's singular `signed_metadata` object with a sorted,
+   exact-key `signed_sources` array.  Each entry records role, mirror URL, suite,
+   InRelease URL and SHA-256.  Publish both retained files under distinct names.
+5. Keep package admission unchanged after indexes are concatenated: every `.deb`
+   hash must still have one unique package/index row.  Also record the source
+   role on each admitted package to preserve provenance when versions overlap.
+
+This requires a new manifest schema rather than overloading schema 4.  Existing
+M1-M4 manifests and gates should remain byte-for-byte compatible.
