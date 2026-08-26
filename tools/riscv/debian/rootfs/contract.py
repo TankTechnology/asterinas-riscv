@@ -509,6 +509,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     try:
         if namespace.command == "write-manifest":
+            signed_source_files = _parse_signed_source_files(namespace.signed_source)
             write_manifest(
                 output=namespace.output,
                 image=namespace.image,
@@ -521,6 +522,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 build_timestamp=namespace.build_timestamp,
                 tool_versions=namespace.tool_version,
                 profile_name=namespace.profile,
+                signed_source_files=signed_source_files,
             )
         else:
             manifest = load_manifest(namespace.manifest)
@@ -743,6 +745,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
     writer.add_argument("--profile", default="minimal-m1")
+    writer.add_argument("--signed-source", action="append", default=[])
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--image", required=True, type=Path)
     verifier.add_argument("--manifest", required=True, type=Path)
@@ -751,7 +754,7 @@ def _argument_parser() -> argparse.ArgumentParser:
 
 
 def _reject_duplicate_cli_options(arguments: Sequence[str]) -> None:
-    repeatable = {"--tool-version"}
+    repeatable = {"--tool-version", "--signed-source"}
     seen: set[str] = set()
     for argument in arguments:
         option = argument.split("=", maxsplit=1)[0]
@@ -772,6 +775,20 @@ def _require_build_timestamp(value: str) -> None:
         datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError as error:
         raise ContractError("build_timestamp must be canonical UTC RFC 3339") from error
+
+
+def _parse_signed_source_files(values: Sequence[str]) -> Mapping[str, Path] | None:
+    if not values:
+        return None
+    sources: dict[str, Path] = {}
+    for value in values:
+        role, separator, path = value.partition("=")
+        if not separator or not role or not path:
+            raise ContractError("signed sources must use non-empty ROLE=PATH values")
+        if role in sources:
+            raise ContractError(f"duplicate signed source role: {role}")
+        sources[role] = Path(path)
+    return sources
 
 
 def _load_package_checksums(
