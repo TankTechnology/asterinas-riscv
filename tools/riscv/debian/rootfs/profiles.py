@@ -210,13 +210,13 @@ _PROFILES["browser-m5"] = RootfsProfile(
     root_uuid="41be8ca6-8168-5ef0-84b1-25824d8f87f5",
     requested_packages=tuple(
         package
-        for package in _PROFILES["desktop-m4"].requested_packages
+        for package in _PROFILES["desktop-m5-network"].requested_packages
         if package != "netsurf-gtk"
     )
     + ("firefox-esr",),
     identity_packages=tuple(
         package
-        for package in _PROFILES["desktop-m4"].identity_packages
+        for package in _PROFILES["desktop-m5-network"].identity_packages
         if package != "netsurf-gtk"
     )
     + ("firefox-esr",),

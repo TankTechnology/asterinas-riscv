@@ -41,6 +41,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(profile.root_label, "ASTER_BROWSERM5")
         self.assertLessEqual(len(profile.root_label.encode("ascii")), 16)
         self.assertIn("firefox-esr", profile.requested_packages)
+        self.assertIn("iproute2", profile.requested_packages)
+        self.assertIn("iputils-ping", profile.requested_packages)
+        self.assertIn("iproute2", profile.identity_packages)
+        self.assertIn("iputils-ping", profile.identity_packages)
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
 
     @mock.patch("subprocess.run")
