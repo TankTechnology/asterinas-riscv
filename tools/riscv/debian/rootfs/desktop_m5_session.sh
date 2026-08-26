@@ -15,7 +15,7 @@ if [[ "${1-}" == --xsession ]]; then
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
     /usr/bin/mkdir -p -- "$FIREFOX_PROFILE"
-    /usr/bin/firefox-esr --no-remote --new-instance --offline \
+    /usr/bin/firefox-esr --no-remote --new-instance --offline --marionette \
         --profile "$FIREFOX_PROFILE" "$PROBE_URL" &
     /usr/bin/sleep 1
     /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Browser M5" &
