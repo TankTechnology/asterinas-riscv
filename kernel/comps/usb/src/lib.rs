@@ -32,3 +32,8 @@ fn init() -> Result<(), ComponentInitError> {
 pub fn run_polling() {
     arch::run_polling();
 }
+
+/// Runs a second firmware-selected USB host worker when the architecture provides one.
+pub fn run_polling_secondary() {
+    arch::run_polling_secondary();
+}

@@ -172,7 +172,10 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
     component::init_all(InitStage::Process, component::parse_metadata!()).unwrap();
     crate::device::init_in_first_process(ctx).unwrap();
     #[cfg(target_arch = "riscv64")]
-    ThreadOptions::new(aster_usb::run_polling).spawn();
+    {
+        ThreadOptions::new(aster_usb::run_polling).spawn();
+        ThreadOptions::new(aster_usb::run_polling_secondary).spawn();
+    }
     crate::fs::init_in_first_process(ctx);
 }
 

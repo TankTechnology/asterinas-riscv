@@ -64,7 +64,7 @@ pub enum UsbKeyboardError {
     Timeout(UsbKeyboardStage),
     /// USB device enumeration failed.
     Enumeration,
-    /// No boot-protocol USB keyboard appeared before the discovery deadline.
+    /// No boot-protocol USB keyboard or mouse appeared before the discovery deadline.
     KeyboardNotFound,
     /// CrabUSB could not open the selected keyboard.
     DeviceOpen,
@@ -104,10 +104,10 @@ pub struct UsbDeviceInfo {
     pub product_id: u16,
 }
 
-/// Identity of the boot keyboard and optional boot mouse owned by one xHCI host.
+/// Identity of the optional boot keyboard and mouse owned by one xHCI host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UsbHidInfo {
-    /// The boot keyboard, present whenever `PollingUsbHidHost::open` succeeds.
+    /// The optional boot keyboard discovered on this controller.
     pub keyboard: Option<UsbDeviceInfo>,
     /// The optional boot mouse discovered beside the keyboard.
     pub mouse: Option<UsbDeviceInfo>,
@@ -139,6 +139,29 @@ struct BootHidInterface {
 enum BootHidKind {
     Keyboard,
     Mouse,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiscoveryDecision {
+    Continue,
+    Complete,
+    Missing,
+}
+
+fn discovery_decision(
+    keyboard_found: bool,
+    mouse_found: bool,
+    deadline_expired: bool,
+) -> DiscoveryDecision {
+    if keyboard_found && mouse_found {
+        DiscoveryDecision::Complete
+    } else if !deadline_expired {
+        DiscoveryDecision::Continue
+    } else if keyboard_found || mouse_found {
+        DiscoveryDecision::Complete
+    } else {
+        DiscoveryDecision::Missing
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -577,7 +600,7 @@ pub struct PollingUsbHidHost {
 struct PollingUsbHidHostInner {
     _xhci: XhciHost,
     events: EventHandler,
-    keyboard: BootKeyboardSession,
+    keyboard: Option<BootKeyboardSession>,
     mouse: Option<BootMouseSession>,
 }
 
@@ -692,10 +715,11 @@ fn open_hid_device(
 }
 
 impl PollingUsbHidHost {
-    /// Starts the firmware-configured xHCI controller and discovers a boot keyboard and mouse.
+    /// Starts one firmware-configured xHCI controller and discovers boot HID devices.
     ///
-    /// The keyboard is mandatory. A mouse is attached when it appears during the same bounded
-    /// discovery window and can be opened without affecting the keyboard session.
+    /// A controller may contribute a keyboard, a mouse, or both. This permits boards whose
+    /// physical USB sockets are wired to separate xHCI controllers while preserving the shared
+    /// keyboard-and-mouse fast path used by QEMU.
     pub fn open(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
         let mut xhci = XhciHost::new(mmio, dma_window)?;
         let events = xhci.host.create_event_handler();
@@ -764,42 +788,42 @@ impl PollingUsbHidHost {
                     *slot = Some((device_id, device_info, interface));
                 }
             }
-            if keyboard.is_some() && mouse.is_some() {
-                break;
-            }
-            if discovery_deadline.expired() {
-                if keyboard.is_some() {
-                    break;
+            match discovery_decision(
+                keyboard.is_some(),
+                mouse.is_some(),
+                discovery_deadline.expired(),
+            ) {
+                DiscoveryDecision::Continue => Task::yield_now(),
+                DiscoveryDecision::Complete => break,
+                DiscoveryDecision::Missing => {
+                    abandon_host(xhci, events);
+                    return Err(UsbKeyboardError::KeyboardNotFound);
                 }
-                abandon_host(xhci, events);
-                return Err(UsbKeyboardError::KeyboardNotFound);
             }
-            Task::yield_now();
         }
 
-        let (_, keyboard_info, keyboard_interface) = keyboard.unwrap();
-        let opened_keyboard =
-            match open_hid_device(&mut xhci, &events, &keyboard_info, keyboard_interface) {
-                Ok(opened) => opened,
-                Err(error) => {
-                    abandon_host(xhci, events);
-                    return Err(error);
-                }
+        let keyboard_session = keyboard.and_then(|(_, keyboard_info, keyboard_interface)| {
+            let opened_keyboard =
+                match open_hid_device(&mut xhci, &events, &keyboard_info, keyboard_interface) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        crate::warn!("USB boot keyboard unavailable: {:?}", error);
+                        return None;
+                    }
+                };
+            let mut session = BootKeyboardSession {
+                _device: opened_keyboard.device,
+                endpoint: opened_keyboard.endpoint,
+                reports: BootKeyboardReportQueue::empty(),
+                info: opened_keyboard.info,
             };
-        let mut keyboard_session = BootKeyboardSession {
-            _device: opened_keyboard.device,
-            endpoint: opened_keyboard.endpoint,
-            reports: BootKeyboardReportQueue::empty(),
-            info: opened_keyboard.info,
-        };
-        if let Err(error) = keyboard_session
-            .reports
-            .fill(&mut keyboard_session.endpoint)
-        {
-            mem::forget(keyboard_session);
-            abandon_host(xhci, events);
-            return Err(error);
-        }
+            if let Err(error) = session.reports.fill(&mut session.endpoint) {
+                crate::warn!("USB boot keyboard report queue unavailable: {:?}", error);
+                mem::forget(session);
+                return None;
+            }
+            Some(session)
+        });
 
         let mouse_session = mouse.and_then(|(_, mouse_info, mouse_interface)| {
             let opened = match open_hid_device(&mut xhci, &events, &mouse_info, mouse_interface) {
@@ -823,6 +847,11 @@ impl PollingUsbHidHost {
             Some(session)
         });
 
+        if keyboard_session.is_none() && mouse_session.is_none() {
+            abandon_host(xhci, events);
+            return Err(UsbKeyboardError::DeviceOpen);
+        }
+
         Ok(Self {
             inner: ManuallyDrop::new(PollingUsbHidHostInner {
                 _xhci: xhci,
@@ -836,7 +865,7 @@ impl PollingUsbHidHost {
     /// Returns the selected keyboard and optional mouse identities.
     pub fn info(&self) -> UsbHidInfo {
         UsbHidInfo {
-            keyboard: Some(self.inner.keyboard.info),
+            keyboard: self.inner.keyboard.as_ref().map(|keyboard| keyboard.info),
             mouse: self.inner.mouse.as_ref().map(|mouse| mouse.info),
         }
     }
@@ -864,10 +893,10 @@ impl PollingUsbHidHost {
         let inner = &mut *self.inner;
         inner.events.handle_event();
         let mut context = Context::from_waker(Waker::noop());
-        if let Some(report) = inner
-            .keyboard
-            .reports
-            .poll(&mut inner.keyboard.endpoint, &mut context)?
+        if let Some(keyboard) = &mut inner.keyboard
+            && let Some(report) = keyboard
+                .reports
+                .poll(&mut keyboard.endpoint, &mut context)?
         {
             return Ok(Some(UsbHidReport::Keyboard(report)));
         }
@@ -1255,6 +1284,19 @@ mod tests {
         for fields in [(0x03, 0x00, 0x02), (0x03, 0x01, 0x00), (0xff, 0x01, 0x02)] {
             assert_eq!(classify_boot_interface(fields.0, fields.1, fields.2), None);
         }
+    }
+
+    #[ktest]
+    fn completes_discovery_with_either_hid_kind_at_the_deadline() {
+        use super::DiscoveryDecision::{Complete, Continue, Missing};
+
+        assert_eq!(super::discovery_decision(false, false, false), Continue);
+        assert_eq!(super::discovery_decision(true, false, false), Continue);
+        assert_eq!(super::discovery_decision(false, true, false), Continue);
+        assert_eq!(super::discovery_decision(true, true, false), Complete);
+        assert_eq!(super::discovery_decision(true, false, true), Complete);
+        assert_eq!(super::discovery_decision(false, true, true), Complete);
+        assert_eq!(super::discovery_decision(false, false, true), Missing);
     }
 
     fn boot_configuration(protocol: u8, max_packet_size: u16) -> ConfigurationDescriptor {
