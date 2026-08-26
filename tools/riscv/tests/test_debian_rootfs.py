@@ -97,6 +97,24 @@ DESKTOP_M3_EVIDENCE_SCRIPT = (
 DESKTOP_M3_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_session.sh"
 )
+DESKTOP_M4_EVIDENCE_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
+)
+DESKTOP_M4_SESSION_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_session.sh"
+)
+DESKTOP_M4_WELCOME_PAGE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
+)
+DESKTOP_M4_MILESTONES = (
+    "DEBIAN_DESKTOP_M4_UDEV state=active",
+    "DEBIAN_DESKTOP_M4_LOGIND state=active",
+    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
+    "DEBIAN_DESKTOP_M4_CLIENTS window-manager=matchbox file-manager=pcmanfm browser=netsurf terminal=xterm",
+    "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
+)
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
@@ -1242,6 +1260,133 @@ WantedBy=multi-user.target
             "/lib/systemd/system/graphical.target",
         )
 
+    def test_configures_desktop_m4_basic_applications(self) -> None:
+        work_directory = self.directory / "configure-desktop-m4"
+        stage = work_directory / "stage"
+        for relative in (
+            "etc",
+            "etc/systemd/system",
+            "home",
+            "usr/bin",
+            "var/lib/dbus",
+            "var/lib/dpkg",
+            "var/cache/apt/archives",
+            "var/lib/apt/lists",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ):
+            (stage / relative).mkdir(parents=True, exist_ok=True)
+        (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+        (stage / "etc/group").write_text("root:x:0:\n")
+        (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+        (stage / "etc/gshadow").write_text("root:!::\n")
+
+        result = _run_configure_rootfs(work_directory, "desktop-m4")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        session = stage / "usr/lib/asterinas/desktop-m4-session"
+        evidence = stage / "usr/lib/asterinas/desktop-m4-evidence"
+        welcome = stage / "usr/share/asterinas/desktop-m4-welcome.html"
+        self.assertEqual(session.read_bytes(), DESKTOP_M4_SESSION_SCRIPT.read_bytes())
+        self.assertEqual(evidence.read_bytes(), DESKTOP_M4_EVIDENCE_SCRIPT.read_bytes())
+        self.assertEqual(welcome.read_bytes(), DESKTOP_M4_WELCOME_PAGE.read_bytes())
+        self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(welcome.stat().st_mode), 0o644)
+        session_text = session.read_text()
+        self.assertIn("matchbox-window-manager -use_titlebar yes &", session_text)
+        self.assertIn(
+            'pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &',
+            session_text,
+        )
+        self.assertIn(
+            "netsurf-gtk file:///usr/share/asterinas/desktop-m4-welcome.html &",
+            session_text,
+        )
+        self.assertIn('-title "Asterinas Terminal" &', session_text)
+        self.assertLess(
+            session_text.index("pcmanfm --no-desktop"), session_text.index("xterm")
+        )
+        self.assertLess(session_text.index("netsurf-gtk"), session_text.index("xterm"))
+        self.assertIn("<title>Asterinas Start</title>", welcome.read_text())
+        self.assertEqual(
+            stat.S_IMODE((stage / "home/asterinas/Asterinas Files").stat().st_mode),
+            0o755,
+        )
+        unit = stage / "etc/systemd/system/asterinas-desktop-m4.service"
+        unit_text = unit.read_text()
+        self.assertIn("User=asterinas", unit_text)
+        self.assertIn("PAMName=login", unit_text)
+        self.assertIn("ExecStart=/usr/lib/asterinas/desktop-m4-session", unit_text)
+        self.assertFalse(
+            (stage / "etc/systemd/system/asterinas-desktop-m3.service").exists()
+        )
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/graphical.target.wants"
+                / "asterinas-desktop-m4.service"
+            ).is_symlink()
+        )
+
+    def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        input_directory = self.directory / "desktop-m4-input"
+        input_directory.mkdir()
+        (input_directory / "event0").touch()
+        (input_directory / "event1").touch()
+        xorg_log = self.directory / "desktop-m4-Xorg.0.log"
+        xorg_log.write_text(
+            """(II) FBDEV(0): using shadow framebuffer
+(II) XINPUT: Adding extended input device \"Asterinas keyboard\"
+(II) XINPUT: Adding extended input device \"Asterinas pointer\"
+""",
+            encoding="utf-8",
+        )
+        fake_bin = self._make_desktop_m4_evidence_tools()
+
+        for missing in (
+            "",
+            "pcmanfm",
+            "netsurf",
+            "xterm",
+            "mapped-pcmanfm",
+            "mapped-netsurf",
+        ):
+            with self.subTest(missing=missing or "none"):
+                console = self.directory / f"desktop-m4-console-{missing or 'complete'}"
+                console.write_text("", encoding="utf-8")
+                environment = os.environ.copy()
+                environment.update(
+                    PATH=f"{fake_bin}:/usr/bin:/bin",
+                    ASTERINAS_DESKTOP_M4_CONSOLE=str(console),
+                    ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY=str(input_directory),
+                    ASTERINAS_DESKTOP_M4_XORG_LOG=str(xorg_log),
+                    ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS="0",
+                    ASTERINAS_DESKTOP_M4_TEST_MISSING=missing,
+                )
+
+                result = subprocess.run(
+                    ["/bin/bash", str(DESKTOP_M4_EVIDENCE_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                evidence = console.read_text(encoding="utf-8")
+                if not missing:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(evidence, "\n".join(DESKTOP_M4_MILESTONES) + "\n")
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertTrue(
+                        evidence.endswith(
+                            "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
+                        ),
+                        evidence,
+                    )
+
     def test_desktop_m3_evidence_requires_complete_session(self) -> None:
         input_directory = self.directory / "desktop-input"
         input_directory.mkdir()
@@ -1347,6 +1492,42 @@ if [ "$ASTERINAS_DESKTOP_M3_TEST_MISSING" = mapped-window ]; then
 else
   printf '0x200001 "Asterinas Debian": ("xterm" "XTerm") 100x30+48+72\n'
 fi
+""",
+        }
+        for name, script in scripts.items():
+            path = fake_bin / name
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+        return fake_bin
+
+    def _make_desktop_m4_evidence_tools(self) -> Path:
+        fake_bin = self.directory / "desktop-m4-evidence-tools"
+        fake_bin.mkdir()
+        scripts = {
+            "systemctl": """#!/bin/sh
+case "$*" in
+  'is-active --quiet systemd-udevd.service'|\
+  'is-active --quiet systemd-logind.service') exit 0 ;;
+  *) exit 1 ;;
+esac
+""",
+            "loginctl": """#!/bin/sh
+printf '1 1000 asterinas seat0 tty1\n'
+""",
+            "pgrep": """#!/bin/sh
+case "$ASTERINAS_DESKTOP_M4_TEST_MISSING:$*" in
+  'pcmanfm:'*'-x pcmanfm'|\
+  'netsurf:'*'-x netsurf-gtk'|\
+  'xterm:'*'-x xterm') exit 1 ;;
+  *) exit 0 ;;
+esac
+""",
+            "xwininfo": """#!/bin/sh
+printf '0x200001 "Asterinas Terminal": ("xterm" "XTerm")\n'
+[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" = mapped-pcmanfm ] || \
+  printf '0x200002 "Asterinas Files": ("pcmanfm" "Pcmanfm")\n'
+[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" = mapped-netsurf ] || \
+  printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
 """,
         }
         for name, script in scripts.items():
