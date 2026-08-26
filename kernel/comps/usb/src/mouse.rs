@@ -66,10 +66,6 @@ impl InputDevice for UsbBootMouseDevice {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "wired into the shared xHCI worker in the next slice"
-)]
 pub(super) fn register(vendor_id: u16, product_id: u16) -> RegisteredInputDevice {
     aster_input::register_device(Arc::new(UsbBootMouseDevice::new(vendor_id, product_id)))
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Bounded interrupt-IN report queue for a USB HID boot keyboard.
+//! Bounded interrupt-IN report queues for USB HID boot devices.
 
 use alloc::boxed::Box;
 use core::{
@@ -14,11 +14,8 @@ use super::{BOOT_KEYBOARD_REPORT_LEN, UsbKeyboardError};
 
 pub(super) const REPORT_QUEUE_DEPTH: usize = 8;
 
-pub(super) trait ReportEndpoint {
-    fn submit_report(
-        &mut self,
-        report: &mut [u8; BOOT_KEYBOARD_REPORT_LEN],
-    ) -> Result<RequestId, UsbKeyboardError>;
+pub(super) trait ReportEndpoint<const N: usize> {
+    fn submit_report(&mut self, report: &mut [u8; N]) -> Result<RequestId, UsbKeyboardError>;
 
     fn poll_report_request(
         &mut self,
@@ -27,22 +24,38 @@ pub(super) trait ReportEndpoint {
     ) -> Poll<Result<TransferCompletion, UsbKeyboardError>>;
 }
 
-struct ReportSlot {
+struct ReportSlot<const N: usize> {
     // TransferRequest retains the buffer address, so the pointee must not move while submitted.
-    report: Box<[u8; BOOT_KEYBOARD_REPORT_LEN]>,
+    report: Box<[u8; N]>,
     request: Option<RequestId>,
 }
 
-pub(super) struct BootKeyboardReportQueue {
-    slots: [ReportSlot; REPORT_QUEUE_DEPTH],
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CompletedReport<const N: usize> {
+    bytes: [u8; N],
+    actual_length: usize,
+}
+
+impl<const N: usize> CompletedReport<N> {
+    pub(super) fn bytes(&self) -> &[u8; N] {
+        &self.bytes
+    }
+
+    pub(super) fn actual_length(&self) -> usize {
+        self.actual_length
+    }
+}
+
+pub(super) struct BootReportQueue<const N: usize> {
+    slots: [ReportSlot<N>; REPORT_QUEUE_DEPTH],
     next_completion: usize,
 }
 
-impl BootKeyboardReportQueue {
+impl<const N: usize> BootReportQueue<N> {
     pub(super) fn empty() -> Self {
         Self {
             slots: array::from_fn(|_| ReportSlot {
-                report: Box::new([0; BOOT_KEYBOARD_REPORT_LEN]),
+                report: Box::new([0; N]),
                 request: None,
             }),
             next_completion: 0,
@@ -51,7 +64,7 @@ impl BootKeyboardReportQueue {
 
     pub(super) fn fill(
         &mut self,
-        endpoint: &mut impl ReportEndpoint,
+        endpoint: &mut impl ReportEndpoint<N>,
     ) -> Result<(), UsbKeyboardError> {
         for slot in &mut self.slots {
             debug_assert!(slot.request.is_none());
@@ -63,9 +76,9 @@ impl BootKeyboardReportQueue {
 
     pub(super) fn poll(
         &mut self,
-        endpoint: &mut impl ReportEndpoint,
+        endpoint: &mut impl ReportEndpoint<N>,
         context: &mut Context<'_>,
-    ) -> Result<Option<[u8; BOOT_KEYBOARD_REPORT_LEN]>, UsbKeyboardError> {
+    ) -> Result<Option<CompletedReport<N>>, UsbKeyboardError> {
         let slot = &mut self.slots[self.next_completion];
         let request = slot.request.ok_or(UsbKeyboardError::Transfer)?;
         let completion = match endpoint.poll_report_request(request, context) {
@@ -83,11 +96,14 @@ impl BootKeyboardReportQueue {
         if completion.status != TransferStatus::Completed {
             return Err(UsbKeyboardError::Transfer);
         }
-        if completion.actual_length != BOOT_KEYBOARD_REPORT_LEN {
+        if completion.actual_length > N {
             return Err(UsbKeyboardError::InvalidReportLength);
         }
 
-        let report = *slot.report;
+        let report = CompletedReport {
+            bytes: *slot.report,
+            actual_length: completion.actual_length,
+        };
         slot.report.fill(0);
         slot.request = Some(endpoint.submit_report(slot.report.as_mut())?);
         self.next_completion = if self.next_completion + 1 == REPORT_QUEUE_DEPTH {
@@ -99,6 +115,35 @@ impl BootKeyboardReportQueue {
     }
 }
 
+pub(super) struct BootKeyboardReportQueue(BootReportQueue<BOOT_KEYBOARD_REPORT_LEN>);
+
+impl BootKeyboardReportQueue {
+    pub(super) fn empty() -> Self {
+        Self(BootReportQueue::empty())
+    }
+
+    pub(super) fn fill(
+        &mut self,
+        endpoint: &mut impl ReportEndpoint<BOOT_KEYBOARD_REPORT_LEN>,
+    ) -> Result<(), UsbKeyboardError> {
+        self.0.fill(endpoint)
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        endpoint: &mut impl ReportEndpoint<BOOT_KEYBOARD_REPORT_LEN>,
+        context: &mut Context<'_>,
+    ) -> Result<Option<[u8; BOOT_KEYBOARD_REPORT_LEN]>, UsbKeyboardError> {
+        let Some(report) = self.0.poll(endpoint, context)? else {
+            return Ok(None);
+        };
+        if report.actual_length != BOOT_KEYBOARD_REPORT_LEN {
+            return Err(UsbKeyboardError::InvalidReportLength);
+        }
+        Ok(Some(report.bytes))
+    }
+}
+
 #[cfg(ktest)]
 mod tests {
     use alloc::vec::Vec;
@@ -106,7 +151,7 @@ mod tests {
 
     use usb_if::endpoint::{RequestId, TransferCompletion, TransferStatus};
 
-    use super::{BootKeyboardReportQueue, ReportEndpoint};
+    use super::{BootKeyboardReportQueue, BootReportQueue, ReportEndpoint};
     use crate::{bus::usb::UsbKeyboardError, prelude::ktest};
 
     const REPORT_ONE: [u8; super::BOOT_KEYBOARD_REPORT_LEN] = [0, 0, 0x04, 0, 0, 0, 0, 0];
@@ -176,7 +221,7 @@ mod tests {
         }
     }
 
-    impl ReportEndpoint for FakeEndpoint {
+    impl ReportEndpoint<{ super::BOOT_KEYBOARD_REPORT_LEN }> for FakeEndpoint {
         fn submit_report(
             &mut self,
             report: &mut [u8; super::BOOT_KEYBOARD_REPORT_LEN],
@@ -405,5 +450,44 @@ mod tests {
             &[Operation::Poll(1), Operation::Submit(9)]
         );
         assert_eq!(endpoint.next_id, 10);
+    }
+
+    struct MouseEndpoint {
+        next_id: u64,
+    }
+
+    impl ReportEndpoint<4> for MouseEndpoint {
+        fn submit_report(&mut self, report: &mut [u8; 4]) -> Result<RequestId, UsbKeyboardError> {
+            *report = [1, 4, 0, 0];
+            let request = RequestId::new(self.next_id);
+            self.next_id += 1;
+            Ok(request)
+        }
+
+        fn poll_report_request(
+            &mut self,
+            request: RequestId,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<TransferCompletion, UsbKeyboardError>> {
+            Poll::Ready(Ok(TransferCompletion {
+                request_id: request,
+                status: TransferStatus::Completed,
+                actual_length: 3,
+                iso_packets: Vec::new(),
+            }))
+        }
+    }
+
+    #[ktest]
+    fn returns_mouse_bytes_with_the_actual_completion_length() {
+        let mut queue = BootReportQueue::<4>::empty();
+        let mut endpoint = MouseEndpoint { next_id: 1 };
+        queue.fill(&mut endpoint).unwrap();
+        let mut context = Context::from_waker(core::task::Waker::noop());
+
+        let report = queue.poll(&mut endpoint, &mut context).unwrap().unwrap();
+
+        assert_eq!(report.bytes(), &[1, 4, 0, 0]);
+        assert_eq!(report.actual_length(), 3);
     }
 }

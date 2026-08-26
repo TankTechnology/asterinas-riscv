@@ -10,7 +10,7 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::{PollingUsbKeyboard, UsbKeyboardError, UsbKeyboardInfo},
+    bus::usb::{PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport, UsbKeyboardError},
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -18,7 +18,10 @@ use ostd::{
 };
 use spin::Once;
 
-use crate::keyboard::{HidBootKeyboard, register};
+use crate::{
+    keyboard::{HidBootKeyboard, register as register_keyboard},
+    mouse::{HidBootMouse, register as register_mouse},
+};
 
 mod capability;
 mod pci;
@@ -301,7 +304,7 @@ pub(super) fn init() {
     }
 }
 
-static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
+static HID_HOST: Once<Mutex<PollingUsbHidHost>> = Once::new();
 
 struct DeferredKeyboardState {
     decoder: HidBootKeyboard,
@@ -309,7 +312,7 @@ struct DeferredKeyboardState {
 }
 
 impl DeferredKeyboardState {
-    fn new(info: UsbKeyboardInfo) -> Self {
+    fn new(info: UsbDeviceInfo) -> Self {
         ostd::info!(
             "USB boot keyboard registered: {:04x}:{:04x} bus=usb name=usb_boot_keyboard",
             info.vendor_id,
@@ -317,24 +320,57 @@ impl DeferredKeyboardState {
         );
         Self {
             decoder: HidBootKeyboard::new(),
-            registered: register(info.vendor_id, info.product_id),
+            registered: register_keyboard(info.vendor_id, info.product_id),
         }
     }
 }
 
-struct EnabledKeyboardIrqs<'a> {
-    keyboard: &'a Mutex<PollingUsbKeyboard>,
+struct DeferredMouseState {
+    decoder: HidBootMouse,
+    registered: RegisteredInputDevice,
+}
+
+impl DeferredMouseState {
+    fn new(info: UsbDeviceInfo) -> Self {
+        ostd::info!(
+            "USB boot mouse registered: {:04x}:{:04x} bus=usb name=usb_boot_mouse",
+            info.vendor_id,
+            info.product_id,
+        );
+        Self {
+            decoder: HidBootMouse::new(),
+            registered: register_mouse(info.vendor_id, info.product_id),
+        }
+    }
+}
+
+struct DeferredHidState {
+    keyboard: Option<DeferredKeyboardState>,
+    mouse: Option<DeferredMouseState>,
+}
+
+impl DeferredHidState {
+    fn new(info: UsbHidInfo) -> Self {
+        Self {
+            keyboard: info.keyboard.map(DeferredKeyboardState::new),
+            mouse: info.mouse.map(DeferredMouseState::new),
+        }
+    }
+}
+
+struct EnabledHidIrqs<'a> {
+    host: &'a Mutex<PollingUsbHidHost>,
     pci_location: Option<PciDeviceLocation>,
 }
 
-impl<'a> EnabledKeyboardIrqs<'a> {
+impl<'a> EnabledHidIrqs<'a> {
     fn new(
-        keyboard: &'a Mutex<PollingUsbKeyboard>,
+        host: &'a Mutex<PollingUsbHidHost>,
         pci_location: Option<PciDeviceLocation>,
     ) -> Result<Self, UsbKeyboardError> {
-        let enable_result = keyboard.lock().enable_irq();
+        let enable_result = host.lock().enable_irq();
         if let Err(error) = enable_result {
-            if let Err(disable_error) = keyboard.lock().disable_irq() {
+            if let Err(disable_error) = host.lock().disable_irq() {
                 ostd::warn!(
                     "failed to restore disabled xHCI interrupts after enable error: {:?}",
                     disable_error
@@ -345,16 +381,13 @@ impl<'a> EnabledKeyboardIrqs<'a> {
         if let Some(location) = pci_location {
             pci::set_intx_enabled(location, true);
         }
-        Ok(Self {
-            keyboard,
-            pci_location,
-        })
+        Ok(Self { host, pci_location })
     }
 }
 
-impl Drop for EnabledKeyboardIrqs<'_> {
+impl Drop for EnabledHidIrqs<'_> {
     fn drop(&mut self) {
-        if let Err(error) = self.keyboard.lock().disable_irq() {
+        if let Err(error) = self.host.lock().disable_irq() {
             ostd::warn!("failed to disable xHCI interrupts: {:?}", error);
         }
         if let Some(location) = self.pci_location {
@@ -363,33 +396,50 @@ impl Drop for EnabledKeyboardIrqs<'_> {
     }
 }
 
-fn process_deferred_keyboard(
-    keyboard: &Mutex<PollingUsbKeyboard>,
-    state: &mut DeferredKeyboardState,
-) -> bool {
+fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHidState) -> bool {
     loop {
         let report = {
-            let mut keyboard = keyboard.lock();
-            match keyboard.poll_report() {
+            let mut host = host.lock();
+            match host.poll_report() {
                 Ok(Some(report)) => report,
                 Ok(None) => return true,
                 Err(error) => {
-                    ostd::warn!("USB boot keyboard transfer stopped: {:?}", error);
+                    ostd::warn!("USB HID transfer stopped: {:?}", error);
                     return false;
                 }
             }
         };
-        let events = state.decoder.decode(report);
-        if !events.is_empty() {
-            state.registered.submit_events(&events);
+        match report {
+            UsbHidReport::Keyboard(report) => {
+                let Some(keyboard) = &mut state.keyboard else {
+                    continue;
+                };
+                let events = keyboard.decoder.decode(report);
+                if !events.is_empty() {
+                    keyboard.registered.submit_events(&events);
+                }
+            }
+            UsbHidReport::Mouse {
+                bytes,
+                actual_length,
+            } => {
+                let Some(mouse) = &mut state.mouse else {
+                    continue;
+                };
+                match mouse.decoder.decode(bytes, actual_length) {
+                    Ok(events) if !events.is_empty() => mouse.registered.submit_events(&events),
+                    Ok(_) => {}
+                    Err(error) => ostd::warn!("invalid USB boot mouse report: {:?}", error),
+                }
+            }
         }
     }
 }
 
-/// Interrupt-driven USB boot keyboard loop.
+/// Interrupt-driven USB HID boot keyboard and mouse loop.
 ///
 /// The xHCI event ring interrupt (from the DTB `interrupt-parent`/`interrupt`
-/// properties) drives the keyboard: the handler wakes this task, which drains
+/// properties) drives HID input: the handler wakes this task, which drains
 /// the event ring and emits evdev events. No polling loop runs while the
 /// keyboard is idle.
 pub fn run_polling() {
@@ -404,7 +454,7 @@ pub fn run_polling() {
             host.interrupt_source.interrupt_parent,
             host.interrupt_source.interrupt,
         );
-        run_keyboard_interrupt_driven(
+        run_hid_interrupt_driven(
             HostResources {
                 mmio: host.mmio,
                 dma_window: host.dma_window,
@@ -428,23 +478,20 @@ pub fn run_polling() {
         resources.interrupt_source.interrupt_parent,
         resources.interrupt_source.interrupt,
     );
-    run_keyboard_interrupt_driven(resources, None);
+    run_hid_interrupt_driven(resources, None);
 }
 
-fn run_keyboard_interrupt_driven(
-    resources: HostResources,
-    pci_location: Option<PciDeviceLocation>,
-) {
-    let keyboard = match PollingUsbKeyboard::open(resources.mmio, resources.dma_window) {
-        Ok(keyboard) => Mutex::new(keyboard),
+fn run_hid_interrupt_driven(resources: HostResources, pci_location: Option<PciDeviceLocation>) {
+    let host = match PollingUsbHidHost::open(resources.mmio, resources.dma_window) {
+        Ok(host) => Mutex::new(host),
         Err(error) => {
-            ostd::warn!("xHCI keyboard startup failed: {:?}", error);
+            ostd::warn!("xHCI HID startup failed: {:?}", error);
             return;
         }
     };
-    let mut state = DeferredKeyboardState::new(keyboard.lock().info());
-    KEYBOARD.call_once(|| keyboard);
-    let keyboard = KEYBOARD.get().unwrap();
+    let mut state = DeferredHidState::new(host.lock().info());
+    HID_HOST.call_once(|| host);
+    let host = HID_HOST.get().unwrap();
 
     let (waiter, waker) = Waiter::new_pair();
 
@@ -485,7 +532,7 @@ fn run_keyboard_interrupt_driven(
 
     // Keep this composite guard after `mapped_irq`: its explicit Drop disables
     // controller INTE first and PCI INTx second, before the PLIC mapping drops.
-    let _enabled_keyboard_irqs = match EnabledKeyboardIrqs::new(keyboard, pci_location) {
+    let _enabled_hid_irqs = match EnabledHidIrqs::new(host, pci_location) {
         Ok(guard) => guard,
         Err(error) => {
             ostd::warn!("failed to enable xHCI interrupts: {:?}", error);
@@ -493,10 +540,10 @@ fn run_keyboard_interrupt_driven(
         }
     };
 
-    ostd::info!("USB boot keyboard interrupt-driven loop started");
+    ostd::info!("USB HID interrupt-driven loop started");
 
     loop {
-        if !process_deferred_keyboard(keyboard, &mut state) {
+        if !process_deferred_hid(host, &mut state) {
             return;
         }
         if mapped_irq.rearm().is_err() {
@@ -627,21 +674,45 @@ mod tests {
     }
 
     #[ktest]
-    fn usb_keyboard_is_registered_before_the_first_report() {
+    fn usb_keyboard_and_mouse_are_registered_before_the_first_report() {
         component::init_all(
             component::InitStage::Bootstrap,
             component::parse_metadata!(),
         )
         .unwrap();
         let before = aster_input::count_devices();
-        let state = DeferredKeyboardState::new(UsbKeyboardInfo {
-            vendor_id: 0x0627,
-            product_id: 0x0001,
+        let state = DeferredHidState::new(UsbHidInfo {
+            keyboard: Some(UsbDeviceInfo {
+                vendor_id: 0x0627,
+                product_id: 0x0001,
+            }),
+            mouse: Some(UsbDeviceInfo {
+                vendor_id: 0x0627,
+                product_id: 0x0002,
+            }),
         });
 
-        assert_eq!(aster_input::count_devices(), before + 1);
+        assert_eq!(aster_input::count_devices(), before + 2);
         assert_eq!(
-            state.registered.device().id().bustype(),
+            state
+                .keyboard
+                .as_ref()
+                .unwrap()
+                .registered
+                .device()
+                .id()
+                .bustype(),
+            aster_input::input_dev::InputId::BUS_USB
+        );
+        assert_eq!(
+            state
+                .mouse
+                .as_ref()
+                .unwrap()
+                .registered
+                .device()
+                .id()
+                .bustype(),
             aster_input::input_dev::InputId::BUS_USB
         );
         drop(state);
