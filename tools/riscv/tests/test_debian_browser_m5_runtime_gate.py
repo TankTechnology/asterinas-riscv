@@ -65,7 +65,15 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         return {
             "url": gate.PROBE_URL,
             "markers": [list(marker) for marker in gate.EXPECTED_MARKERS],
-            "resources": [gate.VIDEO_URL],
+            "media": {
+                "currentSrc": gate.VIDEO_URL,
+                "ended": True,
+                "readyState": 4,
+                "error": None,
+                "duration": 0.2,
+            },
+            # Firefox file:// playback may not expose media in Resource Timing.
+            "resources": [],
         }
 
     def _pending_snapshot(self) -> dict[str, object]:
@@ -76,11 +84,21 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 list(gate.EXPECTED_MARKERS[1]),
                 list(gate.PENDING_MARKERS[2]),
             ],
-            "resources": [gate.VIDEO_URL],
+            "media": {
+                "currentSrc": gate.VIDEO_URL,
+                "ended": False,
+                "readyState": 4,
+                "error": None,
+                "duration": 0.2,
+            },
+            "resources": [],
         }
 
     def test_accepts_only_exact_ordered_permanent_dom_and_local_resource(self) -> None:
         gate.validate_snapshot(self._snapshot())
+        resource_observed = self._snapshot()
+        resource_observed["resources"] = [gate.VIDEO_URL]
+        gate.validate_snapshot(resource_observed)
         mutations = []
         missing = self._snapshot()
         missing["markers"] = missing["markers"][:-1]
@@ -97,6 +115,18 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         external = self._snapshot()
         external["resources"] = [gate.VIDEO_URL, "https://example.invalid/tracker"]
         mutations.append(external)
+        external_media = self._snapshot()
+        external_media["media"]["currentSrc"] = "https://example.invalid/video.webm"
+        mutations.append(external_media)
+        not_ended = self._snapshot()
+        not_ended["media"]["ended"] = False
+        mutations.append(not_ended)
+        insufficient_data = self._snapshot()
+        insufficient_data["media"]["readyState"] = 2
+        mutations.append(insufficient_data)
+        decode_error = self._snapshot()
+        decode_error["media"]["error"] = 3
+        mutations.append(decode_error)
         wrong_page = self._snapshot()
         wrong_page["url"] = "https://example.invalid/index.html"
         mutations.append(wrong_page)
@@ -144,7 +174,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             {"sessionId": "session", "capabilities": {}},
             ["wrong-window", "probe-window"],
             None,
-            {"value": json.dumps({"url": "about:blank", "markers": [], "resources": []})},
+            {"value": json.dumps({"url": "about:blank", "markers": [], "media": None, "resources": []})},
             None,
             {"value": json.dumps(snapshot)},
             {"value": None},
@@ -224,6 +254,9 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("--marionette", session)
         self.assertNotIn("--remote-debugging-port", session)
         self.assertIn('"WebDriver:ExecuteScript"', client)
+        self.assertIn("video.currentSrc", client)
+        self.assertIn("video.readyState", client)
+        self.assertIn("video.error", client)
         self.assertNotIn("script.evaluate", client)
         self.assertIn("browser-m5-marionette-gate", evidence)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
