@@ -39,7 +39,8 @@ from tools.riscv.megrez_board_session import (
 
 BOARD_ADDRESS = "10.100.19.200"
 HOST_ADDRESS = "10.100.19.216"
-NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21"
+GATEWAY_ADDRESS = "10.100.16.1"
+NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
 HOST_PING_ARGV = (
     "ping",
     "-n",

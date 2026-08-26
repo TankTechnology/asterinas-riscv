@@ -88,7 +88,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         bootargs = physical_bootargs()
 
         self.assertIn(
-            "asterinas.net=eic7700-rj45,10.100.19.200/21",
+            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
             bootargs.split(),
         )
         self.assertEqual(bootargs.split()[0:2], ["console=tty0", "console=ttyS0"])
