@@ -6,6 +6,7 @@
 #include <linux/capability.h>
 #include <linux/seccomp.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,14 +26,14 @@ struct worker {
 	pid_t tid;
 };
 
-static int install_errno_filter_with(long nr, unsigned int flags, int error)
+static int install_action_filter(long nr, unsigned int flags,
+				 unsigned int action)
 {
 	struct sock_filter insns[] = {
 		BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 			 offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1),
-		BPF_STMT(BPF_RET | BPF_K,
-			 SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA)),
+		BPF_STMT(BPF_RET | BPF_K, action),
 		BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
@@ -41,6 +42,12 @@ static int install_errno_filter_with(long nr, unsigned int flags, int error)
 	};
 
 	return syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, flags, &prog);
+}
+
+static int install_errno_filter_with(long nr, unsigned int flags, int error)
+{
+	return install_action_filter(
+		nr, flags, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA));
 }
 
 static int install_errno_filter(long nr, unsigned int flags)
@@ -366,6 +373,58 @@ release:
 	goto out;
 }
 
+static int test_tsync_catches_up_disabled_sibling(void)
+{
+	struct worker worker = { 0 };
+	pthread_t thread;
+	int failed = 1;
+
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, ancestor_worker, &worker) != 0)
+		goto out;
+	pthread_barrier_wait(&worker.ready);
+	/* Leave the sibling disabled while the caller advances one node. */
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		goto release;
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
+		goto release;
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	thread = 0;
+	if (worker.result == 0)
+		failed = 0;
+out:
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return failed;
+release:
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	goto out;
+}
+
+static int test_kill_process_has_signed_precedence(void)
+{
+	pid_t child = fork();
+	int status;
+
+	if (child == 0) {
+		if (install_action_filter(SYS_getpid, 0,
+					  SECCOMP_RET_KILL_PROCESS) != 0)
+			_exit(2);
+		/* Newest ERRNO must lose to the older signed KILL_PROCESS action. */
+		if (install_errno_filter(SYS_getpid, 0) != 0)
+			_exit(3);
+		syscall(SYS_getpid);
+		_exit(4);
+	}
+	if (child < 0 || waitpid(child, &status, 0) != child)
+		return 1;
+	return WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS ? 0 : 1;
+}
+
 static int test_tsync_stacking_single_thread(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
@@ -402,6 +461,10 @@ int main(void)
 				 "single-thread TSYNC stacking");
 	failures += run_isolated(test_tsync_from_common_ancestor,
 				 "TSYNC from common ancestor");
+	failures += run_isolated(test_tsync_catches_up_disabled_sibling,
+				 "TSYNC catches up disabled sibling");
+	failures += run_isolated(test_kill_process_has_signed_precedence,
+				 "signed KILL_PROCESS precedence");
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
