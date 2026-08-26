@@ -60,6 +60,7 @@ pub const MAC_CONFIGURATION: RegisterOffset = RegisterOffset::new(0x0000);
 pub const MAC_PACKET_FILTER: RegisterOffset = RegisterOffset::new(0x0008);
 pub const MAC_INTERRUPT_STATUS: RegisterOffset = RegisterOffset::new(0x00b0);
 pub const MAC_INTERRUPT_ENABLE: RegisterOffset = RegisterOffset::new(0x00b4);
+pub const MAC_VERSION: RegisterOffset = RegisterOffset::new(0x0110);
 pub const MAC_MDIO_ADDRESS: RegisterOffset = RegisterOffset::new(0x0200);
 pub const MAC_MDIO_DATA: RegisterOffset = RegisterOffset::new(0x0204);
 pub const MAC_ADDRESS0_HIGH: RegisterOffset = RegisterOffset::new(0x0300);
@@ -109,6 +110,7 @@ mod tests {
     #[ktest]
     fn queue_zero_register_offsets_match_the_dwmac4_layout() {
         assert_eq!(MAC_CONFIGURATION.offset(), 0x0000);
+        assert_eq!(MAC_VERSION.offset(), 0x0110);
         assert_eq!(MAC_MDIO_ADDRESS.offset(), 0x0200);
         assert_eq!(DMA_MODE.offset(), 0x1000);
         assert_eq!(DMA_CHANNEL0_TX_CONTROL.offset(), 0x1104);
