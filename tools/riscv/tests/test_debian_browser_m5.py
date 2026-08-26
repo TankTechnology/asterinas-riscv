@@ -45,6 +45,27 @@ class DebianBrowserM5AdmissionTests(unittest.TestCase):
                     ROOTFS_DIR / "browser_m5.webm.base64",
                 )
 
+    def test_probe_rejects_overwritten_or_reordered_result_nodes(self) -> None:
+        source = (ROOTFS_DIR / "browser_m5_probe.html").read_text()
+        mutations = (
+            source.replace('id="video-canplay-result"', 'id="video-ended-result"', 1),
+            source.replace(
+                '<p id="video-canplay-result">Local silent video pending</p>\n'
+                '<p id="video-ended-result">Local silent video completion pending</p>',
+                '<p id="video-ended-result">Local silent video completion pending</p>\n'
+                '<p id="video-canplay-result">Local silent video pending</p>',
+            ),
+            source.replace("canplay.textContent =", "ended.textContent =", 1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            html = Path(directory) / "probe.html"
+            for mutation in mutations:
+                html.write_text(mutation)
+                with self.assertRaises(ValueError):
+                    validate_probe_assets(
+                        html, ROOTFS_DIR / "browser_m5.webm.base64"
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
