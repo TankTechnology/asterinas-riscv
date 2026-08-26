@@ -45,8 +45,15 @@ enum {
     ROOT_DISCOVERY_TIMEOUT_SECONDS = 30,
 };
 
-static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANROOT";
+/*
+ * An ext2 volume label is a fixed-width byte field, not a C string.  Spell
+ * out the only full-width label so newer GCC versions do not diagnose the
+ * intentionally absent NUL terminator under -Werror.
+ */
+static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
+    'A', 'S', 'T', 'E', 'R', '_', 'D', 'E',
+    'B', 'I', 'A', 'N', 'R', 'O', 'O', 'T',
+};
 static const unsigned char SYSTEMD_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM2";
 static const unsigned char DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
