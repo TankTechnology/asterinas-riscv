@@ -199,6 +199,9 @@ validate_configuration() {
     [[ "$MIRROR" =~ ^https://[^/?#[:space:]]+(/[^?#[:space:]]*)?/?$ ]] ||
         die "mirror must be an HTTPS URL without query or fragment"
     MIRROR="${MIRROR%/}"
+    if [[ "$PROFILE" == browser-m5 && "$MIRROR" != "$DEFAULT_MIRROR" ]]; then
+        die "browser-m5 base mirror must be exactly: $DEFAULT_MIRROR"
+    fi
     [[ "$SOURCE_DATE_EPOCH" =~ ^(0|[1-9][0-9]*)$ ]] ||
         die "SOURCE_DATE_EPOCH must be a canonical nonnegative decimal integer"
     decimal_is_at_most "$SOURCE_DATE_EPOCH" "$MAX_SOURCE_DATE_EPOCH" ||
@@ -1156,8 +1159,8 @@ publish_artifacts() {
     fi
 
     # The helper rolls back ordinary failures and termination signals. The
-    # The profile-specific file set is intentionally not claimed to be
-    # power-loss atomic.
+    # profile-specific file set is intentionally not claimed to be power-loss
+    # atomic.
     PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
         publish-set \
         --output-dir "$OUTPUT_DIR" \
