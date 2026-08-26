@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import socket
 import time
 from enum import Enum
@@ -24,7 +25,7 @@ KERNEL_LOAD = 0x8020_0000
 INITRD_LOAD = 0x8400_0000
 DTB_LOAD = 0xB000_0000
 FB_PHYS_ADDR = 0x4000_0000
-FB_APERTURE_SIZE = 4 * 1024 * 1024
+FB_APERTURE_SIZE_BYTES = 4 * 1024 * 1024
 FB_WIDTH_PIXELS = 1280
 FB_HEIGHT_PIXELS = 800
 FB_BYTES_PER_PIXEL = 4
@@ -32,6 +33,11 @@ FB_STRIDE_BYTES = FB_WIDTH_PIXELS * FB_BYTES_PER_PIXEL
 FB_NODE_NAME = f"framebuffer@{FB_PHYS_ADDR:x}"
 FB_NODE = f"/{FB_NODE_NAME}"
 FB_SCREENSHOT = WORK / "fbdev-frame.ppm"
+PPM_RGB_BYTES_PER_PIXEL = 3
+MIN_VISIBLE_PIXELS_PERCENT = 1
+MIN_VISIBLE_SPAN_PERCENT = 10
+MONITOR_TIMEOUT_SECONDS = 5
+MONITOR_PROMPT = b"(qemu)"
 
 INIT_MARKER = b">>> systemd init: launching systemd (PID 1) <<<"
 GRAPHICAL_TARGET = b"Reached target Asterinas DRM Xfce Desktop"
@@ -40,7 +46,9 @@ MODESETTING_DRIVER = b"modesetting_drv.so"
 MODESETTING_ACTIVE = b"modeset(0): using default device"
 FBDEV_DRIVER = b"fbdev_drv.so"
 FBDEV_ACTIVE = b"FBDEV(0): using"
-FBDEV_MODE = b"FBDEV(0): Virtual size is 1280x800"
+FBDEV_MODE = (
+    f"FBDEV(0): Virtual size is {FB_WIDTH_PIXELS}x{FB_HEIGHT_PIXELS}"
+).encode()
 GLAMOR_ACTIVE = b"glamor x acceleration enabled"
 XORG_READY = b"XFCE_DRM_XORG_READY"
 X11_CONNECT_OK = b"XFCE_DRM_X11_CONNECT_OK"
@@ -49,8 +57,8 @@ PANIC_MARKERS = (
     b"Kernel panic",
     b"Uncaught panic",
     b"panic!",
-    b"BUG:",
 )
+BUG_MARKER_RE = re.compile(rb"(?<![A-Za-z])BUG:")
 FRAMEBUFFER_ERROR = b"failed to add fb"
 
 
@@ -58,6 +66,23 @@ class DisplayPath(Enum):
     VIRGL = "virgl"
     SOFTWARE_DRM = "software-drm"
     FBDEV = "fbdev"
+
+
+class BootOutcome(Enum):
+    TIMEOUT = "timeout"
+    PANIC = "panic"
+    DESKTOP_UP = "desktop-up"
+    PANIC_DURING_SETTLE = "panic-during-settle"
+    SETTLED = "settled"
+    SETTLE_ERROR = "settle-error"
+    BOOT_ERROR = "boot-error"
+    INTERRUPTED = "interrupted"
+
+
+def contains_panic(output: bytes) -> bool:
+    return any(marker in output for marker in PANIC_MARKERS) or bool(
+        BUG_MARKER_RE.search(output)
+    )
 
 
 def uboot_commands(display_path: DisplayPath) -> list[tuple[str, str, str, float]]:
@@ -82,7 +107,7 @@ def uboot_commands(display_path: DisplayPath) -> list[tuple[str, str, str, float
                 (
                     "fb-reg",
                     f"fdt set {FB_NODE} reg "
-                    f"<0x0 {FB_PHYS_ADDR:#x} 0x0 {FB_APERTURE_SIZE:#x}>",
+                    f"<0x0 {FB_PHYS_ADDR:#x} 0x0 {FB_APERTURE_SIZE_BYTES:#x}>",
                     "=>",
                     10,
                 ),
@@ -135,23 +160,66 @@ def uboot_commands(display_path: DisplayPath) -> list[tuple[str, str, str, float
 
 
 def has_visible_fbdev_frame(path: Path) -> bool:
-    """Validate the guest framebuffer region of a QEMU PPM screendump."""
+    """Validate substantial guest content in QEMU's binary PPM screendump."""
 
+    # QEMU's `screendump` emits Netpbm P6: an ASCII header followed by one
+    # three-byte RGB tuple per pixel.  See docs/interop/vnc.txt in QEMU and
+    # https://netpbm.sourceforge.net/doc/ppm.html.
     try:
         magic, geometry, maximum, pixels = path.read_bytes().split(b"\n", 3)
         width, height = (int(value) for value in geometry.split())
     except (OSError, ValueError):
         return False
-    expected_bytes = width * height * 3
-    guest_frame_bytes = FB_WIDTH_PIXELS * FB_HEIGHT_PIXELS * 3
-    return (
-        magic == b"P6"
-        and maximum == b"255"
-        and width == FB_WIDTH_PIXELS
-        and height >= FB_HEIGHT_PIXELS
-        and len(pixels) == expected_bytes
-        and any(pixels[:guest_frame_bytes])
+    expected_bytes = width * height * PPM_RGB_BYTES_PER_PIXEL
+    if (
+        magic != b"P6"
+        or maximum != b"255"
+        or width != FB_WIDTH_PIXELS
+        or height < FB_HEIGHT_PIXELS
+        or len(pixels) != expected_bytes
+    ):
+        return False
+
+    nonblack_pixels = 0
+    min_x = FB_WIDTH_PIXELS
+    max_x = -1
+    min_y = FB_HEIGHT_PIXELS
+    max_y = -1
+    guest_frame_bytes = (
+        FB_WIDTH_PIXELS * FB_HEIGHT_PIXELS * PPM_RGB_BYTES_PER_PIXEL
     )
+    for offset in range(0, guest_frame_bytes, PPM_RGB_BYTES_PER_PIXEL):
+        if pixels[offset] or pixels[offset + 1] or pixels[offset + 2]:
+            pixel_index = offset // PPM_RGB_BYTES_PER_PIXEL
+            x = pixel_index % FB_WIDTH_PIXELS
+            y = pixel_index // FB_WIDTH_PIXELS
+            nonblack_pixels += 1
+            min_x = min(min_x, x)
+            max_x = max(max_x, x)
+            min_y = min(min_y, y)
+            max_y = max(max_y, y)
+
+    total_guest_pixels = FB_WIDTH_PIXELS * FB_HEIGHT_PIXELS
+    minimum_visible_pixels = (
+        total_guest_pixels * MIN_VISIBLE_PIXELS_PERCENT // 100
+    )
+    minimum_x_span = FB_WIDTH_PIXELS * MIN_VISIBLE_SPAN_PERCENT // 100
+    minimum_y_span = FB_HEIGHT_PIXELS * MIN_VISIBLE_SPAN_PERCENT // 100
+    return (
+        nonblack_pixels >= minimum_visible_pixels
+        and max_x - min_x + 1 >= minimum_x_span
+        and max_y - min_y + 1 >= minimum_y_span
+    )
+
+
+def read_monitor_prompt(monitor: socket.socket) -> bytes:
+    response = bytearray()
+    while MONITOR_PROMPT not in response:
+        chunk = monitor.recv(4096)
+        if not chunk:
+            raise OSError("QEMU monitor closed before returning its prompt")
+        response.extend(chunk)
+    return bytes(response)
 
 
 def capture_visible_fbdev_frame(path: Path) -> bool:
@@ -163,9 +231,10 @@ def capture_visible_fbdev_frame(path: Path) -> bool:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
             monitor.connect(str(MONITOR_SOCKET))
-            monitor.settimeout(5)
+            monitor.settimeout(MONITOR_TIMEOUT_SECONDS)
+            read_monitor_prompt(monitor)
             monitor.sendall(f"screendump {path}\n".encode())
-            time.sleep(2)
+            read_monitor_prompt(monitor)
     except OSError:
         return False
     return has_visible_fbdev_frame(path)
@@ -237,7 +306,7 @@ def main() -> int:
     ]
 
     boot = Boot(argv, serial_log)
-    reached = "timeout"
+    reached = BootOutcome.TIMEOUT
     visible_fbdev_frame = False
     try:
         print("[boot] waiting for U-Boot", flush=True)
@@ -253,8 +322,8 @@ def main() -> int:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
             clean = ANSI_RE.sub(b"", bytes(boot.pending))
-            if any(marker in clean for marker in PANIC_MARKERS):
-                reached = "panic"
+            if contains_panic(clean):
+                reached = BootOutcome.PANIC
                 break
             graphics_ready = (
                 display_path is not DisplayPath.VIRGL
@@ -266,28 +335,31 @@ def main() -> int:
                 and graphics_ready
                 and X11_CONNECT_OK in clean
             ):
-                reached = "desktop-up"
+                reached = BootOutcome.DESKTOP_UP
                 break
             boot._drain(1.0)
 
-        if reached == "desktop-up":
+        if reached is BootOutcome.DESKTOP_UP:
+            settle_transcript_start = len(boot.transcript)
             settle_deadline = time.monotonic() + args.settle
             while time.monotonic() < settle_deadline:
                 boot._drain(1.0)
-                clean = ANSI_RE.sub(b"", bytes(boot.transcript))
-                if any(marker in clean for marker in PANIC_MARKERS):
-                    reached = "panic-during-settle"
+                settle_output = ANSI_RE.sub(
+                    b"", bytes(boot.transcript[settle_transcript_start:])
+                )
+                if contains_panic(settle_output):
+                    reached = BootOutcome.PANIC_DURING_SETTLE
                     break
             else:
-                reached = "settled"
-            if reached == "settled" and display_path is DisplayPath.FBDEV:
+                reached = BootOutcome.SETTLED
+            if reached is BootOutcome.SETTLED and display_path is DisplayPath.FBDEV:
                 visible_fbdev_frame = capture_visible_fbdev_frame(FB_SCREENSHOT)
                 print(
                     f"[frame] {FB_SCREENSHOT}: "
                     f"{'visible' if visible_fbdev_frame else 'missing-or-black'}",
                     flush=True,
                 )
-            if args.interactive and reached == "settled":
+            if args.interactive and reached is BootOutcome.SETTLED:
                 print(
                     "[interactive] Xfce is ready in the QEMU GTK window; "
                     "press Ctrl-C to stop",
@@ -295,8 +367,16 @@ def main() -> int:
                 )
                 while boot.proc.poll() is None:
                     boot._drain(1.0)
-    except (TimeoutError, RuntimeError, KeyboardInterrupt) as error:
-        reached = "settle-error" if reached == "desktop-up" else "boot-error"
+    except KeyboardInterrupt:
+        if reached is not BootOutcome.SETTLED:
+            reached = BootOutcome.INTERRUPTED
+        print("[boot] interrupted", flush=True)
+    except (TimeoutError, RuntimeError) as error:
+        reached = (
+            BootOutcome.SETTLE_ERROR
+            if reached is BootOutcome.DESKTOP_UP
+            else BootOutcome.BOOT_ERROR
+        )
         print(f"[boot] {error}", flush=True)
     finally:
         boot.close()
@@ -328,11 +408,11 @@ def main() -> int:
     }
     for name, present in markers.items():
         print(f"  {name}: {'OK' if present else 'MISSING'}")
-    print(f"  reached: {reached}")
+    print(f"  reached: {reached.value}")
     print("\n=== serial tail ===")
     print(transcript[-5000:])
 
-    passed = reached == "settled" and all(markers.values())
+    passed = reached is BootOutcome.SETTLED and all(markers.values())
     if display_path is DisplayPath.FBDEV:
         print("XFCE_FBDEV_PASS" if passed else "XFCE_FBDEV_FAIL")
     else:
