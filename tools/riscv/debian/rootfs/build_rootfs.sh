@@ -923,6 +923,8 @@ configure_desktop() {
             "$script_directory/browser_m5_probe.html" \
             "$script_directory/browser_m5.webm.base64" "$decoded_video"
         install -m 0644 -- "$decoded_video" "$browser_directory/browser-m5.webm"
+        install -D -m 0755 -- "$script_directory/browser_m5_marionette_gate.py" \
+            "$stage/usr/lib/asterinas/browser-m5-marionette-gate"
         install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
         cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {

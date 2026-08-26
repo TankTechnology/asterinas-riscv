@@ -32,6 +32,7 @@ ready() {
     [[ -r "/proc/$browser_pid/cmdline" ]] || return 1
     command_line="$(tr '\0' ' ' <"/proc/$browser_pid/cmdline")"
     [[ "$command_line" == *" --offline "* ]] || return 1
+    [[ "$command_line" == *" --marionette "* ]] || return 1
     [[ "$command_line" == *" file:///usr/share/asterinas/browser-m5/index.html"* ]] || return 1
     window_tree="$(DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority xwininfo -root -tree 2>/dev/null)" || return 1
     [[ "${window_tree,,}" == *"asterinas offline browser m5 probe"* ]] || return 1
@@ -42,6 +43,11 @@ while ! ready; do
     sleep 1
 done
 
+content_evidence="$(/usr/lib/asterinas/browser-m5-marionette-gate --timeout 30 2>>"$CONSOLE")" ||
+    fail browser-content
+[[ "$content_evidence" == "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network=offline" ]] ||
+    fail browser-content-output
+
 emit "DEBIAN_BROWSER_M5_UDEV state=active"
 emit "DEBIAN_BROWSER_M5_LOGIND state=active"
 emit "DEBIAN_BROWSER_M5_SESSION user=asterinas tty=tty1"
@@ -49,4 +55,5 @@ emit "DEBIAN_BROWSER_M5_INPUT keyboard=evdev pointer=evdev"
 emit "DEBIAN_BROWSER_M5_XORG framebuffer=fbdev display=:0"
 emit "DEBIAN_BROWSER_M5_CLIENTS window-manager=matchbox browser=firefox-esr terminal=xterm"
 emit "DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file"
+emit "$content_evidence"
 emit "DEBIAN_BROWSER_M5_READY user=asterinas display=:0"
