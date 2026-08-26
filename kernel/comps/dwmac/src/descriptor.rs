@@ -41,7 +41,7 @@ pub enum DescriptorError {
 
 /// A 16-byte DWMAC4/5 normal DMA descriptor.
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Pod)]
 pub struct Descriptor {
     words: [u32; 4],
 }

@@ -5,6 +5,9 @@
 #![no_std]
 #![deny(unsafe_code)]
 
+#[macro_use]
+extern crate ostd_pod;
+
 macro_rules! __log_prefix {
     () => {
         "dwmac: "
@@ -17,19 +20,31 @@ use component::{ComponentInitError, init_component};
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
 #[cfg_attr(not(target_arch = "riscv64"), path = "arch/other.rs")]
 mod arch;
+#[cfg(target_arch = "riscv64")]
+mod device;
 
 pub mod descriptor;
 pub mod phy;
+pub mod queue;
 pub mod regs;
 pub mod select;
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
     #[cfg(target_arch = "riscv64")]
-    arch::initialize().map_err(|error| {
-        ostd::error!("EIC7700 platform initialization failed: {:?}", error);
-        ComponentInitError::Unknown
-    })?;
+    {
+        let Some(platform) = arch::prepare().map_err(|error| {
+            ostd::error!("EIC7700 platform initialization failed: {:?}", error);
+            ComponentInitError::Unknown
+        })?
+        else {
+            return Ok(());
+        };
+        device::register(platform).map_err(|error| {
+            ostd::error!("EIC7700 network registration failed: {:?}", error);
+            ComponentInitError::Unknown
+        })?;
+    }
     #[cfg(not(target_arch = "riscv64"))]
     arch::initialize();
     Ok(())
