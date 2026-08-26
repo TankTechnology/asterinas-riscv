@@ -40,10 +40,18 @@ fn init() -> Result<(), ComponentInitError> {
         else {
             return Ok(());
         };
-        device::register(platform).map_err(|error| {
-            ostd::error!("EIC7700 network registration failed: {:?}", error);
-            ComponentInitError::Unknown
-        })?;
+        match device::register(platform) {
+            Ok(()) => {}
+            Err(device::DeviceError::Platform(arch::PlatformError::Select(
+                select::SelectError::NoLink,
+            ))) => {
+                ostd::warn!("no linked Megrez GMAC detected; Ethernet remains unavailable");
+            }
+            Err(error) => {
+                ostd::error!("EIC7700 network registration failed: {:?}", error);
+                return Err(ComponentInitError::Unknown);
+            }
+        }
     }
     #[cfg(not(target_arch = "riscv64"))]
     arch::initialize();
