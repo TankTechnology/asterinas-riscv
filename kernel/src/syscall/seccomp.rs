@@ -5,7 +5,7 @@ use crate::{
     prelude::*,
     process::{
         credentials::capabilities::CapSet,
-        posix_thread::AsPosixThread,
+        posix_thread::{AsPosixThread, SeccompFilter},
         signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
     },
     security::lsm::hooks as lsm_hooks,
@@ -68,9 +68,9 @@ pub use crate::util::bpf::SockFilter;
 /// Returns whether the calling thread's seccomp policy blocks `syscall_number`.
 ///
 /// Strict mode rejects any syscall outside the strict allowlist. Filter mode
-/// evaluates the thread's classic-BPF program against `seccomp_data` built from
-/// `args` and `instruction_pointer`, then maps the filter's return value to an
-/// action. A thread with no policy (disabled) always allows.
+/// evaluates every program in the thread's filter chain against `seccomp_data`
+/// and selects the highest-precedence action. A thread with no policy always
+/// allows.
 pub fn check(
     ctx: &Context,
     syscall_number: u64,
@@ -90,7 +90,7 @@ pub fn check(
                 return SeccompDecision::Allow;
             };
             let data = build_seccomp_data(syscall_number, args, instruction_pointer);
-            seccomp_action_to_decision(run_filter(&filter, &data))
+            seccomp_action_to_decision(run_filter_chain(&filter, &data))
         }
         _ => SeccompDecision::Allow,
     }
@@ -132,6 +132,24 @@ fn seccomp_action_to_decision(action: u32) -> SeccompDecision {
 /// out-of-bounds instruction yields `SECCOMP_RET_KILL_THREAD` (fail secure).
 fn run_filter(prog: &[SockFilter], data: &[u8; 64]) -> u32 {
     crate::util::bpf::run_filter(prog, data, false).unwrap_or(SECCOMP_RET_KILL_THREAD)
+}
+
+/// Runs newest-to-oldest and selects the action with the smallest signed
+/// action-only value, as Linux's `seccomp_run_filters` does. Equal-precedence
+/// actions retain the newest filter's data.
+fn run_filter_chain(chain: &SeccompFilter, data: &[u8; 64]) -> u32 {
+    let mut selected = SECCOMP_RET_ALLOW;
+    let mut current = Some(chain);
+    while let Some(filter) = current {
+        let action = run_filter(filter.program(), data);
+        if ((action & SECCOMP_RET_ACTION_FULL) as i32)
+            < ((selected & SECCOMP_RET_ACTION_FULL) as i32)
+        {
+            selected = action;
+        }
+        current = filter.parent().map(Arc::as_ref);
+    }
+    selected
 }
 
 /// A `SIGSYS` signal raised by seccomp.
@@ -206,6 +224,8 @@ pub fn sys_seccomp(
             }
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
+            // TODO: Enforce Linux's MAX_INSNS_PER_PATH budget across the
+            // complete chain (including its per-node accounting overhead).
 
             // Linux permits installing a filter only after privileges have
             // been made non-increasing, or with CAP_SYS_ADMIN in the caller's
@@ -225,30 +245,35 @@ pub fn sys_seccomp(
                 );
             }
 
-            let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
+            let program: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
             let tasks = ctx.process.tasks().lock();
             let caller_no_new_privs = ctx.posix_thread.credentials().no_new_privs();
+            let caller_filter = ctx.posix_thread.seccomp_filter();
+            if ctx.posix_thread.seccomp_mode() == SECCOMP_MODE_STRICT {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "cannot install a filter after strict seccomp mode"
+                );
+            }
+            let filter = SeccompFilter::new(program, caller_filter.clone());
 
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
-                // Asterinas currently represents one filter per thread rather
-                // than Linux's filter tree.  Consequently, the subset that we
-                // can synchronize without weakening or replacing an existing
-                // policy is the initial transition from DISABLED to FILTER.
-                // Preflight every sibling before changing any of them.  On a
-                // mismatch Linux returns the offending TID and makes no
-                // changes.
-                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
-                    return_errno_with_message!(
-                        Errno::EINVAL,
-                        "seccomp filter stacking is not supported"
-                    );
-                }
+                // A sibling can catch up if its current chain is an ancestor
+                // of the caller's chain. Preflight all siblings before making
+                // any changes so a divergent tree produces no partial update.
                 if let Some(thread) = tasks
                     .as_slice()
                     .iter()
                     .map(|task| task.as_posix_thread().unwrap())
                     .filter(|thread| thread.tid() != ctx.posix_thread.tid())
-                    .find(|thread| thread.seccomp_mode() != SECCOMP_MODE_DISABLED)
+                    .find(|thread| match thread.seccomp_mode() {
+                        SECCOMP_MODE_DISABLED => false,
+                        SECCOMP_MODE_FILTER => !SeccompFilter::is_ancestor(
+                            thread.seccomp_filter().as_ref(),
+                            caller_filter.as_ref(),
+                        ),
+                        _ => true,
+                    })
                 {
                     return Ok(SyscallReturn::Return(thread.tid() as _));
                 }
@@ -268,12 +293,6 @@ pub fn sys_seccomp(
                     thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
                 }
             } else {
-                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
-                    return_errno_with_message!(
-                        Errno::EINVAL,
-                        "seccomp filter stacking is not supported"
-                    );
-                }
                 ctx.posix_thread.set_seccomp_filter(filter);
                 ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
             }

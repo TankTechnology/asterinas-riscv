@@ -54,6 +54,49 @@ pub use rseq::{
 };
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 
+/// An immutable node in a thread's seccomp filter tree.
+///
+/// Nodes are identity-bearing: installing identical BPF programs twice still
+/// creates distinct nodes, matching Linux's filter-tree ancestry semantics.
+#[derive(Debug)]
+pub struct SeccompFilter {
+    program: Arc<[SockFilter]>,
+    parent: Option<Arc<SeccompFilter>>,
+}
+
+impl SeccompFilter {
+    pub fn new(program: Arc<[SockFilter]>, parent: Option<Arc<SeccompFilter>>) -> Arc<Self> {
+        Arc::new(Self { program, parent })
+    }
+
+    pub fn program(&self) -> &[SockFilter] {
+        &self.program
+    }
+
+    pub fn parent(&self) -> Option<&Arc<SeccompFilter>> {
+        self.parent.as_ref()
+    }
+
+    /// Returns whether `ancestor` is the root of, or a node in, `descendant`.
+    /// The empty chain is the root ancestor of every chain.
+    pub fn is_ancestor(
+        ancestor: Option<&Arc<SeccompFilter>>,
+        descendant: Option<&Arc<SeccompFilter>>,
+    ) -> bool {
+        let Some(ancestor) = ancestor else {
+            return true;
+        };
+        let mut current = descendant;
+        while let Some(node) = current {
+            if Arc::ptr_eq(ancestor, node) {
+                return true;
+            }
+            current = node.parent();
+        }
+        false
+    }
+}
+
 pub struct PosixThread {
     // Immutable part
     process: Weak<Process>,
@@ -118,9 +161,9 @@ pub struct PosixThread {
     /// `2` = filter; see `crate::syscall::seccomp`).
     seccomp_mode: AtomicU32,
 
-    /// The seccomp BPF filter program, set by `seccomp(SECCOMP_SET_MODE_FILTER)`.
+    /// The immutable seccomp BPF filter chain.
     /// Only meaningful when `seccomp_mode == SECCOMP_MODE_FILTER`.
-    seccomp_filter: Mutex<Option<Arc<[SockFilter]>>>,
+    seccomp_filter: Mutex<Option<Arc<SeccompFilter>>>,
 }
 
 impl PosixThread {
@@ -379,16 +422,16 @@ impl PosixThread {
         self.seccomp_mode.store(mode, Ordering::Relaxed);
     }
 
-    /// Returns the seccomp BPF filter program, if one is installed.
-    pub fn seccomp_filter(&self) -> Option<Arc<[SockFilter]>> {
+    /// Returns the head of the seccomp filter chain, if one is installed.
+    pub fn seccomp_filter(&self) -> Option<Arc<SeccompFilter>> {
         self.seccomp_filter.lock().clone()
     }
 
-    /// Installs the seccomp BPF filter program.
+    /// Installs a new head for the seccomp filter chain.
     ///
     /// As with [`Self::set_seccomp_mode`], this is only called from `seccomp(2)`
     /// and is irreversible for the lifetime of the thread.
-    pub fn set_seccomp_filter(&self, filter: Arc<[SockFilter]>) {
+    pub fn set_seccomp_filter(&self, filter: Arc<SeccompFilter>) {
         *self.seccomp_filter.lock() = Some(filter);
     }
 }
