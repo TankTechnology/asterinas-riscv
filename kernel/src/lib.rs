@@ -31,6 +31,7 @@ extern crate getset;
 extern crate ostd_pod;
 
 // Keep inventory-only driver components linked until they expose a kernel API.
+use aster_dwmac as _;
 use aster_mmc as _;
 use aster_usb as _;
 

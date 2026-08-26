@@ -159,6 +159,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-dwmac"
+version = "0.1.0"
+dependencies = [
+ "component",
+ "ostd",
+]
+
+[[package]]
 name = "aster-framebuffer"
 version = "0.1.0"
 dependencies = [
@@ -217,6 +225,7 @@ dependencies = [
  "aster-block",
  "aster-cmdline",
  "aster-console",
+ "aster-dwmac",
  "aster-framebuffer",
  "aster-fuse",
  "aster-i8042",
