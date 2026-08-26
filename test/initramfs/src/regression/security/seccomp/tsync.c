@@ -207,6 +207,40 @@ static int test_strict_cannot_replace_filter(void)
 	return syscall(SYS_getpid) == -1 && errno == BLOCK_ERRNO ? 0 : 1;
 }
 
+#ifdef __asterinas__
+/*
+ * Asterinas currently models one filter per thread.  Until filter trees are
+ * implemented, reject stacking rather than replacing (and potentially
+ * weakening) the policy already in force.
+ */
+static int test_filter_stacking_is_rejected_atomically(void)
+{
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	errno = 0;
+	if (install_errno_filter(SYS_getppid, 0) != -1 || errno != EINVAL)
+		return 1;
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		return 1;
+	return syscall(SYS_getppid) > 0 ? 0 : 1;
+}
+
+static int test_tsync_stacking_is_rejected(void)
+{
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	errno = 0;
+	if (install_errno_filter(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC) != -1 ||
+	    errno != EINVAL)
+		return 1;
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		return 1;
+	return syscall(SYS_getppid) > 0 ? 0 : 1;
+}
+#endif
+
 int main(void)
 {
 	int failures = 0;
@@ -218,6 +252,12 @@ int main(void)
 				 "clone inherits filter");
 	failures += run_isolated(test_strict_cannot_replace_filter,
 				 "strict cannot replace filter");
+#ifdef __asterinas__
+	failures += run_isolated(test_filter_stacking_is_rejected_atomically,
+				 "filter stacking atomic rejection");
+	failures += run_isolated(test_tsync_stacking_is_rejected,
+				 "TSYNC stacking rejection");
+#endif
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
