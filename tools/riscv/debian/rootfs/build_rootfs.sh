@@ -9,6 +9,7 @@ readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
+readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SUPPORTED_SUITE="trixie"
@@ -152,7 +153,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -174,6 +175,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     fi
 }
 
@@ -673,6 +676,9 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-m5-network ]]; then
+        configure_desktop "$stage" m4
+        configure_desktop_m5_network "$stage"
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -689,6 +695,35 @@ EOF
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+configure_desktop_m5_network() {
+    local stage="$1"
+    local script_directory
+    local service_name="asterinas-desktop-m5-network"
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m5_network_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
+    cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M5 wired-network evidence
+After=asterinas-desktop-m4-evidence.service
+Wants=asterinas-desktop-m4-evidence.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
+    ln -s -- \
+        "../$service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 }
 
 configure_desktop() {
