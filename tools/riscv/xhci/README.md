@@ -1,14 +1,15 @@
-# RISC-V PCI xHCI keyboard gate
+# RISC-V PCI xHCI keyboard and mouse gate
 
 This gate proves one narrow input path on QEMU `virt`:
 
 ```text
-PCI qemu-xhci -> DT-routed INTx -> CrabUSB -> USB HID boot keyboard
-    -> Asterinas input core -> evdev -> guest /init
+PCI qemu-xhci -> DT-routed INTx -> CrabUSB -> USB HID boot keyboard + mouse
+    -> shared Asterinas input worker -> evdev -> guest /init
 ```
 
 The accepted configuration is RISC-V Sv39 with `smp=4`, one Red Hat
-`1b36:000d` PCI xHCI controller, and one QEMU `0627:0001` USB keyboard.
+`1b36:000d` PCI xHCI controller, one QEMU `0627:0001` USB keyboard, and one
+QEMU `0627:0001` USB mouse.
 The QEMU device has MSI and MSI-X disabled explicitly. The gate does not allow a
 VirtIO or i8042 keyboard fallback and starts QEMU with `-nic none`.
 
@@ -38,14 +39,17 @@ make test_riscv_xhci_input_unit
 ```
 
 The builder creates a deterministic raw `newc` archive containing only `.` and
-an executable static RISC-V `/init`. The guest accepts exactly one
-`BUS_USB` keyboard named `usb_boot_keyboard`. It waits for delayed device
-registration, then requires this exact event sequence:
+an executable static RISC-V `/init`. The guest accepts exactly one `BUS_USB`
+keyboard named `usb_boot_keyboard` and one `BUS_USB` relative pointer named
+`usb_boot_mouse`. It waits for delayed device registration, then requires this
+exact event sequence:
 
 1. `KEY_A` press and `SYN_REPORT`;
 2. `KEY_A` release and `SYN_REPORT`;
 3. `KEY_1` press and `SYN_REPORT`;
 4. `KEY_1` release and `SYN_REPORT`.
+5. `REL_X=17`, `REL_Y=-9`, and `SYN_REPORT`;
+6. `BTN_LEFT` press/release, each followed by `SYN_REPORT`.
 
 ## Build and prepare
 
@@ -91,8 +95,10 @@ Success requires all of the following current-run evidence, in order:
 
 - PCI `0000:00:01.0 1b36:000d`, DT interrupt parent 9, interrupt 33;
 - USB `0627:0001`, bus `usb`, name `usb_boot_keyboard`;
-- guest READY, the eight exact evdev records, then PASS;
-- no panic marker, no alternative keyboard device, and complete process-group
+- USB `0627:0001`, bus `usb`, name `usb_boot_mouse`;
+- both guest READY records, eight exact keyboard records and PASS, then seven
+  exact pointer records and PASS;
+- no panic marker, no alternative input device, and complete process-group
   cleanup.
 
 The gate snapshots all inputs without following symlinks, bounds serial and HMP
@@ -117,9 +123,10 @@ worktree that performed the run.
 
 ## Scope boundary
 
-This M1 proves cold-boot enumeration and deterministic key delivery for one
-QEMU PCI xHCI controller and one HID boot keyboard. It does **not** prove USB
-hotplug, hubs, multiple keyboards, HID report protocol, key repeat, keyboard
-LEDs, TTY/Xorg integration, physical Megrez xHCI, MSI/MSI-X, or arbitrary xHCI
-hardware. Physical-board work must separately validate clocks, resets, PHY,
-cache coherency, DMA windows, and the board's real interrupt topology.
+The current gate proves cold-boot enumeration and deterministic key and pointer
+delivery for one QEMU PCI xHCI controller, one HID boot keyboard, and one HID
+boot mouse. It does **not** prove USB hotplug, hubs, multiple devices per kind,
+HID report protocol, key repeat, keyboard LEDs, physical Megrez xHCI,
+MSI/MSI-X, or arbitrary xHCI hardware. Physical-board work must separately
+validate clocks, resets, PHY, cache coherency, DMA windows, interrupt topology,
+and Xorg pointer behavior.
