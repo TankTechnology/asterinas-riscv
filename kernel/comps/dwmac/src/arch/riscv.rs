@@ -8,11 +8,11 @@ use ostd::{
     io::IoMem,
     mm::io::VmIoOnce,
 };
-use spin::Once;
 
 use crate::{
-    phy::{Deadline, MdioBus, MdioError},
+    phy::{Deadline, LinkState, MdioBus, MdioError},
     regs::{MAC_MDIO_ADDRESS, MAC_MDIO_DATA, MAC_VERSION},
+    select::{MonotonicClock, PortCandidate, SelectError, select_linked_port},
 };
 
 const COMPATIBLE: &[u8] = b"eswin,win2030-qos-eth\0";
@@ -57,8 +57,6 @@ const MDIO_REGISTER_SHIFT: u32 = 16;
 const MDIO_PHY_SHIFT: u32 = 21;
 const PHY_ID1: u8 = 2;
 const PHY_ID2: u8 = 3;
-
-static PLATFORM: Once<MegrezPlatform> = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PortFields {
@@ -130,6 +128,7 @@ pub(super) enum PlatformError {
     UnsupportedController,
     InvalidPhy,
     Mdio(MdioError),
+    Select(SelectError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -611,32 +610,27 @@ impl PlatformRegisters for MmioRegisters {
     }
 }
 
-fn validate_controllers(registers: &mut dyn PlatformRegisters) -> Result<(), PlatformError> {
+fn validate_controllers(registers: &mut dyn PlatformRegisters) -> Result<[u8; 2], PlatformError> {
+    let mut versions = [0; 2];
     for alias in [0, 1] {
         let version =
             registers.read(RegisterBank::Gmac(alias), MAC_VERSION.offset() as usize)? as u8;
         if !(GMAC4_MIN_VERSION..=GMAC5_MAX_VERSION).contains(&version) {
             return Err(PlatformError::UnsupportedController);
         }
+        versions[usize::from(alias)] = version;
     }
-    Ok(())
+    Ok(versions)
 }
 
 fn now_nanoseconds() -> u64 {
     u64::try_from(aster_time::read_monotonic_time().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn wait_mdio_idle(
-    registers: &mut dyn PlatformRegisters,
-    alias_index: u8,
-    deadline: Deadline,
-) -> Result<(), MdioError> {
+fn wait_mdio_idle(mmio: &IoMem, deadline: Deadline) -> Result<(), MdioError> {
     loop {
-        let address = registers
-            .read(
-                RegisterBank::Gmac(alias_index),
-                MAC_MDIO_ADDRESS.offset() as usize,
-            )
+        let address: u32 = mmio
+            .read_once(MAC_MDIO_ADDRESS.offset() as usize)
             .map_err(|_| MdioError::BusFault)?;
         if address & MDIO_BUSY == 0 {
             return Ok(());
@@ -649,8 +643,7 @@ fn wait_mdio_idle(
 }
 
 struct PortMdio<'a> {
-    alias_index: u8,
-    registers: &'a mut dyn PlatformRegisters,
+    mmio: &'a IoMem,
 }
 
 impl MdioBus for PortMdio<'_> {
@@ -663,32 +656,21 @@ impl MdioBus for PortMdio<'_> {
         if phy_address > 31 || register > 31 {
             return Err(MdioError::InvalidAddress);
         }
-        wait_mdio_idle(self.registers, self.alias_index, deadline)?;
-        self.registers
-            .write(
-                RegisterBank::Gmac(self.alias_index),
-                MAC_MDIO_DATA.offset() as usize,
-                0,
-            )
+        wait_mdio_idle(self.mmio, deadline)?;
+        self.mmio
+            .write_once(MAC_MDIO_DATA.offset() as usize, &0u32)
             .map_err(|_| MdioError::BusFault)?;
         let command = (u32::from(phy_address) << MDIO_PHY_SHIFT)
             | (u32::from(register) << MDIO_REGISTER_SHIFT)
             | MDIO_CLOCK_150_250MHZ
             | MDIO_READ
             | MDIO_BUSY;
-        self.registers
-            .write(
-                RegisterBank::Gmac(self.alias_index),
-                MAC_MDIO_ADDRESS.offset() as usize,
-                command,
-            )
+        self.mmio
+            .write_once(MAC_MDIO_ADDRESS.offset() as usize, &command)
             .map_err(|_| MdioError::BusFault)?;
-        wait_mdio_idle(self.registers, self.alias_index, deadline)?;
-        self.registers
-            .read(
-                RegisterBank::Gmac(self.alias_index),
-                MAC_MDIO_DATA.offset() as usize,
-            )
+        wait_mdio_idle(self.mmio, deadline)?;
+        self.mmio
+            .read_once::<u32>(MAC_MDIO_DATA.offset() as usize)
             .map(|value| value as u16)
             .map_err(|_| MdioError::BusFault)
     }
@@ -703,45 +685,110 @@ impl MdioBus for PortMdio<'_> {
         if phy_address > 31 || register > 31 {
             return Err(MdioError::InvalidAddress);
         }
-        wait_mdio_idle(self.registers, self.alias_index, deadline)?;
-        self.registers
-            .write(
-                RegisterBank::Gmac(self.alias_index),
-                MAC_MDIO_DATA.offset() as usize,
-                u32::from(value),
-            )
+        wait_mdio_idle(self.mmio, deadline)?;
+        self.mmio
+            .write_once(MAC_MDIO_DATA.offset() as usize, &u32::from(value))
             .map_err(|_| MdioError::BusFault)?;
         let command = (u32::from(phy_address) << MDIO_PHY_SHIFT)
             | (u32::from(register) << MDIO_REGISTER_SHIFT)
             | MDIO_CLOCK_150_250MHZ
             | MDIO_WRITE
             | MDIO_BUSY;
-        self.registers
-            .write(
-                RegisterBank::Gmac(self.alias_index),
-                MAC_MDIO_ADDRESS.offset() as usize,
-                command,
-            )
+        self.mmio
+            .write_once(MAC_MDIO_ADDRESS.offset() as usize, &command)
             .map_err(|_| MdioError::BusFault)?;
-        wait_mdio_idle(self.registers, self.alias_index, deadline)
+        wait_mdio_idle(self.mmio, deadline)
     }
 }
 
-struct MegrezPlatform {
-    configs: [PlatformConfig; 2],
-    registers: MmioRegisters,
+struct PlatformClock;
+
+impl MonotonicClock for PlatformClock {
+    fn now_nanoseconds(&self) -> u64 {
+        now_nanoseconds()
+    }
+
+    fn wait_until(&mut self, target_nanoseconds: u64) {
+        while now_nanoseconds() < target_nanoseconds {
+            spin_loop();
+        }
+    }
 }
 
-pub(super) fn initialize() -> Result<(), PlatformError> {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SelectedPortInfo {
+    pub alias_index: u8,
+    pub version: u8,
+    pub interrupt_source: InterruptSourceInFdt,
+    pub mac_address: [u8; 6],
+    pub link_state: LinkState,
+}
+
+pub(super) struct MegrezPlatform {
+    configs: [PlatformConfig; 2],
+    registers: MmioRegisters,
+    versions: [u8; 2],
+}
+
+impl MegrezPlatform {
+    pub fn select_linked(&mut self) -> Result<SelectedPortInfo, PlatformError> {
+        let [gmac0, gmac1] = &self.registers.gmac;
+        let mut mdio0 = PortMdio { mmio: gmac0 };
+        let mut mdio1 = PortMdio { mmio: gmac1 };
+        let mut candidates = [
+            PortCandidate::new(0, self.configs[0].phy_address, &mut mdio0),
+            PortCandidate::new(1, self.configs[1].phy_address, &mut mdio1),
+        ];
+        let selected =
+            select_linked_port(&mut candidates, &mut PlatformClock, Duration::from_secs(3))
+                .map_err(PlatformError::Select)?;
+        let alias = usize::from(selected.alias_index());
+        let speed = LinkSpeed::from_mbps(selected.link_state().speed_mbps())
+            .ok_or(PlatformError::InvalidPhy)?;
+        program_platform(&mut self.registers, &self.configs[alias], speed)?;
+        Ok(SelectedPortInfo {
+            alias_index: selected.alias_index(),
+            version: self.versions[alias],
+            interrupt_source: self.configs[alias].interrupt_source(),
+            mac_address: self.configs[alias].mac_address,
+            link_state: selected.link_state(),
+        })
+    }
+
+    pub fn read_gmac(&self, alias_index: u8, offset: usize) -> Result<u32, PlatformError> {
+        self.registers
+            .gmac
+            .get(usize::from(alias_index))
+            .ok_or(PlatformError::RegisterAccess)?
+            .read_once(offset)
+            .map_err(|_| PlatformError::RegisterAccess)
+    }
+
+    pub fn write_gmac(
+        &self,
+        alias_index: u8,
+        offset: usize,
+        value: u32,
+    ) -> Result<(), PlatformError> {
+        self.registers
+            .gmac
+            .get(usize::from(alias_index))
+            .ok_or(PlatformError::RegisterAccess)?
+            .write_once(offset, &value)
+            .map_err(|_| PlatformError::RegisterAccess)
+    }
+}
+
+pub(super) fn prepare() -> Result<Option<MegrezPlatform>, PlatformError> {
     let Some(configs) = discover_configs()? else {
-        return Ok(());
+        return Ok(None);
     };
     let mut registers = MmioRegisters::acquire(&configs)?;
     let initial_speed = LinkSpeed::from_mbps(1000).unwrap();
     for config in &configs {
         program_platform(&mut registers, config, initial_speed)?;
     }
-    validate_controllers(&mut registers)?;
+    let versions = validate_controllers(&mut registers)?;
     for config in &configs {
         let interrupt_source = config.interrupt_source();
         let deadline = Deadline::from_nanoseconds(
@@ -750,8 +797,7 @@ pub(super) fn initialize() -> Result<(), PlatformError> {
                 .ok_or(PlatformError::Mdio(MdioError::TimedOut))?,
         );
         let mut mdio = PortMdio {
-            alias_index: config.alias_index,
-            registers: &mut registers,
+            mmio: &registers.gmac[usize::from(config.alias_index)],
         };
         let id1 = mdio
             .read(config.phy_address, PHY_ID1, deadline)
@@ -773,10 +819,13 @@ pub(super) fn initialize() -> Result<(), PlatformError> {
             id2,
         );
     }
-    let platform = MegrezPlatform { configs, registers };
+    let platform = MegrezPlatform {
+        configs,
+        registers,
+        versions,
+    };
     debug_assert_eq!(platform.configs.len(), platform.registers.gmac.len());
-    PLATFORM.call_once(|| platform);
-    Ok(())
+    Ok(Some(platform))
 }
 
 #[cfg(ktest)]
