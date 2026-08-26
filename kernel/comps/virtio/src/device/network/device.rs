@@ -147,8 +147,10 @@ impl NetworkDevice {
 
         aster_network::register_device(
             super::DEVICE_NAME.to_string(),
+            true,
             Arc::new(SpinLock::new(device)),
-        );
+        )
+        .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
         Ok(())
     }
 
