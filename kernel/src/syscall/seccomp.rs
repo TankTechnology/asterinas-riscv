@@ -224,8 +224,6 @@ pub fn sys_seccomp(
             }
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
-            // TODO: Enforce Linux's MAX_INSNS_PER_PATH budget across the
-            // complete chain (including its per-node accounting overhead).
 
             // Linux permits installing a filter only after privileges have
             // been made non-increasing, or with CAP_SYS_ADMIN in the caller's
@@ -255,7 +253,12 @@ pub fn sys_seccomp(
                     "cannot install a filter after strict seccomp mode"
                 );
             }
-            let filter = SeccompFilter::new(program, caller_filter.clone());
+            let Some(filter) = SeccompFilter::try_new(program, caller_filter.clone()) else {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "seccomp filter chain exceeds MAX_INSNS_PER_PATH"
+                );
+            };
 
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 // A sibling can catch up if its current chain is an ancestor
