@@ -182,6 +182,12 @@ pub fn sys_seccomp(
             }
             // Serialize seccomp policy changes with TSYNC's preflight/commit.
             let tasks = ctx.process.tasks().lock();
+            if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "cannot replace an existing seccomp policy with strict mode"
+                );
+            }
             ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_STRICT);
             drop(tasks);
             Ok(SyscallReturn::Return(0))
@@ -199,7 +205,7 @@ pub fn sys_seccomp(
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
 
-            let filter = Arc::from(filters.into_boxed_slice());
+            let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
             let tasks = ctx.process.tasks().lock();
 
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
@@ -210,10 +216,17 @@ pub fn sys_seccomp(
                 // Preflight every sibling before changing any of them.  On a
                 // mismatch Linux returns the offending TID and makes no
                 // changes.
+                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "seccomp filter stacking is not supported"
+                    );
+                }
                 if let Some(thread) = tasks
                     .as_slice()
                     .iter()
                     .map(|task| task.as_posix_thread().unwrap())
+                    .filter(|thread| thread.tid() != ctx.posix_thread.tid())
                     .find(|thread| thread.seccomp_mode() != SECCOMP_MODE_DISABLED)
                 {
                     return Ok(SyscallReturn::Return(thread.tid() as _));
@@ -231,6 +244,12 @@ pub fn sys_seccomp(
                     thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
                 }
             } else {
+                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "seccomp filter stacking is not supported"
+                    );
+                }
                 ctx.posix_thread.set_seccomp_filter(filter);
                 ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
             }
