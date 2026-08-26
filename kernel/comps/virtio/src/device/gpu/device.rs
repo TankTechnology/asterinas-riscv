@@ -74,9 +74,12 @@ pub struct GpuDevice {
     framebuffer: Arc<DmaStream>,
     scanout_width: u32,
     scanout_height: u32,
-    /// Resource id of the most recent framebuffer presented via
-    /// [`present_framebuffer`], tracked so it can be unref'd before the next one.
-    present_resource: SpinLock<Option<u32>>,
+    /// Most recent 2D scanout: resource id, backing address/size, and geometry.
+    ///
+    /// Repeated dirty updates reuse this resource. Recreating it for every
+    /// update briefly detaches the active QEMU scanout and can leave the GTK
+    /// display reporting that its output is inactive.
+    present_resource: SpinLock<Option<(u32, u64, u32, u32, u32)>>,
     /// Resource id of the most recent cursor presented via [`present_cursor`].
     cursor_resource: SpinLock<Option<u32>>,
     /// Next resource id handed out by [`present_framebuffer`] / [`present_cursor`].
@@ -177,8 +180,8 @@ impl GpuDevice {
     /// Runs the full 2D pipeline for a caller-provided framebuffer: create a
     /// resource, attach `addr`/`size` of guest memory as its backing store, set
     /// it as scanout 0, transfer the pixels to the host, and flush. Any
-    /// previously presented resource is unref'd first so repeated present calls
-    /// (e.g. page flips or mode switches) do not leak resources.
+    /// previously presented resource is unref'd after the replacement becomes
+    /// active so repeated presents neither leak resources nor detach scanout 0.
     pub fn present_framebuffer(
         &self,
         addr: u64,
@@ -186,26 +189,35 @@ impl GpuDevice {
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
-        if let Some(prev) = *self.present_resource.lock() {
-            // Best-effort cleanup: a stale resource id must not wedge a later present.
-            let _ = self.resource_unref(prev);
-        }
-
-        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
-        self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
-        self.attach_backing(resource_id, addr, size)?;
-
         let r = VirtioGpuRect {
             x: 0,
             y: 0,
             width,
             height,
         };
-        self.set_scanout(SCANOUT_ID, resource_id, r)?;
+
+        let previous = *self.present_resource.lock();
+        if let Some((resource_id, old_addr, old_size, old_width, old_height)) = previous
+            && (old_addr, old_size, old_width, old_height) == (addr, size, width, height)
+        {
+            self.transfer_to_host_2d(resource_id, r, 0)?;
+            self.flush(resource_id, r)?;
+            return Ok(());
+        }
+
+        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
+        self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
+        self.attach_backing(resource_id, addr, size)?;
         self.transfer_to_host_2d(resource_id, r, 0)?;
+        self.set_scanout(SCANOUT_ID, resource_id, r)?;
         self.flush(resource_id, r)?;
 
-        *self.present_resource.lock() = Some(resource_id);
+        *self.present_resource.lock() = Some((resource_id, addr, size, width, height));
+        if let Some((previous_resource, ..)) = previous {
+            // Switch scanout first, then release the old resource so scanout 0
+            // is never transiently detached.
+            let _ = self.resource_unref(previous_resource);
+        }
         Ok(())
     }
 
