@@ -16,7 +16,7 @@
 
 use core::fmt::Display;
 
-use super::{DriHandle, DumbBuffer, GemObject};
+use super::{DriHandle, DumbBuffer, GpuManager};
 use crate::{
     events::IoEvents,
     fs::{
@@ -33,25 +33,50 @@ use crate::{
 
 /// A dma-buf file wrapping an exported GEM/dumb buffer.
 pub(super) struct DmaBufFile {
+    /// Keeps the exporting device and GEM object alive until the fd closes.
+    gpu_manager: Arc<GpuManager>,
+    object_id: u32,
     /// The shared dumb-buffer pool the buffer is carved out of.
     pool: Arc<Vmo>,
     /// The buffer's sub-range within `pool`.
     buffer: DumbBuffer,
+    access_mode: AccessMode,
     common: FileCommon,
 }
 
 impl DmaBufFile {
-    fn new(pool: Arc<Vmo>, buffer: DumbBuffer) -> Self {
+    fn new(
+        gpu_manager: Arc<GpuManager>,
+        object_id: u32,
+        pool: Arc<Vmo>,
+        buffer: DumbBuffer,
+        access_mode: AccessMode,
+    ) -> Self {
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:dmabuf".to_string());
         Self {
+            gpu_manager,
+            object_id,
             pool,
             buffer,
+            access_mode,
             common: FileCommon::new(pseudo_path, StatusFlags::empty()),
         }
     }
 
     fn buffer(&self) -> DumbBuffer {
         self.buffer
+    }
+}
+
+impl Drop for DmaBufFile {
+    fn drop(&mut self) {
+        if let Err(error) = self.gpu_manager.release_gem_object(self.object_id) {
+            ostd::warn!(
+                "cannot release GEM object {} after dma-buf close: {:?}",
+                self.object_id,
+                error
+            );
+        }
     }
 }
 
@@ -65,7 +90,7 @@ impl Pollable for DmaBufFile {
 
 impl FileLike for DmaBufFile {
     fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDWR
+        self.access_mode
     }
 
     fn common(&self) -> &FileCommon {
@@ -77,9 +102,11 @@ impl FileLike for DmaBufFile {
             .buffer
             .mapped_range()
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "dma-buf mapping range overflows"))?;
-        Ok(Mappable::VmoRanges {
+        let size = range.end - range.start;
+        Ok(Mappable::VmoWindow {
             vmo: self.pool.clone(),
-            ranges: vec![range],
+            vmo_offset: range.start,
+            size,
         })
     }
 
@@ -115,6 +142,12 @@ pub(super) fn handle_to_fd(
     gem_handle: u32,
     flags: u32,
 ) -> Result<(Arc<DmaBufFile>, FdFlags)> {
+    const DRM_CLOEXEC: u32 = CreationFlags::O_CLOEXEC.bits();
+    const DRM_RDWR: u32 = AccessMode::O_RDWR as u32;
+
+    if flags & !(DRM_CLOEXEC | DRM_RDWR) != 0 {
+        return_errno_with_message!(Errno::EINVAL, "unsupported PRIME export flags");
+    }
     let inner = handle.inner.lock();
     let object_id = *inner
         .handles
@@ -122,18 +155,22 @@ pub(super) fn handle_to_fd(
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
     drop(inner);
 
-    let guard = handle.gpu_manager.gem_objects.lock();
-    let obj = guard
-        .get(&object_id)
-        .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
-    let buffer = obj.buffer;
-    drop(guard);
-
     let pool = handle.gpu_manager.ensure_pool()?;
-    let file = Arc::new(DmaBufFile::new(pool, buffer));
+    let buffer = handle.gpu_manager.retain_gem_object(object_id)?;
+    let access_mode = if flags & DRM_RDWR != 0 {
+        AccessMode::O_RDWR
+    } else {
+        AccessMode::O_RDONLY
+    };
+    let file = Arc::new(DmaBufFile::new(
+        handle.gpu_manager.clone(),
+        object_id,
+        pool,
+        buffer,
+        access_mode,
+    ));
 
-    // `DRM_CLOEXEC` is the only supported export flag.
-    let fd_flags = if flags & CreationFlags::O_CLOEXEC.bits() != 0 {
+    let fd_flags = if flags & DRM_CLOEXEC != 0 {
         FdFlags::CLOEXEC
     } else {
         FdFlags::empty()
@@ -145,23 +182,12 @@ pub(super) fn handle_to_fd(
 ///
 /// Returns the new handle (and the buffer size, for completeness).
 pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<(u32, u64)> {
+    if !Arc::ptr_eq(&handle.gpu_manager, &file.gpu_manager) {
+        return_errno_with_message!(Errno::EXDEV, "dma-buf belongs to another DRM device");
+    }
     let buffer = file.buffer();
-
-    // Register a fresh GEM object backed by the same pool sub-range.
-    let object_id = handle
-        .gpu_manager
-        .next_gem_id
-        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    let gem_obj = GemObject {
-        name: core::sync::atomic::AtomicU32::new(0),
-        ref_count: core::sync::atomic::AtomicU32::new(1),
-        buffer,
-    };
-    handle
-        .gpu_manager
-        .gem_objects
-        .lock()
-        .insert(object_id, Arc::new(gem_obj));
+    let object_id = file.object_id;
+    handle.gpu_manager.retain_gem_object(object_id)?;
 
     let mut inner = handle.inner.lock();
     let gem_handle = inner.next_handle;
@@ -173,8 +199,5 @@ pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<(u32
 
 /// Rolls back a just-created dma-buf import that was not published to userspace.
 pub(super) fn rollback_fd_to_handle(handle: &DriHandle, gem_handle: u32) {
-    let object_id = handle.inner.lock().handles.remove(&gem_handle);
-    if let Some(object_id) = object_id {
-        handle.gpu_manager.gem_objects.lock().remove(&object_id);
-    }
+    super::gem::rollback_handle(handle, gem_handle);
 }

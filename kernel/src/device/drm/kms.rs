@@ -103,6 +103,7 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
         }
         object_id
     };
+    handle.gpu_manager.retain_gem_object(object_id)?;
 
     let mut inner = handle.inner.lock();
     let fb_id = inner.next_fb_id;
@@ -190,6 +191,7 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
         }
         object_id
     };
+    handle.gpu_manager.retain_gem_object(object_id)?;
 
     let mut inner = handle.inner.lock();
     let fb_id = inner.next_fb_id;
@@ -210,13 +212,34 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
 
 /// RMFB: unregister a framebuffer.
 pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
-    let mut inner = handle.inner.lock();
-    if inner.framebuffers.remove(&fb_id).is_none() {
-        return_errno_with_message!(Errno::EINVAL, "unknown framebuffer id");
+    let _kms_operation = handle.kms_operation.lock();
+    let (framebuffer, was_active) = {
+        let inner = handle.inner.lock();
+        let framebuffer = *inner
+            .framebuffers
+            .get(&fb_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+        let was_active = inner.current_fb_id == Some(fb_id);
+        (framebuffer, was_active)
+    };
+
+    if was_active {
+        handle
+            .gpu_manager
+            .gpu
+            .disable_scanout()
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
     }
-    if inner.current_fb_id == Some(fb_id) {
+
+    let mut inner = handle.inner.lock();
+    inner.framebuffers.remove(&fb_id);
+    if was_active {
         inner.current_fb_id = None;
     }
+    drop(inner);
+    handle
+        .gpu_manager
+        .release_gem_object(framebuffer.object_id)?;
     Ok(())
 }
 
@@ -226,6 +249,7 @@ pub(super) fn set_crtc(handle: &super::DriHandle, req: &DrmModeCrtc) -> Result<(
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
     if req.fb_id == 0 {
+        let _kms_operation = handle.kms_operation.lock();
         handle
             .gpu_manager
             .gpu
@@ -239,6 +263,7 @@ pub(super) fn set_crtc(handle: &super::DriHandle, req: &DrmModeCrtc) -> Result<(
 
 /// Presents a framebuffer on the scanout, copying its pixels to the host.
 pub(super) fn present_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
+    let _kms_operation = handle.kms_operation.lock();
     let (addr, size, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
@@ -286,12 +311,19 @@ pub(super) fn get_crtc(
     if req.crtc_id != CRTC_ID {
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
-    let inner = handle.inner.lock();
+    let (fb_id, current_width, current_height) = {
+        let inner = handle.inner.lock();
+        (
+            inner.current_fb_id,
+            inner.current_width,
+            inner.current_height,
+        )
+    };
     cmd.write(&DrmModeCrtc {
         crtc_id: CRTC_ID,
-        fb_id: inner.current_fb_id.unwrap_or(0),
-        mode_valid: u32::from(inner.current_fb_id.is_some()),
-        mode: build_mode(inner.current_width, inner.current_height),
+        fb_id: fb_id.unwrap_or(0),
+        mode_valid: u32::from(fb_id.is_some()),
+        mode: build_mode(current_width, current_height),
         ..Default::default()
     })?;
     Ok(0)

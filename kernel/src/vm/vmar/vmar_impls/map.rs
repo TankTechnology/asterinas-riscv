@@ -358,7 +358,7 @@ impl<'a> VmarMapOptions<'a> {
             VmarMapOffset::Any => inner.alloc_free_region(map_size, align)?.start,
         };
 
-        let mut map_vmo = |vmo: Arc<Vmo>| -> Result<MappedMemory> {
+        let mut map_vmo = |vmo: Arc<Vmo>, mapped_offset: usize| -> Result<MappedMemory> {
             // For inode-backed files the mapped VMO must be the inode's page
             // cache. Special files may map standalone VMOs.
             if let Some(ref path) = path
@@ -380,19 +380,35 @@ impl<'a> VmarMapOptions<'a> {
 
             Ok(MappedMemory::Vmo(MappedVmo::new(
                 vmo,
-                vmo_offset,
+                mapped_offset,
                 is_writable_tracked,
             )?))
         };
 
         // Parse the `Mappable` and prepare the `MappedMemory`.
         let (mapped_mem, io_mem) = match mappable {
-            Some(Mappable::Vmo(vmo)) => (map_vmo(vmo)?, None),
+            Some(Mappable::Vmo(vmo)) => (map_vmo(vmo, vmo_offset)?, None),
             Some(Mappable::VmoRanges { vmo, ranges }) => {
                 if !is_mmap_range_authorized(&ranges, vmo_offset, map_size) {
                     return_errno_with_message!(Errno::EACCES, "mmap range is not authorized");
                 }
-                (map_vmo(vmo)?, None)
+                (map_vmo(vmo, vmo_offset)?, None)
+            }
+            Some(Mappable::VmoWindow {
+                vmo,
+                vmo_offset: window_offset,
+                size,
+            }) => {
+                let end = vmo_offset
+                    .checked_add(map_size)
+                    .ok_or_else(|| Error::with_message(Errno::EACCES, "mmap range overflows"))?;
+                if end > size {
+                    return_errno_with_message!(Errno::EACCES, "mmap range is not authorized");
+                }
+                let mapped_offset = window_offset
+                    .checked_add(vmo_offset)
+                    .ok_or_else(|| Error::with_message(Errno::EACCES, "VMO offset overflows"))?;
+                (map_vmo(vmo, mapped_offset)?, None)
             }
             Some(Mappable::IoMem(io_mem)) => (MappedMemory::Device, Some(io_mem)),
             None => (MappedMemory::Anonymous, None),

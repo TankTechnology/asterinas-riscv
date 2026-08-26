@@ -234,20 +234,25 @@ pub(super) fn virtgpu_resource_create(
     // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
     let mut new_gem_handle: Option<u32> = None;
     let mut new_allocation: Option<(usize, usize)> = None;
+    let retained_backing_object: u32;
     let backing = if req.bo_handle != 0 {
         let inner = handle.inner.lock();
         let object_id = *inner
             .handles
             .get(&req.bo_handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-        let guard = handle.gpu_manager.gem_objects.lock();
-        let obj = guard
-            .get(&object_id)
-            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        drop(inner);
         let base = handle.gpu_manager.pool_paddr()?;
-        let size = u32::try_from(obj.buffer.size)
-            .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
-        Some((object_id, base + obj.buffer.offset, size))
+        let buffer = handle.gpu_manager.retain_gem_object(object_id)?;
+        retained_backing_object = object_id;
+        let size = match u32::try_from(buffer.size) {
+            Ok(size) => size,
+            Err(_) => {
+                let _ = handle.gpu_manager.release_gem_object(object_id);
+                return_errno_with_message!(Errno::EINVAL, "GEM backing is too large");
+            }
+        };
+        Some((object_id, base + buffer.offset, size))
     } else {
         // Allocate a dumb buffer from the shared pool to back this resource.
         let bpp = 32;
@@ -282,7 +287,9 @@ pub(super) fn virtgpu_resource_create(
             .fetch_add(1, Ordering::Relaxed);
         let gem_obj = GemObject {
             name: AtomicU32::new(0),
-            ref_count: AtomicU32::new(1),
+            // One reference belongs to the handle published below; the other
+            // pins the object until this host-resource transaction finishes.
+            ref_count: AtomicU32::new(2),
             buffer: DumbBuffer {
                 offset,
                 size,
@@ -302,6 +309,7 @@ pub(super) fn virtgpu_resource_create(
         inner.next_handle += 1;
         inner.handles.insert(gem_handle, object_id);
         new_gem_handle = Some(gem_handle);
+        retained_backing_object = object_id;
 
         let base = handle.gpu_manager.pool_paddr()?;
         Some((object_id, base + offset, size as u32))
@@ -315,6 +323,9 @@ pub(super) fn virtgpu_resource_create(
             .lock()
             .contains_key(&object_id)
     {
+        let _ = handle
+            .gpu_manager
+            .release_gem_object(retained_backing_object);
         return_errno_with_message!(Errno::EBUSY, "GEM object already has a 3D resource");
     }
 
@@ -393,10 +404,7 @@ pub(super) fn virtgpu_resource_create(
             }
         }
         if let Some(gem_handle) = new_gem_handle {
-            let object_id = handle.inner.lock().handles.remove(&gem_handle);
-            if let Some(object_id) = object_id {
-                handle.gpu_manager.gem_objects.lock().remove(&object_id);
-            }
+            super::gem::rollback_handle(handle, gem_handle);
         }
         if let Some((offset, next_offset)) = new_allocation {
             let mut allocation_cursor = handle.gpu_manager.next_offset.lock();
@@ -404,8 +412,14 @@ pub(super) fn virtgpu_resource_create(
                 *allocation_cursor = offset;
             }
         }
+        let _ = handle
+            .gpu_manager
+            .release_gem_object(retained_backing_object);
         return Err(error);
     }
+    handle
+        .gpu_manager
+        .release_gem_object(retained_backing_object)?;
     Ok(0)
 }
 
@@ -420,22 +434,28 @@ pub(super) fn virtgpu_resource_info(
     >,
 ) -> Result<i32> {
     let mut req = cmd.read()?;
-    let inner = handle.inner.lock();
-    let object_id = inner
-        .handles
-        .get(&req.bo_handle)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-    let guard = handle.gpu_manager.gem_objects.lock();
-    let obj = guard
-        .get(object_id)
-        .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
-    req.size = u32::try_from(obj.buffer.size)
+    let object_id = {
+        let inner = handle.inner.lock();
+        *inner
+            .handles
+            .get(&req.bo_handle)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
+    };
+    let buffer_size = {
+        let objects = handle.gpu_manager.gem_objects.lock();
+        objects
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?
+            .buffer
+            .size
+    };
+    req.size = u32::try_from(buffer_size)
         .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
     req.res_handle = *handle
         .gpu_manager
         .gem_resources
         .lock()
-        .get(object_id)
+        .get(&object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
     // The blob_mem field is 0 for non-blob resources.
     req.blob_mem = 0;
@@ -527,6 +547,16 @@ pub(super) fn virtgpu_execbuffer(
 ) -> Option<Result<i32>> {
     Some((|| -> Result<i32> {
         let req = cmd.read()?;
+        if req.flags & !VIRTGPU_EXECBUF_FENCE_FD_OUT != 0
+            || req.ring_idx != 0
+            || req.syncobj_stride != 0
+            || req.num_in_syncobjs != 0
+            || req.num_out_syncobjs != 0
+            || req.in_syncobjs != 0
+            || req.out_syncobjs != 0
+        {
+            return_errno_with_message!(Errno::EINVAL, "unsupported execbuffer synchronization");
+        }
 
         // Read the command buffer from userspace
         if req.size == 0 || req.command == 0 {
@@ -744,24 +774,36 @@ pub(super) fn virtgpu_map(
     cmd: crate::util::ioctl::Ioctl<b'd', 0x41, true, crate::util::ioctl::InOutData<DrmVirtgpuMap>>,
 ) -> Result<i32> {
     let req = cmd.read()?;
-    let inner = handle.inner.lock();
-    let object_id = inner
-        .handles
-        .get(&req.handle)
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-    let guard = handle.gpu_manager.gem_objects.lock();
-    let obj = guard
-        .get(object_id)
-        .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+    let object_id = {
+        let inner = handle.inner.lock();
+        *inner
+            .handles
+            .get(&req.handle)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
+    };
+    let offset = {
+        let objects = handle.gpu_manager.gem_objects.lock();
+        objects
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?
+            .buffer
+            .offset
+    };
     let mut resp = req;
-    resp.offset = obj.buffer.offset as u64;
+    resp.offset = offset as u64;
     cmd.write(&resp)?;
     Ok(0)
 }
 
-/// WAIT: wait for a resource to become idle (no-op for now).
+/// `VIRTGPU_WAIT_NOWAIT` — reports busy instead of waiting.
+const VIRTGPU_WAIT_NOWAIT: u32 = 0x01;
+
+/// A one-dword `VIRGL_CCMD_NOP` command stream.
+const VIRGL_NOP: [u8; 4] = [0; 4];
+
+/// WAIT: waits for all earlier work on this file's virgl timeline.
 pub(super) fn virtgpu_wait(
-    _handle: &super::DriHandle,
+    handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
         b'd',
         0x48,
@@ -770,7 +812,51 @@ pub(super) fn virtgpu_wait(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
-    // Always succeed — no async GPU operations to wait for.
+    if req.flags & !VIRTGPU_WAIT_NOWAIT != 0 {
+        return_errno_with_message!(Errno::EINVAL, "unsupported virtgpu wait flags");
+    }
+
+    let object_id = {
+        let inner = handle.inner.lock();
+        *inner
+            .handles
+            .get(&req.handle)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
+    };
+    if !handle
+        .gpu_manager
+        .gem_resources
+        .lock()
+        .contains_key(&object_id)
+    {
+        return_errno_with_message!(Errno::EINVAL, "GEM object has no 3D resource");
+    }
+
+    // The transport currently has no nonblocking used-ring query for a
+    // resource timeline. Reject NOWAIT explicitly rather than sleeping or
+    // claiming completion.
+    if req.flags & VIRTGPU_WAIT_NOWAIT != 0 {
+        return_errno_with_message!(
+            Errno::EOPNOTSUPP,
+            "nonblocking virtio-gpu wait is unavailable"
+        );
+    }
+
+    // Virtio 1.3 section 5.7.6.7 requires a fenced response to be delayed
+    // until the associated command and all earlier commands on this context's
+    // timeline have completed. A fenced virgl NOP is therefore a timeline
+    // barrier without replaying or mutating the resource.
+    let context_id = handle.ensure_virgl_context()?;
+    let fence_id = handle
+        .gpu_manager
+        .next_fence_id
+        .fetch_add(1, Ordering::Relaxed);
+    handle
+        .gpu_manager
+        .gpu
+        .submit_3d_fenced(context_id, VIRGL_NOP.len() as u32, &VIRGL_NOP, fence_id)
+        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu wait failed"))?;
+
     cmd.write(&req)?;
     Ok(0)
 }

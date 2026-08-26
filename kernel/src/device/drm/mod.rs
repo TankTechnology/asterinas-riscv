@@ -26,7 +26,10 @@ mod prime;
 mod property;
 mod virtio_gpu;
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+};
 
 use aster_time::read_monotonic_time;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
@@ -114,6 +117,8 @@ const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
 
 /// `DRM_EVENT_FLIP_COMPLETE` event type for `drm_event_vblank`.
 const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
+/// Bounds page-flip events retained by one open DRM file.
+const MAX_DRM_EVENTS: usize = 1024;
 
 /// `DRM_PLANE_TYPE_PRIMARY` — the plane type enum value.
 const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
@@ -129,8 +134,9 @@ const PRIMARY_PLANE_ID: u32 = 1;
 /// `Mappable::Vmo` per file and selects a buffer by its byte offset within it.
 ///
 /// 64 MiB holds ~15 1280x800@32bpp buffers — enough for a GBM surface's
-/// back/front/shadow buffers plus a few app allocations. Note the allocator
-/// is a bump allocator: destroyed buffers are not reclaimed yet.
+/// back/front/shadow buffers plus a few app allocations. The pool remains a
+/// bump allocator because an established userspace mapping can outlive its GEM
+/// handle; reusing that span would alias an unrelated later allocation.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
@@ -225,6 +231,58 @@ impl GpuManager {
             .and_then(|pool| pool.paddr())
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
     }
+
+    /// Adds one owner to an existing GEM object and returns its buffer.
+    fn retain_gem_object(&self, object_id: u32) -> Result<DumbBuffer> {
+        let objects = self.gem_objects.lock();
+        let object = objects
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        let references = object.ref_count.load(Ordering::Relaxed);
+        let references = references.checked_add(1).ok_or_else(|| {
+            Error::with_message(Errno::EOVERFLOW, "GEM reference count overflows")
+        })?;
+        object.ref_count.store(references, Ordering::Relaxed);
+        Ok(object.buffer)
+    }
+
+    /// Drops one GEM owner and destroys global state after the final reference.
+    fn release_gem_object(&self, object_id: u32) -> Result<()> {
+        let released = {
+            let mut objects = self.gem_objects.lock();
+            let object = objects
+                .get(&object_id)
+                .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+            let references = object.ref_count.load(Ordering::Relaxed);
+            if references == 0 {
+                return_errno_with_message!(Errno::EINVAL, "GEM object has no references");
+            }
+            if references > 1 {
+                object.ref_count.store(references - 1, Ordering::Relaxed);
+                return Ok(());
+            }
+            objects.remove(&object_id).unwrap()
+        };
+
+        let name = released.name.load(Ordering::Relaxed);
+        if name != 0 {
+            let mut names = self.gem_names.lock();
+            if names.get(&name) == Some(&object_id) {
+                names.remove(&name);
+            }
+        }
+
+        let resource_id = self.gem_resources.lock().remove(&object_id);
+        if let Some(resource_id) = resource_id
+            && let Err(error) = self.gpu.resource_unref(resource_id)
+        {
+            warn!(
+                "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
+                resource_id, object_id, error
+            );
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +311,7 @@ struct DumbBuffer {
 }
 
 impl DumbBuffer {
-    fn mapped_range(self) -> Option<core::ops::Range<usize>> {
+    fn mapped_range(self) -> Option<Range<usize>> {
         let mapped_size = self
             .size
             .checked_add(PAGE_SIZE - 1)?
@@ -366,6 +424,10 @@ struct DriHandle {
     context: Mutex<VirglContext>,
     /// Serializes validation, device updates, and per-file cursor state.
     cursor_operation: Mutex<()>,
+    /// Serializes scanout device updates with their software-state commits.
+    kms_operation: Mutex<()>,
+    /// Serializes event dequeue/copy/requeue transactions between readers.
+    event_read_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
     /// Notifies readers/pollers when page-flip events are queued.
     pollee: Pollee,
@@ -421,6 +483,8 @@ impl DriHandle {
                 is_created: false,
             }),
             cursor_operation: Mutex::new(()),
+            kms_operation: Mutex::new(()),
+            event_read_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -500,7 +564,7 @@ impl DriHandle {
     /// Our present path is synchronous (the virtio-gpu control command has
     /// completed by the time the ioctl returns), so the event is queued
     /// immediately, right after the flip is applied.
-    fn queue_flip_event(&self, user_data: u64) {
+    fn queue_flip_event(&self, user_data: u64) -> Result<()> {
         let now = read_monotonic_time();
         let sequence = self
             .gpu_manager
@@ -515,25 +579,47 @@ impl DriHandle {
             sequence,
             crtc_id: CRTC_ID,
         };
-        self.inner.lock().events.push_back(event);
+        let mut inner = self.inner.lock();
+        if inner.events.len() >= MAX_DRM_EVENTS {
+            return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
+        }
+        inner.events.push_back(event);
+        drop(inner);
         self.pollee.notify(IoEvents::IN);
+        Ok(())
     }
 
     /// Pops pending page-flip events into `writer`.
     fn read_events(&self, writer: &mut VmWriter) -> Result<usize> {
+        if writer.avail() == 0 {
+            return Ok(0);
+        }
         let max_events = writer.avail() / size_of::<DrmEventVblank>();
-        if max_events == 0 && writer.avail() != 0 {
+        if max_events == 0 {
             return_errno_with_message!(Errno::EINVAL, "the buffer is too short for an event");
         }
 
-        let mut inner = self.inner.lock();
+        let _event_read_operation = self.event_read_operation.lock();
         let mut bytes = 0;
         while bytes / size_of::<DrmEventVblank>() < max_events {
-            let Some(event) = inner.events.front().copied() else {
-                break;
+            let event = {
+                let mut inner = self.inner.lock();
+                let Some(event) = inner.events.pop_front() else {
+                    break;
+                };
+                if inner.events.is_empty() {
+                    self.pollee.invalidate();
+                }
+                event
             };
-            writer.write_val(&event)?;
-            inner.events.pop_front();
+            if let Err(error) = writer.write_val(&event) {
+                self.inner.lock().events.push_front(event);
+                self.pollee.notify(IoEvents::IN);
+                if bytes != 0 {
+                    return Ok(bytes);
+                }
+                return Err(error.into());
+            }
             bytes += size_of::<DrmEventVblank>();
         }
         if bytes == 0 {
@@ -541,21 +627,57 @@ impl DriHandle {
         }
         Ok(bytes)
     }
+
+    /// Snapshots the GEM object ids owned by this file without allocating
+    /// while the per-file spinlock is held.
+    fn snapshot_object_ids(&self) -> Vec<u32> {
+        loop {
+            let capacity = self.inner.lock().handles.len();
+            let mut object_ids = Vec::with_capacity(capacity);
+            let inner = self.inner.lock();
+            if inner.handles.len() > object_ids.capacity() {
+                continue;
+            }
+            object_ids.extend(inner.handles.values().copied());
+            return object_ids;
+        }
+    }
+
+    /// Resolves mmap ranges without allocating while the GEM table is locked.
+    fn snapshot_mappable_ranges(&self, object_ids: &[u32]) -> Vec<Range<usize>> {
+        let mut ranges = Vec::with_capacity(object_ids.len());
+        let objects = self.gpu_manager.gem_objects.lock();
+        for object_id in object_ids {
+            let Some(range) = objects
+                .get(object_id)
+                .and_then(|object| object.buffer.mapped_range())
+            else {
+                continue;
+            };
+            ranges.push(range);
+        }
+        ranges
+    }
 }
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
-        let _ = self.gpu_manager.master_id.compare_exchange(
-            self.file_id,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let _kms_operation = self.kms_operation.lock();
         let _cursor_operation = self.cursor_operation.lock();
-        let (resource_id, position) = {
+        let (resource_id, position, has_active_scanout) = {
             let inner = self.inner.lock();
-            (inner.cursor.resource_id, inner.cursor.position)
+            (
+                inner.cursor.resource_id,
+                inner.cursor.position,
+                inner.current_fb_id.is_some(),
+            )
         };
+        if self.is_master()
+            && has_active_scanout
+            && let Err(error) = self.gpu_manager.gpu.disable_scanout()
+        {
+            warn!("cannot disable scanout on DRM file close: {:?}", error);
+        }
         if let Some(resource_id) = resource_id {
             let _ = self
                 .gpu_manager
@@ -569,6 +691,31 @@ impl Drop for DriHandle {
         {
             warn!("cannot destroy virgl context {}: {:?}", context.id, error);
         }
+
+        let inner = self.inner.get_mut();
+        let framebuffer_objects: Vec<_> = inner
+            .framebuffers
+            .values()
+            .map(|framebuffer| framebuffer.object_id)
+            .collect();
+        let handle_objects: Vec<_> = inner.handles.values().copied().collect();
+        inner.framebuffers.clear();
+        inner.handles.clear();
+        for object_id in framebuffer_objects.into_iter().chain(handle_objects) {
+            if let Err(error) = self.gpu_manager.release_gem_object(object_id) {
+                warn!(
+                    "cannot release GEM object {} on close: {:?}",
+                    object_id, error
+                );
+            }
+        }
+
+        let _ = self.gpu_manager.master_id.compare_exchange(
+            self.file_id,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 }
 
@@ -636,13 +783,8 @@ impl PerOpenFileOps for DriHandle {
             .ok_or_else(|| {
                 Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
             })?;
-        let inner = self.inner.lock();
-        let objects = self.gpu_manager.gem_objects.lock();
-        let ranges = inner
-            .handles
-            .values()
-            .filter_map(|object_id| objects.get(object_id)?.buffer.mapped_range())
-            .collect();
+        let object_ids = self.snapshot_object_ids();
+        let ranges = self.snapshot_mappable_ranges(&object_ids);
         Ok(Mappable::VmoRanges { vmo: pool, ranges })
     }
 
@@ -720,7 +862,10 @@ impl PerOpenFileOps for DriHandle {
                 let (handle, size) = gem::gem_open(self, req.name)?;
                 req.handle = handle;
                 req.size = size;
-                cmd.write(&req)?;
+                if let Err(error) = cmd.write(&req) {
+                    gem::rollback_handle(self, handle);
+                    return Err(error);
+                }
                 Ok(0)
             }
             cmd @ ModeGetResources => {
@@ -801,7 +946,11 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeCreateDumb => {
                 let req = cmd.read()?;
-                cmd.write(&dumb::create_dumb(self, &req)?)?;
+                let response = dumb::create_dumb(self, &req)?;
+                if let Err(error) = cmd.write(&response) {
+                    gem::rollback_handle(self, response.handle);
+                    return Err(error);
+                }
                 Ok(0)
             }
             cmd @ ModeMapDumb => {
@@ -823,7 +972,10 @@ impl PerOpenFileOps for DriHandle {
                 }
                 let mut req = cmd.read()?;
                 req.fb_id = kms::add_fb(self, &req)?;
-                cmd.write(&req)?;
+                if let Err(error) = cmd.write(&req) {
+                    let _ = kms::rm_fb(self, req.fb_id);
+                    return Err(error);
+                }
                 Ok(0)
             }
             _cmd @ SetMaster => {
@@ -908,7 +1060,10 @@ impl PerOpenFileOps for DriHandle {
                 }
                 let mut req = cmd.read()?;
                 req.fb_id = kms::add_fb2(self, &req)?;
-                cmd.write(&req)?;
+                if let Err(error) = cmd.write(&req) {
+                    let _ = kms::rm_fb(self, req.fb_id);
+                    return Err(error);
+                }
                 Ok(0)
             }
             cmd @ ModePageFlip => {
@@ -925,7 +1080,7 @@ impl PerOpenFileOps for DriHandle {
                 }
                 kms::present_fb(self, req.fb_id)?;
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-                    self.queue_flip_event(req.user_data);
+                    self.queue_flip_event(req.user_data)?;
                 }
                 Ok(0)
             }

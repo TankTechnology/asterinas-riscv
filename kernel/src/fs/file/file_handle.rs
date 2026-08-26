@@ -358,6 +358,12 @@ pub enum Mappable {
         vmo: Arc<Vmo>,
         ranges: Vec<Range<usize>>,
     },
+    /// A window into a VMO whose file offset zero maps to `vmo_offset`.
+    VmoWindow {
+        vmo: Arc<Vmo>,
+        vmo_offset: usize,
+        size: usize,
+    },
     /// An MMIO region.
     IoMem(IoMem),
 }

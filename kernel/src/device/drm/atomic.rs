@@ -239,7 +239,7 @@ fn commit_atomic_state(
     if let Some(fb_id) = new_fb_id {
         kms::present_fb(handle, fb_id)?;
         if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-            handle.queue_flip_event(user_data);
+            handle.queue_flip_event(user_data)?;
         }
     }
 
