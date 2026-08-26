@@ -83,6 +83,11 @@ class XhciGuestProbeTests(unittest.TestCase):
             "partial-read",
             "panic-text",
             "deadline",
+            "valid-mouse",
+            "zero-mice",
+            "two-mice",
+            "virtio-mouse",
+            "mouse-sequence",
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             binary = Path(temporary_directory) / "input-gate-self-test"
@@ -110,9 +115,16 @@ class XhciGuestProbeTests(unittest.TestCase):
             ) as process:
                 try:
                     readable, _, _ = select.select([process.stdout], [], [], 2.0)
-                    self.assertTrue(readable, "lifecycle probe did not publish PASS")
+                    self.assertTrue(
+                        readable, "lifecycle probe did not publish keyboard PASS"
+                    )
                     self.assertEqual(
-                        process.stdout.readline(), "XHCI_INPUT_PASS events=8\n"
+                        process.stdout.readline(),
+                        "XHCI_INPUT_KEYBOARD_PASS events=8\n",
+                    )
+                    self.assertEqual(
+                        process.stdout.readline(),
+                        "XHCI_INPUT_POINTER_PASS events=7\n",
                     )
                     self.assertIsNone(
                         process.poll(), "probe exited after publishing PASS"
@@ -231,7 +243,7 @@ class XhciHostGateTests(unittest.TestCase):
             input_timeout=0.2,
         )
 
-    def test_qemu_argv_has_only_pci_xhci_usb_keyboard(self) -> None:
+    def test_qemu_argv_has_only_pci_xhci_usb_keyboard_and_mouse(self) -> None:
         argv = self.gate.qemu_argv(
             self.uboot,
             self.boot_disk,
@@ -244,7 +256,12 @@ class XhciHostGateTests(unittest.TestCase):
             argv.index("qemu-xhci,id=xhci,msi=off,msix=off"),
             argv.index("usb-kbd,id=usb-kbd,bus=xhci.0"),
         )
+        self.assertLess(
+            argv.index("usb-kbd,id=usb-kbd,bus=xhci.0"),
+            argv.index("usb-mouse,id=usb-mouse,bus=xhci.0"),
+        )
         self.assertEqual(sum(item.startswith("usb-kbd,") for item in argv), 1)
+        self.assertEqual(sum(item.startswith("usb-mouse,") for item in argv), 1)
         for forbidden in ("virtio-keyboard", "i8042", "-nic user", "usb-tablet"):
             self.assertNotIn(forbidden, joined)
         self.assertIn("-nic none", joined)
@@ -304,6 +321,7 @@ class XhciHostGateTests(unittest.TestCase):
         self.assertTrue(result.passed, result.reason)
         mutations = {
             "missing": valid.replace(self.gate.USB_MARKER + b"\n", b""),
+            "missing-mouse": valid.replace(self.gate.MOUSE_USB_MARKER + b"\n", b""),
             "duplicate": valid.replace(
                 self.gate.PCI_MARKER + b"\n",
                 self.gate.PCI_MARKER + b"\n" + self.gate.PCI_MARKER + b"\n",
@@ -311,6 +329,7 @@ class XhciHostGateTests(unittest.TestCase):
             "stale-before-ready": self.gate.PASS_MARKER + b"\n" + valid,
             "reversed": b"\n".join(reversed(valid.splitlines())) + b"\n",
             "fallback": valid + b"virtio_keyboard registered\n",
+            "pointer-fallback": valid + b"virtio_mouse registered\n",
             "panic": valid + b"Kernel panic\n",
         }
         for name, transcript in mutations.items():
@@ -336,10 +355,22 @@ class XhciHostGateTests(unittest.TestCase):
                     self.transcript += gate.PCI_MARKER + b"\n"
                 elif marker == gate.USB_MARKER:
                     self.transcript += gate.USB_MARKER + b"\n"
-                elif marker == gate.READY_MARKER:
-                    self.transcript += b"XHCI_INPUT_READY path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
-                elif marker == gate.PASS_MARKER:
-                    self.transcript += gate.EVENT_TRANSCRIPT + gate.PASS_MARKER + b"\n"
+                elif marker == gate.MOUSE_USB_MARKER:
+                    self.transcript += gate.MOUSE_USB_MARKER + b"\n"
+                elif marker == gate.KEYBOARD_READY_MARKER:
+                    self.transcript += b"XHCI_INPUT_READY kind=keyboard path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
+                elif marker == gate.MOUSE_READY_MARKER:
+                    self.transcript += b"XHCI_INPUT_READY kind=mouse path=/dev/input/event1 bustype=3 name=usb_boot_mouse\n"
+                elif marker == gate.KEYBOARD_PASS_MARKER:
+                    self.transcript += b"".join(
+                        line + b"\n" for line in gate.KEYBOARD_EVENT_LINES
+                    )
+                    self.transcript += gate.KEYBOARD_PASS_MARKER + b"\n"
+                elif marker == gate.POINTER_PASS_MARKER:
+                    self.transcript += b"".join(
+                        line + b"\n" for line in gate.MOUSE_EVENT_LINES
+                    )
+                    self.transcript += gate.POINTER_PASS_MARKER + b"\n"
                 else:
                     self.transcript += marker + b"\n"
 
@@ -358,6 +389,12 @@ class XhciHostGateTests(unittest.TestCase):
 
             def send_key(self, key: str) -> None:
                 actions.append(f"key:{key}")
+
+            def mouse_move(self, x: int, y: int) -> None:
+                actions.append(f"mouse:move:{x}:{y}")
+
+            def mouse_button(self, buttons: int) -> None:
+                actions.append(f"mouse:button:{buttons}")
 
             def close(self) -> None:
                 actions.append("monitor:close")
@@ -386,8 +423,17 @@ class XhciHostGateTests(unittest.TestCase):
         )
         result = self.gate.run_gate(self.config(), dependencies)
         self.assertTrue(result.passed, result.reason)
-        self.assertLess(actions.index("wait:XHCI_INPUT_READY"), actions.index("key:a"))
+        self.assertLess(
+            actions.index("wait:XHCI_INPUT_READY kind=mouse"), actions.index("key:a")
+        )
         self.assertLess(actions.index("key:a"), actions.index("key:1"))
+        self.assertLess(actions.index("key:1"), actions.index("mouse:move:17:-9"))
+        self.assertLess(
+            actions.index("mouse:move:17:-9"), actions.index("mouse:button:1")
+        )
+        self.assertLess(
+            actions.index("mouse:button:1"), actions.index("mouse:button:0")
+        )
         self.assertEqual(actions[-3:], ["monitor:close", "cleanup", "drain"])
         self.assertEqual(monitor_modes, [0o700])
         self.assertTrue(monitor_parents[0].is_relative_to(self.directory))
@@ -396,8 +442,9 @@ class XhciHostGateTests(unittest.TestCase):
         self.assertTrue(evidence["passed"])
         self.assertEqual(evidence["smp"], 4)
         self.assertEqual(evidence["pci"]["bdf"], "0000:00:01.0")
-        self.assertEqual(evidence["usb"]["vendor_id"], "0627")
-        self.assertEqual(len(evidence["events"]), 8)
+        self.assertEqual(evidence["usb"]["keyboard"]["vendor_id"], "0627")
+        self.assertEqual(evidence["usb"]["mouse"]["vendor_id"], "0627")
+        self.assertEqual(len(evidence["events"]), 15)
         self.assertEqual(evidence["cleanup"], "complete")
         self.assertEqual(self.serial_log.read_bytes(), console.transcript)
 
@@ -413,10 +460,22 @@ class XhciHostGateTests(unittest.TestCase):
                     self.transcript += marker + b"\n"
                 elif marker == gate.USB_MARKER:
                     self.transcript += marker + b"\n"
-                elif marker == gate.READY_MARKER:
-                    self.transcript += b"XHCI_INPUT_READY path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
-                elif marker == gate.PASS_MARKER:
-                    self.transcript += gate.EVENT_TRANSCRIPT + marker + b"\n"
+                elif marker == gate.MOUSE_USB_MARKER:
+                    self.transcript += marker + b"\n"
+                elif marker == gate.KEYBOARD_READY_MARKER:
+                    self.transcript += b"XHCI_INPUT_READY kind=keyboard path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
+                elif marker == gate.MOUSE_READY_MARKER:
+                    self.transcript += b"XHCI_INPUT_READY kind=mouse path=/dev/input/event1 bustype=3 name=usb_boot_mouse\n"
+                elif marker == gate.KEYBOARD_PASS_MARKER:
+                    self.transcript += b"".join(
+                        line + b"\n" for line in gate.KEYBOARD_EVENT_LINES
+                    )
+                    self.transcript += marker + b"\n"
+                elif marker == gate.POINTER_PASS_MARKER:
+                    self.transcript += b"".join(
+                        line + b"\n" for line in gate.MOUSE_EVENT_LINES
+                    )
+                    self.transcript += marker + b"\n"
                 else:
                     self.transcript += marker + b"\n"
 
@@ -432,6 +491,12 @@ class XhciHostGateTests(unittest.TestCase):
 
             def send_key(self, key: str) -> None:
                 del key
+
+            def mouse_move(self, x: int, y: int) -> None:
+                del x, y
+
+            def mouse_button(self, buttons: int) -> None:
+                del buttons
 
             def close(self) -> None:
                 pass
@@ -580,6 +645,38 @@ class XhciHostGateTests(unittest.TestCase):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=1)
             process.stdout.close()
+
+    def test_hmp_accepts_only_registered_pointer_commands(self) -> None:
+        gate = self.gate
+
+        class PromptSocket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def sendall(self, command: bytes) -> None:
+                self.sent.append(command)
+
+            def recv(self, count: int) -> bytes:
+                del count
+                return b"(qemu) "
+
+        monitor = gate.HmpMonitor(self.directory / "unused.sock", 0.2)
+        monitor.socket = PromptSocket()
+        monitor.mouse_move(17, -9)
+        monitor.mouse_button(1)
+        monitor.mouse_button(0)
+        self.assertEqual(
+            monitor.socket.sent,
+            [b"mouse_move 17 -9\n", b"mouse_button 1\n", b"mouse_button 0\n"],
+        )
+        for invalid in ((0, 1 << 16), (-(1 << 16), 0)):
+            with self.assertRaises(gate.MonitorError):
+                monitor.mouse_move(*invalid)
+        with self.assertRaises(gate.MonitorError):
+            monitor.mouse_button(8)
 
 
 if __name__ == "__main__":
