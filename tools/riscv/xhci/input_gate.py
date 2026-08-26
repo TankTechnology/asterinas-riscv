@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Run the bounded RISC-V PCI xHCI USB-keyboard evidence gate."""
+"""Run the bounded RISC-V PCI xHCI USB keyboard-and-mouse evidence gate."""
 
 from __future__ import annotations
 
@@ -45,18 +45,32 @@ from qemu_uboot_profiles import GENERIC_SV39_LTP_SMP4  # noqa: E402
 QEMU_CPU = "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"
 PCI_MARKER = b"PCI xHCI selected: 0000:00:01.0 1b36:000d irq-parent=9 irq=33"
 USB_MARKER = b"USB boot keyboard registered: 0627:0001 bus=usb name=usb_boot_keyboard"
-READY_MARKER = b"XHCI_INPUT_READY"
-PASS_MARKER = b"XHCI_INPUT_PASS events=8"
-EVENT_LINES = (
-    b"XHCI_INPUT_EVENT type=1 code=30 value=1",
-    b"XHCI_INPUT_EVENT type=0 code=0 value=0",
-    b"XHCI_INPUT_EVENT type=1 code=30 value=0",
-    b"XHCI_INPUT_EVENT type=0 code=0 value=0",
-    b"XHCI_INPUT_EVENT type=1 code=2 value=1",
-    b"XHCI_INPUT_EVENT type=0 code=0 value=0",
-    b"XHCI_INPUT_EVENT type=1 code=2 value=0",
-    b"XHCI_INPUT_EVENT type=0 code=0 value=0",
+MOUSE_USB_MARKER = b"USB boot mouse registered: 0627:0001 bus=usb name=usb_boot_mouse"
+KEYBOARD_READY_MARKER = b"XHCI_INPUT_READY kind=keyboard"
+MOUSE_READY_MARKER = b"XHCI_INPUT_READY kind=mouse"
+KEYBOARD_PASS_MARKER = b"XHCI_INPUT_KEYBOARD_PASS events=8"
+POINTER_PASS_MARKER = b"XHCI_INPUT_POINTER_PASS events=7"
+PASS_MARKER = POINTER_PASS_MARKER
+KEYBOARD_EVENT_LINES = (
+    b"XHCI_INPUT_EVENT source=keyboard type=1 code=30 value=1",
+    b"XHCI_INPUT_EVENT source=keyboard type=0 code=0 value=0",
+    b"XHCI_INPUT_EVENT source=keyboard type=1 code=30 value=0",
+    b"XHCI_INPUT_EVENT source=keyboard type=0 code=0 value=0",
+    b"XHCI_INPUT_EVENT source=keyboard type=1 code=2 value=1",
+    b"XHCI_INPUT_EVENT source=keyboard type=0 code=0 value=0",
+    b"XHCI_INPUT_EVENT source=keyboard type=1 code=2 value=0",
+    b"XHCI_INPUT_EVENT source=keyboard type=0 code=0 value=0",
 )
+MOUSE_EVENT_LINES = (
+    b"XHCI_INPUT_EVENT source=mouse type=2 code=0 value=17",
+    b"XHCI_INPUT_EVENT source=mouse type=2 code=1 value=-9",
+    b"XHCI_INPUT_EVENT source=mouse type=0 code=0 value=0",
+    b"XHCI_INPUT_EVENT source=mouse type=1 code=272 value=1",
+    b"XHCI_INPUT_EVENT source=mouse type=0 code=0 value=0",
+    b"XHCI_INPUT_EVENT source=mouse type=1 code=272 value=0",
+    b"XHCI_INPUT_EVENT source=mouse type=0 code=0 value=0",
+)
+EVENT_LINES = KEYBOARD_EVENT_LINES + MOUSE_EVENT_LINES
 EVENT_TRANSCRIPT = b"".join(line + b"\n" for line in EVENT_LINES)
 PANIC_MARKERS = (
     b"Kernel panic",
@@ -73,10 +87,18 @@ FALLBACK_MARKERS = (
     b"VirtIO keyboard",
     b"i8042",
     b"AT keyboard",
+    b"virtio_mouse",
+    b"virtio-mouse",
+    b"VirtIO mouse",
+    b"usb-tablet",
 )
-READY_PATTERN = re.compile(
-    rb"XHCI_INPUT_READY path=/dev/input/event(?:[0-9]|[12][0-9]|3[01]) "
+KEYBOARD_READY_PATTERN = re.compile(
+    rb"XHCI_INPUT_READY kind=keyboard path=/dev/input/event(?:[0-9]|[12][0-9]|3[01]) "
     rb"bustype=3 name=usb_boot_keyboard"
+)
+MOUSE_READY_PATTERN = re.compile(
+    rb"XHCI_INPUT_READY kind=mouse path=/dev/input/event(?:[0-9]|[12][0-9]|3[01]) "
+    rb"bustype=3 name=usb_boot_mouse"
 )
 HMP_MAX_RESPONSE_BYTES = 64 * 1024
 SERIAL_MAX_BYTES = 8 * 1024 * 1024
@@ -132,7 +154,7 @@ class Classification:
     reason: str
     pci: dict[str, Any]
     usb: dict[str, Any]
-    events: tuple[dict[str, int], ...]
+    events: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -147,7 +169,7 @@ class GateRunResult:
     qemu_argv: list[str]
     pci: dict[str, Any]
     usb: dict[str, Any]
-    events: tuple[dict[str, int], ...]
+    events: tuple[dict[str, Any], ...]
     cleanup: str
     serial_sha256: str
     manifest_artifacts: dict[str, Any]
@@ -172,6 +194,10 @@ class Monitor(Protocol):
     def connect(self) -> None: ...
 
     def send_key(self, key: str) -> None: ...
+
+    def mouse_move(self, x: int, y: int) -> None: ...
+
+    def mouse_button(self, buttons: int) -> None: ...
 
     def close(self) -> None: ...
 
@@ -328,9 +354,15 @@ def expected_transcript() -> bytes:
         + b"\n"
         + USB_MARKER
         + b"\n"
-        + b"XHCI_INPUT_READY path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
-        + EVENT_TRANSCRIPT
-        + PASS_MARKER
+        + MOUSE_USB_MARKER
+        + b"\n"
+        + b"XHCI_INPUT_READY kind=keyboard path=/dev/input/event0 bustype=3 name=usb_boot_keyboard\n"
+        + b"XHCI_INPUT_READY kind=mouse path=/dev/input/event1 bustype=3 name=usb_boot_mouse\n"
+        + b"".join(line + b"\n" for line in KEYBOARD_EVENT_LINES)
+        + KEYBOARD_PASS_MARKER
+        + b"\n"
+        + b"".join(line + b"\n" for line in MOUSE_EVENT_LINES)
+        + POINTER_PASS_MARKER
         + b"\n"
     )
 
@@ -366,6 +398,8 @@ def qemu_argv(
         "qemu-xhci,id=xhci,msi=off,msix=off",
         "-device",
         "usb-kbd,id=usb-kbd,bus=xhci.0",
+        "-device",
+        "usb-mouse,id=usb-mouse,bus=xhci.0",
         "-display",
         "none",
         "-monitor",
@@ -390,7 +424,15 @@ def classify_transcript(transcript: bytes) -> Classification:
             )
 
     positions: list[int] = []
-    for marker in (PCI_MARKER, USB_MARKER, READY_MARKER, PASS_MARKER):
+    for marker in (
+        PCI_MARKER,
+        USB_MARKER,
+        MOUSE_USB_MARKER,
+        KEYBOARD_READY_MARKER,
+        MOUSE_READY_MARKER,
+        KEYBOARD_PASS_MARKER,
+        POINTER_PASS_MARKER,
+    ):
         if transcript.count(marker) != 1:
             return _failed(
                 f"expected exactly one marker: {marker.decode(errors='replace')}"
@@ -398,20 +440,35 @@ def classify_transcript(transcript: bytes) -> Classification:
         positions.append(transcript.find(marker))
     if positions != sorted(positions) or len(set(positions)) != len(positions):
         return _failed("xHCI input markers are out of order")
-    if not READY_PATTERN.search(transcript):
-        return _failed("READY does not identify the sole BUS_USB keyboard")
-    protocol_prefixes = (b"XHCI_INPUT_READY", b"XHCI_INPUT_EVENT", b"XHCI_INPUT_PASS")
+    protocol_prefixes = (
+        b"XHCI_INPUT_READY",
+        b"XHCI_INPUT_EVENT",
+        b"XHCI_INPUT_KEYBOARD_PASS",
+        b"XHCI_INPUT_POINTER_PASS",
+    )
     protocol_lines = tuple(
         line for line in transcript.splitlines() if line.startswith(protocol_prefixes)
     )
+    if len(protocol_lines) < 2 or not KEYBOARD_READY_PATTERN.fullmatch(
+        protocol_lines[0]
+    ):
+        return _failed("READY does not identify the sole BUS_USB keyboard")
+    if not MOUSE_READY_PATTERN.fullmatch(protocol_lines[1]):
+        return _failed("READY does not identify the sole BUS_USB relative pointer")
+    expected_after_ready = (
+        *KEYBOARD_EVENT_LINES,
+        KEYBOARD_PASS_MARKER,
+        *MOUSE_EVENT_LINES,
+        POINTER_PASS_MARKER,
+    )
     expected_protocol = (
-        b"XHCI_INPUT_READY path=/dev/input/event0 bustype=3 name=usb_boot_keyboard",
-        *EVENT_LINES,
-        PASS_MARKER,
+        protocol_lines[0],
+        protocol_lines[1],
+        *expected_after_ready,
     )
     if len(protocol_lines) != len(expected_protocol):
         return _failed("unexpected, missing, or stale XHCI_INPUT protocol line")
-    if protocol_lines[1:] != expected_protocol[1:]:
+    if protocol_lines != expected_protocol:
         return _failed("normalized evdev protocol differs from the gate contract")
 
     events = tuple(_parse_event(line) for line in EVENT_LINES)
@@ -426,10 +483,18 @@ def classify_transcript(transcript: bytes) -> Classification:
             "interrupt": 33,
         },
         usb={
-            "vendor_id": "0627",
-            "product_id": "0001",
-            "bus": "usb",
-            "name": "usb_boot_keyboard",
+            "keyboard": {
+                "vendor_id": "0627",
+                "product_id": "0001",
+                "bus": "usb",
+                "name": "usb_boot_keyboard",
+            },
+            "mouse": {
+                "vendor_id": "0627",
+                "product_id": "0001",
+                "bus": "usb",
+                "name": "usb_boot_mouse",
+            },
         },
         events=events,
     )
@@ -439,11 +504,19 @@ def _failed(reason: str) -> Classification:
     return Classification(False, reason, {}, {}, ())
 
 
-def _parse_event(line: bytes) -> dict[str, int]:
-    match = re.fullmatch(rb"XHCI_INPUT_EVENT type=(\d+) code=(\d+) value=(-?\d+)", line)
+def _parse_event(line: bytes) -> dict[str, Any]:
+    match = re.fullmatch(
+        rb"XHCI_INPUT_EVENT source=(keyboard|mouse) type=(\d+) code=(\d+) value=(-?\d+)",
+        line,
+    )
     if match is None:
         raise ValueError("invalid normalized event")
-    return {"type": int(match[1]), "code": int(match[2]), "value": int(match[3])}
+    return {
+        "source": match[1].decode("ascii"),
+        "type": int(match[2]),
+        "code": int(match[3]),
+        "value": int(match[4]),
+    }
 
 
 def validate_config(config: GateConfig) -> GateConfig:
@@ -620,13 +693,22 @@ def _run_snapshot_gate(
         boot.wait_for(PCI_MARKER, config.startup_timeout)
         timeout_reason = "timeout: USB keyboard registration"
         boot.wait_for(USB_MARKER, config.startup_timeout)
-        timeout_reason = "timeout: guest READY"
-        boot.wait_for(READY_MARKER, config.startup_timeout)
+        timeout_reason = "timeout: USB mouse registration"
+        boot.wait_for(MOUSE_USB_MARKER, config.startup_timeout)
+        timeout_reason = "timeout: guest keyboard READY"
+        boot.wait_for(KEYBOARD_READY_MARKER, config.startup_timeout)
+        timeout_reason = "timeout: guest mouse READY"
+        boot.wait_for(MOUSE_READY_MARKER, config.startup_timeout)
         monitor.connect()
         monitor.send_key("a")
         monitor.send_key("1")
-        timeout_reason = "timeout: guest PASS"
-        boot.wait_for(PASS_MARKER, config.input_timeout)
+        timeout_reason = "timeout: guest keyboard PASS"
+        boot.wait_for(KEYBOARD_PASS_MARKER, config.input_timeout)
+        monitor.mouse_move(17, -9)
+        monitor.mouse_button(1)
+        monitor.mouse_button(0)
+        timeout_reason = "timeout: guest pointer PASS"
+        boot.wait_for(POINTER_PASS_MARKER, config.input_timeout)
         reason = "passed"
     except TimeoutError:
         reason = timeout_reason
@@ -746,7 +828,7 @@ class SerialBootConsole:
 
 
 class HmpMonitor:
-    """Send two reviewed HMP key commands with total deadlines and byte caps."""
+    """Send reviewed HMP keyboard and pointer commands with bounded responses."""
 
     def __init__(self, path: Path, timeout: float) -> None:
         self.path = path
@@ -776,8 +858,7 @@ class HmpMonitor:
             raise MonitorError("unregistered HMP key or disconnected monitor")
         deadline = time.monotonic() + self.timeout
         try:
-            self.socket.sendall(f"sendkey {key}\n".encode("ascii"))
-            self._read_prompt(deadline)
+            self._send_command(f"sendkey {key}", deadline)
             remaining = deadline - time.monotonic()
             if remaining < HMP_INTER_KEY_DELAY_SECONDS:
                 raise TimeoutError("HMP key delay exceeds command deadline")
@@ -786,6 +867,41 @@ class HmpMonitor:
                 raise TimeoutError("HMP key delay exceeds command deadline")
         except (OSError, TimeoutError) as error:
             raise MonitorError(f"failed to send key {key}: {error}") from error
+
+    def mouse_move(self, x: int, y: int) -> None:
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) for value in (x, y)
+        ):
+            raise MonitorError("mouse displacement must be an integer")
+        if not all(-(1 << 15) <= value < (1 << 15) for value in (x, y)):
+            raise MonitorError("mouse displacement is outside the registered range")
+        self._run_pointer_command(f"mouse_move {x} {y}")
+
+    def mouse_button(self, buttons: int) -> None:
+        if (
+            isinstance(buttons, bool)
+            or not isinstance(buttons, int)
+            or not 0 <= buttons <= 7
+        ):
+            raise MonitorError("mouse button mask is outside the registered range")
+        self._run_pointer_command(f"mouse_button {buttons}")
+
+    def _run_pointer_command(self, command: str) -> None:
+        if self.socket is None:
+            raise MonitorError("disconnected HMP monitor")
+        deadline = time.monotonic() + self.timeout
+        try:
+            self._send_command(command, deadline)
+        except (OSError, TimeoutError) as error:
+            raise MonitorError(
+                f"failed HMP pointer command {command}: {error}"
+            ) from error
+
+    def _send_command(self, command: str, deadline: float) -> None:
+        if self.socket is None:
+            raise MonitorError("HMP monitor is disconnected")
+        self.socket.sendall(command.encode("ascii") + b"\n")
+        self._read_prompt(deadline)
 
     def close(self) -> None:
         if self.socket is not None:
