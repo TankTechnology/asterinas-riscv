@@ -37,7 +37,8 @@ contain no URL except the repository-owned WebM when Firefox exposes an entry.
 Firefox does not necessarily expose `file://` media in Resource Timing, so the
 required decode evidence instead comes directly from the live media element:
 its `currentSrc` must be the repository-owned WebM, it must be ended with
-sufficient ready state, no media error, and a finite positive duration.
+sufficient current-data ready state, no media error, a finite positive duration,
+and a finite positive playback position at the end of that duration.
 Missing, duplicated, reordered, forged, or externally sourced evidence fails
 closed.  This page-level observation does not claim that Firefox made no other
 background network connections; socket-level isolation/evidence is separate.
