@@ -81,9 +81,15 @@ def _validate_device_set_shape(device_set: QemuDeviceSet) -> None:
         raise ValueError("device set contains an unregistered device kind")
     if len(device_set.devices) != len(set(device_set.devices)):
         raise ValueError("device set contains duplicate devices")
-    if device_set.framebuffer is not None and DeviceKind.BOCHS_DISPLAY not in device_set.devices:
+    if (
+        device_set.framebuffer is not None
+        and DeviceKind.BOCHS_DISPLAY not in device_set.devices
+    ):
         raise ValueError("framebuffer requires bochs-display")
-    if DeviceKind.BOCHS_DISPLAY in device_set.devices and device_set.framebuffer is None:
+    if (
+        DeviceKind.BOCHS_DISPLAY in device_set.devices
+        and device_set.framebuffer is None
+    ):
         raise ValueError("bochs-display requires framebuffer")
 
 
@@ -108,7 +114,9 @@ def _validate_capture_paths(paths: RuntimeDevicePaths) -> tuple[Path, Path]:
     capture_root = paths.capture_root
     monitor_socket = paths.monitor_socket
     if capture_root is None or monitor_socket is None:
-        raise ValueError("framebuffer device set requires capture_root and monitor_socket")
+        raise ValueError(
+            "framebuffer device set requires capture_root and monitor_socket"
+        )
     if not capture_root.is_absolute():
         raise ValueError("capture_root must be absolute")
     if capture_root.is_symlink() or not capture_root.is_dir():
@@ -124,7 +132,9 @@ def _validate_capture_paths(paths: RuntimeDevicePaths) -> tuple[Path, Path]:
     try:
         monitor_socket.resolve(strict=False).relative_to(capture_root.resolve())
     except ValueError as error:
-        raise ValueError("monitor_socket must be strictly below capture_root") from error
+        raise ValueError(
+            "monitor_socket must be strictly below capture_root"
+        ) from error
     if monitor_socket.resolve(strict=False) == capture_root.resolve():
         raise ValueError("monitor_socket must be strictly below capture_root")
     return capture_root, monitor_socket
@@ -183,8 +193,6 @@ def render_device_argv(
     if device_set.framebuffer is not None:
         _, monitor_socket = _validate_capture_paths(paths)
         argv.extend(("-qmp", f"unix:{monitor_socket},server=on,wait=off"))
-    elif any(
-        path is not None for path in (paths.capture_root, paths.monitor_socket)
-    ):
+    elif any(path is not None for path in (paths.capture_root, paths.monitor_socket)):
         raise ValueError("non-framebuffer device set does not accept capture paths")
     return tuple(argv)
