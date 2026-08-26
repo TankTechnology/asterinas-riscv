@@ -433,6 +433,8 @@ def write_manifest(
     )
     _require_exact(suite, _SUITE, "suite")
     _require_https(mirror_url, "mirror_url")
+    if profile.schema_version == 5:
+        _require_exact(mirror_url.rstrip("/"), M5_SOURCES[0].mirror_url, "mirror_url")
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
         raise ContractError("debian_release must be a signed Debian 13 point release")
     _require_build_timestamp(build_timestamp)
