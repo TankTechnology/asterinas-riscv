@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import argparse
 import hashlib
 from pathlib import Path
 import re
 import subprocess
+from collections.abc import Sequence
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -171,3 +173,28 @@ def _sha256(data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()
     assert _SHA256_RE.fullmatch(digest)
     return digest
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="signed_sources")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    verifier = subparsers.add_parser("verify")
+    verifier.add_argument("--role", choices=("base", "security"), required=True)
+    verifier.add_argument("--inrelease", type=Path, required=True)
+    verifier.add_argument("--keyring", type=Path, required=True)
+    owner = subparsers.add_parser("owner")
+    owner.add_argument("--filename", required=True)
+    values = parser.parse_args(arguments)
+    try:
+        if values.command == "verify":
+            source = {source.role: source for source in M5_SOURCES}[values.role]
+            print(verify_inrelease(source, values.inrelease, values.keyring))
+        else:
+            print(source_for_apt_list(values.filename).role)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
