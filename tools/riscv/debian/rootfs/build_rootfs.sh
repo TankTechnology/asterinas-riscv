@@ -800,6 +800,7 @@ EOF
         configure_desktop_m5_network "$stage"
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
+        configure_desktop_m5_network "$stage" m5
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -820,6 +821,7 @@ EOF
 
 configure_desktop_m5_network() {
     local stage="$1"
+    local desktop_generation="${2:-m4}"
     local script_directory
     local service_name="asterinas-desktop-m5-network"
 
@@ -827,11 +829,11 @@ configure_desktop_m5_network() {
     install -D -m 0755 -- \
         "$script_directory/desktop_m5_network_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
-    cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
+    cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
-After=asterinas-desktop-m4-evidence.service
-Wants=asterinas-desktop-m4-evidence.service
+After=asterinas-desktop-$desktop_generation-evidence.service
+Wants=asterinas-desktop-$desktop_generation-evidence.service
 
 [Service]
 Type=oneshot
