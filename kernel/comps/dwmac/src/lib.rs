@@ -8,7 +8,9 @@
 use component::{ComponentInitError, init_component};
 
 pub mod descriptor;
+pub mod phy;
 pub mod regs;
+pub mod select;
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
