@@ -28,6 +28,7 @@ _INSTALLER_COMMANDS = (
     "gzip",
     "mkdir",
     "mount",
+    "reboot",
     "sha256sum",
     "sleep",
     "sync",
@@ -337,8 +338,9 @@ done < /installer/chunks.tsv
 set -- $(dd if="$target" bs={BLOCK_SIZE} count="{root_size // BLOCK_SIZE}" 2>/dev/null | sha256sum)
 [ "$1" = "{root_sha256}" ] || fail final-image-hash
 echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
-sync
-hold
+sync || fail final-sync
+reboot -f
+fail reboot-returned
 """.encode()
 
 

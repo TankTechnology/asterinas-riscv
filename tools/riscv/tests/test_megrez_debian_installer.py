@@ -45,6 +45,7 @@ _INSTALLER_COMMANDS = (
     "gzip",
     "mkdir",
     "mount",
+    "reboot",
     "sha256sum",
     "sleep",
     "sync",
@@ -130,7 +131,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
         self.assertIn("DEBIAN_INSTALL_FAIL", script)
-        self.assertNotIn("reboot", script)
+        pass_offset = script.index("DEBIAN_INSTALL_PASS")
+        reboot_offset = script.index("reboot -f")
+        self.assertLess(pass_offset, reboot_offset)
+        self.assertIn(
+            "sync || fail final-sync\nreboot -f\nfail reboot-returned", script
+        )
 
     def test_build_archive_is_reproducible_and_replaces_init(self):
         with tempfile.TemporaryDirectory() as temporary:
