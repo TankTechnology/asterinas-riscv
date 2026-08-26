@@ -162,12 +162,17 @@ dependencies = [
 name = "aster-dwmac"
 version = "0.1.0"
 dependencies = [
+ "aster-bigtcp",
  "aster-logger",
+ "aster-network",
+ "aster-softirq",
  "aster-time",
  "component",
  "fdt",
  "ostd",
+ "ostd-pod",
  "spin 0.9.9",
+ "zerocopy",
 ]
 
 [[package]]
