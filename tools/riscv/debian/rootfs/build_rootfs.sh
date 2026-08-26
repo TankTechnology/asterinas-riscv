@@ -990,6 +990,10 @@ configure_desktop() {
         install -m 0644 -- "$decoded_video" "$browser_directory/browser-m5.webm"
         install -D -m 0755 -- "$script_directory/browser_m5_marionette_gate.py" \
             "$stage/usr/lib/asterinas/browser-m5-marionette-gate"
+        install -D -m 0755 -- "$script_directory/browser_m5_firefox.sh" \
+            "$stage/usr/lib/asterinas/browser-m5-firefox"
+        install -D -m 0755 -- "$script_directory/browser_m5_network_observer.sh" \
+            "$stage/usr/lib/asterinas/browser-m5-network-observer"
         install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
         cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
@@ -1006,6 +1010,41 @@ configure_desktop() {
 }
  EOF
         chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
+        cat >"$stage/etc/systemd/system/asterinas-browser-m5.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M5 private-network Firefox workload
+Requires=asterinas-desktop-m5.service
+After=asterinas-desktop-m5.service
+
+[Service]
+Type=simple
+User=asterinas
+PrivateNetwork=yes
+Environment=HOME=/home/asterinas
+ExecStart=/usr/lib/asterinas/browser-m5-firefox
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical.target
+EOF
+        cat >"$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M5 initial network namespace observer
+Requires=asterinas-browser-m5.service
+After=asterinas-browser-m5.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/browser-m5-network-observer
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+        chmod 0644 -- \
+            "$stage/etc/systemd/system/asterinas-browser-m5.service" \
+            "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
     fi
 
     install -D -m 0755 -- \
@@ -1055,14 +1094,22 @@ EOF
     chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
     rm -f -- \
         "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
+    local evidence_unit_dependencies=""
+    local evidence_service_namespace=""
+    if [[ "$generation" == m5 ]]; then
+        evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
+        evidence_service_namespace='PrivateNetwork=yes'
+    fi
     cat >"$stage/etc/systemd/system/$service_name-evidence.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop evidence
 After=basic.target
 Wants=$service_name.service
+$evidence_unit_dependencies
 
 [Service]
 Type=oneshot
+$evidence_service_namespace
 ExecStart=/usr/lib/asterinas/desktop-$generation-evidence
 RemainAfterExit=yes
 
@@ -1078,6 +1125,12 @@ EOF
     ln -s -- \
         ../$service_name-evidence.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
+    if [[ "$generation" == m5 ]]; then
+        ln -s -- ../asterinas-browser-m5.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5.service"
+        ln -s -- ../asterinas-browser-m5-network-observer.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
+    fi
     rm -f -- "$stage/etc/systemd/system/default.target"
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
