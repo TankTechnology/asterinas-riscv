@@ -55,6 +55,42 @@ static int install_errno_filter(long nr, unsigned int flags)
 	return install_errno_filter_with(nr, flags, BLOCK_ERRNO);
 }
 
+static int install_padded_filter(size_t len, long blocked_nr)
+{
+	struct sock_filter *insns;
+	struct sock_fprog prog;
+	size_t prefix_len;
+	int result;
+
+	if (len == 0 || len > 4096 || (blocked_nr >= 0 && len < 4)) {
+		errno = EINVAL;
+		return -1;
+	}
+	insns = calloc(len, sizeof(*insns));
+	if (insns == NULL)
+		return -1;
+	prefix_len = blocked_nr >= 0 ? len - 4 : len - 1;
+	for (size_t i = 0; i < prefix_len; ++i)
+		insns[i] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_IMM, 0);
+	if (blocked_nr >= 0) {
+		insns[len - 4] = (struct sock_filter)BPF_STMT(
+			BPF_LD | BPF_W | BPF_ABS,
+			offsetof(struct seccomp_data, nr));
+		insns[len - 3] = (struct sock_filter)BPF_JUMP(
+			BPF_JMP | BPF_JEQ | BPF_K, blocked_nr, 0, 1);
+		insns[len - 2] = (struct sock_filter)BPF_STMT(
+			BPF_RET | BPF_K,
+			SECCOMP_RET_ERRNO | (BLOCK_ERRNO & SECCOMP_RET_DATA));
+	}
+	insns[len - 1] =
+		(struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+	prog.len = len;
+	prog.filter = insns;
+	result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog);
+	free(insns);
+	return result;
+}
+
 static void *probe_worker(void *arg)
 {
 	struct worker *worker = arg;
@@ -448,6 +484,49 @@ static int test_kill_process_has_signed_precedence(void)
 	return WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS ? 0 : 1;
 }
 
+static int test_filter_path_instruction_budget(void)
+{
+	/* 7*4096 + 6*4 = 28696 after the first seven nodes. */
+	if (install_padded_filter(4096, SYS_getpid) != 0)
+		return 1;
+	for (int i = 0; i < 6; ++i) {
+		if (install_padded_filter(4096, -1) != 0)
+			return 1;
+	}
+#ifdef __asterinas__
+	/* 28696 + 4 + 4068 = MAX_INSNS_PER_PATH (32768). */
+	if (install_padded_filter(4068, -1) != 0)
+		return 1;
+	/* One more one-insn node costs 4 + 1 and must be rejected atomically. */
+	errno = 0;
+	if (install_padded_filter(1, -1) != -1 || errno != EINVAL)
+		return 1;
+#else
+	/*
+	 * Linux budgets the translated BPF length, which can differ from the
+	 * classic-BPF input length. Approach the same boundary, then append tiny
+	 * nodes until Linux reports its documented ENOMEM without hard-coding a
+	 * translator-specific exact input length.
+	 */
+	if (install_padded_filter(3900, -1) != 0)
+		return 1;
+	for (int i = 0;; ++i) {
+		errno = 0;
+		if (install_padded_filter(1, -1) == -1) {
+			if (errno != ENOMEM)
+				return 1;
+			break;
+		}
+		if (i == 63)
+			return 1;
+	}
+#endif
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		return 1;
+	return syscall(SYS_getppid) > 0 ? 0 : 1;
+}
+
 static int test_tsync_stacking_single_thread(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
@@ -490,6 +569,8 @@ int main(void)
 				 "TSYNC catches up disabled sibling");
 	failures += run_isolated(test_kill_process_has_signed_precedence,
 				 "signed KILL_PROCESS precedence");
+	failures += run_isolated(test_filter_path_instruction_budget,
+				 "filter path instruction budget");
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
