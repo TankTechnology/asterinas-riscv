@@ -340,6 +340,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(result.returncode, 0, result.stderr)
         packages = result.stdout.splitlines()
         self.assertIn("firefox-esr", packages)
+        self.assertIn("iproute2", packages)
+        self.assertIn("iputils-ping", packages)
         self.assertNotIn("netsurf-gtk", packages)
         tools = subprocess.run(
             [str(rootfs / "build_rootfs.sh"), "--profile", "browser-m5", "--print-tools"],
@@ -462,11 +464,23 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             video = stage / "usr/share/asterinas/browser-m5/browser-m5.webm"
             session = stage / "usr/lib/asterinas/desktop-m5-session"
             evidence = stage / "usr/lib/asterinas/desktop-m5-evidence"
+            network_evidence = (
+                stage / "usr/lib/asterinas/desktop-m5-network-evidence"
+            )
+            network_unit = (
+                stage
+                / "etc/systemd/system/asterinas-desktop-m5-network.service"
+            )
             policy = stage / "usr/lib/firefox-esr/distribution/policies.json"
             self.assertEqual(probe.stat().st_mode & 0o777, 0o644)
             self.assertEqual(video.stat().st_mode & 0o777, 0o644)
             self.assertEqual(session.stat().st_mode & 0o777, 0o755)
             self.assertEqual(evidence.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(network_evidence.stat().st_mode & 0o777, 0o755)
+            self.assertIn(
+                "After=asterinas-desktop-m5-evidence.service",
+                network_unit.read_text(),
+            )
             self.assertEqual(policy.stat().st_mode & 0o777, 0o644)
             policies = json.loads(policy.read_text())["policies"]
             self.assertTrue(policies["DisableTelemetry"])
