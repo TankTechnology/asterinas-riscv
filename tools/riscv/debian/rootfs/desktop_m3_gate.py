@@ -46,7 +46,6 @@ _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 _BOCHS_BAR_RE = re.compile(rb"^\s*0\s+(0x[0-9a-fA-F]+)\s+", re.MULTILINE)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
-    (b"debian_desktop_m3_fail reason=", "desktop guest failure"),
     (b"(ee) no screens found", "Xorg has no screens"),
     (b"fatal server error", "Xorg fatal server error"),
     (b"segmentation fault", "userspace segmentation fault"),
@@ -67,21 +66,36 @@ def classify_desktop_m3(
 ) -> GateResult:
     """Classify fully drained serial evidence without trusting a screenshot alone."""
 
+    return classify_desktop(
+        transcript,
+        expected_debian_release=expected_debian_release,
+        milestones=DESKTOP_M3_MILESTONES,
+        failure_marker=b"DEBIAN_DESKTOP_M3_FAIL reason=",
+    )
+
+
+def classify_desktop(
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    milestones: tuple[str, ...],
+    failure_marker: bytes,
+) -> GateResult:
+    """Classify one ordered desktop profile without trusting its screenshot."""
+
     if not expected_debian_release:
         return GateResult(False, "missing expected Debian release", None)
     clean = _ANSI_ESCAPE_RE.sub(b"", transcript).lower()
-    for marker, reason in _FATAL_MARKERS:
+    for marker, reason in _FATAL_MARKERS + (
+        (failure_marker.lower(), "desktop guest failure"),
+    ):
         if marker in clean:
             return GateResult(False, reason, None)
 
     original = _ANSI_ESCAPE_RE.sub(b"", transcript)
-    positions = [original.find(marker.encode()) for marker in DESKTOP_M3_MILESTONES]
+    positions = [original.find(marker.encode()) for marker in milestones]
     missing = next(
-        (
-            marker
-            for marker, position in zip(DESKTOP_M3_MILESTONES, positions)
-            if position < 0
-        ),
+        (marker for marker, position in zip(milestones, positions) if position < 0),
         None,
     )
     if missing is not None:
@@ -197,6 +211,13 @@ def capture_rendered_ppm(
 class DesktopM3Operations(ConcreteOperations):
     """Graphical adapter around the existing pinned rootfs gate backend."""
 
+    SCHEMA_VERSION = 3
+    PROFILE_NAME = "desktop-m3"
+    ARTIFACT_PREFIX = "desktop-m3"
+    MILESTONES = DESKTOP_M3_MILESTONES
+    FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
+    BOOTARGS = DESKTOP_M3_BOOTARGS
+
     def __init__(self, config: GateConfig) -> None:
         super().__init__(config)
         self._screenshot = b""
@@ -211,8 +232,8 @@ class DesktopM3Operations(ConcreteOperations):
         self._require_output().invalidate(
             "boot.ext4",
             "debian-root.run.ext2",
-            "desktop-m3.serial.log",
-            "desktop-m3.ppm",
+            f"{self.ARTIFACT_PREFIX}.serial.log",
+            f"{self.ARTIFACT_PREFIX}.ppm",
             "result.json",
         )
 
@@ -221,8 +242,11 @@ class DesktopM3Operations(ConcreteOperations):
     ) -> Mapping[str, object]:
         identity = dict(super().validate_inputs(config, snapshots))
         manifest = load_manifest(self.input_paths["manifest"])
-        if manifest.schema_version != 3 or manifest.profile != "desktop-m3":
-            raise GateFailure("rootfs manifest is not the desktop-m3 profile")
+        if (
+            manifest.schema_version != self.SCHEMA_VERSION
+            or manifest.profile != self.PROFILE_NAME
+        ):
+            raise GateFailure(f"rootfs manifest is not the {self.PROFILE_NAME} profile")
         identity["profile"] = manifest.profile
         return identity
 
@@ -247,7 +271,7 @@ class DesktopM3Operations(ConcreteOperations):
             f'fdt set /{node} status "okay"',
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{DESKTOP_M3_BOOTARGS}"',
+            f'setenv bootargs "{self.BOOTARGS}"',
         )
 
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
@@ -278,15 +302,15 @@ class DesktopM3Operations(ConcreteOperations):
         serial.wait_for(b"Starting kernel ...", deadline)
         completion = serial.wait_for_any(
             (
-                DESKTOP_M3_MILESTONES[-1].encode(),
-                b"DEBIAN_DESKTOP_M3_FAIL reason=",
+                self.MILESTONES[-1].encode(),
+                self.FAILURE_MARKER,
             ),
             time.monotonic() + config.boot_timeout,
         )
-        if completion.startswith(b"DEBIAN_DESKTOP_M3_FAIL"):
+        if completion.startswith(self.FAILURE_MARKER.split(b" reason=", 1)[0]):
             raise GateFailure("guest reported desktop failure")
 
-        screenshot = session["directory"] / "desktop-m3.ppm"
+        screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],
             screenshot,
@@ -305,9 +329,11 @@ class DesktopM3Operations(ConcreteOperations):
         output = self._require_output()
         result["qemu_argv"] = self._attempted_argv
         result["screenshot"] = self._screenshot_metadata
-        output.atomic_write("desktop-m3.serial.log", transcript)
+        output.atomic_write(f"{self.ARTIFACT_PREFIX}.serial.log", transcript)
         if self._screenshot:
-            output.atomic_write("desktop-m3.ppm", self._screenshot, mode=0o600)
+            output.atomic_write(
+                f"{self.ARTIFACT_PREFIX}.ppm", self._screenshot, mode=0o600
+            )
         document = json.dumps(result, indent=2, sort_keys=True) + "\n"
         output.atomic_write("result.json", document.encode())
 

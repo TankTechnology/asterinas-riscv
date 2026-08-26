@@ -42,6 +42,12 @@ from tools.riscv.debian.rootfs.desktop_m3_gate import (
     desktop_m3_qemu_argv,
     inspect_ppm,
 )
+from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_MILESTONES,
+    DesktopM4Operations,
+    classify_desktop_m4,
+    desktop_m4_qemu_argv,
+)
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
     MAX_TRANSCRIPT_BYTES,
@@ -105,15 +111,6 @@ DESKTOP_M4_SESSION_SCRIPT = (
 )
 DESKTOP_M4_WELCOME_PAGE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
-)
-DESKTOP_M4_MILESTONES = (
-    "DEBIAN_DESKTOP_M4_UDEV state=active",
-    "DEBIAN_DESKTOP_M4_LOGIND state=active",
-    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
-    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
-    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
-    "DEBIAN_DESKTOP_M4_CLIENTS window-manager=matchbox file-manager=pcmanfm browser=netsurf terminal=xterm",
-    "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
 )
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
@@ -4488,6 +4485,99 @@ class DebianDesktopM3GateTests(unittest.TestCase):
         self.assertTrue(
             issubclass(DesktopM3Operations, gate_backend_module.ConcreteOperations)
         )
+
+
+class DebianDesktopM4GateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.uboot = self.directory / "u-boot"
+        self.boot = self.directory / "boot.ext4"
+        self.root = self.directory / "root.ext2"
+        for path in (self.uboot, self.boot, self.root):
+            path.write_bytes(path.name.encode())
+
+    def test_graphical_contract_reuses_m3_devices_for_m4(self) -> None:
+        arguments = desktop_m4_qemu_argv(
+            uboot=self.uboot,
+            boot_disk=self.boot,
+            root_disk=self.root,
+            monitor_socket=self.directory / "monitor.sock",
+        )
+
+        self.assertIn("bochs-display", arguments)
+        self.assertIn("virtio-keyboard-device", arguments)
+        self.assertIn("virtio-tablet-device", arguments)
+        self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
+        self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
+
+    def test_classifier_requires_ordered_application_evidence(self) -> None:
+        transcript = ("boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n").encode()
+
+        result = classify_desktop_m4(transcript, expected_debian_release="13.6")
+
+        self.assertTrue(result.passed, result.reason)
+        reversed_result = classify_desktop_m4(
+            ("\n".join(reversed(DESKTOP_M4_MILESTONES)) + "\n").encode(),
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(reversed_result.passed)
+        self.assertEqual(reversed_result.reason, "desktop milestones out of order")
+        failed = classify_desktop_m4(
+            transcript + b"DEBIAN_DESKTOP_M4_FAIL reason=netsurf\n",
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(failed.passed)
+        self.assertEqual(failed.reason, "desktop guest failure")
+
+    def test_adapter_binds_only_schema_four_profile_and_m4_outputs(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        config = mock.Mock()
+
+        with (
+            mock.patch.object(
+                DesktopM4Operations,
+                "input_paths",
+                new_callable=mock.PropertyMock,
+                return_value={"manifest": self.directory / "manifest.json"},
+            ),
+            mock.patch.object(
+                gate_backend_module.ConcreteOperations,
+                "validate_inputs",
+                return_value={"debian_release": "13.6"},
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.desktop_m3_gate.load_manifest",
+                return_value=mock.Mock(schema_version=4, profile="desktop-m4"),
+            ),
+        ):
+            identity = operations.validate_inputs(config, {})
+
+        self.assertEqual(identity["profile"], "desktop-m4")
+        self.assertEqual(operations.ARTIFACT_PREFIX, "desktop-m4")
+
+        for schema, profile in ((3, "desktop-m3"), (4, "desktop-m3")):
+            with (
+                self.subTest(schema=schema, profile=profile),
+                mock.patch.object(
+                    DesktopM4Operations,
+                    "input_paths",
+                    new_callable=mock.PropertyMock,
+                    return_value={"manifest": self.directory / "manifest.json"},
+                ),
+                mock.patch.object(
+                    gate_backend_module.ConcreteOperations,
+                    "validate_inputs",
+                    return_value={},
+                ),
+                mock.patch(
+                    "tools.riscv.debian.rootfs.desktop_m3_gate.load_manifest",
+                    return_value=mock.Mock(schema_version=schema, profile=profile),
+                ),
+                self.assertRaisesRegex(GateFailure, "desktop-m4 profile"),
+            ):
+                operations.validate_inputs(config, {})
 
 
 class DebianRootfsDocumentationTests(unittest.TestCase):
