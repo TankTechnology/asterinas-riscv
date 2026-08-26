@@ -261,6 +261,11 @@ def main() -> int:
         action="store_true",
         help="also pack the full rootfs as a compressed debug initramfs",
     )
+    parser.add_argument(
+        "--software-display",
+        action="store_true",
+        help="use the CPU-rendered modesetting fallback instead of glamor",
+    )
     args = parser.parse_args()
 
     for path in (args.base, args.runtime / "usr/lib/xorg/Xorg"):
@@ -273,7 +278,10 @@ def main() -> int:
     install_drm_runtime(args.runtime, ROOTFS)
     install_x11_ready_probe(args.runtime, ROOTFS)
 
-    shutil.copy2(Path(__file__).with_name("xorg-drm.conf"), ROOTFS / "etc/xorg.conf")
+    xorg_config = (
+        "xorg-drm-software.conf" if args.software_display else "xorg-drm.conf"
+    )
+    shutil.copy2(Path(__file__).with_name(xorg_config), ROOTFS / "etc/xorg.conf")
     shutil.copy2(
         Path(__file__).with_name("units") / "xorg-drm.service",
         ROOTFS / "etc/systemd/system/xorg.service",
@@ -281,6 +289,14 @@ def main() -> int:
     graphical_target = Path(__file__).with_name("units") / "graphical-drm.target"
     shutil.copy2(graphical_target, ROOTFS / "etc/systemd/system/graphical.target")
     shutil.copy2(graphical_target, ROOTFS / "etc/systemd/system/default.target")
+
+    xfconf_dir = ROOTFS / "etc/xdg/xfce4/xfconf/xfce-perchannel-xml"
+    xfconf_dir.mkdir(parents=True, exist_ok=True)
+    (xfconf_dir / "xfdesktop.xml").unlink(missing_ok=True)
+    shutil.copy2(
+        Path(__file__).with_name("xfconf-defaults") / "xfce4-desktop.xml",
+        xfconf_dir / "xfce4-desktop.xml",
+    )
 
     print(f"[pack] persistent root {ROOT_DISK}")
     pack_root_disk(ROOTFS)

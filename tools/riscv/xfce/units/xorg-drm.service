@@ -11,7 +11,10 @@ Environment=LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib
 Environment=LIBGL_DRIVERS_PATH=/usr/lib/riscv64-linux-gnu/dri
 Environment=GBM_BACKENDS_PATH=/usr/lib/riscv64-linux-gnu/gbm
 Environment=LIBGL_DEBUG=verbose
-ExecStart=/usr/lib/xorg/Xorg -config /etc/xorg.conf -modulepath /usr/lib/xorg/modules -xkbdir /usr/share/X11/xkb -logfile /dev/ttyS0 -noreset
+# Asterinas's MIT-SHM implementation does not yet support the complete X11
+# permission/attach contract. GTK otherwise eventually receives BadValue and
+# restarts xfdesktop, so keep the desktop on the normal XPutImage path.
+ExecStart=/usr/lib/xorg/Xorg -config /etc/xorg.conf -modulepath /usr/lib/xorg/modules -xkbdir /usr/share/X11/xkb -logfile /dev/ttyS0 -noreset -extension MIT-SHM
 ExecStartPost=/bin/sh -c 'until /usr/bin/x11-ready >/dev/ttyS0 2>&1; do /bin/sleep 1; done; echo XFCE_DRM_XORG_READY >/dev/ttyS0'
 Restart=on-failure
 RestartSec=2s

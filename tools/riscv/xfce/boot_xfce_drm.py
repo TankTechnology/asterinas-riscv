@@ -17,6 +17,7 @@ WORK = REPO / "target/xfce-drm"
 UBOOT = WORK / "u-boot"
 BOOT_DISK = WORK / "boot.ext4"
 ROOT_DISK = WORK / "root.ext2"
+MONITOR_SOCKET = WORK / "qemu-monitor.sock"
 KERNEL_LOAD = 0x8020_0000
 INITRD_LOAD = 0x8400_0000
 DTB_LOAD = 0xB000_0000
@@ -63,6 +64,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--settle", type=float, default=15.0)
     parser.add_argument("--interactive", action="store_true")
+    parser.add_argument(
+        "--software-display",
+        action="store_true",
+        help="accept the CPU-rendered modesetting fallback without glamor",
+    )
     parser.add_argument("--smp", type=int, default=4)
     args = parser.parse_args()
 
@@ -70,8 +76,17 @@ def main() -> int:
         if not path.exists():
             raise SystemExit(f"missing {path}; run build_xfce_drm.py first")
     serial_log = WORK / "serial.log"
+    MONITOR_SOCKET.unlink(missing_ok=True)
 
-    display = "gtk,gl=on,show-cursor=on" if args.interactive else "egl-headless,gl=on"
+    if args.software_display:
+        # The GTK OpenGL display path preserves the unused X byte of an XRGB
+        # dumb buffer as alpha, making the guest surface transparent under
+        # compositors.  The plain GTK/pixman path treats XRGB as opaque.
+        display = "gtk,gl=off,show-cursor=on" if args.interactive else "none"
+        gpu_device = "virtio-gpu-pci,id=gpu0"
+    else:
+        display = "gtk,gl=on,show-cursor=on" if args.interactive else "egl-headless,gl=on"
+        gpu_device = "virtio-gpu-gl-pci,id=gpu0"
 
     argv = [
         "qemu-system-riscv64",
@@ -86,11 +101,11 @@ def main() -> int:
         "-device", "virtio-blk-device,drive=bootdisk",
         "-drive", f"if=none,format=raw,file={ROOT_DISK},id=rootdisk",
         "-device", "virtio-blk-device,drive=rootdisk",
-        "-device", "virtio-gpu-gl-pci,id=gpu0",
+        "-device", gpu_device,
         "-device", "virtio-keyboard-device",
         "-device", "virtio-tablet-device",
         "-serial", "stdio",
-        "-monitor", "none",
+        "-monitor", f"unix:{MONITOR_SOCKET},server=on,wait=off",
     ]
 
     boot = Boot(argv, serial_log)
@@ -112,10 +127,11 @@ def main() -> int:
             if any(marker in clean for marker in PANIC_MARKERS):
                 reached = "panic"
                 break
+            graphics_ready = args.software_display or GLAMOR_ACTIVE in clean.lower()
             if (
                 GRAPHICAL_TARGET in clean
                 and SESSION_STARTED in clean
-                and GLAMOR_ACTIVE in clean.lower()
+                and graphics_ready
                 and X11_CONNECT_OK in clean
             ):
                 reached = "desktop-up"
@@ -134,6 +150,7 @@ def main() -> int:
         print(f"[boot] {error}", flush=True)
     finally:
         boot.close()
+        MONITOR_SOCKET.unlink(missing_ok=True)
 
     clean = ANSI_RE.sub(b"", bytes(boot.transcript))
     transcript = clean.decode("utf-8", "replace")
@@ -142,7 +159,7 @@ def main() -> int:
         "xfce-session": SESSION_STARTED in clean,
         "modesetting-driver": MODESETTING_DRIVER in clean,
         "modesetting-active": MODESETTING_ACTIVE in clean,
-        "glamor-log": GLAMOR_ACTIVE in clean.lower(),
+        "graphics-mode": args.software_display or GLAMOR_ACTIVE in clean.lower(),
         "xorg-ready": XORG_READY in clean,
         "x11-connect": X11_CONNECT_OK in clean,
         "kms-framebuffer": FRAMEBUFFER_ERROR not in clean,

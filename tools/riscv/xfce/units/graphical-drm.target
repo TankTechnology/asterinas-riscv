@@ -3,6 +3,6 @@
 [Unit]
 Description=Asterinas DRM Xfce Desktop
 Requires=multi-user.target
-Wants=dbus-smoke.service xorg.service xfce-session.service
+Wants=dbus-smoke.service xorg.service xfce-session.service xterm.service
 After=multi-user.target
 AllowIsolate=yes
