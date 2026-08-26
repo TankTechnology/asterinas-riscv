@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #define BLOCK_ERRNO 99
+#define STACK_ERRNO 98
 
 struct worker {
 	pthread_barrier_t ready;
@@ -24,14 +25,14 @@ struct worker {
 	pid_t tid;
 };
 
-static int install_errno_filter(long nr, unsigned int flags)
+static int install_errno_filter_with(long nr, unsigned int flags, int error)
 {
 	struct sock_filter insns[] = {
 		BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 			 offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1),
 		BPF_STMT(BPF_RET | BPF_K,
-			 SECCOMP_RET_ERRNO | (BLOCK_ERRNO & SECCOMP_RET_DATA)),
+			 SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA)),
 		BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
@@ -40,6 +41,11 @@ static int install_errno_filter(long nr, unsigned int flags)
 	};
 
 	return syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, flags, &prog);
+}
+
+static int install_errno_filter(long nr, unsigned int flags)
+{
+	return install_errno_filter_with(nr, flags, BLOCK_ERRNO);
 }
 
 static void *probe_worker(void *arg)
@@ -71,6 +77,27 @@ static void *divergent_worker(void *arg)
 		if (worker->result == -1)
 			worker->result = -errno;
 	}
+	return NULL;
+}
+
+static void *ancestor_worker(void *arg)
+{
+	struct worker *worker = arg;
+
+	worker->tid = syscall(SYS_gettid);
+	pthread_barrier_wait(&worker->ready);
+	pthread_barrier_wait(&worker->done);
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO) {
+		worker->result = 1;
+		return NULL;
+	}
+	errno = 0;
+	if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO) {
+		worker->result = 1;
+		return NULL;
+	}
+	worker->result = 0;
 	return NULL;
 }
 
@@ -279,39 +306,79 @@ static int test_strict_cannot_replace_filter(void)
 	return syscall(SYS_getpid) == -1 && errno == BLOCK_ERRNO ? 0 : 1;
 }
 
-#ifdef __asterinas__
-/*
- * Asterinas currently models one filter per thread.  Until filter trees are
- * implemented, reject stacking rather than replacing (and potentially
- * weakening) the policy already in force.
- */
-static int test_filter_stacking_is_rejected_atomically(void)
+static int test_filter_stacking(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
 		return 1;
-	errno = 0;
-	if (install_errno_filter(SYS_getppid, 0) != -1 || errno != EINVAL)
+	if (install_errno_filter_with(SYS_getppid, 0, STACK_ERRNO) != 0)
 		return 1;
 	errno = 0;
 	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
 		return 1;
-	return syscall(SYS_getppid) > 0 ? 0 : 1;
+	errno = 0;
+	return syscall(SYS_getppid) == -1 && errno == STACK_ERRNO ? 0 : 1;
 }
 
-static int test_tsync_stacking_is_rejected(void)
+static int test_equal_action_uses_newest_data(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
 		return 1;
+	if (install_errno_filter_with(SYS_getpid, 0, STACK_ERRNO) != 0)
+		return 1;
 	errno = 0;
-	if (install_errno_filter(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC) != -1 ||
-	    errno != EINVAL)
+	return syscall(SYS_getpid) == -1 && errno == STACK_ERRNO ? 0 : 1;
+}
+
+static int test_tsync_from_common_ancestor(void)
+{
+	struct worker worker = { 0 };
+	pthread_t thread;
+	int failed = 1;
+
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, ancestor_worker, &worker) != 0)
+		goto out;
+	pthread_barrier_wait(&worker.ready);
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
+		goto release;
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		goto release;
+	errno = 0;
+	if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO)
+		goto release;
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	thread = 0;
+	if (worker.result == 0)
+		failed = 0;
+out:
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return failed;
+release:
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	goto out;
+}
+
+static int test_tsync_stacking_single_thread(void)
+{
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
 		return 1;
 	errno = 0;
 	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
 		return 1;
-	return syscall(SYS_getppid) > 0 ? 0 : 1;
+	errno = 0;
+	return syscall(SYS_getppid) == -1 && errno == STACK_ERRNO ? 0 : 1;
 }
-#endif
 
 int main(void)
 {
@@ -328,12 +395,13 @@ int main(void)
 				 "clone inherits filter");
 	failures += run_isolated(test_strict_cannot_replace_filter,
 				 "strict cannot replace filter");
-#ifdef __asterinas__
-	failures += run_isolated(test_filter_stacking_is_rejected_atomically,
-				 "filter stacking atomic rejection");
-	failures += run_isolated(test_tsync_stacking_is_rejected,
-				 "TSYNC stacking rejection");
-#endif
+	failures += run_isolated(test_filter_stacking, "filter stacking");
+	failures += run_isolated(test_equal_action_uses_newest_data,
+				 "equal action uses newest data");
+	failures += run_isolated(test_tsync_stacking_single_thread,
+				 "single-thread TSYNC stacking");
+	failures += run_isolated(test_tsync_from_common_ancestor,
+				 "TSYNC from common ancestor");
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
