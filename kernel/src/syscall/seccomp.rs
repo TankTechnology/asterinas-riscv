@@ -4,9 +4,11 @@ use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::{
+        credentials::capabilities::CapSet,
         posix_thread::AsPosixThread,
         signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
     },
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// Seccomp modes (values of the per-thread `seccomp_mode` field).
@@ -205,8 +207,27 @@ pub fn sys_seccomp(
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
 
+            // Linux permits installing a filter only after privileges have
+            // been made non-increasing, or with CAP_SYS_ADMIN in the caller's
+            // current user namespace.  The seccomp ABI reports EACCES rather
+            // than the capability hook's usual EPERM on failure.
+            if !ctx.posix_thread.credentials().no_new_privs()
+                && lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                    ctx.thread_local.borrow_user_ns().as_ref(),
+                    ctx.posix_thread,
+                    CapSet::SYS_ADMIN,
+                ))
+                .is_err()
+            {
+                return_errno_with_message!(
+                    Errno::EACCES,
+                    "seccomp filter requires no_new_privs or CAP_SYS_ADMIN"
+                );
+            }
+
             let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
             let tasks = ctx.process.tasks().lock();
+            let caller_no_new_privs = ctx.posix_thread.credentials().no_new_privs();
 
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 // Asterinas currently represents one filter per thread rather
@@ -240,6 +261,9 @@ pub fn sys_seccomp(
                     .iter()
                     .map(|task| task.as_posix_thread().unwrap())
                 {
+                    if caller_no_new_privs {
+                        thread.set_no_new_privs();
+                    }
                     thread.set_seccomp_filter(filter.clone());
                     thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
                 }

@@ -322,6 +322,14 @@ impl PosixThread {
         self.credentials.dup().restrict()
     }
 
+    /// Irreversibly enables `no_new_privs` for this thread.
+    ///
+    /// This narrow internal API is used by seccomp TSYNC, which must propagate
+    /// the caller's `no_new_privs` bit to every synchronized sibling.
+    pub(crate) fn set_no_new_privs(&self) {
+        self.credentials.set_no_new_privs();
+    }
+
     /// Returns the I/O priority value of the thread.
     pub fn io_priority(&self) -> &AtomicU32 {
         &self.io_priority
