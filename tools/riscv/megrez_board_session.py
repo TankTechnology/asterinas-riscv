@@ -267,7 +267,12 @@ class BoardSession:
             and f"{PROMPT.strip()} {command}" not in normalized_lines
         ):
             raise RuntimeError(f"echo mismatch for {command!r}")
-        if UBOOT_ERROR_PATTERN.search(out):
+        kernel_entered = (
+            command.startswith("booti ")
+            and expect == MILESTONES["kernel_enter"]
+            and MILESTONES["kernel_enter"] in out
+        )
+        if UBOOT_ERROR_PATTERN.search(out) and not kernel_entered:
             raise RuntimeError(
                 f"U-Boot error while running {command!r}: {out[-200:]!r}"
             )
@@ -500,6 +505,9 @@ def main(argv: list[str]) -> int:
         final_marker=FINAL_MILESTONE_MARKERS[args.final_profile],
     )
     try:
+        # A board already stopped at U-Boot is silent after the serial port is
+        # reopened. Wake the prompt before waiting for evidence from this session.
+        session.send("")
         boot = session.wait_for(PROMPT, timeout=60)
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
