@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from tools.riscv.debian.rootfs.profiles import get_profile
-from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
+from tools.riscv.debian.rootfs.contract import ContractError, load_manifest, write_manifest
 from tools.riscv.debian.rootfs.signed_sources import (
     BASE_SOURCE,
     M5_SOURCES,
@@ -205,7 +206,74 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             with self.assertRaisesRegex(ValueError, "browser-m5 contract"):
                 signed_sources_manifest((BASE_SOURCE,), {"base": base})
 
+    def _writer_inputs(self, root: Path, *, firefox_role: str = "security") -> dict[str, object]:
+        profile = get_profile("browser-m5")
+        package_names = sorted(set(profile.requested_packages + profile.identity_packages))
+        rows = [(name, "riscv64", "1") for name in package_names]
+        image = root / "image"
+        image.write_bytes(b"image")
+        lock = root / "packages.lock"
+        lock.write_text("".join(f"{name}\t{arch}\t{version}\n" for name, arch, version in rows))
+        checksums = root / "package-checksums"
+        checksum_rows = [
+            (name, arch, version, hashlib.sha256(name.encode()).hexdigest(), firefox_role if name == "firefox-esr" else "base")
+            for name, arch, version in rows
+        ]
+        checksums.write_text("".join("\t".join(row) + "\n" for row in checksum_rows))
+        inrelease = root / "legacy-InRelease"
+        inrelease.write_bytes(b"legacy")
+        source_files = {"base": root / "base-InRelease", "security": root / "security-InRelease"}
+        source_files["base"].write_bytes(b"base")
+        source_files["security"].write_bytes(b"security")
+        return {
+            "output": root / "manifest.json",
+            "image": image,
+            "packages_lock": lock,
+            "inrelease": inrelease,
+            "package_checksums": checksums,
+            "mirror_url": BASE_SOURCE.mirror_url,
+            "suite": "trixie",
+            "debian_release": "13.6",
+            "build_timestamp": "2026-08-26T00:00:00Z",
+            "tool_versions": ("debootstrap=test",),
+            "profile_name": "browser-m5",
+            "signed_source_files": source_files,
+        }
+
+    @mock.patch("tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically")
+    def test_schema_five_writer_emits_exact_sources_and_package_roles(self, publish: mock.Mock) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            write_manifest(**inputs)
+        serialized = publish.call_args.args[1]
+        payload = json.loads(serialized)
+        self.assertNotIn("signed_metadata", payload)
+        self.assertEqual([row["role"] for row in payload["signed_sources"]], ["base", "security"])
+        firefox = next(row for row in payload["downloaded_packages"] if row["name"] == "firefox-esr")
+        self.assertEqual(firefox["source_role"], "security")
+
+    def test_writer_rejects_firefox_from_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory), firefox_role="base")
+            with self.assertRaisesRegex(ContractError, "firefox-esr"):
+                write_manifest(**inputs)
+
+    def test_writer_output_cannot_alias_either_signed_inrelease(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            for role in ("base", "security"):
+                aliased = dict(inputs)
+                aliased["output"] = inputs["signed_source_files"][role]
+                with self.assertRaisesRegex(ContractError, "aliases input"):
+                    write_manifest(**aliased)
+
+    def test_old_schema_rejects_signed_source_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            inputs["profile_name"] = "minimal-m1"
+            with self.assertRaisesRegex(ContractError, "only valid for browser-m5"):
+                write_manifest(**inputs)
+
 
 if __name__ == "__main__":
     unittest.main()
-import json
