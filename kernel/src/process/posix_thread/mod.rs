@@ -62,11 +62,32 @@ pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 pub struct SeccompFilter {
     program: Arc<[SockFilter]>,
     parent: Option<Arc<SeccompFilter>>,
+    path_instructions: usize,
 }
 
 impl SeccompFilter {
-    pub fn new(program: Arc<[SockFilter]>, parent: Option<Arc<SeccompFilter>>) -> Arc<Self> {
-        Arc::new(Self { program, parent })
+    /// Linux limits a filter path to 32K instructions. Each existing node
+    /// contributes an additional four-instruction accounting overhead when a
+    /// new node is appended.
+    pub const MAX_INSNS_PER_PATH: usize = 1 << 15;
+
+    pub fn try_new(
+        program: Arc<[SockFilter]>,
+        parent: Option<Arc<SeccompFilter>>,
+    ) -> Option<Arc<Self>> {
+        let ancestor_cost = match parent.as_ref() {
+            Some(parent) => parent.path_instructions.checked_add(4)?,
+            None => 0,
+        };
+        let path_instructions = ancestor_cost.checked_add(program.len())?;
+        if path_instructions > Self::MAX_INSNS_PER_PATH {
+            return None;
+        }
+        Some(Arc::new(Self {
+            program,
+            parent,
+            path_instructions,
+        }))
     }
 
     pub fn program(&self) -> &[SockFilter] {
@@ -94,6 +115,21 @@ impl SeccompFilter {
             current = node.parent();
         }
         false
+    }
+}
+
+impl Drop for SeccompFilter {
+    fn drop(&mut self) {
+        // Arc's normal recursive destruction can exhaust the kernel stack for
+        // a long uniquely-owned chain. Iteratively peel unique ancestors;
+        // stop as soon as an ancestor is shared by another thread/snapshot.
+        let mut parent = self.parent.take();
+        while let Some(parent_arc) = parent {
+            let Ok(mut parent_node) = Arc::try_unwrap(parent_arc) else {
+                break;
+            };
+            parent = parent_node.parent.take();
+        }
     }
 }
 
@@ -433,6 +469,53 @@ impl PosixThread {
     /// and is irreversible for the lifetime of the thread.
     pub fn set_seccomp_filter(&self, filter: Arc<SeccompFilter>) {
         *self.seccomp_filter.lock() = Some(filter);
+    }
+}
+
+#[cfg(ktest)]
+mod seccomp_filter_tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    fn program(len: usize) -> Arc<[SockFilter]> {
+        Arc::from(
+            vec![
+                SockFilter {
+                    code: 0x06, // BPF_RET | BPF_K
+                    jt: 0,
+                    jf: 0,
+                    k: 0x7fff_0000, // SECCOMP_RET_ALLOW
+                };
+                len
+            ]
+            .into_boxed_slice(),
+        )
+    }
+
+    #[ktest]
+    fn seccomp_filter_path_budget_boundary() {
+        let mut chain = None;
+        for _ in 0..7 {
+            chain = SeccompFilter::try_new(program(4096), chain);
+            assert!(chain.is_some());
+        }
+        chain = SeccompFilter::try_new(program(4068), chain);
+        assert_eq!(chain.as_ref().unwrap().path_instructions, 1 << 15);
+        assert!(SeccompFilter::try_new(program(1), chain.clone()).is_none());
+    }
+
+    #[ktest]
+    fn dropping_long_unique_filter_chain_is_iterative() {
+        let one_instruction = program(1);
+        let mut chain = None;
+        // 6554 one-insn nodes cost 6554 + 6553*4 = 32766.
+        for _ in 0..6554 {
+            chain = SeccompFilter::try_new(one_instruction.clone(), chain);
+            assert!(chain.is_some());
+        }
+        assert!(SeccompFilter::try_new(one_instruction, chain.clone()).is_none());
+        drop(chain);
     }
 }
 
