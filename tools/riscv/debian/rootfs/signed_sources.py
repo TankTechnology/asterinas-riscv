@@ -127,7 +127,11 @@ def authenticate_packages(index: bytes, release_path: str, inrelease: bytes) -> 
 def signed_sources_manifest(sources: tuple[SignedSource, ...], files: dict[str, Path]) -> list[dict[str, str]]:
     """Return a deterministic schema-5 signed_sources fragment."""
 
-    if set(files) != {source.role for source in sources}:
+    expected_sources = {source.role: source for source in M5_SOURCES}
+    supplied_sources = {source.role: source for source in sources}
+    if supplied_sources != expected_sources or len(sources) != len(M5_SOURCES):
+        raise ValueError("signed sources do not match the browser-m5 contract")
+    if set(files) != set(expected_sources):
         raise ValueError("signed source files do not match configured roles")
     rows = [
         {
