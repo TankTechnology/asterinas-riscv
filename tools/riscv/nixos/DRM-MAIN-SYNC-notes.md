@@ -328,3 +328,46 @@ boots on that converged kernel and reaches an accelerated virgl/glamor desktop.
 The end-to-end result, commands, kernel defects found by Xorg, and current TCG
 performance limit are recorded in
 [`../xfce/XFCE-DRM-M1-report.md`](../xfce/XFCE-DRM-M1-report.md).
+
+## 2026-08-27 KMS and unpublished-handle hardening
+
+DRM-master ownership, scanout ownership, active mode dimensions, and KMS
+updates now share one device-wide sleeping mutex. This closes the old gap where
+two primary-node files serialized only their own state while both changed the
+same hardware scanout. Closing or removing a framebuffer distinguishes the
+owning file as well as its per-file framebuffer id, and `GETCRTC` no longer
+publishes an id from another file's private namespace.
+
+GEM handles returned by `GEM_OPEN`, `CREATE_DUMB`, PRIME import, and implicit
+`VIRTGPU_RESOURCE_CREATE` allocation are now staged as `PendingGemHandle`
+transactions. A handle number and object reference are reserved without adding
+the handle to the per-file lookup table. Successful userspace copyout publishes
+the handle; failure drops the pending transaction, releases the object, and
+rewinds a still-last bump allocation. This prevents another thread sharing the
+DRM file from observing and using a handle that the creating ioctl later tries
+to roll back.
+
+Focused real-guest validation passed:
+
+- a read-only ioctl response page forced `CREATE_DUMB` copyout to return
+  `EFAULT`; handle 1 remained unqueryable and the next valid allocation still
+  mapped at offset zero (`M20_PRIME_UNPUBLISHED_HANDLE_OK`);
+- PRIME export, close-original, import, and mmap lifetime remained operational
+  (`M20_PRIME_PASS`);
+- raw virgl resource creation, transfer, fenced render, wait, and double-buffer
+  checks remained operational (`M16_VIRGL_RAW_PASS`);
+- the persistent-root software-display desktop reached every graphical, Xorg,
+  X11, and framebuffer gate (`XFCE_DRM_PASS`) in 2 minutes 19.602 seconds.
+
+The controlled DRM-versus-fbdev startup measurements are recorded in
+[`../xfce/XFCE-DISPLAY-BENCH.md`](../xfce/XFCE-DISPLAY-BENCH.md). They do not
+show a statistically meaningful TCG startup-time advantage for either path;
+DRM's current value is Linux KMS/PRIME/virgl compatibility, while an eventual
+smoothness result needs interaction/frame-latency measurements on the virgl
+path rather than boot time.
+
+Debian riscv64 Xorg, Mesa, GBM, EGL, and virgl userspace are already exercised
+by the M19 runtime and work with this DRM implementation. The official Debian
+desktop m3/m4 boot configuration still selects `xserver-xorg-video-fbdev` with
+`bochs-display`, so Debian userspace is supported but that distribution's
+default desktop integration has not yet switched to DRM.

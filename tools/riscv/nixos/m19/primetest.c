@@ -45,11 +45,46 @@ int main(void) {
     int card = open("/dev/dri/card0", O_RDWR);
     if (card < 0) { printf("M20_PRIME_FAIL open card0 errno=%d\n", errno); return 1; }
 
+    /* A failed response copyout must not publish the reserved GEM handle or
+     * consume space from the dumb-buffer bump allocator. */
+    long page_size = sysconf(_SC_PAGESIZE);
+    struct drm_mode_create_dumb *unpublished = mmap(
+        NULL, page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (unpublished == MAP_FAILED) {
+        printf("M20_PRIME_FAIL unpublished mmap errno=%d\n", errno); return 1;
+    }
+    *unpublished = (struct drm_mode_create_dumb){ .width = 1, .height = 1, .bpp = 32 };
+    if (mprotect(unpublished, page_size, PROT_READ) != 0) {
+        printf("M20_PRIME_FAIL unpublished mprotect errno=%d\n", errno); return 1;
+    }
+    errno = 0;
+    if (ioctl(card, DRM_IOCTL_MODE_CREATE_DUMB, unpublished) != -1 || errno != EFAULT) {
+        printf("M20_PRIME_FAIL unpublished CREATE_DUMB result errno=%d handle=%u\n",
+               errno, unpublished->handle);
+        return 1;
+    }
+    struct drm_mode_map_dumb unpublished_map = { .handle = 1 };
+    errno = 0;
+    if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &unpublished_map) != -1 || errno != EINVAL) {
+        printf("M20_PRIME_FAIL unpublished handle visible errno=%d offset=%llu\n",
+               errno, (unsigned long long)unpublished_map.offset);
+        return 1;
+    }
+    munmap(unpublished, page_size);
+    printf("M20_PRIME_UNPUBLISHED_HANDLE_OK\n");
+
     /* Consume the first pool span so that dma-buf offset zero must be
      * translated to a nonzero VMO offset for the object under test. */
     struct drm_mode_create_dumb sacrificial = { .width = 1, .height = 1, .bpp = 32 };
     if (ioctl(card, DRM_IOCTL_MODE_CREATE_DUMB, &sacrificial) != 0) {
         printf("M20_PRIME_FAIL sacrificial CREATE_DUMB errno=%d\n", errno); return 1;
+    }
+    struct drm_mode_map_dumb sacrificial_map = { .handle = sacrificial.handle };
+    if (ioctl(card, DRM_IOCTL_MODE_MAP_DUMB, &sacrificial_map) != 0 ||
+        sacrificial_map.offset != 0) {
+        printf("M20_PRIME_FAIL unpublished allocation retained errno=%d offset=%llu\n",
+               errno, (unsigned long long)sacrificial_map.offset);
+        return 1;
     }
     struct drm_mode_destroy_dumb destroy = { .handle = sacrificial.handle };
     if (ioctl(card, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy) != 0) {

@@ -16,7 +16,7 @@
 
 use core::fmt::Display;
 
-use super::{DriHandle, DumbBuffer, GpuManager};
+use super::{DriHandle, DumbBuffer, GpuManager, gem::PendingGemHandle};
 use crate::{
     events::IoEvents,
     fs::{
@@ -181,23 +181,16 @@ pub(super) fn handle_to_fd(
 /// Imports a dma-buf fd as a per-file GEM handle.
 ///
 /// Returns the new handle (and the buffer size, for completeness).
-pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<(u32, u64)> {
+pub(super) fn fd_to_handle<'a>(
+    handle: &'a DriHandle,
+    file: &DmaBufFile,
+) -> Result<(PendingGemHandle<'a>, u64)> {
     if !Arc::ptr_eq(&handle.gpu_manager, &file.gpu_manager) {
         return_errno_with_message!(Errno::EXDEV, "dma-buf belongs to another DRM device");
     }
     let buffer = file.buffer();
     let object_id = file.object_id;
     handle.gpu_manager.retain_gem_object(object_id)?;
-
-    let mut inner = handle.inner.lock();
-    let gem_handle = inner.next_handle;
-    inner.next_handle += 1;
-    inner.handles.insert(gem_handle, object_id);
-
-    Ok((gem_handle, buffer.size as u64))
-}
-
-/// Rolls back a just-created dma-buf import that was not published to userspace.
-pub(super) fn rollback_fd_to_handle(handle: &DriHandle, gem_handle: u32) {
-    super::gem::rollback_handle(handle, gem_handle);
+    let pending = PendingGemHandle::new_owned(handle, object_id)?;
+    Ok((pending, buffer.size as u64))
 }

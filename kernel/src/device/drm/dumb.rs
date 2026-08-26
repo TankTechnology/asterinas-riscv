@@ -10,15 +10,18 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use align_ext::AlignExt;
 
-use super::{DUMB_POOL_SIZE, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DumbBuffer};
+use super::{
+    DUMB_POOL_SIZE, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DumbBuffer,
+    gem::PendingGemHandle,
+};
 use crate::prelude::*;
 
 /// Creates a dumb buffer, allocating from the global pool and wrapping it
 /// in a GEM object.
-pub(super) fn create_dumb(
-    handle: &super::DriHandle,
+pub(super) fn create_dumb<'a>(
+    handle: &'a super::DriHandle,
     req: &DrmModeCreateDumb,
-) -> Result<DrmModeCreateDumb> {
+) -> Result<(DrmModeCreateDumb, PendingGemHandle<'a>)> {
     if req.flags != 0 {
         return_errno_with_message!(Errno::EINVAL, "unsupported dumb buffer flags");
     }
@@ -44,7 +47,8 @@ pub(super) fn create_dumb(
     if end > DUMB_POOL_SIZE {
         return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
     }
-    *offset_guard = end.align_up(PAGE_SIZE);
+    let next_offset = end.align_up(PAGE_SIZE);
+    *offset_guard = next_offset;
     drop(offset_guard);
 
     let object_id = handle
@@ -68,17 +72,17 @@ pub(super) fn create_dumb(
         .lock()
         .insert(object_id, Arc::new(gem_obj));
 
-    let mut inner = handle.inner.lock();
-    let gem_handle = inner.next_handle;
-    inner.next_handle += 1;
-    inner.handles.insert(gem_handle, object_id);
+    let pending = PendingGemHandle::new_allocated(handle, object_id, offset, next_offset)?;
 
-    Ok(DrmModeCreateDumb {
-        handle: gem_handle,
-        pitch,
-        size: size as u64,
-        ..*req
-    })
+    Ok((
+        DrmModeCreateDumb {
+            handle: pending.id(),
+            pitch,
+            size: size as u64,
+            ..*req
+        },
+        pending,
+    ))
 }
 
 /// Returns the byte offset of a dumb buffer within the pool for mmap.

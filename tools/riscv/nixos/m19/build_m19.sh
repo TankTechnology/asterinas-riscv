@@ -43,6 +43,8 @@ mkdir -p "${ROOTFS}/root"
     "${ROOTFS}/usr/lib/riscv64-linux-gnu/libgbm.so.1"
 "${MUSLCC}" -O2 -static -o "${ROOTFS}/root/virgltest" \
     "${REPO_ROOT}/tools/riscv/nixos/m16/virgltest.c"
+"${MUSLCC}" -O2 -static -o "${ROOTFS}/root/primetest" \
+    "$(dirname "${BASH_SOURCE[0]}")/primetest.c"
 
 echo "==> packing initramfs (Debian rootfs, this takes a moment)"
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )

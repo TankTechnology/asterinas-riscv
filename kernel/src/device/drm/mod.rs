@@ -889,13 +889,11 @@ impl PerOpenFileOps for DriHandle {
             cmd @ GemOpen => {
                 let _kms_state = self.lock_kms_as_master()?;
                 let mut req = cmd.read()?;
-                let (handle, size) = gem::gem_open(self, req.name)?;
-                req.handle = handle;
+                let (pending, size) = gem::gem_open(self, req.name)?;
+                req.handle = pending.id();
                 req.size = size;
-                if let Err(error) = cmd.write(&req) {
-                    gem::rollback_handle(self, handle);
-                    return Err(error);
-                }
+                cmd.write(&req)?;
+                pending.publish();
                 Ok(0)
             }
             cmd @ ModeGetResources => {
@@ -976,11 +974,9 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeCreateDumb => {
                 let req = cmd.read()?;
-                let response = dumb::create_dumb(self, &req)?;
-                if let Err(error) = cmd.write(&response) {
-                    gem::rollback_handle(self, response.handle);
-                    return Err(error);
-                }
+                let (response, pending) = dumb::create_dumb(self, &req)?;
+                cmd.write(&response)?;
+                pending.publish();
                 Ok(0)
             }
             cmd @ ModeMapDumb => {
@@ -1212,16 +1208,16 @@ impl PerOpenFileOps for DriHandle {
                         )));
                     }
                 };
-                let (handle, _size) = match prime::fd_to_handle(self, dma_buf) {
+                let (pending, _size) = match prime::fd_to_handle(self, dma_buf) {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
                 let mut resp = req;
-                resp.handle = handle;
+                resp.handle = pending.id();
                 if let Err(e) = cmd.write(&resp) {
-                    prime::rollback_fd_to_handle(self, handle);
                     return Some(Err(e));
                 }
+                pending.publish();
                 Some(Ok(0))
             }
             _ => None,
