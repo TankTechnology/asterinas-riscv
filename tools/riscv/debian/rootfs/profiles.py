@@ -194,8 +194,8 @@ _PROFILES = {
 
 _PROFILES["browser-m5"] = RootfsProfile(
     name="browser-m5",
-    schema_version=5,
-    root_label="ASTER_DEBIANM5",
+    schema_version=6,
+    root_label="ASTER_BROWSERM5",
     root_uuid="41be8ca6-8168-5ef0-84b1-25824d8f87f5",
     requested_packages=tuple(
         package
