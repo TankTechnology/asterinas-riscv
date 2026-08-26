@@ -299,6 +299,10 @@ validate_existing_publication_targets() {
         [[ ! -L "$target" ]] || die "unsafe published artifact symlink: $target"
         [[ ! -e "$target" || -f "$target" ]] ||
             die "unsafe published artifact type: $target"
+    else
+        target="$OUTPUT_DIR/source-metadata/Security-InRelease"
+        [[ ! -e "$target" && ! -L "$target" ]] ||
+            die "stale browser-m5 artifact in non-browser output: $target"
     fi
 }
 
