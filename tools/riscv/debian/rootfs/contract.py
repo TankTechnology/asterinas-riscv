@@ -21,6 +21,7 @@ from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 from tools.riscv.debian.rootfs.profiles import RootfsProfile, get_profile
+from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
 
 
 _M1_PROFILE = get_profile("minimal-m1")
@@ -55,8 +56,19 @@ _MANIFEST_V1_KEYS = {
     "gate_packages",
 }
 _MANIFEST_V2_KEYS = _MANIFEST_V1_KEYS | {"profile"}
+_MANIFEST_V5_KEYS = (_MANIFEST_V2_KEYS - {"mirror_url", "signed_metadata"}) | {
+    "signed_sources"
+}
 _SIGNED_METADATA_KEYS = {"url", "sha256"}
 _DOWNLOADED_PACKAGE_KEYS = {"name", "architecture", "version", "sha256"}
+_DOWNLOADED_PACKAGE_V5_KEYS = _DOWNLOADED_PACKAGE_KEYS | {"source_role"}
+_SIGNED_SOURCE_KEYS = {
+    "role",
+    "mirror_url",
+    "suite",
+    "inrelease_url",
+    "inrelease_sha256",
+}
 _FILESYSTEM_KEYS = {
     "type",
     "label",
@@ -67,6 +79,8 @@ _FILESYSTEM_KEYS = {
 
 PackageLockRow = tuple[str, str, str]
 DownloadedPackageIdentity = tuple[str, str, str, str]
+DownloadedPackageIdentityV5 = tuple[str, str, str, str, str]
+SignedSourceIdentity = tuple[str, str, str, str, str]
 
 
 class ContractError(ValueError):
@@ -96,8 +110,11 @@ class RootfsManifest:
     architecture: str
     signed_metadata_url: str
     signed_metadata_sha256: str
+    signed_sources: tuple[SignedSourceIdentity, ...]
     packages_lock_sha256: str
-    downloaded_packages: tuple[DownloadedPackageIdentity, ...]
+    downloaded_packages: tuple[
+        DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...
+    ]
     filesystem: FilesystemIdentity
     tool_versions: tuple[tuple[str, str], ...]
     build_timestamp: str
@@ -142,23 +159,30 @@ def load_manifest(path: Path) -> RootfsManifest:
             schema_version,
             _string(manifest["profile"], "profile"),
         )
+    elif schema_version == 5:
+        _exact_keys(manifest, _MANIFEST_V5_KEYS, "manifest")
+        profile = _profile_for_manifest(
+            schema_version,
+            _string(manifest["profile"], "profile"),
+        )
     else:
         raise ContractError(f"unsupported manifest schema version: {schema_version}")
 
-    signed_metadata = _mapping(
-        manifest["signed_metadata"],
-        "signed_metadata",
-    )
-    _exact_keys(
-        signed_metadata,
-        _SIGNED_METADATA_KEYS,
-        "signed_metadata",
-    )
+    if schema_version == 5:
+        signed_metadata: Mapping[str, Any] = {}
+        signed_sources = _signed_sources(manifest["signed_sources"])
+        _validate_m5_sources(signed_sources)
+    else:
+        signed_metadata = _mapping(manifest["signed_metadata"], "signed_metadata")
+        _exact_keys(signed_metadata, _SIGNED_METADATA_KEYS, "signed_metadata")
+        signed_sources = ()
 
     filesystem = _mapping(manifest["filesystem"], "filesystem")
     _exact_keys(filesystem, _FILESYSTEM_KEYS, "filesystem")
 
-    downloaded_packages = _downloaded_packages(manifest["downloaded_packages"])
+    downloaded_packages = _downloaded_packages(
+        manifest["downloaded_packages"], schema_version=schema_version
+    )
     tool_versions = _string_mapping(
         manifest["tool_versions"],
         "tool_versions",
@@ -179,16 +203,21 @@ def load_manifest(path: Path) -> RootfsManifest:
             manifest["debian_release"],
             "debian_release",
         ),
-        mirror_url=_string(manifest["mirror_url"], "mirror_url"),
+        mirror_url=(
+            "" if schema_version == 5 else _string(manifest["mirror_url"], "mirror_url")
+        ),
         architecture=_string(manifest["architecture"], "architecture"),
-        signed_metadata_url=_string(
-            signed_metadata["url"],
-            "signed_metadata.url",
+        signed_metadata_url=(
+            ""
+            if schema_version == 5
+            else _string(signed_metadata["url"], "signed_metadata.url")
         ),
-        signed_metadata_sha256=_sha256(
-            signed_metadata["sha256"],
-            "signed_metadata.sha256",
+        signed_metadata_sha256=(
+            ""
+            if schema_version == 5
+            else _sha256(signed_metadata["sha256"], "signed_metadata.sha256")
         ),
+        signed_sources=signed_sources,
         packages_lock_sha256=_sha256(
             manifest["packages_lock_sha256"],
             "packages_lock_sha256",
@@ -262,8 +291,11 @@ def validate_frozen_root(
             f"{manifest.debian_release!r}"
         )
     _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
-    _require_https(manifest.mirror_url, "mirror_url")
-    _require_https(manifest.signed_metadata_url, "signed_metadata.url")
+    if manifest.schema_version == 5:
+        _validate_m5_sources(manifest.signed_sources)
+    else:
+        _require_https(manifest.mirror_url, "mirror_url")
+        _require_https(manifest.signed_metadata_url, "signed_metadata.url")
 
     filesystem = manifest.filesystem
     _require_integer(filesystem.size_bytes, "filesystem.size_bytes")
@@ -292,21 +324,26 @@ def validate_frozen_root(
     downloaded_packages = manifest.downloaded_packages
     if downloaded_packages != tuple(sorted(downloaded_packages)):
         raise ContractError("downloaded package identities must be sorted")
-    downloaded_identities = tuple(
-        (name, architecture) for name, architecture, _, _ in downloaded_packages
-    )
+    downloaded_identities = tuple((row[0], row[1]) for row in downloaded_packages)
     if len(downloaded_identities) != len(set(downloaded_identities)):
         raise ContractError("downloaded package identities must be unique")
 
     locked_rows = set(rows)
-    for name, architecture, version, _ in downloaded_packages:
+    for package in downloaded_packages:
+        name, architecture, version = package[:3]
         if (name, architecture, version) not in locked_rows:
             raise ContractError(
                 f"downloaded package {name}/{architecture}/{version} "
                 "does not match packages.lock"
             )
+        if (
+            manifest.schema_version == 5
+            and name == "firefox-esr"
+            and package[4] != "security"
+        ):
+            raise ContractError("firefox-esr must be admitted from the security source")
 
-    downloaded_names = {name for name, _, _, _ in downloaded_packages}
+    downloaded_names = {row[0] for row in downloaded_packages}
     missing_install_packages = set(profile.requested_packages) - downloaded_names
     if missing_install_packages:
         raise ContractError(
@@ -315,7 +352,7 @@ def validate_frozen_root(
         )
     downloaded_rows = {
         (name, architecture, version)
-        for name, architecture, version, _ in downloaded_packages
+        for name, architecture, version, *_ in downloaded_packages
     }
     if downloaded_rows != locked_rows:
         raise ContractError("downloaded package set does not equal packages.lock set")
@@ -373,6 +410,7 @@ def write_manifest(
     build_timestamp: str,
     tool_versions: Sequence[str],
     profile_name: str = "minimal-m1",
+    signed_source_files: Mapping[str, Path] | None = None,
 ) -> None:
     """Validates build inputs and atomically writes a canonical manifest."""
 
@@ -392,7 +430,9 @@ def write_manifest(
         raise ContractError(str(error)) from error
 
     lock_rows = parse_packages_lock(packages_lock)
-    downloaded_packages = load_package_checksums(package_checksums)
+    downloaded_packages = load_package_checksums(
+        package_checksums, schema_version=profile.schema_version
+    )
     parsed_tool_versions = _parse_tool_versions(tool_versions)
     gate_versions = _gate_versions(lock_rows, profile)
 
@@ -401,13 +441,14 @@ def write_manifest(
         "build_timestamp": build_timestamp,
         "debian_release": debian_release,
         "downloaded_packages": [
-            {
+            ({
                 "architecture": architecture,
                 "name": name,
                 "sha256": sha256,
                 "version": version,
-            }
-            for name, architecture, version, sha256 in downloaded_packages
+            } | ({"source_role": row[4]} if profile.schema_version == 5 else {}))
+            for row in downloaded_packages
+            for name, architecture, version, sha256 in (row[:4],)
         ],
         "filesystem": {
             "block_size_bytes": _FILESYSTEM_BLOCK_SIZE_BYTES,
@@ -417,17 +458,29 @@ def write_manifest(
             "uuid": profile.root_uuid,
         },
         "gate_packages": gate_versions,
-        "mirror_url": mirror_url,
         "packages_lock_sha256": sha256_file(packages_lock),
         "root_image_sha256": sha256_file(image),
         "schema_version": profile.schema_version,
-        "signed_metadata": {
-            "sha256": sha256_file(inrelease),
-            "url": f"{mirror_url.rstrip('/')}/dists/{suite}/InRelease",
-        },
         "suite": suite,
         "tool_versions": parsed_tool_versions,
     }
+    if profile.schema_version == 5:
+        if signed_source_files is None:
+            raise ContractError("browser-m5 requires signed_source_files")
+        from tools.riscv.debian.rootfs.signed_sources import signed_sources_manifest
+
+        try:
+            manifest["signed_sources"] = signed_sources_manifest(
+                M5_SOURCES, dict(signed_source_files)
+            )
+        except ValueError as error:
+            raise ContractError(str(error)) from error
+    else:
+        manifest["mirror_url"] = mirror_url
+        manifest["signed_metadata"] = {
+            "sha256": sha256_file(inrelease),
+            "url": f"{mirror_url.rstrip('/')}/dists/{suite}/InRelease",
+        }
     if profile.schema_version >= 2:
         manifest["profile"] = profile.name
     serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
@@ -556,24 +609,76 @@ def _sha256(value: object, path: str) -> str:
     return value
 
 
-def _downloaded_packages(value: object) -> tuple[DownloadedPackageIdentity, ...]:
+def _downloaded_packages(
+    value: object, *, schema_version: int
+) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...]:
     packages = _sequence(value, "downloaded_packages")
-    identities: list[DownloadedPackageIdentity] = []
+    identities: list[DownloadedPackageIdentity | DownloadedPackageIdentityV5] = []
     for index, package_value in enumerate(packages):
         path = f"downloaded_packages[{index}]"
         package = _mapping(package_value, path)
-        _exact_keys(package, _DOWNLOADED_PACKAGE_KEYS, path)
-        identities.append(
-            (
-                _string(package["name"], f"{path}.name"),
-                _string(package["architecture"], f"{path}.architecture"),
-                _string(package["version"], f"{path}.version"),
-                _sha256(package["sha256"], f"{path}.sha256"),
-            )
+        keys = (
+            _DOWNLOADED_PACKAGE_V5_KEYS
+            if schema_version == 5
+            else _DOWNLOADED_PACKAGE_KEYS
         )
+        _exact_keys(package, keys, path)
+        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV5 = (
+            _string(package["name"], f"{path}.name"),
+            _string(package["architecture"], f"{path}.architecture"),
+            _string(package["version"], f"{path}.version"),
+            _sha256(package["sha256"], f"{path}.sha256"),
+        )
+        if schema_version == 5:
+            role = _string(package["source_role"], f"{path}.source_role")
+            if role not in {source.role for source in M5_SOURCES}:
+                raise ContractError(f"unexpected {path}.source_role: {role!r}")
+            identity += (role,)
+        identities.append(identity)
     if not identities:
         raise ContractError("downloaded_packages must not be empty")
     return tuple(identities)
+
+
+def _signed_sources(value: object) -> tuple[SignedSourceIdentity, ...]:
+    source_values = _sequence(value, "signed_sources")
+    identities: list[SignedSourceIdentity] = []
+    for index, source_value in enumerate(source_values):
+        path = f"signed_sources[{index}]"
+        source = _mapping(source_value, path)
+        _exact_keys(source, _SIGNED_SOURCE_KEYS, path)
+        identities.append(
+            (
+                _string(source["role"], f"{path}.role"),
+                _string(source["mirror_url"], f"{path}.mirror_url"),
+                _string(source["suite"], f"{path}.suite"),
+                _string(source["inrelease_url"], f"{path}.inrelease_url"),
+                _sha256(source["inrelease_sha256"], f"{path}.inrelease_sha256"),
+            )
+        )
+    return tuple(identities)
+
+
+def _validate_m5_sources(sources: tuple[SignedSourceIdentity, ...]) -> None:
+    expected = tuple(
+        sorted(
+            (
+                source.role,
+                source.mirror_url,
+                source.suite,
+                source.inrelease_url,
+            )
+            for source in M5_SOURCES
+        )
+    )
+    actual = tuple(sorted(row[:4] for row in sources))
+    if actual != expected:
+        raise ContractError("signed_sources do not match the browser-m5 source contract")
+    if tuple(sources) != tuple(sorted(sources)):
+        raise ContractError("signed_sources must be sorted by role")
+    for _, mirror_url, _, inrelease_url, _ in sources:
+        _require_https(mirror_url, "signed_sources.mirror_url")
+        _require_https(inrelease_url, "signed_sources.inrelease_url")
 
 
 def _string_mapping(value: object, path: str) -> tuple[tuple[str, str], ...]:
@@ -662,23 +767,35 @@ def _require_build_timestamp(value: str) -> None:
         raise ContractError("build_timestamp must be canonical UTC RFC 3339") from error
 
 
-def load_package_checksums(path: Path) -> tuple[DownloadedPackageIdentity, ...]:
+def load_package_checksums(
+    path: Path, *, schema_version: int = 1
+) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...]:
     """Load the exact package provenance rows recorded beside a root image."""
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise ContractError("package-checksums must be UTF-8") from error
 
-    rows: list[DownloadedPackageIdentity] = []
+    rows: list[DownloadedPackageIdentity | DownloadedPackageIdentityV5] = []
+    expected_fields = 5 if schema_version == 5 else 4
     for line_number, line in enumerate(text.splitlines(), start=1):
         fields = line.split("\t")
-        if len(fields) != 4 or any(not field for field in fields):
+        if len(fields) != expected_fields or any(not field for field in fields):
             raise ContractError(
-                f"package-checksums line {line_number} must contain four "
+                f"package-checksums line {line_number} must contain {expected_fields} "
                 "non-empty tab-separated fields"
             )
         sha256 = _sha256(fields[3], f"package-checksums line {line_number} SHA-256")
-        rows.append((fields[0], fields[1], fields[2], sha256))
+        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV5 = (
+            fields[0], fields[1], fields[2], sha256
+        )
+        if schema_version == 5:
+            if fields[4] not in {source.role for source in M5_SOURCES}:
+                raise ContractError(
+                    f"unexpected package-checksums source role: {fields[4]!r}"
+                )
+            identity += (fields[4],)
+        rows.append(identity)
 
     identities = tuple(rows)
     if not identities:
@@ -687,9 +804,7 @@ def load_package_checksums(path: Path) -> tuple[DownloadedPackageIdentity, ...]:
         set(identities)
     ):
         raise ContractError("package-checksums rows must be sorted and unique")
-    package_identities = tuple(
-        (name, architecture) for name, architecture, _, _ in identities
-    )
+    package_identities = tuple((row[0], row[1]) for row in identities)
     if len(package_identities) != len(set(package_identities)):
         raise ContractError("package-checksums package identities must be unique")
     return identities
