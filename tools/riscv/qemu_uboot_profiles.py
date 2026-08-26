@@ -180,7 +180,9 @@ class ValidationScenario:
 
     def __post_init__(self) -> None:
         if not self.name or not self.bootargs:
-            raise ValueError("validation scenario identity and bootargs must be non-empty")
+            raise ValueError(
+                "validation scenario identity and bootargs must be non-empty"
+            )
         if not self.milestones or self.milestones[-1].stage is not self.terminal:
             raise ValueError("validation scenario terminal must be its last milestone")
         stages = tuple(item.stage for item in self.milestones)
