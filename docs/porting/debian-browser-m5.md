@@ -24,6 +24,32 @@ preflight before publication.
 This milestone does not claim network playback, audio, hardware decoding,
 Direct Rendering Manager acceleration, or encrypted-media DRM support.
 
+## Runtime content evidence follow-up
+
+The stacked runtime-gate follow-up enables Firefox's built-in Marionette server
+with `--marionette`.  Mozilla documents Marionette as shipping with Firefox,
+listening on loopback port 2828 by default, and exposing DOM state over its
+version-3 length-prefixed TCP protocol.  The repository-owned Python stdlib
+client creates a WebDriver session, examines every browser window, and accepts
+exactly one whose live document has the probe `file://` URL.  It then requires
+the three permanent DOM markers in exact order and requires resource timing to
+contain only the repository-owned WebM `file://` URL.  Missing, duplicated,
+reordered, forged, or externally sourced evidence fails closed.
+
+This deliberately does not use CDP: Mozilla removed CDP support after Firefox
+140.  It also does not require geckodriver or Selenium.  The gate retains the
+existing process, Xorg, input, window-manager, terminal, offline-file workload,
+and wired-network evidence; the new `DEBIAN_BROWSER_M5_CONTENT` line is emitted
+only after Marionette returns the exact live DOM snapshot.  This module has
+mock protocol and classifier coverage but has not yet been validated on the
+Megrez board, so it is not board-level admission evidence.
+
+Protocol references:
+
+- <https://firefox-source-docs.mozilla.org/remote/marionette/Intro.html>
+- <https://firefox-source-docs.mozilla.org/remote/marionette/Protocol.html>
+- <https://firefox-source-docs.mozilla.org/remote/Prefs.html>
+
 ## Minimal signed-security-source design
 
 The current builder retains and verifies one base `InRelease`, re-fetches that
