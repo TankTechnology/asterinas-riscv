@@ -66,6 +66,7 @@ pub(super) enum DeviceError {
     Dma(QueueError),
     Irq,
     Platform(PlatformError),
+    Registration,
     RegisterEncoding,
     ResetTimeout,
 }
@@ -118,7 +119,8 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         selected.mac_address,
     );
     let device = Arc::new(SpinLock::<_, BottomHalfDisabled>::new(device));
-    aster_network::register_device(DEVICE_NAME.to_string(), device.clone());
+    aster_network::register_device(DEVICE_NAME.to_string(), true, device.clone())
+        .map_err(|_| DeviceError::Registration)?;
     device.lock().irq.rearm().map_err(|_| DeviceError::Irq)?;
     Ok(())
 }
