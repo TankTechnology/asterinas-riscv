@@ -85,12 +85,26 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             current.write_bytes(b"two")
             with self.assertRaisesRegex(ValueError, "changed"):
                 require_unchanged(retained, current, "security")
-        self.assertEqual(
-            source_for_apt_list("security_dists_trixie-security_main_binary-riscv64_Packages.xz"),
-            SECURITY_SOURCE,
-        )
+        for source in M5_SOURCES:
+            for configured_component in source.components:
+                component = configured_component.rsplit("/", 1)[-1]
+                for architecture in ("riscv64", "all"):
+                    with self.subTest(
+                        role=source.role,
+                        component=component,
+                        architecture=architecture,
+                    ):
+                        self.assertEqual(
+                            source_for_apt_list(
+                                f"mirror_dists_{source.suite}_{component}_"
+                                f"binary-{architecture}_Packages.xz"
+                            ),
+                            source,
+                        )
         with self.assertRaisesRegex(ValueError, "0 source owners"):
-            source_for_apt_list("unknown_Packages")
+            source_for_apt_list(
+                "mirror_dists_trixie_firmware_binary-riscv64_Packages.xz"
+            )
         with self.assertRaisesRegex(ValueError, "2 source owners"):
             source_for_apt_list(
                 "x_dists_trixie_main_binary-riscv64_Packages_"

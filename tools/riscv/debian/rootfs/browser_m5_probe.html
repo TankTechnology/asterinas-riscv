@@ -4,26 +4,29 @@
 <title>Asterinas offline browser M5 probe</title>
 <style>body{font:24px sans-serif;background:#102030;color:#fff} .pass{color:#72e59a}</style>
 <h1>Asterinas offline browser probe</h1>
-<p id="js">JavaScript pending</p>
-<p id="media">Local silent video pending</p>
+<p id="js-result">JavaScript pending</p>
+<p id="video-canplay-result">Local silent video pending</p>
+<p id="video-ended-result">Local silent video completion pending</p>
 <video id="video" muted playsinline width="160" height="90" src="browser-m5.webm"></video>
 <script>
 (() => {
   "use strict";
-  const js = document.querySelector("#js");
-  const media = document.querySelector("#media");
+  const js = document.querySelector("#js-result");
+  const canplay = document.querySelector("#video-canplay-result");
+  const ended = document.querySelector("#video-ended-result");
   const video = document.querySelector("#video");
   const values = [1, 2, 3].map(value => value * value);
   if (values.join(",") !== "1,4,9" || typeof Promise !== "function") return;
   js.textContent = "ASTERINAS_BROWSER_M5_JS_PASS";
   js.className = "pass";
   video.addEventListener("canplay", () => {
-    media.textContent = "ASTERINAS_BROWSER_M5_VIDEO_CANPLAY";
+    canplay.textContent = "ASTERINAS_BROWSER_M5_VIDEO_CANPLAY";
+    canplay.className = "pass";
     video.play();
   }, {once: true});
   video.addEventListener("ended", () => {
-    media.textContent = "ASTERINAS_BROWSER_M5_VIDEO_ENDED";
-    media.className = "pass";
+    ended.textContent = "ASTERINAS_BROWSER_M5_VIDEO_ENDED";
+    ended.className = "pass";
   }, {once: true});
   video.load();
 })();

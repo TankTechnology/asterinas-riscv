@@ -93,12 +93,17 @@ def require_unchanged(retained: Path, current: Path, role: str) -> None:
 def source_for_apt_list(filename: str, sources: tuple[SignedSource, ...] = M5_SOURCES) -> SignedSource:
     """Map an apt Packages filename to exactly one configured signed source."""
 
-    matches = [
-        source
-        for source in sources
-        if f"_dists_{source.suite}_main_binary-riscv64_Packages" in filename
-        or f"_dists_{source.suite}_main_binary-all_Packages" in filename
-    ]
+    matches = []
+    for source in sources:
+        apt_components = tuple(component.rsplit("/", 1)[-1] for component in source.components)
+        owns = any(
+            f"_dists_{source.suite}_{component}_binary-{architecture}_Packages"
+            in filename
+            for component in apt_components
+            for architecture in ("riscv64", "all")
+        )
+        if owns:
+            matches.append(source)
     if len(matches) != 1:
         raise ValueError(f"apt Packages list has {len(matches)} source owners: {filename}")
     return matches[0]
