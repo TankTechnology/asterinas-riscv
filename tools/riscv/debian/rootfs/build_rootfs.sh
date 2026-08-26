@@ -8,6 +8,7 @@ umask 077
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
+readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SUPPORTED_SUITE="trixie"
@@ -151,7 +152,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -171,6 +172,8 @@ configure_profile() {
         OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
     fi
 }
 

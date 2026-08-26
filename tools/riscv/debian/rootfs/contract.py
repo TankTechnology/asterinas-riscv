@@ -136,7 +136,7 @@ def load_manifest(path: Path) -> RootfsManifest:
     if schema_version == 1:
         _exact_keys(manifest, _MANIFEST_V1_KEYS, "manifest")
         profile = _M1_PROFILE
-    elif schema_version in (2, 3):
+    elif schema_version in (2, 3, 4):
         _exact_keys(manifest, _MANIFEST_V2_KEYS, "manifest")
         profile = _profile_for_manifest(
             schema_version,
