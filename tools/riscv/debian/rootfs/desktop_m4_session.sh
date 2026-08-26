@@ -37,5 +37,6 @@ fi
 
 exec /usr/bin/xinit "$0" --xsession -- \
     /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
+    -extension MIT-SHM \
     -logfile "$HOME/Xorg.0.log" vt1 \
     >>"$SESSION_LOG" 2>&1
