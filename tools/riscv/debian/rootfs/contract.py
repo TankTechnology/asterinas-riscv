@@ -56,12 +56,12 @@ _MANIFEST_V1_KEYS = {
     "gate_packages",
 }
 _MANIFEST_V2_KEYS = _MANIFEST_V1_KEYS | {"profile"}
-_MANIFEST_V5_KEYS = (_MANIFEST_V2_KEYS - {"mirror_url", "signed_metadata"}) | {
+_MANIFEST_V6_KEYS = (_MANIFEST_V2_KEYS - {"mirror_url", "signed_metadata"}) | {
     "signed_sources"
 }
 _SIGNED_METADATA_KEYS = {"url", "sha256"}
 _DOWNLOADED_PACKAGE_KEYS = {"name", "architecture", "version", "sha256"}
-_DOWNLOADED_PACKAGE_V5_KEYS = _DOWNLOADED_PACKAGE_KEYS | {"source_role"}
+_DOWNLOADED_PACKAGE_V6_KEYS = _DOWNLOADED_PACKAGE_KEYS | {"source_role"}
 _SIGNED_SOURCE_KEYS = {
     "role",
     "mirror_url",
@@ -79,7 +79,7 @@ _FILESYSTEM_KEYS = {
 
 PackageLockRow = tuple[str, str, str]
 DownloadedPackageIdentity = tuple[str, str, str, str]
-DownloadedPackageIdentityV5 = tuple[str, str, str, str, str]
+DownloadedPackageIdentityV6 = tuple[str, str, str, str, str]
 SignedSourceIdentity = tuple[str, str, str, str, str]
 
 
@@ -113,7 +113,7 @@ class RootfsManifest:
     signed_sources: tuple[SignedSourceIdentity, ...]
     packages_lock_sha256: str
     downloaded_packages: tuple[
-        DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...
+        DownloadedPackageIdentity | DownloadedPackageIdentityV6, ...
     ]
     filesystem: FilesystemIdentity
     tool_versions: tuple[tuple[str, str], ...]
@@ -160,7 +160,7 @@ def load_manifest(path: Path) -> RootfsManifest:
             _string(manifest["profile"], "profile"),
         )
     elif schema_version == 6:
-        _exact_keys(manifest, _MANIFEST_V5_KEYS, "manifest")
+        _exact_keys(manifest, _MANIFEST_V6_KEYS, "manifest")
         profile = _profile_for_manifest(
             schema_version,
             _string(manifest["profile"], "profile"),
@@ -618,19 +618,19 @@ def _sha256(value: object, path: str) -> str:
 
 def _downloaded_packages(
     value: object, *, schema_version: int
-) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...]:
+) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV6, ...]:
     packages = _sequence(value, "downloaded_packages")
-    identities: list[DownloadedPackageIdentity | DownloadedPackageIdentityV5] = []
+    identities: list[DownloadedPackageIdentity | DownloadedPackageIdentityV6] = []
     for index, package_value in enumerate(packages):
         path = f"downloaded_packages[{index}]"
         package = _mapping(package_value, path)
         keys = (
-            _DOWNLOADED_PACKAGE_V5_KEYS
+            _DOWNLOADED_PACKAGE_V6_KEYS
             if schema_version == 6
             else _DOWNLOADED_PACKAGE_KEYS
         )
         _exact_keys(package, keys, path)
-        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV5 = (
+        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV6 = (
             _string(package["name"], f"{path}.name"),
             _string(package["architecture"], f"{path}.architecture"),
             _string(package["version"], f"{path}.version"),
@@ -776,14 +776,14 @@ def _require_build_timestamp(value: str) -> None:
 
 def load_package_checksums(
     path: Path, *, schema_version: int = 1
-) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV5, ...]:
+) -> tuple[DownloadedPackageIdentity | DownloadedPackageIdentityV6, ...]:
     """Load the exact package provenance rows recorded beside a root image."""
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise ContractError("package-checksums must be UTF-8") from error
 
-    rows: list[DownloadedPackageIdentity | DownloadedPackageIdentityV5] = []
+    rows: list[DownloadedPackageIdentity | DownloadedPackageIdentityV6] = []
     expected_fields = 5 if schema_version == 6 else 4
     for line_number, line in enumerate(text.splitlines(), start=1):
         fields = line.split("\t")
@@ -793,7 +793,7 @@ def load_package_checksums(
                 "non-empty tab-separated fields"
             )
         sha256 = _sha256(fields[3], f"package-checksums line {line_number} SHA-256")
-        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV5 = (
+        identity: DownloadedPackageIdentity | DownloadedPackageIdentityV6 = (
             fields[0], fields[1], fields[2], sha256
         )
         if schema_version == 6:
