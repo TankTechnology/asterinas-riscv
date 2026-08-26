@@ -1,0 +1,197 @@
+{
+  "contract_id": "megrez-gmac-m5",
+  "dtb_identity": {
+    "crc32": "4afcb20e",
+    "sha256": "02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17",
+    "size": 154800
+  },
+  "ports": [
+    {
+      "alias_index": 0,
+      "axi_blen": [
+        0,
+        0,
+        0,
+        0,
+        16,
+        8,
+        4
+      ],
+      "axi_lpi_en": 0,
+      "axi_rd_osr_lmt": 2,
+      "axi_wr_osr_lmt": 2,
+      "clock_cells": [
+        3,
+        550,
+        3,
+        551,
+        3,
+        552
+      ],
+      "clock_names": [
+        "app",
+        "stmmaceth",
+        "tx"
+      ],
+      "compatible": [
+        "eswin,win2030-qos-eth"
+      ],
+      "controller_id": 0,
+      "delay_1000m": [
+        589505315,
+        2148302883,
+        202116108
+      ],
+      "delay_100m": [
+        1347440720,
+        2151645264,
+        1061109567
+      ],
+      "delay_10m": [
+        0,
+        0,
+        0
+      ],
+      "delay_registers": [
+        276,
+        280,
+        284
+      ],
+      "dma_noncoherent": true,
+      "hsp_sp_csr": [
+        1346633728,
+        8192,
+        4144,
+        256,
+        264
+      ],
+      "interrupt": 61,
+      "interrupt_parent": 16,
+      "mac_address": "00:48:54:71:00:47",
+      "mac_address_source": "firmware-observed",
+      "mmio_size": 65536,
+      "mmio_start": 1346371584,
+      "node_path": "/soc/ethernet@50400000",
+      "phy_address": 0,
+      "phy_address_source": "vendor-driver-fixed",
+      "phy_mode": "rgmii-txid",
+      "reset_cells": [
+        20,
+        7,
+        67108864
+      ],
+      "reset_gpio": [
+        25,
+        30,
+        1
+      ],
+      "reset_name": "ethrst",
+      "rgmii_select": [
+        26,
+        656,
+        3
+      ],
+      "status": "okay",
+      "syscrg_csr": [
+        1367506944,
+        524288,
+        328,
+        332
+      ]
+    },
+    {
+      "alias_index": 1,
+      "axi_blen": [
+        0,
+        0,
+        0,
+        0,
+        16,
+        8,
+        4
+      ],
+      "axi_lpi_en": 0,
+      "axi_rd_osr_lmt": 2,
+      "axi_wr_osr_lmt": 2,
+      "clock_cells": [
+        3,
+        550,
+        3,
+        551,
+        3,
+        553
+      ],
+      "clock_names": [
+        "app",
+        "stmmaceth",
+        "tx"
+      ],
+      "compatible": [
+        "eswin,win2030-qos-eth"
+      ],
+      "controller_id": 1,
+      "delay_1000m": [
+        623191333,
+        2150006821,
+        640034342
+      ],
+      "delay_100m": [
+        1212696648,
+        2153283656,
+        1482184792
+      ],
+      "delay_10m": [
+        0,
+        0,
+        0
+      ],
+      "delay_registers": [
+        532,
+        536,
+        540
+      ],
+      "dma_noncoherent": true,
+      "hsp_sp_csr": [
+        1346633728,
+        8192,
+        4148,
+        512,
+        520
+      ],
+      "interrupt": 70,
+      "interrupt_parent": 16,
+      "mac_address": "00:48:54:71:00:48",
+      "mac_address_source": "firmware-observed",
+      "mmio_size": 65536,
+      "mmio_start": 1346437120,
+      "node_path": "/soc/ethernet@50410000",
+      "phy_address": 0,
+      "phy_address_source": "vendor-driver-fixed",
+      "phy_mode": "rgmii-txid",
+      "reset_cells": [
+        20,
+        7,
+        33554432
+      ],
+      "reset_gpio": [
+        29,
+        16,
+        1
+      ],
+      "reset_name": "ethrst",
+      "rgmii_select": [
+        26,
+        660,
+        3
+      ],
+      "status": "okay",
+      "syscrg_csr": [
+        1367506944,
+        524288,
+        328,
+        332
+      ]
+    }
+  ],
+  "schema_version": 1
+}

@@ -278,6 +278,11 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_rootfs -v
 
+.PHONY: test_riscv_megrez_gmac_unit
+test_riscv_megrez_gmac_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_gmac_contract -v
+
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
