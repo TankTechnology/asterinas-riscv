@@ -18,6 +18,11 @@ PROBE_MARKERS = (
     "ASTERINAS_BROWSER_M5_VIDEO_CANPLAY",
     "ASTERINAS_BROWSER_M5_VIDEO_ENDED",
 )
+PROBE_RESULT_IDS = (
+    "js-result",
+    "video-canplay-result",
+    "video-ended-result",
+)
 WEBM_EBML_HEADER = bytes.fromhex("1a45dfa3")
 
 
@@ -27,8 +32,26 @@ def validate_probe_assets(html_path: Path, video_base64_path: Path) -> bytes:
     html = html_path.read_text(encoding="utf-8")
     lowered = html.lower()
     for marker in PROBE_MARKERS:
-        if marker not in html:
+        if html.count(marker) != 1:
             raise ValueError(f"missing browser probe marker: {marker}")
+    result_positions = []
+    for result_id in PROBE_RESULT_IDS:
+        declaration = f'id="{result_id}"'
+        if html.count(declaration) != 1:
+            raise ValueError(f"missing unique browser result node: {result_id}")
+        selector = f'document.querySelector("#{result_id}")'
+        if html.count(selector) != 1:
+            raise ValueError(f"browser result node is not independently addressed: {result_id}")
+        result_positions.append(html.index(declaration))
+    if result_positions != sorted(result_positions):
+        raise ValueError("browser result nodes are not in evidence order")
+    marker_writes = (
+        'js.textContent = "ASTERINAS_BROWSER_M5_JS_PASS"',
+        'canplay.textContent = "ASTERINAS_BROWSER_M5_VIDEO_CANPLAY"',
+        'ended.textContent = "ASTERINAS_BROWSER_M5_VIDEO_ENDED"',
+    )
+    if any(html.count(write) != 1 for write in marker_writes):
+        raise ValueError("browser probe markers do not have independent result writes")
     for forbidden in ("http://", "https://", "getusermedia", "encryptedmedia"):
         if forbidden in lowered:
             raise ValueError(f"browser probe has forbidden dependency: {forbidden}")
