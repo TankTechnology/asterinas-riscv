@@ -38,6 +38,35 @@ def _archive(*entries: tuple[str, bytes, int]) -> bytes:
     return result + _entry("TRAILER!!!", b"", ino=len(entries) + 1)
 
 
+_INSTALLER_COMMANDS = (
+    "blockdev",
+    "cat",
+    "dd",
+    "gzip",
+    "mkdir",
+    "mount",
+    "sha256sum",
+    "sleep",
+    "sync",
+)
+
+
+def _busybox_base_entries() -> tuple[tuple[str, bytes, int], ...]:
+    entries = [
+        (".", b"", 0o040755),
+        ("init", b"old-init", 0o100755),
+        ("bin", b"usr/bin", 0o120777),
+        ("usr", b"", 0o040755),
+        ("usr/bin", b"", 0o040755),
+        ("usr/bin/busybox", b"elf", 0o100555),
+        ("usr/bin/sh", b"busybox", 0o120777),
+    ]
+    entries.extend(
+        (f"usr/bin/{command}", b"busybox", 0o120777) for command in _INSTALLER_COMMANDS
+    )
+    return tuple(entries)
+
+
 class MegrezDebianInstallerTests(unittest.TestCase):
     def test_parse_newc_preserves_entries_and_rejects_unsafe_names(self):
         archive = _archive(
@@ -110,15 +139,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             image = root / "root.ext2"
             first = root / "first.cpio"
             second = root / "second.cpio"
-            base.write_bytes(
-                _archive(
-                    (".", b"", 0o040755),
-                    ("init", b"old-init", 0o100755),
-                    ("usr", b"", 0o040755),
-                    ("usr/bin", b"", 0o040755),
-                    ("usr/bin/busybox", b"elf", 0o100755),
-                )
-            )
+            base.write_bytes(_archive(*_busybox_base_entries()))
             image.write_bytes(b"a" * 4096 + b"b" * 4096)
             image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
 
@@ -132,6 +153,60 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             self.assertIn("installer/chunks.tsv", entries)
             self.assertIn("installer/chunks/0000.gz", entries)
             self.assertIn("installer/chunks/0001.gz", entries)
+
+    def test_build_archive_rejects_missing_installer_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = root / "base.cpio"
+            image = root / "root.ext2"
+            output = root / "installer.cpio"
+            image.write_bytes(b"a" * 4096)
+            image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
+            output.write_bytes(b"published")
+
+            required_paths = ("usr/bin/sh",) + tuple(
+                f"usr/bin/{command}" for command in _INSTALLER_COMMANDS
+            )
+            for missing in required_paths:
+                with self.subTest(missing=missing):
+                    output.write_bytes(b"published")
+                    entries = tuple(
+                        entry
+                        for entry in _busybox_base_entries()
+                        if entry[0] != missing
+                    )
+                    base.write_bytes(_archive(*entries))
+                    with self.assertRaisesRegex(
+                        InstallerError, "missing executable installer runtime"
+                    ):
+                        build_archive(base, image, output, image_hash, chunk_size=4096)
+                    self.assertEqual(output.read_bytes(), b"published")
+
+    def test_build_archive_accepts_absolute_internal_runtime_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = root / "base.cpio"
+            image = root / "root.ext2"
+            output = root / "installer.cpio"
+            entries = tuple(
+                (name, b"/usr/bin" if name == "bin" else data, mode)
+                for name, data, mode in _busybox_base_entries()
+            )
+            base.write_bytes(_archive(*entries))
+            image.write_bytes(b"a" * 4096)
+
+            try:
+                build_archive(
+                    base,
+                    image,
+                    output,
+                    hashlib.sha256(image.read_bytes()).hexdigest(),
+                    chunk_size=4096,
+                )
+            except InstallerError as error:
+                self.fail(f"absolute in-root symlink was rejected: {error}")
+
+            self.assertTrue(output.is_file())
 
     def test_build_archive_preserves_existing_output_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
