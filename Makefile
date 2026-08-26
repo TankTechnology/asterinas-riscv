@@ -282,7 +282,8 @@ test_riscv_debian_rootfs_unit:
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
 	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_megrez_gmac_contract -v
+		tools.riscv.tests.test_megrez_gmac_contract \
+		tools.riscv.tests.test_megrez_gmac_gate -v
 
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
