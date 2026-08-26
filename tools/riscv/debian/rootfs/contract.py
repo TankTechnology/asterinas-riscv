@@ -159,7 +159,7 @@ def load_manifest(path: Path) -> RootfsManifest:
             schema_version,
             _string(manifest["profile"], "profile"),
         )
-    elif schema_version == 5:
+    elif schema_version == 6:
         _exact_keys(manifest, _MANIFEST_V5_KEYS, "manifest")
         profile = _profile_for_manifest(
             schema_version,
@@ -168,7 +168,7 @@ def load_manifest(path: Path) -> RootfsManifest:
     else:
         raise ContractError(f"unsupported manifest schema version: {schema_version}")
 
-    if schema_version == 5:
+    if schema_version == 6:
         signed_metadata: Mapping[str, Any] = {}
         signed_sources = _signed_sources(manifest["signed_sources"])
         _validate_m5_sources(signed_sources)
@@ -204,17 +204,17 @@ def load_manifest(path: Path) -> RootfsManifest:
             "debian_release",
         ),
         mirror_url=(
-            "" if schema_version == 5 else _string(manifest["mirror_url"], "mirror_url")
+            "" if schema_version == 6 else _string(manifest["mirror_url"], "mirror_url")
         ),
         architecture=_string(manifest["architecture"], "architecture"),
         signed_metadata_url=(
             ""
-            if schema_version == 5
+            if schema_version == 6
             else _string(signed_metadata["url"], "signed_metadata.url")
         ),
         signed_metadata_sha256=(
             ""
-            if schema_version == 5
+            if schema_version == 6
             else _sha256(signed_metadata["sha256"], "signed_metadata.sha256")
         ),
         signed_sources=signed_sources,
@@ -291,7 +291,7 @@ def validate_frozen_root(
             f"{manifest.debian_release!r}"
         )
     _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
-    if manifest.schema_version == 5:
+    if manifest.schema_version == 6:
         _validate_m5_sources(manifest.signed_sources)
     else:
         _require_https(manifest.mirror_url, "mirror_url")
@@ -337,7 +337,7 @@ def validate_frozen_root(
                 "does not match packages.lock"
             )
         if (
-            manifest.schema_version == 5
+            manifest.schema_version == 6
             and name == "firefox-esr"
             and package[4] != "security"
         ):
@@ -419,7 +419,7 @@ def write_manifest(
         profile = get_profile(profile_name)
     except ValueError as error:
         raise ContractError(str(error)) from error
-    if profile.schema_version == 5:
+    if profile.schema_version == 6:
         if signed_source_files is None:
             raise ContractError("browser-m5 requires signed_source_files")
         source_inputs = tuple(signed_source_files.values())
@@ -433,7 +433,7 @@ def write_manifest(
     )
     _require_exact(suite, _SUITE, "suite")
     _require_https(mirror_url, "mirror_url")
-    if profile.schema_version == 5:
+    if profile.schema_version == 6:
         _require_exact(mirror_url.rstrip("/"), M5_SOURCES[0].mirror_url, "mirror_url")
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
         raise ContractError("debian_release must be a signed Debian 13 point release")
@@ -455,7 +455,7 @@ def write_manifest(
                 "name": name,
                 "sha256": sha256,
                 "version": version,
-            } | ({"source_role": row[4]} if profile.schema_version == 5 else {}))
+            } | ({"source_role": row[4]} if profile.schema_version == 6 else {}))
             for row in downloaded_packages
             for name, architecture, version, sha256 in (row[:4],)
         ],
@@ -473,7 +473,7 @@ def write_manifest(
         "suite": suite,
         "tool_versions": parsed_tool_versions,
     }
-    if profile.schema_version == 5:
+    if profile.schema_version == 6:
         from tools.riscv.debian.rootfs.signed_sources import signed_sources_manifest
 
         try:
@@ -626,7 +626,7 @@ def _downloaded_packages(
         package = _mapping(package_value, path)
         keys = (
             _DOWNLOADED_PACKAGE_V5_KEYS
-            if schema_version == 5
+            if schema_version == 6
             else _DOWNLOADED_PACKAGE_KEYS
         )
         _exact_keys(package, keys, path)
@@ -636,7 +636,7 @@ def _downloaded_packages(
             _string(package["version"], f"{path}.version"),
             _sha256(package["sha256"], f"{path}.sha256"),
         )
-        if schema_version == 5:
+        if schema_version == 6:
             role = _string(package["source_role"], f"{path}.source_role")
             if role not in {source.role for source in M5_SOURCES}:
                 raise ContractError(f"unexpected {path}.source_role: {role!r}")
@@ -784,7 +784,7 @@ def load_package_checksums(
         raise ContractError("package-checksums must be UTF-8") from error
 
     rows: list[DownloadedPackageIdentity | DownloadedPackageIdentityV5] = []
-    expected_fields = 5 if schema_version == 5 else 4
+    expected_fields = 5 if schema_version == 6 else 4
     for line_number, line in enumerate(text.splitlines(), start=1):
         fields = line.split("\t")
         if len(fields) != expected_fields or any(not field for field in fields):
@@ -796,7 +796,7 @@ def load_package_checksums(
         identity: DownloadedPackageIdentity | DownloadedPackageIdentityV5 = (
             fields[0], fields[1], fields[2], sha256
         )
-        if schema_version == 5:
+        if schema_version == 6:
             if fields[4] not in {source.role for source in M5_SOURCES}:
                 raise ContractError(
                     f"unexpected package-checksums source role: {fields[4]!r}"
