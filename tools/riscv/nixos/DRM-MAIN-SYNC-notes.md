@@ -254,7 +254,19 @@ Validation on the converged tree:
 - host cursor-gate unit tests: 10/10 pass;
 - real U-Boot/QEMU cursor gate: pass, with two `UPDATE_CURSOR` traces and one
   `MOVE_CURSOR` trace. Evidence is generated under
-  `target/qemu-uboot/drm-cursor/evidence/`.
+  `target/qemu-uboot/drm-cursor/evidence/`;
+- persistent-root software-display Xfce boot: pass. Xorg opened the real DRM
+  card, selected the 640x480 `Virtual-1` mode, reached
+  `XFCE_DRM_X11_CONNECT_OK`/`XFCE_DRM_XORG_READY`, and started `xfwm4`,
+  `xfce4-panel`, `xfdesktop`, `xfsettingsd`, and `xfce4-session`. The visually
+  confirmed framebuffer is
+  `target/xfce-drm/guest-main-sync-final.png`.
+
+The measured Xfce boot reached its systemd desktop target in 2 minutes 43.319
+seconds: 10.533 seconds in the kernel and 2 minutes 32.786 seconds in userspace.
+The full panel/dock render arrived later because software AIGLX/swrast under
+RISC-V TCG remained CPU-bound. This result demonstrates a working, interactive
+DRM desktop, but it is not yet a native-speed or consistently smooth experience.
 
 Run the formal kernel build again after OSDK ktests and before packaging a QEMU
 gate. The ktest workflow updates generic OSDK artifact links, so packaging
