@@ -13,12 +13,13 @@ audio track, and emits three ordered DOM markers: JavaScript pass, video
 browser automation or accessibility interface; process existence or a window
 title alone is insufficient evidence.
 
-Rootfs integration must add the signed Debian security archive as a separately
-verified source before requesting `firefox-esr`.  It must record the source
-InRelease and package checksum in the immutable manifest, rather than silently
-depending on whichever security update is current.  The integration is kept
-out of this initial change because the M1-M4 builder currently authenticates
-only the configured base mirror and has a fixed one-GiB image contract.
+This foundation defines and validates the separately signed Debian security
+source and its immutable schema-6 provenance contract, but does not enable a
+`browser-m5` rootfs build.  The stacked builder follow-up requests
+`firefox-esr`, retains both InRelease files, records each package's source role,
+and publishes the six-file artifact set.  That browser profile keeps the fixed
+one-GiB image contract, so a real build still needs the documented capacity
+preflight before publication.
 
 This milestone does not claim network playback, audio, hardware decoding,
 Direct Rendering Manager acceleration, or encrypted-media DRM support.
