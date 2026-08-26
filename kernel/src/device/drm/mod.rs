@@ -173,13 +173,70 @@ struct GpuManager {
     flip_sequence: AtomicU32,
     /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
     next_fence_id: AtomicU64,
-    /// Primary-node file id that currently owns DRM master, or zero.
-    master_id: AtomicU64,
+    /// Serializes DRM-master transitions with device-wide KMS state changes.
+    kms_state: Mutex<KmsState>,
     next_file_id: AtomicU64,
+}
+
+#[derive(Debug)]
+struct KmsState {
+    /// Primary-node file id that currently owns DRM master.
+    master_file_id: Option<u64>,
+    /// Framebuffer currently driving the device scanout.
+    scanout: Option<ActiveFramebuffer>,
+    current_width: u32,
+    current_height: u32,
+    /// Current mode blob id (set via atomic MODE_ID property).
+    mode_blob: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveFramebuffer {
+    owner_file_id: u64,
+    fb_id: u32,
+}
+
+impl KmsState {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            master_file_id: None,
+            scanout: None,
+            current_width: width,
+            current_height: height,
+            mode_blob: None,
+        }
+    }
+
+    fn is_master(&self, file_id: u64) -> bool {
+        self.master_file_id == Some(file_id)
+    }
+
+    fn scanout_matches(&self, file_id: u64, fb_id: u32) -> bool {
+        self.scanout
+            == Some(ActiveFramebuffer {
+                owner_file_id: file_id,
+                fb_id,
+            })
+    }
+
+    fn scanout_owned_by(&self, file_id: u64) -> bool {
+        self.scanout
+            .is_some_and(|scanout| scanout.owner_file_id == file_id)
+    }
+
+    fn commit_scanout(&mut self, file_id: u64, fb_id: u32, width: u32, height: u32) {
+        self.scanout = Some(ActiveFramebuffer {
+            owner_file_id: file_id,
+            fb_id,
+        });
+        self.current_width = width;
+        self.current_height = height;
+    }
 }
 
 impl GpuManager {
     fn new(gpu: Arc<GpuDevice>) -> Self {
+        let (width, height) = (gpu.width(), gpu.height());
         Self {
             gpu,
             pool: SpinLock::new(None),
@@ -193,7 +250,7 @@ impl GpuManager {
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
             next_fence_id: AtomicU64::new(1),
-            master_id: AtomicU64::new(0),
+            kms_state: Mutex::new(KmsState::new(width, height)),
             next_file_id: AtomicU64::new(1),
         }
     }
@@ -372,12 +429,9 @@ impl Device for DriPrimary {
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         self.gpu_manager.ensure_pool()?;
-        let gpu = &self.gpu_manager.gpu;
         Ok(Box::new(DriHandle::new(
             self.gpu_manager.clone(),
             DriNodeType::Primary,
-            gpu.width(),
-            gpu.height(),
         )))
     }
 }
@@ -397,12 +451,9 @@ impl Device for DriRender {
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         self.gpu_manager.ensure_pool()?;
-        let gpu = &self.gpu_manager.gpu;
         Ok(Box::new(DriHandle::new(
             self.gpu_manager.clone(),
             DriNodeType::Render,
-            gpu.width(),
-            gpu.height(),
         )))
     }
 }
@@ -424,8 +475,6 @@ struct DriHandle {
     context: Mutex<VirglContext>,
     /// Serializes validation, device updates, and per-file cursor state.
     cursor_operation: Mutex<()>,
-    /// Serializes scanout device updates with their software-state commits.
-    kms_operation: Mutex<()>,
     /// Serializes event dequeue/copy/requeue transactions between readers.
     event_read_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
@@ -446,11 +495,6 @@ struct DriInner {
     next_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
     next_fb_id: u32,
-    current_fb_id: Option<u32>,
-    current_width: u32,
-    current_height: u32,
-    /// Current mode blob id (set via atomic MODE_ID property).
-    mode_blob: Option<u32>,
     /// Pending page-flip completion events, readable via `read()`.
     events: VecDeque<DrmEventVblank>,
     /// Cursor resource and position owned by this open DRM file.
@@ -458,21 +502,12 @@ struct DriInner {
 }
 
 impl DriHandle {
-    fn new(
-        gpu_manager: Arc<GpuManager>,
-        node_type: DriNodeType,
-        current_width: u32,
-        current_height: u32,
-    ) -> Self {
+    fn new(gpu_manager: Arc<GpuManager>, node_type: DriNodeType) -> Self {
         let context_id = gpu_manager.next_context_id.fetch_add(1, Ordering::Relaxed);
         let file_id = gpu_manager.next_file_id.fetch_add(1, Ordering::Relaxed);
         if matches!(node_type, DriNodeType::Primary) {
-            let _ = gpu_manager.master_id.compare_exchange(
-                0,
-                file_id,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+            let mut kms_state = gpu_manager.kms_state.lock();
+            kms_state.master_file_id.get_or_insert(file_id);
         }
         Self {
             gpu_manager,
@@ -483,17 +518,12 @@ impl DriHandle {
                 is_created: false,
             }),
             cursor_operation: Mutex::new(()),
-            kms_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
                 framebuffers: BTreeMap::new(),
                 next_fb_id: 1,
-                current_fb_id: None,
-                current_width,
-                current_height,
-                mode_blob: None,
                 events: VecDeque::new(),
                 cursor: CursorState::default(),
             }),
@@ -506,42 +536,39 @@ impl DriHandle {
         matches!(self.node_type, DriNodeType::Render)
     }
 
-    fn is_master(&self) -> bool {
-        !self.is_render_node() && self.gpu_manager.master_id.load(Ordering::Acquire) == self.file_id
-    }
-
-    fn require_master(&self) -> Result<()> {
+    fn lock_kms_as_master(&self) -> Result<MutexGuard<'_, KmsState>> {
         if self.is_render_node() {
             return_errno_with_message!(Errno::EOPNOTSUPP, "KMS ioctl not available on render node");
         }
-        if !self.is_master() {
+        let kms_state = self.gpu_manager.kms_state.lock();
+        if !kms_state.is_master(self.file_id) {
             return_errno_with_message!(Errno::EACCES, "DRM master is owned by another file");
         }
-        Ok(())
+        Ok(kms_state)
     }
 
     fn set_master(&self) -> Result<()> {
         if self.is_render_node() {
             return_errno_with_message!(Errno::EOPNOTSUPP, "render nodes cannot become DRM master");
         }
-        match self.gpu_manager.master_id.compare_exchange(
-            0,
-            self.file_id,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => Ok(()),
-            Err(owner) if owner == self.file_id => Ok(()),
-            Err(_) => return_errno_with_message!(Errno::EBUSY, "DRM master is already owned"),
+        let mut kms_state = self.gpu_manager.kms_state.lock();
+        match kms_state.master_file_id {
+            None => {
+                kms_state.master_file_id = Some(self.file_id);
+                Ok(())
+            }
+            Some(owner) if owner == self.file_id => Ok(()),
+            Some(_) => return_errno_with_message!(Errno::EBUSY, "DRM master is already owned"),
         }
     }
 
     fn drop_master(&self) -> Result<()> {
-        self.gpu_manager
-            .master_id
-            .compare_exchange(self.file_id, 0, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ())
-            .map_err(|_| Error::with_message(Errno::EINVAL, "file does not own DRM master"))
+        let mut kms_state = self.gpu_manager.kms_state.lock();
+        if !kms_state.is_master(self.file_id) {
+            return_errno_with_message!(Errno::EINVAL, "file does not own DRM master");
+        }
+        kms_state.master_file_id = None;
+        Ok(())
     }
 
     /// Creates the per-file legacy virgl context on first 3D use.
@@ -662,21 +689,17 @@ impl DriHandle {
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
-        let _kms_operation = self.kms_operation.lock();
+        let mut kms_state = self.gpu_manager.kms_state.lock();
         let _cursor_operation = self.cursor_operation.lock();
-        let (resource_id, position, has_active_scanout) = {
+        let (resource_id, position) = {
             let inner = self.inner.lock();
-            (
-                inner.cursor.resource_id,
-                inner.cursor.position,
-                inner.current_fb_id.is_some(),
-            )
+            (inner.cursor.resource_id, inner.cursor.position)
         };
-        if self.is_master()
-            && has_active_scanout
-            && let Err(error) = self.gpu_manager.gpu.disable_scanout()
-        {
-            warn!("cannot disable scanout on DRM file close: {:?}", error);
+        if kms_state.scanout_owned_by(self.file_id) {
+            if let Err(error) = self.gpu_manager.gpu.disable_scanout() {
+                warn!("cannot disable scanout on DRM file close: {:?}", error);
+            }
+            kms_state.scanout = None;
         }
         if let Some(resource_id) = resource_id {
             let _ = self
@@ -684,6 +707,10 @@ impl Drop for DriHandle {
                 .gpu
                 .clear_cursor(resource_id, position.x, position.y);
         }
+        if kms_state.is_master(self.file_id) {
+            kms_state.master_file_id = None;
+        }
+        drop(kms_state);
 
         let context = self.context.get_mut();
         if context.is_created
@@ -709,13 +736,6 @@ impl Drop for DriHandle {
                 );
             }
         }
-
-        let _ = self.gpu_manager.master_id.compare_exchange(
-            self.file_id,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
     }
 }
 
@@ -850,14 +870,14 @@ impl PerOpenFileOps for DriHandle {
                 gem::gem_close(self, req.handle).map(|_| 0)
             }
             cmd @ GemFlink => {
-                self.require_master()?;
+                let _kms_state = self.lock_kms_as_master()?;
                 let mut req = cmd.read()?;
                 req.name = gem::gem_flink(self, req.handle)?;
                 cmd.write(&req)?;
                 Ok(0)
             }
             cmd @ GemOpen => {
-                self.require_master()?;
+                let _kms_state = self.lock_kms_as_master()?;
                 let mut req = cmd.read()?;
                 let (handle, size) = gem::gem_open(self, req.name)?;
                 req.handle = handle;
@@ -927,19 +947,19 @@ impl PerOpenFileOps for DriHandle {
                 kms::get_crtc(self, cmd)
             }
             cmd @ ModeSetCrtc => {
-                self.require_master()?;
+                let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
-                kms::set_crtc(self, &req)?;
+                kms::set_crtc(self, &mut kms_state, &req)?;
                 Ok(0)
             }
             cmd @ ModeCursor => {
-                self.require_master()?;
+                let _kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 kms::set_cursor(self, req.into())?;
                 Ok(0)
             }
             cmd @ ModeCursor2 => {
-                self.require_master()?;
+                let _kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 kms::set_cursor(self, req)?;
                 Ok(0)
@@ -1030,8 +1050,8 @@ impl PerOpenFileOps for DriHandle {
                 plane::get_plane(cmd)
             }
             cmd @ ModeAtomic => {
-                self.require_master()?;
-                atomic::mode_atomic(self, cmd)
+                let mut kms_state = self.lock_kms_as_master()?;
+                atomic::mode_atomic(self, &mut kms_state, cmd)
             }
             cmd @ ModeCreatePropertyBlob => {
                 if self.is_render_node() {
@@ -1067,7 +1087,7 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModePageFlip => {
-                self.require_master()?;
+                let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 if req.crtc_id != CRTC_ID {
                     return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
@@ -1078,19 +1098,19 @@ impl PerOpenFileOps for DriHandle {
                 if req.flags & !(DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC) != 0 {
                     return_errno_with_message!(Errno::EINVAL, "unsupported page flip flags");
                 }
-                kms::present_fb(self, req.fb_id)?;
+                kms::present_fb(self, &mut kms_state, req.fb_id)?;
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
                     self.queue_flip_event(req.user_data)?;
                 }
                 Ok(0)
             }
             cmd @ ModeDirtyFb => {
-                self.require_master()?;
+                let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 if req.fb_id == 0 {
                     return Ok(0);
                 }
-                kms::present_fb(self, req.fb_id)?;
+                kms::present_fb(self, &mut kms_state, req.fb_id)?;
                 Ok(0)
             }
             cmd @ VirtgpuGetparam => {

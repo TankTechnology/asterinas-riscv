@@ -25,6 +25,7 @@ use crate::{
 /// `DRM_IOCTL_MODE_ATOMIC`: atomic commit of KMS property changes.
 pub(super) fn mode_atomic(
     handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
     cmd: Ioctl<b'd', 0xbc, true, InOutData<DrmModeAtomic>>,
 ) -> Result<i32> {
     let req = cmd.read()?;
@@ -112,6 +113,7 @@ pub(super) fn mode_atomic(
     // Commit the atomic changes
     commit_atomic_state(
         handle,
+        kms_state,
         prop_mgr,
         &obj_ids,
         &prop_ids,
@@ -159,6 +161,7 @@ fn validate_property_value(
 /// Commit validated atomic property changes.
 fn commit_atomic_state(
     handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
     prop_mgr: &PropertyManager,
     obj_ids: &[u32],
     prop_ids: &[u32],
@@ -232,12 +235,12 @@ fn commit_atomic_state(
     if flags & DRM_MODE_ATOMIC_ALLOW_MODESET != 0
         && let Some(blob_id) = new_mode_blob
     {
-        apply_mode_blob(handle, prop_mgr, blob_id)?;
+        apply_mode_blob(kms_state, prop_mgr, blob_id)?;
     }
 
     // If we have a FB_ID, present it
     if let Some(fb_id) = new_fb_id {
-        kms::present_fb(handle, fb_id)?;
+        kms::present_fb(handle, kms_state, fb_id)?;
         if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
             handle.queue_flip_event(user_data)?;
         }
@@ -248,7 +251,7 @@ fn commit_atomic_state(
 
 /// Apply a mode blob (drm_mode_modeinfo) to the CRTC.
 fn apply_mode_blob(
-    handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
     prop_mgr: &PropertyManager,
     blob_id: u32,
 ) -> Result<()> {
@@ -257,8 +260,6 @@ fn apply_mode_blob(
     if blob.data.len() < 68 {
         return_errno_with_message!(Errno::EINVAL, "mode blob too small");
     }
-    // Store the mode blob id in the per-file state
-    let mut inner = handle.inner.lock();
-    inner.mode_blob = Some(blob_id);
+    kms_state.mode_blob = Some(blob_id);
     Ok(())
 }

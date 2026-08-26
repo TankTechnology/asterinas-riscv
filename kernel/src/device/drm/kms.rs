@@ -212,14 +212,14 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
 
 /// RMFB: unregister a framebuffer.
 pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
-    let _kms_operation = handle.kms_operation.lock();
+    let mut kms_state = handle.gpu_manager.kms_state.lock();
     let (framebuffer, was_active) = {
         let inner = handle.inner.lock();
         let framebuffer = *inner
             .framebuffers
             .get(&fb_id)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
-        let was_active = inner.current_fb_id == Some(fb_id);
+        let was_active = kms_state.scanout_matches(handle.file_id, fb_id);
         (framebuffer, was_active)
     };
 
@@ -234,7 +234,7 @@ pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
     let mut inner = handle.inner.lock();
     inner.framebuffers.remove(&fb_id);
     if was_active {
-        inner.current_fb_id = None;
+        kms_state.scanout = None;
     }
     drop(inner);
     handle
@@ -244,26 +244,32 @@ pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
 }
 
 /// SETCRTC: set the mode and scanout framebuffer for a CRTC.
-pub(super) fn set_crtc(handle: &super::DriHandle, req: &DrmModeCrtc) -> Result<()> {
+pub(super) fn set_crtc(
+    handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
+    req: &DrmModeCrtc,
+) -> Result<()> {
     if req.crtc_id != CRTC_ID {
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
     if req.fb_id == 0 {
-        let _kms_operation = handle.kms_operation.lock();
         handle
             .gpu_manager
             .gpu
             .disable_scanout()
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
-        handle.inner.lock().current_fb_id = None;
+        kms_state.scanout = None;
         return Ok(());
     }
-    present_fb(handle, req.fb_id)
+    present_fb(handle, kms_state, req.fb_id)
 }
 
 /// Presents a framebuffer on the scanout, copying its pixels to the host.
-pub(super) fn present_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
-    let _kms_operation = handle.kms_operation.lock();
+pub(super) fn present_fb(
+    handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
+    fb_id: u32,
+) -> Result<()> {
     let (addr, size, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
@@ -295,10 +301,7 @@ pub(super) fn present_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
         .present_framebuffer(addr as u64, size, width, height)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
 
-    let mut inner = handle.inner.lock();
-    inner.current_fb_id = Some(fb_id);
-    inner.current_width = width;
-    inner.current_height = height;
+    kms_state.commit_scanout(handle.file_id, fb_id, width, height);
     Ok(())
 }
 
@@ -311,19 +314,13 @@ pub(super) fn get_crtc(
     if req.crtc_id != CRTC_ID {
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
-    let (fb_id, current_width, current_height) = {
-        let inner = handle.inner.lock();
-        (
-            inner.current_fb_id,
-            inner.current_width,
-            inner.current_height,
-        )
-    };
+    let kms_state = handle.gpu_manager.kms_state.lock();
+    let fb_id = kms_state.scanout.map(|scanout| scanout.fb_id);
     cmd.write(&DrmModeCrtc {
         crtc_id: CRTC_ID,
         fb_id: fb_id.unwrap_or(0),
         mode_valid: u32::from(fb_id.is_some()),
-        mode: build_mode(current_width, current_height),
+        mode: build_mode(kms_state.current_width, kms_state.current_height),
         ..Default::default()
     })?;
     Ok(0)
@@ -481,6 +478,7 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::framebuffer_extent;
+    use crate::device::drm::{ActiveFramebuffer, KmsState};
 
     #[ktest]
     fn framebuffer_extent_rejects_empty_or_overlapping_rows() {
@@ -491,5 +489,24 @@ mod tests {
     #[ktest]
     fn framebuffer_extent_includes_pitch_and_offset() {
         assert_eq!(framebuffer_extent(128, 512, 64, 2, 32), Some(896));
+    }
+
+    #[ktest]
+    fn device_scanout_distinguishes_per_file_framebuffer_ids() {
+        let mut state = KmsState::new(1280, 800);
+        state.commit_scanout(11, 7, 640, 480);
+
+        assert!(state.scanout_matches(11, 7));
+        assert!(!state.scanout_matches(12, 7));
+        assert!(state.scanout_owned_by(11));
+        assert!(!state.scanout_owned_by(12));
+        assert_eq!(
+            state.scanout,
+            Some(ActiveFramebuffer {
+                owner_file_id: 11,
+                fb_id: 7,
+            })
+        );
+        assert_eq!((state.current_width, state.current_height), (640, 480));
     }
 }
