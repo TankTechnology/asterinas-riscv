@@ -301,6 +301,29 @@ static int test_clone_inherits_filter(void)
 	return worker.result == -BLOCK_ERRNO ? 0 : 1;
 }
 
+static int test_fork_inherits_filter_chain(void)
+{
+	pid_t child;
+	int status;
+
+	if (install_errno_filter(SYS_getpid, 0) != 0 ||
+	    install_errno_filter_with(SYS_getppid, 0, STACK_ERRNO) != 0)
+		return 1;
+	child = fork();
+	if (child == 0) {
+		errno = 0;
+		if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+			_exit(2);
+		errno = 0;
+		if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO)
+			_exit(3);
+		_exit(0);
+	}
+	if (child < 0 || waitpid(child, &status, 0) != child)
+		return 1;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 1;
+}
+
 static int test_strict_cannot_replace_filter(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
@@ -452,6 +475,8 @@ int main(void)
 	failures += run_isolated(test_unknown_flags, "unknown flags");
 	failures += run_isolated(test_clone_inherits_filter,
 				 "clone inherits filter");
+	failures += run_isolated(test_fork_inherits_filter_chain,
+				 "fork inherits filter chain");
 	failures += run_isolated(test_strict_cannot_replace_filter,
 				 "strict cannot replace filter");
 	failures += run_isolated(test_filter_stacking, "filter stacking");
