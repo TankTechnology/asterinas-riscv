@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,8 @@ from unittest import mock
 
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest, write_manifest
+from tools.riscv.debian.rootfs import fsops as fsops_module
+from tools.riscv.debian.rootfs import contract as contract_module
 from tools.riscv.debian.rootfs.signed_sources import (
     BASE_SOURCE,
     M5_SOURCES,
@@ -299,6 +303,181 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             inputs["profile_name"] = "minimal-m1"
             with self.assertRaisesRegex(ContractError, "only valid for browser-m5"):
                 write_manifest(**inputs)
+
+    def test_builder_and_session_have_closed_offline_m5_contract(self) -> None:
+        rootfs = Path(__file__).parents[1] / "debian/rootfs"
+        builder = (rootfs / "build_rootfs.sh").read_text()
+        session = (rootfs / "desktop_m5_session.sh").read_text()
+        evidence = (rootfs / "desktop_m5_evidence.sh").read_text()
+        self.assertIn("$SECURITY_MIRROR/dists/trixie-security/InRelease", builder)
+        self.assertIn("verify_m5_releases_are_unchanged", builder)
+        self.assertIn("tools.riscv.debian.rootfs.signed_sources owner", builder)
+        self.assertIn('print $1, $2, $3, $4, role', builder)
+        self.assertIn('--signed-source "base=', builder)
+        self.assertIn('--signed-source "security=', builder)
+        self.assertIn("browser_m5.webm.base64", builder)
+        self.assertIn("probe_video_file", builder)
+        self.assertIn("install -m 0644", builder)
+        self.assertIn("--offline", session)
+        self.assertIn('"$PROBE_URL"', session)
+        self.assertIn('--profile "$FIREFOX_PROFILE"', session)
+        self.assertEqual(session.count("file:///"), 1)
+        self.assertNotIn("http://", session)
+        self.assertNotIn("https://", session)
+        for baseline in ("UDEV", "LOGIND", "SESSION", "INPUT", "XORG", "CLIENTS"):
+            self.assertIn(f"DEBIAN_BROWSER_M5_{baseline}", evidence)
+        self.assertIn("DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file", evidence)
+        self.assertNotIn("DEBIAN_BROWSER_M5_CONTENT", evidence)
+        self.assertNotIn("VIDEO_CANPLAY", evidence)
+        self.assertNotIn("VIDEO_ENDED", evidence)
+
+        result = subprocess.run(
+            [str(rootfs / "build_rootfs.sh"), "--profile", "browser-m5", "--print-packages"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        packages = result.stdout.splitlines()
+        self.assertIn("firefox-esr", packages)
+        self.assertNotIn("netsurf-gtk", packages)
+        tools = subprocess.run(
+            [str(rootfs / "build_rootfs.sh"), "--profile", "browser-m5", "--print-tools"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(tools.returncode, 0, tools.stderr)
+        self.assertIn("ffprobe", tools.stdout.splitlines())
+        self.assertIn("ffmpeg", tools.stdout.splitlines())
+
+    def test_m5_publication_rolls_back_security_metadata_with_the_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            output = root / "output"
+            for base, prefix in ((source, b"new:"), (output, b"old:")):
+                for relative in fsops_module._M5_PUBLISHED_PATHS:
+                    path = base / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(prefix + relative.encode())
+            before = {
+                relative: (output / relative).read_bytes()
+                for relative in fsops_module._M5_PUBLISHED_PATHS
+            }
+            real_replace = os.replace
+            replacements = 0
+
+            def fail_after_security_is_prepared(*args, **kwargs):
+                nonlocal replacements
+                replacements += 1
+                if replacements == 3:
+                    raise OSError("injected M5 publication failure")
+                return real_replace(*args, **kwargs)
+
+            with (
+                mock.patch.object(fsops_module.os, "replace", new=fail_after_security_is_prepared),
+                self.assertRaisesRegex(OSError, "injected M5 publication failure"),
+            ):
+                fsops_module.publish_set(
+                    output, source, include_security_inrelease=True
+                )
+            self.assertEqual(
+                {
+                    relative: (output / relative).read_bytes()
+                    for relative in fsops_module._M5_PUBLISHED_PATHS
+                },
+                before,
+            )
+
+    @mock.patch("tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically")
+    def test_manifest_cli_forwards_both_signed_sources(self, publish: mock.Mock) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = self._writer_inputs(Path(directory))
+            sources = inputs["signed_source_files"]
+            arguments = [
+                "write-manifest",
+                "--output", str(inputs["output"]),
+                "--image", str(inputs["image"]),
+                "--packages-lock", str(inputs["packages_lock"]),
+                "--inrelease", str(inputs["inrelease"]),
+                "--package-checksums", str(inputs["package_checksums"]),
+                "--mirror", str(inputs["mirror_url"]),
+                "--suite", str(inputs["suite"]),
+                "--debian-release", str(inputs["debian_release"]),
+                "--build-timestamp", str(inputs["build_timestamp"]),
+                "--tool-version", "debootstrap=test",
+                "--profile", "browser-m5",
+                "--signed-source", f"base={sources['base']}",
+                "--signed-source", f"security={sources['security']}",
+            ]
+            self.assertEqual(contract_module.main(arguments), 0)
+        payload = json.loads(publish.call_args.args[1])
+        self.assertEqual(
+            [source["role"] for source in payload["signed_sources"]],
+            ["base", "security"],
+        )
+
+    def test_builder_installs_verified_read_only_probe_and_m5_session(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            stage = work / "stage"
+            for relative in (
+                "etc/systemd/system",
+                "etc/X11/xorg.conf.d",
+                "home",
+                "usr/bin",
+                "var/lib/dbus",
+                "var/lib/dpkg",
+                "var/cache/apt/archives",
+                "var/lib/apt/lists",
+                "var/log",
+                "tmp",
+                "var/tmp",
+            ):
+                (stage / relative).mkdir(parents=True, exist_ok=True)
+            (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+            (stage / "etc/group").write_text("root:x:0:\n")
+            (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+            (stage / "etc/gshadow").write_text("root:!::\n")
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; PROFILE=browser-m5; configure_profile 1; '
+                    'WORK_DIR="$2"; configure_and_normalize_rootfs',
+                    "m5-configure-test",
+                    str(builder),
+                    str(work),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            probe = stage / "usr/share/asterinas/browser-m5/index.html"
+            video = stage / "usr/share/asterinas/browser-m5/browser-m5.webm"
+            session = stage / "usr/lib/asterinas/desktop-m5-session"
+            evidence = stage / "usr/lib/asterinas/desktop-m5-evidence"
+            policy = stage / "usr/lib/firefox-esr/distribution/policies.json"
+            self.assertEqual(probe.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(video.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(session.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(evidence.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(policy.stat().st_mode & 0o777, 0o644)
+            policies = json.loads(policy.read_text())["policies"]
+            self.assertTrue(policies["DisableTelemetry"])
+            self.assertTrue(policies["DontCheckDefaultBrowser"])
+            self.assertEqual(policies["OverrideFirstRunPage"], "")
+            self.assertEqual(video.read_bytes()[:4], bytes.fromhex("1a45dfa3"))
+            self.assertIn("--offline", session.read_text())
+            self.assertIn(
+                "file:///usr/share/asterinas/browser-m5/index.html",
+                session.read_text(),
+            )
 
 
 if __name__ == "__main__":

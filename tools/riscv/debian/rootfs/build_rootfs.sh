@@ -10,8 +10,10 @@ readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
+readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
+readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
 readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
@@ -139,6 +141,9 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
+            if [[ "$PROFILE" == browser-m5 ]]; then
+                printf '%s\n' ffprobe ffmpeg
+            fi
         else
             printf '%s\n' "${INSTALL_PACKAGES[@]}"
         fi
@@ -153,7 +158,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -177,6 +182,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
+    elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
     fi
 }
 
@@ -284,6 +291,12 @@ validate_existing_publication_targets() {
         [[ ! -e "$target" || -f "$target" ]] ||
             die "unsafe published artifact type: $target"
     done
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        target="$OUTPUT_DIR/source-metadata/Security-InRelease"
+        [[ ! -L "$target" ]] || die "unsafe published artifact symlink: $target"
+        [[ ! -e "$target" || -f "$target" ]] ||
+            die "unsafe published artifact type: $target"
+    fi
 }
 
 validate_existing_cache_targets() {
@@ -302,6 +315,10 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
+        command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
+    fi
     command -v python3 >/dev/null 2>&1 || die "missing runtime tool: python3"
 }
 
@@ -332,6 +349,9 @@ cleanup() {
 fetch_and_verify_release() {
     local inrelease="$WORK_DIR/source-metadata/InRelease"
     local release_url="$MIRROR/dists/$SUITE/InRelease"
+    local security_inrelease="$WORK_DIR/source-metadata/Security-InRelease"
+    local script_directory
+    local repository_root
     local -a codenames=()
     local -a versions=()
 
@@ -346,6 +366,23 @@ fetch_and_verify_release() {
         --output "$inrelease" \
         "$release_url"
     require_safe_keyring_path "$DEBIAN_KEYRING"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        curl \
+            --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
+            --output "$security_inrelease" \
+            "$SECURITY_MIRROR/dists/trixie-security/InRelease"
+        script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+        DEBIAN_RELEASE="$(PYTHONPATH="$repository_root" python3 -m \
+            tools.riscv.debian.rootfs.signed_sources verify \
+            --role base --inrelease "$inrelease" --keyring "$DEBIAN_KEYRING")"
+        PYTHONPATH="$repository_root" python3 -m \
+            tools.riscv.debian.rootfs.signed_sources verify \
+            --role security --inrelease "$security_inrelease" \
+            --keyring "$DEBIAN_KEYRING" >/dev/null
+        readonly DEBIAN_RELEASE
+        return
+    fi
     gpgv --keyring "$DEBIAN_KEYRING" "$inrelease"
 
     mapfile -t codenames < <(sed -n 's/^Codename: //p' "$inrelease")
@@ -437,6 +474,10 @@ install_rootfs_packages() {
 
     log "phase 4/8: updating signed package indexes"
     printf 'deb %s %s main\n' "$MIRROR" "$SUITE" >"$stage/etc/apt/sources.list"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        printf 'deb %s trixie-security main\n' "$SECURITY_MIRROR" \
+            >>"$stage/etc/apt/sources.list"
+    fi
     cp -L -- /etc/resolv.conf "$stage/etc/resolv.conf"
     mkdir -p -- "$stage/etc/ssl/certs"
     cp -L -- /etc/ssl/certs/ca-certificates.crt "$bootstrap_ca"
@@ -470,9 +511,22 @@ audit_packages() {
     local release_path
     local authenticated_paths=""
     local authenticated_index_count=0
+    local source_role="base"
+    local source_inrelease
+    local component
+    local index_checksums
+    local script_directory
+    local repository_root
 
     log "phase 6/8: auditing package lock and signed-index checksums"
-    verify_release_is_unchanged "$WORK_DIR" "$MIRROR" "$SUITE" "$DEBIAN_RELEASE"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        verify_m5_releases_are_unchanged
+        : >"$WORK_DIR/package-index-checksums"
+        script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    else
+        verify_release_is_unchanged "$WORK_DIR" "$MIRROR" "$SUITE" "$DEBIAN_RELEASE"
+    fi
     LC_ALL=C dpkg-query \
         "--admindir=$stage/var/lib/dpkg" \
         --show \
@@ -483,7 +537,22 @@ audit_packages() {
     for package_list in "$stage"/var/lib/apt/lists/*_Packages*; do
         [[ -f "$package_list" ]] || continue
         package_list_name="${package_list##*/}"
-        case "$package_list_name" in
+        if [[ "$PROFILE" == browser-m5 ]]; then
+            source_role="$(PYTHONPATH="$repository_root" python3 -m \
+                tools.riscv.debian.rootfs.signed_sources owner \
+                --filename "$package_list_name")"
+            if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-(riscv64|all)_Packages ]]; then
+                component="${BASH_REMATCH[1]}"
+                release_path="$component/binary-${BASH_REMATCH[2]}/Packages"
+            else
+                die "cannot map apt Packages index path: $package_list_name"
+            fi
+            if [[ "$source_role" == base ]]; then
+                source_inrelease="$WORK_DIR/source-metadata/InRelease"
+            else
+                source_inrelease="$WORK_DIR/source-metadata/Security-InRelease"
+            fi
+        else case "$package_list_name" in
             *_dists_${SUITE}_main_binary-${DEBIAN_ARCHITECTURE}_Packages*)
                 release_path="main/binary-$DEBIAN_ARCHITECTURE/Packages"
                 ;;
@@ -494,24 +563,38 @@ audit_packages() {
                 die "cannot map apt Packages index to retained InRelease: $package_list_name"
                 ;;
         esac
-        [[ "$authenticated_paths" != *$'\n'"$release_path"$'\n'* ]] ||
-            die "ambiguous apt Packages index target: $release_path"
-        authenticated_paths+=$'\n'"$release_path"$'\n'
+            source_inrelease="$WORK_DIR/source-metadata/InRelease"
+        fi
+        [[ "$authenticated_paths" != *$'\n'"$source_role:$release_path"$'\n'* ]] ||
+            die "ambiguous apt Packages index target: $source_role:$release_path"
+        authenticated_paths+=$'\n'"$source_role:$release_path"$'\n'
         package_index="$WORK_DIR/package-index-$authenticated_index_count"
         chroot "$stage" /usr/lib/apt/apt-helper cat-file \
             "/var/lib/apt/lists/$package_list_name" >"$package_index"
         authenticate_package_index \
             "$package_index" \
             "$release_path" \
-            "$WORK_DIR/source-metadata/InRelease"
+            "$source_inrelease"
         cat "$package_index" >>"$WORK_DIR/package-index"
         printf '\n' >>"$WORK_DIR/package-index"
+        if [[ "$PROFILE" == browser-m5 ]]; then
+            index_checksums="$WORK_DIR/package-index-checksums-$authenticated_index_count"
+            extract_package_index_checksums "$package_index" "$index_checksums"
+            awk -F '\t' -v role="$source_role" \
+                'BEGIN { OFS = "\t" } { print $1, $2, $3, $4, role }' \
+                "$index_checksums" >>"$WORK_DIR/package-index-checksums"
+        fi
         ((authenticated_index_count += 1))
     done
     ((authenticated_index_count > 0)) || die "no authenticated package index is available"
-    extract_package_index_checksums \
-        "$WORK_DIR/package-index" \
-        "$WORK_DIR/package-index-checksums"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        LC_ALL=C sort -u "$WORK_DIR/package-index-checksums" \
+            -o "$WORK_DIR/package-index-checksums"
+    else
+        extract_package_index_checksums \
+            "$WORK_DIR/package-index" \
+            "$WORK_DIR/package-index-checksums"
+    fi
     admit_downloaded_packages
 }
 
@@ -550,6 +633,39 @@ verify_release_is_unchanged() {
     current_sha256="${current_sha256%% *}"
     [[ "$current_sha256" == "$retained_sha256" ]] ||
         die "signed release changed during build: InRelease SHA-256 mismatch"
+}
+
+verify_m5_releases_are_unchanged() {
+    local script_directory
+    local repository_root
+    local role
+    local mirror
+    local suite
+    local retained
+    local current
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    for role in base security; do
+        if [[ "$role" == base ]]; then
+            mirror="$MIRROR"
+            suite="$SUITE"
+            retained="$WORK_DIR/source-metadata/InRelease"
+        else
+            mirror="$SECURITY_MIRROR"
+            suite="trixie-security"
+            retained="$WORK_DIR/source-metadata/Security-InRelease"
+        fi
+        current="$WORK_DIR/source-metadata/$role-InRelease.current"
+        curl --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
+            --output "$current" "$mirror/dists/$suite/InRelease"
+        PYTHONPATH="$repository_root" python3 -m \
+            tools.riscv.debian.rootfs.signed_sources verify \
+            --role "$role" --inrelease "$current" --keyring "$DEBIAN_KEYRING" \
+            >/dev/null
+        cmp --silent -- "$retained" "$current" ||
+            die "$role signed release changed during build: InRelease mismatch"
+    done
 }
 
 authenticate_package_index() {
@@ -679,6 +795,8 @@ EOF
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
+    elif [[ "$PROFILE" == browser-m5 ]]; then
+        configure_desktop "$stage" "m5"
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -796,11 +914,13 @@ configure_desktop() {
     local stage="$1"
     local generation="$2"
     local script_directory
+    local repository_root
     local session_source
     local evidence_source
     local service_name="asterinas-desktop-$generation"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     session_source="$script_directory/desktop_${generation}_session.sh"
     evidence_source="$script_directory/desktop_${generation}_evidence.sh"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
@@ -847,6 +967,34 @@ configure_desktop() {
                 "$script_directory/asterinas-$launcher.desktop" \
                 "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
         done
+    elif [[ "$generation" == m5 ]]; then
+        local browser_directory="$stage/usr/share/asterinas/browser-m5"
+        local decoded_video="$WORK_DIR/browser-m5.webm"
+        install -d -m 0755 -- "$browser_directory"
+        install -m 0644 -- "$script_directory/browser_m5_probe.html" \
+            "$browser_directory/index.html"
+        base64 --decode "$script_directory/browser_m5.webm.base64" >"$decoded_video"
+        PYTHONPATH="$repository_root" python3 -c \
+            'from pathlib import Path; from tools.riscv.debian.rootfs.browser_m5 import validate_probe_assets, probe_video_file; import sys; video=validate_probe_assets(Path(sys.argv[1]), Path(sys.argv[2])); Path(sys.argv[3]).read_bytes() == video or sys.exit("decoded browser fixture mismatch"); probe_video_file(Path(sys.argv[3]))' \
+            "$script_directory/browser_m5_probe.html" \
+            "$script_directory/browser_m5.webm.base64" "$decoded_video"
+        install -m 0644 -- "$decoded_video" "$browser_directory/browser-m5.webm"
+        install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
+        cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
+{
+  "policies": {
+    "DisableDefaultBrowserAgent": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "DisableTelemetry": true,
+    "DontCheckDefaultBrowser": true,
+    "NoDefaultBookmarks": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": ""
+  }
+}
+ EOF
+        chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
     fi
 
     install -D -m 0755 -- \
@@ -1036,6 +1184,13 @@ write_rootfs_manifest() {
     mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
     qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
 
+    local -a signed_source_arguments=()
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        signed_source_arguments=(
+            --signed-source "base=$WORK_DIR/source-metadata/InRelease"
+            --signed-source "security=$WORK_DIR/source-metadata/Security-InRelease"
+        )
+    fi
     PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.contract \
         write-manifest \
         --output "$WORK_DIR/rootfs-manifest.json" \
@@ -1047,6 +1202,7 @@ write_rootfs_manifest() {
         --suite "$SUITE" \
         --debian-release "$DEBIAN_RELEASE" \
         --profile "$PROFILE" \
+        "${signed_source_arguments[@]}" \
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
@@ -1056,16 +1212,22 @@ write_rootfs_manifest() {
 publish_artifacts() {
     local script_directory
     local repository_root
+    local -a security_publication=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        security_publication=(--include-security-inrelease)
+    fi
 
     # The helper rolls back ordinary failures and termination signals. The
-    # five-file set is intentionally not claimed to be power-loss atomic.
+    # The profile-specific file set is intentionally not claimed to be
+    # power-loss atomic.
     PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
         publish-set \
         --output-dir "$OUTPUT_DIR" \
-        --source-root "$WORK_DIR"
+        --source-root "$WORK_DIR" \
+        "${security_publication[@]}"
 }
 
 log() {
