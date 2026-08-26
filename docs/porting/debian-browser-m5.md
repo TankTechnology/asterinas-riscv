@@ -42,15 +42,17 @@ the same invariant, not a special exception for Firefox:
    decompressed Packages bytes against that source's retained `InRelease`.
 3. Re-fetch and byte-hash-check both signed releases immediately before package
    admission.  A change to either release aborts the build.
-4. Replace the manifest's singular `signed_metadata` object with a sorted,
+4. In browser schema 6, replace the manifest's singular `signed_metadata`
+   object with a sorted,
    exact-key `signed_sources` array.  Each entry records role, mirror URL, suite,
    InRelease URL and SHA-256.  Publish both retained files under distinct names.
 5. Keep package admission unchanged after indexes are concatenated: every `.deb`
    hash must still have one unique package/index row.  Also record the source
    role on each admitted package to preserve provenance when versions overlap.
 
-This requires a new manifest schema rather than overloading schema 4.  Existing
-M1-M4 manifests and gates should remain byte-for-byte compatible.
+Browser M5 uses manifest schema 6 because remote main already assigns legacy
+schema 5 to `desktop-m5-network`. Existing M1-M4 and network-M5 manifests keep
+their legacy single-source shape and remain byte-for-byte compatible.
 
 The security InRelease advertises the component as `updates/main`, while the
 authenticated checksum paths and apt list remain `main/binary-riscv64/Packages`.
