@@ -37,15 +37,21 @@
 
 **U-Boot 命令必须逐字符节流发送**（bridge 已实现 paced TX），提交前核对完整回显。
 
-## 4. 状态与下一步（更新至 2026-08-10）
+## 4. 状态与下一步（更新至 2026-08-26）
 
 **已解决**：
 - **UART 可见性** ✅：dw-apb-uart 驱动（TX/RX/中断/Busy Detect）已实现并在 7/21 真机验证（`docs/porting/evidence/2026-07-21-megrez-dw-apb-uart-rx.md`）——下次上板串口应能看到 PID 1 hello。
+- **双 xHCI 键鼠** ✅：USB0（`0x5048_0000`/IRQ 85）注册 Logitech
+  boot keyboard；USB1（`0x5049_0000`/IRQ 86）经 VIA hub 注册 boot
+  mouse。两个独立中断 worker 均启动，Debian/Xorg 报告 evdev keyboard 和
+  pointer。证据见 `docs/porting/evidence/2026-08-26-megrez-dual-xhci-desktop.md`。
+- **基础 Debian 桌面** ✅：真机进入 systemd graphical target，非 root
+  `asterinas` 会话启动 Xorg fbdev、Matchbox 和 xterm；HDMI 已由操作员目视确认。
 
-**待验证（下次上板内容）**：
-1. **USB 键盘真机验证**：`codex/megrez-usb-keyboard` 分支（键盘链路）QEMU 验证完整（Megrez Sv48 契约模拟 PASS + virt 键盘回归 + DWC3 选择失败安全验证）；**Megrez 的 DWC3 硬件交互**只能在真机验证——这是上板的主要价值。
-2. **DTB 修补（上板前必须做）**：真机 RockOS DTB **没有** `/chosen/asterinas,usb-host` 属性（Asterinas 专用选择机制）——上板传输时需 `fdtput` 加该属性，指向 Megrez 的 DWC3 节点（从板端 DTB audit 确认路径，MMIO 为 `0x5048_0000`/`0x5049_0000`），并更新 DTB 的 CRC 门禁值。
-3. **构建基线**：键盘分支未做真机链——上板前按第 3 节构建 + QEMU 门禁 + 产物身份校验。
+**下一步**：
+1. 在 HDMI 上人工确认鼠标移动、左键和键盘输入的实际桌面交互；当前自动证据已到设备注册和 Xorg evdev 选择。
+2. 把当前基础桌面会话从带 `asterinas.reboot_after=600` 的有界验证启动，升级为可长期使用的启动配置。
+3. 在不依赖 DRM 加速的前提下加入 PCManFM 和 NetSurf；网络与硬件加速仍是后续独立里程碑。
 
 ## 5. 板子信息速查
 

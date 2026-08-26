@@ -71,9 +71,16 @@ setenv initrd_size ${filesize}
 **方案 B（U-Boot 内修补，后备）**：
 
 ```text
-fdt set /chosen asterinas,usb-host /soc/usb@50480000    # 路径以板端 fdt print 确认为准
-fdt print /chosen                                        # 核对
+fdt set /chosen asterinas,usb-host \
+  /soc/usb0@50480000/dwc3@50480000 \
+  /soc/usb1@50490000/dwc3@50490000
+fdt print /chosen asterinas,usb-host
 ```
+
+该属性是最多两个节点路径组成的 DT string-list。2026-08-26 的真机验证中，
+USB0（IRQ 85）连接 Logitech 键盘，USB1（IRQ 86）经 VIA hub 连接光电鼠标；
+Asterinas 为两个控制器分别启动 xHCI HID worker。只需要一个控制器时仍可写
+单个路径。
 
 ### 5.1 current-main HDMI framebuffer 候选
 
@@ -110,7 +117,8 @@ booti 0x80200000 0x83000000:${initrd_size} 0xf0000000
 | 内核进入 | `Enter riscv_boot` |
 | 内核 banner | `Presented by the Asterinas developers` |
 | 用户态 | `>>> Hello from RISC-V userspace on Asterinas! <<<` |
-| **键盘（本次上板目标）** | 插入 USB 键盘 → 按键 → 串口回显字符 |
+| **双 xHCI 输入** | 两个 `Starting DWC3 xHCI host`，随后键盘和鼠标分别注册 |
+| **桌面输入** | `DEBIAN_DESKTOP_M3_INPUT keyboard=evdev pointer=evdev` |
 | 自动恢复（验证安全网） | 若卡住：400 秒后自动重启回 U-Boot `=>` |
 
 ## 8. 安全结束
