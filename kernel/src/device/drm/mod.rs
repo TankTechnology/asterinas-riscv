@@ -384,15 +384,20 @@ impl GpuManager {
 
     /// Retries resources that outlived their GEM objects without holding a spinlock.
     fn drain_pending_resource_cleanup(&self) {
-        loop {
-            let resource_id = self.pending_resource_cleanup.lock().iter().next().copied();
-            let Some(resource_id) = resource_id else {
-                return;
-            };
-            if self.gpu.resource_unref(resource_id).is_err() {
-                return;
-            }
-            self.pending_resource_cleanup.lock().remove(&resource_id);
+        retry_pending_resources(&self.pending_resource_cleanup, |resource_id| {
+            self.gpu.resource_unref(resource_id).is_ok()
+        });
+    }
+}
+
+fn retry_pending_resources(
+    pending_resources: &SpinLock<BTreeSet<u32>>,
+    mut try_cleanup: impl FnMut(u32) -> bool,
+) {
+    let resources: Vec<_> = pending_resources.lock().iter().copied().collect();
+    for resource_id in resources {
+        if try_cleanup(resource_id) {
+            pending_resources.lock().remove(&resource_id);
         }
     }
 }
@@ -437,6 +442,28 @@ impl GemResourceState {
 enum HostCleanupStatus {
     Confirmed,
     Unconfirmed,
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn failed_resource_cleanup_does_not_block_later_resources() {
+        // Regression for the cleanup starvation found while reviewing `9fc8a0824`.
+        let pending_resources = SpinLock::new(BTreeSet::from([10, 11]));
+        let mut attempted_resources = Vec::new();
+
+        retry_pending_resources(&pending_resources, |resource_id| {
+            attempted_resources.push(resource_id);
+            resource_id == 11
+        });
+
+        assert_eq!(attempted_resources, vec![10, 11]);
+        assert_eq!(*pending_resources.lock(), BTreeSet::from([10]));
+    }
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
