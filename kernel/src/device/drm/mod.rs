@@ -27,7 +27,10 @@ mod property;
 mod virtio_gpu;
 
 use core::{
-    ops::Range,
+    ops::{
+        Bound::{Excluded, Included},
+        Range,
+    },
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
@@ -394,11 +397,22 @@ fn retry_pending_resources(
     pending_resources: &SpinLock<BTreeSet<u32>>,
     mut try_cleanup: impl FnMut(u32) -> bool,
 ) {
-    let resources: Vec<_> = pending_resources.lock().iter().copied().collect();
-    for resource_id in resources {
+    let Some(last_resource_id) = pending_resources.lock().last().copied() else {
+        return;
+    };
+    let mut next_resource_id = pending_resources.lock().first().copied();
+    while let Some(resource_id) = next_resource_id {
         if try_cleanup(resource_id) {
             pending_resources.lock().remove(&resource_id);
         }
+        if resource_id == last_resource_id {
+            return;
+        }
+        next_resource_id = pending_resources
+            .lock()
+            .range((Excluded(resource_id), Included(last_resource_id)))
+            .next()
+            .copied();
     }
 }
 
@@ -458,11 +472,14 @@ mod tests {
 
         retry_pending_resources(&pending_resources, |resource_id| {
             attempted_resources.push(resource_id);
+            if resource_id == 10 {
+                pending_resources.lock().insert(12);
+            }
             resource_id == 11
         });
 
         assert_eq!(attempted_resources, vec![10, 11]);
-        assert_eq!(*pending_resources.lock(), BTreeSet::from([10]));
+        assert_eq!(*pending_resources.lock(), BTreeSet::from([10, 12]));
     }
 }
 
