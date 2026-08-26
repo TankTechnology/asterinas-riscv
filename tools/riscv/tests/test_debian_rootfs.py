@@ -553,6 +553,7 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-control-character",
             "systemd-root-label",
             "systemd-desktop-root-label",
+            "systemd-application-desktop-root-label",
             "systemd-handoff-sequence",
             "systemd-exec",
         )
@@ -1301,6 +1302,7 @@ WantedBy=multi-user.target
             "netsurf-gtk file:///usr/share/asterinas/desktop-m4-welcome.html &",
             session_text,
         )
+        self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
         self.assertLess(
             session_text.index("pcmanfm --no-desktop"), session_text.index("xterm")
