@@ -516,6 +516,33 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertNotIn("missing required tool", result.stderr)
         self.assertNotIn("phase 1/8", result.stderr)
 
+    def test_non_browser_profile_rejects_stale_security_metadata_early(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            metadata = output / "source-metadata"
+            metadata.mkdir(parents=True)
+            stale = metadata / "Security-InRelease"
+            stale.write_text("stale browser provenance")
+            result = subprocess.run(
+                [
+                    str(builder),
+                    "--profile", "desktop-m5-network",
+                    "--output-dir", str(output),
+                    "--cache-dir", str(root / "cache"),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("stale browser-m5 artifact", result.stderr)
+        self.assertNotIn("missing required tool", result.stderr)
+        self.assertNotIn("phase 1/8", result.stderr)
+
     def test_manifest_cli_rejects_custom_m5_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inputs = self._writer_inputs(Path(directory))
