@@ -415,20 +415,27 @@ def write_manifest(
     """Validates build inputs and atomically writes a canonical manifest."""
 
     _require_safe_output_path(output)
+    try:
+        profile = get_profile(profile_name)
+    except ValueError as error:
+        raise ContractError(str(error)) from error
+    if profile.schema_version == 5:
+        if signed_source_files is None:
+            raise ContractError("browser-m5 requires signed_source_files")
+        source_inputs = tuple(signed_source_files.values())
+    else:
+        if signed_source_files is not None:
+            raise ContractError("signed_source_files is only valid for browser-m5")
+        source_inputs = ()
     _require_disjoint_output(
         output,
-        (image, packages_lock, inrelease, package_checksums),
+        (image, packages_lock, inrelease, package_checksums, *source_inputs),
     )
     _require_exact(suite, _SUITE, "suite")
     _require_https(mirror_url, "mirror_url")
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
         raise ContractError("debian_release must be a signed Debian 13 point release")
     _require_build_timestamp(build_timestamp)
-    try:
-        profile = get_profile(profile_name)
-    except ValueError as error:
-        raise ContractError(str(error)) from error
-
     lock_rows = parse_packages_lock(packages_lock)
     downloaded_packages = _load_package_checksums(
         package_checksums, schema_version=profile.schema_version
@@ -465,8 +472,6 @@ def write_manifest(
         "tool_versions": parsed_tool_versions,
     }
     if profile.schema_version == 5:
-        if signed_source_files is None:
-            raise ContractError("browser-m5 requires signed_source_files")
         from tools.riscv.debian.rootfs.signed_sources import signed_sources_manifest
 
         try:
@@ -792,6 +797,10 @@ def _load_package_checksums(
             if fields[4] not in {source.role for source in M5_SOURCES}:
                 raise ContractError(
                     f"unexpected package-checksums source role: {fields[4]!r}"
+                )
+            if fields[0] == "firefox-esr" and fields[4] != "security":
+                raise ContractError(
+                    "firefox-esr must be admitted from the security source"
                 )
             identity += (fields[4],)
         rows.append(identity)
