@@ -127,6 +127,12 @@ The current gate proves cold-boot enumeration and deterministic key and pointer
 delivery for one QEMU PCI xHCI controller, one HID boot keyboard, and one HID
 boot mouse. It does **not** prove USB hotplug, hubs, multiple devices per kind,
 HID report protocol, key repeat, keyboard LEDs, physical Megrez xHCI,
-MSI/MSI-X, or arbitrary xHCI hardware. Physical-board work must separately
-validate clocks, resets, PHY, cache coherency, DMA windows, interrupt topology,
-and Xorg pointer behavior.
+MSI/MSI-X, or arbitrary xHCI hardware.
+
+The physical Megrez path is deliberately a separate gate. A 2026-08-26 run
+selected both board DWC3 controllers from a two-string
+`/chosen/asterinas,usb-host` property: USB0 registered the keyboard and USB1
+registered a mouse behind the board's VIA hub. Both interrupt workers reached
+the Debian Desktop M3 Xorg session. See
+[`2026-08-26-megrez-dual-xhci-desktop.md`](../../../docs/porting/evidence/2026-08-26-megrez-dual-xhci-desktop.md)
+for the frozen topology and remaining human-interaction boundary.
