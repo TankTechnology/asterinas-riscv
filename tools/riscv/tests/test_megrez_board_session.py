@@ -471,6 +471,25 @@ class SerialContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "FDT error"):
             session.command(fdt_command)
 
+    def test_booti_accepts_nonfatal_fdt_warning_after_kernel_entry(self):
+        session = self._session()
+        command = "booti 0x80200000 0x83000000:${initrd_size} 0xf0000000"
+        session.send = mock.Mock()
+        session.wait_for = mock.Mock(
+            return_value=(
+                f"{command}\r\n"
+                "ERROR: reserving fdt memory region failed "
+                "(addr=fffff000 size=1000 flags=4)\r\n"
+                "Starting kernel ...\r\nEnter riscv_boot\r\n"
+            )
+        )
+
+        output = session.command(
+            command, expect=board.MILESTONES["kernel_enter"], timeout=30
+        )
+
+        self.assertIn(board.MILESTONES["kernel_enter"], output)
+
     def test_load_artifact_requires_load_evidence_not_just_echo(self):
         session = self._session()
         load = "ext4load mmc 1:1 0x80200000 /kernel"
@@ -587,6 +606,13 @@ class BootTransactionTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(result, 0)
+        physical_session.send.assert_called_once_with("")
+        self.assertLess(
+            physical_session.mock_calls.index(mock.call.send("")),
+            physical_session.mock_calls.index(
+                mock.call.wait_for(board.PROMPT, timeout=60)
+            ),
+        )
         physical_session.note_milestone.assert_called_once_with(current_boot)
 
     def test_framebuffer_handoff_is_complete_before_booti(self):
