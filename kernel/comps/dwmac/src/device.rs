@@ -26,32 +26,20 @@ use crate::{
         DMA_CHANNEL0_TX_CONTROL, DMA_CHANNEL0_TX_DESCRIPTOR_LIST,
         DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH, DMA_CHANNEL0_TX_RING_LENGTH,
         DMA_CHANNEL0_TX_TAIL_POINTER, DMA_MODE, DMA_SYSTEM_BUS_MODE, MAC_ADDRESS0_HIGH,
-        MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_INTERRUPT_ENABLE, MAC_PACKET_FILTER,
-        encode_ring_length, encode_rx_buffer_size,
+        MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_ENABLE,
+        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_OPERATION_MODE,
+        MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero, dma_interrupt_enable,
+        dma_status_needs_rx_resume, dma_system_bus_mode, encode_ring_length, encode_rx_buffer_size,
     },
 };
 
 const DEVICE_NAME: &str = "eic7700-rj45";
 const DMA_SOFTWARE_RESET: u32 = 1;
-const DMA_ADDRESS_ALIGNED_BEATS: u32 = 1 << 12;
-const DMA_AXI_BURSTS_16_8_4: u32 = (1 << 3) | (1 << 2) | (1 << 1);
-const DMA_AXI_WRITE_LIMIT_2: u32 = 2 << 24;
-const DMA_AXI_READ_LIMIT_2: u32 = 2 << 16;
 const DMA_TX_PBL_32: u32 = 32 << 16;
 const DMA_TX_OPERATE_ON_SECOND_PACKET: u32 = 1 << 4;
 const DMA_TX_START: u32 = 1;
 const DMA_RX_PBL_32: u32 = 32 << 16;
 const DMA_RX_START: u32 = 1;
-const DMA_INTERRUPT_NORMAL_4_10: u32 = 1 << 15;
-const DMA_INTERRUPT_ABNORMAL_4_10: u32 = 1 << 14;
-const DMA_INTERRUPT_FATAL_BUS: u32 = 1 << 12;
-const DMA_INTERRUPT_RX: u32 = 1 << 6;
-const DMA_INTERRUPT_TX: u32 = 1;
-const DMA_INTERRUPT_MASK: u32 = DMA_INTERRUPT_NORMAL_4_10
-    | DMA_INTERRUPT_ABNORMAL_4_10
-    | DMA_INTERRUPT_FATAL_BUS
-    | DMA_INTERRUPT_RX
-    | DMA_INTERRUPT_TX;
 const DMA_STATUS_FATAL_BUS: u32 = 1 << 12;
 const DMA_STATUS_KNOWN: u32 = 0x003f_fdc7;
 const MAC_CONFIG_DUPLEX: u32 = 1 << 13;
@@ -109,11 +97,14 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
-    device.write(DMA_CHANNEL0_INTERRUPT_ENABLE.offset(), DMA_INTERRUPT_MASK)?;
+    let interrupt_enable = dma_interrupt_enable(selected.version);
+    device.write(DMA_CHANNEL0_INTERRUPT_ENABLE.offset(), interrupt_enable)?;
     ostd::info!(
-        "ASTERINAS_GMAC_SELECTED key={} alias={} speed={}Mbps duplex={} mac={:02x?}",
+        "ASTERINAS_GMAC_SELECTED key={} alias={} version={:#04x} interrupt_enable={:#010x} speed={}Mbps duplex={} mac={:02x?}",
         DEVICE_NAME,
         selected.alias_index,
+        selected.version,
+        interrupt_enable,
         selected.link_state.speed_mbps(),
         selected.link_state.is_full_duplex(),
         selected.mac_address,
@@ -173,18 +164,22 @@ fn configure_selected(
     addresses: QueueAddresses,
 ) -> Result<(), DeviceError> {
     let alias = selected.alias_index;
+    let read = |offset: u32| platform.read_gmac(alias, offset as usize);
     let write = |offset: u32, value| platform.write_gmac(alias, offset as usize, value);
     let split = |address: usize| (address as u32, (address as u64 >> 32) as u32);
     let (tx_low, tx_high) = split(addresses.tx_ring);
     let (rx_low, rx_high) = split(addresses.rx_ring);
+    let mac_feature1 = read(MAC_HW_FEATURE1.offset())?;
+    let queue_zero = configure_queue_zero(
+        mac_feature1,
+        read(MTL_TX_QUEUE0_OPERATION_MODE.offset())?,
+        read(MTL_RX_QUEUE0_OPERATION_MODE.offset())?,
+        read(MAC_RX_QUEUE_CONTROL0.offset())?,
+    )
+    .map_err(|_| DeviceError::RegisterEncoding)?;
 
-    write(
-        DMA_SYSTEM_BUS_MODE.offset(),
-        DMA_ADDRESS_ALIGNED_BEATS
-            | DMA_AXI_WRITE_LIMIT_2
-            | DMA_AXI_READ_LIMIT_2
-            | DMA_AXI_BURSTS_16_8_4,
-    )?;
+    let system_bus_mode = dma_system_bus_mode(tx_high, rx_high);
+    write(DMA_SYSTEM_BUS_MODE.offset(), system_bus_mode)?;
     write(DMA_CHANNEL0_CONTROL.offset(), 0)?;
     write(DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH.offset(), tx_high)?;
     write(DMA_CHANNEL0_TX_DESCRIPTOR_LIST.offset(), tx_low)?;
@@ -208,6 +203,29 @@ fn configure_selected(
         DMA_TX_PBL_32 | DMA_TX_OPERATE_ON_SECOND_PACKET,
     )?;
     write(DMA_CHANNEL0_RX_CONTROL.offset(), DMA_RX_PBL_32 | rx_buffer)?;
+    write(
+        MTL_TX_QUEUE0_OPERATION_MODE.offset(),
+        queue_zero.mtl_tx_operation_mode,
+    )?;
+    write(
+        MTL_RX_QUEUE0_OPERATION_MODE.offset(),
+        queue_zero.mtl_rx_operation_mode,
+    )?;
+    write(
+        MAC_RX_QUEUE_CONTROL0.offset(),
+        queue_zero.mac_rx_queue_control0,
+    )?;
+    ostd::info!(
+        "configured GMAC{} queue zero: feature1={:#010x} system_bus={:#010x} tx_ring={:#018x} rx_ring={:#018x} mac_rxq={:#010x} mtl_tx={:#010x} mtl_rx={:#010x}",
+        alias,
+        mac_feature1,
+        system_bus_mode,
+        addresses.tx_ring,
+        addresses.rx_ring,
+        queue_zero.mac_rx_queue_control0,
+        queue_zero.mtl_tx_operation_mode,
+        queue_zero.mtl_rx_operation_mode,
+    );
     let mac_low = u32::from_le_bytes([
         selected.mac_address[0],
         selected.mac_address[1],
@@ -291,12 +309,24 @@ impl DwmacDevice {
             self.fatal = true;
             return;
         };
+        let needs_rx_resume = dma_status_needs_rx_resume(status);
         if status & DMA_STATUS_FATAL_BUS != 0 {
             self.fatal = true;
         }
         if self
             .write(DMA_CHANNEL0_STATUS.offset(), status & DMA_STATUS_KNOWN)
             .is_err()
+        {
+            self.fatal = true;
+            return;
+        }
+        if needs_rx_resume
+            && self
+                .write(
+                    DMA_CHANNEL0_RX_TAIL_POINTER.offset(),
+                    self.queue.rx_resume_tail() as u32,
+                )
+                .is_err()
         {
             self.fatal = true;
         }

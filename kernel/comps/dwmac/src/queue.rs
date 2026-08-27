@@ -143,6 +143,7 @@ pub(super) struct DmaQueue {
     rx_buffers: Vec<Option<RxBuffer>>,
     tx_buffers: Vec<Option<TxBuffer>>,
     rx_head: usize,
+    rx_resume_tail: usize,
     rx_tail_to_write: Option<usize>,
     tx: RingState,
 }
@@ -156,11 +157,13 @@ impl DmaQueue {
             .call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
         let rx_pool = RX_POOL.get().unwrap();
         let ring = DmaStream::alloc(1, false).map_err(|_| QueueError::Allocation)?;
+        let rx_ring = ring.daddr() + RX_RING_OFFSET;
         let mut queue = Self {
             ring,
             rx_buffers: (0..QUEUE_SIZE).map(|_| None).collect(),
             tx_buffers: (0..QUEUE_SIZE).map(|_| None).collect(),
             rx_head: 0,
+            rx_resume_tail: rx_ring + QUEUE_SIZE * size_of::<Descriptor>(),
             rx_tail_to_write: None,
             tx: RingState::new(QUEUE_SIZE),
         };
@@ -277,10 +280,14 @@ impl DmaQueue {
         self.rx_tail_to_write.take()
     }
 
+    pub fn rx_resume_tail(&self) -> usize {
+        self.rx_resume_tail
+    }
+
     fn advance_rx(&mut self) {
         self.rx_head = (self.rx_head + 1) % QUEUE_SIZE;
-        self.rx_tail_to_write =
-            Some(self.addresses().rx_ring + self.rx_head * size_of::<Descriptor>());
+        self.rx_resume_tail = self.addresses().rx_ring + self.rx_head * size_of::<Descriptor>();
+        self.rx_tail_to_write = Some(self.rx_resume_tail);
     }
 
     fn descriptor_offset(is_tx: bool, slot: usize) -> usize {
