@@ -231,6 +231,56 @@ are inspected as visual evidence and are not compared to a fixed hash.
 Rendering the full modern Baidu homepage is a later compatibility target, not
 a prerequisite for this foundational gate.
 
+### Megrez static-RJ45 browser gate
+
+The physical browser milestone reuses the signed `desktop-m5-network` root
+and the kernel's reviewed static profile. The exact guest identity is:
+
+```text
+asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1
+interface=eth0
+primary DNS=10.2.0.5
+fallback DNS=10.2.0.6
+```
+
+Install a newly built ext2 image with
+`tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
+back eMMC partition 2. Linux may stage immutable boot files but is not an
+accepted runtime or installer kernel. Serve the current Image, frozen Megrez
+DTB, and Stage1 from a private TFTP root on `10.100.19.216`, then compute the
+two changing U-Boot CRC32 values and run the bounded gate:
+
+```bash
+crc32_file() {
+  python3 -c 'import pathlib,sys,zlib; print(f"{zlib.crc32(pathlib.Path(sys.argv[1]).read_bytes()):08x}")' "$1"
+}
+BOOTI_CRC32="$(crc32_file target/megrez-browser-network/tftp/asterinas-browser-net.booti)"
+STAGE1_CRC32="$(crc32_file target/megrez-browser-network/tftp/debian-browser-stage1.cpio)"
+python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
+  --booti asterinas-browser-net.booti \
+  --dtb eic7700-milkv-megrez.dtb \
+  --initrd debian-browser-stage1.cpio \
+  --expected-crc32 "booti=$BOOTI_CRC32,dtb=4afcb20e,initrd=$STAGE1_CRC32" \
+  --host-interface enp12s0 --load-transport tftp \
+  --tftp-board-address 10.100.19.200 \
+  --tftp-server-address 10.100.19.216 \
+  --tftp-netmask 255.255.248.0 \
+  --output-directory target/megrez-browser-network/gate \
+  --boot-timeout 300 --drain-timeout 5
+```
+
+The strict serial order is selected GMAC, physical M5 link/ping/DNS/HTTPS/PNG
+evidence, M5 READY, M4 desktop READY, M6 remote image, one JavaScript status,
+and matching M6 READY. `limited-pass`, `disabled`, and `failed` describe only
+the packaged NetSurf JavaScript engine; none claims Chromium compatibility.
+The gate drains the full serial transcript before publishing `passed: true`
+and separately requires ten lossless host-to-board pings.
+
+This is a bounded useful-network contract, not a general Linux network stack
+milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
+recovery, live GMAC failover, USB Ethernet, Wi-Fi, Firefox, and modern
+JavaScript remain outside this gate.
+
 ## Evidence and cleanup
 
 Inspect the immutable provenance and the current-run evidence:
