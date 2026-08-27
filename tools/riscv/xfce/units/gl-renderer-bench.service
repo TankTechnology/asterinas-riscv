@@ -1,0 +1,17 @@
+[Unit]
+Description=Identify and benchmark the active Mesa renderer
+After=xorg.service
+Requires=xorg.service
+PartOf=graphical.target
+
+[Service]
+Type=oneshot
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib
+Environment=LIBGL_DRIVERS_PATH=/usr/lib/riscv64-linux-gnu/dri
+Environment=LIBGL_DEBUG=verbose
+ExecStart=/usr/bin/gl-renderer-bench
+TimeoutStartSec=10min
+StandardOutput=tty
+StandardError=tty

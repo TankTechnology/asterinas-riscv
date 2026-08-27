@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from boot_xfce_desktop import ANSI_RE, Boot
+from build_xfce_drm import QEMU_CPU, STAGE1_INITRAMFS, pack_boot_disk
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -49,7 +50,11 @@ FBDEV_ACTIVE = b"FBDEV(0): using"
 FBDEV_MODE = (
     f"FBDEV(0): Virtual size is {FB_WIDTH_PIXELS}x{FB_HEIGHT_PIXELS}"
 ).encode()
-GLAMOR_ACTIVE = b"glamor x acceleration enabled"
+GLAMOR_VIRGL_ACTIVE = b"glamor x acceleration enabled on virgl"
+GL_BENCH_PASS = b"XFCE_GL_BENCH_PASS"
+GL_DIRECT = b"XFCE_GL_DIRECT yes"
+GL_RENDERER_VIRGL = b"XFCE_GL_RENDERER virgl"
+GL_RENDERER_SOFTWARE = b"XFCE_GL_RENDERER llvmpipe"
 XORG_READY = b"XFCE_DRM_XORG_READY"
 X11_CONNECT_OK = b"XFCE_DRM_X11_CONNECT_OK"
 PANIC_MARKERS = (
@@ -85,7 +90,9 @@ def contains_panic(output: bytes) -> bool:
     )
 
 
-def uboot_commands(display_path: DisplayPath) -> list[tuple[str, str, str, float]]:
+def uboot_commands(
+    display_path: DisplayPath, kernel_loglevel: str
+) -> list[tuple[str, str, str, float]]:
     commands = [
         ("virtio-scan", "virtio scan", "=>", 30),
         ("kernel-load", f"ext4load virtio 0:0 {KERNEL_LOAD:#x} /asterinas.booti", "bytes read", 60),
@@ -140,7 +147,12 @@ def uboot_commands(display_path: DisplayPath) -> list[tuple[str, str, str, float
         )
     commands.extend(
         [
-            ("bootargs", 'setenv bootargs "console=ttyS0 loglevel=warn init=/init"', "=>", 10),
+            (
+                "bootargs",
+                f'setenv bootargs "console=ttyS0 loglevel={kernel_loglevel} init=/init"',
+                "=>",
+                10,
+            ),
             (
                 "initrd-load",
                 f"ext4load virtio 0:0 {INITRD_LOAD:#x} /initramfs.cpio.gz",
@@ -256,11 +268,26 @@ def main() -> int:
         help="use bochs-display and Xorg fbdev without a DRM device",
     )
     parser.add_argument("--smp", type=int, default=4)
+    parser.add_argument(
+        "--kernel-image",
+        type=Path,
+        default=REPO / "target/osdk/aster-kernel-osdk-bin.Image",
+        help="RISC-V Linux Image to place in the temporary boot disk",
+    )
+    parser.add_argument(
+        "--kernel-loglevel",
+        choices=("warn", "info", "debug"),
+        default="warn",
+        help="kernel log level used for boot diagnostics",
+    )
     args = parser.parse_args()
 
     if args.software_display and args.fbdev_display:
         parser.error("--software-display and --fbdev-display are mutually exclusive")
 
+    # Keep the boot image and DTB synchronized with the current kernel, CPU
+    # page-table mode, memory size, and requested hart count.
+    pack_boot_disk(STAGE1_INITRAMFS, args.smp, args.kernel_image)
     for path in (UBOOT, BOOT_DISK, ROOT_DISK):
         if not path.exists():
             raise SystemExit(f"missing {path}; run build_xfce_drm.py first")
@@ -288,7 +315,7 @@ def main() -> int:
     argv = [
         "qemu-system-riscv64",
         "-machine", "virt",
-        "-cpu", "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        "-cpu", QEMU_CPU,
         "-m", "2G",
         "-smp", str(args.smp),
         "-display", display,
@@ -311,7 +338,9 @@ def main() -> int:
     try:
         print("[boot] waiting for U-Boot", flush=True)
         boot.read_until(b"=> ", 60)
-        for name, command, expected, timeout in uboot_commands(display_path):
+        for name, command, expected, timeout in uboot_commands(
+            display_path, args.kernel_loglevel
+        ):
             print(f"[uboot] {name}", flush=True)
             boot.send(command)
             boot.read_until(expected.encode(), timeout)
@@ -327,12 +356,26 @@ def main() -> int:
                 break
             graphics_ready = (
                 display_path is not DisplayPath.VIRGL
-                or GLAMOR_ACTIVE in clean.lower()
+                or GLAMOR_VIRGL_ACTIVE in clean.lower()
+            )
+            renderer_ready = (
+                display_path is DisplayPath.FBDEV
+                or (
+                    GL_BENCH_PASS in clean
+                    and GL_DIRECT in clean
+                    and (
+                        GL_RENDERER_VIRGL
+                        if display_path is DisplayPath.VIRGL
+                        else GL_RENDERER_SOFTWARE
+                    )
+                    in clean
+                )
             )
             if (
                 GRAPHICAL_TARGET in clean
                 and SESSION_STARTED in clean
                 and graphics_ready
+                and renderer_ready
                 and X11_CONNECT_OK in clean
             ):
                 reached = BootOutcome.DESKTOP_UP
@@ -396,7 +439,20 @@ def main() -> int:
         "display-driver": display_driver in clean,
         "display-active": display_active in clean,
         "graphics-mode": (
-            display_path is not DisplayPath.VIRGL or GLAMOR_ACTIVE in clean.lower()
+            display_path is not DisplayPath.VIRGL
+            or GLAMOR_VIRGL_ACTIVE in clean.lower()
+        ),
+        "renderer": (
+            True
+            if display_path is DisplayPath.FBDEV
+            else GL_BENCH_PASS in clean
+            and GL_DIRECT in clean
+            and (
+                GL_RENDERER_VIRGL
+                if display_path is DisplayPath.VIRGL
+                else GL_RENDERER_SOFTWARE
+            )
+            in clean
         ),
         "xorg-ready": XORG_READY in clean,
         "x11-connect": X11_CONNECT_OK in clean,

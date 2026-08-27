@@ -28,6 +28,7 @@ STAGE1_INITRAMFS = BUILD / "stage1-initramfs.cpio"
 BOOT_DISK = BUILD / "boot.ext4"
 ROOT_DISK = BUILD / "root.ext2"
 MULTIARCH_LIB = Path("usr/lib/riscv64-linux-gnu")
+QEMU_CPU = "rv64,sv48=true,svpbmt=true,zkr=true,svadu=false,svade=true"
 
 
 def run(argv: list[str], **kwargs: object) -> None:
@@ -162,6 +163,28 @@ def install_x11_ready_probe(runtime: Path, rootfs: Path) -> None:
     )
 
 
+def install_gl_renderer_bench(runtime: Path, rootfs: Path) -> None:
+    library_dir = runtime / MULTIARCH_LIB
+    output = rootfs / "usr/bin/gl-renderer-bench"
+    run(
+        [
+            "riscv64-linux-gnu-gcc",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-idirafter",
+            "/usr/include",
+            f"-Wl,-rpath-link,{library_dir}",
+            "-o",
+            str(output),
+            str(Path(__file__).with_name("gl_renderer_bench.c")),
+            str(library_dir / "libX11.so.6"),
+            str(library_dir / "libGL.so.1"),
+        ]
+    )
+
+
 def extract_base(base: Path, rootfs: Path) -> None:
     shutil.rmtree(rootfs, ignore_errors=True)
     rootfs.mkdir(parents=True)
@@ -232,11 +255,11 @@ def pack_root_disk(rootfs: Path) -> None:
     run(["mkfs.ext2", "-q", "-F", "-d", str(rootfs), str(ROOT_DISK)])
 
 
-def pack_boot_disk(initramfs: Path) -> None:
-    kernel = REPO / "target/osdk/aster-kernel-osdk-bin.Image"
-    dtb = REPO / "target/drm-m19/qemu-virt.dtb"
+def pack_boot_disk(initramfs: Path, smp: int, kernel: Path | None = None) -> None:
+    if kernel is None:
+        kernel = REPO / "target/osdk/aster-kernel-osdk-bin.Image"
     uboot = REPO / "target/drm-m19/u-boot"
-    for path in (kernel, dtb, uboot):
+    for path in (kernel, uboot):
         if not path.exists():
             raise SystemExit(f"missing boot artifact: {path}")
 
@@ -244,8 +267,24 @@ def pack_boot_disk(initramfs: Path) -> None:
     shutil.copy2(uboot, BUILD / "u-boot")
     with tempfile.TemporaryDirectory() as stage_name:
         stage = Path(stage_name)
+        dtb = stage / "qemu-virt.dtb"
+        run(
+            [
+                "qemu-system-riscv64",
+                "-machine",
+                f"virt,dumpdtb={dtb}",
+                "-cpu",
+                QEMU_CPU,
+                "-m",
+                "2G",
+                "-smp",
+                str(smp),
+                "-display",
+                "none",
+                "-nodefaults",
+            ]
+        )
         shutil.copy2(kernel, stage / "asterinas.booti")
-        shutil.copy2(dtb, stage / "qemu-virt.dtb")
         shutil.copy2(initramfs, stage / "initramfs.cpio.gz")
         size_mb = 128
         run(["truncate", "-s", f"{size_mb}M", str(BOOT_DISK)])
@@ -271,6 +310,7 @@ def main() -> int:
         action="store_true",
         help="use Xorg fbdev on a firmware simple-framebuffer instead of DRM",
     )
+    parser.add_argument("--smp", type=int, default=4)
     args = parser.parse_args()
 
     if args.software_display and args.fbdev_display:
@@ -285,6 +325,7 @@ def main() -> int:
     print(f"[overlay] DRM runtime from {args.runtime}")
     install_drm_runtime(args.runtime, ROOTFS)
     install_x11_ready_probe(args.runtime, ROOTFS)
+    install_gl_renderer_bench(args.runtime, ROOTFS)
 
     if args.fbdev_display:
         xorg_config = "xorg-fbdev.conf"
@@ -296,6 +337,10 @@ def main() -> int:
     shutil.copy2(
         Path(__file__).with_name("units") / "xorg-drm.service",
         ROOTFS / "etc/systemd/system/xorg.service",
+    )
+    shutil.copy2(
+        Path(__file__).with_name("units") / "gl-renderer-bench.service",
+        ROOTFS / "etc/systemd/system/gl-renderer-bench.service",
     )
     graphical_target = Path(__file__).with_name("units") / "graphical-drm.target"
     shutil.copy2(graphical_target, ROOTFS / "etc/systemd/system/graphical.target")
@@ -313,7 +358,7 @@ def main() -> int:
     pack_root_disk(ROOTFS)
     print(f"[pack] stage-1 {STAGE1_INITRAMFS}")
     pack_stage1()
-    pack_boot_disk(STAGE1_INITRAMFS)
+    pack_boot_disk(STAGE1_INITRAMFS, args.smp)
     if args.debug_initramfs:
         print(f"[pack] debug initramfs {INITRAMFS}")
         pack_initramfs(ROOTFS, INITRAMFS)
