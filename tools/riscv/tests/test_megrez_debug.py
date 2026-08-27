@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import unittest
 import zlib
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,8 @@ from tools.riscv.megrez_debug_contract import (
     MAX_ARTIFACT_BYTES,
     ArtifactIdentity,
     DebugContractError,
+    DebugPlan,
+    StageResult,
 )
 
 
@@ -107,6 +111,147 @@ class MegrezDebugArtifactTests(unittest.TestCase):
             self.assertRaisesRegex(DebugContractError, "identity changed"),
         ):
             ArtifactIdentity.from_path("kernel", artifact, 0x80200000)
+
+
+class MegrezDebugPlanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        self.artifacts = tuple(
+            self._artifact(name, addresses[name])
+            for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
+        )
+
+    def _artifact(self, name: str, address: int) -> ArtifactIdentity:
+        path = self.directory / name
+        path.write_bytes(f"{name}-bytes".encode())
+        return ArtifactIdentity.from_path(name, path, address)
+
+    def _plan(self) -> DebugPlan:
+        return DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=self.artifacts,
+            bootargs=(
+                "cpu_no_boost_1_6ghz loglevel=info init=/init "
+                "asterinas.reboot_after=180"
+            ),
+            smp=4,
+            sv39=True,
+            markers=(
+                "Enter riscv_boot",
+                "Presented by the Asterinas developers",
+                "ASTERINAS_GMAC_TCP_PROBE_READY",
+            ),
+            reboot_after=180,
+        )
+
+    def test_plan_round_trip_is_canonical_and_hash_bound(self) -> None:
+        plan = self._plan()
+        encoded = plan.canonical_bytes()
+
+        self.assertTrue(encoded.endswith(b"\n"))
+        self.assertEqual(encoded, DebugPlan.from_bytes(encoded).canonical_bytes())
+        self.assertEqual(plan.plan_sha256, hashlib.sha256(encoded).hexdigest())
+        self.assertEqual(
+            tuple(artifact.name for artifact in plan.artifacts),
+            ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"),
+        )
+        self.assertEqual(plan.smp, 4)
+        self.assertIs(plan.sv39, True)
+
+    def test_plan_rejects_duplicate_keys_at_every_depth(self) -> None:
+        valid = json.loads(self._plan().canonical_bytes())
+        artifact = json.dumps(valid["artifacts"][0], separators=(",", ":"))
+        duplicate_top = (
+            self._plan()
+            .canonical_bytes()
+            .decode()
+            .replace('{"artifacts":', '{"schema_version":1,"artifacts":', 1)
+        )
+        duplicate_nested_artifact = artifact.replace(
+            '{"crc32":', '{"name":"kernel","crc32":', 1
+        )
+        nested = (
+            self._plan()
+            .canonical_bytes()
+            .decode()
+            .replace(artifact, duplicate_nested_artifact, 1)
+        )
+
+        for encoded in (duplicate_top.encode(), nested.encode()):
+            with self.assertRaisesRegex(DebugContractError, "duplicate JSON key"):
+                DebugPlan.from_bytes(encoded)
+
+    def test_plan_rejects_wrong_architecture_and_unsafe_values(self) -> None:
+        plan = self._plan()
+        invalid = (
+            replace(plan, schema_version=True),
+            replace(plan, smp=2),
+            replace(plan, sv39=False),
+            replace(plan, reboot_after=True),
+            replace(plan, reboot_after=0),
+            replace(plan, bootargs="init=/init; saveenv"),
+            replace(plan, markers=()),
+            replace(plan, markers=("same", "same")),
+            replace(plan, artifacts=tuple(reversed(plan.artifacts))),
+            replace(
+                plan,
+                artifacts=(replace(plan.artifacts[0], sha256="0" * 63),)
+                + plan.artifacts[1:],
+            ),
+            replace(
+                plan,
+                artifacts=(replace(plan.artifacts[0], crc32="xyzxyzxy"),)
+                + plan.artifacts[1:],
+            ),
+        )
+
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(DebugContractError):
+                value.validate()
+
+    def test_plan_loader_rejects_unknown_missing_and_wrongly_typed_fields(self) -> None:
+        payload = json.loads(self._plan().canonical_bytes())
+        variants: list[dict[str, object]] = []
+        unknown = dict(payload)
+        unknown["unknown"] = 1
+        variants.append(unknown)
+        missing = dict(payload)
+        del missing["profile"]
+        variants.append(missing)
+        wrong_type = dict(payload)
+        wrong_type["markers"] = "marker"
+        variants.append(wrong_type)
+
+        for value in variants:
+            with self.assertRaises(DebugContractError):
+                DebugPlan.from_bytes(json.dumps(value).encode())
+
+    def test_stage_result_round_trip_binds_the_plan_hash(self) -> None:
+        plan = self._plan()
+        result = StageResult(
+            schema_version=1,
+            stage="fast",
+            passed=True,
+            reason="pass",
+            plan_sha256=plan.plan_sha256,
+            evidence=("serial.log", "result.json"),
+        )
+
+        encoded = result.canonical_bytes()
+
+        self.assertEqual(result, StageResult.from_bytes(encoded))
+        self.assertTrue(encoded.endswith(b"\n"))
+        with self.assertRaises(DebugContractError):
+            replace(result, plan_sha256="f" * 63).validate()
 
 
 if __name__ == "__main__":
