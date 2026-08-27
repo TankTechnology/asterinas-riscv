@@ -4477,6 +4477,47 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
 
 
 class DebianRootfsGateBackendSessionTests(unittest.TestCase):
+    def test_validation_uses_manifest_schema_for_package_checksums(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            inputs = []
+            for index in range(8):
+                path = directory / f"input-{index}"
+                path.write_bytes(str(index).encode())
+                inputs.append(path)
+            output = directory / "output"
+            output.mkdir()
+            config = GateConfig(*inputs, output)
+            downloaded_packages = (
+                ("firefox-esr", "riscv64", "140.14.0esr-1", "0" * 64, "security"),
+            )
+            manifest = mock.Mock(
+                schema_version=6,
+                downloaded_packages=downloaded_packages,
+                suite="trixie",
+                architecture="riscv64",
+                debian_release="13.6",
+                root_image_sha256="1" * 64,
+                packages_lock_sha256="2" * 64,
+                gate_packages=(),
+            )
+            with (
+                mock.patch.object(gate_backend_module, "load_manifest", return_value=manifest),
+                mock.patch.object(gate_backend_module, "validate_frozen_root"),
+                mock.patch.object(
+                    gate_backend_module,
+                    "_load_package_checksums",
+                    return_value=downloaded_packages,
+                ) as load_checksums,
+                mock.patch.object(gate_backend_module, "verify_four_hart_dtb", return_value=4),
+                gate_backend_module.ConcreteOperations(config) as operations,
+            ):
+                operations.validate_inputs(config, operations.snapshot_inputs(config))
+
+            load_checksums.assert_called_once_with(
+                mock.ANY, schema_version=manifest.schema_version
+            )
+
     def test_session_uses_hardlinked_same_root_and_removes_directory_after_drain(
         self,
     ) -> None:
