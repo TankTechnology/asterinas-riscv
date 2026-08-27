@@ -3,7 +3,12 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    process::{
+        credentials::capabilities::CapSet,
+        posix_thread::AsPosixThread,
+        signal::{c_types::siginfo_t, constants::SIGSYS, sig_num::SigNum, signals::Signal},
+    },
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// Seccomp modes (values of the per-thread `seccomp_mode` field).
@@ -14,6 +19,9 @@ pub const SECCOMP_MODE_FILTER: u32 = 2;
 // --- `seccomp(2)` operations (`linux/seccomp.h`) ---
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
+
+/// Synchronize a newly installed filter to all threads in the process.
+const SECCOMP_FILTER_FLAG_TSYNC: u32 = 1 << 0;
 
 /// `si_code` value for a seccomp-generated `SIGSYS` (`asm-generic/siginfo.h`).
 const SYS_SECCOMP: i32 = 1;
@@ -174,13 +182,23 @@ pub fn sys_seccomp(
             if args != 0 {
                 return_errno_with_message!(Errno::EINVAL, "seccomp strict mode takes no args");
             }
+            // Serialize seccomp policy changes with TSYNC's preflight/commit.
+            let tasks = ctx.process.tasks().lock();
+            if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "cannot replace an existing seccomp policy with strict mode"
+                );
+            }
             ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_STRICT);
+            drop(tasks);
             Ok(SyscallReturn::Return(0))
         }
         SECCOMP_SET_MODE_FILTER => {
-            // `SECCOMP_FILTER_FLAG_TSYNC` / `SECCOMP_FILTER_FLAG_NEW_LISTENER` /
+            // `SECCOMP_FILTER_FLAG_NEW_LISTENER` / `SECCOMP_FILTER_FLAG_LOG` /
+            // `SECCOMP_FILTER_FLAG_SPEC_ALLOW` / `SECCOMP_FILTER_FLAG_TSYNC_ESRCH` /
             // `SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV` are not supported yet.
-            if flags != 0 {
+            if flags & !SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 return_errno_with_message!(Errno::EINVAL, "unsupported seccomp filter flags");
             }
             if args == 0 {
@@ -189,9 +207,77 @@ pub fn sys_seccomp(
 
             let filters = crate::util::bpf::read_prog_from_user(args)?;
 
-            ctx.posix_thread
-                .set_seccomp_filter(Arc::from(filters.into_boxed_slice()));
-            ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+            // Linux permits installing a filter only after privileges have
+            // been made non-increasing, or with CAP_SYS_ADMIN in the caller's
+            // current user namespace.  The seccomp ABI reports EACCES rather
+            // than the capability hook's usual EPERM on failure.
+            if !ctx.posix_thread.credentials().no_new_privs()
+                && lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                    ctx.thread_local.borrow_user_ns().as_ref(),
+                    ctx.posix_thread,
+                    CapSet::SYS_ADMIN,
+                ))
+                .is_err()
+            {
+                return_errno_with_message!(
+                    Errno::EACCES,
+                    "seccomp filter requires no_new_privs or CAP_SYS_ADMIN"
+                );
+            }
+
+            let filter: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
+            let tasks = ctx.process.tasks().lock();
+            let caller_no_new_privs = ctx.posix_thread.credentials().no_new_privs();
+
+            if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
+                // Asterinas currently represents one filter per thread rather
+                // than Linux's filter tree.  Consequently, the subset that we
+                // can synchronize without weakening or replacing an existing
+                // policy is the initial transition from DISABLED to FILTER.
+                // Preflight every sibling before changing any of them.  On a
+                // mismatch Linux returns the offending TID and makes no
+                // changes.
+                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "seccomp filter stacking is not supported"
+                    );
+                }
+                if let Some(thread) = tasks
+                    .as_slice()
+                    .iter()
+                    .map(|task| task.as_posix_thread().unwrap())
+                    .filter(|thread| thread.tid() != ctx.posix_thread.tid())
+                    .find(|thread| thread.seccomp_mode() != SECCOMP_MODE_DISABLED)
+                {
+                    return Ok(SyscallReturn::Return(thread.tid() as _));
+                }
+
+                // Holding the task-set lock prevents concurrent clone/exit
+                // from changing the synchronization set between preflight and
+                // commit.  Installing a filter cannot fail after this point.
+                for thread in tasks
+                    .as_slice()
+                    .iter()
+                    .map(|task| task.as_posix_thread().unwrap())
+                {
+                    if caller_no_new_privs {
+                        thread.set_no_new_privs();
+                    }
+                    thread.set_seccomp_filter(filter.clone());
+                    thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+                }
+            } else {
+                if ctx.posix_thread.seccomp_mode() != SECCOMP_MODE_DISABLED {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "seccomp filter stacking is not supported"
+                    );
+                }
+                ctx.posix_thread.set_seccomp_filter(filter);
+                ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
+            }
+            drop(tasks);
             Ok(SyscallReturn::Return(0))
         }
         _ => return_errno_with_message!(Errno::EINVAL, "unknown seccomp operation"),
