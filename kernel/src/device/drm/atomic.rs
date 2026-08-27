@@ -497,10 +497,10 @@ fn validate_atomic_state(
     }
 
     if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-        let includes_crtc = updates
-            .iter()
-            .any(|update| update.object == AtomicKmsObject::Crtc);
-        if !includes_crtc {
+        let has_crtc_target = updates.iter().any(|update| {
+            !update.properties.is_empty() && object_routes_to_crtc(update.object, proposed_state)
+        });
+        if !has_crtc_target {
             return_errno_with_message!(Errno::EINVAL, "atomic event has no CRTC");
         }
         if !current_state.active && !proposed_state.active {
@@ -521,6 +521,20 @@ fn validate_atomic_state(
         return Ok(AtomicHardwareUpdate::Disable);
     }
     Ok(AtomicHardwareUpdate::None)
+}
+
+/// Returns whether changing `object` affects the single exposed CRTC.
+///
+/// Atomic page flips commonly update only a plane's `FB_ID`. Such a plane
+/// still targets its already-committed CRTC and must be allowed to request a
+/// page-flip event. Connector updates similarly affect the CRTC to which the
+/// connector is routed.
+fn object_routes_to_crtc(object: AtomicKmsObject, state: &ProposedKmsState) -> bool {
+    match object {
+        AtomicKmsObject::Crtc => true,
+        AtomicKmsObject::Connector => state.connector_crtc == Some(CRTC_ID),
+        AtomicKmsObject::PrimaryPlane => state.plane_crtc == Some(CRTC_ID),
+    }
 }
 
 fn commit_atomic_state(
@@ -634,5 +648,18 @@ mod tests {
         assert!(state.validate_topology().is_err());
         state.plane_crtc = Some(CRTC_ID);
         assert!(state.validate_topology().is_ok());
+    }
+
+    #[ktest]
+    fn drm_validation_routed_plane_is_a_valid_atomic_event_target() {
+        let mut state = ProposedKmsState::empty();
+        assert!(!object_routes_to_crtc(
+            AtomicKmsObject::PrimaryPlane,
+            &state
+        ));
+
+        state.plane_crtc = Some(CRTC_ID);
+        assert!(object_routes_to_crtc(AtomicKmsObject::PrimaryPlane, &state));
+        assert!(object_routes_to_crtc(AtomicKmsObject::Crtc, &state));
     }
 }

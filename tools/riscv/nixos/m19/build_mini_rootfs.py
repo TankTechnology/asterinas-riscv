@@ -107,9 +107,37 @@ if not os.path.lexists(link):
 os.makedirs(os.path.join(DST, "bin"), exist_ok=True)
 shutil.copy2(os.path.join(SRC, "usr/bin/busybox"), os.path.join(DST, "bin/busybox"))
 os.makedirs(os.path.join(DST, "root"), exist_ok=True)
-shutil.copy2(os.path.join(SRC, "root/eglrender2"), os.path.join(DST, "root/eglrender2"))
-shutil.copy2(os.path.join(SRC, "root/virgltest"), os.path.join(DST, "root/virgltest"))
-shutil.copy2(os.path.join(SRC, "root/primetest"), os.path.join(DST, "root/primetest"))
+gnucc = os.environ.get("RISC_V_GNU_CC", "riscv64-linux-gnu-gcc")
+mesa_include = os.environ.get("MESA_HEADERS")
+if mesa_include is None:
+    mesa_include = str(REPO / "target/drm-m19/mesa-headers")
+    os.makedirs(mesa_include, exist_ok=True)
+    for header_dir in ("EGL", "GLES2", "KHR"):
+        shutil.copytree(
+            os.path.join("/usr/include", header_dir),
+            os.path.join(mesa_include, header_dir),
+            dirs_exist_ok=True,
+        )
+    shutil.copy2("/usr/include/gbm.h", os.path.join(mesa_include, "gbm.h"))
+subprocess.run([
+    gnucc, "-O2", "-o", os.path.join(DST, "root/eglrender2"),
+    str(REPO / "tools/riscv/nixos/m19/eglrender2.c"),
+    f"-I{mesa_include}", f"-L{os.path.join(SRC, LIB)}",
+    f"-Wl,-rpath-link,{os.path.join(SRC, LIB)}",
+    os.path.join(SRC, LIB, "libEGL.so.1"),
+    os.path.join(SRC, LIB, "libGLESv2.so.2"),
+    os.path.join(SRC, LIB, "libgbm.so.1"),
+], check=True)
+muslcc = os.environ.get("RISC_V_MUSL_CC", "riscv64-linux-musl-gcc")
+subprocess.run([
+    muslcc, "-O2", "-static", "-o", os.path.join(DST, "root/virgltest"),
+    str(REPO / "tools/riscv/nixos/m16/virgltest.c"),
+], check=True)
+subprocess.run([
+    muslcc, "-O2", "-static", "-pthread", "-o",
+    os.path.join(DST, "root/primetest"),
+    str(REPO / "tools/riscv/nixos/m19/primetest.c"),
+], check=True)
 shutil.copy2(os.path.join(SRC, "root/ioctltrace.so"), os.path.join(DST, "root/ioctltrace.so"))
 
 init = """#!/bin/busybox sh
@@ -127,7 +155,7 @@ echo "MINI_PRIME_RC=$?"
 echo MINI_RAW_BEGIN
 LD_PRELOAD=/root/ioctltrace.so /root/virgltest 2>&1
 echo "MINI_RAW_RC=$?"
-export EGL_LOG_LEVEL=debug
+export EGL_LOG_LEVEL=warning
 export LIBGL_DEBUG=verbose
 echo MINI_EGL_BEGIN
 LD_PRELOAD=/root/ioctltrace.so /root/eglrender2 2>&1

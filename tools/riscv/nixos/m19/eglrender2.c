@@ -16,6 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@
 #define DRM_IOCTL_SET_CLIENT_CAP DRM_IOW(0x0d, struct drm_set_client_cap)
 #define DRM_IOCTL_MODE_GETRESOURCES DRM_IOWR(0xa0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_GETCONNECTOR DRM_IOWR(0xa7, struct drm_mode_get_connector)
+#define DRM_IOCTL_MODE_GETPLANERESOURCES DRM_IOWR(0xb5, struct drm_mode_get_plane_res)
 #define DRM_IOCTL_MODE_GETPROPERTY DRM_IOWR(0xaa, struct drm_mode_get_property)
 #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES DRM_IOWR(0xb9, struct drm_mode_obj_get_properties)
 #define DRM_IOCTL_MODE_ADDFB2 DRM_IOWR(0xb8, struct drm_mode_fb_cmd2)
@@ -63,6 +65,11 @@ struct drm_mode_card_res {
     uint32_t min_width, max_width, min_height, max_height;
 };
 
+struct drm_mode_get_plane_res {
+    uint64_t plane_id_ptr;
+    uint32_t count_planes, pad;
+};
+
 struct drm_mode_get_connector {
     uint64_t encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
     uint32_t count_modes, count_props, count_encoders;
@@ -89,9 +96,9 @@ struct drm_mode_fb_cmd2 {
 };
 
 struct drm_mode_atomic {
-    uint32_t flags, count_props;
+    uint32_t flags, count_objs;
     uint64_t objs_ptr, count_props_ptr, props_ptr, prop_values_ptr;
-    uint64_t blob_id, user_data, reserved, reserved_ptr;
+    uint64_t reserved, user_data;
 };
 
 struct drm_mode_create_blob {
@@ -112,8 +119,9 @@ static void fail(const char *stage) {
 }
 
 /* Find a KMS property id by name on an object. */
-static uint32_t find_prop(int fd, uint32_t obj_type, const char *name) {
-    struct drm_mode_obj_get_properties q = { .obj_id = 1, .obj_type = obj_type };
+static uint32_t find_prop(int fd, uint32_t obj_id, uint32_t obj_type,
+                          const char *name) {
+    struct drm_mode_obj_get_properties q = { .obj_id = obj_id, .obj_type = obj_type };
     if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) < 0) return 0;
     uint32_t ids[32] = {0};
     uint64_t vals[32] = {0};
@@ -180,8 +188,40 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) < 0) fail("cap atomic");
     printf("M19_KMS_CAPS_OK\n");
 
+    /* Discover global KMS object ids instead of assuming that every object is
+     * id 1. DRM objects share one namespace, and Asterinas deliberately gives
+     * the CRTC, connector, encoder, and plane distinct ids. */
+    struct drm_mode_card_res resources = {0};
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
+        fail("get_resources");
+    uint32_t crtc_ids[8] = {0}, connector_ids[8] = {0};
+    if (resources.count_crtcs > 8 || resources.count_connectors > 8)
+        fail("too_many_kms_objects");
+    resources.crtc_id_ptr = (uint64_t)crtc_ids;
+    resources.connector_id_ptr = (uint64_t)connector_ids;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0 ||
+        resources.count_crtcs < 1 || resources.count_connectors < 1)
+        fail("get_resource_ids");
+
+    struct drm_mode_get_plane_res plane_resources = {0};
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &plane_resources) < 0)
+        fail("get_plane_resources");
+    uint32_t plane_ids[8] = {0};
+    if (plane_resources.count_planes > 8)
+        fail("too_many_planes");
+    plane_resources.plane_id_ptr = (uint64_t)plane_ids;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &plane_resources) < 0 ||
+        plane_resources.count_planes < 1)
+        fail("get_plane_ids");
+
+    const uint32_t crtc_id = crtc_ids[0];
+    const uint32_t connector_id = connector_ids[0];
+    const uint32_t plane_id = plane_ids[0];
+    printf("M19_KMS_IDS crtc=%u connector=%u plane=%u\n",
+           crtc_id, connector_id, plane_id);
+
     /* Connector mode. */
-    struct drm_mode_get_connector conn = { .connector_id = 1 };
+    struct drm_mode_get_connector conn = { .connector_id = connector_id };
     struct drm_mode_modeinfo mode = {0};
     if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) < 0) fail("get_connector");
     conn.modes_ptr = (uint64_t)&mode;
@@ -244,19 +284,19 @@ int main(void) {
     glUseProgram(prog);
 
     /* KMS property ids. */
-    uint32_t p_conn_crtc = find_prop(fd, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
-    uint32_t p_crtc_active = find_prop(fd, DRM_MODE_OBJECT_CRTC, "ACTIVE");
-    uint32_t p_crtc_mode = find_prop(fd, DRM_MODE_OBJECT_CRTC, "MODE_ID");
-    uint32_t p_plane_fb = find_prop(fd, DRM_MODE_OBJECT_PLANE, "FB_ID");
-    uint32_t p_plane_crtc = find_prop(fd, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
-    uint32_t p_src_x = find_prop(fd, DRM_MODE_OBJECT_PLANE, "SRC_X");
-    uint32_t p_src_y = find_prop(fd, DRM_MODE_OBJECT_PLANE, "SRC_Y");
-    uint32_t p_src_w = find_prop(fd, DRM_MODE_OBJECT_PLANE, "SRC_W");
-    uint32_t p_src_h = find_prop(fd, DRM_MODE_OBJECT_PLANE, "SRC_H");
-    uint32_t p_crtc_x = find_prop(fd, DRM_MODE_OBJECT_PLANE, "CRTC_X");
-    uint32_t p_crtc_y = find_prop(fd, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
-    uint32_t p_crtc_w = find_prop(fd, DRM_MODE_OBJECT_PLANE, "CRTC_W");
-    uint32_t p_crtc_h = find_prop(fd, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+    uint32_t p_conn_crtc = find_prop(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+    uint32_t p_crtc_active = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+    uint32_t p_crtc_mode = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+    uint32_t p_plane_fb = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+    uint32_t p_plane_crtc = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+    uint32_t p_src_x = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+    uint32_t p_src_y = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+    uint32_t p_src_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+    uint32_t p_src_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+    uint32_t p_crtc_x = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+    uint32_t p_crtc_y = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+    uint32_t p_crtc_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+    uint32_t p_crtc_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
     if (!p_conn_crtc || !p_crtc_active || !p_crtc_mode || !p_plane_fb || !p_plane_crtc)
         fail("props");
 
@@ -268,6 +308,8 @@ int main(void) {
     /* Render + present loop. */
     uint8_t *pixels = malloc(width * height * 4);
     uint32_t csums[NUM_FRAMES];
+    uint32_t previous_sequence = 0;
+    bool have_previous_sequence = false;
     struct gbm_bo *pending_bo = NULL;
 
     for (int frame = 0; frame < NUM_FRAMES; frame++) {
@@ -330,31 +372,40 @@ int main(void) {
         if (ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb2) < 0) fail("addfb2");
 
         /* Atomic commit: full state on frame 0, FB-only flips after. */
-        uint32_t objs[14], props[14];
+        uint32_t objs[3], counts[3], props[14];
         uint64_t vals[14];
-        uint32_t n = 0;
+        uint32_t obj_count = 0, prop_count = 0;
         uint32_t aflags = DRM_MODE_PAGE_FLIP_EVENT;
         if (frame == 0) {
             aflags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-            objs[n] = 1; props[n] = p_conn_crtc; vals[n] = 1; n++;
-            objs[n] = 1; props[n] = p_crtc_active; vals[n] = 1; n++;
-            objs[n] = 1; props[n] = p_crtc_mode; vals[n] = blob.blob_id; n++;
-            objs[n] = 1; props[n] = p_plane_crtc; vals[n] = 1; n++;
-            objs[n] = 1; props[n] = p_src_x; vals[n] = 0; n++;
-            objs[n] = 1; props[n] = p_src_y; vals[n] = 0; n++;
-            objs[n] = 1; props[n] = p_src_w; vals[n] = (uint64_t)width << 16; n++;
-            objs[n] = 1; props[n] = p_src_h; vals[n] = (uint64_t)height << 16; n++;
-            objs[n] = 1; props[n] = p_crtc_x; vals[n] = 0; n++;
-            objs[n] = 1; props[n] = p_crtc_y; vals[n] = 0; n++;
-            objs[n] = 1; props[n] = p_crtc_w; vals[n] = width; n++;
-            objs[n] = 1; props[n] = p_crtc_h; vals[n] = height; n++;
+            objs[obj_count] = connector_id; counts[obj_count++] = 1;
+            props[prop_count] = p_conn_crtc; vals[prop_count++] = crtc_id;
+
+            objs[obj_count] = crtc_id; counts[obj_count++] = 2;
+            props[prop_count] = p_crtc_active; vals[prop_count++] = 1;
+            props[prop_count] = p_crtc_mode; vals[prop_count++] = blob.blob_id;
+
+            objs[obj_count] = plane_id; counts[obj_count++] = 10;
+            props[prop_count] = p_plane_crtc; vals[prop_count++] = crtc_id;
+            props[prop_count] = p_src_x; vals[prop_count++] = 0;
+            props[prop_count] = p_src_y; vals[prop_count++] = 0;
+            props[prop_count] = p_src_w; vals[prop_count++] = (uint64_t)width << 16;
+            props[prop_count] = p_src_h; vals[prop_count++] = (uint64_t)height << 16;
+            props[prop_count] = p_crtc_x; vals[prop_count++] = 0;
+            props[prop_count] = p_crtc_y; vals[prop_count++] = 0;
+            props[prop_count] = p_crtc_w; vals[prop_count++] = width;
+            props[prop_count] = p_crtc_h; vals[prop_count++] = height;
+            props[prop_count] = p_plane_fb; vals[prop_count++] = fb2.fb_id;
+        } else {
+            objs[obj_count] = plane_id; counts[obj_count++] = 1;
+            props[prop_count] = p_plane_fb; vals[prop_count++] = fb2.fb_id;
         }
-        objs[n] = 1; props[n] = p_plane_fb; vals[n] = fb2.fb_id; n++;
 
         struct drm_mode_atomic at = {
             .flags = aflags,
-            .count_props = n,
+            .count_objs = obj_count,
             .objs_ptr = (uint64_t)objs,
+            .count_props_ptr = (uint64_t)counts,
             .props_ptr = (uint64_t)props,
             .prop_values_ptr = (uint64_t)vals,
             .user_data = (uint64_t)frame + 100,
@@ -365,8 +416,12 @@ int main(void) {
         struct drm_event_vblank ev = {0};
         int rc = read(fd, &ev, sizeof(ev));
         if (rc != (int)sizeof(ev) || ev.type != DRM_EVENT_FLIP_COMPLETE ||
-            ev.user_data != (uint64_t)frame + 100)
+            ev.length != sizeof(ev) || ev.user_data != (uint64_t)frame + 100 ||
+            ev.crtc_id != crtc_id ||
+            (have_previous_sequence && ev.sequence <= previous_sequence))
             fail("flip_event");
+        previous_sequence = ev.sequence;
+        have_previous_sequence = true;
 
         printf("M19_FRAME %d csum=%08x fb=%u seq=%u\n", frame, csums[frame], fb2.fb_id,
                ev.sequence);
@@ -378,10 +433,11 @@ int main(void) {
         pending_bo = bo;
     }
 
-    int distinct = 0;
-    for (int i = 1; i < NUM_FRAMES; i++)
-        if (csums[i] != csums[0]) distinct++;
-    printf("M19_FRAMES_DISTINCT %d\n", distinct);
+    for (int i = 0; i < NUM_FRAMES; i++)
+        for (int j = i + 1; j < NUM_FRAMES; j++)
+            if (csums[i] == csums[j])
+                fail("frame_checksums");
+    printf("M19_FRAMES_DISTINCT %d\n", NUM_FRAMES);
 
     printf("M19_EGL_DONE\n");
     return 0;

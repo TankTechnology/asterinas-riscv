@@ -11,6 +11,7 @@ Log lands at /tmp/m20-mesavirgl3-stdout.log.
 """
 import os
 import pty
+import re
 import select
 import subprocess
 import sys
@@ -22,13 +23,16 @@ KERNEL = REPO / "target/osdk/aster-kernel-osdk-bin.Image"
 DTB = REPO / "target/drm-m19/qemu-virt.dtb"
 UBOOT = REPO / "target/drm-m19/u-boot"
 MINI_CPIO = Path("/tmp/mini-virgl2.cpio.gz")
+MINI_ROOT_DISK = Path("/tmp/mini-virgl2.ext2")
 RAW_ONLY = "--raw-only" in sys.argv
 
 BOOT_DIR = Path("/tmp/mini-boot")
 BOOTDISK = BOOT_DIR / "boot.ext4"
 LOG = Path("/tmp/m20-mesavirgl3-stdout.log")
 
-BOOTARGS = "console=ttyS0 loglevel=info init=/init"
+# The ext2-backed Mesa closure performs many small reads. Keep routine block
+# I/O logs off the serial console so they do not dominate TCG test time.
+BOOTARGS = "console=ttyS0 loglevel=warn init=/init"
 
 CMDS = [
     (b"virtio scan", b"=>", 30),
@@ -77,8 +81,13 @@ def run() -> bytes:
         "-kernel", str(UBOOT),
         "-drive", f"if=none,format=raw,file={BOOTDISK},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
-        "-device", "virtio-gpu-gl-pci",
     ]
+    if MINI_ROOT_DISK.exists():
+        argv.extend((
+            "-drive", f"if=none,format=raw,file={MINI_ROOT_DISK},id=mesaroot",
+            "-device", "virtio-blk-device,drive=mesaroot",
+        ))
+    argv.extend(("-device", "virtio-gpu-gl-pci"))
 
     master_fd, slave_fd = pty.openpty()
     proc = subprocess.Popen(argv, stdin=slave_fd, stdout=slave_fd,
@@ -174,10 +183,36 @@ def main() -> int:
                 or "M20_PRIME" in s or "MINI_RAW_RC" in s):
             print(f"  {s}")
     print(f"\n[full log] {LOG}")
-    required_markers = ["MINI_PRIME_RC=0", "MINI_RAW_RC=0"]
+    required_markers = [
+        "M20_PRIME_PASS",
+        "MINI_PRIME_RC=0",
+        "M16_VIRGL_RAW_PASS",
+        "MINI_RAW_RC=0",
+    ]
     if not RAW_ONLY:
-        required_markers.extend(("MINI_EGL_RC=0", "M19_GL_RENDERER virgl"))
-    passed = all(marker in text for marker in required_markers)
+        required_markers.extend((
+            "M19_GL_RENDERER virgl",
+            "M19_FRAMES_DISTINCT 4",
+            "M19_EGL_DONE",
+            "MINI_EGL_RC=0",
+        ))
+    forbidden_markers = [
+        "M20_PRIME_FAIL",
+        "M16_VIRGL_FAIL",
+        "M19_EGL_FAIL",
+        "M19_GL_RENDERER llvmpipe",
+        "M19_GL_RENDERER softpipe",
+        "Illegal resource",
+        "illegal resource",
+        "error decoding command",
+    ]
+    return_codes = re.findall(r"MINI_(?:PRIME|RAW|EGL)_RC=(-?\d+)", text)
+    passed = (
+        all(marker in text for marker in required_markers)
+        and not any(marker in text for marker in forbidden_markers)
+        and all(code == "0" for code in return_codes)
+        and "panic" not in text.lower()
+    )
     print("MINI_VIRGL_PASS" if passed else "MINI_VIRGL_FAIL")
     return 0 if passed else 1
 
