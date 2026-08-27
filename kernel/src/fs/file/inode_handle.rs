@@ -111,6 +111,22 @@ impl InodeHandle {
         self.rights
     }
 
+    /// Returns whether this handle is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// Regular files and pipe/FIFO handles cannot retain arbitrary file descriptions. Device
+    /// handles are conservative by default because a per-open device object may retain another
+    /// [`FileLike`] (for example, a loop device retains its backing file). A concrete per-open
+    /// implementation must opt in explicitly after its ownership has been audited.
+    pub(crate) fn is_scm_rights_proven_leaf(&self) -> bool {
+        matches!(
+            self.path().inode().type_(),
+            InodeType::File | InodeType::NamedPipe
+        ) || self
+            .open_file
+            .as_ref()
+            .is_some_and(|open_file| open_file.is_scm_rights_proven_leaf())
+    }
+
     fn file_ops_and_is_offset_aware(&self) -> (&dyn FileOps, bool) {
         if let Some(ref open_file) = self.open_file {
             let is_offset_aware = open_file.is_offset_aware();
@@ -579,6 +595,15 @@ pub enum SeekFrom {
 /// operations that are not purely inode-backed, such as state and operations for
 /// devices, pipes, namespace files, and procfs files.
 pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
+    /// Returns whether this per-open object is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// The default must remain conservative: an implementation may strongly retain arbitrary
+    /// [`FileLike`] objects even when its inode type looks harmless. Override this only after
+    /// proving that neither the object nor anything it owns can retain a file description.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        false
+    }
+
     /// Checks whether the `seek()` operation should fail.
     fn check_seekable(&self) -> Result<()>;
 

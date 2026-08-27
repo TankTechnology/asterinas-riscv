@@ -223,6 +223,7 @@ struct ScmFiles {
     /// One stable node per AF_UNIX FD occurrence, including duplicates.
     passed_sockets: Vec<SocketNode>,
     has_stream_socket: bool,
+    has_datagram_socket: bool,
     has_unsupported_file: bool,
 }
 
@@ -319,21 +320,49 @@ impl AuxiliaryData {
     }
 
     /// Returns stable socket identities with one entry per SCM_RIGHTS FD occurrence.
-    #[cfg_attr(
-        not(ktest),
-        expect(dead_code, reason = "consumed by Slice 5/6 graph reservations")
-    )]
     pub(super) fn passed_sockets(&self) -> &[SocketNode] {
         &self.scm_files.passed_sockets
     }
 
     /// Returns whether B1 encountered a file container whose strong ownership is not modeled.
-    #[cfg_attr(
-        not(ktest),
-        expect(dead_code, reason = "enforced by Slice 5/6 graph policy")
-    )]
     pub(super) fn has_unsupported_file(&self) -> bool {
         self.scm_files.has_unsupported_file
+    }
+
+    /// Returns whether this batch must remain closed until Slice 6 tracks datagram queue edges.
+    pub(super) fn has_datagram_socket_pending_slice6(&self) -> bool {
+        self.scm_files.has_datagram_socket
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn new_test_scm(
+        passed_sockets: Vec<SocketNode>,
+        has_unsupported_file: bool,
+    ) -> Self {
+        Self {
+            files: Vec::new(),
+            cred: None,
+            scm_files: ScmFiles {
+                has_stream_socket: !passed_sockets.is_empty(),
+                has_datagram_socket: false,
+                passed_sockets,
+                has_unsupported_file,
+            },
+        }
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn new_test_datagram_scm(passed_socket: SocketNode) -> Self {
+        Self {
+            files: Vec::new(),
+            cred: None,
+            scm_files: ScmFiles {
+                passed_sockets: vec![passed_socket],
+                has_stream_socket: false,
+                has_datagram_socket: true,
+                has_unsupported_file: false,
+            },
+        }
     }
 
     /// Fills the current credentials if there are no credentials.
@@ -377,7 +406,10 @@ impl AuxiliaryData {
 
     /// Returns whether the auxiliary data contains nothing.
     pub(super) fn is_empty(&self) -> bool {
-        self.files.is_empty() && self.cred.is_none()
+        self.files.is_empty()
+            && self.cred.is_none()
+            && self.scm_files.passed_sockets.is_empty()
+            && !self.scm_files.has_unsupported_file
     }
 
     /// Returns whether the auxiliary data can be treated as a subset of the other one.
@@ -414,7 +446,10 @@ impl ScmFiles {
                     result.has_stream_socket = true;
                     result.passed_sockets.push(node);
                 }
-                ScmFileClass::DirectDatagram(node) => result.passed_sockets.push(node),
+                ScmFileClass::DirectDatagram(node) => {
+                    result.has_datagram_socket = true;
+                    result.passed_sockets.push(node);
+                }
                 ScmFileClass::ProvenLeaf => {}
                 ScmFileClass::Unsupported => result.has_unsupported_file = true,
             }
@@ -440,12 +475,14 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
         return ScmFileClass::DirectDatagram(socket.scm_node().clone());
     }
 
-    // Inode-backed regular files do not own arbitrary file descriptions. Epoll's interest and
-    // ready sets retain only weak watched-file references. Other socket families also cannot own
-    // AF_UNIX file descriptions, so all three classes are proven leaves in the B1 graph.
+    // Regular files, pipe/FIFO handles, and explicitly audited per-open handles do not own
+    // arbitrary file descriptions. Other `InodeHandle` implementations are not safe to
+    // generalize: a loop-device open file may strongly retain its backing `FileLike`.
+    // Epoll's interest and ready sets retain only weak watched-file references. Other socket
+    // families also cannot own AF_UNIX file descriptions.
     if is_proven_leaf(
         file.downcast_ref::<InodeHandle>()
-            .is_some_and(|_| file.path().inode().type_().is_regular_file()),
+            .is_some_and(InodeHandle::is_scm_rights_proven_leaf),
         file.downcast_ref::<EpollFile>().is_some(),
         file.as_socket().is_some(),
     ) {
@@ -458,8 +495,8 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
     ScmFileClass::Unsupported
 }
 
-fn is_proven_leaf(is_regular_inode: bool, is_epoll: bool, is_non_unix_socket: bool) -> bool {
-    is_regular_inode || is_epoll || is_non_unix_socket
+fn is_proven_leaf(is_safe_inode: bool, is_epoll: bool, is_non_unix_socket: bool) -> bool {
+    is_safe_inode || is_epoll || is_non_unix_socket
 }
 
 #[cfg(ktest)]
@@ -493,6 +530,7 @@ mod test {
         ]);
         assert_eq!(classes.passed_sockets.len(), 2);
         assert!(classes.has_stream_socket);
+        assert!(classes.has_datagram_socket);
         assert!(classes.has_unsupported_file);
 
         let unknown = Arc::new(UnknownFile) as Arc<dyn FileLike>;

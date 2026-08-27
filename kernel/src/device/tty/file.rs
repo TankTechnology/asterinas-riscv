@@ -48,6 +48,10 @@ impl<D: TtyDriver> FileOps for TtyFile<D> {
 }
 
 impl<D: TtyDriver> PerOpenFileOps for TtyFile<D> {
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        D::SCM_RIGHTS_PROVEN_LEAF
+    }
+
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a TTY");
     }
@@ -62,5 +66,20 @@ impl<D: TtyDriver> PerOpenFileOps for TtyFile<D> {
 
     fn settable_status_flags(&self) -> SettableStatusFlags {
         SettableStatusFlags::minimal().with_o_async()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::device::tty::{hvc::HvcDriver, serial::SerialDriver, vt::VtDriver};
+
+    #[ktest]
+    fn scm_rights_leaf_requires_concrete_driver_opt_in() {
+        assert!(!VtDriver::SCM_RIGHTS_PROVEN_LEAF);
+        assert!(HvcDriver::SCM_RIGHTS_PROVEN_LEAF);
+        assert!(SerialDriver::SCM_RIGHTS_PROVEN_LEAF);
     }
 }
