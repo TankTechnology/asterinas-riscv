@@ -231,6 +231,44 @@ are inspected as visual evidence and are not compared to a fixed hash.
 Rendering the full modern Baidu homepage is a later compatibility target, not
 a prerequisite for this foundational gate.
 
+### QEMU M7 real Baidu page evidence
+
+The M7 gate reuses the M6 network, desktop, remote-image, and local-JavaScript
+evidence before starting a fresh NetSurf process with JavaScript disabled. It
+loads Baidu's official mobile page because the HTTPS desktop endpoint falls
+back to an approximately 700-KiB legacy document that NetSurf 3.11 does not
+finish laying out. The mobile document is approximately 80 KiB and retains
+the real Baidu logo, search form, remote stylesheets, and image requests.
+
+```bash
+make test_riscv_debian_desktop_m7_baidu_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m7-baidu/m7-qemu"
+```
+
+`desktop-m7-baidu-home.ppm` is published only after the title identifies a
+real page from `https://m.baidu.com/`. A search-result frame and a passing
+`result.json` additionally require the submitted query to return a result
+title. If Baidu sends its `wappass.baidu.com` security challenge, the gate
+publishes `desktop-m7-baidu-failure.ppm` and remains failed. The challenge is
+evidence that DNS, HTTPS, navigation, and rendering reached Baidu, but it is
+not accepted as search-result evidence.
+
+The 2026-08-28 generic-Sv39/SMP=4 run reached the homepage milestone and
+captured a visible Baidu logo and search box. The subsequent `asterinas`
+query rendered `百度安全验证`, so the final M7 result remained failed with
+`search-title-timeout`. The current image also lacks a CJK font, leaving some
+Chinese text as missing-glyph boxes. These are user-space/browser and remote
+service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
+VirtIO input, Xorg, or framebuffer failure.
+
 ### Megrez static-RJ45 browser gate
 
 The physical browser milestone reuses the signed `desktop-m5-network` root

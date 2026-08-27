@@ -326,6 +326,6 @@ git status --short
 
 ### Task 7: Start a separate M6 browser/compatibility slice
 
-- [ ] Preserve the current M6 baseline: DNS, HTTPS 200, Baidu logo asset, NetSurf local-JavaScript `limited-pass`, screenshots, and exact rootfs/kernel identities.
-- [ ] Write a separate plan to load `https://www.baidu.com/`, requiring logo, search box, basic text, URL/title, process state, DNS/HTTPS evidence, and screenshot. Do not claim modern JavaScript/login/hot-search compatibility for NetSurf 3.11.
+- [x] Preserve the current M6 baseline: DNS, HTTPS 200, Baidu logo asset, NetSurf local-JavaScript `limited-pass`, screenshots, and exact rootfs/kernel identities.
+- [x] Write and execute a separate M7 plan. The desktop endpoint exposed a NetSurf layout stall; the honest compatibility fallback loads `https://m.baidu.com/` with JavaScript disabled and requires a real logo, search box, URL/title, process state, DNS/HTTPS evidence, and screenshot. A Baidu security challenge remains a failed search-result gate and is not claimed as modern JavaScript/login/hot-search compatibility.
 - [ ] Capture the exact `systemd-sysusers` exit/errno and add a separate Asterinas regression for `/proc/sys/fs/nr_open` writes before modifying kernel behavior. Do not hide either issue in guest scripts or move it to the board.
