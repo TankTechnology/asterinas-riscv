@@ -24,9 +24,13 @@ from tools.riscv.megrez_debug_contract import (
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_board import (
+    BoardRunConfig,
+    BoardRunFailure,
+    BoardTermination,
     BoardTransport,
     BoardTransportError,
     ensure_board_artifacts,
+    run_board,
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -634,6 +638,198 @@ class MegrezDebugBoardTransportTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(BoardTransportError, message):
                     transport.ensure(identity, timeout=1.0)
+
+
+class MegrezDebugBoardStateTests(unittest.TestCase):
+    class Operations:
+        def __init__(self, chunks: list[str | BaseException]) -> None:
+            self.chunks = list(chunks)
+            self.calls: list[tuple[str, float | None]] = []
+            self.booti_count = 0
+            self.published: StageResult | None = None
+            self.outcomes = (
+                "kernel:cache-hit",
+                "initramfs:cache-hit",
+                "megrez_dtb:cache-hit",
+            )
+
+        def invalidate(self) -> None:
+            self.calls.append(("invalidate", None))
+
+        def open(self, timeout: float) -> None:
+            self.calls.append(("open", timeout))
+
+        def ensure_artifacts(self, _plan: DebugPlan, timeout: float) -> tuple[str, ...]:
+            self.calls.append(("ensure", timeout))
+            return self.outcomes
+
+        def prepare_boot(self, _plan: DebugPlan, timeout: float) -> None:
+            self.calls.append(("prepare", timeout))
+
+        def booti(self, _plan: DebugPlan, timeout: float) -> None:
+            self.calls.append(("booti", timeout))
+            self.booti_count += 1
+
+        def read_chunk(self, timeout: float) -> str:
+            self.calls.append(("read", timeout))
+            if not self.chunks:
+                raise TimeoutError("no more serial data")
+            value = self.chunks.pop(0)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        def close(self) -> None:
+            self.calls.append(("close", None))
+
+        def publish(
+            self,
+            result: StageResult,
+            _transcript: str,
+            _outcomes: tuple[str, ...],
+        ) -> None:
+            self.calls.append(("publish", None))
+            self.published = result
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = []
+        for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+            path = directory / name
+            path.write_bytes(name.encode())
+            artifacts.append(ArtifactIdentity.from_path(name, path, addresses[name]))
+        self.plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(artifacts),
+            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=180,
+        )
+
+    @staticmethod
+    def _clock():
+        value = 100.0
+
+        def monotonic() -> float:
+            nonlocal value
+            current = value
+            value += 1.0
+            return current
+
+        return monotonic
+
+    def test_success_uses_one_declining_budget_one_booti_and_recovery(self) -> None:
+        operations = self.Operations(
+            [
+                "old text Enter ris",
+                "cv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n",
+                "U-Boot recovered\n=> ",
+            ]
+        )
+
+        result = run_board(
+            self.plan,
+            BoardRunConfig(timeout=300.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "board-pass")
+        self.assertEqual(result.plan_sha256, self.plan.plan_sha256)
+        self.assertEqual(operations.booti_count, 1)
+        self.assertEqual(operations.published, result)
+        self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
+        budgets = [value for _name, value in operations.calls if value is not None]
+        self.assertTrue(all(0 < value < 300 for value in budgets))
+        self.assertEqual(budgets, sorted(budgets, reverse=True))
+
+    def test_marker_and_timeout_failures_never_retry_booti(self) -> None:
+        cases = (
+            (["ASTERINAS_GMAC_TCP_PROBE_READY\n"], "guest-marker-order"),
+            ([], "kernel-timeout"),
+            (["Enter riscv_boot\n"], "guest-timeout"),
+            (
+                ["Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n"],
+                "uboot-recovery-timeout",
+            ),
+        )
+        for chunks, reason in cases:
+            with self.subTest(reason=reason):
+                operations = self.Operations(chunks)
+                result = run_board(
+                    self.plan,
+                    BoardRunConfig(timeout=300.0),
+                    operations,
+                    clock=lambda: 10.0,
+                )
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(operations.booti_count, 1)
+                self.assertEqual(operations.published, result)
+
+    def test_first_termination_defers_through_close_and_publication(self) -> None:
+        operations = self.Operations([BoardTermination(15)])
+
+        with self.assertRaisesRegex(BoardTermination, "15"):
+            run_board(
+                self.plan,
+                BoardRunConfig(timeout=300.0),
+                operations,
+                clock=lambda: 20.0,
+            )
+
+        self.assertEqual(operations.booti_count, 1)
+        assert operations.published is not None
+        self.assertFalse(operations.published.passed)
+        self.assertEqual(operations.published.reason, "board-terminated-15")
+        self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
+
+    def test_absolute_deadline_expires_without_starting_an_extra_read(self) -> None:
+        operations = self.Operations(["unreachable"])
+        times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
+
+        result = run_board(
+            self.plan,
+            BoardRunConfig(timeout=300.0),
+            operations,
+            clock=lambda: next(times),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "kernel-timeout")
+        self.assertFalse(any(name == "read" for name, _value in operations.calls))
+
+    def test_configuration_and_preboot_failure_forbid_booti(self) -> None:
+        with self.assertRaisesRegex(ValueError, "300"):
+            BoardRunConfig(timeout=301.0)
+
+        class FailingOperations(self.Operations):
+            def prepare_boot(self, _plan: DebugPlan, timeout: float) -> None:
+                self.calls.append(("prepare", timeout))
+                raise BoardRunFailure("uboot-prepare-failed")
+
+        operations = FailingOperations([])
+        result = run_board(
+            self.plan,
+            BoardRunConfig(timeout=300.0),
+            operations,
+            clock=lambda: 30.0,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "uboot-prepare-failed")
+        self.assertEqual(operations.booti_count, 0)
 
 
 class MegrezDebugCliTests(unittest.TestCase):
