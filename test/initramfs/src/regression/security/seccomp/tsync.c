@@ -6,6 +6,7 @@
 #include <linux/capability.h>
 #include <linux/seccomp.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 #include <unistd.h>
 
 #define BLOCK_ERRNO 99
+#define STACK_ERRNO 98
 
 struct worker {
 	pthread_barrier_t ready;
@@ -24,14 +26,14 @@ struct worker {
 	pid_t tid;
 };
 
-static int install_errno_filter(long nr, unsigned int flags)
+static int install_action_filter(long nr, unsigned int flags,
+				 unsigned int action)
 {
 	struct sock_filter insns[] = {
 		BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
 			 offsetof(struct seccomp_data, nr)),
 		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1),
-		BPF_STMT(BPF_RET | BPF_K,
-			 SECCOMP_RET_ERRNO | (BLOCK_ERRNO & SECCOMP_RET_DATA)),
+		BPF_STMT(BPF_RET | BPF_K, action),
 		BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
@@ -40,6 +42,53 @@ static int install_errno_filter(long nr, unsigned int flags)
 	};
 
 	return syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, flags, &prog);
+}
+
+static int install_errno_filter_with(long nr, unsigned int flags, int error)
+{
+	return install_action_filter(
+		nr, flags, SECCOMP_RET_ERRNO | (error & SECCOMP_RET_DATA));
+}
+
+static int install_errno_filter(long nr, unsigned int flags)
+{
+	return install_errno_filter_with(nr, flags, BLOCK_ERRNO);
+}
+
+static int install_padded_filter(size_t len, long blocked_nr)
+{
+	struct sock_filter *insns;
+	struct sock_fprog prog;
+	size_t prefix_len;
+	int result;
+
+	if (len == 0 || len > 4096 || (blocked_nr >= 0 && len < 4)) {
+		errno = EINVAL;
+		return -1;
+	}
+	insns = calloc(len, sizeof(*insns));
+	if (insns == NULL)
+		return -1;
+	prefix_len = blocked_nr >= 0 ? len - 4 : len - 1;
+	for (size_t i = 0; i < prefix_len; ++i)
+		insns[i] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_IMM, 0);
+	if (blocked_nr >= 0) {
+		insns[len - 4] = (struct sock_filter)BPF_STMT(
+			BPF_LD | BPF_W | BPF_ABS,
+			offsetof(struct seccomp_data, nr));
+		insns[len - 3] = (struct sock_filter)BPF_JUMP(
+			BPF_JMP | BPF_JEQ | BPF_K, blocked_nr, 0, 1);
+		insns[len - 2] = (struct sock_filter)BPF_STMT(
+			BPF_RET | BPF_K,
+			SECCOMP_RET_ERRNO | (BLOCK_ERRNO & SECCOMP_RET_DATA));
+	}
+	insns[len - 1] =
+		(struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+	prog.len = len;
+	prog.filter = insns;
+	result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog);
+	free(insns);
+	return result;
 }
 
 static void *probe_worker(void *arg)
@@ -71,6 +120,27 @@ static void *divergent_worker(void *arg)
 		if (worker->result == -1)
 			worker->result = -errno;
 	}
+	return NULL;
+}
+
+static void *ancestor_worker(void *arg)
+{
+	struct worker *worker = arg;
+
+	worker->tid = syscall(SYS_gettid);
+	pthread_barrier_wait(&worker->ready);
+	pthread_barrier_wait(&worker->done);
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO) {
+		worker->result = 1;
+		return NULL;
+	}
+	errno = 0;
+	if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO) {
+		worker->result = 1;
+		return NULL;
+	}
+	worker->result = 0;
 	return NULL;
 }
 
@@ -267,6 +337,29 @@ static int test_clone_inherits_filter(void)
 	return worker.result == -BLOCK_ERRNO ? 0 : 1;
 }
 
+static int test_fork_inherits_filter_chain(void)
+{
+	pid_t child;
+	int status;
+
+	if (install_errno_filter(SYS_getpid, 0) != 0 ||
+	    install_errno_filter_with(SYS_getppid, 0, STACK_ERRNO) != 0)
+		return 1;
+	child = fork();
+	if (child == 0) {
+		errno = 0;
+		if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+			_exit(2);
+		errno = 0;
+		if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO)
+			_exit(3);
+		_exit(0);
+	}
+	if (child < 0 || waitpid(child, &status, 0) != child)
+		return 1;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 1;
+}
+
 static int test_strict_cannot_replace_filter(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
@@ -279,39 +372,174 @@ static int test_strict_cannot_replace_filter(void)
 	return syscall(SYS_getpid) == -1 && errno == BLOCK_ERRNO ? 0 : 1;
 }
 
-#ifdef __asterinas__
-/*
- * Asterinas currently models one filter per thread.  Until filter trees are
- * implemented, reject stacking rather than replacing (and potentially
- * weakening) the policy already in force.
- */
-static int test_filter_stacking_is_rejected_atomically(void)
+static int test_filter_stacking(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
 		return 1;
-	errno = 0;
-	if (install_errno_filter(SYS_getppid, 0) != -1 || errno != EINVAL)
+	if (install_errno_filter_with(SYS_getppid, 0, STACK_ERRNO) != 0)
 		return 1;
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		return 1;
+	errno = 0;
+	return syscall(SYS_getppid) == -1 && errno == STACK_ERRNO ? 0 : 1;
+}
+
+static int test_equal_action_uses_newest_data(void)
+{
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	if (install_errno_filter_with(SYS_getpid, 0, STACK_ERRNO) != 0)
+		return 1;
+	errno = 0;
+	return syscall(SYS_getpid) == -1 && errno == STACK_ERRNO ? 0 : 1;
+}
+
+static int test_tsync_from_common_ancestor(void)
+{
+	struct worker worker = { 0 };
+	pthread_t thread;
+	int failed = 1;
+
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		return 1;
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, ancestor_worker, &worker) != 0)
+		goto out;
+	pthread_barrier_wait(&worker.ready);
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
+		goto release;
+	errno = 0;
+	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
+		goto release;
+	errno = 0;
+	if (syscall(SYS_getppid) != -1 || errno != STACK_ERRNO)
+		goto release;
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	thread = 0;
+	if (worker.result == 0)
+		failed = 0;
+out:
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return failed;
+release:
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	goto out;
+}
+
+static int test_tsync_catches_up_disabled_sibling(void)
+{
+	struct worker worker = { 0 };
+	pthread_t thread;
+	int failed = 1;
+
+	pthread_barrier_init(&worker.ready, NULL, 2);
+	pthread_barrier_init(&worker.done, NULL, 2);
+	if (pthread_create(&thread, NULL, ancestor_worker, &worker) != 0)
+		goto out;
+	pthread_barrier_wait(&worker.ready);
+	/* Leave the sibling disabled while the caller advances one node. */
+	if (install_errno_filter(SYS_getpid, 0) != 0)
+		goto release;
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
+		goto release;
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	thread = 0;
+	if (worker.result == 0)
+		failed = 0;
+out:
+	pthread_barrier_destroy(&worker.ready);
+	pthread_barrier_destroy(&worker.done);
+	return failed;
+release:
+	pthread_barrier_wait(&worker.done);
+	pthread_join(thread, NULL);
+	goto out;
+}
+
+static int test_kill_process_has_signed_precedence(void)
+{
+	pid_t child = fork();
+	int status;
+
+	if (child == 0) {
+		if (install_action_filter(SYS_getpid, 0,
+					  SECCOMP_RET_KILL_PROCESS) != 0)
+			_exit(2);
+		/* Newest ERRNO must lose to the older signed KILL_PROCESS action. */
+		if (install_errno_filter(SYS_getpid, 0) != 0)
+			_exit(3);
+		syscall(SYS_getpid);
+		_exit(4);
+	}
+	if (child < 0 || waitpid(child, &status, 0) != child)
+		return 1;
+	return WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS ? 0 : 1;
+}
+
+static int test_filter_path_instruction_budget(void)
+{
+	/* 7*4096 + 6*4 = 28696 after the first seven nodes. */
+	if (install_padded_filter(4096, SYS_getpid) != 0)
+		return 1;
+	for (int i = 0; i < 6; ++i) {
+		if (install_padded_filter(4096, -1) != 0)
+			return 1;
+	}
+#ifdef __asterinas__
+	/* 28696 + 4 + 4068 = MAX_INSNS_PER_PATH (32768). */
+	if (install_padded_filter(4068, -1) != 0)
+		return 1;
+	/* One more one-insn node costs 4 + 1 and must be rejected atomically. */
+	errno = 0;
+	if (install_padded_filter(1, -1) != -1 || errno != EINVAL)
+		return 1;
+#else
+	/*
+	 * Linux budgets the translated BPF length, which can differ from the
+	 * classic-BPF input length. Approach the same boundary, then append tiny
+	 * nodes until Linux reports its documented ENOMEM without hard-coding a
+	 * translator-specific exact input length.
+	 */
+	if (install_padded_filter(3900, -1) != 0)
+		return 1;
+	for (int i = 0;; ++i) {
+		errno = 0;
+		if (install_padded_filter(1, -1) == -1) {
+			if (errno != ENOMEM)
+				return 1;
+			break;
+		}
+		if (i == 63)
+			return 1;
+	}
+#endif
 	errno = 0;
 	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
 		return 1;
 	return syscall(SYS_getppid) > 0 ? 0 : 1;
 }
 
-static int test_tsync_stacking_is_rejected(void)
+static int test_tsync_stacking_single_thread(void)
 {
 	if (install_errno_filter(SYS_getpid, 0) != 0)
 		return 1;
-	errno = 0;
-	if (install_errno_filter(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC) != -1 ||
-	    errno != EINVAL)
+	if (install_errno_filter_with(SYS_getppid, SECCOMP_FILTER_FLAG_TSYNC,
+				      STACK_ERRNO) != 0)
 		return 1;
 	errno = 0;
 	if (syscall(SYS_getpid) != -1 || errno != BLOCK_ERRNO)
 		return 1;
-	return syscall(SYS_getppid) > 0 ? 0 : 1;
+	errno = 0;
+	return syscall(SYS_getppid) == -1 && errno == STACK_ERRNO ? 0 : 1;
 }
-#endif
 
 int main(void)
 {
@@ -326,14 +554,23 @@ int main(void)
 	failures += run_isolated(test_unknown_flags, "unknown flags");
 	failures += run_isolated(test_clone_inherits_filter,
 				 "clone inherits filter");
+	failures += run_isolated(test_fork_inherits_filter_chain,
+				 "fork inherits filter chain");
 	failures += run_isolated(test_strict_cannot_replace_filter,
 				 "strict cannot replace filter");
-#ifdef __asterinas__
-	failures += run_isolated(test_filter_stacking_is_rejected_atomically,
-				 "filter stacking atomic rejection");
-	failures += run_isolated(test_tsync_stacking_is_rejected,
-				 "TSYNC stacking rejection");
-#endif
+	failures += run_isolated(test_filter_stacking, "filter stacking");
+	failures += run_isolated(test_equal_action_uses_newest_data,
+				 "equal action uses newest data");
+	failures += run_isolated(test_tsync_stacking_single_thread,
+				 "single-thread TSYNC stacking");
+	failures += run_isolated(test_tsync_from_common_ancestor,
+				 "TSYNC from common ancestor");
+	failures += run_isolated(test_tsync_catches_up_disabled_sibling,
+				 "TSYNC catches up disabled sibling");
+	failures += run_isolated(test_kill_process_has_signed_precedence,
+				 "signed KILL_PROCESS precedence");
+	failures += run_isolated(test_filter_path_instruction_budget,
+				 "filter path instruction budget");
 	failures += run_isolated(test_divergent_policy_is_atomic,
 				 "divergent policy atomic failure");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;

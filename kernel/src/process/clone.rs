@@ -605,6 +605,16 @@ fn clone_child_process(
     // Inherit the parent's OOM score adjustment
     let child_oom_score_adj = process.oom_score_adj().load(Ordering::Relaxed);
 
+    // Take one seccomp snapshot while serialized with TSYNC. The child below
+    // belongs to a new thread group, so it may keep this snapshot even if the
+    // parent group advances after this critical section.
+    let (child_seccomp_mode, child_seccomp_filter) = {
+        let tasks = process.tasks().lock();
+        let snapshot = (posix_thread.seccomp_mode(), posix_thread.seccomp_filter());
+        drop(tasks);
+        snapshot
+    };
+
     let child_tid = allocate_posix_tid();
 
     let child = {
@@ -641,8 +651,8 @@ fn clone_child_process(
             .user_ns(child_user_ns.clone())
             .ns_proxy(child_ns_proxy)
             .default_timer_slack_ns(default_timer_slack_ns)
-            .seccomp_mode(posix_thread.seccomp_mode())
-            .seccomp_filter(posix_thread.seccomp_filter())
+            .seccomp_mode(child_seccomp_mode)
+            .seccomp_filter(child_seccomp_filter)
             .sched_policy(ctx.thread.sched_attr().fork_child_policy())
         };
         #[cfg(target_arch = "x86_64")]
