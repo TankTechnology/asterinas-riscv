@@ -11,8 +11,10 @@ import os
 import stat
 import sys
 import tempfile
+from contextlib import AbstractContextManager
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Callable
 
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
@@ -26,6 +28,7 @@ from tools.riscv.megrez_debug_board import (
     run_physical_board,
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
+from tools.riscv.megrez_debug_probe import ProbeServer, ProbeServerError
 
 KERNEL_ADDRESS = 0x80200000
 INITRAMFS_ADDRESS = 0x83000000
@@ -228,7 +231,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(arguments: Sequence[str] | None = None) -> int:
+def main(
+    arguments: Sequence[str] | None = None,
+    *,
+    probe_server_factory: Callable[[], AbstractContextManager[object]] = ProbeServer,
+) -> int:
     try:
         values = _parser().parse_args(arguments)
         if values.command == "plan":
@@ -243,11 +250,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if values.command == "simulate":
             plan = _load_plan(values.plan)
             _check_artifacts(plan)
-            result = simulate_fast(
-                plan,
-                values.output_directory,
-                values.uboot_build_directory,
-            )
+            with probe_server_factory():
+                result = simulate_fast(
+                    plan,
+                    values.output_directory,
+                    values.uboot_build_directory,
+                )
             _atomic_write(
                 values.output_directory / "result.json", result.canonical_bytes()
             )
@@ -261,12 +269,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         _validate_simulation(values.simulation_result, plan)
         if values.output_directory is None:
             raise WorkflowError("board-output-directory-required")
-        result = run_physical_board(
-            plan,
-            values.device,
-            values.output_directory,
-            timeout=values.timeout,
-        )
+        with probe_server_factory():
+            result = run_physical_board(
+                plan,
+                values.device,
+                values.output_directory,
+                timeout=values.timeout,
+            )
         return 0 if result.passed else 2
     except BoardTermination as error:
         return 128 + error.signum
@@ -274,6 +283,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         BoardRunFailure,
         DebugContractError,
         OSError,
+        ProbeServerError,
         SimulationError,
         WorkflowError,
     ) as error:

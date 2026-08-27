@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 import zlib
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -23,6 +25,7 @@ from tools.riscv.megrez_debug_contract import (
     StageResult,
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
+from tools.riscv.megrez_debug_probe import ProbeServer
 from tools.riscv.megrez_debug_board import (
     BoardRunConfig,
     BoardRunFailure,
@@ -35,6 +38,34 @@ from tools.riscv.megrez_debug_board import (
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
+
+
+class MegrezDebugProbeServerTests(unittest.TestCase):
+    def test_server_returns_exact_probe_response_and_releases_port(self) -> None:
+        with ProbeServer(host="127.0.0.1", port=0) as server:
+            address = server.address
+            with socket.create_connection(address, timeout=1.0) as connection:
+                connection.sendall(
+                    b"GET /asterinas-probe HTTP/1.0\r\n"
+                    b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                )
+                response = bytearray()
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+
+        self.assertEqual(
+            bytes(response),
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 23\r\n"
+            b"Connection: close\r\n\r\n"
+            b"ASTERINAS_TCP_PROBE_OK\n",
+        )
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
+            rebound.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            rebound.bind(address)
 
 
 class MegrezDebugArtifactTests(unittest.TestCase):
@@ -523,7 +554,21 @@ class MegrezDebugSimulationTests(unittest.TestCase):
         )
         from tools.riscv import megrez_debug
 
-        with mock.patch.object(megrez_debug, "simulate_fast", return_value=expected):
+        events: list[str] = []
+
+        class Probe:
+            def __enter__(self):
+                events.append("probe-enter")
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                events.append("probe-exit")
+
+        def simulate(*_args: object, **_kwargs: object) -> StageResult:
+            events.append("simulate")
+            return expected
+
+        with mock.patch.object(megrez_debug, "simulate_fast", side_effect=simulate):
             status = megrez_debug.main(
                 (
                     "simulate",
@@ -534,10 +579,12 @@ class MegrezDebugSimulationTests(unittest.TestCase):
                     str(self.output),
                     "--uboot-build-directory",
                     str(self.build),
-                )
+                ),
+                probe_server_factory=Probe,
             )
 
         self.assertEqual(status, 0)
+        self.assertEqual(events, ["probe-enter", "simulate", "probe-exit"])
         self.assertEqual(
             StageResult.from_bytes((self.output / "result.json").read_bytes()),
             expected,
@@ -967,8 +1014,22 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             plan_sha256=self.plan.plan_sha256,
             evidence=("serial.log", "transport.json"),
         )
+        events: list[str] = []
+
+        class Probe:
+            def __enter__(self):
+                events.append("probe-enter")
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                events.append("probe-exit")
+
+        def board(*_args: object, **_kwargs: object) -> StageResult:
+            events.append("board")
+            return expected
+
         with mock.patch.object(
-            megrez_debug, "run_physical_board", return_value=expected
+            megrez_debug, "run_physical_board", side_effect=board
         ) as run:
             status = megrez_debug.main(
                 self._arguments(
@@ -976,10 +1037,12 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
                     str(self.output),
                     "--timeout",
                     "240",
-                )
+                ),
+                probe_server_factory=Probe,
             )
 
         self.assertEqual(status, 0)
+        self.assertEqual(events, ["probe-enter", "board", "probe-exit"])
         run.assert_called_once_with(
             self.plan,
             "/dev/ttyUSB-test",
@@ -1012,7 +1075,8 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             side_effect=BoardTermination(15),
         ):
             status = megrez_debug.main(
-                self._arguments("--output-directory", str(self.output))
+                self._arguments("--output-directory", str(self.output)),
+                probe_server_factory=nullcontext,
             )
 
         self.assertEqual(status, 143)
