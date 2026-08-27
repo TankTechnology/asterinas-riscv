@@ -100,6 +100,8 @@ class DebianDesktopM7BaiduGuestTests(unittest.TestCase):
         console.write_text("", encoding="utf-8")
         state = self.directory / f"state-{mode}"
         state.write_text("0", encoding="utf-8")
+        browser_state = self.directory / f"browser-state-{mode}"
+        browser_state.write_text("running", encoding="utf-8")
         netsurf_log = self.directory / f"netsurf-{mode}.log"
         netsurf_log.write_text("netsurf-log-ready\n", encoding="utf-8")
         actions = self.directory / f"actions-{mode}"
@@ -108,7 +110,18 @@ class DebianDesktopM7BaiduGuestTests(unittest.TestCase):
         process.mkdir(parents=True)
         (process / "cmdline").write_bytes(b"/usr/bin/netsurf-gtk\0")
 
-        (fake_bin / "pgrep").write_text("#!/bin/sh\nprintf '777\\n'\n")
+        (fake_bin / "pgrep").write_text(
+            "#!/bin/sh\n"
+            '[ "$(cat "$ASTERINAS_M7_BROWSER_STATE")" = closed ] && exit 1\n'
+            "printf '777\\n'\n"
+        )
+        (fake_bin / "runuser").write_text(
+            "#!/bin/sh\n"
+            'printf \'runuser %s\\n\' "$*" >>"$ASTERINAS_M7_ACTIONS"\n'
+            "printf 'launched' >\"$ASTERINAS_M7_BROWSER_STATE\"\n"
+            "printf '1' >\"$ASTERINAS_M7_STATE\"\n"
+            "printf 'netsurf-log-ready\\n' >\"$ASTERINAS_BROWSER_M7_NETSURF_LOG\"\n"
+        )
         (fake_bin / "xdotool").write_text(
             """#!/bin/sh
 set -eu
@@ -131,7 +144,9 @@ case "$1" in
     ;;
   windowactivate|windowfocus|mousemove|click|type) ;;
   key)
-    if [ "${2-}" = Return ]; then
+    if [ "${2-}" = ctrl+q ]; then
+      printf 'closed' >"$ASTERINAS_M7_BROWSER_STATE"
+    elif [ "${2-}" = Return ]; then
       phase="$(cat "$ASTERINAS_M7_STATE")"
       printf '%s' "$((phase + 1))" >"$ASTERINAS_M7_STATE"
     fi
@@ -141,7 +156,7 @@ esac
 """,
             encoding="utf-8",
         )
-        for command in ("pgrep", "xdotool"):
+        for command in ("pgrep", "runuser", "xdotool"):
             (fake_bin / command).chmod(0o755)
 
         environment = os.environ.copy()
@@ -156,6 +171,7 @@ esac
             ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS="0",
             ASTERINAS_BROWSER_M7_NETSURF_LOG=str(netsurf_log),
             ASTERINAS_M7_ACTIONS=str(actions),
+            ASTERINAS_M7_BROWSER_STATE=str(browser_state),
             ASTERINAS_M7_STATE=str(state),
             ASTERINAS_M7_MODE=mode,
         )
@@ -182,7 +198,12 @@ esac
             ],
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
-        self.assertIn("type --delay 0 -- https://www.baidu.com/", action_lines)
+        self.assertIn("key ctrl+q", action_lines)
+        runuser_action = next(
+            action for action in action_lines if action.startswith("runuser ")
+        )
+        self.assertIn("--enable_javascript=0", runuser_action)
+        self.assertTrue(runuser_action.endswith(" https://www.baidu.com/"))
         self.assertLess(
             action_lines.index("windowactivate --sync 42"),
             action_lines.index("windowfocus --sync 42"),
@@ -191,21 +212,18 @@ esac
             action_lines.index("windowfocus --sync 42"),
             action_lines.index("mousemove --sync 500 42"),
         )
-        home_focus = action_lines.index("mousemove --sync 500 42")
+        search_focus = action_lines.index("mousemove --sync 500 42")
         self.assertEqual(
-            action_lines[home_focus : home_focus + 4],
+            action_lines[search_focus : search_focus + 4],
             [
                 "mousemove --sync 500 42",
                 "click 1",
                 "key ctrl+a",
-                "type --delay 0 -- https://www.baidu.com/",
+                "type --delay 0 -- https://www.baidu.com/s?wd=asterinas-riscv",
             ],
         )
-        self.assertNotIn("key ctrl+l", action_lines)
-        self.assertIn("mousemove --sync 560 310", action_lines)
-        self.assertIn("click 1", action_lines)
-        self.assertIn("type --delay 40 -- asterinas-riscv", action_lines)
-        self.assertEqual(action_lines.count("key Return"), 2)
+        self.assertNotIn("mousemove --sync 560 310", action_lines)
+        self.assertEqual(action_lines.count("key Return"), 1)
 
     def test_guest_reports_bounded_home_and_search_title_failures(self) -> None:
         for mode, reason in (
