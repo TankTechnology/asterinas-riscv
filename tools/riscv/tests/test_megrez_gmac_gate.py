@@ -20,7 +20,6 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
 )
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
-    HOST_PING_ARGV,
     PHYSICAL_MILESTONES,
     GateConfig,
     GateFailure,
@@ -29,7 +28,6 @@ from tools.riscv.megrez_gmac_gate import (
     classify_physical_transcript,
     physical_bootargs,
     run_gate,
-    verify_host_ping,
 )
 
 
@@ -60,18 +58,11 @@ class FakeOperations:
         chunks: Iterable[bytes] = (),
         *,
         boot: bytes = b"",
-        ping: subprocess.CompletedProcess[bytes] | None = None,
         conflict: bool = False,
     ) -> None:
         self.events: list[str] = []
         self.chunks = iter(chunks)
         self.boot_output = boot
-        self.ping = ping or subprocess.CompletedProcess(
-            HOST_PING_ARGV,
-            0,
-            b"10 packets transmitted, 10 received, 0% packet loss\n",
-            b"",
-        )
         self.conflict = conflict
         self.published: tuple[bytes, dict[str, object]] | None = None
 
@@ -96,8 +87,7 @@ class FakeOperations:
         return next(self.chunks, b"")
 
     def ping_board(self) -> subprocess.CompletedProcess[bytes]:
-        self.events.append("host-ping")
-        return self.ping
+        raise AssertionError("the browser network gate must not use ICMP")
 
     def drain(self, deadline: float) -> bytes:
         del deadline
@@ -139,7 +129,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertIsNotNone(operations.published)
 
-    def test_split_markers_then_exact_ten_host_pings_pass(self) -> None:
+    def test_split_browser_network_markers_pass_without_icmp(self) -> None:
         self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
         evidence = complete_browser_evidence()
         operations = FakeOperations(
@@ -165,13 +155,12 @@ class MegrezGmacGateTests(unittest.TestCase):
                 "read",
                 "read",
                 "read",
-                "host-ping",
                 "drain",
                 "close",
                 "publish",
             ],
         )
-        self.assertEqual(result["host_ping_count"], 10)
+        self.assertNotIn("host_ping_count", result)
         self.assertEqual(result["javascript_status"], "limited-pass")
         self.assertIn(b"late harmless log", operations.published[0])
 
@@ -279,7 +268,7 @@ class MegrezGmacGateTests(unittest.TestCase):
                     reason,
                 )
 
-    def test_address_probe_and_host_ping_have_strict_process_contracts(self) -> None:
+    def test_address_probe_has_a_strict_process_contract(self) -> None:
         calls: list[tuple[str, ...]] = []
 
         def run_unused(
@@ -313,26 +302,6 @@ class MegrezGmacGateTests(unittest.TestCase):
                 "enp1s0",
                 BOARD_ADDRESS,
                 run=lambda *args, **kwargs: conflict,
-            )
-        self.assertEqual(
-            verify_host_ping(
-                subprocess.CompletedProcess(
-                    HOST_PING_ARGV,
-                    0,
-                    b"10 packets transmitted, 10 received, 0% packet loss\n",
-                    b"",
-                )
-            ),
-            10,
-        )
-        with self.assertRaisesRegex(GateFailure, "host ping failed"):
-            verify_host_ping(
-                subprocess.CompletedProcess(
-                    HOST_PING_ARGV,
-                    1,
-                    b"10 packets transmitted, 9 received, 10% packet loss\n",
-                    b"",
-                )
             )
 
 

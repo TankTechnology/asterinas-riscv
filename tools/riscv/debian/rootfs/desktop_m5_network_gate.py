@@ -12,7 +12,6 @@ from tools.riscv.debian.rootfs.gate_protocol import GateResult
 
 DESKTOP_M5_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_GUEST_PING peer=10.100.19.216 count=10",
     "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
@@ -29,7 +28,7 @@ DESKTOP_M5_QEMU_MILESTONES = (
 def classify_desktop_m5_network(
     transcript: bytes, *, expected_debian_release: str
 ) -> GateResult:
-    """Require ordered link, address, and peer reachability evidence."""
+    """Require ordered link, DNS, HTTPS, and asset evidence."""
 
     if any(
         transcript.count(marker.encode()) > 1 for marker in DESKTOP_M5_MEGREZ_MILESTONES

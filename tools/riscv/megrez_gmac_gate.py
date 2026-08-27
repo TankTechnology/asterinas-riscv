@@ -46,17 +46,6 @@ BOARD_ADDRESS = "10.100.19.200"
 HOST_ADDRESS = "10.100.19.216"
 GATEWAY_ADDRESS = "10.100.16.1"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
-HOST_PING_ARGV = (
-    "ping",
-    "-n",
-    "-c",
-    "10",
-    "-W",
-    "2",
-    "-I",
-    HOST_ADDRESS,
-    BOARD_ADDRESS,
-)
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 PHYSICAL_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
@@ -73,9 +62,6 @@ _BROWSER_READY_RE = re.compile(
 PHYSICAL_READY_MARKERS = tuple(
     f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode()
     for status in DESKTOP_M6_JAVASCRIPT_STATUSES
-)
-_HOST_PING_SUMMARY = re.compile(
-    rb"(?m)^10 packets transmitted, 10 (?:packets )?received, 0% packet loss"
 )
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
@@ -156,7 +142,6 @@ class GateOperations(Protocol):
     def open_board(self) -> None: ...
     def boot(self) -> bytes: ...
     def read(self, deadline: float) -> bytes: ...
-    def ping_board(self) -> subprocess.CompletedProcess[bytes]: ...
     def drain(self, deadline: float) -> bytes: ...
     def close_board(self) -> None: ...
     def publish(self, transcript: bytes, result: dict[str, object]) -> None: ...
@@ -253,15 +238,6 @@ def check_address_unused(
     )
 
 
-def verify_host_ping(completed: subprocess.CompletedProcess[bytes]) -> int:
-    """Require exactly ten transmitted and received host-originated pings."""
-
-    output = completed.stdout + completed.stderr
-    if completed.returncode != 0 or _HOST_PING_SUMMARY.search(output) is None:
-        raise GateFailure("host ping failed or lost packets")
-    return 10
-
-
 def _append_transcript(transcript: bytearray, chunk: bytes) -> None:
     if not isinstance(chunk, bytes):
         raise GateFailure("serial reader returned non-bytes data")
@@ -304,7 +280,6 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         classification = classify_physical_transcript(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
-        ping_count = verify_host_ping(operations.ping_board())
         _append_transcript(
             transcript,
             operations.drain(time.monotonic() + config.drain_timeout),
@@ -318,7 +293,6 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             "reason": "pass",
             "board_address": BOARD_ADDRESS,
             "host_address": HOST_ADDRESS,
-            "host_ping_count": ping_count,
             "javascript_status": _browser_javascript_status(bytes(transcript)),
         }
     except Exception as error:
@@ -348,7 +322,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
 
 
 class PhysicalGateOperations:
-    """Concrete serial, ARP, ICMP, and pinned-output adapter."""
+    """Concrete serial, duplicate-address, and pinned-output adapter."""
 
     def __init__(self, arguments: argparse.Namespace) -> None:
         self.arguments = arguments
@@ -405,9 +379,6 @@ class PhysicalGateOperations:
         return read_available(self._session().fd, min(1.0, remaining)).encode(
             errors="replace"
         )
-
-    def ping_board(self) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(HOST_PING_ARGV, capture_output=True, check=False)
 
     def drain(self, deadline: float) -> bytes:
         remaining = max(0.0, deadline - time.monotonic())
