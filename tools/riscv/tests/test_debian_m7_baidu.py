@@ -244,6 +244,8 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
         operations._home_screenshot_metadata = {}
         operations._search_screenshot = b""
         operations._search_screenshot_metadata = {}
+        operations._failure_screenshot = b""
+        operations._failure_screenshot_metadata = {}
         return operations
 
     def test_protocol_captures_home_then_search_after_m6(self) -> None:
@@ -305,12 +307,59 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
             ["desktop-m7-baidu-home.ppm", "desktop-m7-baidu-search.ppm"],
         )
 
+    def test_protocol_captures_current_frame_when_m7_guest_fails(self) -> None:
+        operations = self._operations()
+
+        class Serial:
+            def wait_for_any(
+                self, markers: tuple[bytes, ...], deadline: float
+            ) -> bytes:
+                del markers, deadline
+                return b"DEBIAN_BROWSER_M7_FAIL reason=home-title-timeout"
+
+        session = {
+            "serial": Serial(),
+            "monitor": object(),
+            "directory": self.directory,
+        }
+        config = SimpleNamespace(boot_timeout=2.0, command_timeout=1.0)
+
+        with (
+            mock.patch.object(
+                DesktopM6BrowserOperations,
+                "run_protocol",
+                autospec=True,
+            ),
+            mock.patch.object(
+                desktop_m7_baidu_gate,
+                "capture_rendered_ppm",
+                return_value=(b"failure-ppm", {"width": 1280}),
+            ) as capture,
+        ):
+            with self.assertRaisesRegex(
+                desktop_m7_baidu_gate.GateFailure,
+                "guest reported Baidu page failure",
+            ):
+                operations.run_protocol(session, config)
+
+        self.assertEqual(operations._failure_screenshot, b"failure-ppm")
+        self.assertEqual(
+            operations._failure_screenshot_metadata,
+            {"width": 1280},
+        )
+        self.assertEqual(
+            capture.call_args.args[1].name,
+            "desktop-m7-baidu-failure.ppm",
+        )
+
     def test_publish_records_both_m7_frames_and_make_target(self) -> None:
         operations = self._operations()
         operations._home_screenshot = b"home"
         operations._search_screenshot = b"search"
+        operations._failure_screenshot = b"failure"
         operations._home_screenshot_metadata = {"width": 1280}
         operations._search_screenshot_metadata = {"width": 1280}
+        operations._failure_screenshot_metadata = {"width": 1024}
         writes: list[tuple[str, bytes, int]] = []
         result: dict[str, object] = {}
 
@@ -330,10 +379,12 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
             [
                 ("desktop-m7-baidu-home.ppm", b"home", 0o600),
                 ("desktop-m7-baidu-search.ppm", b"search", 0o600),
+                ("desktop-m7-baidu-failure.ppm", b"failure", 0o600),
             ],
         )
         self.assertEqual(result["homepage_screenshot"], {"width": 1280})
         self.assertEqual(result["search_screenshot"], {"width": 1280})
+        self.assertEqual(result["failure_screenshot"], {"width": 1024})
         inherited.assert_called_once()
 
         makefile = MAKEFILE.read_text(encoding="utf-8")
