@@ -55,6 +55,10 @@ BOCHS_XRGB8888 = FramebufferContract(
     pixel_format="x8r8g8b8",
 )
 HEADLESS = QemuDeviceSet("headless", ())
+VIRTIO_NET_SLIRP = QemuDeviceSet(
+    "virtio-net-slirp",
+    (DeviceKind.VIRTIO_NET,),
+)
 MEGREZ_BASIC = QemuDeviceSet(
     "megrez-basic",
     (DeviceKind.BOCHS_DISPLAY,),
@@ -68,6 +72,7 @@ DRM_CURSOR = QemuDeviceSet(
 _DEVICE_SETS = MappingProxyType(
     {
         HEADLESS.name: HEADLESS,
+        VIRTIO_NET_SLIRP.name: VIRTIO_NET_SLIRP,
         MEGREZ_BASIC.name: MEGREZ_BASIC,
         DRM_CURSOR.name: DRM_CURSOR,
     }
@@ -177,6 +182,15 @@ def render_device_argv(
             )
         elif device is DeviceKind.VIRTIO_KEYBOARD:
             argv.extend(("-device", "virtio-keyboard-device"))
+        elif device is DeviceKind.VIRTIO_NET:
+            argv.extend(
+                (
+                    "-netdev",
+                    "user,id=net0",
+                    "-device",
+                    "virtio-net-device,netdev=net0",
+                )
+            )
         elif device is DeviceKind.VIRTIO_GPU:
             argv.extend(
                 (

@@ -17,7 +17,6 @@ from typing import Sequence
 
 from megrez_contract import ArtifactIdentity, artifact_identity, load_contract
 from qemu_uboot_profiles import (
-    GENERIC_SV39,
     DtbProvider,
     Fidelity,
     QemuUbootProfile,
@@ -432,6 +431,33 @@ def remove_rng_seed_if_present(dtb: Path) -> bool:
     if "rng-seed" in _properties(dtb, "/chosen"):
         raise ValueError("failed to remove /chosen/rng-seed")
     return True
+
+
+def canonicalize_dtb(dtb: Path) -> None:
+    """Rewrite one regular DTB into deterministic ``dtc`` binary layout."""
+
+    source = dtb.lstat()
+    if stat.S_ISLNK(source.st_mode) or not stat.S_ISREG(source.st_mode):
+        raise ValueError("DTB canonicalization requires a regular non-symlink file")
+    with tempfile.TemporaryDirectory(
+        prefix=".qemu-dtb-canonical-", dir=dtb.parent
+    ) as temporary_directory:
+        canonical = Path(temporary_directory) / dtb.name
+        _run(
+            [
+                "dtc",
+                "-q",
+                "-I",
+                "dtb",
+                "-O",
+                "dtb",
+                "-o",
+                str(canonical),
+                str(dtb),
+            ]
+        )
+        canonical.chmod(stat.S_IMODE(source.st_mode))
+        canonical.replace(dtb)
 
 
 def _inspect_real_dtb(dtb: Path) -> RealDtbFacts:
@@ -1253,6 +1279,7 @@ def generate_sanitized_dtb(
         raise ValueError("QEMU did not produce a non-empty DTB")
     if profile.remove_rng_seed:
         remove_rng_seed_if_present(dtb)
+        canonicalize_dtb(dtb)
     override = profile.machine.root_compatible_override
     if override is not None:
         _apply_root_compatible_override(dtb, override)
@@ -1281,7 +1308,10 @@ def _apply_root_compatible_override(dtb: Path, compatibles: tuple[str, ...]) -> 
         text=True,
         timeout=10.0,
     )
-    if _string_list_property(_semantic_dtb_snapshot(dtb), "/", "compatible") != compatibles:
+    if (
+        _string_list_property(_semantic_dtb_snapshot(dtb), "/", "compatible")
+        != compatibles
+    ):
         raise ValueError("root compatible override did not take effect")
 
 
