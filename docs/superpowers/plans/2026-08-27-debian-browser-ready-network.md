@@ -41,7 +41,9 @@ python3 -W error::ResourceWarning -m unittest \
   tools.riscv.tests.test_debian_m5_network -v
 ```
 
-Expected: the new physical success fixture fails because the guest script still emits only link, ping, and READY.
+Expected: the classifier contract fails because the exported physical tuple
+still contains only link, ping, and READY. The shell lifecycle remains frozen
+at that legacy output until Task 2.
 
 - [ ] **Step 3: Implement only the marker/classifier contract**
 
