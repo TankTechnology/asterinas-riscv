@@ -117,7 +117,7 @@ fn handle_getlk(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> 
         from_c_flock_and_file(&lock_mut_c, &**file)?,
     );
 
-    let lock = file.as_inode_handle_or_err()?.test_range_lock(lock)?;
+    let lock = file.test_range_lock(lock)?;
 
     lock_mut_c.copy_from_range_lock(&lock);
     ctx.user_space().write_val(lock_mut_ptr, &lock_mut_c)?;
@@ -145,13 +145,12 @@ fn handle_setlk(
         from_c_flock_and_file(&lock_mut_c, &*file)?,
     );
 
-    let inode_file = file.as_inode_handle_or_err()?;
-    inode_file.set_range_lock(&lock, is_nonblocking)?;
+    file.set_range_lock(&lock, is_nonblocking)?;
 
     if lock.type_() == RangeLockType::Unlock {
         return Ok(SyscallReturn::Return(0));
     }
-    // A concurrent close will release the range locks for this owner and inode
+    // A concurrent close will release the range locks for this owner and file
     // but may miss the new one. If it happens, release the new lock to prevent
     // it from leaking forever.
     let file_is_still_open = file_table.read_with(|table| {
@@ -160,7 +159,7 @@ fn handle_setlk(
             .is_ok_and(|current_file| Arc::ptr_eq(current_file, &file))
     });
     if !file_is_still_open {
-        inode_file.release_range_locks(owner);
+        file.release_range_locks(owner);
         return_errno_with_message!(
             Errno::EBADF,
             "the file descriptor was closed while setting a range lock"

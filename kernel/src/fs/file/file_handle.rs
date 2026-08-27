@@ -13,7 +13,12 @@ use super::{
     inode_handle::SeekFrom,
 };
 use crate::{
-    fs::vfs::{inode::FallocMode, path::Path},
+    fs::vfs::{
+        inode::FallocMode,
+        inode_ext::InodeExt,
+        path::Path,
+        range_lock::{RangeLockItem, RangeLockOwner, RangeLockType},
+    },
     net::socket::Socket,
     prelude::*,
     process::{Process, posix_thread::FileTableRefMut, signal::Pollable},
@@ -288,6 +293,79 @@ impl dyn FileLike {
         self.downcast_ref().ok_or_else(|| {
             Error::with_message(Errno::EINVAL, "the file is not related to an inode")
         })
+    }
+
+    /// Tests whether a POSIX record lock can be acquired on this file.
+    ///
+    /// Linux permits record locks on non-regular file descriptions such as sockets and pipes.
+    /// Their pseudo filesystem inodes provide the same per-object lock identity that regular
+    /// files get from their backing inodes.
+    pub fn test_range_lock(&self, mut lock: RangeLockItem) -> Result<RangeLockItem> {
+        if let Some(inode_handle) = self.downcast_ref::<InodeHandle>() {
+            return inode_handle.test_range_lock(lock);
+        }
+
+        let Some(range_lock_list) = self
+            .path()
+            .inode()
+            .fs_lock_context()
+            .map(|context| context.range_lock_list())
+        else {
+            lock.set_type(RangeLockType::Unlock);
+            return Ok(lock);
+        };
+
+        Ok(range_lock_list.test_lock(lock))
+    }
+
+    /// Sets or removes a POSIX record lock on this file.
+    pub fn set_range_lock(&self, lock: &RangeLockItem, is_nonblocking: bool) -> Result<()> {
+        if let Some(inode_handle) = self.downcast_ref::<InodeHandle>() {
+            return inode_handle.set_range_lock(lock, is_nonblocking);
+        }
+
+        match lock.type_() {
+            RangeLockType::ReadLock if !self.access_mode().is_readable() => {
+                return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
+            }
+            RangeLockType::WriteLock if !self.access_mode().is_writable() => {
+                return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
+            }
+            _ => {}
+        }
+
+        let inode = self.path().inode();
+        if lock.type_() == RangeLockType::Unlock {
+            if let Some(range_lock_list) = inode
+                .fs_lock_context()
+                .map(|context| context.range_lock_list())
+            {
+                range_lock_list.unlock(lock);
+            }
+            return Ok(());
+        }
+
+        inode
+            .fs_lock_context_or_init()
+            .range_lock_list()
+            .set_lock(lock, is_nonblocking)
+    }
+
+    /// Releases every POSIX record lock owned by `owner` on this file.
+    pub fn release_range_locks(&self, owner: RangeLockOwner) {
+        if let Some(inode_handle) = self.downcast_ref::<InodeHandle>() {
+            inode_handle.release_range_locks(owner);
+            return;
+        }
+
+        if let Some(range_lock_list) = self
+            .path()
+            .inode()
+            .fs_lock_context()
+            .map(|context| context.range_lock_list())
+        {
+            range_lock_list.unlock_all(owner);
+        }
     }
 }
 
