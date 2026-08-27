@@ -59,6 +59,33 @@ pub struct VirtQueue {
     is_callback_enabled: bool,
 }
 
+/// A handle for notifying a device about newly available queue entries.
+///
+/// Keeping this handle separate allows callers to release a lock protecting
+/// the virtqueue before performing the notification I/O.
+#[derive(Debug)]
+pub(crate) struct VirtQueueNotifier {
+    notify_config: ConfigManager<u32>,
+    queue_idx: u32,
+}
+
+impl VirtQueueNotifier {
+    /// Notifies the device that the queue has available entries.
+    pub(crate) fn notify(&self) {
+        notify_device(&self.notify_config, self.queue_idx);
+    }
+}
+
+fn notify_device(notify_config: &ConfigManager<u32>, queue_idx: u32) {
+    if notify_config.is_modern() {
+        notify_config.write_once::<u32>(0, queue_idx).unwrap();
+    } else {
+        notify_config
+            .write_once::<u16>(0, queue_idx as u16)
+            .unwrap();
+    }
+}
+
 /// An error returned by [`VirtQueue::new`].
 #[derive(Debug)]
 pub(crate) enum CreationError {
@@ -491,17 +518,17 @@ impl VirtQueue {
         flags & 0x0001u16 == 0u16
     }
 
+    /// Creates a handle that can notify the device independently of the queue.
+    pub(crate) fn notifier(&self) -> VirtQueueNotifier {
+        VirtQueueNotifier {
+            notify_config: self.notify_config.clone(),
+            queue_idx: self.queue_idx,
+        }
+    }
+
     /// Notifies the device that there are available elements.
     pub fn notify(&mut self) {
-        if self.notify_config.is_modern() {
-            self.notify_config
-                .write_once::<u32>(0, self.queue_idx)
-                .unwrap();
-        } else {
-            self.notify_config
-                .write_once::<u16>(0, self.queue_idx as u16)
-                .unwrap();
-        }
+        notify_device(&self.notify_config, self.queue_idx);
     }
 
     /// Disables registered callbacks.

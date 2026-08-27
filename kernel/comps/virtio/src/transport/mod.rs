@@ -102,7 +102,7 @@ pub trait VirtioTransport: Sync + Send + Debug {
 }
 
 /// Manage PCI device/notify configuration space (legacy/modern).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ConfigManager<T: Pod> {
     modern_space: Option<SafePtr<T, IoMem>>,
     legacy_space: Option<(BarAccess, usize)>,

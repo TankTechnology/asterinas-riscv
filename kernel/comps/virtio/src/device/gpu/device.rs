@@ -5,7 +5,7 @@
 //! The driver covers the 2D control queue, hardware cursor, and virgl 3D
 //! command paths. EDID and newer resource/context features remain disabled.
 
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -13,8 +13,9 @@ use core::{
 
 use aster_util::mem_obj_slice::Slice;
 use ostd::{
+    arch::trap::TrapFrame,
     mm::{HasDaddr, PAGE_SIZE, VmIo, dma::DmaStream},
-    sync::{Mutex, SpinLock},
+    sync::{LocalIrqDisabled, Mutex, MutexGuard, SpinLock, WaitQueue},
 };
 
 use super::{
@@ -31,7 +32,7 @@ use super::{
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
-    queue::VirtQueue,
+    queue::{VirtQueue, VirtQueueNotifier},
     transport::DeviceTransport,
 };
 
@@ -66,6 +67,113 @@ struct PresentedResource {
     height: u32,
 }
 
+struct ControlQueue {
+    operation: Mutex<()>,
+    inner: SpinLock<ControlQueueInner, LocalIrqDisabled>,
+    notifier: VirtQueueNotifier,
+    completion_waiters: WaitQueue,
+}
+
+struct ControlQueueInner {
+    queue: VirtQueue,
+    irq_wait_enabled: bool,
+    completed: Option<(u16, u32)>,
+}
+
+struct ControlOperation<'a> {
+    queue: &'a ControlQueue,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl ControlQueue {
+    fn new(queue: VirtQueue) -> Arc<Self> {
+        let notifier = queue.notifier();
+        Arc::new(Self {
+            operation: Mutex::new(()),
+            inner: SpinLock::new(ControlQueueInner {
+                queue,
+                irq_wait_enabled: false,
+                completed: None,
+            }),
+            notifier,
+            completion_waiters: WaitQueue::new(),
+        })
+    }
+
+    fn lock(&self) -> ControlOperation<'_> {
+        ControlOperation {
+            queue: self,
+            _guard: self.operation.lock(),
+        }
+    }
+
+    fn enable_irq_wait(&self) {
+        // Serialize the mode switch with submissions. Otherwise a request
+        // that chose polling could have its response consumed by the IRQ
+        // handler after this flag changes and wait forever.
+        let _operation = self.operation.lock();
+        self.inner.lock().irq_wait_enabled = true;
+    }
+
+    fn handle_irq(&self) {
+        {
+            let mut inner = self.inner.lock();
+            if !inner.irq_wait_enabled || inner.completed.is_some() {
+                return;
+            }
+            let Ok(completed) = inner
+                .queue
+                .pop_used_with_min_bytes(size_of::<VirtioGpuCtrlHdr>())
+            else {
+                return;
+            };
+            inner.completed = Some(completed);
+        }
+        self.completion_waiters.wake_all();
+    }
+}
+
+impl ControlOperation<'_> {
+    fn add_dma_bufs(&self, inputs: &[&Slice<Arc<DmaStream>>], outputs: &[&Slice<Arc<DmaStream>>]) {
+        let should_notify = {
+            let mut inner = self.queue.inner.lock();
+            inner
+                .queue
+                .add_dma_bufs(inputs, outputs)
+                .expect("add control queue buffers");
+            inner.queue.should_notify()
+        };
+        if should_notify {
+            self.queue.notifier.notify();
+        }
+    }
+
+    fn wait_for_used(&self, min_bytes: usize) -> (u16, u32) {
+        let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
+        if !irq_wait_enabled {
+            loop {
+                if let Ok(used) = self
+                    .queue
+                    .inner
+                    .lock()
+                    .queue
+                    .pop_used_with_min_bytes(min_bytes)
+                {
+                    return used;
+                }
+                spin_loop();
+            }
+        }
+
+        self.queue.completion_waiters.wait_until(|| {
+            let mut inner = self.queue.inner.lock();
+            let completed = inner.completed.take()?;
+            debug_assert!(completed.1 as usize >= min_bytes);
+            Some(completed)
+        })
+    }
+}
+
 impl PresentedResource {
     fn matches(self, addr: u64, size: u32, width: u32, height: u32) -> bool {
         (
@@ -83,7 +191,7 @@ pub struct GpuDevice {
     /// queue borrows it during `init` and holds its own handle afterwards, so
     /// this field is never read directly.
     _transport: SpinLock<DeviceTransport>,
-    control_queue: Mutex<VirtQueue>,
+    control_queue: Arc<ControlQueue>,
     /// The cursor queue carries the hardware-cursor commands
     /// (`UPDATE_CURSOR`/`MOVE_CURSOR`).
     cursor_queue: Mutex<VirtQueue>,
@@ -129,30 +237,46 @@ impl GpuDevice {
         // The cursor queue is allowed (and in QEMU, is) much smaller than the
         // control queue (16 vs 256). Clamp each queue to what the device
         // actually offers instead of assuming both are `QUEUE_SIZE`.
-        let control_queue_size = QUEUE_SIZE.min(
+        let control_queue_size = control_queue_size(
             device_transport
                 .max_queue_size(VQ_CONTROL)
                 .unwrap_or(QUEUE_SIZE),
-        );
+        )
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
         let cursor_queue_size = cursor_queue_size(
             device_transport
                 .max_queue_size(VQ_CURSOR)
                 .unwrap_or(QUEUE_SIZE),
         )
         .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
-        let mut control_queue =
-            VirtQueue::new(VQ_CONTROL, control_queue_size, device_transport.as_mut())?;
+        let control_queue = ControlQueue::new(VirtQueue::new(
+            VQ_CONTROL,
+            control_queue_size,
+            device_transport.as_mut(),
+        )?);
         let cursor_queue = VirtQueue::new(VQ_CURSOR, cursor_queue_size, device_transport.as_mut())?;
         let control_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
         let cursor_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
 
+        let irq_control_queue = control_queue.clone();
+        device_transport.register_queue_callback(
+            VQ_CONTROL,
+            Box::new(move |_: &TrapFrame| {
+                irq_control_queue.handle_irq();
+            }),
+            false,
+        )?;
+
         // Mark the device ready before issuing the first control request.
+        // Boot-time requests still poll because task scheduling is not ready.
         device_transport.finish_init();
 
+        let operation = control_queue.lock();
         let (scanout_width, scanout_height) =
-            query_display_info(&mut control_queue, &control_buf, config.num_scanouts)?;
+            query_display_info(&operation, &control_buf, config.num_scanouts)?;
+        drop(operation);
         ostd::info!(
             "virtio-gpu: {} scanout(s), primary {}x{}",
             config.num_scanouts,
@@ -163,12 +287,11 @@ impl GpuDevice {
             ostd::warn!("virtio-gpu reported an empty scanout; leaving it unconfigured");
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
-
         let (framebuffer, framebuffer_len) = alloc_framebuffer(scanout_width, scanout_height)?;
 
         let device = Arc::new(Self {
             _transport: SpinLock::new(device_transport),
-            control_queue: Mutex::new(control_queue),
+            control_queue,
             cursor_queue: Mutex::new(cursor_queue),
             control_buf,
             cursor_buf,
@@ -194,6 +317,7 @@ impl GpuDevice {
         );
 
         device.render_test_pattern();
+        device.control_queue.enable_irq_wait();
         Ok(())
     }
 
@@ -480,9 +604,9 @@ impl GpuDevice {
             width,
             height,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -511,7 +635,7 @@ impl GpuDevice {
             padding: 0,
         };
 
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let req_slice = Slice::new(
             self.control_buf.clone(),
             CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len,
@@ -520,7 +644,7 @@ impl GpuDevice {
         req_slice.write_val(attach_len, &entry).unwrap();
 
         let (code, _) = submit_control(
-            &mut queue,
+            &queue,
             &self.control_buf,
             req_len,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -540,9 +664,9 @@ impl GpuDevice {
             scanout_id,
             resource_id,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -563,9 +687,9 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -580,9 +704,9 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -596,9 +720,9 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -638,9 +762,9 @@ impl GpuDevice {
             flags,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -664,9 +788,9 @@ impl GpuDevice {
             context_init,
             debug_name: name,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -679,9 +803,9 @@ impl GpuDevice {
         let req = super::VirtioGpuCtxDestroy {
             hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_DESTROY, ctx_id),
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -700,9 +824,9 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -721,9 +845,9 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -790,8 +914,8 @@ impl GpuDevice {
         req_slice.write_val(0, &req).unwrap();
         req_slice.write_bytes(req_len, data).unwrap();
 
-        let mut queue = self.control_queue.lock();
-        let (code, _) = submit_control_at(&mut queue, &submit_buf, total_len, total_len, resp_len)?;
+        let queue = self.control_queue.lock();
+        let (code, _) = submit_control_at(&queue, &submit_buf, total_len, total_len, resp_len)?;
         check_ok(code)
     }
 
@@ -806,8 +930,8 @@ impl GpuDevice {
             padding: 0,
         };
         let resp_len = size_of::<super::VirtioGpuRespCapsetInfo>();
-        let mut queue = self.control_queue.lock();
-        let code = control_cmd(&mut queue, &self.control_buf, &req, resp_len)?;
+        let queue = self.control_queue.lock();
+        let code = control_cmd(&queue, &self.control_buf, &req, resp_len)?;
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET_INFO {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
@@ -880,9 +1004,8 @@ impl GpuDevice {
         let req_slice = Slice::new(capset_buf.clone(), 0..req_len);
         req_slice.write_val(0, &req).unwrap();
 
-        let mut queue = self.control_queue.lock();
-        let (code, used_len) =
-            submit_control_at(&mut queue, &capset_buf, req_len, req_len, resp_len)?;
+        let queue = self.control_queue.lock();
+        let (code, used_len) = submit_control_at(&queue, &capset_buf, req_len, req_len, resp_len)?;
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
@@ -923,9 +1046,9 @@ impl GpuDevice {
             stride,
             layer_stride,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -959,9 +1082,9 @@ impl GpuDevice {
             stride,
             layer_stride,
         };
-        let mut queue = self.control_queue.lock();
+        let queue = self.control_queue.lock();
         let code = control_cmd(
-            &mut queue,
+            &queue,
             &self.control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
@@ -1026,7 +1149,7 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
 /// example `GET_CAPSET` returns the actual capset size, not the maximum),
 /// so the used length is validated against the header size, not `resp_len`.
 fn submit_control(
-    queue: &mut VirtQueue,
+    queue: &ControlOperation<'_>,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_len: usize,
@@ -1040,7 +1163,7 @@ fn submit_control(
 /// command stream so they are not constrained by the fixed small-command
 /// layout in [`GpuDevice::control_buf`].
 fn submit_control_at(
-    queue: &mut VirtQueue,
+    queue: &ControlOperation<'_>,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_offset: usize,
@@ -1050,19 +1173,10 @@ fn submit_control_at(
     req_slice.sync_to_device().unwrap();
 
     let resp_slice = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
-    queue
-        .add_dma_bufs(&[&req_slice], &[&resp_slice])
-        .expect("add control queue buffers");
-    if queue.should_notify() {
-        queue.notify();
-    }
+    queue.add_dma_bufs(&[&req_slice], &[&resp_slice]);
 
-    let used_len = loop {
-        if let Ok((_, len)) = queue.pop_used_with_min_bytes(size_of::<VirtioGpuCtrlHdr>()) {
-            break (len as usize).min(resp_len);
-        }
-        spin_loop();
-    };
+    let (_, used_len) = queue.wait_for_used(size_of::<VirtioGpuCtrlHdr>());
+    let used_len = (used_len as usize).min(resp_len);
 
     resp_slice.sync_from_device().unwrap();
     Ok((resp_slice.read_val::<u32>(0).unwrap(), used_len))
@@ -1070,7 +1184,7 @@ fn submit_control_at(
 
 /// Sends a fixed-size control request and waits for its response.
 fn control_cmd<T: ostd_pod::Pod>(
-    queue: &mut VirtQueue,
+    queue: &ControlOperation<'_>,
     buf: &Arc<DmaStream>,
     req: &T,
     resp_len: usize,
@@ -1123,9 +1237,15 @@ fn cursor_queue_size(device_max: u16) -> Option<u16> {
     Some(size)
 }
 
+/// Chooses a power-of-two control queue with room for request and response.
+fn control_queue_size(device_max: u16) -> Option<u16> {
+    let size = cursor_queue_size(device_max)?;
+    (size >= 2).then_some(size)
+}
+
 /// Queries the display info and returns scanout 0's dimensions.
 fn query_display_info(
-    queue: &mut VirtQueue,
+    queue: &ControlOperation<'_>,
     buf: &Arc<DmaStream>,
     num_scanouts: u32,
 ) -> Result<(u32, u32), VirtioDeviceError> {
@@ -1182,6 +1302,15 @@ mod tests {
         assert_eq!(cursor_queue_size(63), Some(32));
         assert_eq!(cursor_queue_size(64), Some(64));
         assert_eq!(cursor_queue_size(256), Some(64));
+    }
+
+    #[ktest]
+    fn control_queue_requires_request_and_response_descriptors() {
+        assert_eq!(control_queue_size(0), None);
+        assert_eq!(control_queue_size(1), None);
+        assert_eq!(control_queue_size(2), Some(2));
+        assert_eq!(control_queue_size(63), Some(32));
+        assert_eq!(control_queue_size(256), Some(64));
     }
 
     #[ktest]

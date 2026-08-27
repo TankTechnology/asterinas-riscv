@@ -375,3 +375,37 @@ by the M19 runtime and work with this DRM implementation. The official Debian
 desktop m3/m4 boot configuration still selects `xserver-xorg-video-fbdev` with
 `bochs-display`, so Debian userspace is supported but that distribution's
 default desktop integration has not yet switched to DRM.
+
+## 2026-08-27 IRQ-driven virtio-gpu control completion
+
+Runtime virtio-gpu control requests no longer busy-poll the used ring. The
+control queue now keeps its virtqueue behind an IRQ-safe spinlock; the queue
+callback removes the completed used entry, records it without allocating, and
+wakes the submitting task through a `WaitQueue`. A sleeping mutex still
+serializes commands and protects the shared small-command DMA buffer, so this
+is a bounded one-request-at-a-time prerequisite rather than asynchronous fence
+submission yet.
+
+Early display discovery and the boot test pattern continue to poll because the
+task scheduler is not available throughout that initialization window. The
+polling-to-IRQ transition takes the same operation mutex as submissions, which
+prevents an IRQ from consuming the response of a request that already chose
+the polling path. Device notification uses a separately cloned virtqueue
+notifier, allowing its MMIO write to happen after the IRQ-disabled queue lock
+is released. Control queues with fewer than the two descriptors required for a
+request/response chain are rejected during initialization.
+
+The RISC-V kernel build passed. The U-Boot mini-root harness repeatedly stalled
+before the first Asterinas log after the host reboot, so the same mini virgl
+initramfs was run through OSDK direct boot with `virtio-gpu-gl-device`. That
+real guest passed PRIME lifetime checks and all raw virgl gates. In particular,
+GET_CAPS versions 0, 1, and 2 all completed (the earlier wake-only experiment
+hung before version 2), followed by resource creation, transfers, fenced and
+unfenced execution, blocking `WAIT`, pixel round-trip, rendered-pixel, and
+double-buffer checks. The final markers were `M20_PRIME_PASS`,
+`M16_VIRGL_RAW_PASS`, and `MINI_RAW_RC=0`.
+
+The next synchronization slice is to allow multiple in-flight control
+requests, associate their descriptor tokens with persistent fence state, and
+implement nonblocking `VIRTGPU_WAIT_NOWAIT`. This commit does not change the
+current synchronous EXECBUFFER/fence ABI by itself.
