@@ -31,11 +31,12 @@ use super::{
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
     VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
     VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
-    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
-    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne,
-    VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d,
-    VirtioGpuResourceFlush, VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d,
-    VirtioGpuUpdateCursor,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
+    VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+    VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos,
+    VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBacking,
+    VirtioGpuResourceCreate2d, VirtioGpuResourceFlush, VirtioGpuResourceUnref, VirtioGpuSetScanout,
+    VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
     control_queue::{ControlQueue, ControlTicket},
 };
@@ -762,7 +763,7 @@ impl GpuDevice {
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)?;
+        check_ok_or_absent(code, VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID)?;
         let owner = self.backing_owners.lock().remove(&resource_id);
         drop(owner);
         Ok(())
@@ -785,36 +786,25 @@ impl GpuDevice {
         }
     }
 
-    /// 3D: create a 3D resource (texture, render target, or buffer).
-    #[expect(clippy::too_many_arguments)]
+    /// Creates a host-side 3D resource.
     pub fn resource_create_3d(
         &self,
-        resource_id: u32,
-        target: u32,
-        format: u32,
-        bind: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-        array_size: u32,
-        last_level: u32,
-        nr_samples: u32,
-        flags: u32,
+        params: super::Resource3dCreateParams,
     ) -> Result<(), VirtioDeviceError> {
         use super::VirtioGpuResourceCreate3d;
         let req = VirtioGpuResourceCreate3d {
             hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
-            resource_id,
-            target,
-            format,
-            bind,
-            width,
-            height,
-            depth,
-            array_size,
-            last_level,
-            nr_samples,
-            flags,
+            resource_id: params.resource_id,
+            target: params.target,
+            format: params.format,
+            bind: params.bind,
+            width: params.width,
+            height: params.height,
+            depth: params.depth,
+            array_size: params.array_size,
+            last_level: params.last_level,
+            nr_samples: params.nr_samples,
+            flags: params.flags,
             padding: 0,
         };
         let control_buf = self.control_buf.lock();
@@ -828,11 +818,11 @@ impl GpuDevice {
             Err(error) => {
                 ostd::warn!(
                     "virtio-gpu 3D resource {} create completion is ambiguous: {:?}",
-                    resource_id,
+                    params.resource_id,
                     error
                 );
                 drop(control_buf);
-                self.defer_resource_unref(resource_id);
+                self.defer_resource_unref(params.resource_id);
                 return Err(VirtioDeviceError::AmbiguousCompletion);
             }
         };
@@ -885,7 +875,7 @@ impl GpuDevice {
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        check_ok_or_absent(code, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID)
     }
 
     /// 3D: attach a resource to the virgl context.
@@ -1215,6 +1205,18 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     }
 }
 
+/// Accepts a successful cleanup or a device-confirmed already-absent object.
+///
+/// A cleanup request may have reached the device even when its completion was
+/// not observable. Retrying then returns an invalid-object response, which is
+/// equivalent to successful cleanup for an internally tracked object.
+fn check_ok_or_absent(code: u32, absent_code: u32) -> Result<(), VirtioDeviceError> {
+    if code == absent_code {
+        return Ok(());
+    }
+    check_ok(code)
+}
+
 fn build_submit_3d(
     ctx_id: u32,
     size: u32,
@@ -1467,6 +1469,31 @@ mod tests {
     fn state_changing_commands_require_nodata_response() {
         assert!(check_ok(VIRTIO_GPU_RESP_OK_NODATA).is_ok());
         assert!(check_ok(VIRTIO_GPU_RESP_OK_DISPLAY_INFO).is_err());
+    }
+
+    #[ktest]
+    fn drm_validation_cleanup_accepts_objects_that_are_already_absent() {
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID
+            )
+            .is_ok()
+        );
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
+                VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID
+            )
+            .is_ok()
+        );
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID
+            )
+            .is_err()
+        );
     }
 
     #[ktest]

@@ -18,6 +18,8 @@ EVIDENCE = WORKDIR / "evidence"
 BOOT_DISK = WORKDIR / "boot.ext4"
 U_BOOT = WORKDIR / "u-boot"
 BOOTARGS = "console=ttyS0 loglevel=info init=/init"
+SMP = os.environ.get("M22_SMP", "4")
+KERNEL_TIMEOUT = int(os.environ.get("M22_KERNEL_TIMEOUT", "300"))
 
 COMMANDS = [
     (b"virtio scan", b"=>", 30),
@@ -39,7 +41,7 @@ def run() -> bytes:
         "-machine", "virt",
         "-cpu", "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
         "-m", "1G",
-        "-smp", "4",
+        "-smp", SMP,
         "-display", "egl-headless,gl=on",
         "-monitor", "none",
         "-serial", "stdio",
@@ -107,7 +109,7 @@ def run() -> bytes:
                     boot_ready = False
 
             if boot_ready:
-                deadline = time.time() + 300
+                deadline = time.time() + KERNEL_TIMEOUT
                 while time.time() < deadline:
                     readable, _, _ = select.select([master_fd], [], [], 0.5)
                     if not readable:

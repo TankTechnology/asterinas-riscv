@@ -27,6 +27,9 @@
 #define DRM_IOCTL_MODE_MAP_DUMB DRM_IOWR(0xb3, struct drm_mode_map_dumb)
 #define DRM_IOCTL_VIRTGPU_EXECBUFFER DRM_IOWR(0x42, struct drm_virtgpu_execbuffer)
 #define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE DRM_IOWR(0x44, struct drm_virtgpu_resource_create)
+#define DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST \
+    DRM_IOWR(0x46, struct drm_virtgpu_3d_transfer)
+#define DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST DRM_IOWR(0x47, struct drm_virtgpu_3d_transfer)
 #define DRM_IOCTL_VIRTGPU_WAIT DRM_IOWR(0x48, struct drm_virtgpu_3d_wait)
 
 #define DRM_CLOEXEC O_CLOEXEC
@@ -91,6 +94,20 @@ struct drm_virtgpu_execbuffer {
     uint32_t num_out_syncobjs;
     uint64_t in_syncobjs;
     uint64_t out_syncobjs;
+};
+
+struct drm_virtgpu_3d_box {
+    uint32_t x, y, z;
+    uint32_t w, h, d;
+};
+
+struct drm_virtgpu_3d_transfer {
+    uint32_t bo_handle;
+    struct drm_virtgpu_3d_box box;
+    uint32_t level;
+    uint32_t offset;
+    uint32_t stride;
+    uint32_t layer_stride;
 };
 
 struct drm_virtgpu_3d_wait {
@@ -377,6 +394,111 @@ static int run_pool_reuse_cycles(void)
     return 0;
 }
 
+static int run_resource_boundary_tests(int control_fd,
+                                       const struct resource_snapshot *baseline)
+{
+    int result = -1;
+    int worker_fd = open("/dev/dri/renderD128", O_RDWR);
+    struct drm_mode_create_dumb dumb = {
+        .width = 64,
+        .height = 64,
+        .bpp = 32,
+    };
+    if (worker_fd < 0 || ioctl(worker_fd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb) < 0)
+        goto out;
+
+    struct drm_virtgpu_resource_create invalid = {
+        .target = 9,
+        .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = 64,
+        .height = 64,
+        .depth = 1,
+        .array_size = 1,
+        .bo_handle = dumb.handle,
+    };
+    errno = 0;
+    int create_result = ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &invalid);
+    CHECK(create_result < 0 && errno == EINVAL,
+          "RESOURCE_CREATE rejects an unknown Gallium target");
+    if (create_result == 0)
+        goto out;
+
+    invalid.target = PIPE_TEXTURE_2D;
+    invalid.width = 0;
+    errno = 0;
+    create_result = ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &invalid);
+    CHECK(create_result < 0 && errno == EINVAL,
+          "RESOURCE_CREATE rejects zero resource dimensions");
+    if (create_result == 0)
+        goto out;
+
+    struct drm_virtgpu_resource_create valid = {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = 64,
+        .height = 64,
+        .depth = 1,
+        .array_size = 1,
+        .last_level = 1,
+        .bo_handle = dumb.handle,
+    };
+    if (ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &valid) < 0)
+        goto out;
+
+    struct drm_virtgpu_3d_transfer transfer = {
+        .bo_handle = dumb.handle,
+        .box = { .w = 64, .h = 64, .d = 1 },
+    };
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &transfer) == 0,
+          "TRANSFER_TO_HOST accepts the full level-zero texture");
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) == 0,
+          "TRANSFER_FROM_HOST accepts the full level-zero texture");
+
+    transfer.box.x = 63;
+    transfer.box.w = 2;
+    transfer.box.h = 1;
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) < 0 &&
+              errno == EINVAL,
+          "TRANSFER_FROM_HOST rejects a box outside resource geometry");
+
+    transfer.box.x = 0;
+    transfer.box.w = 64;
+    transfer.box.h = 64;
+    transfer.offset = 1;
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) < 0 &&
+              errno == EINVAL,
+          "TRANSFER_FROM_HOST rejects a write beyond GEM backing");
+
+    transfer.offset = 0;
+    transfer.level = 2;
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &transfer) < 0 &&
+              errno == EINVAL,
+          "TRANSFER_TO_HOST rejects a missing mip level");
+
+    result = 0;
+
+out:
+    if (dumb.handle != 0 && worker_fd >= 0)
+        close_gem(worker_fd, dumb.handle);
+    if (worker_fd >= 0)
+        close(worker_fd);
+    if (result == 0) {
+        struct resource_snapshot released;
+        if (read_snapshot(control_fd, &released) < 0 ||
+            !reclaimable_counters_equal(baseline, &released)) {
+            result = -1;
+        }
+    }
+    return result;
+}
+
 static int run_round(int control_fd, const struct resource_snapshot *baseline, int round,
                      uint64_t *mapped_offset)
 {
@@ -577,6 +699,8 @@ int main(void)
           "PRIME mmap pins its GEM span after dma-buf close");
     CHECK(run_pool_reuse_cycles() == 0,
           "pool survives %d cycles exceeding old cumulative capacity", REUSE_CYCLES);
+    CHECK(run_resource_boundary_tests(control_fd, &baseline) == 0,
+          "rejected resource requests leave all counters at baseline");
 
     uint64_t expected_map_offset = UINT64_MAX;
     for (int round = 0; round < STRESS_ROUNDS; round++) {

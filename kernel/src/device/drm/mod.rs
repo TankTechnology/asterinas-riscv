@@ -26,6 +26,7 @@ mod plane;
 mod prime;
 mod property;
 mod resource_tracking;
+mod virgl_resource;
 mod virtio_gpu;
 
 use core::{
@@ -562,6 +563,16 @@ impl GpuManager {
             .and_then(|state| state.live_resource_id())
     }
 
+    fn live_gem_resource_metadata(
+        &self,
+        object_id: u32,
+    ) -> Option<virgl_resource::LiveGemResource> {
+        self.gem_resources
+            .lock()
+            .get(&object_id)
+            .and_then(|state| state.live_resource())
+    }
+
     fn insert_gem_resource(&self, object_id: u32, state: GemResourceState) {
         let previous = self.gem_resources.lock().insert(object_id, state);
         debug_assert!(previous.is_none());
@@ -697,20 +708,28 @@ struct GemObject {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GemResourceState {
-    Live(u32),
+    Live(virgl_resource::LiveGemResource),
     CleanupOnly(u32),
 }
 
 impl GemResourceState {
     fn resource_id(self) -> u32 {
         match self {
-            Self::Live(resource_id) | Self::CleanupOnly(resource_id) => resource_id,
+            Self::Live(resource) => resource.create.resource_id,
+            Self::CleanupOnly(resource_id) => resource_id,
         }
     }
 
     fn live_resource_id(self) -> Option<u32> {
         match self {
-            Self::Live(resource_id) => Some(resource_id),
+            Self::Live(resource) => Some(resource.create.resource_id),
+            Self::CleanupOnly(_) => None,
+        }
+    }
+
+    fn live_resource(self) -> Option<virgl_resource::LiveGemResource> {
+        match self {
+            Self::Live(resource) => Some(resource),
             Self::CleanupOnly(_) => None,
         }
     }

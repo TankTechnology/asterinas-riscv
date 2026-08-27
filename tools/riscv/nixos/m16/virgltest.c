@@ -148,7 +148,8 @@ static int failures;
 
 #define CHECK(cond, ...) do { \
     if (cond) { printf("M16_VIRGL_PASS " __VA_ARGS__); printf("\n"); } \
-    else { printf("M16_VIRGL_FAIL " __VA_ARGS__); printf("\n"); failures++; } \
+    else { int saved_errno = errno; printf("M16_VIRGL_FAIL " __VA_ARGS__); \
+        printf(" errno=%d\n", saved_errno); failures++; } \
 } while (0)
 
 #define TEX_W 64

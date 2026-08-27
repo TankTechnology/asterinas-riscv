@@ -94,6 +94,22 @@ pub const MAX_SCANOUTS: usize = 16;
 /// rendering).
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 
+/// Named parameters for one `RESOURCE_CREATE_3D` request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Resource3dCreateParams {
+    pub resource_id: u32,
+    pub target: u32,
+    pub format: u32,
+    pub bind: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub array_size: u32,
+    pub last_level: u32,
+    pub nr_samples: u32,
+    pub flags: u32,
+}
+
 /// Receives notification when an asynchronous GPU command leaves the device.
 ///
 /// Implementations must be safe to call from interrupt context and should

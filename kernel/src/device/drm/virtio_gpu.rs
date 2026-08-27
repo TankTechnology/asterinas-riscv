@@ -6,10 +6,13 @@
 //! These are the kernel-side entry points for Mesa's virgl driver. They
 //! translate DRM ioctl structs into virtio-gpu control queue commands.
 
+use aster_virtio::device::gpu::Resource3dCreateParams;
+
 use super::{
     DumbBuffer, GemResourceState,
     dumb::{PendingDumbBuffer, allocate_pool_span},
     gem::{GemObjectRef, PendingGemHandle},
+    virgl_resource::{LiveGemResource, Transfer3d},
 };
 use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
 
@@ -115,6 +118,21 @@ pub(super) struct DrmVirtgpu3dBox {
     pub w: u32,
     pub h: u32,
     pub d: u32,
+}
+
+impl DrmVirtgpu3dBox {
+    fn transfer(self, level: u32, offset: u32) -> Transfer3d {
+        Transfer3d {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            width: self.w,
+            height: self.h,
+            depth: self.d,
+            level,
+            offset,
+        }
+    }
 }
 
 /// `struct drm_virtgpu_3d_transfer_to_host`.
@@ -224,12 +242,28 @@ pub(super) fn virtgpu_resource_create(
 ) -> Result<i32> {
     let mut req = cmd.read()?;
 
+    let mut create = Resource3dCreateParams {
+        resource_id: 0,
+        target: req.target,
+        format: req.format,
+        bind: req.bind,
+        width: req.width,
+        height: req.height,
+        depth: req.depth,
+        array_size: req.array_size,
+        last_level: req.last_level,
+        nr_samples: req.nr_samples,
+        flags: req.flags,
+    };
+    super::virgl_resource::validate_create(&create)?;
+
     // Allocate a new virtio-gpu resource id
     let res_handle = handle
         .gpu_manager
         .gpu
         .allocate_resource_id()
         .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu resource ids exhausted"))?;
+    create.resource_id = res_handle;
 
     // If a GEM buffer handle is provided, look up the backing memory.
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM
@@ -321,19 +355,7 @@ pub(super) fn virtgpu_resource_create(
         handle
             .gpu_manager
             .gpu
-            .resource_create_3d(
-                res_handle,
-                req.target,
-                req.format,
-                req.bind,
-                req.width,
-                req.height,
-                req.depth,
-                req.array_size,
-                req.last_level,
-                req.nr_samples,
-                req.flags,
-            )
+            .resource_create_3d(create)
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
         resource_created = true;
 
@@ -397,9 +419,13 @@ pub(super) fn virtgpu_resource_create(
         return Err(error);
     }
     if let Some(object_id) = backing_object_id {
-        handle
-            .gpu_manager
-            .insert_gem_resource(object_id, GemResourceState::Live(res_handle));
+        handle.gpu_manager.insert_gem_resource(
+            object_id,
+            GemResourceState::Live(LiveGemResource {
+                create,
+                backing_size: req.size,
+            }),
+        );
     }
     drop(resource_creation);
     handle
@@ -675,10 +701,12 @@ pub(super) fn virtgpu_transfer_to_host(
             .get(&req.bo_handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
-    let resource_id = handle
+    let resource = handle
         .gpu_manager
-        .live_gem_resource(object_id)
+        .live_gem_resource_metadata(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    resource.validate_transfer(req.box_.transfer(req.level, req.offset))?;
+    let resource_id = resource.create.resource_id;
     let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
     handle
@@ -726,10 +754,12 @@ pub(super) fn virtgpu_transfer_from_host(
             .get(&req.bo_handle)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
-    let resource_id = handle
+    let resource = handle
         .gpu_manager
-        .live_gem_resource(object_id)
+        .live_gem_resource_metadata(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    resource.validate_transfer(req.box_.transfer(req.level, req.offset))?;
+    let resource_id = resource.create.resource_id;
     let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
     handle
