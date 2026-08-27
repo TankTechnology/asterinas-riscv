@@ -283,7 +283,7 @@ git diff --check
 - [ ] **Step 2: Run the actual fast gate once**
 
 ```bash
-python3 tools/riscv/megrez_debug.py simulate \
+PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug simulate \
   target/megrez-debug/plan.json --tier fast \
   --output-directory target/qemu-uboot/megrez-debug/fast \
   --uboot-build-directory target/qemu-uboot/megrez-debug/uboot
@@ -294,7 +294,7 @@ Require real argv/log evidence for Sv39 and four harts, ordered Asterinas/guest 
 - [ ] **Step 3: Run one board attempt only when U-Boot is available**
 
 ```bash
-python3 tools/riscv/megrez_debug.py board \
+PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
   target/megrez-debug/plan.json /dev/ttyUSB0 \
   --simulation-result target/qemu-uboot/megrez-debug/fast/result.json \
   --output-directory target/megrez-debug/board --timeout 300
