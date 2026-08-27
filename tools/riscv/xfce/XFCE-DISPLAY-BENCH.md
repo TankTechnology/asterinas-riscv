@@ -124,8 +124,11 @@ The explicit `--base` avoids the launcher's historical sibling-worktree default 
 
 The DRM implementation already supports Debian user space.
 The M19 runtime used by the DRM, virgl, and Xfce gates consists of Debian Trixie riscv64 binaries.
-Debian's Xorg modesetting driver opens Asterinas `/dev/dri/card0`, and Debian Mesa's virgl driver has completed the EGL/render gate.
-The controlled DRM Xfce run above is another full-system Debian-runtime confirmation.
+Debian's Xorg modesetting driver opens Asterinas `/dev/dri/card0`, and the M19
+raw-EGL gate exercises Debian Mesa's virgl driver.
+The software-DRM comparison above confirms the Xorg/Xfce integration but does
+not itself prove application-side GPU rendering. That direct GLX/DRI3 gate is
+recorded separately in [`XFCE-DRM-M2-report.md`](XFCE-DRM-M2-report.md).
 
 The official Asterinas Debian desktop pipeline has not adopted DRM yet.
 Its `desktop-m3` and `desktop-m4` profiles explicitly install `xserver-xorg-video-fbdev`.

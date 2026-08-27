@@ -529,3 +529,26 @@ cleanup for directly presented scanout/cursor resources, and finish generic
 virtqueue I/O migration away from logging/error paths under spinlocks. After
 that, the DRM stack can be rebased onto the latest main branch and split into
 upstream-sized commits.
+
+## 2026-08-27 Xfce DRI3 direct rendering
+
+The Xfce acceptance path now distinguishes Xorg's server-side glamor renderer
+from the renderer selected by an ordinary GLX application. Before this slice,
+Xorg used virgl but the application reported `llvmpipe`, so the desktop had
+only partial acceleration.
+
+Two missing Linux interfaces blocked DRI3 clients. The DRM sysfs minor nodes
+did not provide the top-level `uevent`/`DEVNAME` consumed by libdrm's
+`drmGetDeviceNameFromFd2`, and the primary node did not implement the
+`GET_MAGIC`/`AUTH_MAGIC` authentication handshake used when Xorg reopens and
+authorizes a client fd. Both interfaces are now present. Authentication state
+also gates `GEM_FLINK` and `GEM_OPEN`, and master reuse is restricted to the
+owning process or a caller with `CAP_SYS_ADMIN`.
+
+The completed guest reports `Using DRI3 for screen 0`,
+`XFCE_GL_DIRECT yes`, `XFCE_GL_RENDERER virgl`, a checked output pixel,
+`XFCE_GL_BENCH_PASS`, and `XFCE_DRM_PASS`. The 30-frame shader sample improved
+from 0.609 FPS on llvmpipe to 5.369 FPS on virgl in one TCG comparison. The
+full diagnosis, control-queue regression bisect, test method, and remaining
+virgl command-stream warning are recorded in
+[`../xfce/XFCE-DRM-M2-report.md`](../xfce/XFCE-DRM-M2-report.md).
