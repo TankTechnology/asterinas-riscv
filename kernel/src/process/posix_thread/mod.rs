@@ -10,22 +10,22 @@ use ostd::{
 use spin::Once;
 
 use super::{
-    Credentials, Process,
     signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
+    Credentials, Process,
 };
 use crate::{
     events::IoEvents,
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
-        ExitCode, Pid,
         namespace::nsproxy::NsProxy,
         posix_thread::ptrace::TraceeStatus,
-        signal::{PauseReason, PollHandle, sig_mask::SigMask},
+        signal::{sig_mask::SigMask, PauseReason, PollHandle},
+        ExitCode, Pid,
     },
     syscall::SockFilter,
     thread::{Thread, Tid},
-    time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
+    time::{clocks::ProfClock, timer::TimerGuard, Timer, TimerManager},
 };
 
 pub mod alien_access;
@@ -44,7 +44,7 @@ mod thread_local;
 pub use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
-pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
+pub use name::{ThreadName, MAX_THREAD_NAME_LEN};
 pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
@@ -320,6 +320,14 @@ impl PosixThread {
     /// Gets the duplicatable read-only credentials of the thread.
     pub fn credentials_dup(&self) -> Credentials<ReadDupOp> {
         self.credentials.dup().restrict()
+    }
+
+    /// Irreversibly enables `no_new_privs` for this thread.
+    ///
+    /// This narrow internal API is used by seccomp TSYNC, which must propagate
+    /// the caller's `no_new_privs` bit to every synchronized sibling.
+    pub(crate) fn set_no_new_privs(&self) {
+        self.credentials.set_no_new_privs();
     }
 
     /// Returns the I/O priority value of the thread.
