@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 from pathlib import Path
 import socket
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -330,6 +333,45 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
              mock.patch.object(gate.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]):
             with self.assertRaisesRegex(gate.GateError, "loopback-only"):
                 gate.validate_network_namespace(123)
+
+    def test_network_observer_accepts_offline_initial_namespace_without_eth0(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        observer = repository / "tools/riscv/debian/rootfs/browser_m5_network_observer.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proc = root / "proc"
+            fake_bin = root / "bin"
+            console = root / "console"
+            (proc / "self/ns").mkdir(parents=True)
+            (proc / "42/ns").mkdir(parents=True)
+            fake_bin.mkdir()
+            (proc / "initial-netns").touch()
+            (proc / "browser-netns").touch()
+            (proc / "self/ns/net").symlink_to(proc / "initial-netns")
+            (proc / "42/ns/net").symlink_to(proc / "browser-netns")
+            (proc / "42/comm").write_text("firefox-esr\n")
+            systemctl = fake_bin / "systemctl"
+            systemctl.write_text("#!/bin/sh\nprintf '42\\n'\n")
+            systemctl.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/bash", str(observer)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "0",
+                    "ASTERINAS_BROWSER_M5_PROC_ROOT": str(proc),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                console.read_text(),
+                "DEBIAN_BROWSER_M5_NETNS firefox=private initial=distinct\n",
+            )
 
     def test_profile_guarantees_small_stdlib_client_runtime(self) -> None:
         profile = get_profile("browser-m5")
