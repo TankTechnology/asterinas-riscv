@@ -13,6 +13,7 @@ readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
 readonly NETSURF_LOG="${ASTERINAS_BROWSER_M7_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
 readonly HOME_URL='https://www.baidu.com/'
 readonly SEARCH_QUERY='asterinas-riscv'
+readonly SEARCH_URL="https://www.baidu.com/s?wd=$SEARCH_QUERY"
 readonly USER_ID=1000
 export DISPLAY=:0
 export XAUTHORITY=/home/asterinas/.Xauthority
@@ -32,28 +33,64 @@ fail() {
 [[ "$FOCUS_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-focus-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
 
-window_output="$(
-    timeout "$COMMAND_TIMEOUT_SECONDS" \
-        xdotool search --onlyvisible --class netsurf
-)" || fail window-search
-((${#window_output} <= 4096)) || fail window-search-output-too-long
-mapfile -t windows <<<"$window_output"
-((${#windows[@]} == 1)) || fail ambiguous-window
-readonly window_id="${windows[0]}"
-[[ "$window_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
+window_id=""
+process_id=""
 
-process_output="$(
-    timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
-)" || fail process-search
-((${#process_output} <= 128)) || fail process-search-output-too-long
-mapfile -t processes <<<"$process_output"
-((${#processes[@]} == 1)) || fail ambiguous-process
-readonly process_id="${processes[0]}"
-[[ "$process_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
-readonly command_line_path="$PROC_ROOT/$process_id/cmdline"
-[[ -f "$command_line_path" && ! -L "$command_line_path" ]] || fail process-cmdline
-tr '\0' '\n' <"$command_line_path" | grep -Fxq /usr/bin/netsurf-gtk ||
-    fail process-command
+find_single_window() {
+    local window_output
+    local -a windows=()
+    window_output="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" \
+            xdotool search --onlyvisible --class netsurf
+    )" || return 1
+    ((${#window_output} <= 4096)) || fail window-search-output-too-long
+    mapfile -t windows <<<"$window_output"
+    ((${#windows[@]} == 1)) || return 1
+    [[ "${windows[0]}" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
+    window_id="${windows[0]}"
+}
+
+find_single_process() {
+    local process_output
+    local command_line_path
+    local -a processes=()
+    process_output="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
+    )" || return 1
+    ((${#process_output} <= 128)) || fail process-search-output-too-long
+    mapfile -t processes <<<"$process_output"
+    ((${#processes[@]} == 1)) || return 1
+    [[ "${processes[0]}" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
+    process_id="${processes[0]}"
+    command_line_path="$PROC_ROOT/$process_id/cmdline"
+    [[ -f "$command_line_path" && ! -L "$command_line_path" ]] ||
+        fail process-cmdline
+    tr '\0' '\n' <"$command_line_path" | grep -Fxq /usr/bin/netsurf-gtk ||
+        fail process-command
+}
+
+wait_for_browser_exit() {
+    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    while timeout "$COMMAND_TIMEOUT_SECONDS" \
+        pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null 2>&1; do
+        ((SECONDS < deadline)) || fail browser-exit-timeout
+        sleep "$POLL_DELAY_SECONDS"
+    done
+}
+
+wait_for_browser_start() {
+    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    while true; do
+        if find_single_process && find_single_window; then
+            return
+        fi
+        ((SECONDS < deadline)) || fail browser-start-timeout
+        sleep "$POLL_DELAY_SECONDS"
+    done
+}
+
+find_single_process || fail process-search
+find_single_window || fail window-search
 
 window_title() {
     local candidate
@@ -128,27 +165,34 @@ wait_for_search_title() {
 }
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool windowactivate --sync "$window_id" || fail old-window-activate
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+q || fail old-browser-quit
+wait_for_browser_exit
+[[ ! -L "$NETSURF_LOG" ]] || fail unsafe-netsurf-log
+: >"$NETSURF_LOG"
+chmod 0600 "$NETSURF_LOG"
+runuser -u asterinas -- /usr/bin/env \
+    DISPLAY=:0 \
+    XAUTHORITY=/home/asterinas/.Xauthority \
+    HOME=/home/asterinas \
+    /usr/bin/netsurf-gtk -v --enable_javascript=0 "$HOME_URL" \
+    >>"$NETSURF_LOG" 2>&1 &
+wait_for_browser_start
+timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowactivate --sync "$window_id" || fail window-activate
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowfocus --sync "$window_id" || fail window-focus
 sleep "$FOCUS_DELAY_SECONDS"
-timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --sync 500 42 || fail home-focus
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail home-click
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail home-select
-timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool type --delay 0 -- "$HOME_URL" || fail home-type
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail home-submit
 wait_for_home_title
 emit "DEBIAN_BROWSER_M7_HOME url=https://www.baidu.com/ title=baidu process=netsurf"
 sleep "$CAPTURE_DELAY_SECONDS"
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --sync 560 310 || fail search-focus
+    xdotool mousemove --sync 500 42 || fail search-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail search-click
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool type --delay 40 -- "$SEARCH_QUERY" || fail search-type
+    xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail search-submit
 wait_for_search_title
 emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas-riscv result=loaded"
