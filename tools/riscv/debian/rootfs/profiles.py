@@ -186,7 +186,6 @@ _PROFILES = {
             "netsurf-gtk",
             "pcmanfm",
             "curl",
-            "fonts-wqy-microhei",
             "iproute2",
             "iputils-ping",
             "xdotool",
