@@ -23,7 +23,6 @@ Add a distinct physical tuple while retaining the current public alias:
 ```python
 DESKTOP_M5_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_GUEST_PING peer=10.100.19.216 count=10",
     "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
@@ -42,7 +41,7 @@ python3 -W error::ResourceWarning -m unittest \
 ```
 
 Expected: the classifier contract fails because the exported physical tuple
-still contains only link, ping, and READY. The shell lifecycle remains frozen
+still contains only link and READY. The shell lifecycle remains frozen
 at that legacy output until Task 2.
 
 - [ ] **Step 3: Implement only the marker/classifier contract**
@@ -157,8 +156,8 @@ DEBIAN_BROWSER_M6_READY remote=baidu javascript=failed
 ```
 
 Test split reads, missing/duplicate/reordered physical markers, duplicate or
-mismatched M6 status, `DEBIAN_BROWSER_M6_FAIL`, a fatal marker received during
-the final drain, and the existing ten-packet host ping lifecycle.
+mismatched M6 status, `DEBIAN_BROWSER_M6_FAIL`, and a fatal marker received
+during the final drain. Do not use ICMP as a proxy for browser traffic.
 
 - [ ] **Step 2: Run RED**
 
@@ -176,8 +175,7 @@ Import `DESKTOP_M5_MEGREZ_MILESTONES` and the M6 allowed JavaScript statuses.
 Wait for the M6 READY prefix, drain the remaining serial output, then classify
 the complete transcript. Add `DEBIAN_BROWSER_M6_FAIL` to fatal markers. Record
 the accepted JavaScript status in `result.json`; keep the address-conflict
-precheck, serial cleanup, host ping, no-`saveenv` policy, and static bootarg
-unchanged.
+precheck, serial cleanup, no-`saveenv` policy, and static bootarg unchanged.
 
 - [ ] **Step 4: Run GREEN and commit**
 
@@ -412,8 +410,9 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
 ```
 
 Expected: selected GMAC, physical M5 DNS/HTTPS/asset READY, M4 READY, M6
-remote and READY, ten guest pings, ten host pings, `passed: true`, and no
-panic/oops/DMA/M5/M6 failure in the fully drained transcript.
+remote and READY, `passed: true`, and no panic/oops/DMA/M5/M6 failure in the
+fully drained transcript. UDP DNS and TCP/TLS are the network proof; ICMP is
+outside this browser-ready contract.
 
 - [ ] **Step 5: Leave one persistent desktop and record evidence**
 
