@@ -252,7 +252,8 @@ int main(void) {
         .box = { .x = 0, .y = 0, .z = 0, .w = TEX_W, .h = TEX_H, .d = 1 },
         .level = 0,
         .offset = 0,
-        .stride = cd.pitch,
+        /* Classic (non-blob) virtio-gpu resources require zero strides. */
+        .stride = 0,
         .layer_stride = 0,
     };
     CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &up) == 0, "TRANSFER_TO_HOST");
@@ -409,7 +410,6 @@ int main(void) {
             int use_b = round & 1;
             uint32_t *buf = use_b ? pixels_b : pixels;
             uint32_t bo = use_b ? cd2.handle : cd.handle;
-            uint32_t pitch = use_b ? cd2.pitch : cd.pitch;
             uint32_t tag = 0xd0000000u | ((uint32_t)round << 16);
 
             /* Upload a round-unique pattern. */
@@ -417,7 +417,7 @@ int main(void) {
             struct drm_virtgpu_3d_transfer x = {
                 .bo_handle = bo,
                 .box = { .x = 0, .y = 0, .z = 0, .w = TEX_W, .h = TEX_H, .d = 1 },
-                .level = 0, .offset = 0, .stride = pitch, .layer_stride = 0,
+                .level = 0, .offset = 0, .stride = 0, .layer_stride = 0,
             };
             CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &x) == 0,
                   "DB round %d TRANSFER_TO_HOST", round);

@@ -724,6 +724,10 @@ struct DriHandle {
 struct VirglContext {
     id: u32,
     is_created: bool,
+    /// Set after an ambiguous host-side context operation.
+    is_poisoned: bool,
+    /// Host resources currently visible to this virgl context.
+    attached_resources: BTreeSet<u32>,
 }
 
 #[derive(Debug)]
@@ -732,6 +736,8 @@ struct DriInner {
     auth_magic: Option<u32>,
     /// Per-file handle → GEM object_id.
     handles: BTreeMap<u32, u32>,
+    /// Published and reserved per-file handles for each GEM object.
+    object_handle_counts: BTreeMap<u32, usize>,
     next_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
     next_fb_id: u32,
@@ -767,6 +773,8 @@ impl DriHandle {
             context: Mutex::new(VirglContext {
                 id: context_id,
                 is_created: false,
+                is_poisoned: false,
+                attached_resources: BTreeSet::new(),
             }),
             cursor_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
@@ -774,6 +782,7 @@ impl DriHandle {
             inner: SpinLock::new(DriInner {
                 auth_magic: None,
                 handles: BTreeMap::new(),
+                object_handle_counts: BTreeMap::new(),
                 next_handle: 1,
                 framebuffers: BTreeMap::new(),
                 next_fb_id: 1,
@@ -900,9 +909,10 @@ impl DriHandle {
         Ok(())
     }
 
-    /// Creates the per-file legacy virgl context on first 3D use.
-    fn ensure_virgl_context(&self) -> Result<u32> {
-        let mut context = self.context.lock();
+    fn ensure_virgl_context_locked(&self, context: &mut VirglContext) -> Result<u32> {
+        if context.is_poisoned {
+            return_errno_with_message!(Errno::EIO, "virgl context is no longer usable");
+        }
         if !context.is_created {
             // `VIRTIO_GPU_F_CONTEXT_INIT` is not negotiated, so the legacy
             // context-create payload must leave `context_init` at zero.
@@ -913,6 +923,159 @@ impl DriHandle {
             context.is_created = true;
         }
         Ok(context.id)
+    }
+
+    /// Prevents further submissions after a host command leaves context
+    /// membership ambiguous. Context destruction is best-effort; poisoning is
+    /// what guarantees that this file cannot reuse the context afterwards.
+    fn poison_virgl_context_locked(&self, context: &mut VirglContext) {
+        context.is_poisoned = true;
+        if context.is_created && self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+            context.is_created = false;
+            context.attached_resources.clear();
+        }
+    }
+
+    fn attach_resource_to_context_locked(
+        &self,
+        context: &mut VirglContext,
+        resource_id: u32,
+    ) -> Result<u32> {
+        let context_id = self.ensure_virgl_context_locked(context)?;
+        if context.attached_resources.contains(&resource_id) {
+            return Ok(context_id);
+        }
+        if self
+            .gpu_manager
+            .gpu
+            .ctx_attach_resource(context_id, resource_id)
+            .is_err()
+        {
+            self.poison_virgl_context_locked(context);
+            return_errno_with_message!(Errno::EIO, "cannot attach virgl resource");
+        }
+        context.attached_resources.insert(resource_id);
+        Ok(context_id)
+    }
+
+    /// Makes a host resource visible to this file's virgl context.
+    ///
+    /// The caller must hold [`GpuManager::resource_creation`] so the global
+    /// object-to-resource mapping cannot change during the attachment.
+    fn attach_resource_to_context(&self, resource_id: u32) -> Result<u32> {
+        let mut context = self.context.lock();
+        self.attach_resource_to_context_locked(&mut context, resource_id)
+    }
+
+    /// Makes all resources referenced by a submission visible to its context.
+    ///
+    /// The caller must hold [`GpuManager::resource_creation`].
+    fn attach_resources_to_context(&self, resource_ids: &BTreeSet<u32>) -> Result<u32> {
+        let mut context = self.context.lock();
+        let mut context_id = self.ensure_virgl_context_locked(&mut context)?;
+        for resource_id in resource_ids {
+            context_id = self.attach_resource_to_context_locked(&mut context, *resource_id)?;
+        }
+        Ok(context_id)
+    }
+
+    fn detach_resource_from_context_locked(
+        &self,
+        context: &mut VirglContext,
+        resource_id: u32,
+    ) -> Result<()> {
+        if !context.attached_resources.contains(&resource_id) {
+            return Ok(());
+        }
+        if self
+            .gpu_manager
+            .gpu
+            .ctx_detach_resource(context.id, resource_id)
+            .is_err()
+        {
+            self.poison_virgl_context_locked(context);
+            return_errno_with_message!(Errno::EIO, "cannot detach virgl resource");
+        }
+        context.attached_resources.remove(&resource_id);
+        Ok(())
+    }
+
+    /// Detaches a resource while the caller holds
+    /// [`GpuManager::resource_creation`].
+    fn detach_resource_from_context(&self, resource_id: u32) -> Result<()> {
+        let mut context = self.context.lock();
+        self.detach_resource_from_context_locked(&mut context, resource_id)
+    }
+
+    /// Reserves one per-file handle reference and attaches an existing host
+    /// resource before the handle can become visible to userspace.
+    fn reserve_gem_handle(&self, object_id: u32) -> Result<u32> {
+        let _resource_creation = self.gpu_manager.resource_creation.lock();
+        let resource_id = self.gpu_manager.live_gem_resource(object_id);
+        let mut context = self.context.lock();
+        let gem_handle = {
+            let mut inner = self.inner.lock();
+            let gem_handle = inner.next_handle;
+            inner.next_handle = gem_handle
+                .checked_add(1)
+                .ok_or_else(|| Error::with_message(Errno::ENOSPC, "GEM handle space exhausted"))?;
+            let count = inner.object_handle_counts.entry(object_id).or_default();
+            *count = count.checked_add(1).ok_or_else(|| {
+                Error::with_message(Errno::EOVERFLOW, "GEM handle reference count overflows")
+            })?;
+            gem_handle
+        };
+
+        if let Some(resource_id) = resource_id
+            && let Err(error) = self.attach_resource_to_context_locked(&mut context, resource_id)
+        {
+            let mut inner = self.inner.lock();
+            if let Some(count) = inner.object_handle_counts.get_mut(&object_id) {
+                *count -= 1;
+                if *count == 0 {
+                    inner.object_handle_counts.remove(&object_id);
+                }
+            }
+            return Err(error);
+        }
+        Ok(gem_handle)
+    }
+
+    /// Drops one reserved or published handle reference, detaching the host
+    /// resource when no handle in this file can use it any longer.
+    fn release_gem_handle_reference(&self, object_id: u32) -> Result<()> {
+        let _resource_creation = self.gpu_manager.resource_creation.lock();
+        let resource_id = self.gpu_manager.live_gem_resource(object_id);
+        let mut context = self.context.lock();
+        let is_last = {
+            let mut inner = self.inner.lock();
+            let count = inner
+                .object_handle_counts
+                .get_mut(&object_id)
+                .ok_or_else(|| {
+                    Error::with_message(Errno::EINVAL, "GEM object has no per-file handles")
+                })?;
+            if *count == 0 {
+                return_errno_with_message!(Errno::EINVAL, "GEM handle reference count is zero");
+            }
+            *count -= 1;
+            if *count == 0 {
+                inner.object_handle_counts.remove(&object_id);
+                true
+            } else {
+                false
+            }
+        };
+        if is_last && let Some(resource_id) = resource_id {
+            if let Err(error) = self.detach_resource_from_context_locked(&mut context, resource_id)
+            {
+                warn!(
+                    "poisoned virgl context {} after resource detach failed: {:?}",
+                    context.id, error
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Queues a page-flip completion event for this file.
@@ -1062,6 +1225,7 @@ impl Drop for DriHandle {
         let handle_objects: Vec<_> = inner.handles.values().copied().collect();
         inner.framebuffers.clear();
         inner.handles.clear();
+        inner.object_handle_counts.clear();
         for object_id in framebuffer_objects.into_iter().chain(handle_objects) {
             if let Err(error) = self.gpu_manager.release_gem_object(object_id) {
                 warn!(

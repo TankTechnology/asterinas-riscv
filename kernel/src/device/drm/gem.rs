@@ -99,25 +99,17 @@ impl Drop for GemObjectRef<'_> {
 pub(super) struct PendingGemHandle<'a> {
     owner: &'a super::DriHandle,
     gem_handle: u32,
-    object: GemObjectRef<'a>,
+    object: Option<GemObjectRef<'a>>,
 }
 
 impl<'a> PendingGemHandle<'a> {
     /// Reserves a handle number for an owned object reference.
     pub(super) fn new(owner: &'a super::DriHandle, object: GemObjectRef<'a>) -> Result<Self> {
-        let gem_handle = {
-            let mut inner = owner.inner.lock();
-            let gem_handle = inner.next_handle;
-            let Some(next_handle) = gem_handle.checked_add(1) else {
-                return_errno_with_message!(Errno::ENOSPC, "GEM handle space is exhausted");
-            };
-            inner.next_handle = next_handle;
-            gem_handle
-        };
+        let gem_handle = owner.reserve_gem_handle(object.object_id())?;
         Ok(Self {
             owner,
             gem_handle,
-            object,
+            object: Some(object),
         })
     }
 
@@ -126,24 +118,44 @@ impl<'a> PendingGemHandle<'a> {
     }
 
     /// Makes the reserved handle visible and transfers its object reference.
-    pub(super) fn publish(self) {
-        let Self {
-            owner,
-            gem_handle,
-            object,
-        } = self;
+    pub(super) fn publish(mut self) {
+        let object = self.object.take().unwrap();
         let object_id = object.into_raw();
-        let previous = owner.inner.lock().handles.insert(gem_handle, object_id);
+        let previous = self
+            .owner
+            .inner
+            .lock()
+            .handles
+            .insert(self.gem_handle, object_id);
         debug_assert!(previous.is_none());
     }
 
     /// Discards the reserved handle and reports final host-resource cleanup.
-    pub(super) fn discard(self) -> Result<super::HostCleanupStatus> {
-        let Self { owner, object, .. } = self;
+    pub(super) fn discard(mut self) -> Result<super::HostCleanupStatus> {
+        let object = self.object.take().unwrap();
         let object_id = object.into_raw();
-        owner
+        let detach_result = self.owner.release_gem_handle_reference(object_id);
+        let cleanup_result = self
+            .owner
             .gpu_manager
-            .release_gem_object_and_report_cleanup(object_id)
+            .release_gem_object_and_report_cleanup(object_id);
+        detach_result?;
+        cleanup_result
+    }
+}
+
+impl Drop for PendingGemHandle<'_> {
+    fn drop(&mut self) {
+        let Some(object) = self.object.as_ref() else {
+            return;
+        };
+        if let Err(error) = self.owner.release_gem_handle_reference(object.object_id()) {
+            ostd::warn!(
+                "cannot release reserved GEM handle {}: {:?}",
+                self.gem_handle,
+                error
+            );
+        }
     }
 }
 
@@ -161,7 +173,10 @@ pub(super) fn gem_close(handle: &super::DriHandle, gem_handle: u32) -> Result<()
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
     };
 
-    handle.gpu_manager.release_gem_object(object_id)
+    let detach_result = handle.release_gem_handle_reference(object_id);
+    let release_result = handle.gpu_manager.release_gem_object(object_id);
+    detach_result?;
+    release_result
 }
 
 /// GEM_FLINK: return the object's id as a global 32-bit name.

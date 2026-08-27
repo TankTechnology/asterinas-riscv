@@ -223,9 +223,6 @@ pub(super) fn virtgpu_resource_create(
     >,
 ) -> Result<i32> {
     let mut req = cmd.read()?;
-    let ctx_id = handle.ensure_virgl_context()?;
-    let _resource_creation = handle.gpu_manager.resource_creation.lock();
-    handle.gpu_manager.drain_pending_resource_cleanup();
 
     // Allocate a new virtio-gpu resource id
     let res_handle = handle
@@ -296,6 +293,8 @@ pub(super) fn virtgpu_resource_create(
     };
 
     let backing_object_id = backing.map(|(object_id, _, _)| object_id);
+    let resource_creation = handle.gpu_manager.resource_creation.lock();
+    handle.gpu_manager.drain_pending_resource_cleanup();
     if let Some(object_id) = backing_object_id
         && handle.gpu_manager.has_gem_resource(object_id)
     {
@@ -344,11 +343,7 @@ pub(super) fn virtgpu_resource_create(
 
         // Every 3D resource, including Gallium buffer resources (`target ==
         // 0`), must be visible to the submitting context.
-        handle
-            .gpu_manager
-            .gpu
-            .ctx_attach_resource(ctx_id, res_handle)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+        handle.attach_resource_to_context(res_handle)?;
         context_attached = true;
 
         req.res_handle = res_handle;
@@ -361,10 +356,7 @@ pub(super) fn virtgpu_resource_create(
 
     if let Err(error) = operation {
         if context_attached {
-            let _ = handle
-                .gpu_manager
-                .gpu
-                .ctx_detach_resource(ctx_id, res_handle);
+            let _ = handle.detach_resource_from_context(res_handle);
         }
         let resource_released =
             !resource_created || handle.gpu_manager.gpu.resource_unref(res_handle).is_ok();
@@ -373,6 +365,7 @@ pub(super) fn virtgpu_resource_create(
                 .gpu_manager
                 .insert_gem_resource(object_id, GemResourceState::CleanupOnly(res_handle));
         }
+        drop(resource_creation);
         let transaction_release = handle
             .gpu_manager
             .release_gem_object(retained_backing_object);
@@ -400,6 +393,7 @@ pub(super) fn virtgpu_resource_create(
             .gpu_manager
             .insert_gem_resource(object_id, GemResourceState::Live(res_handle));
     }
+    drop(resource_creation);
     handle
         .gpu_manager
         .release_gem_object(retained_backing_object)?;
@@ -503,10 +497,10 @@ pub(super) fn virtgpu_get_caps(
 /// fd signaling when the submitted command completes).
 const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
 
-/// EXECBUFFER: submit a virgl command stream to the host.
+/// Submits a virgl command stream to the host.
 ///
-/// This is the core ioctl for virgl rendering. Mesa encodes GL commands
-/// in a virgl command buffer and submits them via this ioctl. When the caller
+/// Mesa encodes GL commands in a virgl command buffer and submits them through
+/// this ioctl.
 /// Every submission receives a persistent fence and is queued without waiting
 /// for rendering to finish.
 /// Setting `VIRTGPU_EXECBUF_FENCE_FD_OUT` controls whether that fence is also
@@ -552,6 +546,7 @@ pub(super) fn virtgpu_execbuffer(
         cmd_buf.resize(command_size, 0);
         current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
 
+        let resource_creation = handle.gpu_manager.resource_creation.lock();
         let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
 
         // Validate and collect the GEM object ids in the resource list so the
@@ -588,7 +583,11 @@ pub(super) fn virtgpu_execbuffer(
             }
         }
 
-        let ctx_id = handle.ensure_virgl_context()?;
+        let resource_ids = object_ids
+            .iter()
+            .filter_map(|object_id| handle.gpu_manager.live_gem_resource(*object_id))
+            .collect();
+        let ctx_id = handle.attach_resources_to_context(&resource_ids)?;
         let mut resp = req;
         let fence_id = handle.gpu_manager.allocate_fence_id()?;
         let fence = Arc::new(super::fence::Fence::new());
@@ -602,6 +601,7 @@ pub(super) fn virtgpu_execbuffer(
             .gpu_manager
             .associate_resource_fence(&object_ids, &fence);
         drop(resource_transaction);
+        drop(resource_creation);
 
         let mut installed_fence_fd = None;
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
@@ -656,8 +656,10 @@ pub(super) fn virtgpu_transfer_to_host(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
-    let ctx_id = handle.ensure_virgl_context()?;
-
+    if req.stride != 0 || req.layer_stride != 0 {
+        return_errno_with_message!(Errno::EINVAL, "layout overrides require blob resources");
+    }
+    let _resource_creation = handle.gpu_manager.resource_creation.lock();
     let object_id = {
         let inner = handle.inner.lock();
         *inner
@@ -669,6 +671,7 @@ pub(super) fn virtgpu_transfer_to_host(
         .gpu_manager
         .live_gem_resource(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
     handle
         .gpu_manager
@@ -704,8 +707,10 @@ pub(super) fn virtgpu_transfer_from_host(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
-    let ctx_id = handle.ensure_virgl_context()?;
-
+    if req.stride != 0 || req.layer_stride != 0 {
+        return_errno_with_message!(Errno::EINVAL, "layout overrides require blob resources");
+    }
+    let _resource_creation = handle.gpu_manager.resource_creation.lock();
     let object_id = {
         let inner = handle.inner.lock();
         *inner
@@ -717,6 +722,7 @@ pub(super) fn virtgpu_transfer_from_host(
         .gpu_manager
         .live_gem_resource(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
+    let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
     handle
         .gpu_manager
