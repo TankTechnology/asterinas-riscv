@@ -25,6 +25,7 @@ mod kms;
 mod plane;
 mod prime;
 mod property;
+mod queue;
 mod resource_tracking;
 mod virgl_resource;
 mod virtio_gpu;
@@ -38,7 +39,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
-use aster_time::read_monotonic_time;
 use aster_virtio::device::{
     VirtioDeviceError,
     gpu::{device::GpuDevice, first_device},
@@ -50,6 +50,7 @@ use ostd::mm::{Paddr, VmIo};
 use self::resource_tracking::VirglContextCounts;
 use self::{
     cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2},
+    queue::{AtomicCommitQueue, DrmEventQueue},
     resource_tracking::{DrmResourceSnapshot, VirglContextTracker},
 };
 use crate::{
@@ -68,7 +69,7 @@ use crate::{
         UserNamespace,
         credentials::capabilities::CapSet,
         posix_thread::{AsPosixThread, FileTableRefMut},
-        signal::{PollHandle, Pollable, Pollee},
+        signal::{PollHandle, Pollable},
     },
     security::lsm::hooks as lsm_hooks,
     util::ioctl::{RawIoctl, dispatch_ioctl},
@@ -137,6 +138,8 @@ const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
 const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
 /// Bounds page-flip events retained by one open DRM file.
 const MAX_DRM_EVENTS: usize = 1024;
+/// Bounds queued nonblocking atomic hardware updates per open DRM file.
+const MAX_PENDING_ATOMIC_COMMITS: usize = 1024;
 
 /// `DRM_PLANE_TYPE_PRIMARY` — the plane type enum value.
 const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
@@ -153,6 +156,8 @@ enum AtomicKmsObject {
 }
 
 impl AtomicKmsObject {
+    const ALL: [Self; 3] = [Self::Crtc, Self::Connector, Self::PrimaryPlane];
+
     fn from_id(id: u32) -> Option<Self> {
         match id {
             CRTC_ID => Some(Self::Crtc),
@@ -924,9 +929,10 @@ struct DriHandle {
     event_read_operation: Mutex<()>,
     /// Serializes page-flip event capacity checks with hardware commits.
     page_flip_operation: Mutex<()>,
+    /// Keeps nonblocking atomic commits ordered with other KMS operations.
+    atomic_commit_queue: Arc<AtomicCommitQueue>,
     inner: SpinLock<DriInner>,
-    /// Notifies readers/pollers when page-flip events are queued.
-    pollee: Pollee,
+    event_queue: Arc<DrmEventQueue>,
 }
 
 #[derive(Debug)]
@@ -947,8 +953,6 @@ struct DriInner {
     object_handle_counts: BTreeMap<u32, usize>,
     next_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
-    /// Pending page-flip completion events, readable via `read()`.
-    events: VecDeque<DrmEventVblank>,
     /// Cursor resource and position owned by this open DRM file.
     cursor: CursorState,
 }
@@ -986,16 +990,16 @@ impl DriHandle {
             cursor_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
             page_flip_operation: Mutex::new(()),
+            atomic_commit_queue: Arc::new(AtomicCommitQueue::new()),
             inner: SpinLock::new(DriInner {
                 auth_magic: None,
                 handles: BTreeMap::new(),
                 object_handle_counts: BTreeMap::new(),
                 next_handle: 1,
                 framebuffers: BTreeMap::new(),
-                events: VecDeque::new(),
                 cursor: CursorState::default(),
             }),
-            pollee: Pollee::new(),
+            event_queue: Arc::new(DrmEventQueue::new()),
         })
     }
 
@@ -1037,6 +1041,8 @@ impl DriHandle {
     fn drop_master(&self) -> Result<()> {
         self.check_master_permission()?;
 
+        let _page_flip_operation = self.page_flip_operation.lock();
+        self.atomic_commit_queue.ensure_idle()?;
         let mut kms_state = self.gpu_manager.kms_state.lock();
         if !kms_state.is_master(self.file_id) {
             return_errno_with_message!(Errno::EINVAL, "file does not own DRM master");
@@ -1318,41 +1324,21 @@ impl DriHandle {
     }
 
     /// Queues a page-flip completion event for this file.
-    ///
-    /// Our present path is synchronous (the virtio-gpu control command has
-    /// completed by the time the ioctl returns), so the event is queued
-    /// immediately, right after the flip is applied.
     fn queue_flip_event(&self, user_data: u64) -> Result<()> {
-        let now = read_monotonic_time();
-        let sequence = self
-            .gpu_manager
-            .flip_sequence
-            .fetch_add(1, Ordering::Relaxed);
-        let event = DrmEventVblank {
-            type_: DRM_EVENT_FLIP_COMPLETE,
-            length: size_of::<DrmEventVblank>() as u32,
-            user_data,
-            tv_sec: now.as_secs() as u32,
-            tv_usec: now.subsec_micros(),
-            sequence,
-            crtc_id: CRTC_ID,
-        };
-        let mut inner = self.inner.lock();
-        if inner.events.len() >= MAX_DRM_EVENTS {
-            return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
-        }
-        inner.events.push_back(event);
-        drop(inner);
-        self.pollee.notify(IoEvents::IN);
-        Ok(())
+        self.event_queue
+            .queue_flip_event(&self.gpu_manager, user_data)
     }
 
     /// Checks that one more page-flip event can be queued.
     fn check_flip_event_capacity(&self) -> Result<()> {
-        if self.inner.lock().events.len() >= MAX_DRM_EVENTS {
-            return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
-        }
-        Ok(())
+        self.event_queue.ensure_capacity()
+    }
+
+    /// Serializes a KMS operation against an in-flight nonblocking commit.
+    fn lock_page_flip_operation(&self) -> Result<MutexGuard<'_, ()>> {
+        let operation = self.page_flip_operation.lock();
+        self.atomic_commit_queue.ensure_idle()?;
+        Ok(operation)
     }
 
     /// Pops pending page-flip events into `writer`.
@@ -1368,19 +1354,11 @@ impl DriHandle {
         let _event_read_operation = self.event_read_operation.lock();
         let mut bytes = 0;
         while bytes / size_of::<DrmEventVblank>() < max_events {
-            let event = {
-                let mut inner = self.inner.lock();
-                let Some(event) = inner.events.pop_front() else {
-                    break;
-                };
-                if inner.events.is_empty() {
-                    self.pollee.invalidate();
-                }
-                event
+            let Some(event) = self.event_queue.pop() else {
+                break;
             };
             if let Err(error) = writer.write_val(&event) {
-                self.inner.lock().events.push_front(event);
-                self.pollee.notify(IoEvents::IN);
+                self.event_queue.requeue_front(event);
                 if bytes != 0 {
                     return Ok(bytes);
                 }
@@ -1427,6 +1405,9 @@ impl DriHandle {
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
+        // The worker owns references to per-file event state and framebuffer
+        // backing. Wait before tearing down the remaining per-file namespace.
+        self.atomic_commit_queue.wait_until_idle();
         let mut kms_state = self.gpu_manager.kms_state.lock();
         let _cursor_operation = self.cursor_operation.lock();
         let (resource_id, position) = {
@@ -1497,18 +1478,7 @@ impl Drop for DriHandle {
 
 impl Pollable for DriHandle {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.pollee
-            .poll_with(mask, poller, || self.check_io_events())
-    }
-}
-
-impl DriHandle {
-    fn check_io_events(&self) -> IoEvents {
-        let mut events = IoEvents::OUT;
-        if !self.inner.lock().events.is_empty() {
-            events |= IoEvents::IN;
-        }
-        events
+        self.event_queue.poll(mask, poller)
     }
 }
 
@@ -1576,6 +1546,7 @@ impl PerOpenFileOps for DriHandle {
                     "KMS ioctl not available on render node"
                 );
             }
+            let _page_flip_operation = self.lock_page_flip_operation()?;
             return kms::rm_fb(self, raw_ioctl.arg() as u32).map(|_| 0);
         }
 
@@ -1723,6 +1694,7 @@ impl PerOpenFileOps for DriHandle {
                 kms::get_crtc(self, cmd)
             }
             cmd @ ModeSetCrtc => {
+                let _page_flip_operation = self.lock_page_flip_operation()?;
                 let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 kms::set_crtc(self, &mut kms_state, &req)?;
@@ -1830,6 +1802,9 @@ impl PerOpenFileOps for DriHandle {
                         "DRM_CLIENT_CAP_ATOMIC is not enabled"
                     );
                 }
+                // Atomic submissions may queue behind earlier nonblocking
+                // commits. Software state is exchanged before each ioctl
+                // returns, while the hardware queue preserves submission order.
                 let _page_flip_operation = self.page_flip_operation.lock();
                 let mut kms_state = self.lock_kms_as_master()?;
                 atomic::mode_atomic(self, &mut kms_state, cmd)
@@ -1868,7 +1843,7 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModePageFlip => {
-                let _page_flip_operation = self.page_flip_operation.lock();
+                let _page_flip_operation = self.lock_page_flip_operation()?;
                 let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 if req.crtc_id != CRTC_ID {
@@ -1914,12 +1889,16 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModeDirtyFb => {
-                let mut kms_state = self.lock_kms_as_master()?;
+                let _page_flip_operation = self.lock_page_flip_operation()?;
+                let kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 if req.fb_id == 0 {
                     return Ok(0);
                 }
-                kms::present_fb(self, &mut kms_state, req.fb_id)?;
+                let framebuffer = kms::prepare_fb(self, req.fb_id)?;
+                if kms_state.scanout_matches(self.file_id, req.fb_id) {
+                    kms::scanout_prepared_fb(&self.gpu_manager, framebuffer)?;
+                }
                 Ok(0)
             }
             cmd @ VirtgpuGetparam => {

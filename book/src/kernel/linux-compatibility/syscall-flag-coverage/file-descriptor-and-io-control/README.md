@@ -164,10 +164,15 @@ The primary plane is enumerated after the file enables
 Both legacy KMS and the Linux `drm_mode_atomic` object/count/property layout
 are supported.
 Atomic `TEST_ONLY`, `ALLOW_MODESET`, and `DRM_MODE_PAGE_FLIP_EVENT` requests
-are validated; atomic `NONBLOCK` is rejected with `EOPNOTSUPP` because commits
-are currently synchronous.
-Flip-completion events are queued after synchronous presentation, not from a
-hardware-vblank interrupt.
+are validated.
+Atomic `NONBLOCK` commits exchange their logical KMS and property state before
+returning, then apply hardware updates through a bounded per-file FIFO.
+Requested flip-completion events reserve queue capacity before the state
+exchange and are published after the corresponding hardware update succeeds.
+An asynchronous hardware failure is logged and does not publish a false
+completion event.
+Synchronous commits queue their completion event after presentation.
+Neither path currently derives completion from a hardware-vblank interrupt.
 Legacy `DRM_MODE_PAGE_FLIP_ASYNC` is likewise rejected with `EOPNOTSUPP`.
 Property blobs are bounded to 64 KiB, owned by the creating DRM file, and kept
 alive while committed KMS state references them.

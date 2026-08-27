@@ -20,8 +20,6 @@ use crate::{
     util::ioctl::{InOutData, Ioctl},
 };
 
-/// The device exposes exactly three atomic-capable objects.
-const MAX_ATOMIC_OBJECTS: usize = 3;
 /// Bounds allocation and validation work performed by one atomic ioctl.
 const MAX_ATOMIC_PROPERTIES: usize = 64;
 
@@ -66,6 +64,15 @@ enum AtomicHardwareUpdate {
     Disable,
 }
 
+enum PreparedAtomicHardwareUpdate {
+    None,
+    Present {
+        framebuffer_id: u32,
+        framebuffer: kms::PreparedFramebuffer,
+    },
+    Disable,
+}
+
 /// Applies one validated atomic KMS transaction.
 pub(super) fn mode_atomic(
     handle: &super::DriHandle,
@@ -74,6 +81,9 @@ pub(super) fn mode_atomic(
 ) -> Result<i32> {
     let req = cmd.read()?;
     validate_request_header(&req)?;
+    if req.flags & (DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_TEST_ONLY) == 0 {
+        handle.atomic_commit_queue.ensure_idle()?;
+    }
 
     let updates = read_and_validate_updates(handle, &req)?;
     let current_state = ProposedKmsState::from_committed(handle)?;
@@ -91,8 +101,22 @@ pub(super) fn mode_atomic(
         return Ok(0);
     }
 
+    let hardware_update = prepare_hardware_update(handle, hardware_update)?;
+    if req.flags & DRM_MODE_ATOMIC_NONBLOCK != 0 {
+        return submit_nonblocking_commit(
+            handle,
+            kms_state,
+            updates,
+            hardware_update,
+            req.flags,
+            req.user_data,
+        );
+    }
+
     commit_atomic_state(
-        handle,
+        &handle.gpu_manager,
+        handle.file_id,
+        &handle.event_queue,
         kms_state,
         &updates,
         hardware_update,
@@ -114,13 +138,15 @@ fn validate_request_header(req: &DrmModeAtomic) -> Result<()> {
     if req.reserved != 0 {
         return_errno_with_message!(Errno::EINVAL, "atomic reserved field must be zero");
     }
-    if req.flags & DRM_MODE_ATOMIC_NONBLOCK != 0 {
+    if req.flags & (DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_PAGE_FLIP_EVENT)
+        == DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_PAGE_FLIP_EVENT
+    {
         return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "nonblocking atomic commits are not implemented"
+            Errno::EINVAL,
+            "test-only atomic commits cannot request a page-flip event"
         );
     }
-    if req.count_objs as usize > MAX_ATOMIC_OBJECTS {
+    if req.count_objs as usize > AtomicKmsObject::ALL.len() {
         return_errno_with_message!(Errno::EINVAL, "too many atomic objects");
     }
     if req.count_objs != 0 && (req.objs_ptr == 0 || req.count_props_ptr == 0) {
@@ -337,11 +363,7 @@ impl ProposedKmsState {
     fn from_committed(handle: &super::DriHandle) -> Result<Self> {
         let property_manager = &handle.gpu_manager.property_manager;
         let mut state = Self::empty();
-        for object in [
-            AtomicKmsObject::Crtc,
-            AtomicKmsObject::Connector,
-            AtomicKmsObject::PrimaryPlane,
-        ] {
+        for object in AtomicKmsObject::ALL {
             for property_id in property_manager.property_ids_for_object(object.object_type()) {
                 let property = property_manager.lookup_property(*property_id)?;
                 let value =
@@ -537,35 +559,109 @@ fn object_routes_to_crtc(object: AtomicKmsObject, state: &ProposedKmsState) -> b
     }
 }
 
-fn commit_atomic_state(
+fn prepare_hardware_update(
+    handle: &super::DriHandle,
+    hardware_update: AtomicHardwareUpdate,
+) -> Result<PreparedAtomicHardwareUpdate> {
+    match hardware_update {
+        AtomicHardwareUpdate::None => Ok(PreparedAtomicHardwareUpdate::None),
+        AtomicHardwareUpdate::Present(framebuffer_id) => {
+            let framebuffer = kms::prepare_fb(handle, framebuffer_id)?;
+            Ok(PreparedAtomicHardwareUpdate::Present {
+                framebuffer_id,
+                framebuffer,
+            })
+        }
+        AtomicHardwareUpdate::Disable => Ok(PreparedAtomicHardwareUpdate::Disable),
+    }
+}
+
+fn submit_nonblocking_commit(
     handle: &super::DriHandle,
     kms_state: &mut super::KmsState,
-    updates: &[AtomicObjectUpdate],
-    hardware_update: AtomicHardwareUpdate,
+    updates: Vec<AtomicObjectUpdate>,
+    hardware_update: PreparedAtomicHardwareUpdate,
     flags: u32,
     user_data: u64,
 ) -> Result<i32> {
-    let property_manager = &handle.gpu_manager.property_manager;
+    let queue_slot = handle.atomic_commit_queue.reserve()?;
+    let event_slot = if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+        Some(handle.event_queue.reserve()?)
+    } else {
+        None
+    };
+    publish_atomic_software_state(
+        &handle.gpu_manager,
+        handle.file_id,
+        kms_state,
+        &updates,
+        &hardware_update,
+    );
 
-    // Device presentation is the only fallible state change. Perform it
-    // before publishing property values so a failed update cannot leave a
-    // partially committed software state.
+    let gpu_manager = handle.gpu_manager.clone();
+    queue_slot.submit(Box::new(move || {
+        let result = apply_nonblocking_hardware_update(&gpu_manager, hardware_update);
+
+        match result {
+            Ok(()) => {
+                if let Some(event_slot) = event_slot {
+                    event_slot.queue(&gpu_manager, user_data);
+                }
+            }
+            Err(error) => {
+                // There is no error-return channel after a nonblocking ioctl
+                // has exchanged its software state. Do not report a false
+                // flip completion; dropping the reservation releases capacity.
+                error!("nonblocking DRM atomic commit failed: {:?}", error);
+            }
+        }
+    }));
+    Ok(0)
+}
+
+fn publish_atomic_software_state(
+    gpu_manager: &super::GpuManager,
+    file_id: u64,
+    kms_state: &mut super::KmsState,
+    updates: &[AtomicObjectUpdate],
+    hardware_update: &PreparedAtomicHardwareUpdate,
+) {
     match hardware_update {
-        AtomicHardwareUpdate::None => {}
-        AtomicHardwareUpdate::Present(framebuffer_id) => {
-            kms::present_fb(handle, kms_state, framebuffer_id)?;
+        PreparedAtomicHardwareUpdate::None => {}
+        PreparedAtomicHardwareUpdate::Present {
+            framebuffer_id,
+            framebuffer,
+        } => {
+            let (width, height) = framebuffer.dimensions();
+            kms_state.commit_scanout(file_id, *framebuffer_id, width, height);
         }
-        AtomicHardwareUpdate::Disable => {
-            handle
-                .gpu_manager
-                .gpu
-                .disable_scanout()
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
-            kms_state.scanout = None;
-        }
+        PreparedAtomicHardwareUpdate::Disable => kms_state.scanout = None,
     }
+    gpu_manager
+        .property_manager
+        .set_values(property_values(updates));
+}
 
-    property_manager.set_values(updates.iter().flat_map(|update| {
+fn apply_nonblocking_hardware_update(
+    gpu_manager: &super::GpuManager,
+    hardware_update: PreparedAtomicHardwareUpdate,
+) -> Result<()> {
+    match hardware_update {
+        PreparedAtomicHardwareUpdate::None => Ok(()),
+        PreparedAtomicHardwareUpdate::Present { framebuffer, .. } => {
+            kms::scanout_prepared_fb(gpu_manager, framebuffer)
+        }
+        PreparedAtomicHardwareUpdate::Disable => gpu_manager
+            .gpu
+            .disable_scanout()
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed")),
+    }
+}
+
+fn property_values(
+    updates: &[AtomicObjectUpdate],
+) -> impl Iterator<Item = (u32, u32, u32, &PropertyValue)> {
+    updates.iter().flat_map(|update| {
         update.properties.iter().map(|property_update| {
             (
                 update.object.id(),
@@ -574,10 +670,45 @@ fn commit_atomic_state(
                 &property_update.value,
             )
         })
-    }));
+    })
+}
+
+fn commit_atomic_state(
+    gpu_manager: &super::GpuManager,
+    file_id: u64,
+    event_queue: &super::DrmEventQueue,
+    kms_state: &mut super::KmsState,
+    updates: &[AtomicObjectUpdate],
+    hardware_update: PreparedAtomicHardwareUpdate,
+    flags: u32,
+    user_data: u64,
+) -> Result<i32> {
+    let property_manager = &gpu_manager.property_manager;
+
+    // Device presentation is the only fallible state change. Perform it
+    // before publishing property values so a failed update cannot leave a
+    // partially committed software state.
+    match hardware_update {
+        PreparedAtomicHardwareUpdate::None => {}
+        PreparedAtomicHardwareUpdate::Present {
+            framebuffer_id,
+            framebuffer,
+        } => {
+            kms::present_prepared_fb(gpu_manager, kms_state, file_id, framebuffer_id, framebuffer)?;
+        }
+        PreparedAtomicHardwareUpdate::Disable => {
+            gpu_manager
+                .gpu
+                .disable_scanout()
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+            kms_state.scanout = None;
+        }
+    }
+
+    property_manager.set_values(property_values(updates));
 
     if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-        handle.queue_flip_event(user_data)?;
+        event_queue.queue_flip_event(gpu_manager, user_data)?;
     }
     Ok(0)
 }
@@ -661,5 +792,25 @@ mod tests {
         state.plane_crtc = Some(CRTC_ID);
         assert!(object_routes_to_crtc(AtomicKmsObject::PrimaryPlane, &state));
         assert!(object_routes_to_crtc(AtomicKmsObject::Crtc, &state));
+    }
+
+    #[ktest]
+    fn atomic_header_accepts_nonblocking_commits() {
+        let request = DrmModeAtomic {
+            flags: DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET,
+            ..Default::default()
+        };
+
+        assert!(validate_request_header(&request).is_ok());
+    }
+
+    #[ktest]
+    fn atomic_header_rejects_test_only_page_flip_events() {
+        let request = DrmModeAtomic {
+            flags: DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_PAGE_FLIP_EVENT,
+            ..Default::default()
+        };
+
+        assert!(validate_request_header(&request).is_err());
     }
 }

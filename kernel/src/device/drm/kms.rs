@@ -7,6 +7,7 @@
 //! the render node. The caller (`mod.rs`) must gate on `is_render_node()`
 //! before dispatching here.
 
+use aster_virtio::device::gpu::GpuBackingOwner;
 use ostd::mm::VmIo;
 
 use super::{
@@ -27,23 +28,23 @@ const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 
 fn framebuffer_extent(
-    offset: u32,
-    pitch: u32,
-    width: u32,
-    height: u32,
+    offset_bytes: u32,
+    pitch_bytes: u32,
+    width_pixels: u32,
+    height_pixels: u32,
     bits_per_pixel: u32,
 ) -> Option<usize> {
-    if width == 0 || height == 0 || bits_per_pixel == 0 {
+    if width_pixels == 0 || height_pixels == 0 || bits_per_pixel == 0 {
         return None;
     }
     let bytes_per_pixel = bits_per_pixel.checked_add(7)? / 8;
-    let row_bytes = (width as usize).checked_mul(bytes_per_pixel as usize)?;
-    let pitch = pitch as usize;
-    if pitch < row_bytes {
+    let row_bytes = (width_pixels as usize).checked_mul(bytes_per_pixel as usize)?;
+    let pitch_bytes = pitch_bytes as usize;
+    if pitch_bytes < row_bytes {
         return None;
     }
-    (offset as usize)
-        .checked_add(pitch.checked_mul(height as usize - 1)?)?
+    (offset_bytes as usize)
+        .checked_add(pitch_bytes.checked_mul(height_pixels as usize - 1)?)?
         .checked_add(row_bytes)
 }
 
@@ -123,9 +124,9 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
 
 /// ADDFB2: register a framebuffer with explicit format and modifier info.
 ///
-/// For the initial implementation, modifiers are accepted but ignored —
-/// virtio-gpu 2D path uses linear scanout. We validate that the framebuffer
-/// fits within the GEM object (the buffer may be larger than the fb).
+/// The virtio-gpu 2D path supports only linear scanout.
+/// The framebuffer must fit within its GEM object,
+/// although the object itself may be larger than the framebuffer.
 pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
     let tight_pitch = req
         .width
@@ -299,6 +300,33 @@ pub(super) fn present_fb(
     kms_state: &mut super::KmsState,
     fb_id: u32,
 ) -> Result<()> {
+    let framebuffer = prepare_fb(handle, fb_id)?;
+    present_prepared_fb(
+        &handle.gpu_manager,
+        kms_state,
+        handle.file_id,
+        fb_id,
+        framebuffer,
+    )
+}
+
+/// Framebuffer data pinned for a synchronous or asynchronous presentation.
+pub(super) struct PreparedFramebuffer {
+    addr: u64,
+    size: u32,
+    backing_owner: Arc<dyn GpuBackingOwner>,
+    width: u32,
+    height: u32,
+}
+
+impl PreparedFramebuffer {
+    pub(super) fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// Pins the backing and resolves the address of a framebuffer before commit.
+pub(super) fn prepare_fb(handle: &super::DriHandle, fb_id: u32) -> Result<PreparedFramebuffer> {
     let (addr, size, backing_owner, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
@@ -330,13 +358,44 @@ pub(super) fn present_fb(
         )
     };
 
-    handle
-        .gpu_manager
-        .gpu
-        .present_framebuffer(addr as u64, size, backing_owner, width, height)
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
+    Ok(PreparedFramebuffer {
+        addr: addr as u64,
+        size,
+        backing_owner,
+        width,
+        height,
+    })
+}
 
-    kms_state.commit_scanout(handle.file_id, fb_id, width, height);
+/// Applies a prepared framebuffer to scanout and publishes the KMS state.
+pub(super) fn present_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    kms_state: &mut super::KmsState,
+    file_id: u64,
+    fb_id: u32,
+    framebuffer: PreparedFramebuffer,
+) -> Result<()> {
+    let (width, height) = framebuffer.dimensions();
+    scanout_prepared_fb(gpu_manager, framebuffer)?;
+    kms_state.commit_scanout(file_id, fb_id, width, height);
+    Ok(())
+}
+
+/// Applies a prepared framebuffer to hardware without changing logical KMS state.
+pub(super) fn scanout_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    framebuffer: PreparedFramebuffer,
+) -> Result<()> {
+    gpu_manager
+        .gpu
+        .present_framebuffer(
+            framebuffer.addr,
+            framebuffer.size,
+            framebuffer.backing_owner,
+            framebuffer.width,
+            framebuffer.height,
+        )
+        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
     Ok(())
 }
 
