@@ -86,13 +86,28 @@ publish_remote_url() {
     fi
 }
 
+resolve_qemu_host() {
+    local attempt
+    local host="$1"
+
+    for attempt in 1 2 3; do
+        if timeout "$COMMAND_TIMEOUT_SECONDS" getent ahostsv4 "$host"; then
+            return 0
+        fi
+        if ((attempt == 3)); then
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 qemu_network_evidence() {
     local curl_result
     local http_status
     local local_address
 
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
-    timeout "$COMMAND_TIMEOUT_SECONDS" getent ahostsv4 www.baidu.com \
+    resolve_qemu_host www.baidu.com \
         >/dev/null 2>>"$CONSOLE" || fail qemu-dns
     emit "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com"
     curl_result="$(

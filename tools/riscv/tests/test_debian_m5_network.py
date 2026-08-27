@@ -571,6 +571,66 @@ esac
         )
         self.assertIn("https://www.baidu.com/", curl_log.read_text())
 
+    def test_qemu_evidence_retries_a_transient_dns_failure(self) -> None:
+        console = self.directory / "qemu-retry-console"
+        console.write_text("", encoding="utf-8")
+        cmdline = self.directory / "qemu-retry-cmdline"
+        cmdline.write_text(
+            "console=ttyS0 asterinas.debian_network=qemu-slirp\n",
+            encoding="utf-8",
+        )
+        resolv_conf = self.directory / "qemu-retry-resolv.conf"
+        url_file = self.directory / "qemu-retry-desktop-url"
+        fake_bin = self.directory / "qemu-retry-bin"
+        fake_bin.mkdir()
+        getent_log = self.directory / "qemu-retry-getent.log"
+        curl_log = self.directory / "qemu-retry-curl.log"
+        for name, body in {
+            "getent": """#!/bin/sh
+attempt=0
+[ ! -f "$ASTERINAS_M5_GETENT_LOG" ] || attempt=$(cat "$ASTERINAS_M5_GETENT_LOG")
+attempt=$((attempt + 1))
+printf '%s\n' "$attempt" >"$ASTERINAS_M5_GETENT_LOG"
+[ "$attempt" -ne 1 ] || exit 75
+printf '%s\n' '110.242.68.66 STREAM www.baidu.com'
+""",
+            "curl": """#!/bin/sh
+printf '%s\n' "$*" >"$ASTERINAS_M5_CURL_LOG"
+printf '200\t10.0.2.15'
+""",
+            "sleep": "#!/bin/sh\nexit 0\n",
+            "ip": "#!/bin/sh\nexit 97\n",
+            "ping": "#!/bin/sh\nexit 98\n",
+        }.items():
+            executable = fake_bin / name
+            executable.write_text(body, encoding="utf-8")
+            executable.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
+            ASTERINAS_M5_GETENT_LOG=str(getent_log),
+            ASTERINAS_M5_CURL_LOG=str(curl_log),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(getent_log.read_text(encoding="utf-8"), "2\n")
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            list(DESKTOP_M5_QEMU_MILESTONES),
+        )
+
     def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:
         transcript = (
             "\n".join((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)) + "\n"
