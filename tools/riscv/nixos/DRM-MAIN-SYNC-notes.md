@@ -549,6 +549,12 @@ The completed guest reports `Using DRI3 for screen 0`,
 `XFCE_GL_DIRECT yes`, `XFCE_GL_RENDERER virgl`, a checked output pixel,
 `XFCE_GL_BENCH_PASS`, and `XFCE_DRM_PASS`. The 30-frame shader sample improved
 from 0.609 FPS on llvmpipe to 5.369 FPS on virgl in one TCG comparison. The
-full diagnosis, control-queue regression bisect, test method, and remaining
-virgl command-stream warning are recorded in
+full diagnosis, control-queue regression bisect, and test method are recorded in
 [`../xfce/XFCE-DRM-M2-report.md`](../xfce/XFCE-DRM-M2-report.md).
+
+The remaining DRI3 `Illegal resource`/`CREATE_OBJECT` warning was traced to a
+shared GEM resource that was attached only to Xorg's virgl context, not to the
+importing GLX client's context. Per-file resource membership is now maintained
+across handle import/close and rechecked from each `EXECBUFFER` BO list. The
+Xfce harness reports `command-stream: OK` and rejects all three former
+virglrenderer error markers.

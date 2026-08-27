@@ -12,6 +12,7 @@ The RISC-V Xfce path now uses virtio-gpu/virgl for both sides of the desktop sta
   `XFCE_GL_RENDERER virgl` renderer;
 - the shader, pixel-readback, and frame-timing gate reports
   `XFCE_GL_BENCH_PASS`;
+- the virgl context/resource compatibility gate reports `command-stream: OK`;
 - the complete systemd/Xorg/Xfce gate reports `XFCE_DRM_PASS`.
 
 This is the first Xfce gate that proves application-side direct rendering.
@@ -58,6 +59,28 @@ DRM master set/drop operations also follow the Linux permission model: the
 same process may reuse a file that was previously master, while another
 process requires `CAP_SYS_ADMIN` in the initial user namespace.
 
+### Shared GEM resources were missing from DRI3 client contexts
+
+The first direct-rendering run still produced `Illegal resource 7`, followed
+by a rejected `CREATE_OBJECT` and `Illegal command buffer`. Xorg had created
+the GEM resource in one DRM file/context, then shared it with the GLX client
+through `GEM_FLINK`/`GEM_OPEN`. Asterinas preserved the global GEM object but
+did not attach its host resource to the importing file's distinct virgl
+context.
+
+Per-file context state now tracks attached resource ids. Reserving/importing a
+GEM handle attaches an already-live resource, `EXECBUFFER` attaches every live
+resource named by its BO list as a compatibility fallback, and the last local
+handle detaches the resource. Attach/detach failures poison the context so an
+ambiguous host association cannot be reused. Transfers and final handle close
+are serialized against resource creation and destruction.
+
+The final Xfce run contains none of the three virglrenderer error markers and
+the automated acceptance harness now fails future virgl runs if any reappear.
+The retained serial log is
+`target/xfce-drm/serial-context-resource-final.log` with SHA-256
+`e8fef9ffdc16c1d95d2448437c74ce14710cb14517ee2840f790c74647cab549`.
+
 ## Renderer benchmark
 
 `gl_renderer_bench.c` creates a direct GLX context, compiles a small fragment
@@ -85,12 +108,6 @@ Its serial log is retained outside Git at
 `target/xfce-drm/serial-dri3-final.log` with SHA-256
 `51bce1323ac93df724dd1f9cd22d0cd2a122b3a6d1252c5638ccc479301b8e5e`.
 
-The virglrenderer console still reports one rejected
-`CREATE_OBJECT`/command-buffer sequence during desktop startup. The benchmark
-continues to produce the expected pixel and completes successfully, so this is
-tracked as a remaining command-stream compatibility issue rather than evidence
-that all 3D commands are complete.
-
 ## Reproduce
 
 Build the persistent root after the Debian RISC-V runtime has been fetched:
@@ -112,7 +129,6 @@ passed. `--software-display` remains available as the llvmpipe baseline, and
 
 ## Remaining work
 
-- Identify and implement the virgl command rejected during desktop startup.
 - Add repeatable interaction/frame-latency measurements; boot time is dominated
   by RISC-V TCG user-space execution.
 - Switch the official Debian desktop profile from its current bochs/fbdev gate
