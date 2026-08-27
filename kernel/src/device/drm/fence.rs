@@ -14,7 +14,6 @@ use core::{
 };
 
 use aster_virtio::device::gpu::{GpuCommandCompletion, device::GpuCommandTicket};
-use ostd::sync::WaitQueue;
 
 use crate::{
     events::IoEvents,
@@ -35,7 +34,6 @@ const FENCE_FAILED: u8 = 3;
 pub(super) struct Fence {
     state: AtomicU8,
     ticket: Mutex<Option<GpuCommandTicket>>,
-    waiters: WaitQueue,
     pollee: Pollee,
 }
 
@@ -44,7 +42,6 @@ impl Fence {
         Self {
             state: AtomicU8::new(FENCE_PENDING),
             ticket: Mutex::new(None),
-            waiters: WaitQueue::new(),
             pollee: Pollee::new(),
         }
     }
@@ -59,6 +56,7 @@ impl Fence {
     }
 
     pub(super) fn try_finish(&self) -> Result<bool> {
+        self.poll_device_completion();
         if !self.is_signaled() {
             return Ok(false);
         }
@@ -67,8 +65,22 @@ impl Fence {
     }
 
     pub(super) fn wait(&self) -> Result<()> {
-        self.waiters.wait_until(|| self.is_signaled().then_some(()));
+        while !self.is_signaled() {
+            self.poll_device_completion();
+            if !self.is_signaled() {
+                ostd::task::Task::yield_now();
+            }
+        }
         self.finish_completed()
+    }
+
+    fn poll_device_completion(&self) {
+        if self.is_signaled() {
+            return;
+        }
+        if let Some(ticket) = self.ticket.lock().as_ref() {
+            ticket.poll_completion();
+        }
     }
 
     fn finish_completed(&self) -> Result<()> {
@@ -96,6 +108,7 @@ impl Fence {
     }
 
     fn check_io_events(&self) -> IoEvents {
+        self.poll_device_completion();
         if !self.is_signaled() {
             return IoEvents::empty();
         }
@@ -111,7 +124,6 @@ impl GpuCommandCompletion for Fence {
         let old_state = self.state.swap(FENCE_COMPLETED, Ordering::AcqRel);
         debug_assert_eq!(old_state, FENCE_PENDING);
         self.pollee.notify(IoEvents::IN);
-        self.waiters.wake_all();
     }
 }
 

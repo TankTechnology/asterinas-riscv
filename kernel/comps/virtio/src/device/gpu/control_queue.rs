@@ -16,6 +16,7 @@ use aster_util::mem_obj_slice::Slice;
 use ostd::{
     mm::dma::DmaStream,
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
+    task::Task,
 };
 
 use super::{GpuCommandCompletion, VirtioGpuCtrlHdr};
@@ -40,7 +41,6 @@ struct TokenMap<T> {
 
 struct ControlRequest {
     completion: SpinLock<Option<Result<u32, PopUsedError>>, LocalIrqDisabled>,
-    waiters: WaitQueue,
     listener: SpinLock<Option<Arc<dyn GpuCommandCompletion>>, LocalIrqDisabled>,
     // Every descriptor's memory must remain alive until the device returns
     // the token, even if completion is delayed.
@@ -87,6 +87,15 @@ impl ControlQueue {
     }
 
     pub(super) fn handle_irq(&self) {
+        self.poll_completions();
+    }
+
+    /// Reclaims every completion currently visible in the used ring.
+    ///
+    /// Virtio permits interrupt suppression and coalescing. Synchronous
+    /// callers also invoke this path so progress does not depend on receiving
+    /// one interrupt for every used-ring update.
+    fn poll_completions(&self) {
         // A device may coalesce several used-ring updates into one interrupt.
         // Bound the work by the queue size so a malformed device cannot keep
         // the IRQ handler spinning forever.
@@ -124,7 +133,6 @@ impl ControlQueue {
             .collect();
         let request = Arc::new(ControlRequest {
             completion: SpinLock::new(None),
-            waiters: WaitQueue::new(),
             listener: SpinLock::new(listener),
             _dma_bufs: dma_bufs,
         });
@@ -204,7 +212,6 @@ impl ControlRequest {
     fn complete(&self, result: Result<u32, PopUsedError>) {
         let old_completion = self.completion.lock().replace(result);
         debug_assert!(old_completion.is_none());
-        self.waiters.wake_all();
         let listener = self.listener.lock().take();
         if let Some(listener) = listener {
             listener.complete();
@@ -219,35 +226,22 @@ impl ControlRequest {
 impl ControlTicket {
     pub(super) fn wait_for_used(self) -> Result<(u16, u32), PopUsedError> {
         let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
-        let result = if irq_wait_enabled {
-            self.request
-                .waiters
-                .wait_until(|| self.request.take_completion())
-        } else {
-            loop {
-                if let Some(completion) = self.request.take_completion() {
-                    break completion;
-                }
-                match self.queue.dispatch_one() {
-                    DispatchResult::NotReady => spin_loop(),
-                    DispatchResult::InvalidToken { token, queue_size } => {
-                        ostd::error!(
-                            "invalid virtio-gpu control token: {} (queue size: {})",
-                            token,
-                            queue_size,
-                        );
-                    }
-                    DispatchResult::Completed { request, result } => {
-                        if let Err(error) = result {
-                            ostd::error!("invalid virtio-gpu control completion: {:?}", error);
-                        }
-                        request.complete(result);
-                        self.queue.descriptors_available.wake_one();
-                    }
-                }
+        let result = loop {
+            if let Some(completion) = self.request.take_completion() {
+                break completion;
+            }
+            self.queue.poll_completions();
+            if irq_wait_enabled {
+                Task::yield_now();
+            } else {
+                spin_loop();
             }
         }?;
         Ok((self.token, result))
+    }
+
+    pub(super) fn poll_completion(&self) {
+        self.queue.poll_completions();
     }
 }
 

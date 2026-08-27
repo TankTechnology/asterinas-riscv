@@ -53,6 +53,11 @@ pub struct GpuCommandTicket {
 }
 
 impl GpuCommandTicket {
+    /// Polls the control queue once without consuming this command's result.
+    pub fn poll_completion(&self) {
+        self.control.poll_completion();
+    }
+
     /// Waits for device completion and validates the command response.
     pub fn wait(self) -> Result<(), VirtioDeviceError> {
         let (code, _) = self.wait_for_response()?;
