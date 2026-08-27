@@ -127,7 +127,7 @@ case "$1" in
       printf 'asterinas-riscv_百度搜索 - NetSurf\n'
     fi
     ;;
-  windowactivate|mousemove|click|type) ;;
+  windowactivate|windowfocus|mousemove|click|type) ;;
   key)
     if [ "${2-}" = Return ]; then
       phase="$(cat "$ASTERINAS_M7_STATE")"
@@ -150,6 +150,7 @@ esac
             ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS="1",
             ASTERINAS_BROWSER_M7_COMMAND_TIMEOUT_SECONDS="1",
             ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS="0",
+            ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS="0",
             ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS="0",
             ASTERINAS_M7_ACTIONS=str(actions),
             ASTERINAS_M7_STATE=str(state),
@@ -179,6 +180,14 @@ esac
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
         self.assertIn("type --delay 0 -- https://www.baidu.com/", action_lines)
+        self.assertLess(
+            action_lines.index("windowactivate --sync 42"),
+            action_lines.index("windowfocus --sync 42"),
+        )
+        self.assertLess(
+            action_lines.index("windowfocus --sync 42"),
+            action_lines.index("key ctrl+l"),
+        )
         self.assertIn("mousemove --sync 560 310", action_lines)
         self.assertIn("click 1", action_lines)
         self.assertIn("type --delay 40 -- asterinas-riscv", action_lines)

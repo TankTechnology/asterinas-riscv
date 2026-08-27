@@ -8,6 +8,7 @@ readonly PROC_ROOT="${ASTERINAS_BROWSER_M7_PROC_ROOT:-/proc}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS:-60}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_COMMAND_TIMEOUT_SECONDS:-10}"
 readonly CAPTURE_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS:-10}"
+readonly FOCUS_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS:-1}"
 readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
 readonly HOME_URL='https://www.baidu.com/'
 readonly SEARCH_QUERY='asterinas-riscv'
@@ -27,6 +28,7 @@ fail() {
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
 [[ "$CAPTURE_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-capture-delay
+[[ "$FOCUS_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-focus-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
 
 window_output="$(
@@ -108,6 +110,9 @@ wait_for_search_title() {
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowactivate --sync "$window_id" || fail window-activate
+timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool windowfocus --sync "$window_id" || fail window-focus
+sleep "$FOCUS_DELAY_SECONDS"
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+l || fail home-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$HOME_URL" || fail home-type
