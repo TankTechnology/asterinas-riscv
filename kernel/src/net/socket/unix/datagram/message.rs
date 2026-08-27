@@ -15,6 +15,7 @@ use crate::{
             UnixSocketAddr,
             addr::{UnixSocketAddrBound, UnixSocketAddrKey},
             ctrl_msg::AuxiliaryData,
+            scm_graph::{DatagramQueueNode, PermanentEdge, SocketNode},
         },
         util::{ControlMessage, RecvFlags, RecvOutput},
     },
@@ -29,6 +30,7 @@ pub(super) struct MessageQueue {
     is_pass_cred: AtomicBool,
     pollee: Pollee,
     send_wait_queue: WaitQueue,
+    scm_node: DatagramQueueNode,
 }
 
 struct Inner {
@@ -104,6 +106,15 @@ impl MessageQueue {
         self.addr.get().cloned().unwrap_or(UnixSocketAddr::Unnamed)
     }
 
+    pub(super) fn scm_node(&self) -> &DatagramQueueNode {
+        &self.scm_node
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn is_closed(&self) -> bool {
+        self.inner.lock().is_none()
+    }
+
     /// Blocks until the buffer is free and the `try_send` succeeds, or until interrupted.
     pub(super) fn block_send<F, R>(&self, timeout: Option<Duration>, mut try_send: F) -> Result<R>
     where
@@ -132,10 +143,11 @@ pub(super) struct MessageReceiver {
     // so it must not belong to `MessageQueue`.
     addr: SpinLock<Option<UnixSocketAddrBound>>,
     queue: Arc<MessageQueue>,
+    owner_edge: Option<PermanentEdge>,
 }
 
 impl MessageReceiver {
-    pub(super) fn new() -> MessageReceiver {
+    pub(super) fn new(owner: &SocketNode) -> MessageReceiver {
         let inner = Inner {
             messages: VecDeque::new(),
             total_length: 0,
@@ -148,11 +160,17 @@ impl MessageReceiver {
             is_pass_cred: AtomicBool::new(false),
             pollee: Pollee::new(),
             send_wait_queue: WaitQueue::new(),
+            scm_node: DatagramQueueNode::new(),
         };
+
+        let queue = Arc::new(queue);
+        let owner_edge = PermanentEdge::new(owner, &queue.scm_node)
+            .expect("new datagram receive queue cannot close an SCM ownership cycle");
 
         Self {
             addr: SpinLock::new(None),
-            queue: Arc::new(queue),
+            queue,
+            owner_edge: Some(owner_edge),
         }
     }
 
@@ -241,6 +259,11 @@ impl MessageReceiver {
         &self.queue
     }
 
+    #[cfg(ktest)]
+    pub(super) fn queue_node(&self) -> DatagramQueueNode {
+        self.queue.scm_node.clone()
+    }
+
     pub(super) fn pollee(&self) -> &Pollee {
         &self.queue.pollee
     }
@@ -265,7 +288,14 @@ impl Drop for MessageReceiver {
             QUEUE_TABLE.remove_queue(&addr.to_key());
         }
 
-        *self.queue.inner.lock() = None;
+        let inner = {
+            let mut queue_inner = self.queue.inner.lock();
+            queue_inner.take()
+        };
+        // Queued ancillary data can own files. Never run their destructors while the queue mutex
+        // is held, and remove the socket-to-local-queue edge before releasing the queue itself.
+        drop(inner);
+        drop(self.owner_edge.take());
         self.queue.send_wait_queue.wake_all();
     }
 }
@@ -299,3 +329,46 @@ impl QueueTable {
 }
 
 pub(in crate::net) const UNIX_DATAGRAM_DEFAULT_BUF_SIZE: usize = 65536;
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::net::socket::unix::scm_graph::permanent_edge_count;
+
+    #[ktest]
+    fn local_queue_owner_edge_is_raii() {
+        let socket = SocketNode::new();
+        let receiver = MessageReceiver::new(&socket);
+        let queue = receiver.queue_node();
+
+        assert_eq!(permanent_edge_count(&socket, &queue), 1);
+        drop(receiver);
+        assert_eq!(permanent_edge_count(&socket, &queue), 0);
+    }
+
+    #[ktest]
+    fn bound_receiver_close_releases_table_and_drains_before_external_owner_drops() {
+        let socket = SocketNode::new();
+        let weak_socket = socket.downgrade();
+        let receiver = MessageReceiver::new(&socket);
+        let queue = receiver.queue_node();
+        let weak_queue = queue.downgrade();
+        receiver.bind(UnixSocketAddr::Unnamed).unwrap();
+        let bound_key = receiver.addr.lock().as_ref().unwrap().to_key();
+        let retained_queue = MessageQueue::lookup_bound(&bound_key).unwrap();
+
+        drop(socket);
+        assert!(weak_socket.is_alive());
+        drop(receiver);
+        assert!(MessageQueue::lookup_bound(&bound_key).is_err());
+        assert!(retained_queue.is_closed());
+        assert!(!weak_socket.is_alive());
+        assert!(weak_queue.is_alive());
+
+        drop(retained_queue);
+        drop(queue);
+        assert!(!weak_queue.is_alive());
+    }
+}
