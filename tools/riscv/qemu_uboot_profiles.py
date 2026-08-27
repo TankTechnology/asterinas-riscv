@@ -314,21 +314,26 @@ ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+MEGREZ_TCP_PROBE_READY_LINE = (
+    b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+    b"status=200 body=ASTERINAS_TCP_PROBE_OK"
+)
+
 MEGREZ_TCP_PROBE = ValidationScenario(
     name="megrez-tcp-probe",
-    bootargs="console=ttyS0 loglevel=info init=/init",
+    bootargs=("console=ttyS0 loglevel=info init=/init asterinas.reboot_after=180"),
     scope=ResultScope.COMPLETE_BOOT,
     milestones=(
         *_ASTERINAS_COMMON_MILESTONES,
         MilestoneExpectation(
             BootMilestone.USERSPACE_READY,
-            b"ASTERINAS_GMAC_TCP_PROBE_READY",
+            MEGREZ_TCP_PROBE_READY_LINE,
         ),
     ),
     terminal=BootMilestone.USERSPACE_READY,
-    completion_line=b"ASTERINAS_GMAC_TCP_PROBE_READY",
+    completion_line=MEGREZ_TCP_PROBE_READY_LINE,
     forbidden_markers=ASTERINAS_USERSPACE_SMOKE.forbidden_markers,
-    audit_policy=AuditPolicy.ASTERINAS_STRICT,
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
     startup_timeout=30.0,
     command_timeout=10.0,
     boot_timeout=90.0,
@@ -444,6 +449,13 @@ QEMU_VIRT_SMP4 = replace(
     name="qemu-virt-smp4",
     hart_count=4,
     mmu_types=("riscv,sv39",) * 4,
+)
+
+QEMU_VIRT_SMP4_FROZEN_DTB = replace(
+    QEMU_VIRT_SMP4,
+    name="qemu-virt-smp4-frozen-dtb",
+    remove_rng_seed=True,
+    provenance="QEMU virt SMP=4 with rng-seed removed for exact DTB identity",
 )
 
 SIFIVE_U = MachineContract(
@@ -613,7 +625,7 @@ GENERIC_SV39 = QemuUbootProfile(
 
 GENERIC_SV39_SMP4_TCP_PROBE = QemuUbootProfile(
     name="generic-sv39-smp4-tcp-probe",
-    machine=QEMU_VIRT_SMP4,
+    machine=QEMU_VIRT_SMP4_FROZEN_DTB,
     boot_flow=UBOOT_BOOTI,
     validation=MEGREZ_TCP_PROBE,
 )

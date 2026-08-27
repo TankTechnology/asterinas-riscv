@@ -302,7 +302,9 @@ class MegrezDebugSimulationTests(unittest.TestCase):
                 ArtifactIdentity.from_path(name, paths[name], addresses[name])
                 for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
             ),
-            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            bootargs=(
+                "console=ttyS0 loglevel=info init=/init asterinas.reboot_after=180"
+            ),
             smp=4,
             sv39=True,
             markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
@@ -333,6 +335,7 @@ class MegrezDebugSimulationTests(unittest.TestCase):
                         {
                             "passed": passed,
                             "profile": "generic-sv39-smp4-tcp-probe",
+                            "device_set": "virtio-net-slirp",
                             "status": "PASS" if passed else "FAIL",
                             "terminal_classification": "BOOT_COMPLETED",
                             "effective_bootargs": self.plan.bootargs,
@@ -345,6 +348,10 @@ class MegrezDebugSimulationTests(unittest.TestCase):
                                     "rv64,sv48=false,svpbmt=true,zkr=true,"
                                     "svadu=false,svade=true"
                                 ),
+                                "-netdev",
+                                "user,id=net0",
+                                "-device",
+                                "virtio-net-device,netdev=net0",
                             ],
                         }
                     )
@@ -394,6 +401,11 @@ class MegrezDebugSimulationTests(unittest.TestCase):
         self.assertIs(prepare_options["capture_output"], False)
         run, _run_options = calls[1]
         self.assertIn("generic-sv39-smp4-tcp-probe", run)
+        self.assertEqual(
+            run[run.index("--device-set") + 1],
+            "virtio-net-slirp",
+        )
+        self.assertNotIn("--bootargs-override", run)
         self.assertEqual(Path(run[run.index("--result") + 1]).name, "qemu-result.json")
 
     def test_fast_simulation_invalidates_stale_results_before_prepare(self) -> None:

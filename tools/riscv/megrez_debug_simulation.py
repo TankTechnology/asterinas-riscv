@@ -23,6 +23,7 @@ from tools.riscv.megrez_debug_contract import (
 )
 
 FAST_PROFILE = "generic-sv39-smp4-tcp-probe"
+FAST_DEVICE_SET = "virtio-net-slirp"
 MAX_RUN_RESULT_BYTES = 8 * 1024 * 1024
 DEFAULT_TIMEOUT = 300.0
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -228,6 +229,8 @@ def simulate_fast(
             "run",
             "--profile",
             FAST_PROFILE,
+            "--device-set",
+            FAST_DEVICE_SET,
             "--uboot",
             str(build / "u-boot"),
             "--boot-disk",
@@ -242,8 +245,6 @@ def simulate_fast(
             str(output / "marker-event.txt"),
             "--result",
             str(qemu_result),
-            "--bootargs-override",
-            plan.bootargs,
         ],
         environment=environment,
         repository_root=repository,
@@ -258,6 +259,7 @@ def simulate_fast(
     if (
         guarded.get("passed") is not True
         or guarded.get("profile") != FAST_PROFILE
+        or guarded.get("device_set") != FAST_DEVICE_SET
         or guarded.get("status") != "PASS"
         or guarded.get("terminal_classification") != "BOOT_COMPLETED"
         or guarded.get("effective_bootargs") != plan.bootargs
@@ -268,6 +270,9 @@ def simulate_fast(
         or "-cpu" not in qemu_arguments
         or qemu_arguments[qemu_arguments.index("-cpu") + 1 :][:1]
         != ["rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"]
+        or qemu_arguments.count("-netdev") != 1
+        or qemu_arguments[qemu_arguments.index("-netdev") + 1 :][:1] != ["user,id=net0"]
+        or qemu_arguments.count("virtio-net-device,netdev=net0") != 1
     ):
         raise SimulationError("qemu-gate-failed")
 
