@@ -12,7 +12,11 @@ use crate::{
     fs::utils::{Endpoint, EndpointState},
     net::socket::{
         unix::{
-            UnixSocketAddr, addr::UnixSocketAddrBound, cred::SocketCred, ctrl_msg::AuxiliaryData,
+            UnixSocketAddr,
+            addr::UnixSocketAddrBound,
+            cred::SocketCred,
+            ctrl_msg::AuxiliaryData,
+            scm_graph::{PermanentEdge, ScmGraphNode, StreamStorageNode},
         },
         util::{ControlMessage, RecvFlags, RecvOutput, SockShutdownCmd},
     },
@@ -29,6 +33,7 @@ pub(super) struct Connected {
     // so it must not belong to `Inner`.
     addr: Option<UnixSocketAddrBound>,
     inner: Endpoint<Inner>,
+    owner_edge: Option<PermanentEdge>,
 }
 
 impl Connected {
@@ -42,6 +47,7 @@ impl Connected {
     ) -> (Connected, Connected) {
         let (this_writer, peer_reader) = RingBuffer::new(UNIX_STREAM_DEFAULT_BUF_SIZE).split();
         let (peer_writer, this_reader) = RingBuffer::new(UNIX_STREAM_DEFAULT_BUF_SIZE).split();
+        let storage_node = StreamStorageNode::new();
 
         let this_inner = Inner {
             addr: Once::new(),
@@ -52,6 +58,7 @@ impl Connected {
             has_aux: AtomicBool::new(false),
             is_pass_cred: AtomicBool::new(false),
             cred,
+            storage_node: storage_node.clone(),
         };
         let peer_inner = Inner {
             addr: Once::new(),
@@ -62,6 +69,7 @@ impl Connected {
             has_aux: AtomicBool::new(false),
             is_pass_cred: AtomicBool::new(false),
             cred: peer_cred,
+            storage_node,
         };
 
         if let Some(addr) = addr.as_ref() {
@@ -76,13 +84,36 @@ impl Connected {
         let this = Connected {
             addr,
             inner: this_inner,
+            owner_edge: None,
         };
         let peer = Connected {
             addr: peer_addr,
             inner: peer_inner,
+            owner_edge: None,
         };
 
         (this, peer)
+    }
+
+    /// Attaches this endpoint's shared storage to its first strong owner.
+    pub(super) fn attach_owner(&mut self, owner: &impl ScmGraphNode) {
+        debug_assert!(self.owner_edge.is_none());
+        let edge = PermanentEdge::new(owner, &self.inner.this_end().storage_node)
+            .expect("new stream storage cannot close an SCM ownership cycle");
+        self.owner_edge = Some(edge);
+    }
+
+    pub(super) fn has_owner(&self) -> bool {
+        self.owner_edge.is_some()
+    }
+
+    /// Transfers storage ownership without exposing a temporarily unowned connection.
+    pub(super) fn replace_owner(&mut self, owner: &impl ScmGraphNode) {
+        let new_edge = PermanentEdge::new(owner, &self.inner.this_end().storage_node)
+            .expect("a fresh accepted socket cannot close an SCM ownership cycle");
+        let old_edge = self.owner_edge.replace(new_edge);
+        debug_assert!(old_edge.is_some());
+        drop(old_edge);
     }
 
     pub(super) fn addr(&self) -> Option<&UnixSocketAddrBound> {
@@ -410,12 +441,29 @@ impl Connected {
     pub(super) fn peer_cred(&self) -> &SocketCred {
         &self.inner.peer_end().cred
     }
+
+    #[cfg(ktest)]
+    pub(super) fn storage_node(&self) -> StreamStorageNode {
+        self.inner.this_end().storage_node.clone()
+    }
 }
 
 impl Drop for Connected {
     fn drop(&mut self) {
+        // Auxiliary data sent by the peer is owned by `peer_end().all_aux`. Drain it before the
+        // endpoint and its graph ownership edge disappear, and never run file destructors while
+        // holding the queue's spin lock.
+        let queued_aux = {
+            let peer_end = self.inner.peer_end();
+            let mut all_aux = peer_end.all_aux.lock();
+            peer_end.has_aux.store(false, Ordering::Relaxed);
+            core::mem::take(&mut *all_aux)
+        };
+        drop(queued_aux);
+
         self.inner.shutdown();
         self.inner.peer_shutdown();
+        drop(self.owner_edge.take());
     }
 }
 
@@ -429,6 +477,7 @@ struct Inner {
     has_aux: AtomicBool,
     is_pass_cred: AtomicBool,
     cred: SocketCred,
+    storage_node: StreamStorageNode,
 }
 
 impl AsRef<EndpointState> for Inner {
@@ -444,3 +493,93 @@ struct RangedAuxiliaryData {
 }
 
 pub(in crate::net) const UNIX_STREAM_DEFAULT_BUF_SIZE: usize = 65536;
+
+#[cfg(ktest)]
+mod test {
+    use aster_rights::ReadDupOp;
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::net::socket::unix::scm_graph::{
+        SocketNode, StreamBacklogNode, permanent_edge_count,
+    };
+
+    #[ktest]
+    fn socketpair_storage_has_exact_owners_and_releases_them() {
+        let (mut first, mut second) = new_pair();
+        let first_socket = SocketNode::new();
+        let second_socket = SocketNode::new();
+        let storage = first.storage_node();
+        let weak_storage = storage.downgrade();
+
+        first.attach_owner(&first_socket);
+        second.attach_owner(&second_socket);
+        assert_eq!(permanent_edge_count(&first_socket, &storage), 1);
+        assert_eq!(permanent_edge_count(&second_socket, &storage), 1);
+
+        drop(first);
+        assert_eq!(permanent_edge_count(&first_socket, &storage), 0);
+        assert_eq!(permanent_edge_count(&second_socket, &storage), 1);
+        drop(second);
+        assert_eq!(permanent_edge_count(&second_socket, &storage), 0);
+
+        assert!(weak_storage.is_alive());
+        drop(storage);
+        assert!(!weak_storage.is_alive());
+    }
+
+    #[ktest]
+    fn accept_owner_transfer_adds_before_removing_backlog_edge() {
+        let (mut client, mut server) = new_pair();
+        let client_socket = SocketNode::new();
+        let backlog = StreamBacklogNode::new();
+        let accepted_socket = SocketNode::new();
+        let storage = server.storage_node();
+
+        client.attach_owner(&client_socket);
+        server.attach_owner(&backlog);
+        assert_eq!(permanent_edge_count(&backlog, &storage), 1);
+
+        server.replace_owner(&accepted_socket);
+        assert_eq!(permanent_edge_count(&backlog, &storage), 0);
+        assert_eq!(permanent_edge_count(&accepted_socket, &storage), 1);
+        drop(server);
+        assert_eq!(permanent_edge_count(&accepted_socket, &storage), 0);
+        drop(client);
+    }
+
+    #[ktest]
+    fn dropping_one_endpoint_drains_only_its_receive_direction() {
+        let (first, second) = new_pair();
+        push_empty_aux(first.inner.peer_end());
+        push_empty_aux(first.inner.this_end());
+        assert_eq!(second.inner.this_end().all_aux.lock().len(), 1);
+        assert_eq!(second.inner.peer_end().all_aux.lock().len(), 1);
+
+        drop(first);
+        assert!(second.inner.this_end().all_aux.lock().is_empty());
+        assert_eq!(second.inner.peer_end().all_aux.lock().len(), 1);
+        drop(second);
+    }
+
+    fn new_pair() -> (Connected, Connected) {
+        let cred = SocketCred::<ReadDupOp>::new_test_root();
+        Connected::new_pair(
+            None,
+            None,
+            EndpointState::default(),
+            EndpointState::default(),
+            cred.dup().restrict(),
+            cred.restrict(),
+        )
+    }
+
+    fn push_empty_aux(inner: &Inner) {
+        inner.all_aux.lock().push_back(RangedAuxiliaryData {
+            data: AuxiliaryData::default(),
+            start: Wrapping(0),
+            end: Wrapping(0),
+        });
+        inner.has_aux.store(true, Ordering::Relaxed);
+    }
+}

@@ -22,6 +22,7 @@ use crate::{
         unix::{
             addr::{UnixSocketAddrBound, UnixSocketAddrKey},
             cred::SocketCred,
+            scm_graph::{SocketNode, StreamBacklogNode},
             stream::socket::OptionSet,
         },
         util::SockShutdownCmd,
@@ -181,6 +182,7 @@ pub(super) struct Backlog {
     pollee: Pollee,
     backlog: AtomicUsize,
     incoming_conns: SpinLock<Option<VecDeque<Connected>>>,
+    scm_node: StreamBacklogNode,
     connect_wait_queue: WaitQueue,
     listener_cred: SocketCred<ReadDupOp>,
     is_pass_cred: AtomicBool,
@@ -195,6 +197,24 @@ impl Backlog {
         is_shutdown: bool,
         is_seqpacket: bool,
     ) -> Self {
+        Self::new_with_cred(
+            addr,
+            pollee,
+            backlog,
+            is_shutdown,
+            is_seqpacket,
+            SocketCred::<ReadDupOp>::new_current(),
+        )
+    }
+
+    fn new_with_cred(
+        addr: UnixSocketAddrBound,
+        pollee: Pollee,
+        backlog: usize,
+        is_shutdown: bool,
+        is_seqpacket: bool,
+        listener_cred: SocketCred<ReadDupOp>,
+    ) -> Self {
         let incoming_sockets = if is_shutdown {
             None
         } else {
@@ -206,8 +226,9 @@ impl Backlog {
             pollee,
             backlog: AtomicUsize::new(backlog),
             incoming_conns: SpinLock::new(incoming_sockets),
+            scm_node: StreamBacklogNode::new(),
             connect_wait_queue: WaitQueue::new(),
-            listener_cred: SocketCred::<ReadDupOp>::new_current(),
+            listener_cred,
             is_pass_cred: AtomicBool::new(false),
             is_seqpacket,
         }
@@ -244,7 +265,13 @@ impl Backlog {
     }
 
     fn shutdown(&self) {
-        *self.incoming_conns.lock() = None;
+        let pending = {
+            let mut incoming_conns = self.incoming_conns.lock();
+            incoming_conns.take()
+        };
+        // `Connected::drop` drains queued files and updates the SCM graph. Neither operation may
+        // run under the backlog spin lock.
+        drop(pending);
 
         self.pollee.notify(SHUT_READ_EVENTS);
         self.connect_wait_queue.wake_all();
@@ -275,6 +302,7 @@ impl Backlog {
         pollee: Pollee,
         options: &OptionSet,
         is_seqpacket: bool,
+        client_node: &SocketNode,
     ) -> Result<Connected, (Error, Init)> {
         if is_seqpacket != self.is_seqpacket {
             // FIXME: According to the Linux implementation, we should avoid this error by
@@ -311,11 +339,13 @@ impl Backlog {
             ));
         }
 
-        let (client_conn, server_conn) = init.into_connected(
+        let (mut client_conn, mut server_conn) = init.into_connected(
             self.addr.clone(),
             pollee,
             self.listener_cred.dup().restrict(),
         );
+        client_conn.attach_owner(client_node);
+        server_conn.attach_owner(&self.scm_node);
         options.apply_to_connected(&client_conn);
         if self.is_pass_cred.load(Ordering::Relaxed) {
             server_conn.set_pass_cred(true);
@@ -358,4 +388,99 @@ pub(super) fn get_backlog(server_key: &UnixSocketAddrKey) -> Result<Arc<Backlog>
             "no socket is listening at the remote address",
         )
     })
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::net::socket::unix::{UnixSocketAddr, scm_graph::permanent_edge_count};
+
+    #[ktest]
+    fn backlog_full_fails_before_creating_owned_storage() {
+        let backlog = new_backlog(0);
+        let client_node = SocketNode::new();
+        let (error, _init) = backlog
+            .push_incoming(
+                Init::new(),
+                Pollee::new(),
+                &OptionSet::new(),
+                false,
+                &client_node,
+            )
+            .err()
+            .unwrap();
+
+        assert_eq!(error.error(), Errno::EAGAIN);
+        assert!(backlog.incoming_conns.lock().as_ref().unwrap().is_empty());
+    }
+
+    #[ktest]
+    fn pending_owner_transfers_to_accepted_socket() {
+        let backlog = new_backlog(1);
+        let client_node = SocketNode::new();
+        let client = push_incoming(&backlog, &client_node);
+        let storage = client.storage_node();
+        let weak_storage = storage.downgrade();
+
+        assert_eq!(permanent_edge_count(&client_node, &storage), 1);
+        assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 1);
+        let mut pending = backlog.pop_incoming().unwrap();
+        assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 1);
+
+        // `UnixStreamSocket::new_connected` initializes the global SockFs mount, which is not
+        // available in the bare ktest runner. Exercise its ownership-transfer operation directly.
+        let accepted_node = SocketNode::new();
+        pending.replace_owner(&accepted_node);
+        assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 0);
+        assert_eq!(permanent_edge_count(&accepted_node, &storage), 1);
+
+        drop(pending);
+        drop(client);
+        assert_eq!(permanent_edge_count(&client_node, &storage), 0);
+        drop(storage);
+        assert!(!weak_storage.is_alive());
+    }
+
+    #[ktest]
+    fn backlog_shutdown_drops_pending_owner_outside_lock() {
+        let backlog = new_backlog(1);
+        let client_node = SocketNode::new();
+        let client = push_incoming(&backlog, &client_node);
+        let storage = client.storage_node();
+
+        assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 1);
+        backlog.shutdown();
+        assert!(backlog.incoming_conns.lock().is_none());
+        assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 0);
+        assert_eq!(permanent_edge_count(&client_node, &storage), 1);
+
+        drop(client);
+        assert_eq!(permanent_edge_count(&client_node, &storage), 0);
+    }
+
+    fn new_backlog(capacity: usize) -> Backlog {
+        Backlog::new_with_cred(
+            UnixSocketAddr::Unnamed.bind().unwrap(),
+            Pollee::new(),
+            capacity,
+            false,
+            false,
+            SocketCred::<ReadDupOp>::new_test_root(),
+        )
+    }
+
+    fn push_incoming(backlog: &Backlog, client_node: &SocketNode) -> Connected {
+        match backlog.push_incoming(
+            Init::new(),
+            Pollee::new(),
+            &OptionSet::new(),
+            false,
+            client_node,
+        ) {
+            Ok(connected) => connected,
+            Err((error, _init)) => panic!("unexpected connect error: {:?}", error),
+        }
+    }
 }

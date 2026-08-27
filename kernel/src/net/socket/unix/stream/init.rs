@@ -63,7 +63,10 @@ impl Init {
 
         pollee.invalidate();
 
+        #[cfg(not(ktest))]
         let cred = SocketCred::<ReadOp>::new_current();
+        #[cfg(ktest)]
+        let cred = SocketCred::<ReadOp>::new_test_root();
         let (this_conn, peer_conn) = Connected::new_pair(
             addr,
             Some(peer_addr),

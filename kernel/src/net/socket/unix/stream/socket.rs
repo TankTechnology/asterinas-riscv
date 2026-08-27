@@ -21,7 +21,10 @@ use crate::{
             Error as SocketError, PeerCred, PeerGroups, SocketOption, macros::sock_option_mut,
         },
         private::SocketPrivate,
-        unix::{CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData},
+        unix::{
+            CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData,
+            scm_graph::SocketNode,
+        },
         util::{
             ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd,
             SocketAddr,
@@ -45,6 +48,7 @@ pub struct UnixStreamSocket {
     timeouts: SocketTimeouts,
 
     socket_type: SockType,
+    scm_node: SocketNode,
     pollee: Pollee,
     common: FileCommon,
 }
@@ -130,7 +134,7 @@ pub(super) struct OptionSet {
 }
 
 impl OptionSet {
-    pub(self) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             socket: SocketOptionSet::new_unix_stream(),
         }
@@ -186,6 +190,7 @@ impl UnixStreamSocket {
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             socket_type,
+            scm_node: SocketNode::new(),
             pollee: Pollee::new(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
@@ -213,11 +218,17 @@ impl UnixStreamSocket {
     }
 
     pub(super) fn new_connected(
-        connected: Connected,
+        mut connected: Connected,
         options: OptionSet,
         is_nonblocking: bool,
         socket_type: SockType,
     ) -> Arc<Self> {
+        let scm_node = SocketNode::new();
+        if connected.has_owner() {
+            connected.replace_owner(&scm_node);
+        } else {
+            connected.attach_owner(&scm_node);
+        }
         let cloned_pollee = connected.cloned_pollee();
         let status_flags = if is_nonblocking {
             StatusFlags::O_NONBLOCK
@@ -229,6 +240,7 @@ impl UnixStreamSocket {
             options: RwLock::new(options),
             timeouts: SocketTimeouts::new(),
             socket_type,
+            scm_node,
             pollee: cloned_pollee,
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
@@ -292,6 +304,7 @@ impl UnixStreamSocket {
                 self.pollee.clone(),
                 &self.options.read(),
                 self.is_seqpacket(),
+                &self.scm_node,
             ) {
                 Ok(connected) => connected,
                 Err((err, init)) => return (State::Init(init), Err(err)),
