@@ -152,7 +152,9 @@ class ConcreteOperations:
         paths = self.input_paths
         manifest = load_manifest(paths["manifest"])
         validate_frozen_root(paths["root_image"], manifest, paths["packages_lock"])
-        checksums = _load_package_checksums(paths["package_checksums"])
+        checksums = _load_package_checksums(
+            paths["package_checksums"], schema_version=manifest.schema_version
+        )
         if checksums != manifest.downloaded_packages:
             raise GateFailure("package-checksums do not match the manifest")
         with tempfile.TemporaryDirectory(prefix="debian-gate-dtb-") as directory:
