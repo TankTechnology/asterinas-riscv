@@ -7,8 +7,7 @@ use super::{
     futex::{FutexVisibility, futex_wake},
     ptrace::PtraceEvent,
     robust_list::wake_robust_futex,
-    rseq::RSEQ_CPU_ID_OFFSET,
-    rseq::RSEQ_CPU_ID_UNINITIALIZED,
+    rseq::{RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED},
 };
 use crate::{
     context::current_userspace,
@@ -17,7 +16,10 @@ use crate::{
         TermStatus,
         exit::{drop_after, exit_process},
         pid_table,
-        signal::{constants::SIGKILL, signals::kernel::KernelSignal},
+        signal::{
+            constants::SIGKILL, provenance::trace_kernel_thread_enqueue,
+            signals::kernel::KernelSignal,
+        },
         task_set::TaskSet,
     },
     thread::{AsThread, Tid},
@@ -68,7 +70,7 @@ fn exit_internal(
         let in_evecve = tasks.in_execve();
 
         if is_exiting_group && !has_exited_group && !in_evecve {
-            sigkill_other_threads(&current_task, &tasks);
+            sigkill_other_threads(&current_task, &tasks, "exit-group-sibling");
             tasks.set_exited_group();
         }
 
@@ -127,7 +129,11 @@ fn exit_internal(
 }
 
 /// Sends `SIGKILL` to all other threads in the current process.
-pub(in crate::process) fn sigkill_other_threads(current_task: &Task, task_set: &TaskSet) {
+pub(in crate::process) fn sigkill_other_threads(
+    current_task: &Task,
+    task_set: &TaskSet,
+    reason: &'static str,
+) {
     debug_assert!(
         task_set
             .as_slice()
@@ -139,9 +145,10 @@ pub(in crate::process) fn sigkill_other_threads(current_task: &Task, task_set: &
         if core::ptr::eq(current_task, task.as_ref()) {
             continue;
         }
-        task.as_posix_thread()
-            .unwrap()
-            .enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
+        let sender = current_task.as_posix_thread().unwrap();
+        let target = task.as_posix_thread().unwrap();
+        trace_kernel_thread_enqueue(reason, sender, target);
+        target.enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
     }
 }
 
