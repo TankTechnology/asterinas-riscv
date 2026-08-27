@@ -165,6 +165,7 @@ _PROFILES = {
             "util-linux",
             "x11-utils",
             "xauth",
+            "xdotool",
             "xfonts-base",
             "xinit",
             "xserver-xorg-core",
@@ -186,6 +187,7 @@ _PROFILES = {
             "curl",
             "iproute2",
             "iputils-ping",
+            "xdotool",
         ),
     ),
 }

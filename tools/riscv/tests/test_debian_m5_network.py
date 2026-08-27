@@ -50,11 +50,16 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.assertEqual(m5.root_uuid, "182e1ea4-296d-5383-8bcb-ea67e40db074")
         self.assertEqual(
             m5.requested_packages,
-            tuple(sorted(m4.requested_packages + ("curl", "iproute2", "iputils-ping"))),
+            tuple(
+                sorted(
+                    m4.requested_packages
+                    + ("curl", "iproute2", "iputils-ping", "xdotool")
+                )
+            ),
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages + ("curl", "iproute2", "iputils-ping"),
+            m4.identity_packages + ("curl", "iproute2", "iputils-ping", "xdotool"),
         )
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
@@ -171,6 +176,12 @@ configure_and_normalize_rootfs
         installed = stage / "usr/lib/asterinas/desktop-m5-network-evidence"
         self.assertEqual(installed.read_bytes(), EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o755)
+        self.assertTrue(
+            (stage / "usr/lib/asterinas/desktop-m6-browser-evidence").is_file()
+        )
+        self.assertTrue(
+            (stage / "usr/share/asterinas/desktop-m6-javascript.html").is_file()
+        )
         unit = stage / "etc/systemd/system/asterinas-desktop-m5-network.service"
         self.assertIn(
             "ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence",
@@ -183,6 +194,15 @@ configure_and_normalize_rootfs
         self.assertTrue(
             (
                 stage / "etc/systemd/system/graphical.target.wants" / unit.name
+            ).is_symlink()
+        )
+        browser_unit = stage / "etc/systemd/system/asterinas-desktop-m6-browser.service"
+        browser_unit_text = browser_unit.read_text(encoding="utf-8")
+        self.assertIn("After=asterinas-desktop-m5-network.service", browser_unit_text)
+        self.assertIn("asterinas-desktop-m4-evidence.service", browser_unit_text)
+        self.assertTrue(
+            (
+                stage / "etc/systemd/system/graphical.target.wants" / browser_unit.name
             ).is_symlink()
         )
 
@@ -315,7 +335,10 @@ exit 0
             console.read_text().splitlines(), list(DESKTOP_M5_QEMU_MILESTONES)
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 10.0.2.3\n")
-        self.assertEqual(url_file.read_text(), "https://www.baidu.com/\n")
+        self.assertEqual(
+            url_file.read_text(),
+            "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
+        )
         self.assertIn("https://www.baidu.com/", curl_log.read_text())
 
     def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:

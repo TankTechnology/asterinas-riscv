@@ -3,9 +3,10 @@
 ## Goal
 
 Extend the existing Asterinas Debian M5 QEMU gate with honest browser-level
-evidence: NetSurf must foreground a Baidu document before the first screenshot,
-and a local page must classify the packaged JavaScript engine separately before
-the second screenshot. Network success remains independent from JavaScript.
+evidence: NetSurf must foreground a PNG served by `www.baidu.com` before the
+first screenshot, and a local page must classify the packaged JavaScript engine
+separately before the second screenshot. Network success remains independent
+from JavaScript and from the modern Baidu homepage's script workload.
 
 ## Existing boundary
 
@@ -24,10 +25,11 @@ Chromium engine and must not be presented as such.
 
 1. **Guest window control plus two host screenshots (selected).** Add `xdotool`
    to the frozen M5 identity. A bounded guest evidence service activates the
-   NetSurf window, verifies a Baidu-derived window title, emits a remote marker,
-   pauses for the host screenshot, navigates to a local JavaScript fixture, and
-   emits one classified status. This is deterministic and testable without
-   assuming a Matchbox stacking order.
+   NetSurf window, verifies the Baidu-hosted image title, emits a resource-bound
+   remote marker, pauses for the host screenshot, navigates to a local
+   JavaScript fixture, and emits one classified status. This is deterministic
+   and testable without assuming a Matchbox stacking order or full modern-page
+   compatibility.
 2. **QEMU HMP keyboard input only.** Repeated Alt-Tab and typed URLs avoid one
    package but depend on focus, stacking order, keyboard layout, and timing. A
    screenshot could select the wrong window without explaining why.
@@ -42,22 +44,24 @@ session keeps its local welcome fallback, but when the trusted M5 URL file is
 present it launches NetSurf with `--enable_javascript=1` and the URL as one
 quoted argument.
 
-The root image contains a fixed local HTML fixture. Its static title is
-`ASTERINAS_JS_PENDING`; a small inline script changes both the title and a
-visible DOM token to `ASTERINAS_JS_PASS`. No external resource participates in
-this smoke test.
+The root image contains two fixed local HTML fixtures. The entry fixture has a
+static `ASTERINAS_JS_PENDING` title; its only script navigates to a second
+document whose title and visible token are `ASTERINAS_JS_PASS`. The separate
+document avoids relying on NetSurf synchronizing a dynamic `document.title`
+change to its X11 window title. No external resource participates in this smoke
+test.
 
 A new bounded M6 evidence script runs only after the M5 network service and M4
 desktop evidence have completed. It:
 
 1. locates one visible NetSurf window using `xdotool`;
-2. waits for a window title containing either `baidu` or `百度`;
+2. waits for a title identifying the Baidu-hosted `result.png` resource;
 3. activates that exact window and emits a stable remote-render marker;
 4. waits five seconds so the host can capture the foreground remote page;
 5. uses `xdotool` to navigate that same window to the local fixture;
-6. reports `limited-pass` when the title becomes `ASTERINAS_JS_PASS`, `failed`
-   when the static page loads without the title transition, or `disabled` when
-   the session explicitly did not request JavaScript;
+6. reports `limited-pass` when script-only navigation loads the
+   `ASTERINAS_JS_PASS` document, `failed` when the pending page remains, or
+   `disabled` when the session explicitly did not request JavaScript;
 7. emits one final marker carrying the same status.
 
 Any remote-title or window-control failure fails the M6 browser gate. A
@@ -88,7 +92,8 @@ Every production behavior is introduced through a failing test first.
 Runtime validation rebuilds only the signed M5 rootfs, verifies the frozen
 manifest and package lock, then runs one Asterinas QEMU M6 gate with a 300-second
 cold-boot budget. Completion requires `passed:true`, two bounded non-blank
-screenshots, a remote Baidu title marker, and an explicit JavaScript status.
+screenshots, a resource-bound Baidu PNG marker, and an explicit JavaScript
+status.
 
 ## Non-goals
 
