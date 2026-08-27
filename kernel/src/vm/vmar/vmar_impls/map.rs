@@ -5,7 +5,7 @@ use core::num::NonZeroUsize;
 use super::{MappedMemory, MappedVmo, RssDelta, VmMapping, Vmar};
 use crate::{
     fs::{
-        file::{FileLike, Mappable},
+        file::{FileLike, Mappable, MmapLifetime},
         ramfs::memfd::MemfdInode,
         vfs::path::Path,
     },
@@ -358,7 +358,10 @@ impl<'a> VmarMapOptions<'a> {
             VmarMapOffset::Any => inner.alloc_free_region(map_size, align)?.start,
         };
 
-        let mut map_vmo = |vmo: Arc<Vmo>, mapped_offset: usize| -> Result<MappedMemory> {
+        let mut map_vmo = |vmo: Arc<Vmo>,
+                           mapped_offset: usize,
+                           lifetime: Option<Arc<dyn MmapLifetime>>|
+         -> Result<MappedMemory> {
             // For inode-backed files the mapped VMO must be the inode's page
             // cache. Special files may map standalone VMOs.
             if let Some(ref path) = path
@@ -382,22 +385,33 @@ impl<'a> VmarMapOptions<'a> {
                 vmo,
                 mapped_offset,
                 is_writable_tracked,
+                lifetime,
             )?))
         };
 
         // Parse the `Mappable` and prepare the `MappedMemory`.
         let (mapped_mem, io_mem) = match mappable {
-            Some(Mappable::Vmo(vmo)) => (map_vmo(vmo, vmo_offset)?, None),
-            Some(Mappable::VmoRanges { vmo, ranges }) => {
-                if !is_mmap_range_authorized(&ranges, vmo_offset, map_size) {
+            Some(Mappable::Vmo(vmo)) => (map_vmo(vmo, vmo_offset, None)?, None),
+            Some(Mappable::VmoGuardedRanges { vmo, ranges }) => {
+                let Some(range) = ranges.iter().find(|range| {
+                    is_mmap_range_authorized(
+                        core::slice::from_ref(range.range()),
+                        vmo_offset,
+                        map_size,
+                    )
+                }) else {
                     return_errno_with_message!(Errno::EACCES, "mmap range is not authorized");
-                }
-                (map_vmo(vmo, vmo_offset)?, None)
+                };
+                (
+                    map_vmo(vmo, vmo_offset, Some(range.lifetime().clone()))?,
+                    None,
+                )
             }
-            Some(Mappable::VmoWindow {
+            Some(Mappable::VmoGuardedWindow {
                 vmo,
                 vmo_offset: window_offset,
                 size,
+                lifetime,
             }) => {
                 let end = vmo_offset
                     .checked_add(map_size)
@@ -408,7 +422,7 @@ impl<'a> VmarMapOptions<'a> {
                 let mapped_offset = window_offset
                     .checked_add(vmo_offset)
                     .ok_or_else(|| Error::with_message(Errno::EACCES, "VMO offset overflows"))?;
-                (map_vmo(vmo, mapped_offset)?, None)
+                (map_vmo(vmo, mapped_offset, Some(lifetime))?, None)
             }
             Some(Mappable::IoMem(io_mem)) => (MappedMemory::Device, Some(io_mem)),
             None => (MappedMemory::Anonymous, None),

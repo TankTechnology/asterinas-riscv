@@ -29,7 +29,7 @@ mod resource_tracking;
 mod virtio_gpu;
 
 use core::{
-    fmt::Formatter,
+    fmt::{Debug, Formatter},
     ops::{
         Bound::{Excluded, Included},
         Range,
@@ -38,7 +38,10 @@ use core::{
 };
 
 use aster_time::read_monotonic_time;
-use aster_virtio::device::gpu::{device::GpuDevice, first_device};
+use aster_virtio::device::{
+    VirtioDeviceError,
+    gpu::{device::GpuDevice, first_device},
+};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
 
@@ -54,7 +57,7 @@ use crate::{
     events::IoEvents,
     fs::{
         file::{
-            Mappable, PerOpenFileOps, StatusFlags,
+            GuardedVmoRange, Mappable, PerOpenFileOps, StatusFlags,
             file_table::{FileDesc, RawFileDesc, WithFileTable},
         },
         vfs::{inode::FileOps, path::Path},
@@ -183,9 +186,9 @@ impl AtomicKmsObject {
 /// `Mappable::Vmo` per file and selects a buffer by its byte offset within it.
 ///
 /// 64 MiB holds ~15 1280x800@32bpp buffers — enough for a GBM surface's
-/// back/front/shadow buffers plus a few app allocations. The pool remains a
-/// bump allocator because an established userspace mapping can outlive its GEM
-/// handle; reusing that span would alias an unrelated later allocation.
+/// back/front/shadow buffers plus a few app allocations.
+/// Page-granular spans are reused only after GEM, mmap, and host-resource
+/// owners all release them.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
@@ -203,11 +206,8 @@ struct GpuManager {
     gpu: Arc<GpuDevice>,
     /// The contiguous pool all dumb buffers are carved out of.
     pool: Mutex<Option<Arc<Vmo>>>,
-    /// Serialized bump-allocator cursor into the pool (page-aligned).
-    ///
-    /// A pending allocation holds this sleeping mutex
-    /// until its creating ioctl publishes the returned handle or rolls the cursor back.
-    next_offset: Mutex<usize>,
+    /// Lifetime-aware allocator for page-aligned sub-ranges of `pool`.
+    dumb_pool: Arc<dumb::DumbPool>,
     /// GEM objects by id. `object_id` is a monotonically increasing counter.
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
     /// Total owners across all entries in `gem_objects`.
@@ -251,6 +251,32 @@ struct GpuManager {
     auth_magics: SpinLock<BTreeMap<u32, Weak<AtomicBool>>>,
     next_auth_magic: AtomicU32,
     next_file_id: AtomicU64,
+}
+
+/// A VMA-owned GEM reference; the final split/forked mapping releases it.
+struct GemMappingLifetime {
+    gpu_manager: Arc<GpuManager>,
+    object_id: u32,
+}
+
+impl Debug for GemMappingLifetime {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("GemMappingLifetime")
+            .field("object_id", &self.object_id)
+            .finish()
+    }
+}
+
+impl Drop for GemMappingLifetime {
+    fn drop(&mut self) {
+        if let Err(error) = self.gpu_manager.release_gem_object(self.object_id) {
+            warn!(
+                "cannot release GEM object {} after its final mapping: {:?}",
+                self.object_id, error
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -325,7 +351,7 @@ impl GpuManager {
         Self {
             gpu,
             pool: Mutex::new(None),
-            next_offset: Mutex::new(0),
+            dumb_pool: dumb::DumbPool::new(DUMB_POOL_SIZE),
             gem_objects: SpinLock::new(BTreeMap::new()),
             gem_references: AtomicU64::new(0),
             gem_names: SpinLock::new(BTreeMap::new()),
@@ -396,7 +422,7 @@ impl GpuManager {
     /// The snapshot is intended for quiescent leak tests. Concurrent operations
     /// may advance individual containers between lock acquisitions.
     fn resource_snapshot(&self) -> DrmResourceSnapshot {
-        let dumb_pool_used_bytes = *self.next_offset.lock();
+        let dumb_pool_usage = self.dumb_pool.usage();
         let gem_object_count = self.gem_objects.lock().len();
 
         let gem_resources = self.gem_resources.lock();
@@ -410,7 +436,8 @@ impl GpuManager {
         let context_counts = self.virgl_contexts.counts();
         let backend = self.gpu.resource_snapshot();
         DrmResourceSnapshot {
-            dumb_pool_used_bytes,
+            dumb_pool_used_bytes: dumb_pool_usage.used_bytes,
+            dumb_pool_high_water_bytes: dumb_pool_usage.high_water_bytes,
             dumb_pool_capacity_bytes: DUMB_POOL_SIZE,
             gem_objects: gem_object_count,
             gem_references: self.gem_references.load(Ordering::Relaxed),
@@ -442,7 +469,20 @@ impl GpuManager {
         })?;
         object.ref_count.store(references, Ordering::Relaxed);
         self.gem_references.fetch_add(1, Ordering::Relaxed);
-        Ok(object.buffer)
+        Ok(object.buffer.clone())
+    }
+
+    /// Retains one GEM object for a mapping that may outlive every file handle.
+    fn retain_gem_mapping(
+        self: &Arc<Self>,
+        object_id: u32,
+    ) -> Result<(DumbBuffer, Arc<GemMappingLifetime>)> {
+        let buffer = self.retain_gem_object(object_id)?;
+        let lifetime = Arc::new(GemMappingLifetime {
+            gpu_manager: self.clone(),
+            object_id,
+        });
+        Ok((buffer, lifetime))
     }
 
     /// Drops one GEM owner and destroys global state after the final reference.
@@ -740,23 +780,19 @@ mod tests {
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct DumbBuffer {
     offset: usize,
     size: usize,
     width: u32,
     height: u32,
     bpp: u32,
+    allocation: Arc<dumb::PoolAllocation>,
 }
 
 impl DumbBuffer {
-    fn mapped_range(self) -> Option<Range<usize>> {
-        let mapped_size = self
-            .size
-            .checked_add(PAGE_SIZE - 1)?
-            .checked_div(PAGE_SIZE)?
-            .checked_mul(PAGE_SIZE)?;
-        Some(self.offset..self.offset.checked_add(mapped_size)?)
+    fn mapped_range(&self) -> Option<Range<usize>> {
+        Some(self.offset..self.offset.checked_add(self.allocation.size())?)
     }
 }
 
@@ -1068,9 +1104,24 @@ impl DriHandle {
             self.gpu_manager.drain_pending_context_cleanup();
             // `VIRTIO_GPU_F_CONTEXT_INIT` is not negotiated, so the legacy
             // context-create payload must leave `context_init` at zero.
-            self.gpu_manager
+            let create_result = self
+                .gpu_manager
                 .gpu
-                .ctx_create(context.id, 0, b"asterinas-drm")
+                .ctx_create(context.id, 0, b"asterinas-drm");
+            if matches!(create_result, Err(VirtioDeviceError::AmbiguousCompletion)) {
+                self.gpu_manager.virgl_contexts.record_created(context.id);
+                if self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+                    self.gpu_manager.virgl_contexts.record_destroyed(context.id);
+                } else {
+                    self.gpu_manager.virgl_contexts.defer_destroy(context.id);
+                }
+                context.is_poisoned = true;
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "virgl context creation completion is ambiguous"
+                );
+            }
+            create_result
                 .map_err(|_| Error::with_message(Errno::EIO, "cannot create virgl context"))?;
             self.gpu_manager.virgl_contexts.record_created(context.id);
             context.is_created = true;
@@ -1340,17 +1391,16 @@ impl DriHandle {
     }
 
     /// Resolves mmap ranges without allocating while the GEM table is locked.
-    fn snapshot_mappable_ranges(&self, object_ids: &[u32]) -> Vec<Range<usize>> {
+    fn snapshot_mappable_ranges(&self, object_ids: &[u32]) -> Vec<GuardedVmoRange> {
         let mut ranges = Vec::with_capacity(object_ids.len());
-        let objects = self.gpu_manager.gem_objects.lock();
         for object_id in object_ids {
-            let Some(range) = objects
-                .get(object_id)
-                .and_then(|object| object.buffer.mapped_range())
-            else {
+            let Ok((buffer, lifetime)) = self.gpu_manager.retain_gem_mapping(*object_id) else {
                 continue;
             };
-            ranges.push(range);
+            let Some(range) = buffer.mapped_range() else {
+                continue;
+            };
+            ranges.push(GuardedVmoRange::new(range, lifetime));
         }
         ranges
     }
@@ -1492,7 +1542,7 @@ impl PerOpenFileOps for DriHandle {
             })?;
         let object_ids = self.snapshot_object_ids();
         let ranges = self.snapshot_mappable_ranges(&object_ids);
-        Ok(Mappable::VmoRanges { vmo: pool, ranges })
+        Ok(Mappable::VmoGuardedRanges { vmo: pool, ranges })
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {

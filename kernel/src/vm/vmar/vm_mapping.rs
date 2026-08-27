@@ -23,9 +23,12 @@ use ostd::{
 
 use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
 use crate::{
-    fs::vfs::{
-        inode::Inode,
-        path::{Path, PathResolver},
+    fs::{
+        file::MmapLifetime,
+        vfs::{
+            inode::Inode,
+            path::{Path, PathResolver},
+        },
     },
     prelude::*,
     process::LockedHeap,
@@ -895,11 +898,18 @@ pub(super) struct MappedVmo {
     /// Whether the VMO's writable mappings need to be tracked, and the
     /// mapping is writable to the VMO.
     is_writable_tracked: bool,
+    /// Keeps a special-file backing object alive for this mapping.
+    lifetime: Option<Arc<dyn MmapLifetime>>,
 }
 
 impl MappedVmo {
     /// Creates a `MappedVmo` used for the mapping.
-    pub(super) fn new(vmo: Arc<Vmo>, offset: usize, is_writable_tracked: bool) -> Result<Self> {
+    pub(super) fn new(
+        vmo: Arc<Vmo>,
+        offset: usize,
+        is_writable_tracked: bool,
+        lifetime: Option<Arc<dyn MmapLifetime>>,
+    ) -> Result<Self> {
         if is_writable_tracked {
             vmo.writable_mapping_status().map()?;
         }
@@ -908,6 +918,7 @@ impl MappedVmo {
             vmo,
             offset,
             is_writable_tracked,
+            lifetime,
         })
     }
 
@@ -986,6 +997,15 @@ impl MappedVmo {
             vmo: self.vmo.clone(),
             offset,
             is_writable_tracked: self.is_writable_tracked,
+            lifetime: self.lifetime.clone(),
+        }
+    }
+
+    fn has_compatible_lifetime(&self, other: &Self) -> bool {
+        match (&self.lifetime, &other.lifetime) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
         }
     }
 }
@@ -1026,7 +1046,7 @@ fn try_merge(left: &VmMapping, right: &VmMapping) -> Option<VmMapping> {
             let l_vmo = l_vmo_obj.vmo();
             let r_vmo = r_vmo_obj.vmo();
 
-            if Arc::ptr_eq(l_vmo, r_vmo) {
+            if Arc::ptr_eq(l_vmo, r_vmo) && l_vmo_obj.has_compatible_lifetime(r_vmo_obj) {
                 let is_offset_contiguous =
                     l_vmo_obj.offset() + left.map_size() == r_vmo_obj.offset();
                 if !is_offset_contiguous {
@@ -1059,12 +1079,41 @@ fn duplicate_frame(src: &UFrame) -> Result<Frame<()>> {
 
 #[cfg(ktest)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use io_util::batch::IoBatch;
     use ostd::prelude::ktest;
 
     use super::*;
     use crate::vm::page_cache::{LockedCachePage, PageCacheBackend, VmoOptions};
 
+    #[derive(Debug)]
+    struct CountedLifetime(Arc<AtomicUsize>);
+
+    impl Drop for CountedLifetime {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[ktest]
+    fn mapped_vmo_retains_lifetime_across_duplicates() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let vmo = VmoOptions::new(PAGE_SIZE).alloc().unwrap();
+        let mapped = MappedVmo::new(
+            vmo,
+            0,
+            false,
+            Some(Arc::new(CountedLifetime(drops.clone()))),
+        )
+        .unwrap();
+        let duplicate = mapped.dup();
+
+        drop(mapped);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(duplicate);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
     struct FailingPageCacheBackend;
 
     impl PageCacheBackend for FailingPageCacheBackend {
@@ -1208,7 +1257,7 @@ mod tests {
         let vm_space = Arc::new(VmSpace::new());
         let map_range = PAGE_SIZE..PAGE_SIZE * 2;
         let vmo = VmoOptions::new_anon(PAGE_SIZE).alloc().unwrap();
-        let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
+        let mapped_vmo = MappedVmo::new(vmo, 0, false, None).unwrap();
         let frame = mapped_vmo.get_committed_frame(0).unwrap();
         let preempt_guard = disable_preempt();
         vm_space
@@ -1255,7 +1304,7 @@ mod tests {
         let vmo = VmoOptions::new_page_cache(16 * PAGE_SIZE, Arc::downgrade(&backend))
             .alloc()
             .unwrap();
-        let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
+        let mapped_vmo = MappedVmo::new(vmo, 0, false, None).unwrap();
         let frame = FrameAllocOptions::new().alloc_frame().unwrap();
         let preempt_guard = disable_preempt();
         vm_space

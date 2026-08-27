@@ -515,7 +515,7 @@ impl Vmo {
     }
 
     /// Fills the specified range with zeros.
-    pub(super) fn fill_zeros(&self, range: Range<usize>) -> Result<()> {
+    pub(crate) fn fill_zeros(&self, range: Range<usize>) -> Result<()> {
         if range.is_empty() {
             return Ok(());
         }

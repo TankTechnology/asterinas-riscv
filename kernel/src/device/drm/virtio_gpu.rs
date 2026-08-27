@@ -8,7 +8,7 @@
 
 use super::{
     DumbBuffer, GemResourceState,
-    dumb::{PendingDumbBuffer, PendingPoolAllocation},
+    dumb::{PendingDumbBuffer, allocate_pool_span},
     gem::{GemObjectRef, PendingGemHandle},
 };
 use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
@@ -253,7 +253,12 @@ pub(super) fn virtgpu_resource_create(
                 return_errno_with_message!(Errno::EINVAL, "GEM backing is too large");
             }
         };
-        Some((object_id, base + buffer.offset, size))
+        Some((
+            object_id,
+            base + buffer.offset,
+            size,
+            buffer.allocation.clone(),
+        ))
     } else {
         // Allocate a dumb buffer from the shared pool to back this resource.
         let bpp = 32;
@@ -267,10 +272,12 @@ pub(super) fn virtgpu_resource_create(
         } else {
             req.size as usize
         };
-        handle.gpu_manager.ensure_pool()?;
+        let backing_size = u32::try_from(size)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
         let base = handle.gpu_manager.pool_paddr()?;
-        let allocation = PendingPoolAllocation::new(&handle.gpu_manager, size)?;
+        let allocation = allocate_pool_span(&handle.gpu_manager, size)?;
         let offset = allocation.offset();
+        let backing_owner = allocation.clone();
 
         let object = GemObjectRef::insert_new(
             &handle.gpu_manager,
@@ -280,6 +287,7 @@ pub(super) fn virtgpu_resource_create(
                 width: req.width,
                 height: req.height,
                 bpp,
+                allocation,
             },
         )?;
         let object_id = object.object_id();
@@ -287,12 +295,12 @@ pub(super) fn virtgpu_resource_create(
         // Pin the object separately while the host-resource transaction runs.
         handle.gpu_manager.retain_gem_object(object_id)?;
         retained_backing_object = object_id;
-        new_dumb_buffer = Some(PendingDumbBuffer::new(pending, allocation));
+        new_dumb_buffer = Some(PendingDumbBuffer::new(pending));
 
-        Some((object_id, base + offset, size as u32))
+        Some((object_id, base + offset, backing_size, backing_owner))
     };
 
-    let backing_object_id = backing.map(|(object_id, _, _)| object_id);
+    let backing_object_id = backing.as_ref().map(|(object_id, _, _, _)| *object_id);
     let resource_creation = handle.gpu_manager.resource_creation.lock();
     handle.gpu_manager.drain_pending_context_cleanup();
     handle.gpu_manager.drain_pending_resource_cleanup();
@@ -329,14 +337,13 @@ pub(super) fn virtgpu_resource_create(
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
         resource_created = true;
 
-        if let Some((_, addr, size)) = backing {
-            let owner = handle.gpu_manager.ensure_pool()?;
+        if let Some((_, addr, size, owner)) = backing.as_ref() {
             handle
                 .gpu_manager
                 .gpu
-                .attach_backing(res_handle, addr as u64, size, owner)
+                .attach_backing(res_handle, *addr as u64, *size, owner.clone())
                 .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-            req.size = size;
+            req.size = *size;
         } else {
             // Host-only resource: report a sensible size estimate.
             req.size = req.width.saturating_mul(req.height).saturating_mul(4);

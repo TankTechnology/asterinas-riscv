@@ -611,12 +611,24 @@ impl GpuDevice {
             height,
         };
         let control_buf = self.control_buf.lock();
-        let code = control_cmd(
+        let code = match control_cmd(
             &self.control_queue,
             &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
-        )?;
+        ) {
+            Ok(code) => code,
+            Err(error) => {
+                ostd::warn!(
+                    "virtio-gpu resource {} create completion is ambiguous: {:?}",
+                    resource_id,
+                    error
+                );
+                drop(control_buf);
+                self.defer_resource_unref(resource_id);
+                return Err(VirtioDeviceError::AmbiguousCompletion);
+            }
+        };
         check_ok(code)
     }
 
@@ -650,15 +662,23 @@ impl GpuDevice {
         req_slice.write_val(0, &attach).unwrap();
         req_slice.write_val(attach_len, &entry).unwrap();
 
+        // Publish the owner before submission. If transport fails after the
+        // device consumed the request, the backing lifetime is uncertain and
+        // must remain pinned until RESOURCE_UNREF is confirmed.
+        let previous = self.backing_owners.lock().insert(resource_id, owner);
+        debug_assert!(previous.is_none());
         let (code, _) = submit_control(
             &self.control_queue,
             &control_buf,
             req_len,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)?;
-        let previous = self.backing_owners.lock().insert(resource_id, owner);
-        debug_assert!(previous.is_none());
+        if let Err(error) = check_ok(code) {
+            // An explicit error response confirms that no backing was attached.
+            let owner = self.backing_owners.lock().remove(&resource_id);
+            drop(owner);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -743,7 +763,8 @@ impl GpuDevice {
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
         check_ok(code)?;
-        self.backing_owners.lock().remove(&resource_id);
+        let owner = self.backing_owners.lock().remove(&resource_id);
+        drop(owner);
         Ok(())
     }
 
@@ -797,12 +818,24 @@ impl GpuDevice {
             padding: 0,
         };
         let control_buf = self.control_buf.lock();
-        let code = control_cmd(
+        let code = match control_cmd(
             &self.control_queue,
             &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
-        )?;
+        ) {
+            Ok(code) => code,
+            Err(error) => {
+                ostd::warn!(
+                    "virtio-gpu 3D resource {} create completion is ambiguous: {:?}",
+                    resource_id,
+                    error
+                );
+                drop(control_buf);
+                self.defer_resource_unref(resource_id);
+                return Err(VirtioDeviceError::AmbiguousCompletion);
+            }
+        };
         check_ok(code)
     }
 
@@ -828,7 +861,15 @@ impl GpuDevice {
             &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
-        )?;
+        )
+        .map_err(|error| {
+            ostd::warn!(
+                "virtio-gpu context {} create completion is ambiguous: {:?}",
+                ctx_id,
+                error
+            );
+            VirtioDeviceError::AmbiguousCompletion
+        })?;
         check_ok(code)
     }
 

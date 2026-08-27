@@ -67,7 +67,7 @@ impl DmaBufFile {
     }
 
     fn buffer(&self) -> DumbBuffer {
-        self.buffer
+        self.buffer.clone()
     }
 }
 
@@ -101,15 +101,16 @@ impl FileLike for DmaBufFile {
     }
 
     fn mappable(&self) -> Result<Mappable> {
-        let range = self
-            .buffer
+        let (buffer, lifetime) = self.gpu_manager.retain_gem_mapping(self.object_id)?;
+        let range = buffer
             .mapped_range()
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "dma-buf mapping range overflows"))?;
         let size = range.end - range.start;
-        Ok(Mappable::VmoWindow {
+        Ok(Mappable::VmoGuardedWindow {
             vmo: self.pool.clone(),
             vmo_offset: range.start,
             size,
+            lifetime,
         })
     }
 

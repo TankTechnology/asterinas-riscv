@@ -29,6 +29,7 @@ pub(super) struct VirglContextCounts {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct DrmResourceSnapshot {
     pub(super) dumb_pool_used_bytes: usize,
+    pub(super) dumb_pool_high_water_bytes: usize,
     pub(super) dumb_pool_capacity_bytes: usize,
     pub(super) gem_objects: usize,
     pub(super) gem_references: u64,

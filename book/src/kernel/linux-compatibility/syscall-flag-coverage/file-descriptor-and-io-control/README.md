@@ -180,16 +180,19 @@ the same aggregate state rather than per-client usage. A snapshot may be
 weakly consistent while other clients are changing resources; leak tests must
 quiesce their workload before comparing it with a baseline.
 
-The device fields report the DUMB-pool used and capacity in bytes; GEM objects,
+The device fields report the DUMB-pool live-used, high-water, and capacity bytes; GEM objects,
 references, and FLINK names; live and cleanup-only host resources; virgl
 contexts and attachments; retained fences and per-object fence associations;
 backend backing owners; scanout and cursor resources; and pending cleanup at
 the DRM, context, and backend layers. A pending-cleanup value means that the
 guest has not confirmed host destruction. `drm-device-fences-tracked` includes
 completed fences retained as conservative lifetime barriers until the next
-prune. The DUMB-pool used value is a monotonic allocation watermark, not live
-GEM memory: the current allocator does not reuse a span because an established
-mapping can outlive its GEM handle.
+prune.
+DUMB spans are reused only after GEM, VMA, and host-backing owners all release
+them.
+The used value is live allocated memory; the high-water value is the monotonic
+peak.
+Reused pages are cleared before a new handle can expose them.
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/ioctl.2.html).

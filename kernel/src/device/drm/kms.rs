@@ -299,8 +299,7 @@ pub(super) fn present_fb(
     kms_state: &mut super::KmsState,
     fb_id: u32,
 ) -> Result<()> {
-    let backing_owner = handle.gpu_manager.ensure_pool()?;
-    let (addr, size, width, height) = {
+    let (addr, size, backing_owner, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
             .framebuffers
@@ -322,7 +321,13 @@ pub(super) fn present_fb(
             .checked_add(obj.buffer.offset)
             .and_then(|addr| addr.checked_add(fb.offset as usize))
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer address overflows"))?;
-        (addr, size, fb.width, fb.height)
+        (
+            addr,
+            size,
+            obj.buffer.allocation.clone(),
+            fb.width,
+            fb.height,
+        )
     };
 
     handle
@@ -412,7 +417,6 @@ pub(super) fn get_encoder(
 /// CURSOR / CURSOR2: validate and apply one hardware-cursor update.
 pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> Result<()> {
     let _cursor_operation = handle.cursor_operation.lock();
-    let backing_owner = handle.gpu_manager.ensure_pool()?;
     let (update, position, backing) = {
         let inner = handle.inner.lock();
         let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
@@ -453,6 +457,7 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
                     u32::try_from(object.buffer.size).map_err(|_| {
                         Error::with_message(Errno::EINVAL, "cursor buffer is too large")
                     })?,
+                    object.buffer.allocation.clone(),
                 ))
             }
             _ => None,
@@ -468,7 +473,7 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
             hot_y,
             ..
         }) => {
-            let (addr, size) = backing.ok_or_else(|| {
+            let (addr, size, backing_owner) = backing.ok_or_else(|| {
                 Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
             })?;
             Some(

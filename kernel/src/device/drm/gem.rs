@@ -7,10 +7,7 @@
 //! GEM_FLINK uses the object's own id as its global name.
 //! [`PendingGemHandle`] stages a per-file handle until its creating ioctl copies the response.
 
-use core::{
-    mem,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::prelude::*;
 
@@ -19,6 +16,7 @@ pub(super) struct GemObjectRef<'a> {
     manager: &'a super::GpuManager,
     object_id: u32,
     buffer: super::DumbBuffer,
+    owns_reference: bool,
 }
 
 impl<'a> GemObjectRef<'a> {
@@ -41,7 +39,7 @@ impl<'a> GemObjectRef<'a> {
                 Arc::new(super::GemObject {
                     name: AtomicU32::new(0),
                     ref_count: AtomicU32::new(1),
-                    buffer,
+                    buffer: buffer.clone(),
                 }),
             );
             manager.gem_references.fetch_add(1, Ordering::Relaxed);
@@ -51,6 +49,7 @@ impl<'a> GemObjectRef<'a> {
             manager,
             object_id,
             buffer,
+            owns_reference: true,
         })
     }
 
@@ -61,6 +60,7 @@ impl<'a> GemObjectRef<'a> {
             manager,
             object_id,
             buffer,
+            owns_reference: true,
         })
     }
 
@@ -69,19 +69,22 @@ impl<'a> GemObjectRef<'a> {
     }
 
     pub(super) fn buffer(&self) -> super::DumbBuffer {
-        self.buffer
+        self.buffer.clone()
     }
 
     /// Transfers the owned reference into another lifetime container.
-    fn into_raw(self) -> u32 {
+    fn into_raw(mut self) -> u32 {
         let object_id = self.object_id;
-        mem::forget(self);
+        self.owns_reference = false;
         object_id
     }
 }
 
 impl Drop for GemObjectRef<'_> {
     fn drop(&mut self) {
+        if !self.owns_reference {
+            return;
+        }
         if let Err(error) = self.manager.release_gem_object(self.object_id) {
             ostd::warn!(
                 "cannot release unpublished GEM object {}: {:?}",

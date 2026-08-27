@@ -30,9 +30,10 @@ ioctl(
 // Control block devices
 ioctl(fd, op = BLKGETSIZE64 | BLKSSZGET, ..);
 
-drm_handle_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_MODE_CREATE_DUMB |
-                 DRM_IOCTL_PRIME_FD_TO_HANDLE |
-                 DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
+drm_buffer_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_GEM_CLOSE |
+                 DRM_IOCTL_MODE_CREATE_DUMB | DRM_IOCTL_MODE_MAP_DUMB |
+                 DRM_IOCTL_MODE_DESTROY_DUMB | DRM_IOCTL_PRIME_HANDLE_TO_FD |
+                 DRM_IOCTL_PRIME_FD_TO_HANDLE | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
 drm_fence_ops = DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
 drm_auth_ops = DRM_IOCTL_GET_MAGIC | DRM_IOCTL_AUTH_MAGIC;
 drm_kms_query_ops = DRM_IOCTL_MODE_GETRESOURCES | DRM_IOCTL_MODE_GETCRTC |
@@ -50,8 +51,8 @@ drm_kms_update_ops = DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_PAGE_FLIP |
 // Authenticate a DRM primary-node client through the current DRM master
 ioctl(fd, op = <drm_auth_ops>, ..);
 
-// Create or import DRM GEM handles
-ioctl(fd, op = <drm_handle_ops>, ..);
+// Manage DRM GEM, DUMB-buffer, and PRIME handles and mappings
+ioctl(fd, op = <drm_buffer_ops>, ..);
 
 // Submit virgl work and query or wait for resource fences
 ioctl(fd, op = <drm_fence_ops>, ..);

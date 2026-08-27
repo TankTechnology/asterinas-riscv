@@ -17,6 +17,11 @@ pub(super) fn write(handle: &DriHandle, formatter: &mut Formatter<'_>) -> core::
     )?;
     writeln!(
         formatter,
+        "drm-device-dumb-pool-high-water-bytes:\t{}",
+        snapshot.dumb_pool_high_water_bytes
+    )?;
+    writeln!(
+        formatter,
         "drm-device-dumb-pool-capacity-bytes:\t{}",
         snapshot.dumb_pool_capacity_bytes
     )?;

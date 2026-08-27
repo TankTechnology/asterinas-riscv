@@ -664,3 +664,27 @@ rendering, virgl, a clean command stream, and `XFCE_DRM_PASS`. The one-run
 30-frame sample was 17.765 FPS and is retained only as semantic evidence. See
 [`DRM-M22-report.md`](DRM-M22-report.md) for the counter contract, staged-close
 test, evidence, review corrections, and remaining pool-lifetime work.
+
+## 2026-08-28 mapping-safe DUMB-pool reuse
+
+The 64 MiB pool is no longer a monotonic bump allocator.
+Page-aligned spans are allocated first-fit, coalesced on final release, and
+cleared before reuse.
+A span is owned jointly by the GEM object, surviving DRM or PRIME VMAs, and
+any virtio-gpu resource whose host backing lifetime is not yet confirmed
+closed.
+The generic VMA lifetime token follows fork, split, and remap, and prevents
+adjacent mappings with different object owners from merging.
+
+M22 now proves both DRM and PRIME mappings survive handle/fd close without
+aliasing, then observes reuse of the original offset after `munmap`. Its 4,200
+fast allocation cycles exceed 64 MiB cumulatively, and all 32 full
+GEM/PRIME/virgl/fence rounds reuse offset zero.
+Final live pool usage is zero; the 32 KiB high-water reflects two
+simultaneously live buffers in the mapping lifetime checks.
+
+RISC-V Sv39 build and ktest pass, M22 reports 42 checks and 32/32 rounds, and
+M17 remains 55/55. The Xfce DRI3/virgl functional gate also passes. Its current
+0.824 FPS sample ran while another RISC-V QEMU saturated roughly 3.3 host CPU
+cores, so it is recorded as load-contaminated functional evidence rather than
+a performance regression measurement.

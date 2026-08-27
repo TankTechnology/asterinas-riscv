@@ -131,8 +131,11 @@ The current property-blob store enforces 64 KiB per blob, 4 MiB in total, and
 resources, virgl contexts and attachments, retained fences, backend ownership,
 scanout/cursor state, and each deferred-cleanup layer. M22 asserts that all
 reclaimable counters return to a quiescent baseline after staged GEM, PRIME,
-context, and fence teardown. It checks the non-reusing DUMB-pool watermark
-separately so a clean lifetime result cannot hide monotonic pool exhaustion.
+context, and fence teardown.
+It also checks mapping-owned and host-owned DUMB span lifetimes.
+M22 requires live pool usage to return to baseline, verifies reuse after both
+DRM and PRIME `munmap`, and runs 4,200 cycles whose cumulative allocation
+exceeds pool capacity.
 The current method and evidence are recorded in
 [`../nixos/DRM-M22-report.md`](../nixos/DRM-M22-report.md).
 

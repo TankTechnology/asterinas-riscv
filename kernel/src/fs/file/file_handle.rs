@@ -4,7 +4,10 @@
 
 //! Opened File Handle
 
-use core::{fmt::Display, ops::Range};
+use core::{
+    fmt::{Debug, Display},
+    ops::Range,
+};
 
 use ostd::io::IoMem;
 
@@ -348,21 +351,48 @@ impl StatusFlagsUpdate {
     }
 }
 
+/// A backing-lifetime token retained while a memory mapping exists.
+pub trait MmapLifetime: Debug + Send + Sync {}
+
+impl<T: Debug + Send + Sync> MmapLifetime for T {}
+
+/// One authorized VMO range together with the object lifetime it depends on.
+#[derive(Clone, Debug)]
+pub struct GuardedVmoRange {
+    range: Range<usize>,
+    lifetime: Arc<dyn MmapLifetime>,
+}
+
+impl GuardedVmoRange {
+    pub(crate) fn new(range: Range<usize>, lifetime: Arc<dyn MmapLifetime>) -> Self {
+        Self { range, lifetime }
+    }
+
+    pub(crate) fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    pub(crate) fn lifetime(&self) -> &Arc<dyn MmapLifetime> {
+        &self.lifetime
+    }
+}
+
 /// An object that may be memory mapped into the user address space.
 #[derive(Clone, Debug)]
 pub enum Mappable {
     /// A VMO (i.e., page cache).
     Vmo(Arc<Vmo>),
-    /// A VMO whose file mapping is limited to the listed byte ranges.
-    VmoRanges {
+    /// A VMO whose authorized ranges retain independent object lifetimes.
+    VmoGuardedRanges {
         vmo: Arc<Vmo>,
-        ranges: Vec<Range<usize>>,
+        ranges: Vec<GuardedVmoRange>,
     },
-    /// A window into a VMO whose file offset zero maps to `vmo_offset`.
-    VmoWindow {
+    /// A VMO window that retains the lifetime of its backing object.
+    VmoGuardedWindow {
         vmo: Arc<Vmo>,
         vmo_offset: usize,
         size: usize,
+        lifetime: Arc<dyn MmapLifetime>,
     },
     /// An MMIO region.
     IoMem(IoMem),

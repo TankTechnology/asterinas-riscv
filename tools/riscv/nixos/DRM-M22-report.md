@@ -9,6 +9,13 @@ M22 passes on the RISC-V Sv39, four-hart Asterinas guest with QEMU's
 GEM/PRIME/context/fence lifetimes, and every reclaimable device-wide counter
 returned exactly to its quiescent baseline after each round.
 
+Before those rounds, M22 also verifies that both card/render-node mappings and
+PRIME dma-buf mappings retain their GEM span after the corresponding handle or
+fd closes. A live mapping prevents reuse and preserves its contents; after
+`munmap`, first-fit allocation reuses the original offset. Finally, 4,200
+create/map/close cycles allocate more than 64 MiB cumulatively without
+exhausting the 64 MiB pool.
+
 The final acceptance set also passes:
 
 - RISC-V `cargo osdk build` with only seven pre-existing unrelated warnings;
@@ -17,8 +24,11 @@ The final acceptance set also passes:
 - the complete NixOS Xorg/Xfce gate with DRI3 direct rendering, the virgl
   renderer, pixel read-back, a clean command stream, and `XFCE_DRM_PASS`.
 
-The Xfce shader sample submitted 30 frames at 17.765 FPS in this run. This is a
-semantic regression result, not a controlled performance comparison.
+The post-change Xfce run passed every functional gate.
+Its shader sample was 0.824 FPS while an unrelated RISC-V QEMU consumed about
+333% host CPU, so this number is intentionally not used as a performance
+comparison.
+The earlier quiescent M22 acceptance run measured 17.765 FPS.
 
 ## What changed
 
@@ -26,7 +36,7 @@ DRM files now append device diagnostics to `/proc/<pid>/fdinfo/<fd>`. The
 `drm-device-` prefix makes clear that the values are totals for the shared GPU,
 not per-client accounting. The snapshot covers:
 
-- the DUMB-pool used/capacity byte gauges;
+- the DUMB-pool live-used, high-water, and capacity byte gauges;
 - GEM objects, owners, and FLINK names;
 - live and cleanup-only host resources;
 - virgl contexts and resource attachments;
@@ -40,10 +50,19 @@ before attached host resources. Poisoning a context after an ambiguous
 attach/detach operation now transfers failed destruction into the same retry
 queue instead of leaving an unreported live host context.
 
-The implementation was split into focused `resource_tracking` and `fdinfo`
-modules. The first 64 MiB contiguous pool allocation now runs under a sleeping
-mutex rather than a spinlock. Boot-pattern scanout is tracked alongside later
-KMS presentation, and fdinfo no longer linearly sums GEM references or fence
+The DUMB pool is now a page-granular, coalescing first-fit allocator. Each span
+is reference-counted by its GEM object, every surviving VMA, and every
+virtio-gpu host backing owner. Pool pages are returned only after all three
+lifetime domains release them and are cleared before reuse. An ambiguous
+`ATTACH_BACKING` transport result retains its owner until a confirmed
+`RESOURCE_UNREF`, preferring bounded quarantine over aliasing host-visible
+memory.
+
+The generic VMA layer carries an optional lifetime token through fork, split,
+and remap. Adjacent VMO mappings merge only when those tokens are identical,
+so mappings of separate buffers in the shared VMO cannot accidentally collapse
+their lifetimes. Boot-pattern scanout remains tracked alongside later KMS
+presentation, and fdinfo does not linearly sum GEM references or fence
 associations while holding their spinlocks.
 
 ## Stress transaction
@@ -73,16 +92,26 @@ The baseline and final snapshots were:
 
 ```text
 baseline gem=0 refs=0 host=0 ctx=0 attach=0 fences=0 assoc=0
-         backing=1 pending=0/0/0 pool=0/67108864 scanout=1 cursor=0
+         backing=1 pending=0/0/0 pool=0/67108864 high-water=0
 final    gem=0 refs=0 host=0 ctx=0 attach=0 fences=0 assoc=0
-         backing=1 pending=0/0/0 pool=524288/67108864 scanout=1 cursor=0
+         backing=1 pending=0/0/0 pool=0/67108864 high-water=32768
 ```
 
-All 32 rounds printed `baseline-restored`, followed by:
+The lifetime and capacity phases printed:
+
+```text
+M22_MAPPING_LIFETIME DRM protected-and-reused offset=0
+M22_MAPPING_LIFETIME PRIME protected-and-reused offset=0
+M22_POOL_REUSE cycles=4200 offset=0
+```
+
+All 32 rounds then printed `baseline-restored` and reused offset zero, followed
+by:
 
 ```text
 M22_PASS all reclaimable resource counters returned to baseline after 32 rounds
-M22_PASS dumb pool watermark grew only by the 524288 allocated bytes
+M22_PASS dumb pool live usage returned to baseline
+M22_PASS dumb pool high-water mark remains within capacity
 M22_RESOURCE_STRESS_PASS
 M22_RESOURCE_STRESS_GATE_PASS
 ```
@@ -113,17 +142,13 @@ not part of the commit.
 
 ## Remaining limitation
 
-M22 deliberately distinguishes live-resource leaks from DUMB-pool capacity.
-The current pool is a 64 MiB non-reusing bump allocator because an established
-userspace mapping can outlive its GEM handle; reclaiming the span at handle
-close could alias a later allocation into that mapping. The 32 rounds therefore
-consume exactly 512 KiB even though all live objects are released.
-
-This is now visible rather than hidden, but it is not yet solved. Long-running
-desktop workloads that repeatedly allocate new DUMB buffers can still exhaust
-the pool. Safe reuse requires tying pool spans to VMA lifetime (or replacing
-the shared bump pool with individually lifetime-managed backing), and is the
-next resource-architecture task.
+The monotonic-exhaustion limitation is resolved. The pool is still a fixed
+64 MiB contiguous allocation, so a workload whose *simultaneously live* DUMB
+buffers exceed that capacity receives `ENOMEM`. This is an explicit capacity
+bound rather than cumulative leakage. The current allocator also uses
+page-granular first-fit rather than relocation or compaction; severe live-range
+fragmentation can therefore reject a large contiguous request even if total
+free bytes would be sufficient.
 
 The result covers QEMU virtio-gpu. It does not claim native EIC7700 display or
 GPU support on the Megrez board.

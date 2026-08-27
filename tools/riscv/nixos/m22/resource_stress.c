@@ -36,6 +36,7 @@
 #define PIPE_FORMAT_B8G8R8X8_UNORM 1
 #define PIPE_BIND_RENDER_TARGET 2
 #define STRESS_ROUNDS 32
+#define REUSE_CYCLES 4200
 
 struct drm_gem_close {
     uint32_t handle;
@@ -99,6 +100,7 @@ struct drm_virtgpu_3d_wait {
 
 enum resource_counter {
     DUMB_POOL_USED_BYTES,
+    DUMB_POOL_HIGH_WATER_BYTES,
     DUMB_POOL_CAPACITY_BYTES,
     GEM_OBJECTS,
     GEM_REFERENCES,
@@ -120,6 +122,7 @@ enum resource_counter {
 
 static const char *const counter_names[RESOURCE_COUNTER_COUNT] = {
     [DUMB_POOL_USED_BYTES] = "drm-device-dumb-pool-used-bytes",
+    [DUMB_POOL_HIGH_WATER_BYTES] = "drm-device-dumb-pool-high-water-bytes",
     [DUMB_POOL_CAPACITY_BYTES] = "drm-device-dumb-pool-capacity-bytes",
     [GEM_OBJECTS] = "drm-device-gem-objects",
     [GEM_REFERENCES] = "drm-device-gem-references",
@@ -201,10 +204,9 @@ static int reclaimable_counters_equal(const struct resource_snapshot *left,
                                       const struct resource_snapshot *right)
 {
     for (int counter = 0; counter < RESOURCE_COUNTER_COUNT; counter++) {
-        // The dumb pool is intentionally a non-reusing bump allocator because
-        // an mmap can outlive its GEM handle. Its watermark is checked
-        // separately; every live-resource counter must still return to zero.
-        if (counter == DUMB_POOL_USED_BYTES)
+        // The high-water mark is monotonic; every live-resource counter,
+        // including currently allocated pool bytes, must return to baseline.
+        if (counter == DUMB_POOL_HIGH_WATER_BYTES)
             continue;
         if (left->value[counter] != right->value[counter]) {
             printf("M22_COUNTER_DIFF %s baseline=%llu actual=%llu\n",
@@ -221,7 +223,7 @@ static void print_snapshot(const char *label, const struct resource_snapshot *sn
 {
     printf("M22_SNAPSHOT %s gem=%llu refs=%llu host=%llu ctx=%llu attach=%llu "
            "fences=%llu assoc=%llu backing=%llu pending=%llu/%llu/%llu "
-           "pool=%llu/%llu\n",
+           "pool=%llu/%llu high-water=%llu\n",
            label,
            (unsigned long long)snapshot->value[GEM_OBJECTS],
            (unsigned long long)snapshot->value[GEM_REFERENCES],
@@ -235,11 +237,148 @@ static void print_snapshot(const char *label, const struct resource_snapshot *sn
            (unsigned long long)snapshot->value[CONTEXT_CLEANUP_PENDING],
            (unsigned long long)snapshot->value[BACKEND_CLEANUP_PENDING],
            (unsigned long long)snapshot->value[DUMB_POOL_USED_BYTES],
-           (unsigned long long)snapshot->value[DUMB_POOL_CAPACITY_BYTES]);
+           (unsigned long long)snapshot->value[DUMB_POOL_CAPACITY_BYTES],
+           (unsigned long long)snapshot->value[DUMB_POOL_HIGH_WATER_BYTES]);
+}
+
+static int create_dumb(int drm_fd, struct drm_mode_create_dumb *dumb,
+                       struct drm_mode_map_dumb *map)
+{
+    *dumb = (struct drm_mode_create_dumb) {
+        .width = 64,
+        .height = 64,
+        .bpp = 32,
+    };
+    if (ioctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, dumb) < 0)
+        return -1;
+    *map = (struct drm_mode_map_dumb) { .handle = dumb->handle };
+    if (ioctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, map) < 0)
+        return -1;
+    return 0;
+}
+
+static int close_gem(int drm_fd, uint32_t handle)
+{
+    struct drm_gem_close close = { .handle = handle };
+    return ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &close);
+}
+
+static int run_mapping_lifetime_test(int control_fd,
+                                     const struct resource_snapshot *baseline,
+                                     const char *device,
+                                     int use_prime)
+{
+    int result = -1;
+    int worker_fd = open(device, O_RDWR);
+    int prime_fd = -1;
+    void *mapping = MAP_FAILED;
+    struct drm_mode_create_dumb first = { 0 }, second = { 0 }, reused = { 0 };
+    struct drm_mode_map_dumb first_map = { 0 }, second_map = { 0 }, reused_map = { 0 };
+    const char *kind = use_prime ? "PRIME" : "DRM";
+
+    if (worker_fd < 0 || create_dumb(worker_fd, &first, &first_map) < 0)
+        goto out;
+    if (use_prime) {
+        struct drm_prime_handle exported = {
+            .handle = first.handle,
+            .flags = DRM_CLOEXEC | DRM_RDWR,
+            .fd = -1,
+        };
+        if (ioctl(worker_fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported) < 0)
+            goto out;
+        prime_fd = exported.fd;
+        mapping = mmap(NULL, first.size, PROT_READ | PROT_WRITE, MAP_SHARED, prime_fd, 0);
+    } else {
+        mapping = mmap(NULL, first.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       worker_fd, first_map.offset);
+    }
+    if (mapping == MAP_FAILED)
+        goto out;
+    memset(mapping, 0x5a, first.size);
+    if (close_gem(worker_fd, first.handle) < 0)
+        goto out;
+    first.handle = 0;
+    if (prime_fd >= 0) {
+        close(prime_fd);
+        prime_fd = -1;
+    }
+
+    if (create_dumb(worker_fd, &second, &second_map) < 0)
+        goto out;
+    if (second_map.offset == first_map.offset || ((unsigned char *)mapping)[0] != 0x5a) {
+        errno = EFAULT;
+        goto out;
+    }
+    if (close_gem(worker_fd, second.handle) < 0)
+        goto out;
+    second.handle = 0;
+
+    munmap(mapping, first.size);
+    mapping = MAP_FAILED;
+    if (create_dumb(worker_fd, &reused, &reused_map) < 0)
+        goto out;
+    if (reused_map.offset != first_map.offset) {
+        errno = EFAULT;
+        goto out;
+    }
+    if (close_gem(worker_fd, reused.handle) < 0)
+        goto out;
+    reused.handle = 0;
+
+    struct resource_snapshot released;
+    if (read_snapshot(control_fd, &released) < 0)
+        goto out;
+    if (!reclaimable_counters_equal(baseline, &released))
+        goto out;
+    printf("M22_MAPPING_LIFETIME %s protected-and-reused offset=%llu\n", kind,
+           (unsigned long long)first_map.offset);
+    result = 0;
+
+out:
+    if (mapping != MAP_FAILED)
+        munmap(mapping, first.size);
+    if (first.handle)
+        close_gem(worker_fd, first.handle);
+    if (second.handle)
+        close_gem(worker_fd, second.handle);
+    if (reused.handle)
+        close_gem(worker_fd, reused.handle);
+    if (prime_fd >= 0)
+        close(prime_fd);
+    if (worker_fd >= 0)
+        close(worker_fd);
+    return result;
+}
+
+static int run_pool_reuse_cycles(void)
+{
+    int worker_fd = open("/dev/dri/renderD128", O_RDWR);
+    uint64_t expected_offset = UINT64_MAX;
+    if (worker_fd < 0)
+        return -1;
+    for (int cycle = 0; cycle < REUSE_CYCLES; cycle++) {
+        struct drm_mode_create_dumb dumb;
+        struct drm_mode_map_dumb map;
+        if (create_dumb(worker_fd, &dumb, &map) < 0) {
+            close(worker_fd);
+            return -1;
+        }
+        if (expected_offset == UINT64_MAX)
+            expected_offset = map.offset;
+        if (map.offset != expected_offset || close_gem(worker_fd, dumb.handle) < 0) {
+            close(worker_fd);
+            errno = EFAULT;
+            return -1;
+        }
+    }
+    close(worker_fd);
+    printf("M22_POOL_REUSE cycles=%d offset=%llu\n", REUSE_CYCLES,
+           (unsigned long long)expected_offset);
+    return 0;
 }
 
 static int run_round(int control_fd, const struct resource_snapshot *baseline, int round,
-                     uint64_t *allocated_bytes)
+                     uint64_t *mapped_offset)
 {
     int result = -1;
     int worker_fd = -1;
@@ -261,12 +400,12 @@ static int run_round(int control_fd, const struct resource_snapshot *baseline, i
     stage = "create dumb buffer";
     if (ioctl(worker_fd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb) < 0)
         goto out;
-    *allocated_bytes = dumb.size;
 
     struct drm_mode_map_dumb map = { .handle = dumb.handle };
     stage = "map dumb buffer";
     if (ioctl(worker_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
         goto out;
+    *mapped_offset = map.offset;
     mapping_size = dumb.size;
     mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                    worker_fd, map.offset);
@@ -432,15 +571,26 @@ int main(void)
           baseline.value[BACKEND_CLEANUP_PENDING] == 0,
           "baseline has no deferred cleanup");
 
-    uint64_t expected_pool_growth = 0;
+    CHECK(run_mapping_lifetime_test(control_fd, &baseline, "/dev/dri/card0", 0) == 0,
+          "DRM mmap pins its GEM span until munmap");
+    CHECK(run_mapping_lifetime_test(control_fd, &baseline, "/dev/dri/renderD128", 1) == 0,
+          "PRIME mmap pins its GEM span after dma-buf close");
+    CHECK(run_pool_reuse_cycles() == 0,
+          "pool survives %d cycles exceeding old cumulative capacity", REUSE_CYCLES);
+
+    uint64_t expected_map_offset = UINT64_MAX;
     for (int round = 0; round < STRESS_ROUNDS; round++) {
-        uint64_t allocated_bytes = 0;
+        uint64_t mapped_offset = UINT64_MAX;
         errno = 0;
-        if (run_round(control_fd, &baseline, round, &allocated_bytes) < 0) {
+        if (run_round(control_fd, &baseline, round, &mapped_offset) < 0) {
             CHECK(0, "round %d restores all resource counters", round);
             break;
         }
-        expected_pool_growth += allocated_bytes;
+        if (expected_map_offset == UINT64_MAX)
+            expected_map_offset = mapped_offset;
+        CHECK(mapped_offset == expected_map_offset,
+              "round %d reused dumb-pool offset %llu", round,
+              (unsigned long long)expected_map_offset);
     }
 
     struct resource_snapshot final;
@@ -451,10 +601,13 @@ int main(void)
         CHECK(reclaimable_counters_equal(&baseline, &final),
               "all reclaimable resource counters returned to baseline after %d rounds",
               STRESS_ROUNDS);
-        CHECK(final.value[DUMB_POOL_USED_BYTES] ==
-                  baseline.value[DUMB_POOL_USED_BYTES] + expected_pool_growth,
-              "dumb pool watermark grew only by the %llu allocated bytes",
-              (unsigned long long)expected_pool_growth);
+        CHECK(final.value[DUMB_POOL_USED_BYTES] == baseline.value[DUMB_POOL_USED_BYTES],
+              "dumb pool live usage returned to baseline");
+        CHECK(final.value[DUMB_POOL_HIGH_WATER_BYTES] >=
+                  baseline.value[DUMB_POOL_HIGH_WATER_BYTES] &&
+              final.value[DUMB_POOL_HIGH_WATER_BYTES] <=
+                  final.value[DUMB_POOL_CAPACITY_BYTES],
+              "dumb pool high-water mark remains within capacity");
     }
     close(control_fd);
 
