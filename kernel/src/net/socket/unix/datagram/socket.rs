@@ -15,20 +15,20 @@ use crate::{
         pseudofs::SockFs,
     },
     net::socket::{
-        Socket,
-        options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
+        options::{macros::sock_option_mut, Error as SocketError, PeerCred, SocketOption},
         private::SocketPrivate,
-        unix::{CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData},
+        unix::{cred::SocketCred, ctrl_msg::AuxiliaryData, CUserCred, UnixSocketAddr},
         util::{
-            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
             options::{
                 GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
             },
+            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
         },
+        Socket,
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::{MultiRead, MultiWrite, net::SockType},
+    util::{net::SockType, MultiRead, MultiWrite},
 };
 
 pub struct UnixDatagramSocket {

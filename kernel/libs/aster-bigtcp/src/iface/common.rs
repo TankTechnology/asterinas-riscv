@@ -17,17 +17,17 @@ use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
 use ostd::sync::{SpinLock, SpinLockGuard};
 use smoltcp::{
-    iface::{Context, packet::Packet},
+    iface::{packet::Packet, Context},
     phy::Device,
     wire::{IpAddress, IpEndpoint, Ipv4Cidr, Ipv4Packet, Ipv6Address, Ipv6Cidr, Ipv6Packet},
 };
 
 use super::{
-    Iface,
     poll::{FnHelper, PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
     time::get_network_timestamp,
+    Iface,
 };
 use crate::{
     errors::BindError,
@@ -244,11 +244,11 @@ impl<E: Ext> IfaceCommon<E> {
     where
         D: Device + ?Sized,
         P: for<'pkt, 'cx, 'tx> FnHelper<
-                &'pkt [u8],
-                &'cx mut Context,
-                D::TxToken<'tx>,
-                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
-            >,
+            &'pkt [u8],
+            &'cx mut Context,
+            D::TxToken<'tx>,
+            Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
+        >,
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
         let mut interface = self.interface();

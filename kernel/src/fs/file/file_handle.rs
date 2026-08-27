@@ -9,8 +9,8 @@ use core::fmt::Display;
 use ostd::io::IoMem;
 
 use super::{
-    AccessMode, FileCommon, InodeHandle, SettableStatusFlags, StatusFlags, file_table::FdFlags,
-    inode_handle::SeekFrom,
+    file_table::FdFlags, inode_handle::SeekFrom, AccessMode, FileCommon, InodeHandle,
+    SettableStatusFlags, StatusFlags,
 };
 use crate::{
     fs::vfs::{
@@ -21,7 +21,7 @@ use crate::{
     },
     net::socket::Socket,
     prelude::*,
-    process::{Process, posix_thread::FileTableRefMut, signal::Pollable},
+    process::{posix_thread::FileTableRefMut, signal::Pollable, Process},
     util::ioctl::RawIoctl,
     vm::page_cache::Vmo,
 };
