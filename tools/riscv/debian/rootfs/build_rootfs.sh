@@ -702,6 +702,7 @@ configure_desktop_m5_network() {
     local script_directory
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
+    local baidu_service_name="asterinas-desktop-m7-baidu"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     install -D -m 0755 -- \
@@ -752,6 +753,27 @@ EOF
     ln -s -- \
         "../$browser_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$browser_service_name.service"
+
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m7_baidu_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m7-baidu-evidence"
+    cat >"$stage/etc/systemd/system/$baidu_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M7 Baidu page evidence
+After=asterinas-desktop-m6-browser.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/desktop-m7-baidu-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$baidu_service_name.service"
+    ln -s -- \
+        "../$baidu_service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
 }
 
 configure_desktop() {
