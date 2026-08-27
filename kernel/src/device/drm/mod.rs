@@ -17,6 +17,7 @@
 mod atomic;
 mod cursor;
 mod dumb;
+mod fdinfo;
 mod fence;
 mod gem;
 mod ioctl;
@@ -24,9 +25,11 @@ mod kms;
 mod plane;
 mod prime;
 mod property;
+mod resource_tracking;
 mod virtio_gpu;
 
 use core::{
+    fmt::Formatter,
     ops::{
         Bound::{Excluded, Included},
         Range,
@@ -39,7 +42,12 @@ use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
 
-use self::cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2};
+#[cfg(ktest)]
+use self::resource_tracking::VirglContextCounts;
+use self::{
+    cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2},
+    resource_tracking::{DrmResourceSnapshot, VirglContextTracker},
+};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -194,7 +202,7 @@ const MAX_RESOLUTION: u32 = 8192;
 struct GpuManager {
     gpu: Arc<GpuDevice>,
     /// The contiguous pool all dumb buffers are carved out of.
-    pool: SpinLock<Option<Arc<Vmo>>>,
+    pool: Mutex<Option<Arc<Vmo>>>,
     /// Serialized bump-allocator cursor into the pool (page-aligned).
     ///
     /// A pending allocation holds this sleeping mutex
@@ -202,6 +210,8 @@ struct GpuManager {
     next_offset: Mutex<usize>,
     /// GEM objects by id. `object_id` is a monotonically increasing counter.
     gem_objects: SpinLock<BTreeMap<u32, Arc<GemObject>>>,
+    /// Total owners across all entries in `gem_objects`.
+    gem_references: AtomicU64,
     /// Global FLINK name → object_id.
     gem_names: SpinLock<BTreeMap<u32, u32>>,
     /// GEM `object_id` → live or cleanup-only virtio-gpu resource.
@@ -217,6 +227,8 @@ struct GpuManager {
     next_framebuffer_id: AtomicU32,
     /// Monotonic virgl context id allocator (context id 0 is reserved).
     next_context_id: AtomicU32,
+    /// Host-created virgl contexts and their attached resources.
+    virgl_contexts: VirglContextTracker,
     /// Property manager for atomic modesetting.
     property_manager: property::PropertyManager,
     /// Monotonic page-flip sequence number (our "vblank counter").
@@ -225,12 +237,14 @@ struct GpuManager {
     next_fence_id: AtomicU64,
     /// Tracked asynchronous command fences associated with each GEM object.
     resource_fences: SpinLock<BTreeMap<u32, Vec<Arc<fence::Fence>>>>,
+    /// Total retained entries across all `resource_fences` vectors.
+    fence_associations: AtomicU64,
     /// Device-wide fence set used as a conservative lifetime barrier.
     ///
     /// Virgl command streams are opaque, so userspace may omit a referenced
     /// resource from the BO list. Final resource and context destruction wait
     /// on this set even when no per-object association was supplied.
-    inflight_fences: SpinLock<Vec<Arc<fence::Fence>>>,
+    tracked_fences: SpinLock<Vec<Arc<fence::Fence>>>,
     /// Device-wide DRM-master and KMS transaction state.
     kms_state: Mutex<KmsState>,
     /// Legacy primary-node authentication magic to per-file auth state.
@@ -310,9 +324,10 @@ impl GpuManager {
         let (width, height) = (gpu.width(), gpu.height());
         Self {
             gpu,
-            pool: SpinLock::new(None),
+            pool: Mutex::new(None),
             next_offset: Mutex::new(0),
             gem_objects: SpinLock::new(BTreeMap::new()),
+            gem_references: AtomicU64::new(0),
             gem_names: SpinLock::new(BTreeMap::new()),
             gem_resources: SpinLock::new(BTreeMap::new()),
             pending_resource_cleanup: SpinLock::new(BTreeSet::new()),
@@ -321,11 +336,13 @@ impl GpuManager {
             next_gem_id: AtomicU32::new(1),
             next_framebuffer_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
+            virgl_contexts: VirglContextTracker::new(),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
             next_fence_id: AtomicU64::new(1),
             resource_fences: SpinLock::new(BTreeMap::new()),
-            inflight_fences: SpinLock::new(Vec::new()),
+            fence_associations: AtomicU64::new(0),
+            tracked_fences: SpinLock::new(Vec::new()),
             kms_state: Mutex::new(KmsState::new(width, height)),
             auth_magics: SpinLock::new(BTreeMap::new()),
             next_auth_magic: AtomicU32::new(1),
@@ -374,6 +391,45 @@ impl GpuManager {
             .map_err(|_| Error::with_message(Errno::ENOSPC, "framebuffer IDs exhausted"))
     }
 
+    /// Takes a diagnostic snapshot from the authoritative resource containers.
+    ///
+    /// The snapshot is intended for quiescent leak tests. Concurrent operations
+    /// may advance individual containers between lock acquisitions.
+    fn resource_snapshot(&self) -> DrmResourceSnapshot {
+        let dumb_pool_used_bytes = *self.next_offset.lock();
+        let gem_object_count = self.gem_objects.lock().len();
+
+        let gem_resources = self.gem_resources.lock();
+        let live_host_resources = gem_resources
+            .values()
+            .filter(|state| matches!(state, GemResourceState::Live(_)))
+            .count();
+        let cleanup_only_host_resources = gem_resources.len() - live_host_resources;
+        drop(gem_resources);
+
+        let context_counts = self.virgl_contexts.counts();
+        let backend = self.gpu.resource_snapshot();
+        DrmResourceSnapshot {
+            dumb_pool_used_bytes,
+            dumb_pool_capacity_bytes: DUMB_POOL_SIZE,
+            gem_objects: gem_object_count,
+            gem_references: self.gem_references.load(Ordering::Relaxed),
+            flink_names: self.gem_names.lock().len(),
+            live_host_resources,
+            cleanup_only_host_resources,
+            pending_resource_cleanup: self.pending_resource_cleanup.lock().len(),
+            virgl_contexts: context_counts.contexts,
+            context_attachments: context_counts.attachments,
+            pending_context_cleanup: context_counts.pending_cleanup,
+            tracked_fences: self.tracked_fences.lock().len(),
+            fence_associations: self.fence_associations.load(Ordering::Relaxed),
+            backend_backing_owners: backend.backing_owners(),
+            backend_pending_cleanup: backend.pending_cleanup(),
+            scanout_resources: backend.scanout_resources(),
+            cursor_resources: backend.cursor_resources(),
+        }
+    }
+
     /// Adds one owner to an existing GEM object and returns its buffer.
     fn retain_gem_object(&self, object_id: u32) -> Result<DumbBuffer> {
         let objects = self.gem_objects.lock();
@@ -385,6 +441,7 @@ impl GpuManager {
             Error::with_message(Errno::EOVERFLOW, "GEM reference count overflows")
         })?;
         object.ref_count.store(references, Ordering::Relaxed);
+        self.gem_references.fetch_add(1, Ordering::Relaxed);
         Ok(object.buffer)
     }
 
@@ -408,10 +465,12 @@ impl GpuManager {
             }
             if references > 1 {
                 object.ref_count.store(references - 1, Ordering::Relaxed);
+                self.gem_references.fetch_sub(1, Ordering::Relaxed);
                 return Ok(HostCleanupStatus::Confirmed);
             }
             objects.remove(&object_id).unwrap()
         };
+        self.gem_references.fetch_sub(1, Ordering::Relaxed);
 
         let name = released.name.load(Ordering::Relaxed);
         if name != 0 {
@@ -428,6 +487,8 @@ impl GpuManager {
             .lock()
             .remove(&object_id)
             .unwrap_or_default();
+        self.fence_associations
+            .fetch_sub(fences.len() as u64, Ordering::Relaxed);
         for fence in fences {
             if let Err(error) = fence.wait() {
                 warn!(
@@ -473,17 +534,24 @@ impl GpuManager {
     }
 
     fn associate_resource_fence(&self, object_ids: &BTreeSet<u32>, fence: &Arc<fence::Fence>) {
-        let mut inflight = self.inflight_fences.lock();
-        inflight.retain(|previous| !previous.is_signaled());
-        inflight.push(fence.clone());
-        drop(inflight);
+        let mut tracked = self.tracked_fences.lock();
+        tracked.retain(|previous| !previous.is_signaled());
+        tracked.push(fence.clone());
+        drop(tracked);
 
         let mut resource_fences = self.resource_fences.lock();
+        let mut removed_count = 0usize;
         for object_id in object_ids {
             let fences = resource_fences.entry(*object_id).or_default();
+            let previous_len = fences.len();
             fences.retain(|previous| !previous.is_signaled());
+            removed_count += previous_len - fences.len();
             fences.push(fence.clone());
         }
+        self.fence_associations
+            .fetch_sub(removed_count as u64, Ordering::Relaxed);
+        self.fence_associations
+            .fetch_add(object_ids.len() as u64, Ordering::Relaxed);
     }
 
     fn resource_fences(&self, object_id: u32) -> Vec<Arc<fence::Fence>> {
@@ -499,18 +567,22 @@ impl GpuManager {
         let Some(current) = resource_fences.get_mut(&object_id) else {
             return;
         };
+        let previous_len = current.len();
         current.retain(|fence| {
             !completed
                 .iter()
                 .any(|completed| Arc::ptr_eq(fence, completed))
         });
+        let removed_count = previous_len - current.len();
         if current.is_empty() {
             resource_fences.remove(&object_id);
         }
+        self.fence_associations
+            .fetch_sub(removed_count as u64, Ordering::Relaxed);
     }
 
     fn wait_for_all_fences(&self) {
-        let fences = self.inflight_fences.lock().clone();
+        let fences = self.tracked_fences.lock().clone();
         for fence in &fences {
             if let Err(error) = fence.wait() {
                 warn!(
@@ -519,8 +591,8 @@ impl GpuManager {
                 );
             }
         }
-        let mut inflight = self.inflight_fences.lock();
-        inflight.retain(|current| {
+        let mut tracked = self.tracked_fences.lock();
+        tracked.retain(|current| {
             !fences
                 .iter()
                 .any(|completed| Arc::ptr_eq(current, completed))
@@ -529,9 +601,15 @@ impl GpuManager {
 
     /// Retries resources that outlived their GEM objects without holding a spinlock.
     fn drain_pending_resource_cleanup(&self) {
-        retry_pending_resources(&self.pending_resource_cleanup, |resource_id| {
+        retry_pending_ids(&self.pending_resource_cleanup, |resource_id| {
             self.gpu.resource_unref(resource_id).is_ok()
         });
+    }
+
+    /// Retries context destruction before retrying attached host resources.
+    fn drain_pending_context_cleanup(&self) {
+        self.virgl_contexts
+            .retry_pending(|context_id| self.gpu.ctx_destroy(context_id).is_ok());
     }
 }
 
@@ -539,24 +617,24 @@ fn next_fence_id(current: u64) -> Option<u64> {
     current.checked_add(1)
 }
 
-fn retry_pending_resources(
-    pending_resources: &SpinLock<BTreeSet<u32>>,
+fn retry_pending_ids(
+    pending_ids: &SpinLock<BTreeSet<u32>>,
     mut try_cleanup: impl FnMut(u32) -> bool,
 ) {
-    let Some(last_resource_id) = pending_resources.lock().last().copied() else {
+    let Some(last_id) = pending_ids.lock().last().copied() else {
         return;
     };
-    let mut next_resource_id = pending_resources.lock().first().copied();
-    while let Some(resource_id) = next_resource_id {
-        if try_cleanup(resource_id) {
-            pending_resources.lock().remove(&resource_id);
+    let mut next_id = pending_ids.lock().first().copied();
+    while let Some(id) = next_id {
+        if try_cleanup(id) {
+            pending_ids.lock().remove(&id);
         }
-        if resource_id == last_resource_id {
+        if id == last_id {
             return;
         }
-        next_resource_id = pending_resources
+        next_id = pending_ids
             .lock()
-            .range((Excluded(resource_id), Included(last_resource_id)))
+            .range((Excluded(id), Included(last_id)))
             .next()
             .copied();
     }
@@ -616,7 +694,7 @@ mod tests {
         let pending_resources = SpinLock::new(BTreeSet::from([10, 11]));
         let mut attempted_resources = Vec::new();
 
-        retry_pending_resources(&pending_resources, |resource_id| {
+        retry_pending_ids(&pending_resources, |resource_id| {
             attempted_resources.push(resource_id);
             if resource_id == 10 {
                 pending_resources.lock().insert(12);
@@ -632,6 +710,32 @@ mod tests {
     fn fence_ids_do_not_wrap() {
         assert_eq!(next_fence_id(1), Some(2));
         assert_eq!(next_fence_id(u64::MAX), None);
+    }
+
+    #[ktest]
+    fn context_cleanup_remains_observable_until_confirmed() {
+        let tracker = VirglContextTracker::new();
+        tracker.record_created(7);
+        tracker.record_attachment(7, 11);
+        tracker.record_attachment(7, 12);
+        assert_eq!(
+            tracker.counts(),
+            VirglContextCounts {
+                contexts: 1,
+                attachments: 2,
+                pending_cleanup: 0,
+            }
+        );
+
+        tracker.defer_destroy(7);
+        tracker.retry_pending(|context_id| {
+            assert_eq!(context_id, 7);
+            false
+        });
+        assert_eq!(tracker.counts().pending_cleanup, 1);
+
+        tracker.retry_pending(|context_id| context_id == 7);
+        assert_eq!(tracker.counts(), VirglContextCounts::default());
     }
 }
 
@@ -776,8 +880,6 @@ struct VirglContext {
     is_created: bool,
     /// Set after an ambiguous host-side context operation.
     is_poisoned: bool,
-    /// Host resources currently visible to this virgl context.
-    attached_resources: BTreeSet<u32>,
 }
 
 #[derive(Debug)]
@@ -825,7 +927,6 @@ impl DriHandle {
                 id: context_id,
                 is_created: false,
                 is_poisoned: false,
-                attached_resources: BTreeSet::new(),
             }),
             cursor_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
@@ -964,12 +1065,14 @@ impl DriHandle {
             return_errno_with_message!(Errno::EIO, "virgl context is no longer usable");
         }
         if !context.is_created {
+            self.gpu_manager.drain_pending_context_cleanup();
             // `VIRTIO_GPU_F_CONTEXT_INIT` is not negotiated, so the legacy
             // context-create payload must leave `context_init` at zero.
             self.gpu_manager
                 .gpu
                 .ctx_create(context.id, 0, b"asterinas-drm")
                 .map_err(|_| Error::with_message(Errno::EIO, "cannot create virgl context"))?;
+            self.gpu_manager.virgl_contexts.record_created(context.id);
             context.is_created = true;
         }
         Ok(context.id)
@@ -980,9 +1083,13 @@ impl DriHandle {
     /// what guarantees that this file cannot reuse the context afterwards.
     fn poison_virgl_context_locked(&self, context: &mut VirglContext) {
         context.is_poisoned = true;
-        if context.is_created && self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+        if context.is_created {
+            if self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+                self.gpu_manager.virgl_contexts.record_destroyed(context.id);
+            } else {
+                self.gpu_manager.virgl_contexts.defer_destroy(context.id);
+            }
             context.is_created = false;
-            context.attached_resources.clear();
         }
     }
 
@@ -992,7 +1099,11 @@ impl DriHandle {
         resource_id: u32,
     ) -> Result<u32> {
         let context_id = self.ensure_virgl_context_locked(context)?;
-        if context.attached_resources.contains(&resource_id) {
+        if self
+            .gpu_manager
+            .virgl_contexts
+            .has_attachment(context_id, resource_id)
+        {
             return Ok(context_id);
         }
         if self
@@ -1004,7 +1115,9 @@ impl DriHandle {
             self.poison_virgl_context_locked(context);
             return_errno_with_message!(Errno::EIO, "cannot attach virgl resource");
         }
-        context.attached_resources.insert(resource_id);
+        self.gpu_manager
+            .virgl_contexts
+            .record_attachment(context_id, resource_id);
         Ok(context_id)
     }
 
@@ -1034,7 +1147,11 @@ impl DriHandle {
         context: &mut VirglContext,
         resource_id: u32,
     ) -> Result<()> {
-        if !context.attached_resources.contains(&resource_id) {
+        if !self
+            .gpu_manager
+            .virgl_contexts
+            .has_attachment(context.id, resource_id)
+        {
             return Ok(());
         }
         if self
@@ -1046,7 +1163,9 @@ impl DriHandle {
             self.poison_virgl_context_locked(context);
             return_errno_with_message!(Errno::EIO, "cannot detach virgl resource");
         }
-        context.attached_resources.remove(&resource_id);
+        self.gpu_manager
+            .virgl_contexts
+            .record_detachment(context.id, resource_id);
         Ok(())
     }
 
@@ -1272,10 +1391,14 @@ impl Drop for DriHandle {
 
         let context = self.context.get_mut();
         self.gpu_manager.wait_for_all_fences();
-        if context.is_created
-            && let Err(error) = self.gpu_manager.gpu.ctx_destroy(context.id)
-        {
-            warn!("cannot destroy virgl context {}: {:?}", context.id, error);
+        if context.is_created {
+            match self.gpu_manager.gpu.ctx_destroy(context.id) {
+                Ok(()) => self.gpu_manager.virgl_contexts.record_destroyed(context.id),
+                Err(error) => {
+                    warn!("cannot destroy virgl context {}: {:?}", context.id, error);
+                    self.gpu_manager.virgl_contexts.defer_destroy(context.id);
+                }
+            }
         }
 
         let inner = self.inner.get_mut();
@@ -1351,6 +1474,10 @@ impl PerOpenFileOps for DriHandle {
 
     fn is_offset_aware(&self) -> bool {
         false
+    }
+
+    fn write_fdinfo(&self, formatter: &mut Formatter<'_>) -> core::fmt::Result {
+        fdinfo::write(self, formatter)
     }
 
     fn mappable(&self) -> Result<Mappable> {

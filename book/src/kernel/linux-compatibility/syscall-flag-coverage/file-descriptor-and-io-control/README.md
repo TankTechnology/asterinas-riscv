@@ -172,6 +172,25 @@ Legacy `DRM_MODE_PAGE_FLIP_ASYNC` is likewise rejected with `EOPNOTSUPP`.
 Property blobs are bounded to 64 KiB, owned by the creating DRM file, and kept
 alive while committed KMS state references them.
 
+DRM file descriptions append diagnostic fields to
+`/proc/<pid>/fdinfo/<fd>`. `drm-driver` identifies the driver and
+`drm-client-id` identifies the open file. Fields beginning with
+`drm-device-` are device-wide totals, so every file for the same GPU reports
+the same aggregate state rather than per-client usage. A snapshot may be
+weakly consistent while other clients are changing resources; leak tests must
+quiesce their workload before comparing it with a baseline.
+
+The device fields report the DUMB-pool used and capacity in bytes; GEM objects,
+references, and FLINK names; live and cleanup-only host resources; virgl
+contexts and attachments; retained fences and per-object fence associations;
+backend backing owners; scanout and cursor resources; and pending cleanup at
+the DRM, context, and backend layers. A pending-cleanup value means that the
+guest has not confirmed host destruction. `drm-device-fences-tracked` includes
+completed fences retained as conservative lifetime barriers until the next
+prune. The DUMB-pool used value is a monotonic allocation watermark, not live
+GEM memory: the current allocator does not reuse a span because an established
+mapping can outlive its GEM handle.
+
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/ioctl.2.html).
 

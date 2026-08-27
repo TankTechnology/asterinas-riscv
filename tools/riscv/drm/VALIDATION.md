@@ -1,6 +1,6 @@
 # DRM validation and architecture plan
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 ## Scope
 
@@ -44,6 +44,7 @@ question cannot be settled from an authoritative specification.
 - M17 atomic KMS and property gate;
 - raw virgl creation, transfer, pixel, fence, and double-buffer gate;
 - GEM/FLINK/PRIME import/export and close-order gate;
+- M22 device-wide lifetime counters and repeated GEM/PRIME/context/fence close;
 - concurrent control-queue clients; and
 - one complete Mesa DRI3/Xorg/Xfce virgl boot.
 
@@ -126,9 +127,14 @@ abstractions:
    buffer-copy performance optimizations.
 
 The current property-blob store enforces 64 KiB per blob, 4 MiB in total, and
-256 live blobs. The next accounting step is to expose debug counters for GEM,
-host resources, context attachments, deferred cleanup, and fences so stress
-tests can assert that every counter returns to its baseline.
+256 live blobs. Device-wide fdinfo accounting now exposes GEM owners, host
+resources, virgl contexts and attachments, retained fences, backend ownership,
+scanout/cursor state, and each deferred-cleanup layer. M22 asserts that all
+reclaimable counters return to a quiescent baseline after staged GEM, PRIME,
+context, and fence teardown. It checks the non-reusing DUMB-pool watermark
+separately so a clean lifetime result cannot hide monotonic pool exhaustion.
+The current method and evidence are recorded in
+[`../nixos/DRM-M22-report.md`](../nixos/DRM-M22-report.md).
 
 The backend boundary is considered useful only after both the virtio-gpu tests
 and a small fake-backend state test can consume it.

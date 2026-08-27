@@ -85,6 +85,41 @@ impl GpuCommandTicket {
     }
 }
 
+/// A diagnostic snapshot of resources retained by the virtio-gpu backend.
+///
+/// Concurrent device operations may advance individual fields between lock
+/// acquisitions. Callers that require a stable baseline must quiesce their own
+/// workload before taking the snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuResourceSnapshot {
+    backing_owners: usize,
+    pending_cleanup: usize,
+    scanout_resources: usize,
+    cursor_resources: usize,
+}
+
+impl GpuResourceSnapshot {
+    /// Returns the number of host resources retaining guest backing memory.
+    pub fn backing_owners(self) -> usize {
+        self.backing_owners
+    }
+
+    /// Returns the number of failed resource unrefs awaiting retry.
+    pub fn pending_cleanup(self) -> usize {
+        self.pending_cleanup
+    }
+
+    /// Returns the number of resources currently driving a scanout.
+    pub fn scanout_resources(self) -> usize {
+        self.scanout_resources
+    }
+
+    /// Returns the number of resources currently used by the hardware cursor.
+    pub fn cursor_resources(self) -> usize {
+        self.cursor_resources
+    }
+}
+
 /// Upper bound for a device-advertised virgl capability blob.
 const MAX_CAPSET_SIZE: usize = 1024 * 1024;
 
@@ -154,6 +189,8 @@ pub struct GpuDevice {
     /// update briefly detaches the active QEMU scanout and can leave the GTK
     /// display reporting that its output is inactive.
     present_resource: Mutex<Option<PresentedResource>>,
+    /// Resource currently selected on scanout 0, including the boot pattern.
+    active_scanout_resource: AtomicU32,
     /// Next resource id handed out by framebuffer, cursor, and virgl clients.
     next_resource_id: AtomicU32,
     /// Serializes multi-command cursor resource transactions without spinning.
@@ -246,6 +283,7 @@ impl GpuDevice {
             num_capsets: config.num_capsets,
             virgl_supported,
             present_resource: Mutex::new(None),
+            active_scanout_resource: AtomicU32::new(0),
             // Resource id 1 is reserved for the boot-time test pattern.
             next_resource_id: AtomicU32::new(2),
             cursor_operation: Mutex::new(()),
@@ -275,9 +313,21 @@ impl GpuDevice {
         self.scanout_height
     }
 
-    /// Whether the host offered and the driver negotiated virgl 3D support.
+    /// Returns whether the host offered and the driver negotiated virgl 3D support.
     pub fn supports_virgl(&self) -> bool {
         self.virgl_supported
+    }
+
+    /// Returns a low-cost diagnostic snapshot of backend resource ownership.
+    pub fn resource_snapshot(&self) -> GpuResourceSnapshot {
+        GpuResourceSnapshot {
+            backing_owners: self.backing_owners.lock().len(),
+            pending_cleanup: self.pending_resource_cleanup.lock().len(),
+            scanout_resources: usize::from(
+                self.active_scanout_resource.load(Ordering::Acquire) != 0,
+            ),
+            cursor_resources: usize::from(self.cursor_resource.load(Ordering::Acquire) != 0),
+        }
     }
 
     /// Allocates a resource id unique to this device instance.
@@ -631,7 +681,12 @@ impl GpuDevice {
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        check_ok(code)?;
+        if scanout_id == SCANOUT_ID {
+            self.active_scanout_resource
+                .store(resource_id, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn transfer_to_host_2d(

@@ -2,7 +2,7 @@
 
 //! Opened Inode-backed File Handle
 
-use core::fmt::Display;
+use core::fmt::{Display, Formatter};
 
 use aster_rights::Rights;
 
@@ -516,7 +516,7 @@ impl FileLike for InodeHandle {
         }
 
         impl Display for FdInfo {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
                 let mut flags = self.inner.status_flags().bits() | self.inner.access_mode() as u32;
                 if self.fd_flags.contains(FdFlags::CLOEXEC) {
                     flags |= CreationFlags::O_CLOEXEC.bits();
@@ -525,7 +525,11 @@ impl FileLike for InodeHandle {
                 writeln!(f, "pos:\t{}", self.inner.offset())?;
                 writeln!(f, "flags:\t0{:o}", flags)?;
                 writeln!(f, "mnt_id:\t{}", self.inner.path().mount_node().id())?;
-                writeln!(f, "ino:\t{}", self.inner.path().inode().ino())
+                writeln!(f, "ino:\t{}", self.inner.path().inode().ino())?;
+                if let Some(open_file) = self.inner.open_file.as_ref() {
+                    open_file.write_fdinfo(f)?;
+                }
+                Ok(())
             }
         }
 
@@ -543,9 +547,7 @@ impl Drop for InodeHandle {
         // Release the write-access tracking registered at open time.
         // The predicate mirrors the one in `new_unchecked_access`
         // (`O_PATH` handles have empty rights and thus never match).
-        if self.access_mode().is_writable()
-            && self.path().inode().type_().is_regular_file()
-        {
+        if self.access_mode().is_writable() && self.path().inode().type_().is_regular_file() {
             self.path()
                 .inode()
                 .write_access_tracker_or_init()
@@ -555,7 +557,7 @@ impl Drop for InodeHandle {
 }
 
 impl Debug for InodeHandle {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
         f.debug_struct("InodeHandle")
             .field("path", &self.path())
             .field("offset", &self.offset())
@@ -631,6 +633,11 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
         _file_table: &mut FileTableRefMut,
     ) -> Option<Result<i32>> {
         None
+    }
+
+    /// Appends per-open-file diagnostics to `/proc/<pid>/fdinfo/<fd>`.
+    fn write_fdinfo(&self, _formatter: &mut Formatter<'_>) -> core::fmt::Result {
+        Ok(())
     }
 
     /// Returns the status flags that can be set for this opened file.

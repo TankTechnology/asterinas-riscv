@@ -44,6 +44,7 @@ impl<'a> GemObjectRef<'a> {
                     buffer,
                 }),
             );
+            manager.gem_references.fetch_add(1, Ordering::Relaxed);
             object_id
         };
         Ok(Self {

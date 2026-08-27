@@ -639,3 +639,28 @@ blob, 4 MiB and 256 live blobs device-wide). Virtio-gpu scanout replacement
 prepares and flushes the new resource before `SET_SCANOUT`; failed unrefs are
 retained for retry, and fixed-size control commands reject truncated device
 responses instead of consuming stale DMA-buffer contents.
+
+## 2026-08-28 device-wide lifetime accounting and M22
+
+DRM fdinfo now exposes explicitly device-scoped GEM, host-resource, virgl
+context/attachment, fence, backend ownership, scanout/cursor, and deferred
+cleanup diagnostics. The implementation derives structural counts from the
+owning containers and keeps O(1) aggregates for GEM owners, context
+attachments, and fence associations. Diagnostics and context tracking were
+split out of the main DRM coordinator, and the first 64 MiB contiguous pool
+allocation no longer runs under a spinlock.
+
+M22 repeatedly creates a mapped GEM buffer, creates and attaches a host virgl
+resource, exports/imports it with PRIME, submits and verifies a successful
+fenced command, closes the worker while retaining the dma-buf, and finally
+closes the dma-buf. All 32 rounds restored every reclaimable counter to the
+baseline. The DUMB-pool watermark advanced by exactly 524,288 bytes, exposing
+the current non-reusing pool as a separate long-run capacity limitation rather
+than misclassifying it as a live-object leak.
+
+On the corrected tree, the RISC-V Sv39 build and `cargo osdk test` pass, M17
+passes 55/55 checks, and the complete Xorg/Xfce gate reports DRI3 direct
+rendering, virgl, a clean command stream, and `XFCE_DRM_PASS`. The one-run
+30-frame sample was 17.765 FPS and is retained only as semantic evidence. See
+[`DRM-M22-report.md`](DRM-M22-report.md) for the counter contract, staged-close
+test, evidence, review corrections, and remaining pool-lifetime work.

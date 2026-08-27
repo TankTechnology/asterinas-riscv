@@ -294,6 +294,7 @@ pub(super) fn virtgpu_resource_create(
 
     let backing_object_id = backing.map(|(object_id, _, _)| object_id);
     let resource_creation = handle.gpu_manager.resource_creation.lock();
+    handle.gpu_manager.drain_pending_context_cleanup();
     handle.gpu_manager.drain_pending_resource_cleanup();
     if let Some(object_id) = backing_object_id
         && handle.gpu_manager.has_gem_resource(object_id)
