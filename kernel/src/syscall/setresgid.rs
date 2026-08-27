@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{Gid, posix_thread::ContextPthreadAdminApi},
+    process::{posix_thread::ContextPthreadAdminApi, Gid},
 };
 
 pub fn sys_setresgid(rgid: i32, egid: i32, sgid: i32, ctx: &Context) -> Result<SyscallReturn> {
