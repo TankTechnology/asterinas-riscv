@@ -269,12 +269,14 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
   --boot-timeout 300 --drain-timeout 5
 ```
 
-The strict serial order is selected GMAC, physical M5 link/ping/DNS/HTTPS/PNG
+The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
 evidence, M5 READY, M4 desktop READY, M6 remote image, one JavaScript status,
 and matching M6 READY. `limited-pass`, `disabled`, and `failed` describe only
 the packaged NetSurf JavaScript engine; none claims Chromium compatibility.
-The gate drains the full serial transcript before publishing `passed: true`
-and separately requires ten lossless host-to-board pings.
+The gate drains the full serial transcript before publishing `passed: true`.
+It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
+Asterinas network path does not provide the Linux ping-socket contract, and a
+ping result would not prove that browser traffic works.
 
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug

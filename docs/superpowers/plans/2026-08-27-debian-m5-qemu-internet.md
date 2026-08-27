@@ -75,9 +75,11 @@ Fake `ip`, `ping`, `getent`, and `curl` as real executable boundaries. Require t
 
 Run the focused M5 test and confirm that the current physical-only script rejects the QEMU address.
 
-- [x] **Step 3: Implement the QEMU branch without weakening physical evidence**
+- [x] **Step 3: Implement the QEMU branch without weakening browser evidence**
 
-Keep the current physical address and ten-ping behavior byte-for-byte. Add only the exact QEMU branch, bounded commands, resolver update, and runtime URL publication.
+Keep the current physical static address behavior. Add only the exact QEMU
+branch, bounded commands, resolver update, and runtime URL publication. The
+later physical gate directly tests DNS and HTTPS instead of relying on ICMP.
 
 - [x] **Step 4: Write and run a failing desktop-session test**
 

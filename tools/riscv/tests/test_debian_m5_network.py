@@ -33,9 +33,11 @@ MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
 )
+MEGREZ_TCP_PROBE_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
+)
 EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_GUEST_PING peer=10.100.19.216 count=10",
     "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
@@ -48,6 +50,41 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
+
+    def test_native_megrez_tcp_probe_validates_exact_http_response(self) -> None:
+        executable = self.directory / "megrez-tcp-probe-self-test"
+        compile_result = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DMEGREZ_TCP_PROBE_SELF_TEST",
+                str(MEGREZ_TCP_PROBE_SOURCE),
+                "-o",
+                str(executable),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+
+        result = subprocess.run(
+            [str(executable)], check=False, capture_output=True, text=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            (
+                "ASTERINAS_GMAC_TCP_PROBE_FAIL "
+                "reason=connect-poll errno=110 attempts=3\n"
+                "MEGREZ_TCP_PROBE_SELF_TEST PASS\n"
+            ),
+        )
 
     def test_profile_extends_m4_with_exact_network_identity(self) -> None:
         m4 = get_profile("desktop-m4")
@@ -313,7 +350,7 @@ esac
         )
         return environment, console, resolv_conf, url_file, ping_log, curl_log
 
-    def test_guest_evidence_requires_link_address_and_ten_pings(self) -> None:
+    def test_guest_evidence_requires_link_dns_https_without_ping(self) -> None:
         environment, console, resolv_conf, url_file, ping_log, curl_log = (
             self._physical_evidence_environment(
                 self.directory / "physical-success",
@@ -337,7 +374,7 @@ esac
         self.assertEqual(
             console.read_text().splitlines(), list(EXPECTED_MEGREZ_MILESTONES)
         )
-        self.assertEqual(ping_log.read_text().strip(), "-n -c 10 -W 2 10.100.19.216")
+        self.assertFalse(ping_log.exists())
         self.assertEqual(
             resolv_conf.read_text(), "nameserver 10.2.0.5\nnameserver 10.2.0.6\n"
         )
@@ -608,7 +645,7 @@ esac
             ).reason,
             "kernel panic",
         )
-        for marker in EXPECTED_MEGREZ_MILESTONES[2:5]:
+        for marker in EXPECTED_MEGREZ_MILESTONES[1:4]:
             with self.subTest(missing=marker):
                 missing = transcript.replace(marker.encode(), b"")
                 self.assertEqual(

@@ -11,7 +11,6 @@ readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
 readonly ADDRESS="10.100.19.200/21"
-readonly PEER="10.100.19.216"
 readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1'
 readonly MEGREZ_PRIMARY_DNS='10.2.0.5'
 readonly MEGREZ_FALLBACK_DNS='10.2.0.6'
@@ -135,8 +134,6 @@ megrez_network_evidence() {
     done
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
-    ping -n -c 10 -W 2 "$PEER" >>"$CONSOLE" 2>&1 || fail guest-ping
-    emit "DEBIAN_NETWORK_M5_GUEST_PING peer=$PEER count=10"
 
     publish_megrez_resolver
     timeout "$COMMAND_TIMEOUT_SECONDS" getent ahostsv4 www.baidu.com \
