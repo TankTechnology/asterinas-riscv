@@ -17,6 +17,10 @@
 
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s (errno=%d %s)\n", msg, errno, strerror(errno)); _exit(1); } printf("ok: %s\n", msg); } while (0)
 
+/* Linux UAPI: the loopback interface is index 1 in every network namespace.
+   systemd's loopback_setup() relies on this fixed value. */
+#define LOOPBACK_IFINDEX 1
+
 static int nl_open(void)
 {
     int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
@@ -153,6 +157,7 @@ static void ns_child(void)
 
     int idx = lo_index(nl);
     CHECK(idx > 0, "lo ifindex resolved");
+    CHECK(idx == LOOPBACK_IFINDEX, "lo uses fixed ifindex 1");
     CHECK(set_link_up(nl, idx, 1) == 0, "RTM_NEWLINK lo up (ip link set lo up)");
     count = dump_links(nl, names, flags, 8);
     CHECK(count == 1 && (flags[0] & IFF_UP), "lo is up after RTM_NEWLINK");

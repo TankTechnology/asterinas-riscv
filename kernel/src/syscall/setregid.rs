@@ -3,23 +3,23 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{Gid, posix_thread::ContextPthreadAdminApi},
+    process::{posix_thread::ContextPthreadAdminApi, Gid},
 };
 
 pub fn sys_setregid(rgid: i32, egid: i32, ctx: &Context) -> Result<SyscallReturn> {
-    let rgid = if rgid >= 0 {
-        Some(Gid::new(rgid.cast_unsigned()))
-    } else {
-        None
+    let map_gid = |id: i32| -> Result<Option<Gid>> {
+        if id < 0 {
+            Ok(None)
+        } else {
+            ctx.thread_local
+                .borrow_user_ns()
+                .make_kgid(id.cast_unsigned())
+                .map(Some)
+        }
     };
 
-    let egid = if egid >= 0 {
-        Some(Gid::new(egid.cast_unsigned()))
-    } else {
-        None
-    };
-
-    debug!("rgid = {:?}, egid = {:?}", rgid, egid);
+    let rgid = map_gid(rgid)?;
+    let egid = map_gid(egid)?;
 
     let credentials = ctx.credentials_mut();
     credentials.set_regid(rgid, egid)?;
