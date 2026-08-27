@@ -122,6 +122,32 @@ make test_riscv_drm_cursor \
 This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
 it is not evidence for the Megrez display controller or physical scanout.
 
+## Simulation-first Megrez debug attempt
+
+The Megrez debug workflow binds one immutable Asterinas artifact plan to a
+generic Sv39/SMP=4 QEMU fast result before touching the board. The physical
+step holds one serial descriptor, verifies the kernel, stage-1 initramfs, and
+Megrez DTB already in RAM by exact CRC32, and transfers only cache misses over
+XMODEM. It patches the live DTB for the firmware framebuffer and USB host,
+runs exactly one `booti`, and waits for the plan's guest marker followed by
+the automatic U-Boot recovery prompt.
+
+It never transfers the 1-GiB Debian root image, runs `saveenv`, resets the
+board, or boots Linux. A failed or interrupted attempt publishes
+`passed:false`; `result.json` is written after the serial and transport
+evidence.
+
+```bash
+make test_riscv_megrez_debug_board \
+  MEGREZ_DEBUG_PLAN="$PWD/target/megrez-debug/debug-plan.json" \
+  MEGREZ_DEBUG_DEVICE=/dev/ttyUSB0 \
+  MEGREZ_DEBUG_SIMULATION_RESULT="$PWD/target/qemu-uboot/megrez-debug/fast/result.json"
+```
+
+The command has one declining timeout, capped at 300 seconds. Reusing RAM is
+safe only when U-Boot reports the exact planned size/address CRC; otherwise
+the artifact is retransmitted and verified again before `booti`.
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It

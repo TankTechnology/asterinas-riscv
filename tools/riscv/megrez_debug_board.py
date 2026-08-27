@@ -4,18 +4,33 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
+import io
+import json
 import math
+import os
 import re
+import signal
+import stat
+import termios
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from types import TracebackType
+from typing import Protocol, TextIO
 
 from tools.riscv.megrez_board_session import (
     CRC_RESULT_PATTERN,
+    MEGREZ_FRAMEBUFFER,
+    MEGREZ_USB_HOST_COMMAND,
     UBOOT_ERROR_PATTERN,
+    BoardSession,
+    open_serial,
+    read_available,
 )
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
     DebugPlan,
@@ -26,6 +41,10 @@ from tools.riscv.megrez_xmodem import INITIAL_BAUD, transfer_fd
 BOARD_ARTIFACT_NAMES = ("kernel", "initramfs", "megrez_dtb")
 Command = Callable[[str, float], str]
 Transfer = Callable[[int, Path, int], object]
+OpenDevice = Callable[[str], int]
+LockDevice = Callable[[int], None]
+CloseDevice = Callable[[int], None]
+SessionFactory = Callable[..., BoardSession]
 MAX_BOARD_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 FATAL_MARKERS = (
     "Uncaught panic",
@@ -184,6 +203,267 @@ class BoardOperations(Protocol):
     ) -> None: ...
 
 
+def _lock_serial(fd: int) -> None:
+    """Hold a cooperative lock and the kernel's exclusive TTY mode."""
+
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        fcntl.ioctl(fd, termios.TIOCEXCL)
+    except OSError as error:
+        if error.errno not in (errno.EINVAL, errno.ENOTTY):
+            raise
+
+
+def _safe_board_output(path: Path, repository_root: Path) -> Path:
+    repository = repository_root.absolute()
+    allowed = repository / "target" / "megrez-debug"
+    candidate = path.absolute()
+    try:
+        candidate.relative_to(allowed)
+    except ValueError as error:
+        raise BoardRunFailure("board-output-outside-target") from error
+
+    current = repository
+    for component in candidate.relative_to(repository).parts:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise BoardRunFailure("board-output-unsafe")
+    candidate.mkdir(parents=True, mode=0o755, exist_ok=True)
+    return candidate
+
+
+class RealBoardOperations:
+    """One descriptor-owned physical-board adapter for ``run_board``."""
+
+    def __init__(
+        self,
+        plan: DebugPlan,
+        device: str,
+        output_directory: Path,
+        *,
+        repository_root: Path | None = None,
+        open_device: OpenDevice = open_serial,
+        lock_device: LockDevice = _lock_serial,
+        close_device: CloseDevice = os.close,
+        session_factory: SessionFactory = BoardSession.from_fd,
+    ) -> None:
+        self._plan = plan
+        self._device = device
+        self._output_path = output_directory
+        self._repository = (
+            repository_root.absolute()
+            if repository_root is not None
+            else Path(__file__).resolve().parents[2]
+        )
+        self._open_device = open_device
+        self._lock_device = lock_device
+        self._close_device = close_device
+        self._session_factory = session_factory
+        self._output: PinnedOutputDirectory | None = None
+        self._fd: int | None = None
+        self._session: BoardSession | None = None
+        self._log: TextIO = io.StringIO()
+        self.last_transcript = ""
+        self.last_outcomes: tuple[str, ...] = ()
+
+    @property
+    def can_publish(self) -> bool:
+        return self._output is not None
+
+    def invalidate(self) -> None:
+        output = _safe_board_output(self._output_path, self._repository)
+        self._output = PinnedOutputDirectory(output)
+        self._output.invalidate("result.json", "serial.log", "transport.json")
+
+    def open(self, timeout: float) -> None:
+        fd = self._open_device(self._device)
+        try:
+            self._lock_device(fd)
+            session = self._session_factory(
+                fd,
+                None,
+                confirm=False,
+                final_marker=self._plan.markers[-1],
+                log_stream=self._log,
+            )
+            session.send("")
+            session.wait_for_uboot_prompt(timeout)
+        except BaseException:
+            self._close_device(fd)
+            raise
+        self._fd = fd
+        self._session = session
+
+    def _require_session(self) -> BoardSession:
+        if self._session is None or self._fd is None:
+            raise BoardRunFailure("transport-not-open")
+        return self._session
+
+    def ensure_artifacts(self, plan: DebugPlan, timeout: float) -> tuple[str, ...]:
+        session = self._require_session()
+        deadline = time.monotonic() + timeout
+        transport = BoardTransport(
+            fd=self._fd,
+            command=lambda command, budget: session.command(command, timeout=budget),
+        )
+        identities = {identity.name: identity for identity in plan.artifacts}
+        outcomes: list[str] = []
+        for name in BOARD_ARTIFACT_NAMES:
+            outcome = transport.ensure(
+                identities[name],
+                timeout=_remaining(deadline, time.monotonic, phase="transport"),
+            )
+            outcomes.append(f"{outcome.artifact}:{outcome.status}")
+        return tuple(outcomes)
+
+    def prepare_boot(self, plan: DebugPlan, timeout: float) -> None:
+        session = self._require_session()
+        deadline = time.monotonic() + timeout
+        initramfs = next(item for item in plan.artifacts if item.name == "initramfs")
+        commands = (
+            "fdt addr 0xf0000000",
+            "fdt resize 0x1000",
+            *MEGREZ_FRAMEBUFFER.commands(),
+            f"setenv initrd_size 0x{initramfs.size:x}",
+            f'setenv bootargs "{plan.bootargs}"',
+            f'fdt set /chosen bootargs "{plan.bootargs}"',
+            MEGREZ_USB_HOST_COMMAND,
+        )
+        for command in commands:
+            session.command(
+                command,
+                timeout=_remaining(deadline, time.monotonic, phase="uboot-prepare"),
+            )
+
+    def booti(self, plan: DebugPlan, timeout: float) -> None:
+        del timeout
+        session = self._require_session()
+        identities = {identity.name: identity for identity in plan.artifacts}
+        kernel = identities["kernel"]
+        initramfs = identities["initramfs"]
+        dtb = identities["megrez_dtb"]
+        session.send(
+            f"booti 0x{kernel.load_address:x} "
+            f"0x{initramfs.load_address:x}:0x{initramfs.size:x} "
+            f"0x{dtb.load_address:x}"
+        )
+
+    def read_chunk(self, timeout: float) -> str:
+        session = self._require_session()
+        chunk = read_available(self._fd, min(timeout, 1.0))
+        if chunk:
+            session._log(chunk)
+        return chunk
+
+    def close(self) -> None:
+        if self._fd is None:
+            return
+        fd = self._fd
+        self._fd = None
+        self._session = None
+        self._close_device(fd)
+
+    def publish(
+        self,
+        result: StageResult,
+        transcript: str,
+        outcomes: tuple[str, ...],
+    ) -> None:
+        if self._output is None:
+            raise BoardRunFailure("board-output-not-pinned")
+        self.last_transcript = transcript
+        self.last_outcomes = outcomes
+        transport = {
+            "schema_version": 1,
+            "plan_sha256": self._plan.plan_sha256,
+            "outcomes": list(outcomes),
+        }
+        self._output.atomic_write(
+            "serial.log", self._log.getvalue().encode(), mode=0o644
+        )
+        self._output.atomic_write(
+            "transport.json",
+            json.dumps(transport, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n",
+            mode=0o644,
+        )
+        self._output.atomic_write("result.json", result.canonical_bytes(), mode=0o644)
+
+    def finish(self) -> None:
+        self.close()
+        self._log.close()
+        if self._output is not None:
+            self._output.close()
+            self._output = None
+
+
+class _BoardSignalState:
+    """Convert the first operator signal into orderly board cleanup."""
+
+    SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+
+    def __init__(self) -> None:
+        self._handling = False
+        self._previous: dict[int, signal.Handlers] = {}
+
+    def _handle(self, signum: int, frame: object) -> None:
+        del frame
+        if self._handling:
+            os._exit(128 + signum)
+        self._handling = True
+        raise BoardTermination(signum)
+
+    def __enter__(self) -> _BoardSignalState:
+        for signum in self.SIGNALS:
+            self._previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, self._handle)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        for signum, handler in self._previous.items():
+            signal.signal(signum, handler)
+
+
+def run_physical_board(
+    plan: DebugPlan,
+    device: str,
+    output_directory: Path,
+    *,
+    timeout: float = 300.0,
+) -> StageResult:
+    """Run one board attempt without reset or persistent U-Boot writes."""
+
+    operations = RealBoardOperations(plan, device, output_directory)
+    try:
+        try:
+            with _BoardSignalState():
+                return run_board(plan, BoardRunConfig(timeout), operations)
+        except BoardTermination as error:
+            if operations.can_publish:
+                operations.publish(
+                    _stage_result(
+                        plan,
+                        passed=False,
+                        reason=f"board-terminated-{error.signum}",
+                    ),
+                    operations.last_transcript,
+                    operations.last_outcomes,
+                )
+            raise
+    finally:
+        operations.finish()
+
+
 class _MarkerTracker:
     def __init__(self, markers: tuple[str, ...]) -> None:
         self._markers = markers
@@ -325,6 +605,13 @@ def run_board(
         if opened:
             try:
                 operations.close()
+            except BoardTermination as error:
+                pending_termination = error
+                result = _stage_result(
+                    plan,
+                    passed=False,
+                    reason=f"board-terminated-{error.signum}",
+                )
             except (OSError, RuntimeError):
                 if pending_termination is None:
                     result = _stage_result(
@@ -335,6 +622,17 @@ def run_board(
         result = _stage_result(plan, passed=False, reason="board-internal-error")
     try:
         operations.publish(result, "".join(transcript), outcomes)
+    except BoardTermination as error:
+        pending_termination = error
+        result = _stage_result(
+            plan,
+            passed=False,
+            reason=f"board-terminated-{error.signum}",
+        )
+        try:
+            operations.publish(result, "".join(transcript), outcomes)
+        except (OSError, RuntimeError) as publication_error:
+            raise BoardRunFailure("board-publication-failed") from publication_error
     except (OSError, RuntimeError) as error:
         raise BoardRunFailure("board-publication-failed") from error
     if pending_termination is not None:
