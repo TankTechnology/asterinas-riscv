@@ -151,6 +151,8 @@ FN_TEST(socketpair_setlkw_and_close_releases_lock)
 	/* systemd uses this lock to serialize shareable network namespace setup. */
 	TEST_SUCC(fcntl(sockets[0], F_SETLKW, &lock));
 	TEST_RES(child_try_fd_write_lock(sockets[0], 0, 0), _ret == EAGAIN);
+	/* The peer socket has its own sockfs inode and must not share this lock. */
+	TEST_RES(child_try_fd_write_lock(sockets[1], 0, 0), _ret == 0);
 
 	/* Closing any duplicate releases this process's POSIX locks on the socket. */
 	TEST_SUCC(close(duplicated_fd));
