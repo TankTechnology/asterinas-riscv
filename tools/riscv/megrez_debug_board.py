@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import gzip
 import io
 import json
 import math
@@ -36,11 +37,15 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_xmodem import INITIAL_BAUD, transfer_fd
+from tools.riscv.megrez_xmodem import (
+    INITIAL_BAUD,
+    read_artifact,
+    transfer_payload_fd,
+)
 
 BOARD_ARTIFACT_NAMES = ("kernel", "initramfs", "megrez_dtb")
 Command = Callable[[str, float], str]
-Transfer = Callable[[int, Path, int], object]
+TransferPayload = Callable[[int, bytes, int], object]
 OpenDevice = Callable[[str], int]
 LockDevice = Callable[[int], None]
 CloseDevice = Callable[[int], None]
@@ -53,6 +58,7 @@ FATAL_MARKERS = (
     "Oops:",
 )
 PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
+KERNEL_COMPRESSED_ADDRESS = 0x90000000
 
 
 class BoardTransportError(RuntimeError):
@@ -69,12 +75,12 @@ class TransportOutcome:
     def __post_init__(self) -> None:
         if self.artifact not in BOARD_ARTIFACT_NAMES:
             raise ValueError("unknown board artifact")
-        if self.status not in ("cache-hit", "transferred"):
+        if self.status not in ("cache-hit", "transferred", "transferred-compressed"):
             raise ValueError("unknown transport outcome")
 
 
-def _default_transfer(fd: int, path: Path, address: int) -> object:
-    return transfer_fd(fd, path, address, current_baud=INITIAL_BAUD)
+def _default_transfer_payload(fd: int, payload: bytes, address: int) -> object:
+    return transfer_payload_fd(fd, payload, address, current_baud=INITIAL_BAUD)
 
 
 class BoardTransport:
@@ -85,13 +91,13 @@ class BoardTransport:
         *,
         fd: int,
         command: Command,
-        transfer: Transfer = _default_transfer,
+        transfer_payload: TransferPayload = _default_transfer_payload,
     ) -> None:
         if type(fd) is not int or fd < 0:
             raise ValueError("serial descriptor must be non-negative")
         self._fd = fd
         self._command = command
-        self._transfer = transfer
+        self._transfer_payload = transfer_payload
 
     @staticmethod
     def _validate_timeout(timeout: float) -> None:
@@ -123,18 +129,34 @@ class BoardTransport:
             return TransportOutcome(identity.name, "cache-hit")
 
         try:
-            self._transfer(
-                self._fd,
-                Path(identity.path),
-                identity.load_address,
-            )
+            payload = read_artifact(Path(identity.path))
+            if identity.name == "kernel":
+                compressed = gzip.compress(payload, compresslevel=1, mtime=0)
+                self._transfer_payload(
+                    self._fd,
+                    compressed,
+                    KERNEL_COMPRESSED_ADDRESS,
+                )
+                self._command(
+                    f"unzip 0x{KERNEL_COMPRESSED_ADDRESS:x} "
+                    f"0x{identity.load_address:x} 0x{identity.size:x}",
+                    timeout,
+                )
+                status = "transferred-compressed"
+            else:
+                self._transfer_payload(
+                    self._fd,
+                    payload,
+                    identity.load_address,
+                )
+                status = "transferred"
         except (OSError, RuntimeError) as error:
             raise BoardTransportError(
                 f"transport-xmodem: {identity.name}: {error}"
             ) from error
         if self._resident_crc(identity, timeout) != identity.crc32:
             raise BoardTransportError(f"transport-post-transfer-crc: {identity.name}")
-        return TransportOutcome(identity.name, "transferred")
+        return TransportOutcome(identity.name, status)
 
 
 def ensure_board_artifacts(
