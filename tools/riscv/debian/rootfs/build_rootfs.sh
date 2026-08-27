@@ -764,6 +764,8 @@ After=asterinas-desktop-m6-browser.service
 
 [Service]
 Type=oneshot
+Environment=ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS=180
+TimeoutStartSec=240
 ExecStart=/usr/lib/asterinas/desktop-m7-baidu-evidence
 RemainAfterExit=yes
 
