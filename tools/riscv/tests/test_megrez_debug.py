@@ -29,6 +29,7 @@ from tools.riscv.megrez_debug_board import (
     BoardTermination,
     BoardTransport,
     BoardTransportError,
+    RealBoardOperations,
     ensure_board_artifacts,
     run_board,
 )
@@ -796,6 +797,66 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertEqual(operations.published.reason, "board-terminated-15")
         self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
 
+    def test_termination_during_close_still_publishes_false(self) -> None:
+        class TerminatingClose(self.Operations):
+            def close(self) -> None:
+                self.calls.append(("close", None))
+                raise BoardTermination(15)
+
+        operations = TerminatingClose(
+            [
+                "Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n",
+                "U-Boot recovered\n=> ",
+            ]
+        )
+        with self.assertRaisesRegex(BoardTermination, "15"):
+            run_board(
+                self.plan,
+                BoardRunConfig(timeout=300.0),
+                operations,
+                clock=lambda: 20.0,
+            )
+
+        assert operations.published is not None
+        self.assertFalse(operations.published.passed)
+        self.assertEqual(operations.published.reason, "board-terminated-15")
+
+    def test_termination_during_publication_retries_false_evidence(self) -> None:
+        class TerminatingPublish(self.Operations):
+            def __init__(self, chunks: list[str | BaseException]) -> None:
+                super().__init__(chunks)
+                self.publish_count = 0
+
+            def publish(
+                self,
+                result: StageResult,
+                transcript: str,
+                outcomes: tuple[str, ...],
+            ) -> None:
+                self.publish_count += 1
+                if self.publish_count == 1:
+                    raise BoardTermination(15)
+                super().publish(result, transcript, outcomes)
+
+        operations = TerminatingPublish(
+            [
+                "Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n",
+                "U-Boot recovered\n=> ",
+            ]
+        )
+        with self.assertRaisesRegex(BoardTermination, "15"):
+            run_board(
+                self.plan,
+                BoardRunConfig(timeout=300.0),
+                operations,
+                clock=lambda: 20.0,
+            )
+
+        self.assertEqual(operations.publish_count, 2)
+        assert operations.published is not None
+        self.assertFalse(operations.published.passed)
+        self.assertEqual(operations.published.reason, "board-terminated-15")
+
     def test_absolute_deadline_expires_without_starting_an_extra_read(self) -> None:
         operations = self.Operations(["unreachable"])
         times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
@@ -830,6 +891,246 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.reason, "uboot-prepare-failed")
         self.assertEqual(operations.booti_count, 0)
+
+
+class MegrezDebugBoardCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = []
+        for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+            path = self.directory / name
+            path.write_bytes(name.encode())
+            artifacts.append(ArtifactIdentity.from_path(name, path, addresses[name]))
+        self.plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(artifacts),
+            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=180,
+        )
+        self.plan_path = self.directory / "plan.json"
+        self.plan_path.write_bytes(self.plan.canonical_bytes())
+        self.simulation = self.directory / "fast-result.json"
+        self.simulation.write_bytes(
+            StageResult(
+                schema_version=1,
+                stage="fast",
+                passed=True,
+                reason="fast-pass",
+                plan_sha256=self.plan.plan_sha256,
+                evidence=("serial.log",),
+            ).canonical_bytes()
+        )
+        self.output = self.directory / "board-output"
+
+    def _arguments(self, *extra: str) -> tuple[str, ...]:
+        return (
+            "board",
+            str(self.plan_path),
+            "/dev/ttyUSB-test",
+            "--simulation-result",
+            str(self.simulation),
+            *extra,
+        )
+
+    def test_board_cli_runs_one_physical_adapter_after_all_prechecks(self) -> None:
+        from tools.riscv import megrez_debug
+
+        expected = StageResult(
+            schema_version=1,
+            stage="board",
+            passed=True,
+            reason="board-pass",
+            plan_sha256=self.plan.plan_sha256,
+            evidence=("serial.log", "transport.json"),
+        )
+        with mock.patch.object(
+            megrez_debug, "run_physical_board", return_value=expected
+        ) as run:
+            status = megrez_debug.main(
+                self._arguments(
+                    "--output-directory",
+                    str(self.output),
+                    "--timeout",
+                    "240",
+                )
+            )
+
+        self.assertEqual(status, 0)
+        run.assert_called_once_with(
+            self.plan,
+            "/dev/ttyUSB-test",
+            self.output,
+            timeout=240.0,
+        )
+
+    def test_board_cli_rejects_missing_output_and_artifact_drift_pre_serial(
+        self,
+    ) -> None:
+        from tools.riscv import megrez_debug
+
+        with mock.patch.object(megrez_debug, "run_physical_board") as run:
+            missing_output = megrez_debug.main(self._arguments())
+            Path(self.plan.artifacts[0].path).write_bytes(b"drift")
+            drift = megrez_debug.main(
+                self._arguments("--output-directory", str(self.output))
+            )
+
+        self.assertEqual(missing_output, 2)
+        self.assertEqual(drift, 2)
+        run.assert_not_called()
+
+    def test_board_cli_maps_termination_to_signal_exit_status(self) -> None:
+        from tools.riscv import megrez_debug
+
+        with mock.patch.object(
+            megrez_debug,
+            "run_physical_board",
+            side_effect=BoardTermination(15),
+        ):
+            status = megrez_debug.main(
+                self._arguments("--output-directory", str(self.output))
+            )
+
+        self.assertEqual(status, 143)
+
+
+class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    def test_real_adapter_reuses_one_fd_and_publishes_result_last(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            output = repository / "target/megrez-debug/board"
+            artifact_directory = repository / "artifacts"
+            artifact_directory.mkdir()
+            addresses = {
+                "kernel": 0x80200000,
+                "initramfs": 0x83000000,
+                "qemu_dtb": 0xF0000000,
+                "megrez_dtb": 0xF0000000,
+            }
+            artifacts = []
+            for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+                path = artifact_directory / name
+                path.write_bytes(name.encode())
+                artifacts.append(
+                    ArtifactIdentity.from_path(name, path, addresses[name])
+                )
+            plan = DebugPlan(
+                schema_version=1,
+                profile="tcp-probe",
+                artifacts=tuple(artifacts),
+                bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+                smp=4,
+                sv39=True,
+                markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+                reboot_after=180,
+            )
+            identities = {item.load_address: item for item in artifacts}
+            identities[0xF0000000] = next(
+                item for item in artifacts if item.name == "megrez_dtb"
+            )
+            commands: list[str] = []
+            sends: list[str] = []
+            closed: list[int] = []
+
+            class Session:
+                fd = 23
+
+                def send(self, command: str) -> None:
+                    sends.append(command)
+
+                def wait_for_uboot_prompt(self, timeout: float) -> str:
+                    self.log.write(f"prompt timeout={timeout}\n")
+                    return "U-Boot\n=> "
+
+                def command(self, command: str, timeout: float) -> str:
+                    commands.append(command)
+                    self.log.write(f"{command}\n")
+                    if command.startswith("crc32 "):
+                        address = int(command.split()[1], 16)
+                        return (
+                            f"{command}\r\nCRC32 for 0x{address:x} ... "
+                            f"==> {identities[address].crc32}\r\n=> "
+                        )
+                    return f"{command}\r\n=> "
+
+            def session_factory(
+                fd: int,
+                _log_path: str | None,
+                *,
+                confirm: bool,
+                final_marker: str,
+                log_stream,
+            ):
+                self.assertEqual(fd, 23)
+                self.assertFalse(confirm)
+                self.assertEqual(final_marker, plan.markers[-1])
+                session = Session()
+                session.log = log_stream
+                return session
+
+            operations = RealBoardOperations(
+                plan,
+                "/dev/fake",
+                output,
+                repository_root=repository,
+                open_device=lambda _device: 23,
+                lock_device=lambda _fd: None,
+                close_device=closed.append,
+                session_factory=session_factory,
+            )
+            operations.invalidate()
+            operations.open(10.0)
+            outcomes = operations.ensure_artifacts(plan, 10.0)
+            operations.prepare_boot(plan, 10.0)
+            operations.booti(plan, 10.0)
+            operations.close()
+            result = StageResult(
+                schema_version=1,
+                stage="board",
+                passed=True,
+                reason="board-pass",
+                plan_sha256=plan.plan_sha256,
+                evidence=("serial.log", "transport.json"),
+            )
+            operations.publish(result, "post-boot\n", outcomes)
+            operations.finish()
+
+            self.assertEqual(closed, [23])
+            self.assertEqual(sends.count(""), 1)
+            initramfs = next(
+                item for item in plan.artifacts if item.name == "initramfs"
+            )
+            self.assertEqual(
+                sends.count(
+                    f"booti 0x80200000 0x83000000:0x{initramfs.size:x} 0xf0000000"
+                ),
+                1,
+            )
+            self.assertFalse(any("saveenv" in command for command in commands))
+            self.assertTrue(
+                any(command.startswith("fdt addr ") for command in commands)
+            )
+            self.assertTrue(
+                any("asterinas,usb-host" in command for command in commands)
+            )
+            self.assertTrue((output / "serial.log").is_file())
+            self.assertTrue((output / "transport.json").is_file())
+            self.assertEqual(
+                StageResult.from_bytes((output / "result.json").read_bytes()),
+                result,
+            )
 
 
 class MegrezDebugCliTests(unittest.TestCase):

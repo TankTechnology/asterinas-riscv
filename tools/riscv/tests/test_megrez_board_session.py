@@ -59,6 +59,17 @@ class MilestoneDetectionTests(unittest.TestCase):
             finally:
                 session.log.close()
 
+        stream = io.StringIO()
+        session = board.BoardSession.from_fd(
+            18,
+            None,
+            confirm=False,
+            log_stream=stream,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            session._log("streamed")
+        self.assertEqual(stream.getvalue(), "streamed")
+
     def test_all_milestones_match_their_markers(self):
         samples = {
             "kernel_enter": "U-Boot 2024.01-gdbb5f9e3 ... Starting kernel ...\nEnter riscv_boot\n",
