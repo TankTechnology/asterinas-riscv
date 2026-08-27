@@ -276,6 +276,7 @@ def _enter_transfer_mode(
 
 
 def _leave_transfer_mode(fd: int) -> None:
+    _configure_serial(fd, INITIAL_BAUD)
     time.sleep(BAUD_SETTLE_SECONDS)
     _write_all(fd, bytes((0x1B,)))
     _read_prompt(fd, 10.0)
@@ -309,6 +310,40 @@ def _address(value: str) -> int:
     return address
 
 
+def _transfer_payload_fd(
+    fd: int, payload: bytes, address: int, *, current_baud: int
+) -> TransferResult:
+    _configure_serial(fd, current_baud)
+    termios.tcflush(fd, termios.TCIFLUSH)
+    _enter_transfer_mode(fd, address, current_baud=current_baud)
+    result = send_payload(
+        payload,
+        read_control=lambda timeout: _read_control(fd, timeout),
+        write_all=lambda data: _write_all(fd, data),
+        start_received=True,
+    )
+    _finish_transfer(
+        fd,
+        payload_size=len(payload),
+        address=address,
+        current_baud=current_baud,
+    )
+    return result
+
+
+def transfer_fd(
+    fd: int,
+    artifact: Path,
+    address: int,
+    *,
+    current_baud: int = INITIAL_BAUD,
+) -> TransferResult:
+    """Transfer through a caller-owned descriptor without closing it."""
+
+    payload = _read_artifact(artifact)
+    return _transfer_payload_fd(fd, payload, address, current_baud=current_baud)
+
+
 def transfer(
     device: str,
     artifact: Path,
@@ -319,22 +354,7 @@ def transfer(
     payload = _read_artifact(artifact)
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
-        _configure_serial(fd, current_baud)
-        termios.tcflush(fd, termios.TCIFLUSH)
-        _enter_transfer_mode(fd, address, current_baud=current_baud)
-        result = send_payload(
-            payload,
-            read_control=lambda timeout: _read_control(fd, timeout),
-            write_all=lambda data: _write_all(fd, data),
-            start_received=True,
-        )
-        _finish_transfer(
-            fd,
-            payload_size=len(payload),
-            address=address,
-            current_baud=current_baud,
-        )
-        return result
+        return _transfer_payload_fd(fd, payload, address, current_baud=current_baud)
     finally:
         os.close(fd)
 
