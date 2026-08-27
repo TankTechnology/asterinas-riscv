@@ -1195,6 +1195,11 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 1,
             )
             self.assertFalse(any("saveenv" in command for command in commands))
+            mmc_device = commands.index("mmc dev 1")
+            self.assertEqual(
+                commands[mmc_device : mmc_device + 2], ["mmc dev 1", "mmc rescan"]
+            )
+            self.assertLess(mmc_device, commands.index("fdt addr 0xf0000000"))
             self.assertTrue(
                 any(command.startswith("fdt addr ") for command in commands)
             )
