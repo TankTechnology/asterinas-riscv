@@ -8,6 +8,7 @@ M22 passes on the RISC-V Sv39, four-hart Asterinas guest with QEMU's
 `virtio-gpu-gl-device` and virgl enabled. The gate completed 32 repeated
 GEM/PRIME/context/fence lifetimes, and every reclaimable device-wide counter
 returned exactly to its quiescent baseline after each round.
+The 2026-08-28 resource-validation run reported 50 passes and zero failures.
 
 Before those rounds, M22 also verifies that both card/render-node mappings and
 PRIME dma-buf mappings retain their GEM span after the corresponding handle or
@@ -18,8 +19,9 @@ exhausting the 64 MiB pool.
 
 The final acceptance set also passes:
 
-- RISC-V `cargo osdk build` with only seven pre-existing unrelated warnings;
-- RISC-V `cargo osdk test`;
+- RISC-V Sv39 `cargo osdk build` with only seven pre-existing unrelated warnings;
+- focused RISC-V ktests for virgl resource geometry, texture and buffer
+  transfer bounds, and plane-only atomic flip events;
 - M17 atomic KMS, 55 passes and no failures; and
 - the complete NixOS Xorg/Xfce gate with DRI3 direct rendering, the virgl
   renderer, pixel read-back, a clean command stream, and `XFCE_DRM_PASS`.
@@ -57,6 +59,20 @@ lifetime domains release them and are cleared before reuse. An ambiguous
 `ATTACH_BACKING` transport result retains its owner until a confirmed
 `RESOURCE_UNREF`, preferring bounded quarantine over aliasing host-visible
 memory.
+
+Virgl resources now retain their complete validated Gallium creation metadata
+alongside the GEM backing size. `RESOURCE_CREATE` rejects unknown targets,
+zero or incoherent dimensions, unsupported flags, invalid sample/mip counts,
+and arithmetic overflow before reaching the host. Transfer ioctls validate the
+requested mip level, target-specific box geometry, backing offset, and byte
+extent when the layout is known. Linear 32-bit formats receive exact last-byte
+checks at every mip level instead of only a coarse aggregate-size check; other
+format layouts remain bounded by virglrenderer's format-aware IOV validation.
+
+The atomic KMS event path now treats an updated primary plane as affecting the
+CRTC to which its committed state is routed. This permits the standard first
+full modeset followed by `FB_ID`-only page flips. A real Mesa/GBM test completed
+four frames with distinct read-back checksums and flip sequences 0 through 3.
 
 The generic VMA layer carries an optional lifetime token through fork, split,
 and remap. Adjacent VMO mappings merge only when those tokens are identical,
@@ -105,6 +121,20 @@ M22_MAPPING_LIFETIME PRIME protected-and-reused offset=0
 M22_POOL_REUSE cycles=4200 offset=0
 ```
 
+The resource-contract phase printed successful full level-zero transfers and
+rejected every malformed request without changing the baseline counters:
+
+```text
+M22_PASS RESOURCE_CREATE rejects an unknown Gallium target
+M22_PASS RESOURCE_CREATE rejects zero resource dimensions
+M22_PASS TRANSFER_TO_HOST accepts the full level-zero texture
+M22_PASS TRANSFER_FROM_HOST accepts the full level-zero texture
+M22_PASS TRANSFER_FROM_HOST rejects a box outside resource geometry
+M22_PASS TRANSFER_FROM_HOST rejects a write beyond GEM backing
+M22_PASS TRANSFER_TO_HOST rejects a missing mip level
+M22_PASS rejected resource requests leave all counters at baseline
+```
+
 All 32 rounds then printed `baseline-restored` and reused offset zero, followed
 by:
 
@@ -120,9 +150,12 @@ The retained serial evidence is generated at
 `target/drm-m22/evidence/serial.log`. The target directory is intentionally
 untracked because it contains generated kernels, disks, and logs.
 
-Run the gate from the repository root after building the RISC-V kernel:
+Run the gate from the repository root after building the RISC-V Sv39 kernel.
+OSDK ktests overwrite the generic kernel artifact, so rebuild the normal kernel
+before packaging the gate:
 
 ```bash
+make TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode kernel
 tools/riscv/nixos/m22/build_m22.sh
 tools/riscv/nixos/m22/boot_m22.py
 ```
@@ -139,6 +172,13 @@ separation, scanout accounting, and documentation changes.
 
 Generated review artifacts are retained under `target/drm-m22-review/` and are
 not part of the commit.
+
+The virgl-resource and partial-atomic tranche received a further combined
+maintainability, correctness, security, and documentation review. Verification
+confirmed all 11 findings (six major and five minor). The fixes made cleanup
+idempotent after a lost response, constrained virgl wire values, extended
+known-layout mip bounds, and prevented false-positive M19/M22 gates. The final
+review is retained under `target/drm-resource-review/` and is also untracked.
 
 ## Remaining limitation
 

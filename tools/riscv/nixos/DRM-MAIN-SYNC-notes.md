@@ -688,3 +688,33 @@ M17 remains 55/55. The Xfce DRI3/virgl functional gate also passes. Its current
 0.824 FPS sample ran while another RISC-V QEMU saturated roughly 3.3 host CPU
 cores, so it is recorded as load-contaminated functional evidence rather than
 a performance regression measurement.
+
+## 2026-08-28 virgl resource contract and partial atomic flips
+
+The converged DRM branch now validates virgl resource creation and transfer
+requests against guest-owned metadata before submitting them to QEMU. The
+validated state contains the Gallium target, format, dimensions, array size,
+mip/sample parameters, flags, and GEM backing size. Texture and buffer
+transfers reject nonexistent mip levels, boxes outside target geometry,
+backing-offset overflow, and—for the common linear 32-bit formats—final-byte
+overflow at every mip level. Other formats retain virglrenderer's format-aware
+IOV validation. M22 exercises both legal TO/FROM transfers and malformed
+requests, then requires all lifetime counters to remain at baseline. Its
+four-hart Sv39 run passed 50 checks, zero failures, and 32/32
+resource-lifetime rounds.
+
+The Mesa acceptance client was corrected to discover the globally unique CRTC,
+connector, and plane ids, use Linux's 56-byte `drm_mode_atomic` layout, and
+group properties per KMS object. This exposed an Asterinas event-validation
+bug: a plane-only `FB_ID` update was rejected unless the request also listed a
+CRTC object. Atomic events now derive their target from the plane's inherited
+CRTC routing. The real virgl renderer subsequently completed four frames: the
+first used a complete modeset and the next three used `FB_ID`-only commits;
+all commits and flip events succeeded, sequences advanced from 0 through 3,
+and all four read-back checksums differed.
+
+The compact Mesa test root now lives on a second 4 KiB-block ext2 disk instead
+of a 165 MiB initramfs. A small bootstrap initramfs mounts and chroots into that
+disk. This removes large initramfs decompression from each iteration while
+retaining the Debian Mesa/LLVM closure. The complete PRIME, raw virgl, and
+Mesa/GBM/KMS gate ended with `MINI_VIRGL_PASS`.

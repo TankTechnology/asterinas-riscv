@@ -77,8 +77,10 @@ question cannot be settled from an authoritative specification.
 | atomic state | TEST_ONLY and invalid pairing | `kmscube`/Xorg | commit, close, and signal races |
 | GEM/PRIME | raw import/export | DRI3 shared buffers | randomized close order |
 | virgl context | raw command stream | Mesa direct rendering | concurrent clients and process kill |
+| virgl resource | target/mip/box/backing bounds | Mesa texture and buffer traffic | malformed transfer corpus |
 | fences | poll and NOWAIT | Mesa submissions | pending-fence close and timeout |
 | presentation | pixel checks | Xfce screenshots | frame-time and long-run checks |
+| partial atomic update | inherited-state ktests | full modeset then FB-only flips | repeated multi-buffer flips |
 
 Every functional gate must assert both success markers and the absence of
 known failure markers.
@@ -136,6 +138,12 @@ It also checks mapping-owned and host-owned DUMB span lifetimes.
 M22 requires live pool usage to return to baseline, verifies reuse after both
 DRM and PRIME `munmap`, and runs 4,200 cycles whose cumulative allocation
 exceeds pool capacity.
+It now also validates the Gallium resource contract before host submission:
+target-specific creation geometry, mip-level transfer geometry, backing
+offsets, plus exact byte extents for the common linear 32-bit formats. Other
+format layouts remain host-validated by virglrenderer. The real Mesa gate
+performs one complete atomic modeset followed by three plane `FB_ID`-only flips, proving that
+committed KMS properties are inherited across partial updates.
 The current method and evidence are recorded in
 [`../nixos/DRM-M22-report.md`](../nixos/DRM-M22-report.md).
 
@@ -153,7 +161,8 @@ The foundation is ready for mainline integration when:
 3. GEM, PRIME, context, backing, and fence stress returns all counters to the
    baseline;
 4. the selected `modetest`, `kmscube`, IGT, and Piglit suites pass;
-5. raw virgl and the full direct-rendering Xfce gate pass repeatedly;
+5. raw virgl, the four-frame Mesa/GBM/atomic gate, and the full
+   direct-rendering Xfce gate pass repeatedly;
 6. page-flip and fence events are neither lost, duplicated, nor issued before
    the implementation's documented completion point;
 7. performance results include frame-time percentiles and stall counts; and
