@@ -268,7 +268,7 @@ contains only `.` and `init`.
 - [ ] **Step 2: Build the current Sv39 SMP=4 Asterinas kernel once**
 
 ```bash
-make kernel TARGET_ARCH=riscv64 SMP=4
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
 ```
 
 Use the existing rustup/toolchain cache and local proxy; inspect progress
