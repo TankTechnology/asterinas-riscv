@@ -255,6 +255,8 @@ QEMU_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build
 RISCV_SIFIVE_U_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u
 RISCV_SIFIVE_U_LINUX_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u-linux
 RISCV_SIFIVE_U_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build
+MEGREZ_DEBUG_FAST_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/fast
+MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
 QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
@@ -262,6 +264,8 @@ QEMU_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_BUILD_DIR),
 RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u)
 RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
 RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
+MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_FAST_OUT_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/fast)
+MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_UBOOT_BUILD_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/uboot)
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
@@ -291,6 +295,15 @@ test_riscv_megrez_gmac_unit:
 test_riscv_megrez_debug_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debug -v
+
+.PHONY: test_riscv_megrez_debug_fast
+test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit
+	@test -n "$(MEGREZ_DEBUG_PLAN)" || \
+		{ echo "MEGREZ_DEBUG_PLAN is required" >&2; exit 2; }
+	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez_debug simulate \
+		"$(MEGREZ_DEBUG_PLAN)" --tier fast \
+		--output-directory "$(MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE)" \
+		--uboot-build-directory "$(MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE)"
 
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
