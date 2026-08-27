@@ -76,6 +76,11 @@ impl SocketNode {
     pub(super) fn new() -> Self {
         Self(NodeHandle::new(NodeKind::Socket))
     }
+
+    #[cfg(ktest)]
+    pub(super) fn downgrade(&self) -> WeakNode {
+        WeakNode(Arc::downgrade(&self.0.0))
+    }
 }
 
 impl StreamStorageNode {
@@ -101,6 +106,11 @@ impl DatagramQueueNode {
     /// Creates a stable identity for one datagram receive queue.
     pub(super) fn new() -> Self {
         Self(NodeHandle::new(NodeKind::DatagramQueue))
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn downgrade(&self) -> WeakNode {
+        WeakNode(Arc::downgrade(&self.0.0))
     }
 }
 
