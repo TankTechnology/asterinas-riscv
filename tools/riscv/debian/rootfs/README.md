@@ -164,7 +164,42 @@ make test_riscv_debian_systemd_m2_gate \
 
 The target requires every frozen artifact and never invokes debootstrap, a
 mirror, or `build_rootfs.sh`. Network is permitted only while constructing the
-signed base root. QEMU is always launched with `-nic none`.
+signed base root. The M1 and M2 gates are always launched with `-nic none`;
+the explicit M5 gate below is the only slirp-enabled exception.
+
+### QEMU M5 HTTPS desktop gate
+
+Build the `desktop-m5-network` root when the external-network desktop is the
+intended input. This profile adds the `curl` command as a frozen package
+identity. The QEMU gate uses slirp only for the guest data path; it does not
+inherit host proxy variables, TAP configuration, or a Linux guest kernel.
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m5-network
+make test_riscv_debian_desktop_m5_qemu_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/qemu-gate"
+```
+
+The gate requires ordered DNS and HTTPS evidence for `www.baidu.com`, the
+exact slirp local address `10.0.2.15`, all M4 application-window milestones,
+and a non-blank framebuffer capture. ICMP ping sockets and `ip` route dumps
+are not part of this browser gate because those Linux interfaces remain
+separate compatibility work; UDP DNS and TCP/TLS are tested directly.
+
+NetSurf can render ordinary raster and SVG page assets supplied by its Debian
+dependencies. Its JavaScript engine is intentionally not a modern Chromium
+compatibility claim: JavaScript must be reported by a separate local DOM smoke
+test and is not allowed to turn a successful DNS/HTTPS gate into a failure.
+The current non-blank framebuffer check proves the desktop, not that the
+foreground window has finished rendering Baidu.
 
 ## Evidence and cleanup
 

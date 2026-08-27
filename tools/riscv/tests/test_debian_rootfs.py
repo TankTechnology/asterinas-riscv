@@ -1300,9 +1300,12 @@ WantedBy=multi-user.target
             session_text,
         )
         self.assertIn(
-            "netsurf-gtk file:///usr/share/asterinas/desktop-m4-welcome.html &",
+            'browser_url="file:///usr/share/asterinas/desktop-m4-welcome.html"',
             session_text,
         )
+        self.assertIn('netsurf-gtk "$browser_url" &', session_text)
+        self.assertIn("ASTERINAS_DESKTOP_URL_FILE", session_text)
+        self.assertIn("^https?://", session_text)
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
         self.assertLess(
