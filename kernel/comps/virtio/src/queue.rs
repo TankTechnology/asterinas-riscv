@@ -102,9 +102,11 @@ pub enum AddBufsError {
 }
 
 /// An error returned by [`VirtQueue::pop_used`] and its friends.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum PopUsedError {
     NotReady,
+    InvalidToken { token: u32, queue_size: usize },
+    InvalidLength { len: u32, min: usize, max: u32 },
 }
 
 #[derive(Debug)]
@@ -439,47 +441,66 @@ impl VirtQueue {
         &mut self,
         min_bytes: usize,
     ) -> Result<(u16, u32), PopUsedError> {
-        loop {
-            if !self.can_pop() {
-                return Err(PopUsedError::NotReady);
+        for _ in 0..self.device_queue_size {
+            match self.pop_used_once_with_min_bytes(min_bytes) {
+                Err(PopUsedError::InvalidToken { token, queue_size }) => {
+                    ostd::error!("invalid used token: {} (queue size: {})", token, queue_size,);
+                }
+                Err(PopUsedError::InvalidLength { len, min, max }) => {
+                    ostd::error!("invalid used length: {} (expected {}..={})", len, min, max,);
+                }
+                result => return result,
             }
-
-            let last_used_slot = self.last_used_idx & (self.device_queue_size - 1);
-            let element_ptr = {
-                let mut ptr = self.used.borrow_vm();
-                ptr.byte_add(offset_of!(UsedRing, ring) + last_used_slot as usize * 8);
-                ptr.cast::<UsedElem>()
-            };
-            let index = field_ptr!(&element_ptr, UsedElem, id).read_once().unwrap();
-            let len = field_ptr!(&element_ptr, UsedElem, len).read_once().unwrap();
-            self.last_used_idx = self.last_used_idx.wrapping_add(1);
-
-            let (desc, dma_len) = if let Some(desc) = self.descs.get_mut(index as usize)
-                && let Some(dma_len) = desc.len
-            {
-                (desc, dma_len)
-            } else {
-                ostd::error!(
-                    "invalid used token: {} (queue size: {})",
-                    index,
-                    self.descs.len(),
-                );
-                continue;
-            };
-            if len > dma_len || (len as usize) < min_bytes {
-                ostd::error!(
-                    "invalid used length: {} (expected {}..={})",
-                    len,
-                    min_bytes,
-                    dma_len,
-                );
-                continue;
-            }
-            desc.len = None;
-            self.recycle_descriptors(index as u16);
-
-            return Ok((index as u16, len));
         }
+
+        Err(PopUsedError::NotReady)
+    }
+
+    /// Examines at most one device-written used entry without logging.
+    ///
+    /// IRQ handlers can use this method while holding a queue lock, then drop
+    /// the lock before reporting an invalid entry. Unlike
+    /// [`Self::pop_used_with_min_bytes`], this method does not skip malformed
+    /// entries or perform an unbounded amount of work.
+    pub(crate) fn pop_used_once_with_min_bytes(
+        &mut self,
+        min_bytes: usize,
+    ) -> Result<(u16, u32), PopUsedError> {
+        if !self.can_pop() {
+            return Err(PopUsedError::NotReady);
+        }
+
+        let last_used_slot = self.last_used_idx & (self.device_queue_size - 1);
+        let element_ptr = {
+            let mut ptr = self.used.borrow_vm();
+            ptr.byte_add(offset_of!(UsedRing, ring) + last_used_slot as usize * 8);
+            ptr.cast::<UsedElem>()
+        };
+        let index = field_ptr!(&element_ptr, UsedElem, id).read_once().unwrap();
+        let len = field_ptr!(&element_ptr, UsedElem, len).read_once().unwrap();
+        self.last_used_idx = self.last_used_idx.wrapping_add(1);
+
+        let (desc, dma_len) = if let Some(desc) = self.descs.get_mut(index as usize)
+            && let Some(dma_len) = desc.len
+        {
+            (desc, dma_len)
+        } else {
+            return Err(PopUsedError::InvalidToken {
+                token: index,
+                queue_size: self.descs.len(),
+            });
+        };
+        if len > dma_len || (len as usize) < min_bytes {
+            return Err(PopUsedError::InvalidLength {
+                len,
+                min: min_bytes,
+                max: dma_len,
+            });
+        }
+        desc.len = None;
+        self.recycle_descriptors(index as u16);
+
+        Ok((index as u16, len))
     }
 
     /// Recycles descriptors in the list specified by `head`.

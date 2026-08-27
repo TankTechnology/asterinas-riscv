@@ -15,7 +15,7 @@ use aster_util::mem_obj_slice::Slice;
 use ostd::{
     arch::trap::TrapFrame,
     mm::{HasDaddr, PAGE_SIZE, VmIo, dma::DmaStream},
-    sync::{LocalIrqDisabled, Mutex, MutexGuard, SpinLock, WaitQueue},
+    sync::{Mutex, SpinLock},
 };
 
 use super::{
@@ -29,10 +29,11 @@ use super::{
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
     VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
+    control_queue::{ControlOperation, ControlQueue},
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
-    queue::{VirtQueue, VirtQueueNotifier},
+    queue::VirtQueue,
     transport::DeviceTransport,
 };
 
@@ -65,113 +66,6 @@ struct PresentedResource {
     backing_size: u32,
     width: u32,
     height: u32,
-}
-
-struct ControlQueue {
-    operation: Mutex<()>,
-    inner: SpinLock<ControlQueueInner, LocalIrqDisabled>,
-    notifier: VirtQueueNotifier,
-    completion_waiters: WaitQueue,
-}
-
-struct ControlQueueInner {
-    queue: VirtQueue,
-    irq_wait_enabled: bool,
-    completed: Option<(u16, u32)>,
-}
-
-struct ControlOperation<'a> {
-    queue: &'a ControlQueue,
-    _guard: MutexGuard<'a, ()>,
-}
-
-impl ControlQueue {
-    fn new(queue: VirtQueue) -> Arc<Self> {
-        let notifier = queue.notifier();
-        Arc::new(Self {
-            operation: Mutex::new(()),
-            inner: SpinLock::new(ControlQueueInner {
-                queue,
-                irq_wait_enabled: false,
-                completed: None,
-            }),
-            notifier,
-            completion_waiters: WaitQueue::new(),
-        })
-    }
-
-    fn lock(&self) -> ControlOperation<'_> {
-        ControlOperation {
-            queue: self,
-            _guard: self.operation.lock(),
-        }
-    }
-
-    fn enable_irq_wait(&self) {
-        // Serialize the mode switch with submissions. Otherwise a request
-        // that chose polling could have its response consumed by the IRQ
-        // handler after this flag changes and wait forever.
-        let _operation = self.operation.lock();
-        self.inner.lock().irq_wait_enabled = true;
-    }
-
-    fn handle_irq(&self) {
-        {
-            let mut inner = self.inner.lock();
-            if !inner.irq_wait_enabled || inner.completed.is_some() {
-                return;
-            }
-            let Ok(completed) = inner
-                .queue
-                .pop_used_with_min_bytes(size_of::<VirtioGpuCtrlHdr>())
-            else {
-                return;
-            };
-            inner.completed = Some(completed);
-        }
-        self.completion_waiters.wake_all();
-    }
-}
-
-impl ControlOperation<'_> {
-    fn add_dma_bufs(&self, inputs: &[&Slice<Arc<DmaStream>>], outputs: &[&Slice<Arc<DmaStream>>]) {
-        let should_notify = {
-            let mut inner = self.queue.inner.lock();
-            inner
-                .queue
-                .add_dma_bufs(inputs, outputs)
-                .expect("add control queue buffers");
-            inner.queue.should_notify()
-        };
-        if should_notify {
-            self.queue.notifier.notify();
-        }
-    }
-
-    fn wait_for_used(&self, min_bytes: usize) -> (u16, u32) {
-        let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
-        if !irq_wait_enabled {
-            loop {
-                if let Ok(used) = self
-                    .queue
-                    .inner
-                    .lock()
-                    .queue
-                    .pop_used_with_min_bytes(min_bytes)
-                {
-                    return used;
-                }
-                spin_loop();
-            }
-        }
-
-        self.queue.completion_waiters.wait_until(|| {
-            let mut inner = self.queue.inner.lock();
-            let completed = inner.completed.take()?;
-            debug_assert!(completed.1 as usize >= min_bytes);
-            Some(completed)
-        })
-    }
 }
 
 impl PresentedResource {
@@ -273,10 +167,10 @@ impl GpuDevice {
         // Boot-time requests still poll because task scheduling is not ready.
         device_transport.finish_init();
 
-        let operation = control_queue.lock();
-        let (scanout_width, scanout_height) =
-            query_display_info(&operation, &control_buf, config.num_scanouts)?;
-        drop(operation);
+        let (scanout_width, scanout_height) = {
+            let operation = control_queue.lock();
+            query_display_info(&operation, &control_buf, config.num_scanouts)?
+        };
         ostd::info!(
             "virtio-gpu: {} scanout(s), primary {}x{}",
             config.num_scanouts,
@@ -287,6 +181,7 @@ impl GpuDevice {
             ostd::warn!("virtio-gpu reported an empty scanout; leaving it unconfigured");
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
+
         let (framebuffer, framebuffer_len) = alloc_framebuffer(scanout_width, scanout_height)?;
 
         let device = Arc::new(Self {
@@ -1173,9 +1068,11 @@ fn submit_control_at(
     req_slice.sync_to_device().unwrap();
 
     let resp_slice = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
-    queue.add_dma_bufs(&[&req_slice], &[&resp_slice]);
+    queue.submit_dma_bufs(&[&req_slice], &[&resp_slice]);
 
-    let (_, used_len) = queue.wait_for_used(size_of::<VirtioGpuCtrlHdr>());
+    let (_, used_len) = queue
+        .wait_for_used(size_of::<VirtioGpuCtrlHdr>())
+        .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
     let used_len = (used_len as usize).min(resp_len);
 
     resp_slice.sync_from_device().unwrap();
@@ -1226,8 +1123,17 @@ fn cursor_cmd<T: ostd_pod::Pod>(
 
 /// Chooses the largest power-of-two queue size up to the driver's cap.
 fn cursor_queue_size(device_max: u16) -> Option<u16> {
+    queue_size_up_to_cap(device_max, 1)
+}
+
+/// Chooses a power-of-two control queue with room for request and response.
+fn control_queue_size(device_max: u16) -> Option<u16> {
+    queue_size_up_to_cap(device_max, 2)
+}
+
+fn queue_size_up_to_cap(device_max: u16, min_size: u16) -> Option<u16> {
     let capped = device_max.min(QUEUE_SIZE);
-    if capped == 0 {
+    if capped < min_size {
         return None;
     }
     let mut size = 1;
@@ -1235,12 +1141,6 @@ fn cursor_queue_size(device_max: u16) -> Option<u16> {
         size *= 2;
     }
     Some(size)
-}
-
-/// Chooses a power-of-two control queue with room for request and response.
-fn control_queue_size(device_max: u16) -> Option<u16> {
-    let size = cursor_queue_size(device_max)?;
-    (size >= 2).then_some(size)
 }
 
 /// Queries the display info and returns scanout 0's dimensions.

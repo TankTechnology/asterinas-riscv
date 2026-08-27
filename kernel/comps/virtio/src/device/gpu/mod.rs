@@ -14,6 +14,7 @@ use spin::Once;
 use crate::device::gpu::device::GpuDevice;
 
 mod config;
+mod control_queue;
 pub mod device;
 
 pub const DEVICE_NAME: &str = "Virtio-GPU";

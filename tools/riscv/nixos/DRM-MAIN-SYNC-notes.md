@@ -386,6 +386,13 @@ serializes commands and protects the shared small-command DMA buffer, so this
 is a bounded one-request-at-a-time prerequisite rather than asynchronous fence
 submission yet.
 
+The IRQ path examines at most one device-written used entry and never logs
+while holding the IRQ-disabled queue lock. A malformed token or response length
+is recorded as a failed completion; diagnostics happen after releasing the
+lock, and the submitting task wakes and returns an error instead of sleeping
+forever. The legacy virtqueue pop helper also bounds how many malformed entries
+it skips in one call to the device-visible ring size.
+
 Early display discovery and the boot test pattern continue to poll because the
 task scheduler is not available throughout that initialization window. The
 polling-to-IRQ transition takes the same operation mutex as submissions, which
