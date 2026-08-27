@@ -41,11 +41,6 @@ EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
     "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
 )
-LEGACY_PHYSICAL_MILESTONES = (
-    EXPECTED_MEGREZ_MILESTONES[0],
-    EXPECTED_MEGREZ_MILESTONES[1],
-    "DEBIAN_NETWORK_M5_READY interface=eth0",
-)
 
 
 class DebianDesktopM5NetworkTests(unittest.TestCase):
@@ -219,10 +214,13 @@ configure_and_normalize_rootfs
             ).is_symlink()
         )
 
-    def _fake_network_tools(self, *, address: str) -> tuple[Path, Path]:
-        bin_directory = self.directory / "bin"
+    def _fake_network_tools(
+        self, *, address: str, directory: Path | None = None
+    ) -> tuple[Path, Path]:
+        directory = self.directory if directory is None else directory
+        bin_directory = directory / "bin"
         bin_directory.mkdir(exist_ok=True)
-        ping_log = self.directory / "ping.log"
+        ping_log = directory / "ping.log"
         ip = bin_directory / "ip"
         ip.write_text(
             f"""#!/bin/sh
@@ -250,16 +248,81 @@ exit 0
         ping.chmod(0o755)
         return bin_directory, ping_log
 
-    def test_guest_evidence_requires_link_address_and_ten_pings(self) -> None:
-        console = self.directory / "console"
+    def _physical_evidence_environment(
+        self, directory: Path, *, cmdline: str
+    ) -> tuple[dict[str, str], Path, Path, Path, Path, Path]:
+        directory.mkdir(parents=True, exist_ok=True)
+        console = directory / "console"
         console.write_text("", encoding="utf-8")
-        fake_bin, ping_log = self._fake_network_tools(address="10.100.19.200/21")
+        cmdline_path = directory / "cmdline"
+        cmdline_path.write_text(cmdline + "\n", encoding="utf-8")
+        resolv_conf = directory / "resolv.conf"
+        resolv_conf.write_text("nameserver 192.0.2.53\n", encoding="utf-8")
+        url_file = directory / "desktop-url"
+        url_file.write_text("https://old.invalid/\n", encoding="utf-8")
+        fake_bin, ping_log = self._fake_network_tools(
+            address="10.100.19.200/21", directory=directory
+        )
+        getent_log = directory / "getent.log"
+        curl_log = directory / "curl.log"
+        getent = fake_bin / "getent"
+        getent.write_text(
+            """#!/bin/sh
+printf '%s\n' "$*" >>"$ASTERINAS_M5_GETENT_LOG"
+exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
+""",
+            encoding="utf-8",
+        )
+        curl = fake_bin / "curl"
+        curl.write_text(
+            """#!/bin/sh
+printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+case "$*" in
+    *result.png*)
+        output=
+        previous=
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            previous="$argument"
+        done
+        [ -n "$output" ] || exit 96
+        if [ "${ASTERINAS_M5_EMPTY_ASSET:-0}" = 1 ]; then : >"$output"; else printf PNG >"$output"; fi
+        exit "${ASTERINAS_M5_ASSET_STATUS:-0}"
+        ;;
+    *)
+        [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_HTTPS_STATUS"
+        printf '%s\t%s' "${ASTERINAS_M5_HTTP_CODE:-200}" "${ASTERINAS_M5_LOCAL_IP:-10.100.19.200}"
+        ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        getent.chmod(0o755)
+        curl.chmod(0o755)
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
             ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
             ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
+            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline_path),
+            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
             ASTERINAS_M5_PING_LOG=str(ping_log),
+            ASTERINAS_M5_GETENT_LOG=str(getent_log),
+            ASTERINAS_M5_CURL_LOG=str(curl_log),
+        )
+        return environment, console, resolv_conf, url_file, ping_log, curl_log
+
+    def test_guest_evidence_requires_link_address_and_ten_pings(self) -> None:
+        environment, console, resolv_conf, url_file, ping_log, curl_log = (
+            self._physical_evidence_environment(
+                self.directory / "physical-success",
+                cmdline=(
+                    "console=tty0 init=/init "
+                    "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+                    "-- --root-init=systemd"
+                ),
+            )
         )
 
         result = subprocess.run(
@@ -272,19 +335,136 @@ exit 0
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            console.read_text().splitlines(), list(LEGACY_PHYSICAL_MILESTONES)
+            console.read_text().splitlines(), list(EXPECTED_MEGREZ_MILESTONES)
         )
         self.assertEqual(ping_log.read_text().strip(), "-n -c 10 -W 2 10.100.19.216")
+        self.assertEqual(
+            resolv_conf.read_text(), "nameserver 10.2.0.5\nnameserver 10.2.0.6\n"
+        )
+        self.assertEqual(
+            url_file.read_text(),
+            "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
+        )
+        curl_calls = curl_log.read_text().splitlines()
+        self.assertEqual(len(curl_calls), 2)
+        self.assertIn("https://www.baidu.com/", curl_calls[0])
+        self.assertIn("result.png", curl_calls[1])
+        self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
+
+    def test_guest_evidence_rejects_wrong_megrez_bootarg_before_network(self) -> None:
+        environment, console, resolv_conf, url_file, ping_log, curl_log = (
+            self._physical_evidence_environment(
+                self.directory / "wrong-bootarg",
+                cmdline=(
+                    "console=tty0 init=/init "
+                    "asterinas.net=eic7700-rj45,10.100.19.200/21,192.0.2.1"
+                ),
+            )
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text().splitlines(),
+            ["DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg"],
+        )
+        self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
+        self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
+        self.assertFalse(ping_log.exists())
+        self.assertFalse(curl_log.exists())
+
+    def test_guest_evidence_reports_dns_https_and_asset_failures(self) -> None:
+        cases = (
+            ("dns", {"ASTERINAS_M5_GETENT_STATUS": "41"}, "megrez-dns"),
+            ("https", {"ASTERINAS_M5_HTTPS_STATUS": "42"}, "megrez-https"),
+            (
+                "http-status",
+                {"ASTERINAS_M5_HTTP_CODE": "503"},
+                "megrez-http-status",
+            ),
+            (
+                "local-address",
+                {"ASTERINAS_M5_LOCAL_IP": "10.100.19.201"},
+                "megrez-local-address",
+            ),
+            ("empty-asset", {"ASTERINAS_M5_EMPTY_ASSET": "1"}, "megrez-asset"),
+        )
+        for name, overrides, expected_reason in cases:
+            with self.subTest(name=name):
+                environment, console, _, url_file, _, _ = (
+                    self._physical_evidence_environment(
+                        self.directory / name,
+                        cmdline=(
+                            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"
+                        ),
+                    )
+                )
+                environment.update(overrides)
+
+                result = subprocess.run(
+                    ["/bin/bash", str(EVIDENCE_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(
+                    console.read_text().splitlines()[-1],
+                    f"DEBIAN_NETWORK_M5_FAIL reason={expected_reason}",
+                )
+                self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
+
+    def test_guest_evidence_preserves_resolver_when_atomic_rename_fails(self) -> None:
+        environment, console, resolv_conf, url_file, _, _ = (
+            self._physical_evidence_environment(
+                self.directory / "resolver-rename",
+                cmdline=("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"),
+            )
+        )
+        fake_mv = Path(environment["PATH"].split(":", 1)[0]) / "mv"
+        fake_mv.write_text("#!/bin/sh\nexit 89\n", encoding="utf-8")
+        fake_mv.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text().splitlines()[-1],
+            "DEBIAN_NETWORK_M5_FAIL reason=resolver-publish",
+        )
+        self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
+        self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
 
     def test_guest_evidence_fails_once_for_wrong_address(self) -> None:
         console = self.directory / "bad-console"
         console.write_text("", encoding="utf-8")
+        cmdline = self.directory / "bad-address-cmdline"
+        cmdline.write_text(
+            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1\n",
+            encoding="utf-8",
+        )
         fake_bin, ping_log = self._fake_network_tools(address="10.100.19.201/21")
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
             ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
             ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
+            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
             ASTERINAS_M5_PING_LOG=str(ping_log),
         )
 
