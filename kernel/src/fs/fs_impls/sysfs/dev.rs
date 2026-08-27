@@ -3,26 +3,27 @@
 //! `/sys/dev/char` device tree for the DRM (virtio-gpu) device.
 //!
 //! Mesa's DRI loader selects the GPU driver by reading the PCI vendor/device
-//! id from `/sys/dev/char/<major>:<minor>/device/{vendor,device}`. Without
-//! these files the loader reports "failed to retrieve device information" and
-//! silently falls back to the software `llvmpipe` driver, so virgl is never
-//! selected. This module exposes that path for the DRM char device
-//! (major 226, minor 0), which is backed by virtio-gpu (PCI id `1af4:1050`).
+//! id from `/sys/dev/char/<major>:<minor>/device/{vendor,device}`. Xorg also
+//! asks libdrm to reopen the device for DRI3 clients, which reads `DEVNAME`
+//! from `/sys/dev/char/<major>:<minor>/uevent`. This module exposes both paths
+//! for the virtio-gpu DRM nodes (PCI id `1af4:1050`).
 
 use alloc::sync::Arc;
 
 use aster_systree::{
-    AttrLessBranchNodeFields, BranchNodeFields, Error, Result, SymlinkNodeFields, SysAttrSetBuilder,
-    SysObj, SysPerms, SysStr, inherit_sys_branch_node, inherit_sys_symlink_node,
+    AttrLessBranchNodeFields, BranchNodeFields, Error, Result, SymlinkNodeFields,
+    SysAttrSetBuilder, SysObj, SysPerms, SysStr, inherit_sys_branch_node, inherit_sys_symlink_node,
 };
 use aster_util::printer::VmPrinter;
 use inherit_methods_macro::inherit_methods;
 use ostd::mm::{VmReader, VmWriter};
 use spin::Once;
 
+const DRM_CHAR_MAJOR: u16 = 226;
+
 /// An attribute-less directory in the sysfs tree.
 #[derive(Debug)]
-pub struct AttrlessDir {
+struct AttrlessDir {
     fields: AttrLessBranchNodeFields<dyn SysObj, Self>,
 }
 
@@ -44,12 +45,65 @@ inherit_sys_branch_node!(AttrlessDir, fields, {
     }
 });
 
+/// A `/sys/dev/char/226:*` DRM node with the `uevent` identity libdrm reads.
+#[derive(Debug)]
+struct DrmCharNode {
+    fields: BranchNodeFields<dyn SysObj, Self>,
+    minor: u16,
+    dev_name: &'static str,
+}
+
+#[inherit_methods(from = "self.fields")]
+impl DrmCharNode {
+    fn new(name: SysStr, minor: u16, dev_name: &'static str) -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        builder.add(SysStr::from("uevent"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        let attrs = builder
+            .build()
+            .expect("failed to build DRM char device sysfs attribute set");
+
+        Arc::new_cyclic(|weak_self| {
+            let fields = BranchNodeFields::new(name, attrs, weak_self.clone());
+            Self {
+                fields,
+                minor,
+                dev_name,
+            }
+        })
+    }
+
+    fn add_child(&self, new_child: Arc<dyn SysObj>) -> Result<()>;
+}
+
+inherit_sys_branch_node!(DrmCharNode, fields, {
+    fn read_attr_at(&self, name: &str, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        if name != "uevent" {
+            return Err(Error::AttributeError);
+        }
+
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer, "MAJOR={}", DRM_CHAR_MAJOR)?;
+        writeln!(printer, "MINOR={}", self.minor)?;
+        writeln!(printer, "DEVNAME={}", self.dev_name)?;
+        writeln!(printer, "DEVTYPE=drm_minor")?;
+        Ok(printer.bytes_written())
+    }
+
+    fn write_attr(&self, _name: &str, _reader: &mut VmReader) -> Result<usize> {
+        Err(Error::AttributeError)
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
+
 /// `/sys/dev/char/<major>:<minor>/device` with read-only `vendor`/`device`
 /// attributes plus the extra fields libdrm's `drmGetDevice2` reads to decide
 /// whether the device is render-capable: `subsystem_vendor`/`subsystem_device`
 /// (hex, separate files) and a `uevent` carrying `PCI_SLOT_NAME`.
 #[derive(Debug)]
-pub struct CharDeviceNode {
+struct CharDeviceNode {
     fields: BranchNodeFields<dyn SysObj, Self>,
     vendor: u32,
     device: u32,
@@ -144,17 +198,21 @@ impl SubsystemSymlink {
 
 inherit_sys_symlink_node!(SubsystemSymlink, fields);
 
-/// Registers `/sys/dev/char/<major>:<minor>/device` for both DRM nodes —
-/// card0 (minor 0) and renderD128 (minor 128) — so libdrm's `drmGetDevice2`
-/// enumeration sees a valid sysfs entry (and thus a render-capable device)
-/// for each node.
+/// Registers `/sys/dev/char/<major>:<minor>` for both DRM nodes.
+///
+/// The top-level `uevent` supplies the `DEVNAME` used by
+/// `drmGetDeviceNameFromFd2`, while the `device` child supplies the PCI identity
+/// used by `drmGetDevice2`.
 pub(super) fn init() {
     DEV_CHAR_ROOT.call_once(|| {
         let dev = AttrlessDir::new(SysStr::from("dev"));
         let char_dir = AttrlessDir::new(SysStr::from("char"));
 
-        for minor in ["226:0", "226:128"] {
-            let node = AttrlessDir::new(SysStr::from(minor));
+        for (node_name, minor, dev_name) in [
+            ("226:0", 0, "dri/card0"),
+            ("226:128", 128, "dri/renderD128"),
+        ] {
+            let node = DrmCharNode::new(SysStr::from(node_name), minor, dev_name);
             let device = CharDeviceNode::new(SysStr::from("device"), 0x1af4, 0x1050);
             let subsystem = SubsystemSymlink::new(SysStr::from("subsystem"), "/sys/bus/pci");
             // libdrm's drmNodeIsDRM() stats this path to decide whether a
@@ -173,3 +231,29 @@ pub(super) fn init() {
 }
 
 static DEV_CHAR_ROOT: Once<()> = Once::new();
+
+#[cfg(ktest)]
+mod tests {
+    use aster_systree::SysNode;
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn drm_char_uevent_reports_device_name() {
+        let node = DrmCharNode::new(SysStr::from("226:0"), 0, "dri/card0");
+        let mut output = [0u8; 128];
+        let mut writer = VmWriter::from(&mut output[..]).to_fallible();
+
+        let bytes_written = node
+            .read_attr_at("uevent", 0, &mut writer)
+            .expect("DRM char uevent should be readable");
+        let uevent = core::str::from_utf8(&output[..bytes_written])
+            .expect("DRM char uevent should be UTF-8");
+
+        assert!(uevent.contains("MAJOR=226\n"));
+        assert!(uevent.contains("MINOR=0\n"));
+        assert!(uevent.contains("DEVNAME=dri/card0\n"));
+        assert!(uevent.contains("DEVTYPE=drm_minor\n"));
+    }
+}
