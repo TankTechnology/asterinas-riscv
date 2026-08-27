@@ -388,10 +388,12 @@ submission yet.
 
 The IRQ path examines at most one device-written used entry and never logs
 while holding the IRQ-disabled queue lock. A malformed token or response length
-is recorded as a failed completion; diagnostics happen after releasing the
-lock, and the submitting task wakes and returns an error instead of sleeping
-forever. The legacy virtqueue pop helper also bounds how many malformed entries
-it skips in one call to the device-visible ring size.
+is handled only after releasing the lock. A valid token with an invalid length
+returns its descriptor chain before waking the submitter with an error. An
+invalid token cannot prove that the submitted chain is no longer device-owned,
+so the request and its DMA buffers deliberately remain alive instead of risking
+DMA into freed memory. The legacy virtqueue pop helper also bounds how many
+malformed entries it skips in one call to the device-visible ring size.
 
 Early display discovery and the boot test pattern continue to poll because the
 task scheduler is not available throughout that initialization window. The

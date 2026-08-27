@@ -81,6 +81,15 @@ impl ControlQueue {
                 .pop_used_once_with_min_bytes(size_of::<VirtioGpuCtrlHdr>())
             {
                 Err(PopUsedError::NotReady) => return,
+                Err(error @ PopUsedError::InvalidToken { .. }) => {
+                    drop(inner);
+                    ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                    // The device did not return the submitted descriptor
+                    // token. Keep the operation and its DMA buffers alive;
+                    // treating this as completion could permit DMA into freed
+                    // or reused memory.
+                    return;
+                }
                 result => result,
             };
             inner.completed = Some(completed);
@@ -124,6 +133,9 @@ impl ControlOperation<'_> {
                     .pop_used_once_with_min_bytes(min_bytes);
                 match result {
                     Err(PopUsedError::NotReady) => spin_loop(),
+                    Err(error @ PopUsedError::InvalidToken { .. }) => {
+                        ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                    }
                     Err(error) => {
                         ostd::error!("invalid virtio-gpu control completion: {:?}", error);
                         return Err(error);

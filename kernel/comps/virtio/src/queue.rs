@@ -491,11 +491,17 @@ impl VirtQueue {
             });
         };
         if len > dma_len || (len as usize) < min_bytes {
-            return Err(PopUsedError::InvalidLength {
+            let error = PopUsedError::InvalidLength {
                 len,
                 min: min_bytes,
                 max: dma_len,
-            });
+            };
+            // The token identifies a submitted descriptor chain, and the
+            // device has placed it in the used ring, so ownership has returned
+            // to the driver even when the reported length is invalid.
+            desc.len = None;
+            self.recycle_descriptors(index as u16);
+            return Err(error);
         }
         desc.len = None;
         self.recycle_descriptors(index as u16);
