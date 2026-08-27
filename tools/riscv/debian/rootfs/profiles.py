@@ -200,13 +200,13 @@ _PROFILES["browser-m5"] = RootfsProfile(
     requested_packages=tuple(
         package
         for package in _PROFILES["desktop-m5-network"].requested_packages
-        if package not in {"curl", "netsurf-gtk", "xdotool"}
+        if package not in {"netsurf-gtk", "xdotool"}
     )
     + ("firefox-esr", "python3-minimal"),
     identity_packages=tuple(
         package
         for package in _PROFILES["desktop-m5-network"].identity_packages
-        if package not in {"curl", "netsurf-gtk", "xdotool"}
+        if package not in {"netsurf-gtk", "xdotool"}
     )
     + ("firefox-esr", "python3-minimal"),
 )
