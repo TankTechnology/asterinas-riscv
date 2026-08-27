@@ -33,6 +33,24 @@ class SimulationError(RuntimeError):
     """One stable failure from preparation or the guarded QEMU fast gate."""
 
 
+def _same_artifact_payload(left: ArtifactIdentity, right: ArtifactIdentity) -> bool:
+    """Compare immutable artifact bytes and placement, excluding source paths."""
+
+    return (
+        left.name,
+        left.load_address,
+        left.size,
+        left.sha256,
+        left.crc32,
+    ) == (
+        right.name,
+        right.load_address,
+        right.size,
+        right.sha256,
+        right.crc32,
+    )
+
+
 def _safe_work_directory(path: Path, *, repository_root: Path, label: str) -> Path:
     repository = repository_root.absolute()
     allowed = repository / "target" / "qemu-uboot"
@@ -218,7 +236,7 @@ def simulate_fast(
         )
     except (DebugContractError, OSError) as error:
         raise SimulationError(f"qemu-dtb-drift: {error}") from error
-    if generated_dtb != expected_dtb:
+    if not _same_artifact_payload(generated_dtb, expected_dtb):
         raise SimulationError("qemu-dtb-drift")
 
     qemu_result = output / "qemu-result.json"
