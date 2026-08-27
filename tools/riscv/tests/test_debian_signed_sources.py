@@ -540,6 +540,111 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertNotIn("missing required tool", result.stderr)
         self.assertNotIn("phase 1/8", result.stderr)
 
+    def test_builder_resolves_identical_cross_source_archives_deterministically(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        checksum = "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            checksums = Path(directory) / "checksums"
+            checksums.write_text(
+                f"libfreetype6\triscv64\t1\t{checksum}\tbase\n"
+                f"libfreetype6\triscv64\t1\t{checksum}\tsecurity\n"
+            )
+            base = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; resolve_downloaded_package_row "$2" archive.deb "$3"',
+                    "m5-source-owner-test",
+                    str(builder),
+                    checksum,
+                    str(checksums),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            checksums.write_text(
+                f"firefox-esr\triscv64\t1\t{checksum}\tbase\n"
+                f"firefox-esr\triscv64\t1\t{checksum}\tsecurity\n"
+            )
+            firefox = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; resolve_downloaded_package_row "$2" archive.deb "$3"',
+                    "m5-source-owner-test",
+                    str(builder),
+                    checksum,
+                    str(checksums),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(base.returncode, 0, base.stderr)
+        self.assertTrue(base.stdout.rstrip().endswith("\tbase"))
+        self.assertEqual(firefox.returncode, 0, firefox.stderr)
+        self.assertTrue(firefox.stdout.rstrip().endswith("\tsecurity"))
+
+    def test_builder_rejects_hash_collision_across_package_identities(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        checksum = "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            checksums = Path(directory) / "checksums"
+            checksums.write_text(
+                f"first\triscv64\t1\t{checksum}\tbase\n"
+                f"second\triscv64\t1\t{checksum}\tsecurity\n"
+            )
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; resolve_downloaded_package_row "$2" archive.deb "$3"',
+                    "m5-source-owner-test",
+                    str(builder),
+                    checksum,
+                    str(checksums),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("multiple identities", result.stderr)
+
+    def test_builder_excludes_superseded_cached_package_versions(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "packages.lock"
+            lock.write_text("util-linux\triscv64\t2.41.5-0+deb13u1\n")
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; '
+                    'if package_row_is_installed util-linux riscv64 2.41-5 "$2"; '
+                    'then old=0; else old=$?; fi; '
+                    'if package_row_is_installed util-linux riscv64 2.41.5-0+deb13u1 "$2"; '
+                    'then new=0; else new=$?; fi; '
+                    'printf "%s %s\\n" "$old" "$new"',
+                    "m5-installed-package-test",
+                    str(builder),
+                    str(lock),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1 0")
+
     def test_non_browser_profile_rejects_stale_security_metadata_early(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"

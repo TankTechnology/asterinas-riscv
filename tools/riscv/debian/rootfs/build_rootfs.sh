@@ -726,19 +726,30 @@ extract_package_index_checksums() {
 admit_downloaded_packages() {
     local archive
     local archive_sha256
-    local -a matching_rows=()
+    local admitted_row
+    local admitted_name
+    local admitted_architecture
+    local admitted_version
 
     : >"$WORK_DIR/source-metadata/package-checksums"
     for archive in "$WORK_DIR"/debs/*.deb; do
         archive_sha256="$(sha256sum "$archive")"
         archive_sha256="${archive_sha256%% *}"
-        mapfile -t matching_rows < <(
-            awk -F '\t' -v sha256="$archive_sha256" '$4 == sha256' \
-                "$WORK_DIR/package-index-checksums"
-        )
-        ((${#matching_rows[@]} == 1)) ||
-            die "downloaded package hash is not unique in the verified package index: ${archive##*/}"
-        printf '%s\n' "${matching_rows[0]}" >> \
+        admitted_row="$(resolve_downloaded_package_row \
+            "$archive_sha256" "${archive##*/}" \
+            "$WORK_DIR/package-index-checksums")"
+        IFS=$'\t' read -r admitted_name admitted_architecture \
+            admitted_version _ _ <<<"$admitted_row"
+        if ! package_row_is_installed \
+            "$admitted_name" "$admitted_architecture" "$admitted_version" \
+            "$WORK_DIR/packages.lock"; then
+            # debootstrap leaves its original archives in apt's cache.  A
+            # subsequent security update can install a newer version while
+            # retaining the superseded archive.  Only the installed package
+            # set belongs in the frozen-root provenance.
+            continue
+        fi
+        printf '%s\n' "$admitted_row" >> \
             "$WORK_DIR/source-metadata/package-checksums"
 
         copy_into_content_cache "$archive" "$archive_sha256"
@@ -746,6 +757,83 @@ admit_downloaded_packages() {
     LC_ALL=C sort -u \
         "$WORK_DIR/source-metadata/package-checksums" \
         -o "$WORK_DIR/source-metadata/package-checksums"
+}
+
+resolve_downloaded_package_row() {
+    local archive_sha256="$1"
+    local archive_name="$2"
+    local package_checksums="$3"
+    local canonical_name
+    local canonical_architecture
+    local canonical_version
+    local canonical_sha256
+    local canonical_role
+    local name
+    local architecture
+    local version
+    local sha256
+    local role
+    local preferred_role="base"
+    local row
+    local -a matching_rows=()
+    local -a preferred_rows=()
+
+    mapfile -t matching_rows < <(
+        awk -F '\t' -v expected_sha256="$archive_sha256" \
+            '$4 == expected_sha256' "$package_checksums"
+    )
+    ((${#matching_rows[@]} > 0)) ||
+        die "downloaded package hash is absent from the verified package index: $archive_name"
+
+    IFS=$'\t' read -r canonical_name canonical_architecture \
+        canonical_version canonical_sha256 canonical_role <<<"${matching_rows[0]}"
+    for row in "${matching_rows[@]}"; do
+        IFS=$'\t' read -r name architecture version sha256 role <<<"$row"
+        [[ "$name" == "$canonical_name" &&
+            "$architecture" == "$canonical_architecture" &&
+            "$version" == "$canonical_version" &&
+            "$sha256" == "$canonical_sha256" ]] ||
+            die "downloaded package hash resolves to multiple identities: $archive_name"
+    done
+
+    # During a Debian stable update the base and security suites can publish
+    # byte-identical archives concurrently under different pool paths.  The
+    # archive then has two independently authenticated owners, not an identity
+    # collision.  Apt prefers the first configured source (base here), while
+    # Firefox remains explicitly admitted through the security source.
+    if [[ "$canonical_name" == firefox-esr ]]; then
+        preferred_role="security"
+    fi
+    for row in "${matching_rows[@]}"; do
+        IFS=$'\t' read -r _ _ _ _ role <<<"$row"
+        if [[ "$role" == "$preferred_role" ]]; then
+            preferred_rows+=("$row")
+        fi
+    done
+    if ((${#matching_rows[@]} == 1)); then
+        printf '%s\n' "${matching_rows[0]}"
+    elif ((${#preferred_rows[@]} == 1)); then
+        printf '%s\n' "${preferred_rows[0]}"
+    else
+        die "downloaded package hash has ambiguous signed-source ownership: $archive_name"
+    fi
+}
+
+package_row_is_installed() {
+    local name="$1"
+    local architecture="$2"
+    local version="$3"
+    local packages_lock="$4"
+
+    awk -F '\t' \
+        -v expected_name="$name" \
+        -v expected_architecture="$architecture" \
+        -v expected_version="$version" '
+            $1 == expected_name &&
+            $2 == expected_architecture &&
+            $3 == expected_version { matches += 1 }
+            END { exit(matches == 1 ? 0 : 1) }
+        ' "$packages_lock"
 }
 
 copy_into_content_cache() {
