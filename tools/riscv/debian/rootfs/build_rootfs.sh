@@ -773,6 +773,15 @@ RemainAfterExit=yes
 WantedBy=graphical.target
 EOF
     chmod 0644 -- "$stage/etc/systemd/system/$baidu_service_name.service"
+    install -d -m 0755 -- \
+        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d"
+    cat > \
+        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf" <<'EOF'
+[Service]
+Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1
+EOF
+    chmod 0644 -- \
+        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf"
     ln -s -- \
         "../$baidu_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"

@@ -134,6 +134,8 @@ class DebianDesktopM6GuestEvidenceTests(unittest.TestCase):
         self.assertIn("desktop-m6-javascript-pass.html", builder)
         self.assertIn("--enable_javascript=1", session)
         self.assertIn('netsurf-gtk "${browser_arguments[@]}" "$browser_url" &', session)
+        self.assertIn("ASTERINAS_DESKTOP_BROWSER_VERBOSE", session)
+        self.assertIn('"$HOME/netsurf-m7.log"', session)
 
     def _fake_environment(
         self,
