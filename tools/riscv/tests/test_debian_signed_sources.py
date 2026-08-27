@@ -473,6 +473,11 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             firefox_unit = stage / "etc/systemd/system/asterinas-browser-m5.service"
             observer_unit = stage / "etc/systemd/system/asterinas-browser-m5-network-observer.service"
             evidence_unit = stage / "etc/systemd/system/asterinas-desktop-m5-evidence.service"
+            logind_timeout = (
+                stage
+                / "etc/systemd/system/systemd-logind.service.d"
+                / "asterinas-browser-m5-timeout.conf"
+            )
             network_evidence = (
                 stage / "usr/lib/asterinas/desktop-m5-network-evidence"
             )
@@ -509,6 +514,14 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             firefox_unit_text = firefox_unit.read_text()
             observer_unit_text = observer_unit.read_text()
             evidence_unit_text = evidence_unit.read_text()
+            self.assertEqual(logind_timeout.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(
+                logind_timeout.read_text(),
+                "[Service]\n"
+                "# Software-emulated SMP RISC-V needs more than systemd's default while\n"
+                "# constructing logind's mount namespace. Keep the extension profile-local.\n"
+                "TimeoutStartSec=300s\n",
+            )
             self.assertIn("PrivateNetwork=yes", firefox_unit_text)
             self.assertIn("User=asterinas", firefox_unit_text)
             self.assertNotIn("PrivateNetwork", observer_unit_text)

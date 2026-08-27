@@ -1133,6 +1133,16 @@ EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/asterinas-browser-m5.service" \
             "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
+        install -d -m 0755 -- \
+            "$stage/etc/systemd/system/systemd-logind.service.d"
+        cat >"$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf" <<'EOF'
+[Service]
+# Software-emulated SMP RISC-V needs more than systemd's default while
+# constructing logind's mount namespace. Keep the extension profile-local.
+TimeoutStartSec=300s
+EOF
+        chmod 0644 -- \
+            "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"
     fi
 
     install -D -m 0755 -- \
