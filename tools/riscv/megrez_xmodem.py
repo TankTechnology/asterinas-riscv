@@ -195,7 +195,7 @@ def _read_until(fd: int, marker: bytes, timeout: float) -> bytes:
     return bytes(transcript)
 
 
-def _read_artifact(path: Path) -> bytes:
+def read_artifact(path: Path) -> bytes:
     try:
         info = path.lstat()
     except OSError as error:
@@ -310,9 +310,11 @@ def _address(value: str) -> int:
     return address
 
 
-def _transfer_payload_fd(
+def transfer_payload_fd(
     fd: int, payload: bytes, address: int, *, current_baud: int
 ) -> TransferResult:
+    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_ARTIFACT_BYTES:
+        raise TransferError("payload size is outside the 1..64 MiB limit")
     _configure_serial(fd, current_baud)
     termios.tcflush(fd, termios.TCIFLUSH)
     _enter_transfer_mode(fd, address, current_baud=current_baud)
@@ -340,8 +342,8 @@ def transfer_fd(
 ) -> TransferResult:
     """Transfer through a caller-owned descriptor without closing it."""
 
-    payload = _read_artifact(artifact)
-    return _transfer_payload_fd(fd, payload, address, current_baud=current_baud)
+    payload = read_artifact(artifact)
+    return transfer_payload_fd(fd, payload, address, current_baud=current_baud)
 
 
 def transfer(
@@ -351,10 +353,10 @@ def transfer(
     *,
     current_baud: int = INITIAL_BAUD,
 ) -> TransferResult:
-    payload = _read_artifact(artifact)
+    payload = read_artifact(artifact)
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
-        return _transfer_payload_fd(fd, payload, address, current_baud=current_baud)
+        return transfer_payload_fd(fd, payload, address, current_baud=current_baud)
     finally:
         os.close(fd)
 
