@@ -33,6 +33,19 @@ MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
 )
+EXPECTED_MEGREZ_MILESTONES = (
+    "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
+    "DEBIAN_NETWORK_M5_GUEST_PING peer=10.100.19.216 count=10",
+    "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
+    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
+    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
+    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
+)
+LEGACY_PHYSICAL_MILESTONES = (
+    EXPECTED_MEGREZ_MILESTONES[0],
+    EXPECTED_MEGREZ_MILESTONES[1],
+    "DEBIAN_NETWORK_M5_READY interface=eth0",
+)
 
 
 class DebianDesktopM5NetworkTests(unittest.TestCase):
@@ -259,7 +272,7 @@ exit 0
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            console.read_text().splitlines(), list(DESKTOP_M5_NETWORK_MILESTONES)
+            console.read_text().splitlines(), list(LEGACY_PHYSICAL_MILESTONES)
         )
         self.assertEqual(ping_log.read_text().strip(), "-n -c 10 -W 2 10.100.19.216")
 
@@ -391,14 +404,15 @@ exit 0
         self.assertIn("--boot-timeout 300", target)
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
-        transcript = "\n".join(DESKTOP_M5_NETWORK_MILESTONES).encode()
+        self.assertEqual(DESKTOP_M5_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)
+        transcript = "\n".join(EXPECTED_MEGREZ_MILESTONES).encode()
         self.assertTrue(
             classify_desktop_m5_network(
                 transcript,
                 expected_debian_release="13.6",
             ).passed
         )
-        reordered = "\n".join(reversed(DESKTOP_M5_NETWORK_MILESTONES)).encode()
+        reordered = "\n".join(reversed(EXPECTED_MEGREZ_MILESTONES)).encode()
         self.assertEqual(
             classify_desktop_m5_network(
                 reordered,
@@ -414,6 +428,25 @@ exit 0
             ).reason,
             "kernel panic",
         )
+        for marker in EXPECTED_MEGREZ_MILESTONES[2:5]:
+            with self.subTest(missing=marker):
+                missing = transcript.replace(marker.encode(), b"")
+                self.assertEqual(
+                    classify_desktop_m5_network(
+                        missing,
+                        expected_debian_release="13.6",
+                    ).reason,
+                    f"missing desktop milestone: {marker}",
+                )
+            with self.subTest(duplicate=marker):
+                duplicate = transcript + b"\n" + marker.encode()
+                self.assertEqual(
+                    classify_desktop_m5_network(
+                        duplicate,
+                        expected_debian_release="13.6",
+                    ).reason,
+                    "duplicate desktop milestone",
+                )
 
 
 if __name__ == "__main__":
