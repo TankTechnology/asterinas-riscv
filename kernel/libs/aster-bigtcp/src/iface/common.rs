@@ -88,7 +88,20 @@ impl<E: Ext> IfaceCommon<E> {
         interface: smoltcp::iface::Interface,
         sched_poll: E::ScheduleNextPoll,
     ) -> Self {
-        let index = INTERFACE_INDEX_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
+        // Linux reserves interface index 1 for the loopback device in every
+        // network namespace.  In particular, systemd configures a freshly
+        // created namespace by addressing `lo` through the fixed
+        // `LOOPBACK_IFINDEX` value instead of resolving its name first.
+        //
+        // Non-loopback interfaces are still allocated globally for now.  A
+        // fresh namespace contains only its own loopback interface, so using
+        // index 1 for every loopback is namespace-correct and cannot collide
+        // with a visible non-loopback interface.
+        let index = if type_ == InterfaceType::LOOPBACK {
+            1
+        } else {
+            INTERFACE_INDEX_ALLOCATOR.fetch_add(1, Ordering::Relaxed)
+        };
 
         Self {
             index,
@@ -135,10 +148,12 @@ impl<E: Ext> IfaceCommon<E> {
     }
 }
 
-/// An allocator that allocates a unique index for each interface.
+/// An allocator for non-loopback interfaces.
 //
-// FIXME: This allocator is specific to each network namespace.
-static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(1);
+// FIXME: This allocator should be specific to each network namespace once
+// namespaces can contain non-loopback interfaces.  Index 1 is reserved for
+// the namespace-local loopback interface.
+static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(2);
 
 // Lock order: `interface` -> `sockets`
 impl<E: Ext> IfaceCommon<E> {
