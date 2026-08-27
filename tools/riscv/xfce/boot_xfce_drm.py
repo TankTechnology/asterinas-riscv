@@ -51,6 +51,7 @@ FBDEV_MODE = (
     f"FBDEV(0): Virtual size is {FB_WIDTH_PIXELS}x{FB_HEIGHT_PIXELS}"
 ).encode()
 GLAMOR_VIRGL_ACTIVE = b"glamor x acceleration enabled on virgl"
+MESA_DRI3_ACTIVE = b"Using DRI3 for screen 0"
 GL_BENCH_PASS = b"XFCE_GL_BENCH_PASS"
 GL_DIRECT = b"XFCE_GL_DIRECT yes"
 GL_RENDERER_VIRGL = b"XFCE_GL_RENDERER virgl"
@@ -65,6 +66,11 @@ PANIC_MARKERS = (
 )
 BUG_MARKER_RE = re.compile(rb"(?<![A-Za-z])BUG:")
 FRAMEBUFFER_ERROR = b"failed to add fb"
+VIRGL_CONTEXT_ERRORS = (
+    b"Illegal resource",
+    b"failed to dispatch CREATE_OBJECT",
+    b"Illegal command buffer",
+)
 
 
 class DisplayPath(Enum):
@@ -363,6 +369,7 @@ def main() -> int:
                 or (
                     GL_BENCH_PASS in clean
                     and GL_DIRECT in clean
+                    and MESA_DRI3_ACTIVE in clean
                     and (
                         GL_RENDERER_VIRGL
                         if display_path is DisplayPath.VIRGL
@@ -447,6 +454,7 @@ def main() -> int:
             if display_path is DisplayPath.FBDEV
             else GL_BENCH_PASS in clean
             and GL_DIRECT in clean
+            and MESA_DRI3_ACTIVE in clean
             and (
                 GL_RENDERER_VIRGL
                 if display_path is DisplayPath.VIRGL
@@ -460,6 +468,10 @@ def main() -> int:
             visible_fbdev_frame and FBDEV_MODE in clean
             if display_path is DisplayPath.FBDEV
             else FRAMEBUFFER_ERROR not in clean
+        ),
+        "command-stream": (
+            display_path is not DisplayPath.VIRGL
+            or not any(marker in clean for marker in VIRGL_CONTEXT_ERRORS)
         ),
     }
     for name, present in markers.items():
