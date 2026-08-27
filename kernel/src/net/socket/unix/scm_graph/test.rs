@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ostd::prelude::ktest;
 
 use super::*;
-use crate::thread::{kernel_thread::ThreadOptions, Thread};
+use crate::thread::{Thread, kernel_thread::ThreadOptions};
 
 #[ktest]
 fn accepts_unrelated_acyclic_edges() {
@@ -80,6 +80,13 @@ fn preserves_duplicate_edge_multiplicity() {
     assert_eq!(edge_count(&socket, &storage, EdgeClass::Permanent), 1);
     second.detach();
     assert_eq!(edge_count(&socket, &storage, EdgeClass::Permanent), 0);
+}
+
+#[ktest]
+fn graph_lock_is_atomic_context_safe() {
+    fn assert_spin_lock(_: &'static SpinLock<ScmGraph>) {}
+
+    assert_spin_lock(scm_graph());
 }
 
 #[ktest]
