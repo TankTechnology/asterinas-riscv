@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-60}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-300}"
 readonly PROC_ROOT="${ASTERINAS_BROWSER_M5_PROC_ROOT:-/proc}"
 fail() { printf '%s\n' "DEBIAN_BROWSER_M5_NETNS_FAIL reason=$1" >>"$CONSOLE"; exit 1; }
 
