@@ -135,6 +135,10 @@ impl UnixDatagramSocket {
         }
     }
 
+    pub(in crate::net::socket::unix) fn scm_node(&self) -> &SocketNode {
+        &self.scm_node
+    }
+
     fn do_send(
         &self,
         reader: &mut dyn MultiRead,
@@ -360,6 +364,9 @@ impl Socket for UnixDatagramSocket {
         };
 
         let auxiliary_data = AuxiliaryData::from_control(control_messages)?;
+        // Preserve the legacy policy after the file-table borrow has ended and before resolving
+        // or locking the target datagram queue. Slice 4 does not enable graph-based acceptance.
+        auxiliary_data.enforce_legacy_send_policy()?;
 
         self.do_send(
             reader,
