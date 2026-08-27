@@ -701,6 +701,7 @@ configure_desktop_m5_network() {
     local stage="$1"
     local script_directory
     local service_name="asterinas-desktop-m5-network"
+    local browser_service_name="asterinas-desktop-m6-browser"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     install -D -m 0755 -- \
@@ -724,6 +725,33 @@ EOF
     ln -s -- \
         "../$service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m6_browser_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m6-browser-evidence"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_m6_javascript.html" \
+        "$stage/usr/share/asterinas/desktop-m6-javascript.html"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_m6_javascript_pass.html" \
+        "$stage/usr/share/asterinas/desktop-m6-javascript-pass.html"
+    cat >"$stage/etc/systemd/system/$browser_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M6 browser evidence
+After=asterinas-desktop-m5-network.service asterinas-desktop-m4-evidence.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/desktop-m6-browser-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$browser_service_name.service"
+    ln -s -- \
+        "../$browser_service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$browser_service_name.service"
 }
 
 configure_desktop() {

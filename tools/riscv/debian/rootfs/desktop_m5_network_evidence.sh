@@ -75,7 +75,9 @@ qemu_network_evidence() {
     temporary_url="$(mktemp "${URL_FILE}.tmp.XXXXXX")" || fail url-temporary
     trap 'rm -f -- "$temporary_url"' RETURN
     chmod 0644 -- "$temporary_url" || fail url-mode
-    printf '%s\n' 'https://www.baidu.com/' >"$temporary_url" || fail url-write
+    printf '%s\n' \
+        'https://www.baidu.com/img/flexible/logo/pc/result.png' \
+        >"$temporary_url" || fail url-write
     mv -T -- "$temporary_url" "$URL_FILE" || fail url-publish
     temporary_url=""
     trap - RETURN
