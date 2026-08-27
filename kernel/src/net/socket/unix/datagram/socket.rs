@@ -15,25 +15,31 @@ use crate::{
         pseudofs::SockFs,
     },
     net::socket::{
-        options::{macros::sock_option_mut, Error as SocketError, PeerCred, SocketOption},
+        Socket,
+        options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
         private::SocketPrivate,
-        unix::{cred::SocketCred, ctrl_msg::AuxiliaryData, CUserCred, UnixSocketAddr},
+        unix::{
+            CUserCred, UnixSocketAddr,
+            cred::SocketCred,
+            ctrl_msg::AuxiliaryData,
+            scm_graph::{PermanentEdge, SocketNode},
+        },
         util::{
+            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
             options::{
                 GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
             },
-            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
         },
-        Socket,
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::{net::SockType, MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, net::SockType},
 };
 
 pub struct UnixDatagramSocket {
+    scm_node: SocketNode,
     local_receiver: MessageReceiver,
-    remote_queue: RwLock<Option<Arc<MessageQueue>>>,
+    remote_queue: RwLock<Option<RemoteQueue>>,
     options: RwLock<OptionSet>,
     timeouts: SocketTimeouts,
     // Since datagram sockets are not connection-oriented, they typically lack well-defined peer
@@ -43,6 +49,29 @@ pub struct UnixDatagramSocket {
 
     is_write_shutdown: AtomicBool,
     common: FileCommon,
+}
+
+struct RemoteQueue {
+    _owner_edge: PermanentEdge,
+    queue: Arc<MessageQueue>,
+}
+
+impl RemoteQueue {
+    fn new(owner: &SocketNode, queue: Arc<MessageQueue>) -> Self {
+        // In Slice 3 no queued SCM edge is recorded, so a datagram queue cannot yet reach a
+        // socket. Slice 6 must make connect/reconnect fallible before adding queue-to-socket
+        // committed edges; this `expect` is deliberately not a permanent graph invariant.
+        let owner_edge = PermanentEdge::new(owner, queue.scm_node())
+            .expect("datagram queues cannot own sockets while the legacy SCM policy is active");
+        Self {
+            _owner_edge: owner_edge,
+            queue,
+        }
+    }
+
+    fn queue(&self) -> &Arc<MessageQueue> {
+        &self.queue
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -74,8 +103,14 @@ impl UnixDatagramSocket {
         let remote_queue_a = socket_a.remote_queue.get_mut();
         let remote_queue_b = socket_b.remote_queue.get_mut();
 
-        *remote_queue_a = Some(socket_b.local_receiver.queue().clone());
-        *remote_queue_b = Some(socket_a.local_receiver.queue().clone());
+        *remote_queue_a = Some(RemoteQueue::new(
+            &socket_a.scm_node,
+            socket_b.local_receiver.queue().clone(),
+        ));
+        *remote_queue_b = Some(RemoteQueue::new(
+            &socket_b.scm_node,
+            socket_a.local_receiver.queue().clone(),
+        ));
 
         (Arc::new(socket_a), Arc::new(socket_b))
     }
@@ -86,8 +121,11 @@ impl UnixDatagramSocket {
         } else {
             StatusFlags::empty()
         };
+        let scm_node = SocketNode::new();
+        let local_receiver = MessageReceiver::new(&scm_node);
         Self {
-            local_receiver: MessageReceiver::new(),
+            scm_node,
+            local_receiver,
             remote_queue: RwLock::new(None),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
@@ -95,6 +133,10 @@ impl UnixDatagramSocket {
             is_write_shutdown: AtomicBool::new(false),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         }
+    }
+
+    pub(in crate::net::socket::unix) fn scm_node(&self) -> &SocketNode {
+        &self.scm_node
     }
 
     fn do_send(
@@ -114,9 +156,12 @@ impl UnixDatagramSocket {
             MessageQueue::lookup_bound(&connected_addr)?
         } else {
             let remote_queue = self.remote_queue.read();
-            remote_queue.clone().ok_or_else(|| {
-                Error::with_message(Errno::ENOTCONN, "the socket is not connected")
-            })?
+            remote_queue
+                .as_ref()
+                .map(|remote| remote.queue().clone())
+                .ok_or_else(|| {
+                    Error::with_message(Errno::ENOTCONN, "the socket is not connected")
+                })?
         };
 
         let res = if self.is_nonblocking() || flags.contains(SendFlags::MSG_DONTWAIT) {
@@ -129,14 +174,7 @@ impl UnixDatagramSocket {
 
         // A connected socket will automatically be disconnected if the remote has been closed.
         if remote.is_none() && res.is_err_and(|err| err.error() == Errno::ECONNREFUSED) {
-            let mut remote_queue = self.remote_queue.write();
-            // Check to ensure that we are still connected to the same remote.
-            if remote_queue
-                .as_ref()
-                .is_some_and(|remote| Arc::ptr_eq(remote, &queue))
-            {
-                *remote_queue = None;
-            }
+            disconnect_remote_if_matches(&self.remote_queue, &queue);
         }
 
         res
@@ -155,6 +193,39 @@ impl UnixDatagramSocket {
         }
 
         io_events
+    }
+}
+
+fn replace_remote_queue(
+    remote_queue: &RwLock<Option<RemoteQueue>>,
+    owner: &SocketNode,
+    queue: Arc<MessageQueue>,
+) {
+    let mut remote_queue = remote_queue.write();
+    // Construct the new edge before replacing the old wrapper. The state lock remains held while
+    // both graph operations run, so observers see neither a missing edge nor a stale connection.
+    *remote_queue = Some(RemoteQueue::new(owner, queue));
+}
+
+fn disconnect_remote_if_matches(
+    remote_queue: &RwLock<Option<RemoteQueue>>,
+    failed_queue: &Arc<MessageQueue>,
+) {
+    let mut remote_queue = remote_queue.write();
+    if remote_queue
+        .as_ref()
+        .is_some_and(|remote| Arc::ptr_eq(remote.queue(), failed_queue))
+    {
+        // Dropping the wrapper under the state lock removes the matching graph edge atomically.
+        *remote_queue = None;
+    }
+}
+
+impl Drop for UnixDatagramSocket {
+    fn drop(&mut self) {
+        // Explicitly detach the socket-to-remote-queue edge before field destruction. The local
+        // receiver drains its queue and detaches the local edge in its own `Drop` implementation.
+        *self.remote_queue.write() = None;
     }
 }
 
@@ -184,8 +255,7 @@ impl Socket for UnixDatagramSocket {
         let connected_addr = remote_addr.connect()?;
         let queue = MessageQueue::lookup_bound(&connected_addr)?;
 
-        let mut remote_queue = self.remote_queue.write();
-        *remote_queue = Some(queue);
+        replace_remote_queue(&self.remote_queue, &self.scm_node, queue);
 
         Ok(())
     }
@@ -215,7 +285,7 @@ impl Socket for UnixDatagramSocket {
     fn peer_addr(&self) -> Result<SocketAddr> {
         let remote_queue = self.remote_queue.read();
         match remote_queue.as_ref() {
-            Some(queue) => Ok(queue.addr().into()),
+            Some(remote) => Ok(remote.queue().addr().into()),
             None => return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected"),
         }
     }
@@ -294,6 +364,9 @@ impl Socket for UnixDatagramSocket {
         };
 
         let auxiliary_data = AuxiliaryData::from_control(control_messages)?;
+        // Preserve the legacy policy after the file-table borrow has ended and before resolving
+        // or locking the target datagram queue. Slice 4 does not enable graph-based acceptance.
+        auxiliary_data.enforce_legacy_send_policy()?;
 
         self.do_send(
             reader,
@@ -377,5 +450,146 @@ impl SetSocketLevelOption for (&MessageReceiver, &SocketTimeouts) {
 
     fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
         Some(self.1)
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::{
+        net::socket::unix::scm_graph::permanent_edge_count,
+        thread::{Thread, kernel_thread::ThreadOptions},
+    };
+
+    #[ktest]
+    fn socketpair_style_local_and_remote_edges_have_exact_multiplicity() {
+        let first_socket = SocketNode::new();
+        let second_socket = SocketNode::new();
+        let first_receiver = MessageReceiver::new(&first_socket);
+        let second_receiver = MessageReceiver::new(&second_socket);
+        let first_queue = first_receiver.queue_node();
+        let second_queue = second_receiver.queue_node();
+
+        let first_remote = RemoteQueue::new(&first_socket, second_receiver.queue().clone());
+        let second_remote = RemoteQueue::new(&second_socket, first_receiver.queue().clone());
+        assert_eq!(permanent_edge_count(&first_socket, &first_queue), 1);
+        assert_eq!(permanent_edge_count(&first_socket, &second_queue), 1);
+        assert_eq!(permanent_edge_count(&second_socket, &second_queue), 1);
+        assert_eq!(permanent_edge_count(&second_socket, &first_queue), 1);
+
+        drop(first_remote);
+        drop(second_remote);
+        assert_eq!(permanent_edge_count(&first_socket, &first_queue), 1);
+        assert_eq!(permanent_edge_count(&first_socket, &second_queue), 0);
+        assert_eq!(permanent_edge_count(&second_socket, &second_queue), 1);
+        assert_eq!(permanent_edge_count(&second_socket, &first_queue), 0);
+
+        drop(first_receiver);
+        drop(second_receiver);
+        assert_eq!(permanent_edge_count(&first_socket, &first_queue), 0);
+        assert_eq!(permanent_edge_count(&second_socket, &second_queue), 0);
+    }
+
+    #[ktest]
+    fn reconnect_replaces_remote_edge_without_a_stale_owner() {
+        let socket = SocketNode::new();
+        let first_queue_owner = SocketNode::new();
+        let second_queue_owner = SocketNode::new();
+        let first_receiver = MessageReceiver::new(&first_queue_owner);
+        let second_receiver = MessageReceiver::new(&second_queue_owner);
+        let first_queue = first_receiver.queue_node();
+        let second_queue = second_receiver.queue_node();
+        let remote = RwLock::new(None);
+
+        replace_remote_queue(&remote, &socket, first_receiver.queue().clone());
+        assert_eq!(permanent_edge_count(&socket, &first_queue), 1);
+        replace_remote_queue(&remote, &socket, second_receiver.queue().clone());
+        assert_eq!(permanent_edge_count(&socket, &first_queue), 0);
+        assert_eq!(permanent_edge_count(&socket, &second_queue), 1);
+
+        *remote.write() = None;
+        assert_eq!(permanent_edge_count(&socket, &second_queue), 0);
+    }
+
+    #[ktest]
+    fn peer_close_disconnect_only_removes_the_matching_remote_edge() {
+        let socket = SocketNode::new();
+        let first_queue_owner = SocketNode::new();
+        let second_queue_owner = SocketNode::new();
+        let first_receiver = MessageReceiver::new(&first_queue_owner);
+        let second_receiver = MessageReceiver::new(&second_queue_owner);
+        let first_queue = first_receiver.queue_node();
+        let second_queue = second_receiver.queue_node();
+        let remote = RwLock::new(None);
+
+        replace_remote_queue(&remote, &socket, first_receiver.queue().clone());
+        disconnect_remote_if_matches(&remote, second_receiver.queue());
+        assert_eq!(permanent_edge_count(&socket, &first_queue), 1);
+        assert_eq!(permanent_edge_count(&socket, &second_queue), 0);
+
+        disconnect_remote_if_matches(&remote, first_receiver.queue());
+        assert!(remote.read().is_none());
+        assert_eq!(permanent_edge_count(&socket, &first_queue), 0);
+    }
+
+    #[ktest]
+    fn reconnect_racing_peer_close_converges_on_the_new_remote_edge() {
+        let socket = SocketNode::new();
+        let first_queue_owner = SocketNode::new();
+        let second_queue_owner = SocketNode::new();
+        let first_receiver = MessageReceiver::new(&first_queue_owner);
+        let second_receiver = MessageReceiver::new(&second_queue_owner);
+        let first_queue = first_receiver.queue_node();
+        let second_queue = second_receiver.queue_node();
+        let remote = Arc::new(RwLock::new(Some(RemoteQueue::new(
+            &socket,
+            first_receiver.queue().clone(),
+        ))));
+        let is_starting = Arc::new(AtomicBool::new(false));
+
+        let reconnect_thread = {
+            let remote = remote.clone();
+            let socket = socket.clone();
+            let new_queue = second_receiver.queue().clone();
+            let is_starting = is_starting.clone();
+            ThreadOptions::new(move || {
+                wait_for_start(&is_starting);
+                replace_remote_queue(&remote, &socket, new_queue);
+            })
+            .spawn()
+        };
+        let peer_close_thread = {
+            let remote = remote.clone();
+            let failed_queue = first_receiver.queue().clone();
+            let is_starting = is_starting.clone();
+            ThreadOptions::new(move || {
+                wait_for_start(&is_starting);
+                disconnect_remote_if_matches(&remote, &failed_queue);
+            })
+            .spawn()
+        };
+
+        is_starting.store(true, Ordering::Release);
+        reconnect_thread.join();
+        peer_close_thread.join();
+        assert_eq!(permanent_edge_count(&socket, &first_queue), 0);
+        assert_eq!(permanent_edge_count(&socket, &second_queue), 1);
+        assert!(
+            remote
+                .read()
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current.queue(), second_receiver.queue()))
+        );
+
+        *remote.write() = None;
+        assert_eq!(permanent_edge_count(&socket, &second_queue), 0);
+    }
+
+    fn wait_for_start(is_starting: &AtomicBool) {
+        while !is_starting.load(Ordering::Acquire) {
+            Thread::yield_now();
+        }
     }
 }
