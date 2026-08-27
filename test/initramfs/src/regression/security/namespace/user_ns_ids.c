@@ -7,6 +7,7 @@
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/fsuid.h>
 #include <unistd.h>
 
 #include "../../common/test.h"
@@ -44,6 +45,22 @@ FN_TEST(setid_arguments_are_resolved_in_the_current_user_namespace)
 
 	TEST_RES(getuid(), _ret == 1234);
 	TEST_RES(getgid(), _ret == 1234);
+
+	/*
+	 * setfsuid()/setfsgid() always return the old caller-visible ID.  In this
+	 * namespace 1234 maps to a different kernel ID, so these assertions also
+	 * catch implementations that leak the global kernel ID on return.
+	 */
+	TEST_RES(setfsuid((uid_t)-1), _ret == 1234);
+	TEST_RES(setfsgid((gid_t)-1), _ret == 1234);
+	TEST_RES(setfsuid(1234), _ret == 1234);
+	TEST_RES(setfsgid(1234), _ret == 1234);
+
+	/* Unmapped filesystem IDs leave the current IDs unchanged without EINVAL. */
+	TEST_RES(setfsuid(1235), _ret == 1234);
+	TEST_RES(setfsgid(1235), _ret == 1234);
+	TEST_RES(setfsuid((uid_t)-1), _ret == 1234);
+	TEST_RES(setfsgid((gid_t)-1), _ret == 1234);
 
 	TEST_ERRNO(setgid(1235), EINVAL);
 	TEST_ERRNO(setuid(1235), EINVAL);
