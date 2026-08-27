@@ -50,6 +50,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertIn("iproute2", profile.identity_packages)
         self.assertIn("iputils-ping", profile.identity_packages)
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
+        self.assertNotIn("curl", profile.requested_packages)
+        self.assertNotIn("xdotool", profile.requested_packages)
 
     @mock.patch("subprocess.run")
     def test_each_release_is_independently_gpg_verified(self, run: mock.Mock) -> None:
@@ -472,6 +474,9 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             observer = stage / "usr/lib/asterinas/browser-m5-network-observer"
             firefox_unit = stage / "etc/systemd/system/asterinas-browser-m5.service"
             observer_unit = stage / "etc/systemd/system/asterinas-browser-m5-network-observer.service"
+            netsurf_evidence_unit = (
+                stage / "etc/systemd/system/asterinas-desktop-m6-browser.service"
+            )
             evidence_unit = stage / "etc/systemd/system/asterinas-desktop-m5-evidence.service"
             logind_timeout = (
                 stage
@@ -533,6 +538,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertLess(evidence_unit_text.index("JoinsNamespaceOf="), evidence_unit_text.index("[Service]"))
             self.assertIn("PrivateNetwork=yes", evidence_unit_text)
             self.assertIn("Requires=asterinas-browser-m5.service", evidence_unit_text)
+            self.assertFalse(netsurf_evidence_unit.exists())
+            self.assertFalse(
+                (stage / "usr/lib/asterinas/desktop-m6-browser-evidence").exists()
+            )
 
     def test_builder_rejects_custom_m5_mirror_before_tools_or_network(self) -> None:
         repository = Path(__file__).resolve().parents[3]

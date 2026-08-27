@@ -892,7 +892,7 @@ EOF
         configure_desktop_m5_network "$stage"
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
-        configure_desktop_m5_network "$stage" m5
+        configure_desktop_m5_network "$stage" m5 false
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -914,6 +914,7 @@ EOF
 configure_desktop_m5_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
+    local install_netsurf_evidence="${3:-true}"
     local script_directory
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
@@ -942,16 +943,17 @@ EOF
         "../$service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 
-    install -D -m 0755 -- \
+    if [[ "$install_netsurf_evidence" == true ]]; then
+        install -D -m 0755 -- \
         "$script_directory/desktop_m6_browser_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m6-browser-evidence"
-    install -D -m 0644 -- \
+        install -D -m 0644 -- \
         "$script_directory/desktop_m6_javascript.html" \
         "$stage/usr/share/asterinas/desktop-m6-javascript.html"
-    install -D -m 0644 -- \
+        install -D -m 0644 -- \
         "$script_directory/desktop_m6_javascript_pass.html" \
         "$stage/usr/share/asterinas/desktop-m6-javascript-pass.html"
-    cat >"$stage/etc/systemd/system/$browser_service_name.service" <<'EOF'
+        cat >"$stage/etc/systemd/system/$browser_service_name.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian M6 browser evidence
 After=asterinas-desktop-m5-network.service asterinas-desktop-m4-evidence.service
@@ -1005,6 +1007,7 @@ EOF
     ln -s -- \
         "../$baidu_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
+    fi
 }
 
 configure_desktop() {
