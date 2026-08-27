@@ -216,6 +216,7 @@ class DesktopM3Operations(ConcreteOperations):
     ARTIFACT_PREFIX = "desktop-m3"
     MILESTONES = DESKTOP_M3_MILESTONES
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
+    ADDITIONAL_FAILURE_MARKERS: tuple[bytes, ...] = ()
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
     def __init__(self, config: GateConfig) -> None:
@@ -300,14 +301,15 @@ class DesktopM3Operations(ConcreteOperations):
         )
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
+        failure_markers = (self.FAILURE_MARKER, *self.ADDITIONAL_FAILURE_MARKERS)
         completion = serial.wait_for_any(
-            (
-                self.MILESTONES[-1].encode(),
-                self.FAILURE_MARKER,
-            ),
+            (self.MILESTONES[-1].encode(), *failure_markers),
             time.monotonic() + config.boot_timeout,
         )
-        if completion.startswith(self.FAILURE_MARKER.split(b" reason=", 1)[0]):
+        if any(
+            completion.startswith(marker.split(b" reason=", 1)[0])
+            for marker in failure_markers
+        ):
             raise GateFailure("guest reported desktop failure")
 
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
