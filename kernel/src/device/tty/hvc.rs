@@ -26,6 +26,9 @@ pub(super) struct HvcDriver {
 impl TtyDriver for HvcDriver {
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/Documentation/admin-guide/devices.txt#L2936>.
     const DEVICE_MAJOR_ID: u32 = 229;
+    // The hypervisor-console driver owns only the console transport, which cannot retain a file
+    // description.
+    const SCM_RIGHTS_PROVEN_LEAF: bool = true;
 
     fn devtmpfs_meta(&self, index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
         Some(DevtmpfsInodeMeta::new(format!("hvc{}", index)))

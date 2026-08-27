@@ -16,7 +16,10 @@ use crate::{
             addr::UnixSocketAddrBound,
             cred::SocketCred,
             ctrl_msg::AuxiliaryData,
-            scm_graph::{PermanentEdge, ScmGraphNode, StreamStorageNode},
+            scm_graph::{
+                CommittedEdges, PermanentEdge, ReservationError, ReservedEdges, ScmGraphNode,
+                StreamStorageNode,
+            },
         },
         util::{ControlMessage, RecvFlags, RecvOutput, SockShutdownCmd},
     },
@@ -276,18 +279,31 @@ impl Connected {
         }
         drop(reader);
 
-        // Consume the auxiliary data that we've read.
+        // Consume the auxiliary data that we've read. Any committed ownership edge is detached
+        // while `all_aux` is still the queue linearization lock, but queued file arcs are moved
+        // out and dropped only after the lock is released. `MSG_PEEK` clones the files and leaves
+        // both the queue entry and its committed edges untouched.
+        let mut drained_aux = VecDeque::new();
         let ctrl_msgs = if aux_pos >= 1 {
-            let aux_data = all_aux.get_mut(aux_pos - 1).unwrap();
+            let consumed_aux_pos = aux_pos - 1;
+            let aux_data = all_aux.get_mut(consumed_aux_pos).unwrap();
             debug_assert!((aux_data.start - read_base).0 <= read_tot_len);
 
+            if behavior.will_consume_data() {
+                // The queue stops owning the passed files at this point. Detach the graph edge
+                // before `generate_control` transfers those strong references to the receiver.
+                aux_data.detach_committed_edges();
+            }
             let ctrl_msgs = aux_data.data.generate_control(behavior, is_pass_cred);
             if behavior.will_consume_data() {
-                let remaining_aux_count = all_aux.len() - (aux_pos - 1);
-                all_aux.retain_back(remaining_aux_count);
+                for queued in all_aux.iter_mut().take(consumed_aux_pos) {
+                    queued.detach_committed_edges();
+                }
+                drained_aux.extend(all_aux.drain(..consumed_aux_pos));
+
                 let consume_len = read_tot_len + trunc_len;
                 if (all_aux.front().unwrap().end - read_base).0 <= consume_len {
-                    all_aux.pop_front();
+                    drained_aux.push_back(all_aux.pop_front().unwrap());
                 } else {
                     all_aux.front_mut().unwrap().start = read_base + Wrapping(consume_len);
                 }
@@ -300,6 +316,8 @@ impl Connected {
             let mut default_aux_data = AuxiliaryData::default();
             default_aux_data.generate_control(behavior, is_pass_cred)
         };
+        drop(all_aux);
+        drop(drained_aux);
 
         debug_assert!(is_seqpacket || read_tot_len != 0);
         let output = if is_seqpacket {
@@ -348,6 +366,31 @@ impl Connected {
 
         let mut all_aux = this_end.all_aux.lock();
 
+        if aux_data.has_unsupported_file() {
+            return_errno_with_message!(
+                Errno::EPERM,
+                "SCM_RIGHTS contains a file container unsupported by B1"
+            );
+        }
+        if aux_data.has_datagram_socket_pending_slice6() {
+            // Slice 3 models datagram socket-to-queue ownership, but datagram queues do not gain
+            // committed queue-to-passed-socket edges until Slice 6. Accepting a datagram FD here
+            // could therefore miss a cross-protocol cycle through an already queued SCM_RIGHTS
+            // file. Keep this class closed until both protocol graphs are complete.
+            return_errno_with_message!(
+                Errno::EPERM,
+                "SCM_RIGHTS datagram sockets require Slice 6 ownership tracking"
+            );
+        }
+        let reserved_edges = if aux_data.passed_sockets().is_empty() {
+            None
+        } else {
+            Some(
+                ReservedEdges::try_new(&this_end.storage_node, aux_data.passed_sockets())
+                    .map_err(map_reservation_error)?,
+            )
+        };
+
         // No matter we succeed later or not, set the flag first to ensure that the auxiliary
         // data are always visible to `try_recv`.
         this_end.has_aux.store(true, Ordering::Relaxed);
@@ -366,12 +409,17 @@ impl Connected {
         } else {
             (this_end.writer.lock().tail(), Ok(0))
         };
-        let Ok(write_len) = write_res else {
-            this_end
-                .has_aux
-                .store(!all_aux.is_empty(), Ordering::Relaxed);
-            return write_res;
-        };
+        let allow_zero_len = is_empty && is_seqpacket;
+        let (write_len, committed_edges) =
+            match finalize_scm_write(reserved_edges, write_res, allow_zero_len) {
+                Ok(result) => result,
+                Err(err) => {
+                    this_end
+                        .has_aux
+                        .store(!all_aux.is_empty(), Ordering::Relaxed);
+                    return Err(err);
+                }
+            };
 
         if need_pass_cred {
             aux_data.fill_cred();
@@ -379,6 +427,7 @@ impl Connected {
 
         // Store the auxiliary data.
         let aux_range = RangedAuxiliaryData {
+            committed_edges,
             data: core::mem::take(aux_data),
             start: write_start,
             end: write_start + Wrapping(write_len),
@@ -457,6 +506,11 @@ impl Drop for Connected {
             let peer_end = self.inner.peer_end();
             let mut all_aux = peer_end.all_aux.lock();
             peer_end.has_aux.store(false, Ordering::Relaxed);
+            for aux in all_aux.iter_mut() {
+                // Keep `all_aux -> scm_graph` as the close linearization order. Detaching after
+                // taking the queue would expose a false-cycle window to concurrent reservations.
+                aux.detach_committed_edges();
+            }
             core::mem::take(&mut *all_aux)
         };
         drop(queued_aux);
@@ -487,9 +541,43 @@ impl AsRef<EndpointState> for Inner {
 }
 
 struct RangedAuxiliaryData {
+    committed_edges: Option<CommittedEdges>,
     data: AuxiliaryData,
     start: Wrapping<usize>, // inclusive
     end: Wrapping<usize>,   // exclusive
+}
+
+impl RangedAuxiliaryData {
+    fn detach_committed_edges(&mut self) {
+        if let Some(edges) = self.committed_edges.take() {
+            edges.detach();
+        }
+    }
+}
+
+fn finalize_scm_write(
+    reserved_edges: Option<ReservedEdges>,
+    write_res: Result<usize>,
+    allow_zero_len: bool,
+) -> Result<(usize, Option<CommittedEdges>)> {
+    let write_len = write_res?;
+    if write_len == 0 && !allow_zero_len {
+        return_errno_with_message!(Errno::EAGAIN, "the channel has no space for this packet");
+    }
+    let committed_edges = reserved_edges.map(ReservedEdges::commit);
+    Ok((write_len, committed_edges))
+}
+
+fn map_reservation_error(error: ReservationError) -> Error {
+    match error {
+        ReservationError::Cycle => {
+            Error::with_message(Errno::EPERM, "SCM_RIGHTS would create an ownership cycle")
+        }
+        ReservationError::MultiplicityOverflow => Error::with_message(
+            Errno::EPERM,
+            "SCM_RIGHTS ownership multiplicity cannot be represented",
+        ),
+    }
 }
 
 pub(in crate::net) const UNIX_STREAM_DEFAULT_BUF_SIZE: usize = 65536;
@@ -501,8 +589,176 @@ mod test {
 
     use super::*;
     use crate::net::socket::unix::scm_graph::{
-        SocketNode, StreamBacklogNode, permanent_edge_count,
+        DatagramQueueNode, SocketNode, StreamBacklogNode, committed_edge_count,
+        permanent_edge_count, reserved_edge_count,
     };
+
+    #[ktest]
+    fn stream_scm_commit_peek_consume_and_duplicate_multiplicity() {
+        let (first, second) = new_pair();
+        let storage = first.storage_node();
+        let passed = SocketNode::new();
+        let mut aux = AuxiliaryData::new_test_scm(vec![passed.clone(), passed.clone()], false);
+        let mut payload = VmReader::from(b"x".as_slice()).to_fallible();
+
+        assert_eq!(first.try_write(&mut payload, &mut aux, false).unwrap(), 1);
+        assert_eq!(committed_edge_count(&storage, &passed), 2);
+
+        let mut peek_byte = [0u8; 1];
+        let mut peek_writer = VmWriter::from(peek_byte.as_mut_slice()).to_fallible();
+        second
+            .try_read(&mut peek_writer, false, RecvFlags::MSG_PEEK)
+            .unwrap();
+        assert_eq!(committed_edge_count(&storage, &passed), 2);
+
+        let mut recv_byte = [0u8; 1];
+        let mut recv_writer = VmWriter::from(recv_byte.as_mut_slice()).to_fallible();
+        second
+            .try_read(&mut recv_writer, false, RecvFlags::empty())
+            .unwrap();
+        assert_eq!(recv_byte, *b"x");
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+    }
+
+    #[ktest]
+    fn stream_scm_full_buffer_rolls_back_then_retry_commits() {
+        let (first, second) = new_pair();
+        let storage = first.storage_node();
+        let passed = SocketNode::new();
+
+        let full_payload = vec![0u8; UNIX_STREAM_DEFAULT_BUF_SIZE];
+        let mut full_reader = VmReader::from(full_payload.as_slice()).to_fallible();
+        assert_eq!(
+            first
+                .try_write(&mut full_reader, &mut AuxiliaryData::default(), false)
+                .unwrap(),
+            UNIX_STREAM_DEFAULT_BUF_SIZE
+        );
+
+        let mut aux = AuxiliaryData::new_test_scm(vec![passed.clone()], false);
+        let mut blocked_payload = VmReader::from(b"b".as_slice()).to_fallible();
+        let error = first
+            .try_write(&mut blocked_payload, &mut aux, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.error(), Errno::EAGAIN);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+        assert_eq!(aux.passed_sockets().len(), 1);
+
+        let mut released_byte = [0u8; 1];
+        let mut release_writer = VmWriter::from(released_byte.as_mut_slice()).to_fallible();
+        second
+            .try_read(&mut release_writer, false, RecvFlags::empty())
+            .unwrap();
+
+        assert_eq!(
+            first
+                .try_write(&mut blocked_payload, &mut aux, false)
+                .unwrap(),
+            1
+        );
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 1);
+
+        // The stream retry filled the one byte that the receiver released. A non-empty
+        // seqpacket must now roll its reservation back and report EAGAIN, not commit a zero-range
+        // control message.
+        let mut seqpacket_aux = AuxiliaryData::new_test_scm(vec![passed.clone()], false);
+        let mut seqpacket_payload = VmReader::from(b"s".as_slice()).to_fallible();
+        let error = first
+            .try_write(&mut seqpacket_payload, &mut seqpacket_aux, true)
+            .err()
+            .unwrap();
+        assert_eq!(error.error(), Errno::EAGAIN);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 1);
+        assert_eq!(seqpacket_aux.passed_sockets().len(), 1);
+
+        drop(second);
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+    }
+
+    #[ktest]
+    fn stream_scm_efault_rolls_back_and_empty_stream_does_not_reserve() {
+        let (first, _second) = new_pair();
+        let storage = first.storage_node();
+        let passed = SocketNode::new();
+
+        let reservation = ReservedEdges::try_new(&storage, &[passed.clone()]).unwrap();
+        assert_eq!(reserved_edge_count(&storage, &passed), 1);
+        let error = finalize_scm_write(
+            Some(reservation),
+            Err(Error::with_message(
+                Errno::EFAULT,
+                "synthetic user-copy fault",
+            )),
+            false,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.error(), Errno::EFAULT);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+
+        let mut aux = AuxiliaryData::new_test_scm(vec![passed.clone()], false);
+        let mut empty = VmReader::from(b"".as_slice()).to_fallible();
+        assert_eq!(first.try_write(&mut empty, &mut aux, false).unwrap(), 0);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+        assert_eq!(aux.passed_sockets().len(), 1);
+
+        assert_eq!(first.try_write(&mut empty, &mut aux, true).unwrap(), 0);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+        assert_eq!(committed_edge_count(&storage, &passed), 1);
+        drop(_second);
+        assert_eq!(committed_edge_count(&storage, &passed), 0);
+    }
+
+    #[ktest]
+    fn stream_scm_rejects_cycles_and_unsupported_containers() {
+        let (mut first, _second) = new_pair();
+        let storage = first.storage_node();
+        let passed = SocketNode::new();
+        first.attach_owner(&passed);
+
+        let mut cyclic_aux = AuxiliaryData::new_test_scm(vec![passed.clone()], false);
+        let mut payload = VmReader::from(b"c".as_slice()).to_fallible();
+        let error = first
+            .try_write(&mut payload, &mut cyclic_aux, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.error(), Errno::EPERM);
+        assert_eq!(reserved_edge_count(&storage, &passed), 0);
+
+        // Slice 3 records `datagram_socket -> queue`, but the queue's existing SCM ownership of
+        // this stream socket is intentionally untracked until Slice 6. Consequently the raw
+        // graph cannot see the real T -> D -> Q --missing--> S -> T cycle and would accept T -> D.
+        // Slice 5 closes that incompleteness at the stream protocol policy instead.
+        let datagram = SocketNode::new();
+        let datagram_queue = DatagramQueueNode::new();
+        let _datagram_owner = PermanentEdge::new(&datagram, &datagram_queue).unwrap();
+        let incomplete_graph_reservation =
+            ReservedEdges::try_new(&storage, &[datagram.clone()]).unwrap();
+        incomplete_graph_reservation.rollback();
+
+        let mut datagram_aux = AuxiliaryData::new_test_datagram_scm(datagram.clone());
+        let mut payload = VmReader::from(b"d".as_slice()).to_fallible();
+        let error = first
+            .try_write(&mut payload, &mut datagram_aux, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.error(), Errno::EPERM);
+        assert_eq!(reserved_edge_count(&storage, &datagram), 0);
+
+        let mut unsupported = AuxiliaryData::new_test_scm(Vec::new(), true);
+        let mut payload = VmReader::from(b"u".as_slice()).to_fallible();
+        let error = first
+            .try_write(&mut payload, &mut unsupported, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.error(), Errno::EPERM);
+    }
 
     #[ktest]
     fn socketpair_storage_has_exact_owners_and_releases_them() {
@@ -576,6 +832,7 @@ mod test {
 
     fn push_empty_aux(inner: &Inner) {
         inner.all_aux.lock().push_back(RangedAuxiliaryData {
+            committed_edges: None,
             data: AuxiliaryData::default(),
             start: Wrapping(0),
             end: Wrapping(0),

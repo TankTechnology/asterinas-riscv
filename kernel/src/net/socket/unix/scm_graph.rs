@@ -505,12 +505,27 @@ impl WeakNode {
 
 #[cfg(ktest)]
 pub(super) fn permanent_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Permanent)
+}
+
+#[cfg(ktest)]
+pub(super) fn reserved_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Reserved)
+}
+
+#[cfg(ktest)]
+pub(super) fn committed_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Committed)
+}
+
+#[cfg(ktest)]
+fn edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode, class: EdgeClass) -> usize {
     scm_graph()
         .lock()
         .edges
         .get(&from.node_handle().id())
         .and_then(|targets| targets.get(&to.node_handle().id()))
-        .map(|counts| counts.get(EdgeClass::Permanent))
+        .map(|counts| counts.get(class))
         .unwrap_or(0)
 }
 
