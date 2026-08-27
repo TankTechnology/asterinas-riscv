@@ -20,8 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_NETWORK_MILESTONES,
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_JAVASCRIPT_STATUSES,
+    DESKTOP_M6_REMOTE_MARKER,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
@@ -55,8 +60,19 @@ HOST_PING_ARGV = (
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 PHYSICAL_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
-    b"DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
-    *(marker.encode() for marker in DESKTOP_M5_NETWORK_MILESTONES),
+    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+    DESKTOP_M4_MILESTONES[-1].encode(),
+    DESKTOP_M6_REMOTE_MARKER.encode(),
+)
+_BROWSER_JAVASCRIPT_RE = re.compile(
+    rb"DEBIAN_BROWSER_M6_JAVASCRIPT status=(limited-pass|disabled|failed)"
+)
+_BROWSER_READY_RE = re.compile(
+    rb"DEBIAN_BROWSER_M6_READY remote=baidu javascript=(limited-pass|disabled|failed)"
+)
+PHYSICAL_READY_MARKERS = tuple(
+    f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode()
+    for status in DESKTOP_M6_JAVASCRIPT_STATUSES
 )
 _HOST_PING_SUMMARY = re.compile(
     rb"(?m)^10 packets transmitted, 10 (?:packets )?received, 0% packet loss"
@@ -65,6 +81,7 @@ _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
     (b"debian_network_m5_fail reason=", "guest network failure"),
+    (b"debian_browser_m6_fail reason=", "browser guest failure"),
     (b"fatal bus error", "GMAC fatal bus error"),
 )
 
@@ -185,9 +202,28 @@ def classify_physical_transcript(transcript: bytes) -> GateResult:
         if count != 1:
             return GateResult(False, "duplicate physical milestone", None)
         positions.append(transcript.find(marker))
+
+    javascript_matches = tuple(_BROWSER_JAVASCRIPT_RE.finditer(transcript))
+    if len(javascript_matches) != 1:
+        return GateResult(False, "missing or duplicate JavaScript evidence", None)
+    ready_matches = tuple(_BROWSER_READY_RE.finditer(transcript))
+    if len(ready_matches) != 1:
+        return GateResult(False, "missing or duplicate browser ready evidence", None)
+    javascript = javascript_matches[0]
+    ready = ready_matches[0]
+    if javascript.group(1) != ready.group(1):
+        return GateResult(False, "missing or mismatched browser ready evidence", None)
+    positions.extend((javascript.start(), ready.start()))
     if positions != sorted(positions):
         return GateResult(False, "physical milestones out of order", None)
     return GateResult(True, "pass", None)
+
+
+def _browser_javascript_status(transcript: bytes) -> str:
+    match = _BROWSER_JAVASCRIPT_RE.search(transcript)
+    if match is None:
+        raise GateFailure("missing JavaScript evidence")
+    return match.group(1).decode("ascii")
 
 
 def check_address_unused(
@@ -258,12 +294,12 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         opened = True
         _append_transcript(transcript, operations.boot())
         deadline = time.monotonic() + config.boot_timeout
-        while PHYSICAL_MILESTONES[-1] not in transcript:
+        while not any(marker in transcript for marker in PHYSICAL_READY_MARKERS):
             if time.monotonic() >= deadline:
                 raise TimeoutError
             chunk = operations.read(deadline)
             if not chunk:
-                raise GateFailure("serial closed before M5 READY")
+                raise GateFailure("serial closed before browser READY")
             _append_transcript(transcript, chunk)
         classification = classify_physical_transcript(bytes(transcript))
         if not classification.passed:
@@ -283,6 +319,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             "board_address": BOARD_ADDRESS,
             "host_address": HOST_ADDRESS,
             "host_ping_count": ping_count,
+            "javascript_status": _browser_javascript_status(bytes(transcript)),
         }
     except Exception as error:
         result = {"passed": False, "reason": _failure_reason(error)}

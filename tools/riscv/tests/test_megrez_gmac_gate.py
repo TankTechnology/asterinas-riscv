@@ -10,6 +10,14 @@ import signal
 import unittest
 from collections.abc import Iterable
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_JAVASCRIPT_STATUSES,
+    DESKTOP_M6_REMOTE_MARKER,
+)
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     HOST_PING_ARGV,
@@ -23,6 +31,27 @@ from tools.riscv.megrez_gmac_gate import (
     run_gate,
     verify_host_ping,
 )
+
+
+EXPECTED_PHYSICAL_MILESTONES = (
+    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+    DESKTOP_M4_MILESTONES[-1].encode(),
+    DESKTOP_M6_REMOTE_MARKER.encode(),
+)
+
+
+def complete_browser_evidence(status: str = "limited-pass") -> bytes:
+    return (
+        b"\n".join(
+            (
+                *EXPECTED_PHYSICAL_MILESTONES,
+                f"DEBIAN_BROWSER_M6_JAVASCRIPT status={status}".encode(),
+                f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode(),
+            )
+        )
+        + b"\n"
+    )
 
 
 class FakeOperations:
@@ -111,9 +140,15 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertIsNotNone(operations.published)
 
     def test_split_markers_then_exact_ten_host_pings_pass(self) -> None:
-        evidence = b"\n".join(PHYSICAL_MILESTONES) + b"\n"
+        self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
+        evidence = complete_browser_evidence()
         operations = FakeOperations(
-            chunks=(evidence[11:73], evidence[73:], b"late harmless log\n"),
+            chunks=(
+                evidence[11:173],
+                evidence[173:-19],
+                evidence[-19:],
+                b"late harmless log\n",
+            ),
             boot=evidence[:11],
         )
 
@@ -129,6 +164,7 @@ class MegrezGmacGateTests(unittest.TestCase):
                 "boot",
                 "read",
                 "read",
+                "read",
                 "host-ping",
                 "drain",
                 "close",
@@ -136,10 +172,11 @@ class MegrezGmacGateTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["host_ping_count"], 10)
+        self.assertEqual(result["javascript_status"], "limited-pass")
         self.assertIn(b"late harmless log", operations.published[0])
 
     def test_failure_or_fatal_drain_closes_and_never_passes(self) -> None:
-        evidence = b"\n".join(PHYSICAL_MILESTONES) + b"\n"
+        evidence = complete_browser_evidence()
         operations = FakeOperations(
             chunks=(evidence, b"Kernel panic - not syncing\n"),
         )
@@ -170,16 +207,21 @@ class MegrezGmacGateTests(unittest.TestCase):
     def test_classifier_rejects_missing_duplicate_reordered_and_guest_failure(
         self,
     ) -> None:
-        complete = b"\n".join(PHYSICAL_MILESTONES)
+        complete = complete_browser_evidence()
         self.assertTrue(classify_physical_transcript(complete).passed)
         cases = (
-            (b"\n".join(PHYSICAL_MILESTONES[:-1]), "missing physical milestone"),
             (
-                complete + b"\n" + PHYSICAL_MILESTONES[-1],
+                complete.replace(EXPECTED_PHYSICAL_MILESTONES[-1], b""),
+                "missing physical milestone",
+            ),
+            (
+                complete + b"\n" + EXPECTED_PHYSICAL_MILESTONES[-1],
                 "duplicate physical milestone",
             ),
             (
-                b"\n".join(reversed(PHYSICAL_MILESTONES)),
+                b"\n".join(reversed(EXPECTED_PHYSICAL_MILESTONES))
+                + b"\nDEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass"
+                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
                 "physical milestones out of order",
             ),
             (
@@ -191,6 +233,50 @@ class MegrezGmacGateTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.assertEqual(
                     classify_physical_transcript(transcript).reason, reason
+                )
+
+    def test_classifier_requires_one_matching_ordered_browser_result(self) -> None:
+        for status in DESKTOP_M6_JAVASCRIPT_STATUSES:
+            with self.subTest(status=status):
+                self.assertTrue(
+                    classify_physical_transcript(
+                        complete_browser_evidence(status)
+                    ).passed
+                )
+
+        complete = complete_browser_evidence()
+        remote = DESKTOP_M6_REMOTE_MARKER.encode()
+        ready = b"DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass"
+        cases = (
+            (
+                complete + remote + b"\n",
+                "duplicate physical milestone",
+            ),
+            (
+                complete + ready + b"\n",
+                "missing or duplicate browser ready evidence",
+            ),
+            (
+                complete.replace(b"javascript=limited-pass", b"javascript=disabled"),
+                "missing or mismatched browser ready evidence",
+            ),
+            (
+                complete.replace(
+                    b"DEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass\n",
+                    b"",
+                ),
+                "missing or duplicate JavaScript evidence",
+            ),
+            (
+                complete + b"DEBIAN_BROWSER_M6_FAIL reason=remote-window-timeout\n",
+                "fatal transcript marker: browser guest failure",
+            ),
+        )
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    classify_physical_transcript(transcript).reason,
+                    reason,
                 )
 
     def test_address_probe_and_host_ping_have_strict_process_contracts(self) -> None:
