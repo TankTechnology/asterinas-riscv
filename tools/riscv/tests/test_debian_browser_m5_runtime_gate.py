@@ -12,7 +12,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from tools.riscv.debian.rootfs import browser_m5_marionette_gate as gate
@@ -220,6 +220,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         snapshot = self._snapshot()
         _Client.responses = [
             {"sessionId": "session", "capabilities": {}},
+            None,
             ["wrong-window", "probe-window"],
             None,
             {"value": json.dumps({"url": "about:blank", "markers": [], "media": None, "resources": []})},
@@ -236,6 +237,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             names,
             [
                 "WebDriver:NewSession",
+                "WebDriver:Navigate",
                 "WebDriver:GetWindowHandles",
                 "WebDriver:SwitchToWindow",
                 "WebDriver:ExecuteScript",
@@ -244,6 +246,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "WebDriver:DeleteSession",
             ],
         )
+        navigate = next(parameters for name, parameters in client.commands if name == "WebDriver:Navigate")
+        self.assertEqual(navigate, {"url": gate.PROBE_URL})
 
     @mock.patch.object(gate, "Marionette", _Client)
     def test_pre_title_diagnostic_reads_status_without_creating_session(self) -> None:
@@ -286,12 +290,29 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             gate.status_once("127.0.0.1", 2828, 5)
         self.assertTrue(_Client.instance.closed)
 
+    def test_diagnose_cli_preserves_ready_false_as_retryable_evidence(self) -> None:
+        output = io.StringIO()
+        status = {"ready": False, "message": "Browser startup is incomplete"}
+        with (
+            mock.patch.object(gate, "validate_network_namespace"),
+            mock.patch.object(gate, "status_once", return_value=status),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                gate.main(["--firefox-pid", "42", "--diagnose-once"]), 0
+            )
+        self.assertEqual(
+            output.getvalue(),
+            'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false status='
+            '{"message":"Browser startup is incomplete","ready":false}\n',
+        )
+
     @mock.patch.object(gate.time, "sleep", return_value=None)
     def test_runner_retries_only_loopback_connection_refused(self, _sleep: mock.Mock) -> None:
         snapshot = self._snapshot()
         _Client.responses = [
             {"sessionId": "session", "capabilities": {}},
-            ["probe"], None, {"value": json.dumps(snapshot)}, {"value": None},
+            None, ["probe"], None, {"value": json.dumps(snapshot)}, {"value": None},
         ]
         attempts = [ConnectionRefusedError(errno.ECONNREFUSED, "not ready"), _Client]
 
@@ -321,6 +342,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
     def test_runner_polls_from_pending_to_pass(self, _sleep: mock.Mock) -> None:
         _Client.responses = [
             {"sessionId": "session", "capabilities": {}},
+            None,
             ["probe"], None, {"value": json.dumps(self._pending_snapshot())},
             ["probe"], None, {"value": json.dumps(self._snapshot())},
             {"value": None},
@@ -357,10 +379,44 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
     def test_runner_rejects_duplicate_probe_windows(self) -> None:
         encoded = {"value": json.dumps(self._snapshot())}
         _Client.responses = [
-            {"sessionId": "session", "capabilities": {}}, ["one", "two"],
+            {"sessionId": "session", "capabilities": {}}, None, ["one", "two"],
             None, encoded, None, encoded,
         ]
         with self.assertRaisesRegex(gate.GateError, "exactly one"):
+            gate.run_gate("127.0.0.1", 2828, 5)
+        self.assertTrue(_Client.instance.closed)
+
+    def test_runner_propagates_explicit_navigate_timeout(self) -> None:
+        class NavigateTimeoutClient(_Client):
+            def command(self, name: str, parameters: object | None = None) -> object:
+                self.commands.append((name, parameters))
+                if name == "WebDriver:NewSession":
+                    return {"sessionId": "session", "capabilities": {}}
+                if name == "WebDriver:Navigate":
+                    raise socket.timeout("navigate stalled")
+                raise AssertionError(f"unexpected command after Navigate: {name}")
+
+        with (
+            mock.patch.object(gate, "Marionette", NavigateTimeoutClient),
+            self.assertRaisesRegex(socket.timeout, "navigate stalled"),
+        ):
+            gate.run_gate("127.0.0.1", 2828, 5)
+        self.assertEqual(
+            NavigateTimeoutClient.instance.commands,
+            [
+                ("WebDriver:NewSession", {"strictFileInteractability": True}),
+                ("WebDriver:Navigate", {"url": gate.PROBE_URL}),
+            ],
+        )
+        self.assertTrue(NavigateTimeoutClient.instance.closed)
+
+    @mock.patch.object(gate, "Marionette", _Client)
+    def test_runner_rejects_non_null_navigate_result(self) -> None:
+        _Client.responses = [
+            {"sessionId": "session", "capabilities": {}},
+            {"unexpected": True},
+        ]
+        with self.assertRaisesRegex(gate.GateError, "invalid Navigate result"):
             gate.run_gate("127.0.0.1", 2828, 5)
         self.assertTrue(_Client.instance.closed)
 
@@ -384,12 +440,138 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("--diagnose-once", evidence)
         self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
         self.assertIn("((diagnostic_timeout <= 30)) || diagnostic_timeout=30", evidence)
+        self.assertNotIn("diagnostic_emitted", evidence)
+        self.assertIn('while ! ready || [[ "$marionette_ready" == false ]]', evidence)
+        self.assertIn('DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status=', evidence)
+        self.assertEqual(evidence.count("marionette_ready=true"), 1)
+        ready_assignment = evidence.index("marionette_ready=true")
+        self.assertLess(
+            evidence.rindex("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status=", 0, ready_assignment),
+            ready_assignment,
+        )
+        unavailable = evidence.index('emit "DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable"')
+        self.assertNotIn("marionette_ready=true", evidence[unavailable:evidence.index("fi", unavailable)])
+        self.assertNotIn("asterinas offline browser m5 probe", evidence.lower())
         self.assertIn('remaining=$((deadline - SECONDS))', evidence)
         self.assertIn('gate_timeout="$remaining"', evidence)
         self.assertIn("network_mode=private-loopback source=file", gate.PASS_LINE)
         self.assertIn("direct_nonloopback_ip=unavailable", gate.PASS_LINE)
         self.assertNotIn("network=offline", gate.PASS_LINE)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
+
+    def test_evidence_retries_failure_and_ready_false_before_one_formal_gate(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        evidence = repository / "tools/riscv/debian/rootfs/desktop_m5_evidence.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            proc = root / "proc"
+            profile = root / "profile"
+            inputs = root / "input"
+            console = root / "console"
+            xorg = root / "Xorg.0.log"
+            calls = root / "gate-calls"
+            process_samples = root / "process-samples"
+            kernel_samples = root / "kernel-samples"
+            fake_bin.mkdir()
+            (proc / "42").mkdir(parents=True)
+            profile.mkdir()
+            inputs.mkdir()
+            calls.touch()
+            (inputs / "event0").touch()
+            (inputs / "event1").touch()
+            (proc / "42/comm").write_text("firefox-esr\n")
+            (proc / "42/cmdline").write_bytes(
+                b"/usr/bin/firefox-esr\0--offline\0--marionette\0"
+                b"file:///usr/share/asterinas/browser-m5/index.html\0"
+            )
+            (profile / "MarionetteActivePort").write_text("2828\n")
+            xorg.write_text(
+                "FBDEV(0)\n"
+                "Adding extended input device test Asterinas keyboard\n"
+                "Adding extended input device test Asterinas pointer\n"
+            )
+            (fake_bin / "systemctl").write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = show ]; then printf '42\\n'; fi\n"
+                "exit 0\n"
+            )
+            (fake_bin / "loginctl").write_text(
+                "#!/bin/sh\nprintf 'c1 1000 asterinas seat0 tty1\\n'\n"
+            )
+            (fake_bin / "pgrep").write_text("#!/bin/sh\nexit 0\n")
+            (fake_bin / "dmesg").write_text("#!/bin/sh\nexit 0\n")
+            fake_gate = fake_bin / "browser-m5-marionette-gate"
+            fake_gate.write_text(
+                "#!/bin/sh\n"
+                "if printf '%s' \"$*\" | grep -q -- --diagnose-once; then\n"
+                "  count=$(wc -l <\"$ASTERINAS_M5_TEST_CALLS\")\n"
+                "  case $count in\n"
+                "    0) printf 'diagnose-timeout\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; exit 2 ;;\n"
+                "    1) printf 'diagnose-false\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; "
+                "printf '%s\\n' 'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false status={\"message\":\"starting\",\"ready\":false}' ;;\n"
+                "    *) printf 'diagnose-true\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; "
+                "printf '%s\\n' 'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status={\"message\":\"ready\",\"ready\":true}' ;;\n"
+                "  esac\n"
+                "else\n"
+                "  printf 'formal\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"\n"
+                f"  printf '%s\\n' '{gate.PASS_LINE}'\n"
+                "fi\n"
+            )
+            for executable in fake_bin.iterdir():
+                executable.chmod(0o755)
+
+            result = subprocess.run(
+                ["/bin/bash", str(evidence)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+                    "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
+                    "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
+                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "15",
+                    "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
+                    "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
+                    "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
+                    "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
+                    "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
+                    "ASTERINAS_M5_TEST_CALLS": str(calls),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                calls.read_text().splitlines(),
+                ["diagnose-timeout", "diagnose-false", "diagnose-true", "formal"],
+            )
+            emitted = console.read_text()
+            self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable", emitted)
+            self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false", emitted)
+            self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true", emitted)
+            self.assertEqual(emitted.count(gate.PASS_LINE), 1)
+            samples = process_samples.read_text()
+            self.assertIn("stage=diagnostic-unavailable", samples)
+            self.assertIn("stage=status-not-ready", samples)
+            self.assertIn("stage=status-ready", samples)
+            self.assertEqual(samples.count("stage=formal-gate-start"), 1)
+            self.assertEqual(samples.count("stage=formal-gate-done"), 1)
+
+    def test_evidence_samples_formal_gate_failure_before_exit(self) -> None:
+        evidence = (
+            Path(__file__).resolve().parents[3]
+            / "tools/riscv/debian/rootfs/desktop_m5_evidence.sh"
+        ).read_text()
+        gate_call = evidence.index('if ! content_evidence="$("$CONTENT_GATE"')
+        failure_sample = evidence.index(
+            "sample_firefox_processes formal-gate-failed", gate_call
+        )
+        failure_exit = evidence.index("fail browser-content", failure_sample)
+        self.assertLess(gate_call, failure_sample)
+        self.assertLess(failure_sample, failure_exit)
 
     def test_network_namespace_contract_accepts_only_same_loopback_namespace(self) -> None:
         with mock.patch.object(gate.os, "readlink", side_effect=["net:[7]", "net:[7]"]), \
