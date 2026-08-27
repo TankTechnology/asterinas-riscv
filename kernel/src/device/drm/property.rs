@@ -43,10 +43,12 @@ const MAX_PROPERTY_BLOBS: usize = 256;
 pub(super) enum PropertyKind {
     Active,
     ModeId,
+    OutFencePtr,
     ConnectorCrtcId,
     PlaneType,
     PlaneFbId,
     PlaneCrtcId,
+    InFenceFd,
     SrcX,
     SrcY,
     SrcW,
@@ -126,6 +128,8 @@ fn default_property_value(property: &Property) -> PropertyValue {
         | PropertyKind::CrtcW
         | PropertyKind::CrtcH => PropertyValue::Range(0),
         PropertyKind::CrtcX | PropertyKind::CrtcY => PropertyValue::SignedRange(0),
+        PropertyKind::InFenceFd => PropertyValue::SignedRange(-1),
+        PropertyKind::OutFencePtr => PropertyValue::Range(0),
         PropertyKind::ModeId => PropertyValue::Blob(None),
         PropertyKind::ConnectorCrtcId | PropertyKind::PlaneFbId | PropertyKind::PlaneCrtcId => {
             PropertyValue::Object(0)
@@ -390,6 +394,18 @@ impl PropertyManager {
             DRM_MODE_OBJECT_CRTC,
             Property {
                 id: self.alloc_prop_id(),
+                kind: PropertyKind::OutFencePtr,
+                name: "OUT_FENCE_PTR",
+                prop_type: PropertyType::Range,
+                flags: 0,
+                min: 0,
+                max: u64::MAX,
+            },
+        );
+        self.define(
+            DRM_MODE_OBJECT_CRTC,
+            Property {
+                id: self.alloc_prop_id(),
                 kind: PropertyKind::ModeId,
                 name: "MODE_ID",
                 prop_type: PropertyType::Blob,
@@ -424,6 +440,18 @@ impl PropertyManager {
                 flags: DRM_MODE_PROP_IMMUTABLE,
                 min: 0,
                 max: u64::MAX,
+            },
+        );
+        self.define(
+            DRM_MODE_OBJECT_PLANE,
+            Property {
+                id: self.alloc_prop_id(),
+                kind: PropertyKind::InFenceFd,
+                name: "IN_FENCE_FD",
+                prop_type: PropertyType::SignedRange,
+                flags: 0,
+                min: (-1i64) as u64,
+                max: i32::MAX as u64,
             },
         );
         self.define(
@@ -604,6 +632,8 @@ impl PropertyManager {
                     PropertyKind::CrtcX | PropertyKind::CrtcY => PropertyValue::SignedRange(0),
                     PropertyKind::CrtcW => PropertyValue::Range(u64::from(width)),
                     PropertyKind::CrtcH => PropertyValue::Range(u64::from(height)),
+                    PropertyKind::OutFencePtr => PropertyValue::Range(0),
+                    PropertyKind::InFenceFd => PropertyValue::SignedRange(-1),
                     PropertyKind::PlaneType => PropertyValue::Enum(DRM_PLANE_TYPE_PRIMARY),
                 };
             }
@@ -889,6 +919,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[ktest]
+    fn explicit_sync_properties_match_linux_defaults() {
+        let manager = PropertyManager::new();
+        let out_fence = manager
+            .property_ids_for_object(DRM_MODE_OBJECT_CRTC)
+            .iter()
+            .map(|id| manager.lookup_property(*id).unwrap())
+            .find(|property| property.kind == PropertyKind::OutFencePtr)
+            .unwrap();
+        assert_eq!(out_fence.name, "OUT_FENCE_PTR");
+        assert_eq!(out_fence.prop_type, PropertyType::Range);
+        assert!(matches!(
+            manager.current_value(CRTC_ID, DRM_MODE_OBJECT_CRTC, &out_fence),
+            PropertyValue::Range(0)
+        ));
+
+        let in_fence = manager
+            .property_ids_for_object(DRM_MODE_OBJECT_PLANE)
+            .iter()
+            .map(|id| manager.lookup_property(*id).unwrap())
+            .find(|property| property.kind == PropertyKind::InFenceFd)
+            .unwrap();
+        assert_eq!(in_fence.name, "IN_FENCE_FD");
+        assert_eq!(in_fence.prop_type, PropertyType::SignedRange);
+        assert_eq!(in_fence.min as i64, -1);
+        assert_eq!(in_fence.max, i32::MAX as u64);
+        assert!(matches!(
+            manager.current_value(PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE, &in_fence),
+            PropertyValue::SignedRange(-1)
+        ));
     }
 
     #[ktest]

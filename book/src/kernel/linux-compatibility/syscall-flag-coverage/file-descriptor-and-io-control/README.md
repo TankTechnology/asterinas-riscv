@@ -152,8 +152,11 @@ DRM primary-node clients can obtain an authentication token with `DRM_IOCTL_GET_
 The current DRM master can consume that token with `DRM_IOCTL_AUTH_MAGIC`, after which the client may use authentication-gated GEM operations such as `DRM_IOCTL_GEM_FLINK` and `DRM_IOCTL_GEM_OPEN`.
 Render nodes do not use this legacy authentication flow.
 
-`DRM_IOCTL_VIRTGPU_EXECBUFFER` supports `VIRTGPU_EXECBUF_FENCE_FD_OUT` and returns a pollable asynchronous fence fd.
-Syncobj arrays, alternate rings, and input fence fds are not supported.
+`DRM_IOCTL_VIRTGPU_EXECBUFFER` supports both
+`VIRTGPU_EXECBUF_FENCE_FD_IN` and `VIRTGPU_EXECBUF_FENCE_FD_OUT`.
+The input fd gates submission until its sync fence signals;
+the output is a close-on-exec, pollable asynchronous fence fd.
+Syncobj arrays and alternate rings are not supported.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
 
 The primary node exposes one CRTC, connector, encoder, and primary plane with
@@ -165,6 +168,10 @@ Both legacy KMS and the Linux `drm_mode_atomic` object/count/property layout
 are supported.
 Atomic `TEST_ONLY`, `ALLOW_MODESET`, and `DRM_MODE_PAGE_FLIP_EVENT` requests
 are validated.
+The primary plane exposes `IN_FENCE_FD`, where `-1` means no dependency,
+and the CRTC exposes `OUT_FENCE_PTR`.
+The output pointer is initialized to `-1` for test-only or failed commits;
+a successful commit returns a sync fence that signals with scanout completion.
 Atomic `NONBLOCK` commits exchange their logical KMS and property state before
 returning, then apply hardware updates through a bounded per-file FIFO.
 Requested flip-completion events reserve queue capacity before the state

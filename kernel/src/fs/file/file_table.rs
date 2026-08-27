@@ -205,6 +205,22 @@ impl FileTable {
         ))
     }
 
+    /// Closes `fd` only if it still names `expected`.
+    ///
+    /// This supports rollback after an fd was exposed through a shared file
+    /// table: another thread may have closed and reused the numeric descriptor
+    /// before the creating syscall detects a later copyout failure.
+    pub fn close_file_if_same(
+        &mut self,
+        fd: FileDesc,
+        expected: &Arc<dyn FileLike>,
+    ) -> Option<ClosedFile> {
+        let is_same = self
+            .get_file(fd)
+            .is_ok_and(|file| Arc::ptr_eq(file, expected));
+        is_same.then(|| self.close_file(fd)).flatten()
+    }
+
     pub fn close_files_on_exec(&mut self) -> Vec<ClosedFile> {
         self.close_files(|entry| entry.flags().contains(FdFlags::CLOEXEC))
     }

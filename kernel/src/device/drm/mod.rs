@@ -1795,20 +1795,6 @@ impl PerOpenFileOps for DriHandle {
                 }
                 plane::get_plane(self, cmd)
             }
-            cmd @ ModeAtomic => {
-                if !self.atomic_modesetting.load(Ordering::Acquire) {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "DRM_CLIENT_CAP_ATOMIC is not enabled"
-                    );
-                }
-                // Atomic submissions may queue behind earlier nonblocking
-                // commits. Software state is exchanged before each ioctl
-                // returns, while the hardware queue preserves submission order.
-                let _page_flip_operation = self.page_flip_operation.lock();
-                let mut kms_state = self.lock_kms_as_master()?;
-                atomic::mode_atomic(self, &mut kms_state, cmd)
-            }
             cmd @ ModeCreatePropertyBlob => {
                 if self.is_render_node() {
                     return_errno_with_message!(
@@ -1947,6 +1933,22 @@ impl PerOpenFileOps for DriHandle {
         use ioctl::*;
 
         dispatch_ioctl!(match raw_ioctl {
+            cmd @ ModeAtomic => {
+                Some((|| -> Result<i32> {
+                    if !self.atomic_modesetting.load(Ordering::Acquire) {
+                        return_errno_with_message!(
+                            Errno::EOPNOTSUPP,
+                            "DRM_CLIENT_CAP_ATOMIC is not enabled"
+                        );
+                    }
+                    // Atomic submissions may queue behind earlier nonblocking
+                    // commits. Software state is exchanged before each ioctl
+                    // returns, while the hardware queue preserves submission order.
+                    let _page_flip_operation = self.page_flip_operation.lock();
+                    let mut kms_state = self.lock_kms_as_master()?;
+                    atomic::mode_atomic(self, &mut kms_state, cmd, file_table)
+                })())
+            }
             cmd @ VirtgpuExecbuffer => {
                 virtio_gpu::virtgpu_execbuffer(self, cmd, file_table)
             }
@@ -1959,10 +1961,11 @@ impl PerOpenFileOps for DriHandle {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                let fd: FileDesc = file_table.unwrap().write().insert(file, fd_flags);
+                let file: Arc<dyn crate::fs::file::FileLike> = file;
+                let fd: FileDesc = file_table.unwrap().write().insert(file.clone(), fd_flags);
                 req.fd = RawFileDesc::from(fd);
                 if let Err(e) = cmd.write(&req) {
-                    let closed = file_table.unwrap().write().close_file(fd);
+                    let closed = file_table.unwrap().write().close_file_if_same(fd, &file);
                     drop(closed);
                     return Some(Err(e));
                 }

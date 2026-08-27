@@ -14,7 +14,11 @@ use super::{
     gem::{GemObjectRef, PendingGemHandle},
     virgl_resource::{LiveGemResource, Transfer3d},
 };
-use crate::{fs::file::file_table::FdFlags, prelude::*, process::posix_thread::FileTableRefMut};
+use crate::{
+    fs::file::file_table::{FdFlags, FileDesc, WithFileTable},
+    prelude::*,
+    process::posix_thread::FileTableRefMut,
+};
 
 // ---------------------------------------------------------------------------
 // Wire types (matching Linux include/uapi/drm/virtgpu_drm.h)
@@ -527,6 +531,10 @@ pub(super) fn virtgpu_get_caps(
     Ok(0)
 }
 
+/// `VIRTGPU_EXECBUF_FENCE_FD_IN` — `fence_fd` names a sync fence that must
+/// complete before the command is submitted.
+const VIRTGPU_EXECBUF_FENCE_FD_IN: u32 = 0x01;
+
 /// `VIRTGPU_EXECBUF_FENCE_FD_OUT` — the caller requests an out-fence (a pollable
 /// fd signaling when the submitted command completes).
 const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
@@ -553,7 +561,7 @@ pub(super) fn virtgpu_execbuffer(
 ) -> Option<Result<i32>> {
     Some((|| -> Result<i32> {
         let req = cmd.read()?;
-        if req.flags & !VIRTGPU_EXECBUF_FENCE_FD_OUT != 0
+        if req.flags & !(VIRTGPU_EXECBUF_FENCE_FD_IN | VIRTGPU_EXECBUF_FENCE_FD_OUT) != 0
             || req.ring_idx != 0
             || req.syncobj_stride != 0
             || req.num_in_syncobjs != 0
@@ -579,6 +587,23 @@ pub(super) fn virtgpu_execbuffer(
             .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate command buffer"))?;
         cmd_buf.resize(command_size, 0);
         current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
+
+        // `fence_fd` is an input before it is overwritten with a newly
+        // installed out-fence. Clone the fence first so IN|OUT can safely use
+        // the same field. Waiting before taking resource transaction locks
+        // prevents an unrelated renderer from being blocked behind it.
+        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_IN != 0 {
+            let fd = FileDesc::try_from(req.fence_fd)?;
+            let file = file_table
+                .read_with(|table| table.get_file(fd).cloned())
+                .map_err(|_| Error::new(Errno::EBADF))?;
+            let fence_file = file
+                .downcast_ref::<super::fence::FenceFile>()
+                .ok_or_else(|| {
+                    Error::with_message(Errno::EINVAL, "execbuffer input fd is not a sync fence")
+                })?;
+            fence_file.fence().wait_for_dependency();
+        }
 
         let resource_creation = handle.gpu_manager.resource_creation.lock();
         let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
@@ -640,19 +665,18 @@ pub(super) fn virtgpu_execbuffer(
         let mut installed_fence_fd = None;
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
             let fence_file = Arc::new(super::fence::FenceFile::new(fence));
+            let file: Arc<dyn crate::fs::file::FileLike> = fence_file;
             let fd = file_table
                 .unwrap()
                 .write()
-                .insert(fence_file, FdFlags::empty());
+                .insert(file.clone(), FdFlags::CLOEXEC);
             resp.fence_fd = u32::from(fd) as i32;
-            installed_fence_fd = Some(fd);
-        } else {
-            resp.fence_fd = -1;
+            installed_fence_fd = Some((fd, file));
         }
 
         if let Err(error) = cmd.write(&resp) {
-            if let Some(fd) = installed_fence_fd {
-                let closed = file_table.unwrap().write().close_file(fd);
+            if let Some((fd, file)) = installed_fence_fd {
+                let closed = file_table.unwrap().write().close_file_if_same(fd, &file);
                 drop(closed);
             }
             return Err(error);

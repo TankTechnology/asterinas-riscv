@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 // DRM-M19: kmscube-style end-to-end virgl verification client.
 //
 // Real-client flow (no pbuffer — the GBM/DRM platform has none):
@@ -22,9 +24,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <unistd.h>
 
 #define NUM_FRAMES 4
+#define FENCE_POLL_TIMEOUT_MS 5000
 
 /* ---- raw KMS ioctl bits (no libdrm needed) ---- */
 #define DRM_IOCTL_BASE 'd'
@@ -46,8 +50,12 @@
 #define DRM_MODE_OBJECT_CONNECTOR 0xc0c0c0c0
 #define DRM_MODE_OBJECT_PLANE 0xeeeeeeee
 #define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
+#define DRM_MODE_ATOMIC_TEST_ONLY 0x0100
+#define DRM_MODE_ATOMIC_NONBLOCK 0x0200
 #define DRM_MODE_PAGE_FLIP_EVENT 0x01
 #define DRM_EVENT_FLIP_COMPLETE 0x02
+#define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
+#define DRM_CLIENT_CAP_ATOMIC 3
 
 struct drm_set_client_cap { uint64_t capability, value; };
 
@@ -182,9 +190,12 @@ int main(void) {
     int fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) fail("open card0");
     if (ioctl(fd, DRM_IOCTL_SET_MASTER, 0) < 0) fail("set_master");
-    struct drm_set_client_cap cap = { .capability = 2, .value = 1 }; /* UNIVERSAL_PLANES */
+    struct drm_set_client_cap cap = {
+        .capability = DRM_CLIENT_CAP_UNIVERSAL_PLANES,
+        .value = 1,
+    };
     if (ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) < 0) fail("cap planes");
-    cap.capability = 3; /* ATOMIC */
+    cap.capability = DRM_CLIENT_CAP_ATOMIC;
     if (ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) < 0) fail("cap atomic");
     printf("M19_KMS_CAPS_OK\n");
 
@@ -287,6 +298,7 @@ int main(void) {
     uint32_t p_conn_crtc = find_prop(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
     uint32_t p_crtc_active = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
     uint32_t p_crtc_mode = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+    uint32_t p_out_fence = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "OUT_FENCE_PTR");
     uint32_t p_plane_fb = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
     uint32_t p_plane_crtc = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
     uint32_t p_src_x = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
@@ -297,8 +309,11 @@ int main(void) {
     uint32_t p_crtc_y = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
     uint32_t p_crtc_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
     uint32_t p_crtc_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
-    if (!p_conn_crtc || !p_crtc_active || !p_crtc_mode || !p_plane_fb || !p_plane_crtc)
+    uint32_t p_in_fence = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD");
+    if (!p_conn_crtc || !p_crtc_active || !p_crtc_mode || !p_out_fence ||
+        !p_plane_fb || !p_plane_crtc || !p_in_fence)
         fail("props");
+    printf("M19_EXPLICIT_SYNC_PROPS in=%u out=%u\n", p_in_fence, p_out_fence);
 
     struct drm_mode_create_blob blob = {
         .data = (uint64_t)&mode, .length = sizeof(mode),
@@ -306,11 +321,17 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &blob) < 0) fail("propblob");
 
     /* Render + present loop. */
-    uint8_t *pixels = malloc(width * height * 4);
+    if (width == 0 || height == 0 || width > SIZE_MAX / height ||
+        (size_t)width * height > SIZE_MAX / 4)
+        fail("pixel_buffer_size");
+    size_t pixel_buffer_size = (size_t)width * height * 4;
+    uint8_t *pixels = malloc(pixel_buffer_size);
+    if (!pixels) fail("pixels");
     uint32_t csums[NUM_FRAMES];
     uint32_t previous_sequence = 0;
     bool have_previous_sequence = false;
     struct gbm_bo *pending_bo = NULL;
+    int previous_out_fence = -1;
 
     for (int frame = 0; frame < NUM_FRAMES; frame++) {
         float t = (float)frame * 0.7f;
@@ -372,20 +393,27 @@ int main(void) {
         if (ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb2) < 0) fail("addfb2");
 
         /* Atomic commit: full state on frame 0, FB-only flips after. */
-        uint32_t objs[3], counts[3], props[14];
-        uint64_t vals[14];
+        uint32_t objs[3], counts[3], props[16];
+        uint64_t vals[16];
         uint32_t obj_count = 0, prop_count = 0;
-        uint32_t aflags = DRM_MODE_PAGE_FLIP_EVENT;
+        uint32_t out_fence_value_index = UINT32_MAX;
+        uint32_t in_fence_value_index = UINT32_MAX;
+        uint32_t fb_value_index = UINT32_MAX;
+        uint32_t aflags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+        int out_fence = -1;
         if (frame == 0) {
             aflags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
             objs[obj_count] = connector_id; counts[obj_count++] = 1;
             props[prop_count] = p_conn_crtc; vals[prop_count++] = crtc_id;
 
-            objs[obj_count] = crtc_id; counts[obj_count++] = 2;
+            objs[obj_count] = crtc_id; counts[obj_count++] = 3;
             props[prop_count] = p_crtc_active; vals[prop_count++] = 1;
             props[prop_count] = p_crtc_mode; vals[prop_count++] = blob.blob_id;
+            props[prop_count] = p_out_fence;
+            out_fence_value_index = prop_count;
+            vals[prop_count++] = (uint64_t)&out_fence;
 
-            objs[obj_count] = plane_id; counts[obj_count++] = 10;
+            objs[obj_count] = plane_id; counts[obj_count++] = 11;
             props[prop_count] = p_plane_crtc; vals[prop_count++] = crtc_id;
             props[prop_count] = p_src_x; vals[prop_count++] = 0;
             props[prop_count] = p_src_y; vals[prop_count++] = 0;
@@ -395,10 +423,25 @@ int main(void) {
             props[prop_count] = p_crtc_y; vals[prop_count++] = 0;
             props[prop_count] = p_crtc_w; vals[prop_count++] = width;
             props[prop_count] = p_crtc_h; vals[prop_count++] = height;
-            props[prop_count] = p_plane_fb; vals[prop_count++] = fb2.fb_id;
+            props[prop_count] = p_plane_fb;
+            fb_value_index = prop_count;
+            vals[prop_count++] = fb2.fb_id;
+            props[prop_count] = p_in_fence;
+            in_fence_value_index = prop_count;
+            vals[prop_count++] = (uint64_t)-1;
         } else {
-            objs[obj_count] = plane_id; counts[obj_count++] = 1;
-            props[prop_count] = p_plane_fb; vals[prop_count++] = fb2.fb_id;
+            objs[obj_count] = crtc_id; counts[obj_count++] = 1;
+            props[prop_count] = p_out_fence;
+            out_fence_value_index = prop_count;
+            vals[prop_count++] = (uint64_t)&out_fence;
+
+            objs[obj_count] = plane_id; counts[obj_count++] = 2;
+            props[prop_count] = p_plane_fb;
+            fb_value_index = prop_count;
+            vals[prop_count++] = fb2.fb_id;
+            props[prop_count] = p_in_fence;
+            in_fence_value_index = prop_count;
+            vals[prop_count++] = (uint64_t)previous_out_fence;
         }
 
         struct drm_mode_atomic at = {
@@ -410,7 +453,54 @@ int main(void) {
             .prop_values_ptr = (uint64_t)vals,
             .user_data = (uint64_t)frame + 100,
         };
+
+        if (frame == 0) {
+            uint32_t test_flags = (aflags & ~(DRM_MODE_PAGE_FLIP_EVENT |
+                                              DRM_MODE_ATOMIC_NONBLOCK)) |
+                                  DRM_MODE_ATOMIC_TEST_ONLY;
+            at.flags = test_flags;
+
+            vals[out_fence_value_index] = 1;
+            errno = 0;
+            if (ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) >= 0 || errno != EFAULT)
+                fail("atomic_bad_out_pointer");
+            vals[out_fence_value_index] = (uint64_t)&out_fence;
+
+            vals[fb_value_index] = UINT32_MAX;
+            out_fence = 123;
+            errno = 0;
+            if (ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) >= 0 || errno != EINVAL ||
+                out_fence != -1)
+                fail("atomic_failed_commit_out_fence");
+            vals[fb_value_index] = fb2.fb_id;
+
+            vals[in_fence_value_index] = INT32_MAX;
+            out_fence = 123;
+            errno = 0;
+            if (ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) >= 0 || errno != EBADF ||
+                out_fence != -1)
+                fail("atomic_bad_in_fence");
+            vals[in_fence_value_index] = (uint64_t)-1;
+
+            out_fence = 123;
+            if (ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 || out_fence != -1)
+                fail("atomic_fence_test_only");
+            printf("M19_EXPLICIT_SYNC_NEGATIVE_OK\n");
+            at.flags = aflags;
+        }
         if (ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0) fail("atomic_commit");
+        if (out_fence < 0) fail("atomic_out_fence");
+        if (previous_out_fence >= 0)
+            close(previous_out_fence);
+
+        struct pollfd fence_poll = { .fd = out_fence, .events = POLLIN };
+        int poll_rc = poll(&fence_poll, 1, FENCE_POLL_TIMEOUT_MS);
+        if (poll_rc != 1 || !(fence_poll.revents & POLLIN) ||
+            (fence_poll.revents & (POLLERR | POLLNVAL)))
+            fail("atomic_out_fence_poll");
+        printf("M19_EXPLICIT_SYNC frame=%d fd=%d revents=%x\n",
+               frame, out_fence, fence_poll.revents);
+        previous_out_fence = out_fence;
 
         /* Wait for the flip event. */
         struct drm_event_vblank ev = {0};
@@ -432,6 +522,9 @@ int main(void) {
         }
         pending_bo = bo;
     }
+
+    if (previous_out_fence >= 0)
+        close(previous_out_fence);
 
     for (int i = 0; i < NUM_FRAMES; i++)
         for (int j = i + 1; j < NUM_FRAMES; j++)

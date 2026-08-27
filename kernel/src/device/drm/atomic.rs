@@ -13,10 +13,13 @@ use super::{
     AtomicKmsObject, CRTC_ID, DRM_MODE_ATOMIC_ALLOW_MODESET, DRM_MODE_ATOMIC_NONBLOCK,
     DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_PAGE_FLIP_EVENT, DrmModeAtomic, DrmModeModeInfo, kms,
     property::{Property, PropertyKind, PropertyType, PropertyValue},
+    queue::{AtomicCommitReservation, DrmEventReservation},
 };
 use crate::{
     context::current_userspace,
+    fs::file::file_table::{FdFlags, FileDesc, RawFileDesc, WithFileTable},
     prelude::*,
+    process::posix_thread::FileTableRefMut,
     util::ioctl::{InOutData, Ioctl},
 };
 
@@ -73,11 +76,24 @@ enum PreparedAtomicHardwareUpdate {
     Disable,
 }
 
+struct AtomicSyncRequest {
+    input_fence: Option<Arc<super::fence::Fence>>,
+    output_pointer: Option<usize>,
+}
+
+struct InstalledOutputFence {
+    fence: Arc<super::fence::Fence>,
+    file: Arc<dyn crate::fs::file::FileLike>,
+    fd: FileDesc,
+    pointer: usize,
+}
+
 /// Applies one validated atomic KMS transaction.
 pub(super) fn mode_atomic(
     handle: &super::DriHandle,
     kms_state: &mut super::KmsState,
     cmd: Ioctl<b'd', 0xbc, true, InOutData<DrmModeAtomic>>,
+    file_table: &mut FileTableRefMut,
 ) -> Result<i32> {
     let req = cmd.read()?;
     validate_request_header(&req)?;
@@ -86,6 +102,7 @@ pub(super) fn mode_atomic(
     }
 
     let updates = read_and_validate_updates(handle, &req)?;
+    let sync = read_atomic_sync_request(&updates, file_table)?;
     let current_state = ProposedKmsState::from_committed(handle)?;
     let mut proposed_state = current_state.clone();
     proposed_state.apply_updates(&updates)?;
@@ -103,17 +120,31 @@ pub(super) fn mode_atomic(
 
     let hardware_update = prepare_hardware_update(handle, hardware_update)?;
     if req.flags & DRM_MODE_ATOMIC_NONBLOCK != 0 {
+        let queue_slot = handle.atomic_commit_queue.reserve()?;
+        let event_slot = if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+            Some(handle.event_queue.reserve()?)
+        } else {
+            None
+        };
+        let output_fence = install_output_fence(sync.output_pointer, file_table)?;
         return submit_nonblocking_commit(
             handle,
             kms_state,
             updates,
             hardware_update,
-            req.flags,
+            sync.input_fence,
+            output_fence.map(|output| output.fence),
+            queue_slot,
+            event_slot,
             req.user_data,
         );
     }
 
-    commit_atomic_state(
+    if let Some(input_fence) = sync.input_fence {
+        input_fence.wait_for_dependency();
+    }
+    let output_fence = install_output_fence(sync.output_pointer, file_table)?;
+    let result = commit_atomic_state(
         &handle.gpu_manager,
         handle.file_id,
         &handle.event_queue,
@@ -122,7 +153,101 @@ pub(super) fn mode_atomic(
         hardware_update,
         req.flags,
         req.user_data,
-    )
+    );
+    match result {
+        Ok(value) => {
+            if let Some(output) = output_fence {
+                output.fence.signal_success();
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Some(output) = output_fence {
+                output.fence.signal_failure();
+                close_output_fence(output, file_table);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn read_atomic_sync_request(
+    updates: &[AtomicObjectUpdate],
+    file_table: &mut FileTableRefMut,
+) -> Result<AtomicSyncRequest> {
+    let mut input_fence = None;
+    let mut output_pointer = None;
+    for update in updates {
+        for property_update in &update.properties {
+            match (property_update.property.kind, &property_update.value) {
+                (PropertyKind::InFenceFd, PropertyValue::SignedRange(-1)) => {}
+                (PropertyKind::InFenceFd, PropertyValue::SignedRange(value)) => {
+                    let raw_fd = RawFileDesc::try_from(*value).map_err(|_| {
+                        Error::with_message(Errno::EBADF, "input fence fd overflows")
+                    })?;
+                    let fd = FileDesc::try_from(raw_fd)?;
+                    let file = file_table
+                        .read_with(|table| table.get_file(fd).cloned())
+                        .map_err(|_| Error::new(Errno::EBADF))?;
+                    let fence_file =
+                        file.downcast_ref::<super::fence::FenceFile>()
+                            .ok_or_else(|| {
+                                Error::with_message(Errno::EINVAL, "input fd is not a sync fence")
+                            })?;
+                    input_fence = Some(fence_file.fence());
+                }
+                (PropertyKind::OutFencePtr, PropertyValue::Range(0)) => {}
+                (PropertyKind::OutFencePtr, PropertyValue::Range(pointer)) => {
+                    let pointer = usize::try_from(*pointer).map_err(|_| {
+                        Error::with_message(Errno::EFAULT, "output fence pointer overflows")
+                    })?;
+                    output_pointer = Some(pointer);
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(AtomicSyncRequest {
+        input_fence,
+        output_pointer,
+    })
+}
+
+fn install_output_fence(
+    output_pointer: Option<usize>,
+    file_table: &mut FileTableRefMut,
+) -> Result<Option<InstalledOutputFence>> {
+    let Some(pointer) = output_pointer else {
+        return Ok(None);
+    };
+    let fence = Arc::new(super::fence::Fence::new());
+    let fence_file = Arc::new(super::fence::FenceFile::new(fence.clone()));
+    let file: Arc<dyn crate::fs::file::FileLike> = fence_file;
+    let fd = file_table
+        .unwrap()
+        .write()
+        .insert(file.clone(), FdFlags::CLOEXEC);
+    let raw_fd = RawFileDesc::from(fd);
+    if let Err(error) = current_userspace!().write_val(pointer, &raw_fd) {
+        let closed = file_table.unwrap().write().close_file_if_same(fd, &file);
+        drop(closed);
+        return Err(error.into());
+    }
+    Ok(Some(InstalledOutputFence {
+        fence,
+        file,
+        fd,
+        pointer,
+    }))
+}
+
+fn close_output_fence(output: InstalledOutputFence, file_table: &mut FileTableRefMut) {
+    let closed = file_table
+        .unwrap()
+        .write()
+        .close_file_if_same(output.fd, &output.file);
+    drop(closed);
+    let _ = current_userspace!().write_val(output.pointer, &-1i32);
 }
 
 fn validate_request_header(req: &DrmModeAtomic) -> Result<()> {
@@ -184,6 +309,13 @@ fn read_and_validate_updates(
     let property_values = read_u64_array(req.prop_values_ptr, total_properties)?;
 
     let property_manager = &handle.gpu_manager.property_manager;
+    initialize_out_fence_pointers(
+        property_manager,
+        &object_ids,
+        &property_counts,
+        &property_ids,
+        &property_values,
+    )?;
     let mut seen_objects = BTreeSet::new();
     let mut property_offset = 0usize;
     let mut updates = Vec::with_capacity(object_count);
@@ -228,6 +360,49 @@ fn read_and_validate_updates(
     }
 
     Ok(updates)
+}
+
+/// Initializes recognized output-fence pointers before semantic validation.
+///
+/// Linux promises `-1` when an atomic commit with a valid `OUT_FENCE_PTR`
+/// fails for any other reason, or when it is `TEST_ONLY`.
+/// See `drm_atomic_crtc_set_property()` and the explicit-fencing property
+/// documentation in `Documentation/gpu/drm-kms.rst`.
+fn initialize_out_fence_pointers(
+    property_manager: &super::property::PropertyManager,
+    object_ids: &[u32],
+    property_counts: &[u32],
+    property_ids: &[u32],
+    property_values: &[u64],
+) -> Result<()> {
+    let mut property_offset = 0usize;
+    for (index, object_id) in object_ids.iter().enumerate() {
+        let property_count = property_counts[index] as usize;
+        let Some(object) = AtomicKmsObject::from_id(*object_id) else {
+            property_offset += property_count;
+            continue;
+        };
+        for property_index in property_offset..property_offset + property_count {
+            let Ok(property) = property_manager.lookup_property(property_ids[property_index])
+            else {
+                continue;
+            };
+            if property.kind != PropertyKind::OutFencePtr
+                || !property_manager.property_applies(object.object_type(), property.id)
+            {
+                continue;
+            }
+            let pointer = property_values[property_index];
+            if pointer != 0 {
+                let pointer = usize::try_from(pointer).map_err(|_| {
+                    Error::with_message(Errno::EFAULT, "output fence pointer overflows")
+                })?;
+                current_userspace!().write_val(pointer, &-1i32)?;
+            }
+        }
+        property_offset += property_count;
+    }
+    Ok(())
 }
 
 fn read_u32_array(pointer: u64, count: usize) -> Result<Vec<u32>> {
@@ -404,6 +579,8 @@ impl ProposedKmsState {
             (PropertyKind::CrtcY, PropertyValue::SignedRange(value)) => self.crtc_y = *value,
             (PropertyKind::CrtcW, PropertyValue::Range(value)) => self.crtc_w = *value,
             (PropertyKind::CrtcH, PropertyValue::Range(value)) => self.crtc_h = *value,
+            (PropertyKind::OutFencePtr, PropertyValue::Range(_))
+            | (PropertyKind::InFenceFd, PropertyValue::SignedRange(_)) => {}
             (PropertyKind::PlaneType, PropertyValue::Enum(_)) => {}
             _ => {
                 return_errno_with_message!(
@@ -581,15 +758,12 @@ fn submit_nonblocking_commit(
     kms_state: &mut super::KmsState,
     updates: Vec<AtomicObjectUpdate>,
     hardware_update: PreparedAtomicHardwareUpdate,
-    flags: u32,
+    input_fence: Option<Arc<super::fence::Fence>>,
+    output_fence: Option<Arc<super::fence::Fence>>,
+    queue_slot: AtomicCommitReservation,
+    event_slot: Option<DrmEventReservation>,
     user_data: u64,
 ) -> Result<i32> {
-    let queue_slot = handle.atomic_commit_queue.reserve()?;
-    let event_slot = if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-        Some(handle.event_queue.reserve()?)
-    } else {
-        None
-    };
     publish_atomic_software_state(
         &handle.gpu_manager,
         handle.file_id,
@@ -600,15 +774,26 @@ fn submit_nonblocking_commit(
 
     let gpu_manager = handle.gpu_manager.clone();
     queue_slot.submit(Box::new(move || {
-        let result = apply_nonblocking_hardware_update(&gpu_manager, hardware_update);
+        let result = (|| {
+            if let Some(input_fence) = input_fence {
+                input_fence.wait_for_dependency();
+            }
+            apply_nonblocking_hardware_update(&gpu_manager, hardware_update)
+        })();
 
         match result {
             Ok(()) => {
+                if let Some(output_fence) = output_fence {
+                    output_fence.signal_success();
+                }
                 if let Some(event_slot) = event_slot {
                     event_slot.queue(&gpu_manager, user_data);
                 }
             }
             Err(error) => {
+                if let Some(output_fence) = output_fence {
+                    output_fence.signal_failure();
+                }
                 // There is no error-return channel after a nonblocking ioctl
                 // has exchanged its software state. Do not report a false
                 // flip completion; dropping the reservation releases capacity.
@@ -662,14 +847,23 @@ fn property_values(
     updates: &[AtomicObjectUpdate],
 ) -> impl Iterator<Item = (u32, u32, u32, &PropertyValue)> {
     updates.iter().flat_map(|update| {
-        update.properties.iter().map(|property_update| {
-            (
-                update.object.id(),
-                update.object.object_type(),
-                property_update.property.id,
-                &property_update.value,
-            )
-        })
+        update
+            .properties
+            .iter()
+            .filter(|property_update| {
+                !matches!(
+                    property_update.property.kind,
+                    PropertyKind::InFenceFd | PropertyKind::OutFencePtr
+                )
+            })
+            .map(|property_update| {
+                (
+                    update.object.id(),
+                    update.object.object_type(),
+                    property_update.property.id,
+                    &property_update.value,
+                )
+            })
     })
 }
 
@@ -760,6 +954,42 @@ mod tests {
         assert_ne!(CRTC_ID, CONNECTOR_ID);
         assert_ne!(CRTC_ID, PRIMARY_PLANE_ID);
         assert_ne!(CONNECTOR_ID, PRIMARY_PLANE_ID);
+    }
+
+    #[ktest]
+    fn explicit_sync_properties_are_not_persisted() {
+        let updates = vec![AtomicObjectUpdate {
+            object: AtomicKmsObject::Crtc,
+            properties: vec![
+                AtomicPropertyUpdate {
+                    property: Arc::new(Property {
+                        id: 1,
+                        kind: PropertyKind::Active,
+                        name: "ACTIVE",
+                        prop_type: PropertyType::Range,
+                        flags: 0,
+                        min: 0,
+                        max: 1,
+                    }),
+                    value: PropertyValue::Range(1),
+                },
+                AtomicPropertyUpdate {
+                    property: Arc::new(Property {
+                        id: 2,
+                        kind: PropertyKind::OutFencePtr,
+                        name: "OUT_FENCE_PTR",
+                        prop_type: PropertyType::Range,
+                        flags: 0,
+                        min: 0,
+                        max: u64::MAX,
+                    }),
+                    value: PropertyValue::Range(0x1000),
+                },
+            ],
+        }];
+        let values: Vec<_> = property_values(&updates).collect();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].2, 1);
     }
 
     #[ktest]

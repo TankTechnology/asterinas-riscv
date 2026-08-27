@@ -14,6 +14,7 @@ use core::{
 };
 
 use aster_virtio::device::gpu::{GpuCommandCompletion, device::GpuCommandTicket};
+use ostd::sync::WaitQueue;
 
 use crate::{
     events::IoEvents,
@@ -25,24 +26,30 @@ use crate::{
     process::signal::{PollHandle, Pollable, Pollee},
 };
 
-const FENCE_PENDING: u8 = 0;
-const FENCE_COMPLETED: u8 = 1;
-const FENCE_SUCCEEDED: u8 = 2;
-const FENCE_FAILED: u8 = 3;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum FenceState {
+    Pending,
+    Completed,
+    Succeeded,
+    Failed,
+}
 
 /// Persistent state for one asynchronous virtio-gpu command.
 pub(super) struct Fence {
     state: AtomicU8,
     ticket: Mutex<Option<GpuCommandTicket>>,
     pollee: Pollee,
+    waiters: WaitQueue,
 }
 
 impl Fence {
     pub(super) fn new() -> Self {
         Self {
-            state: AtomicU8::new(FENCE_PENDING),
+            state: AtomicU8::new(FenceState::Pending as u8),
             ticket: Mutex::new(None),
             pollee: Pollee::new(),
+            waiters: WaitQueue::new(),
         }
     }
 
@@ -52,7 +59,24 @@ impl Fence {
     }
 
     pub(super) fn is_signaled(&self) -> bool {
-        self.state.load(Ordering::Acquire) != FENCE_PENDING
+        self.state() != FenceState::Pending
+    }
+
+    /// Signals a software-backed fence after a successful KMS commit.
+    pub(super) fn signal_success(&self) {
+        self.signal(FenceState::Succeeded, IoEvents::IN);
+    }
+
+    /// Signals a software-backed fence after a failed asynchronous KMS commit.
+    pub(super) fn signal_failure(&self) {
+        self.signal(FenceState::Failed, IoEvents::IN | IoEvents::ERR);
+    }
+
+    fn signal(&self, state: FenceState, events: IoEvents) {
+        let old_state = self.state.swap(state as u8, Ordering::AcqRel);
+        debug_assert_eq!(old_state, FenceState::Pending as u8);
+        self.waiters.wake_all();
+        self.pollee.notify(events);
     }
 
     pub(super) fn try_finish(&self) -> Result<bool> {
@@ -65,13 +89,24 @@ impl Fence {
     }
 
     pub(super) fn wait(&self) -> Result<()> {
-        while !self.is_signaled() {
-            self.poll_device_completion();
-            if !self.is_signaled() {
-                ostd::task::Task::yield_now();
-            }
-        }
+        self.wait_until_signaled();
         self.finish_completed()
+    }
+
+    fn wait_until_signaled(&self) {
+        self.waiters.wait_until(|| {
+            self.poll_device_completion();
+            self.is_signaled().then_some(())
+        });
+    }
+
+    /// Waits for a producer dependency without propagating its stored status.
+    ///
+    /// Linux input fences gate consumers on completion. A signaled fence is a
+    /// satisfied dependency even when its producer recorded an error.
+    pub(super) fn wait_for_dependency(&self) {
+        self.wait_until_signaled();
+        let _ = self.finish_completed();
     }
 
     fn poll_device_completion(&self) {
@@ -85,13 +120,15 @@ impl Fence {
 
     fn finish_completed(&self) -> Result<()> {
         let mut ticket = self.ticket.lock();
-        match self.state.load(Ordering::Acquire) {
-            FENCE_SUCCEEDED => return Ok(()),
-            FENCE_FAILED => {
+        match self.state() {
+            FenceState::Succeeded => return Ok(()),
+            FenceState::Failed => {
                 return_errno_with_message!(Errno::EIO, "virtio-gpu fence completed with an error");
             }
-            FENCE_COMPLETED => {}
-            _ => return_errno_with_message!(Errno::EBUSY, "virtio-gpu fence is pending"),
+            FenceState::Completed => {}
+            FenceState::Pending => {
+                return_errno_with_message!(Errno::EBUSY, "virtio-gpu fence is pending");
+            }
         }
 
         let result = ticket
@@ -99,12 +136,22 @@ impl Fence {
             .expect("completed virtio-gpu fence has no control ticket")
             .wait();
         let final_state = if result.is_ok() {
-            FENCE_SUCCEEDED
+            FenceState::Succeeded
         } else {
-            FENCE_FAILED
+            FenceState::Failed
         };
-        self.state.store(final_state, Ordering::Release);
+        self.state.store(final_state as u8, Ordering::Release);
         result.map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu fence response failed"))
+    }
+
+    fn state(&self) -> FenceState {
+        match self.state.load(Ordering::Acquire) {
+            value if value == FenceState::Pending as u8 => FenceState::Pending,
+            value if value == FenceState::Completed as u8 => FenceState::Completed,
+            value if value == FenceState::Succeeded as u8 => FenceState::Succeeded,
+            value if value == FenceState::Failed as u8 => FenceState::Failed,
+            _ => unreachable!("invalid DRM fence state"),
+        }
     }
 
     fn check_io_events(&self) -> IoEvents {
@@ -121,8 +168,11 @@ impl Fence {
 
 impl GpuCommandCompletion for Fence {
     fn complete(&self) {
-        let old_state = self.state.swap(FENCE_COMPLETED, Ordering::AcqRel);
-        debug_assert_eq!(old_state, FENCE_PENDING);
+        let old_state = self
+            .state
+            .swap(FenceState::Completed as u8, Ordering::AcqRel);
+        debug_assert_eq!(old_state, FenceState::Pending as u8);
+        self.waiters.wake_all();
         self.pollee.notify(IoEvents::IN);
     }
 }
@@ -140,6 +190,10 @@ impl FenceFile {
             common: FileCommon::new(pseudo_path, StatusFlags::empty()),
             fence,
         }
+    }
+
+    pub(super) fn fence(&self) -> Arc<Fence> {
+        self.fence.clone()
     }
 }
 
@@ -180,14 +234,60 @@ impl FileLike for FenceFile {
 
 #[cfg(ktest)]
 mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
     use ostd::prelude::ktest;
 
     use super::Fence;
+    use crate::thread::kernel_thread::ThreadOptions;
 
     #[ktest]
     fn pending_fence_is_nonblocking() {
         let fence = Fence::new();
         assert!(!fence.is_signaled());
         assert!(matches!(fence.try_finish(), Ok(false)));
+    }
+
+    #[ktest]
+    fn software_fence_reports_success() {
+        let fence = Fence::new();
+        fence.signal_success();
+        assert!(fence.is_signaled());
+        assert!(matches!(fence.try_finish(), Ok(true)));
+    }
+
+    #[ktest]
+    fn software_fence_reports_failure() {
+        let fence = Fence::new();
+        fence.signal_failure();
+        assert!(fence.is_signaled());
+        assert!(fence.try_finish().is_err());
+        fence.wait_for_dependency();
+    }
+
+    #[ktest]
+    fn dependency_wait_parks_until_signal() {
+        let fence = Arc::new(Fence::new());
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let fence = fence.clone();
+            let started = started.clone();
+            let finished = finished.clone();
+            ThreadOptions::new(move || {
+                started.store(true, Ordering::Release);
+                fence.wait_for_dependency();
+                finished.store(true, Ordering::Release);
+            })
+            .spawn()
+        };
+        while !started.load(Ordering::Acquire) {
+            ostd::task::Task::yield_now();
+        }
+        assert!(!finished.load(Ordering::Acquire));
+        fence.signal_success();
+        waiter.join();
+        assert!(finished.load(Ordering::Acquire));
     }
 }

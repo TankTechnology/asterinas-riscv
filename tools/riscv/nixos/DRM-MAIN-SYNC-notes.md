@@ -755,7 +755,30 @@ Mesa EGL/GBM/KMS rendering, ending in `MINI_VIRGL_PASS`. M22 separately passed
 these TCG functional runs are not treated as performance measurements.
 
 Known compatibility gaps remain explicit: the virtual CRTC advertises no
-gamma table, atomic `IN_FENCE_FD`/`OUT_FENCE_PTR` properties are not exposed,
-and completion events currently follow virtio-gpu command completion rather
-than a physical vblank clock. These are follow-up interoperability and pacing
-items, not hidden prerequisites for the validated virgl scanout path.
+gamma table, and completion events currently follow virtio-gpu command
+completion rather than a physical vblank clock. These are follow-up
+interoperability and pacing items, not hidden prerequisites for the validated
+virgl scanout path.
+
+## 2026-08-28 atomic explicit synchronization
+
+The atomic KMS pipeline now exposes Linux-compatible plane `IN_FENCE_FD` and
+CRTC `OUT_FENCE_PTR` properties. They remain one-shot values (`-1` and `0`
+when queried) rather than becoming persistent KMS state. Test-only and failed
+commits initialize valid output pointers to `-1`; successful commits return a
+close-on-exec sync-file-like fd. Nonblocking workers wait for input
+dependencies, perform the virtio-gpu scanout update in FIFO order, and signal
+the output fence at the same completion stage as the page-flip event.
+
+Mesa's explicit KMS path also required
+`VIRTGPU_EXECBUF_FENCE_FD_IN`. The execbuffer ioctl now accepts an input and
+output fence in the shared `fence_fd` field, waits without holding global GPU
+resource-transaction locks, and preserves the existing asynchronous render
+out-fence behavior. This was discovered by public atomic `kmscube`, not by a
+driver-specific ioctl test.
+
+The Sv39 public-client gate enumerated both properties and passed legacy and
+atomic `modetest`, then rendered four real virgl frames through both legacy
+and atomic `kmscube`. The dedicated Mesa client performed a test-only commit,
+four nonblocking commits with output-fence polling, and chained each completed
+output fence into the next plane update; all four frames and checksums passed.
