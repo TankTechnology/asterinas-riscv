@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -19,6 +22,8 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+
+REPOSITORY_ROOT = Path(__file__).parents[3]
 
 
 class MegrezDebugArtifactTests(unittest.TestCase):
@@ -252,6 +257,170 @@ class MegrezDebugPlanTests(unittest.TestCase):
         self.assertTrue(encoded.endswith(b"\n"))
         with self.assertRaises(DebugContractError):
             replace(result, plan_sha256="f" * 63).validate()
+
+
+class MegrezDebugCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.artifact_directory = self.directory / "artifacts with spaces"
+        self.artifact_directory.mkdir()
+        self.artifacts: dict[str, Path] = {}
+        for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+            path = self.artifact_directory / f"{name} image"
+            path.write_bytes(f"{name}-payload".encode())
+            self.artifacts[name] = path
+        self.plan_path = self.directory / "plan output" / "debug-plan.json"
+
+    def _run(self, *arguments: object) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "tools.riscv.megrez_debug",
+                *(str(value) for value in arguments),
+            ],
+            cwd=self.directory,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    def _create_plan(self) -> DebugPlan:
+        result = self._run(
+            "plan",
+            "--kernel",
+            self.artifacts["kernel"],
+            "--initramfs",
+            self.artifacts["initramfs"],
+            "--qemu-dtb",
+            self.artifacts["qemu_dtb"],
+            "--megrez-dtb",
+            self.artifacts["megrez_dtb"],
+            "--bootargs",
+            ("cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=180"),
+            "--marker",
+            "Enter riscv_boot",
+            "--marker",
+            "ASTERINAS_GMAC_TCP_PROBE_READY",
+            "--output",
+            self.plan_path,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return DebugPlan.from_bytes(self.plan_path.read_bytes())
+
+    def test_plan_and_check_work_from_an_arbitrary_directory(self) -> None:
+        plan = self._create_plan()
+
+        self.assertEqual(stat.S_IMODE(self.plan_path.stat().st_mode), 0o644)
+        self.assertEqual(plan.profile, "tcp-probe")
+        self.assertEqual(plan.reboot_after, 180)
+        check = self._run("check", self.plan_path)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertEqual(
+            check.stdout,
+            f"MEGREZ_DEBUG_CHECK_PASS plan={plan.plan_sha256}\n",
+        )
+        self.assertEqual(check.stderr, "")
+
+    def test_plan_rejects_directory_and_symlink_outputs_without_mutation(self) -> None:
+        output_directory = self.directory / "output-directory"
+        output_directory.mkdir()
+        protected = self.directory / "protected"
+        protected.write_bytes(b"keep")
+        output_symlink = self.directory / "output-symlink"
+        output_symlink.symlink_to(protected)
+
+        for output in (output_directory, output_symlink):
+            with self.subTest(output=output.name):
+                self.plan_path = output
+                result = self._run(
+                    "plan",
+                    "--kernel",
+                    self.artifacts["kernel"],
+                    "--initramfs",
+                    self.artifacts["initramfs"],
+                    "--qemu-dtb",
+                    self.artifacts["qemu_dtb"],
+                    "--megrez-dtb",
+                    self.artifacts["megrez_dtb"],
+                    "--bootargs",
+                    "init=/init asterinas.reboot_after=180",
+                    "--marker",
+                    "READY",
+                    "--output",
+                    output,
+                )
+                self.assertEqual(result.returncode, 2)
+        self.assertEqual(protected.read_bytes(), b"keep")
+        self.assertEqual(list(output_directory.iterdir()), [])
+
+    def test_check_detects_artifact_drift(self) -> None:
+        self._create_plan()
+        self.artifacts["kernel"].write_bytes(b"changed-kernel")
+
+        result = self._run("check", self.plan_path)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("plan-artifact-drift", result.stderr)
+
+    def test_board_dry_run_is_complete_and_never_requires_serial(self) -> None:
+        plan = self._create_plan()
+
+        result = self._run(
+            "board",
+            self.plan_path,
+            self.directory / "missing-serial-device",
+            "--simulation-result",
+            self.directory / "missing-result.json",
+            "--dry-run",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            [
+                {"action": "require-simulation", "tier": "fast"},
+                {"action": "probe-uboot-baud", "choices": [115200, 1500000]},
+                {
+                    "action": "cache-or-transfer",
+                    "artifact": "kernel",
+                    "address": 0x80200000,
+                },
+                {
+                    "action": "cache-or-transfer",
+                    "artifact": "initramfs",
+                    "address": 0x83000000,
+                },
+                {
+                    "action": "cache-or-transfer",
+                    "artifact": "megrez_dtb",
+                    "address": 0xF0000000,
+                },
+                {"action": "boot-once", "reboot_after": plan.reboot_after},
+                {"action": "capture-markers"},
+                {"action": "await-automatic-recovery"},
+            ],
+        )
+
+    def test_board_refuses_missing_simulation_before_serial_access(self) -> None:
+        self._create_plan()
+
+        result = self._run(
+            "board",
+            self.plan_path,
+            self.directory / "missing-serial-device",
+            "--simulation-result",
+            self.directory / "missing-result.json",
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("plan-simulation-missing", result.stderr)
 
 
 if __name__ == "__main__":

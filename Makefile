@@ -287,6 +287,11 @@ test_riscv_megrez_gmac_unit:
 		tools.riscv.tests.test_megrez_gmac_gate \
 		tools.riscv.tests.test_megrez_xmodem -v
 
+.PHONY: test_riscv_megrez_debug_unit
+test_riscv_megrez_debug_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_debug -v
+
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
