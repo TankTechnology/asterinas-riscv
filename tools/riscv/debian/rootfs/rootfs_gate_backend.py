@@ -61,6 +61,7 @@ ARTIFACT_NAMES = (
     "boot2.serial.log",
     "result.json",
 )
+QEMU_RUNTIME_DIRECTORY = Path("/tmp")
 
 
 def _hash_fd(descriptor: int) -> str:
@@ -250,13 +251,10 @@ class ConcreteOperations:
             raise GateFailure("output directory identity changed before launch")
         directory = Path(
             tempfile.mkdtemp(
-                prefix=f".debian-qemu-b{boot_number}-",
-                dir=config.output_directory,
+                prefix=f"asterinas-debian-qemu-b{boot_number}-",
+                dir=QEMU_RUNTIME_DIRECTORY,
             )
         )
-        if not os.path.samestat(directory.parent.lstat(), pinned_status):
-            shutil.rmtree(directory, ignore_errors=True)
-            raise GateFailure("output directory identity changed during launch")
         os.chmod(directory, 0o700)
         master = slave = -1
         process = None

@@ -4333,8 +4333,8 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                 path = directory / f"input-{index}"
                 path.write_bytes(str(index).encode())
                 inputs.append(path)
-            output = directory / "output"
-            output.mkdir()
+            output = directory / ("repository-output-" + "x" * 40) / ("y" * 40)
+            output.mkdir(parents=True)
             boot = output / "boot.ext4"
             root = output / "debian-root.run.ext2"
             boot.write_bytes(b"boot")
@@ -4349,7 +4349,13 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                     gate_backend_module, "launch_process", return_value=process
                 ),
                 mock.patch.object(
-                    gate_backend_module.HmpMonitor, "connect", return_value=monitor
+                    gate_backend_module.HmpMonitor,
+                    "connect",
+                    side_effect=lambda path, *_args, **_kwargs: (
+                        monitor
+                        if len(os.fsencode(path)) < 108
+                        else (_ for _ in ()).throw(OSError("AF_UNIX path too long"))
+                    ),
                 ),
                 mock.patch.object(
                     gate_backend_module, "SerialConsole", return_value=serial
@@ -4360,7 +4366,10 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                     config, {"boot_disk": boot, "root_disk": root}, 1
                 )
                 session_directory = session["directory"]
-                self.assertEqual(session_directory.parent, output)
+                self.assertEqual(session_directory.parent, Path("/tmp"))
+                self.assertLess(
+                    len(os.fsencode(session_directory / "monitor.sock")), 108
+                )
                 self.assertTrue(os.path.samefile(root, session_directory / root.name))
                 operations.close_monitor(session)
                 operations.cleanup_process(session, config)
