@@ -49,8 +49,9 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertIn("iputils-ping", profile.requested_packages)
         self.assertIn("iproute2", profile.identity_packages)
         self.assertIn("iputils-ping", profile.identity_packages)
+        self.assertIn("curl", profile.requested_packages)
+        self.assertIn("curl", profile.identity_packages)
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
-        self.assertNotIn("curl", profile.requested_packages)
         self.assertNotIn("xdotool", profile.requested_packages)
 
     @mock.patch("subprocess.run")
@@ -275,7 +276,9 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertNotIn("signed_metadata", payload)
         self.assertEqual([row["role"] for row in payload["signed_sources"]], ["base", "security"])
         firefox = next(row for row in payload["downloaded_packages"] if row["name"] == "firefox-esr")
+        curl = next(row for row in payload["downloaded_packages"] if row["name"] == "curl")
         self.assertEqual(firefox["source_role"], "security")
+        self.assertEqual(curl["source_role"], "base")
 
     def test_writer_rejects_firefox_from_base(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -345,6 +348,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(result.returncode, 0, result.stderr)
         packages = result.stdout.splitlines()
         self.assertIn("firefox-esr", packages)
+        self.assertIn("curl", packages)
         self.assertIn("iproute2", packages)
         self.assertIn("iputils-ping", packages)
         self.assertNotIn("netsurf-gtk", packages)
