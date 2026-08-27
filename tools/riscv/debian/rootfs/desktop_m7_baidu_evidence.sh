@@ -11,9 +11,9 @@ readonly CAPTURE_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS:-10
 readonly FOCUS_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS:-1}"
 readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
 readonly NETSURF_LOG="${ASTERINAS_BROWSER_M7_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
-readonly HOME_URL='https://www.baidu.com/'
-readonly SEARCH_QUERY='asterinas-riscv'
-readonly SEARCH_URL="https://www.baidu.com/s?wd=$SEARCH_QUERY"
+readonly HOME_URL='https://m.baidu.com/'
+readonly SEARCH_QUERY='asterinas'
+readonly SEARCH_URL="https://m.baidu.com/s?word=$SEARCH_QUERY"
 readonly USER_ID=1000
 export DISPLAY=:0
 export XAUTHORITY=/home/asterinas/.Xauthority
@@ -184,7 +184,7 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowfocus --sync "$window_id" || fail window-focus
 sleep "$FOCUS_DELAY_SECONDS"
 wait_for_home_title
-emit "DEBIAN_BROWSER_M7_HOME url=https://www.baidu.com/ title=baidu process=netsurf"
+emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 sleep "$CAPTURE_DELAY_SECONDS"
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
@@ -195,5 +195,5 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail search-submit
 wait_for_search_title
-emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas-riscv result=loaded"
+emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
 emit "DEBIAN_BROWSER_M7_READY page=baidu search=pass"

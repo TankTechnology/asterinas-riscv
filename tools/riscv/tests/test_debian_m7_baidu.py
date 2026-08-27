@@ -58,12 +58,12 @@ class DebianDesktopM7BaiduContractTests(unittest.TestCase):
         self.assertTrue(result.passed, result.reason)
         self.assertEqual(
             DESKTOP_M7_HOME_MARKER,
-            "DEBIAN_BROWSER_M7_HOME url=https://www.baidu.com/ "
-            "title=baidu process=netsurf",
+            "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ "
+            "variant=mobile title=baidu process=netsurf",
         )
         self.assertEqual(
             DESKTOP_M7_SEARCH_MARKER,
-            "DEBIAN_BROWSER_M7_SEARCH query=asterinas-riscv result=loaded",
+            "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded",
         )
 
     def test_classifier_rejects_missing_duplicate_reordered_and_failure(self) -> None:
@@ -139,7 +139,7 @@ case "$1" in
     elif [ "$phase" = 1 ]; then
       printf '百度一下，你就知道 - NetSurf\n'
     else
-      printf 'asterinas-riscv_百度搜索 - NetSurf\n'
+      printf 'asterinas - 百度 - NetSurf\n'
     fi
     ;;
   windowactivate|windowfocus|mousemove|click|type) ;;
@@ -203,7 +203,7 @@ esac
             action for action in action_lines if action.startswith("runuser ")
         )
         self.assertIn("--enable_javascript=0", runuser_action)
-        self.assertTrue(runuser_action.endswith(" https://www.baidu.com/"))
+        self.assertTrue(runuser_action.endswith(" https://m.baidu.com/"))
         self.assertLess(
             action_lines.index("windowactivate --sync 42"),
             action_lines.index("windowfocus --sync 42"),
@@ -219,7 +219,7 @@ esac
                 "mousemove --sync 500 42",
                 "click 1",
                 "key ctrl+a",
-                "type --delay 0 -- https://www.baidu.com/s?wd=asterinas-riscv",
+                "type --delay 0 -- https://m.baidu.com/s?word=asterinas",
             ],
         )
         self.assertNotIn("mousemove --sync 560 310", action_lines)

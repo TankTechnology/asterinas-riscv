@@ -29,11 +29,10 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 
 
 DESKTOP_M7_HOME_MARKER = (
-    "DEBIAN_BROWSER_M7_HOME url=https://www.baidu.com/ title=baidu process=netsurf"
+    "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ "
+    "variant=mobile title=baidu process=netsurf"
 )
-DESKTOP_M7_SEARCH_MARKER = (
-    "DEBIAN_BROWSER_M7_SEARCH query=asterinas-riscv result=loaded"
-)
+DESKTOP_M7_SEARCH_MARKER = "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
 DESKTOP_M7_READY_MARKER = "DEBIAN_BROWSER_M7_READY page=baidu search=pass"
 DESKTOP_M7_FAILURE_MARKER = b"DEBIAN_BROWSER_M7_FAIL reason="
 
