@@ -98,13 +98,20 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             tuple(
                 sorted(
                     m4.requested_packages
-                    + ("curl", "iproute2", "iputils-ping", "xdotool")
+                    + (
+                        "curl",
+                        "fonts-wqy-microhei",
+                        "iproute2",
+                        "iputils-ping",
+                        "xdotool",
+                    )
                 )
             ),
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages + ("curl", "iproute2", "iputils-ping", "xdotool"),
+            m4.identity_packages
+            + ("curl", "fonts-wqy-microhei", "iproute2", "iputils-ping", "xdotool"),
         )
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
