@@ -496,7 +496,11 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertIn('"WebDriver:ExecuteScript"', content_gate.read_text())
             self.assertEqual(network_evidence.stat().st_mode & 0o777, 0o755)
             self.assertIn(
-                "After=asterinas-desktop-m5-evidence.service",
+                "After=local-fs.target",
+                network_unit.read_text(),
+            )
+            self.assertIn(
+                "Before=asterinas-desktop-m5.service",
                 network_unit.read_text(),
             )
             self.assertEqual(policy.stat().st_mode & 0o777, 0o644)
