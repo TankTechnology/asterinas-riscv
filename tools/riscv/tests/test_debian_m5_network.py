@@ -301,6 +301,7 @@ configure_and_normalize_rootfs
             "ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence",
             unit.read_text(),
         )
+        self.assertNotIn("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", unit.read_text())
         self.assertIn("Before=asterinas-desktop-m4.service", unit.read_text())
         self.assertNotIn(
             "After=asterinas-desktop-m4-evidence.service", unit.read_text()
