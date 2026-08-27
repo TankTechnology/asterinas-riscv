@@ -4590,6 +4590,17 @@ class DebianDesktopM4GateTests(unittest.TestCase):
 
 
 class DebianRootfsDocumentationTests(unittest.TestCase):
+    def test_browser_network_plan_builds_the_generic_sv39_kernel(self) -> None:
+        plan = (
+            REPOSITORY_ROOT
+            / "docs/superpowers/plans/2026-08-27-debian-browser-ready-network.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode",
+            plan,
+        )
+
     def test_operator_guide_covers_the_frozen_offline_runtime_workflow(self) -> None:
         guide = (REPOSITORY_ROOT / "tools/riscv/debian/rootfs/README.md").read_text(
             encoding="utf-8"
