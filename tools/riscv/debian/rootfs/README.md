@@ -201,6 +201,36 @@ test and is not allowed to turn a successful DNS/HTTPS gate into a failure.
 The current non-blank framebuffer check proves the desktop, not that the
 foreground window has finished rendering Baidu.
 
+### QEMU M6 browser evidence gate
+
+After rebuilding the `desktop-m5-network` root, use the M6 gate to foreground
+and capture a Baidu-hosted PNG in NetSurf before navigating the same window to
+a fixed local JavaScript fixture. The direct image isolates HTTPS transfer and
+image decoding from the modern Baidu homepage's script workload:
+
+```bash
+make test_riscv_debian_desktop_m6_browser_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/m6-qemu-gate"
+```
+
+`desktop-m6-browser.ppm` records the foreground Baidu logo image and
+`desktop-m6-javascript.ppm` records the local fixture after classification.
+`result.json` reports `limited-pass`, `disabled`, or `failed`. A
+`limited-pass` proves only that the packaged NetSurf engine executed a local
+script-only navigation from the pending fixture to a fixed pass document; it
+is not a claim of Chromium-compatible JavaScript. The changing remote pixels
+are inspected as visual evidence and are not compared to a fixed hash.
+Rendering the full modern Baidu homepage is a later compatibility target, not
+a prerequisite for this foundational gate.
+
 ## Evidence and cleanup
 
 Inspect the immutable provenance and the current-run evidence:
