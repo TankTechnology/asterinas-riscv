@@ -325,6 +325,8 @@ class RealBoardOperations:
         deadline = time.monotonic() + timeout
         initramfs = next(item for item in plan.artifacts if item.name == "initramfs")
         commands = (
+            "mmc dev 1",
+            "mmc rescan",
             "fdt addr 0xf0000000",
             "fdt resize 0x1000",
             *MEGREZ_FRAMEBUFFER.commands(),
