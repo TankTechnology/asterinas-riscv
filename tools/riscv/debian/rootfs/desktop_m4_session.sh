@@ -24,7 +24,14 @@ if [[ "${1-}" == --xsession ]]; then
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
     /usr/bin/pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &
-    /usr/bin/netsurf-gtk "${browser_arguments[@]}" "$browser_url" &
+    if [[ "${ASTERINAS_DESKTOP_BROWSER_VERBOSE:-0}" == 1 ]]; then
+        : >"$HOME/netsurf-m7.log"
+        chmod 0600 "$HOME/netsurf-m7.log"
+        /usr/bin/netsurf-gtk -v "${browser_arguments[@]}" "$browser_url" \
+            >"$HOME/netsurf-m7.log" 2>&1 &
+    else
+        /usr/bin/netsurf-gtk "${browser_arguments[@]}" "$browser_url" &
+    fi
     /usr/bin/sleep 1
     /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Terminal" &
     wait "$window_manager_pid"

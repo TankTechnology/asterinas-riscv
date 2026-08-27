@@ -100,6 +100,8 @@ class DebianDesktopM7BaiduGuestTests(unittest.TestCase):
         console.write_text("", encoding="utf-8")
         state = self.directory / f"state-{mode}"
         state.write_text("0", encoding="utf-8")
+        netsurf_log = self.directory / f"netsurf-{mode}.log"
+        netsurf_log.write_text("netsurf-log-ready\n", encoding="utf-8")
         actions = self.directory / f"actions-{mode}"
         proc_root = self.directory / f"proc-{mode}"
         process = proc_root / "777"
@@ -152,6 +154,7 @@ esac
             ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS="0",
             ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS="0",
             ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS="0",
+            ASTERINAS_BROWSER_M7_NETSURF_LOG=str(netsurf_log),
             ASTERINAS_M7_ACTIONS=str(actions),
             ASTERINAS_M7_STATE=str(state),
             ASTERINAS_M7_MODE=mode,
@@ -221,6 +224,11 @@ esac
 
                 self.assertNotEqual(result.returncode, 0)
                 lines = console.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(
+                    lines[-3],
+                    "DEBIAN_BROWSER_M7_NETSURF_LOG "
+                    "tail_hex=6e6574737572662d6c6f672d72656164790a",
+                )
                 self.assertTrue(lines[-2].startswith("DEBIAN_BROWSER_M7_DIAGNOSTIC"))
                 self.assertEqual(lines[-1], f"DEBIAN_BROWSER_M7_FAIL reason={reason}")
 
@@ -232,6 +240,7 @@ esac
         self.assertIn("After=asterinas-desktop-m6-browser.service", builder)
         self.assertIn("Environment=ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS=180", builder)
         self.assertIn("TimeoutStartSec=240", builder)
+        self.assertIn("Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1", builder)
 
 
 class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
