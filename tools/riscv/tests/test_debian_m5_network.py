@@ -631,6 +631,79 @@ printf '200\t10.0.2.15'
             list(DESKTOP_M5_QEMU_MILESTONES),
         )
 
+    def test_qemu_evidence_retries_https_and_bounds_final_diagnostic(self) -> None:
+        def run_case(
+            name: str, failures: int
+        ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+            directory = self.directory / name
+            directory.mkdir()
+            console = directory / "console"
+            console.write_text("", encoding="utf-8")
+            cmdline = directory / "cmdline"
+            cmdline.write_text(
+                "console=ttyS0 asterinas.debian_network=qemu-slirp\n",
+                encoding="utf-8",
+            )
+            fake_bin = directory / "bin"
+            fake_bin.mkdir()
+            curl_count = directory / "curl-count"
+            for tool, body in {
+                "getent": "#!/bin/sh\nprintf '%s\\n' '110.242.68.66 STREAM www.baidu.com'\n",
+                "curl": """#!/bin/sh
+count=0
+[ ! -f "$ASTERINAS_M5_CURL_COUNT" ] || count=$(cat "$ASTERINAS_M5_CURL_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" >"$ASTERINAS_M5_CURL_COUNT"
+if [ "$count" -le "$ASTERINAS_M5_CURL_FAILURES" ]; then
+    head -c 3000 /dev/zero | tr '\\000' E >&2
+    exit 28
+fi
+printf '200\t10.0.2.15'
+""",
+                "sleep": "#!/bin/sh\nexit 0\n",
+            }.items():
+                executable = fake_bin / tool
+                executable.write_text(body, encoding="utf-8")
+                executable.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{fake_bin}:/usr/bin:/bin",
+                ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
+                ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
+                ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(directory / "resolv.conf"),
+                ASTERINAS_DESKTOP_M5_URL_FILE=str(directory / "desktop-url"),
+                ASTERINAS_M5_CURL_COUNT=str(curl_count),
+                ASTERINAS_M5_CURL_FAILURES=str(failures),
+            )
+            result = subprocess.run(
+                ["/bin/bash", str(EVIDENCE_SCRIPT)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return result, console, curl_count
+
+        recovered, recovered_console, recovered_count = run_case("recovered", 1)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(recovered_count.read_text(encoding="utf-8"), "2\n")
+        self.assertEqual(
+            recovered_console.read_text(encoding="utf-8").splitlines(),
+            list(DESKTOP_M5_QEMU_MILESTONES),
+        )
+
+        failed, failed_console, failed_count = run_case("failed", 3)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(failed_count.read_text(encoding="utf-8"), "3\n")
+        failed_lines = failed_console.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(failed_lines[0], DESKTOP_M5_QEMU_MILESTONES[0])
+        self.assertEqual(
+            failed_lines[1],
+            "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=qemu-https attempt=3 "
+            f"stderr_hex={'45' * 2048}",
+        )
+        self.assertEqual(failed_lines[2], "DEBIAN_NETWORK_M5_FAIL reason=qemu-https")
+
     def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:
         transcript = (
             "\n".join((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)) + "\n"

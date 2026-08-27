@@ -101,6 +101,46 @@ resolve_qemu_host() {
     done
 }
 
+request_qemu_https() {
+    local attempt
+    local curl_error
+    local curl_result
+    local stderr_hex
+
+    curl_error="$(mktemp "${URL_FILE}.curl-error.XXXXXX")" ||
+        fail qemu-curl-temporary
+    for attempt in 1 2 3; do
+        : >"$curl_error" || fail qemu-curl-error-reset
+        if curl_result="$(
+            timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+                --fail \
+                --location \
+                --silent \
+                --show-error \
+                --max-time "$COMMAND_TIMEOUT_SECONDS" \
+                --output /dev/null \
+                --write-out $'%{http_code}\t%{local_ip}' \
+                "$BAIDU_URL" 2>"$curl_error"
+        )"; then
+            rm -f -- "$curl_error"
+            printf '%s' "$curl_result"
+            return 0
+        fi
+        if ((attempt != 3)); then
+            sleep 1
+        fi
+    done
+
+    stderr_hex="$(
+        head -c 2048 -- "$curl_error" |
+            od -An -v -tx1 |
+            tr -d '[:space:]'
+    )"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=qemu-https attempt=3 stderr_hex=${stderr_hex:-none}"
+    rm -f -- "$curl_error"
+    return 1
+}
+
 qemu_network_evidence() {
     local curl_result
     local http_status
@@ -110,17 +150,7 @@ qemu_network_evidence() {
     resolve_qemu_host www.baidu.com \
         >/dev/null 2>>"$CONSOLE" || fail qemu-dns
     emit "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com"
-    curl_result="$(
-        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
-            --fail \
-            --location \
-            --silent \
-            --show-error \
-            --max-time "$COMMAND_TIMEOUT_SECONDS" \
-            --output /dev/null \
-            --write-out $'%{http_code}\t%{local_ip}' \
-            "$BAIDU_URL"
-    )" || fail qemu-https
+    curl_result="$(request_qemu_https)" || fail qemu-https
     [[ "$curl_result" == *$'\t'* ]] || fail qemu-curl-output
     http_status="${curl_result%%$'\t'*}"
     local_address="${curl_result#*$'\t'}"
