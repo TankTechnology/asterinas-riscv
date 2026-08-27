@@ -12,19 +12,18 @@ use ostd::{
 };
 use spin::Once;
 
-use super::{PosixThread, ThreadLocal};
+use super::{PosixThread, SeccompFilter, ThreadLocal};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
-        Credentials, NsProxy, Process, UserNamespace,
         posix_thread::{name::ThreadName, thread_local::SuppUserContext},
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
+        Credentials, NsProxy, Process, UserNamespace,
     },
     sched::{Nice, SchedPolicy},
-    syscall::SockFilter,
-    thread::{Thread, Tid, task},
-    time::{TimerManager, clocks::ProfClock},
+    thread::{task, Thread, Tid},
+    time::{clocks::ProfClock, TimerManager},
     vm::vmar::VmarHandle,
 };
 
@@ -51,7 +50,7 @@ pub struct PosixThreadBuilder {
     ns_proxy: Option<Arc<NsProxy>>,
     default_timer_slack_ns: u64,
     seccomp_mode: u32,
-    seccomp_filter: Option<Arc<[SockFilter]>>,
+    seccomp_filter: Option<Arc<SeccompFilter>>,
 }
 
 impl PosixThreadBuilder {
@@ -158,7 +157,7 @@ impl PosixThreadBuilder {
         self
     }
 
-    pub fn seccomp_filter(mut self, seccomp_filter: Option<Arc<[SockFilter]>>) -> Self {
+    pub fn seccomp_filter(mut self, seccomp_filter: Option<Arc<SeccompFilter>>) -> Self {
         self.seccomp_filter = seccomp_filter;
         self
     }
