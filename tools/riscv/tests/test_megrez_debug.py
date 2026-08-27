@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -32,6 +33,7 @@ from tools.riscv.megrez_debug_board import (
     BoardTermination,
     BoardTransport,
     BoardTransportError,
+    KERNEL_COMPRESSED_ADDRESS,
     RealBoardOperations,
     ensure_board_artifacts,
     run_board,
@@ -620,7 +622,7 @@ class MegrezDebugBoardTransportTests(unittest.TestCase):
 
     def test_all_ram_cache_hits_skip_every_xmodem_transfer(self) -> None:
         commands: list[tuple[str, float]] = []
-        transfers: list[tuple[int, Path, int]] = []
+        transfers: list[tuple[int, bytes, int]] = []
         identities = {item.name: item for item in self.plan.artifacts}
         by_address = {
             identities[name].load_address: identities[name]
@@ -636,7 +638,9 @@ class MegrezDebugBoardTransportTests(unittest.TestCase):
         transport = BoardTransport(
             fd=7,
             command=command,
-            transfer=lambda fd, path, address: transfers.append((fd, path, address)),
+            transfer_payload=lambda fd, payload, address: transfers.append(
+                (fd, payload, address)
+            ),
         )
 
         outcomes = ensure_board_artifacts(self.plan, transport, timeout=2.5)
@@ -657,27 +661,36 @@ class MegrezDebugBoardTransportTests(unittest.TestCase):
     def test_cache_miss_transfers_once_then_requires_matching_crc(self) -> None:
         identity = next(item for item in self.plan.artifacts if item.name == "kernel")
         resident_crc = "00000000"
-        transfers: list[tuple[int, Path, int]] = []
+        transfers: list[tuple[int, bytes, int]] = []
+        commands: list[str] = []
 
         def command(text: str, _timeout: float) -> str:
+            nonlocal resident_crc
+            commands.append(text)
+            if text.startswith("unzip "):
+                resident_crc = identity.crc32
+                return f"{text}\r\nUncompressed size: {identity.size}\r\n=> "
             return (
                 f"{text}\r\nCRC32 for 0x{identity.load_address:x} ... "
                 f"==> {resident_crc}\r\n=> "
             )
 
-        def transfer(fd: int, path: Path, address: int) -> None:
-            nonlocal resident_crc
-            transfers.append((fd, path, address))
-            resident_crc = identity.crc32
+        def transfer(fd: int, payload: bytes, address: int) -> None:
+            transfers.append((fd, payload, address))
 
-        outcome = BoardTransport(fd=9, command=command, transfer=transfer).ensure(
-            identity, timeout=3.0
-        )
+        outcome = BoardTransport(
+            fd=9, command=command, transfer_payload=transfer
+        ).ensure(identity, timeout=3.0)
 
-        self.assertEqual(outcome.status, "transferred")
+        self.assertEqual(outcome.status, "transferred-compressed")
+        self.assertEqual(len(transfers), 1)
+        fd, payload, address = transfers[0]
+        self.assertEqual((fd, address), (9, KERNEL_COMPRESSED_ADDRESS))
+        self.assertEqual(gzip.decompress(payload), Path(identity.path).read_bytes())
         self.assertEqual(
-            transfers,
-            [(9, Path(identity.path), identity.load_address)],
+            commands[1],
+            f"unzip 0x{KERNEL_COMPRESSED_ADDRESS:x} "
+            f"0x{identity.load_address:x} 0x{identity.size:x}",
         )
 
     def test_malformed_or_still_mismatched_crc_fails_closed(self) -> None:
@@ -694,7 +707,7 @@ class MegrezDebugBoardTransportTests(unittest.TestCase):
                 transport = BoardTransport(
                     fd=11,
                     command=lambda _text, _timeout, value=output: value,
-                    transfer=lambda _fd, _path, _address: None,
+                    transfer_payload=lambda _fd, _payload, _address: None,
                 )
                 with self.assertRaisesRegex(BoardTransportError, message):
                     transport.ensure(identity, timeout=1.0)
