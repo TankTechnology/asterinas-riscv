@@ -113,7 +113,10 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowfocus --sync "$window_id" || fail window-focus
 sleep "$FOCUS_DELAY_SECONDS"
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+l || fail home-focus
+timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool mousemove --sync 500 42 || fail home-focus
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail home-click
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail home-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$HOME_URL" || fail home-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail home-submit

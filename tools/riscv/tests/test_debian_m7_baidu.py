@@ -186,8 +186,19 @@ esac
         )
         self.assertLess(
             action_lines.index("windowfocus --sync 42"),
-            action_lines.index("key ctrl+l"),
+            action_lines.index("mousemove --sync 500 42"),
         )
+        home_focus = action_lines.index("mousemove --sync 500 42")
+        self.assertEqual(
+            action_lines[home_focus : home_focus + 4],
+            [
+                "mousemove --sync 500 42",
+                "click 1",
+                "key ctrl+a",
+                "type --delay 0 -- https://www.baidu.com/",
+            ],
+        )
+        self.assertNotIn("key ctrl+l", action_lines)
         self.assertIn("mousemove --sync 560 310", action_lines)
         self.assertIn("click 1", action_lines)
         self.assertIn("type --delay 40 -- asterinas-riscv", action_lines)
