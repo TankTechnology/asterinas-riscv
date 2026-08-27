@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import ipaddress
 import os
+import re
 import stat
 import tempfile
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
@@ -33,6 +36,7 @@ _INSTALLER_COMMANDS = (
     "sleep",
     "sync",
 )
+_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "wget")
 _INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
@@ -223,14 +227,16 @@ def _resolve_entry(entries: dict[str, NewcEntry], path: str) -> NewcEntry | None
     return entry
 
 
-def _validate_installer_runtime(entries: Sequence[NewcEntry]) -> None:
+def _validate_installer_runtime(
+    entries: Sequence[NewcEntry], commands: Sequence[str] = _INSTALLER_COMMANDS
+) -> None:
     by_name = {entry.name: entry for entry in entries}
 
     shell = _resolve_entry(by_name, "/bin/sh")
     if shell is None or not stat.S_ISREG(shell.mode) or not shell.mode & 0o111:
         raise InstallerError("missing executable installer runtime: /bin/sh")
 
-    for command in _INSTALLER_COMMANDS:
+    for command in commands:
         candidates = (
             _resolve_entry(by_name, f"/{directory}/{command}")
             for directory in _INSTALLER_PATH
@@ -344,6 +350,82 @@ fail reboot-returned
 """.encode()
 
 
+def _canonical_root_url(root_url: str) -> str:
+    if not root_url or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in root_url
+    ):
+        raise InstallerError("root URL contains control characters")
+    try:
+        parsed = urllib.parse.urlsplit(root_url)
+        port = parsed.port
+        address = ipaddress.IPv4Address(parsed.hostname or "")
+    except ValueError as error:
+        raise InstallerError("root URL must contain a literal IPv4 address") from error
+    if (
+        parsed.scheme != "http"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+        or ".." in PurePosixPath(parsed.path).parts
+        or re.fullmatch(r"/[A-Za-z0-9._/-]+", parsed.path) is None
+    ):
+        raise InstallerError("root URL must be canonical uncredentialed HTTP")
+    canonical = f"http://{address}:{port}{parsed.path}"
+    if root_url != canonical:
+        raise InstallerError("root URL must use canonical IPv4 syntax")
+    return canonical
+
+
+def render_network_init(root_sha256: str, root_size: int, root_url: str) -> bytes:
+    """Render an Asterinas-only LAN installer with bounded retries and readback."""
+    if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
+        raise InstallerError("root SHA-256 must be lowercase hexadecimal")
+    if root_size <= 0 or root_size % BLOCK_SIZE:
+        raise InstallerError("root size must be a positive multiple of 4096")
+    quoted_url = f"'{_canonical_root_url(root_url)}'"
+    blocks = root_size // BLOCK_SIZE
+    return f"""#!/bin/sh
+set -o pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+hold() {{ while :; do sleep 3600; done; }}
+fail() {{ echo "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+cmdline=" $(cat /proc/cmdline) "
+case "$cmdline" in *" asterinas.mmc_write_partition2 "*) ;; *) fail write-gate-not-armed ;; esac
+case "$cmdline" in *" asterinas.debian_install_sha256={root_sha256} "*) ;; *) fail image-hash-not-armed ;; esac
+target=/dev/mmcblk0p2
+[ -b "$target" ] || fail target-not-block-device
+[ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+attempt=1
+fetched=0
+while [ "$attempt" -le 3 ]; do
+    if wget -T 30 -O - {quoted_url} | dd of="$target" bs={BLOCK_SIZE} conv=notrunc count={blocks}; then
+        fetched=1
+        break
+    fi
+    echo "DEBIAN_INSTALL_FETCH_RETRY attempt=$attempt"
+    attempt=$((attempt + 1))
+    sleep 2
+done
+[ "$fetched" = 1 ] || fail network-fetch
+sync || fail network-sync
+set -- $(dd if="$target" bs={BLOCK_SIZE} count="{blocks}" 2>/dev/null | sha256sum)
+[ "$1" = "{root_sha256}" ] || fail final-image-hash
+echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$1"
+echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
+sync || fail final-sync
+reboot -f
+fail reboot-returned
+""".encode()
+
+
 def _added_entry(name: str, mode: int, data: bytes, ino: int) -> NewcEntry:
     return NewcEntry(name, mode, ino, 2 if stat.S_ISDIR(mode) else 1, 0, 0, 0, 0, data)
 
@@ -405,6 +487,10 @@ def build_archive(
         for chunk in chunks
     )
     archive = _encode_archive((*entries, *additions))
+    _publish_archive(output, archive)
+
+
+def _publish_archive(output: Path, archive: bytes) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -428,12 +514,46 @@ def build_archive(
             temporary.unlink(missing_ok=True)
 
 
+def build_network_archive(
+    base_cpio: Path,
+    root_image: Path,
+    output: Path,
+    root_sha256: str,
+    root_url: str,
+) -> None:
+    """Build a small installer that fetches the frozen root through Asterinas."""
+    entries = list(parse_newc(base_cpio.read_bytes()))
+    _validate_installer_runtime(entries, _NETWORK_INSTALLER_COMMANDS)
+    actual_hash = sha256_file(root_image)
+    if actual_hash != root_sha256:
+        raise InstallerError("root image SHA-256 mismatch")
+    if "init" not in {entry.name for entry in entries}:
+        raise InstallerError("base initramfs has no init")
+    init_data = render_network_init(root_sha256, root_image.stat().st_size, root_url)
+    entries = [
+        NewcEntry(
+            entry.name,
+            stat.S_IFREG | 0o755 if entry.name == "init" else entry.mode,
+            entry.ino,
+            entry.nlink,
+            entry.devmajor,
+            entry.devminor,
+            entry.rdevmajor,
+            entry.rdevminor,
+            init_data if entry.name == "init" else entry.data,
+        )
+        for entry in entries
+    ]
+    _publish_archive(output, _encode_archive(entries))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-cpio", type=Path, required=True)
     parser.add_argument("--root-image", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--packages-lock", type=Path, required=True)
+    parser.add_argument("--root-url")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -446,12 +566,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
         validate_frozen_root(namespace.root_image, manifest, namespace.packages_lock)
         if namespace.root_image.stat().st_size != ROOT_IMAGE_SIZE:
             raise InstallerError("Megrez Debian root image must be exactly 1 GiB")
-        build_archive(
-            namespace.base_cpio,
-            namespace.root_image,
-            namespace.output,
-            manifest.root_image_sha256,
-        )
+        if namespace.root_url is None:
+            build_archive(
+                namespace.base_cpio,
+                namespace.root_image,
+                namespace.output,
+                manifest.root_image_sha256,
+            )
+        else:
+            build_network_archive(
+                namespace.base_cpio,
+                namespace.root_image,
+                namespace.output,
+                manifest.root_image_sha256,
+                namespace.root_url,
+            )
     except (ContractError, InstallerError, OSError) as error:
         parser.error(str(error))
     return 0
