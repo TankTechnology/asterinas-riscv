@@ -321,7 +321,11 @@ MEGREZ_TCP_PROBE_READY_LINE = (
 
 MEGREZ_TCP_PROBE = ValidationScenario(
     name="megrez-tcp-probe",
-    bootargs=("console=ttyS0 loglevel=info init=/init asterinas.reboot_after=180"),
+    bootargs=(
+        "console=ttyS0 loglevel=info init=/init "
+        "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+        "asterinas.reboot_after=180"
+    ),
     scope=ResultScope.COMPLETE_BOOT,
     milestones=(
         *_ASTERINAS_COMMON_MILESTONES,
