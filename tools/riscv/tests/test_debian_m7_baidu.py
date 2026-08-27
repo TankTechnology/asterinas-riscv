@@ -230,6 +230,8 @@ esac
         self.assertIn("desktop_m7_baidu_evidence.sh", builder)
         self.assertIn("/usr/lib/asterinas/desktop-m7-baidu-evidence", builder)
         self.assertIn("After=asterinas-desktop-m6-browser.service", builder)
+        self.assertIn("Environment=ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS=180", builder)
+        self.assertIn("TimeoutStartSec=240", builder)
 
 
 class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
