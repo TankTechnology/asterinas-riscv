@@ -31,7 +31,7 @@ use core::{
         Bound::{Excluded, Included},
         Range,
     },
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use aster_time::read_monotonic_time;
@@ -53,9 +53,12 @@ use crate::{
     },
     prelude::*,
     process::{
-        posix_thread::FileTableRefMut,
+        UserNamespace,
+        credentials::capabilities::CapSet,
+        posix_thread::{AsPosixThread, FileTableRefMut},
         signal::{PollHandle, Pollable, Pollee},
     },
+    security::lsm::hooks as lsm_hooks,
     util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
@@ -193,6 +196,9 @@ struct GpuManager {
     inflight_fences: SpinLock<Vec<Arc<fence::Fence>>>,
     /// Device-wide DRM-master and KMS transaction state.
     kms_state: Mutex<KmsState>,
+    /// Legacy primary-node authentication magic to per-file auth state.
+    auth_magics: SpinLock<BTreeMap<u32, Weak<AtomicBool>>>,
+    next_auth_magic: AtomicU32,
     next_file_id: AtomicU64,
 }
 
@@ -283,6 +289,8 @@ impl GpuManager {
             resource_fences: SpinLock::new(BTreeMap::new()),
             inflight_fences: SpinLock::new(Vec::new()),
             kms_state: Mutex::new(KmsState::new(width, height)),
+            auth_magics: SpinLock::new(BTreeMap::new()),
+            next_auth_magic: AtomicU32::new(1),
             next_file_id: AtomicU64::new(1),
         }
     }
@@ -696,6 +704,9 @@ struct DriHandle {
     gpu_manager: Arc<GpuManager>,
     node_type: DriNodeType,
     file_id: u64,
+    owner_pid: u32,
+    was_master: AtomicBool,
+    authenticated: Arc<AtomicBool>,
     /// Legacy virgl context associated with this open DRM file.
     context: Mutex<VirglContext>,
     /// Serializes validation, device updates, and per-file cursor state.
@@ -717,6 +728,8 @@ struct VirglContext {
 
 #[derive(Debug)]
 struct DriInner {
+    /// Legacy authentication token allocated by `DRM_IOCTL_GET_MAGIC`.
+    auth_magic: Option<u32>,
     /// Per-file handle → GEM object_id.
     handles: BTreeMap<u32, u32>,
     next_handle: u32,
@@ -738,14 +751,19 @@ impl DriHandle {
             .next_file_id
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| Error::with_message(Errno::ENOSPC, "DRM file ids exhausted"))?;
-        if matches!(node_type, DriNodeType::Primary) {
+        let is_authenticated = if matches!(node_type, DriNodeType::Primary) {
             let mut kms_state = gpu_manager.kms_state.lock();
-            kms_state.master_file_id.get_or_insert(file_id);
-        }
+            *kms_state.master_file_id.get_or_insert(file_id) == file_id
+        } else {
+            true
+        };
         Ok(Self {
             gpu_manager,
             node_type,
             file_id,
+            owner_pid: current!().pid(),
+            was_master: AtomicBool::new(is_authenticated),
+            authenticated: Arc::new(AtomicBool::new(is_authenticated)),
             context: Mutex::new(VirglContext {
                 id: context_id,
                 is_created: false,
@@ -754,6 +772,7 @@ impl DriHandle {
             event_read_operation: Mutex::new(()),
             page_flip_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
+                auth_magic: None,
                 handles: BTreeMap::new(),
                 next_handle: 1,
                 framebuffers: BTreeMap::new(),
@@ -785,23 +804,99 @@ impl DriHandle {
         if self.is_render_node() {
             return_errno_with_message!(Errno::EOPNOTSUPP, "render nodes cannot become DRM master");
         }
+        self.check_master_permission()?;
+
         let mut kms_state = self.gpu_manager.kms_state.lock();
         match kms_state.master_file_id {
             None => {
                 kms_state.master_file_id = Some(self.file_id);
-                Ok(())
             }
-            Some(owner) if owner == self.file_id => Ok(()),
+            Some(owner) if owner == self.file_id => {}
             Some(_) => return_errno_with_message!(Errno::EBUSY, "DRM master is already owned"),
         }
+        self.was_master.store(true, Ordering::Release);
+        self.authenticated.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn drop_master(&self) -> Result<()> {
+        self.check_master_permission()?;
+
         let mut kms_state = self.gpu_manager.kms_state.lock();
         if !kms_state.is_master(self.file_id) {
             return_errno_with_message!(Errno::EINVAL, "file does not own DRM master");
         }
         kms_state.master_file_id = None;
+        Ok(())
+    }
+
+    fn check_master_permission(&self) -> Result<()> {
+        if self.was_master.load(Ordering::Acquire) && current!().pid() == self.owner_pid {
+            return Ok(());
+        }
+
+        let thread = current_thread!();
+        let posix_thread = thread.as_posix_thread().ok_or_else(|| {
+            Error::with_message(
+                Errno::EACCES,
+                "DRM master operation requires a POSIX thread",
+            )
+        })?;
+        let init_user_ns = UserNamespace::get_init_singleton();
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            init_user_ns.as_ref(),
+            posix_thread,
+            CapSet::SYS_ADMIN,
+        ))
+    }
+
+    fn check_authenticated(&self) -> Result<()> {
+        if self.is_render_node() || !self.authenticated.load(Ordering::Acquire) {
+            return_errno_with_message!(
+                Errno::EACCES,
+                "ioctl requires an authenticated primary DRM client"
+            );
+        }
+        Ok(())
+    }
+
+    fn get_auth_magic(&self) -> Result<u32> {
+        if self.is_render_node() {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "authentication is not available on render nodes"
+            );
+        }
+
+        let mut inner = self.inner.lock();
+        if let Some(magic) = inner.auth_magic {
+            return Ok(magic);
+        }
+        let magic = self
+            .gpu_manager
+            .next_auth_magic
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |magic| {
+                magic.checked_add(1)
+            })
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "DRM auth magics exhausted"))?;
+        self.gpu_manager
+            .auth_magics
+            .lock()
+            .insert(magic, Arc::downgrade(&self.authenticated));
+        inner.auth_magic = Some(magic);
+        Ok(magic)
+    }
+
+    fn authenticate_magic(&self, magic: u32) -> Result<()> {
+        let _kms_state = self.lock_kms_as_master()?;
+        let authenticated = self
+            .gpu_manager
+            .auth_magics
+            .lock()
+            .remove(&magic)
+            .and_then(|state| state.upgrade())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown DRM auth magic"))?;
+        authenticated.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -946,6 +1041,10 @@ impl Drop for DriHandle {
         }
         drop(kms_state);
 
+        if let Some(magic) = self.inner.lock().auth_magic {
+            self.gpu_manager.auth_magics.lock().remove(&magic);
+        }
+
         let context = self.context.get_mut();
         self.gpu_manager.wait_for_all_fences();
         if context.is_created
@@ -1070,6 +1169,12 @@ impl PerOpenFileOps for DriHandle {
                 cmd.write(&version)?;
                 Ok(0)
             }
+            cmd @ GetMagic => {
+                cmd.write(&DrmAuth {
+                    magic: self.get_auth_magic()?,
+                })?;
+                Ok(0)
+            }
             cmd @ GetCap => {
                 let mut cap = cmd.read()?;
                 cap.value = match cap.capability {
@@ -1100,19 +1205,23 @@ impl PerOpenFileOps for DriHandle {
                     }
                 }
             }
+            cmd @ AuthMagic => {
+                let auth = cmd.read()?;
+                self.authenticate_magic(auth.magic).map(|_| 0)
+            }
             cmd @ GemClose => {
                 let req = cmd.read()?;
                 gem::gem_close(self, req.handle).map(|_| 0)
             }
             cmd @ GemFlink => {
-                let _kms_state = self.lock_kms_as_master()?;
+                self.check_authenticated()?;
                 let mut req = cmd.read()?;
                 req.name = gem::gem_flink(self, req.handle)?;
                 cmd.write(&req)?;
                 Ok(0)
             }
             cmd @ GemOpen => {
-                let _kms_state = self.lock_kms_as_master()?;
+                self.check_authenticated()?;
                 let mut req = cmd.read()?;
                 let (pending, size) = gem::gem_open(self, req.name)?;
                 req.handle = pending.id();
@@ -1537,6 +1646,15 @@ struct DrmVersion {
 struct DrmGetCap {
     capability: u64,
     value: u64,
+}
+
+/// `struct drm_auth` used by `DRM_IOCTL_GET_MAGIC` and `DRM_IOCTL_AUTH_MAGIC`.
+///
+/// Reference: <https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmAuth {
+    magic: u32,
 }
 
 /// `struct drm_set_client_cap`.

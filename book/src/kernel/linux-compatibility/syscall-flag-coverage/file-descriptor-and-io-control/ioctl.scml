@@ -34,6 +34,10 @@ drm_handle_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_MODE_CREATE_DUMB |
                  DRM_IOCTL_PRIME_FD_TO_HANDLE |
                  DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
 drm_fence_ops = DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
+drm_auth_ops = DRM_IOCTL_GET_MAGIC | DRM_IOCTL_AUTH_MAGIC;
+
+// Authenticate a DRM primary-node client through the current DRM master
+ioctl(fd, op = <drm_auth_ops>, ..);
 
 // Create or import DRM GEM handles
 ioctl(fd, op = <drm_handle_ops>, ..);

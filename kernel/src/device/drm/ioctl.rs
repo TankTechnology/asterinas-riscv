@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! DRM (Direct Rendering Manager) ioctl definitions and wire types.
+//! DRM (Direct Rendering Manager) ioctl definitions.
 //!
-//! This module collects all `#[repr(C)]` structs that mirror the Linux UAPI
-//! headers and the `ioc!()` type aliases that drive the typed ioctl dispatch in
-//! [`super::DriHandle::ioctl`].
+//! This module collects the `ioc!()` type aliases that drive the typed ioctl
+//! dispatch in [`super::DriHandle::ioctl`]. Wire types live beside the DRM
+//! state or driver-specific implementation that consumes them.
 
 use super::{
-    DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
+    DrmAuth, DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
     DrmModeCreateDumb, DrmModeCreatePropertyBlob, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor,
     DrmModeCursor2, DrmModeDestroyDumb, DrmModeDestroyPropertyBlob, DrmModeFbCmd, DrmModeFbCmd2,
     DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
@@ -19,12 +19,14 @@ use super::{
         DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
     },
 };
-use crate::util::ioctl::{InData, InOutData, NoData, ioc};
+use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
 // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
 pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
+pub(super) type GetMagic = ioc!(DRM_IOCTL_GET_MAGIC, b'd', 0x02, OutData<DrmAuth>);
 pub(super) type GetCap = ioc!(DRM_IOCTL_GET_CAP, b'd', 0x0c, InOutData<DrmGetCap>);
 pub(super) type SetClientCap = ioc!(DRM_IOCTL_SET_CLIENT_CAP, b'd', 0x0d, InData<DrmSetClientCap>);
+pub(super) type AuthMagic = ioc!(DRM_IOCTL_AUTH_MAGIC, b'd', 0x11, InData<DrmAuth>);
 pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
 pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 

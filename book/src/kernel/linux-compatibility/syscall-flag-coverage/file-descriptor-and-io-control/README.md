@@ -148,6 +148,10 @@ DRM handle-creating operations publish a new GEM handle only after the ioctl res
 If copying the response fails, the handle remains inaccessible and a new dumb-buffer pool reservation is rolled back after successful device cleanup.
 If the device cannot confirm resource destruction, the reservation is quarantined instead of being reused.
 
+DRM primary-node clients can obtain an authentication token with `DRM_IOCTL_GET_MAGIC`.
+The current DRM master can consume that token with `DRM_IOCTL_AUTH_MAGIC`, after which the client may use authentication-gated GEM operations such as `DRM_IOCTL_GEM_FLINK` and `DRM_IOCTL_GEM_OPEN`.
+Render nodes do not use this legacy authentication flow.
+
 `DRM_IOCTL_VIRTGPU_EXECBUFFER` supports `VIRTGPU_EXECBUF_FENCE_FD_OUT` and returns a pollable asynchronous fence fd.
 Syncobj arrays, alternate rings, and input fence fds are not supported.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
