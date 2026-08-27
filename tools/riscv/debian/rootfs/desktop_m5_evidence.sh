@@ -54,7 +54,7 @@ while ! ready; do
         remaining=$((deadline - SECONDS))
         ((remaining > 0)) || fail browser-timeout
         diagnostic_timeout="$remaining"
-        ((diagnostic_timeout <= 300)) || diagnostic_timeout=300
+        ((diagnostic_timeout <= 30)) || diagnostic_timeout=30
         if diagnostic_evidence="$(/usr/lib/asterinas/browser-m5-marionette-gate \
             --firefox-pid "$browser_pid" --timeout "$diagnostic_timeout" \
             --diagnose-once 2>>"$CONSOLE")"; then

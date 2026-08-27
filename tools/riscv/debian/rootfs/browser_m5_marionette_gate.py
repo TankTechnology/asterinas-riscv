@@ -50,59 +50,6 @@ _EXPRESSION = r"""return JSON.stringify({
   resources: performance.getEntriesByType('resource').map(entry => entry.name)
 });"""
 
-_DIAGNOSTIC_EXPRESSION = r"""return JSON.stringify({
-  url: location.href,
-  title: document.title,
-  readyState: document.readyState,
-  markers: Array.from(document.querySelectorAll(
-    '#js-result, #video-canplay-result, #video-ended-result'
-  )).map(node => [node.id, node.textContent]),
-  jsComplete: document.querySelector('#js-result')?.textContent ===
-    'ASTERINAS_BROWSER_M5_JS_PASS',
-  media: (() => {
-    const video = document.querySelector('video');
-    return video === null ? null : {
-      currentSrc: video.currentSrc,
-      ended: video.ended,
-      readyState: video.readyState,
-      networkState: video.networkState,
-      paused: video.paused,
-      error: video.error === null ? null : video.error.code,
-      duration: Number.isFinite(video.duration) ? video.duration : null,
-      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : null,
-      videoWidth: video.videoWidth,
-      videoHeight: video.videoHeight,
-      clientWidth: video.clientWidth,
-      clientHeight: video.clientHeight
-    };
-  })(),
-  viewport: {
-    innerWidth: window.innerWidth,
-    innerHeight: window.innerHeight,
-    devicePixelRatio: window.devicePixelRatio
-  },
-  paint: {
-    bodyBackground: getComputedStyle(document.body).backgroundColor,
-    bodyColor: getComputedStyle(document.body).color,
-    bodyTextLength: document.body.innerText.length
-  },
-  navigation: performance.getEntriesByType('navigation').map(entry => ({
-    name: entry.name,
-    domContentLoadedEventEnd: entry.domContentLoadedEventEnd,
-    loadEventEnd: entry.loadEventEnd,
-    transferSize: entry.transferSize,
-    decodedBodySize: entry.decodedBodySize
-  })),
-  resources: performance.getEntriesByType('resource').map(entry => ({
-    name: entry.name,
-    initiatorType: entry.initiatorType,
-    duration: entry.duration,
-    transferSize: entry.transferSize,
-    decodedBodySize: entry.decodedBodySize
-  }))
-});"""
-
-
 class GateError(RuntimeError):
     """The browser did not provide exact, trustworthy content evidence."""
 
@@ -309,8 +256,8 @@ def _connect(
             time.sleep(min(0.1, remaining))
 
 
-def snapshot_once(host: str, port: int, timeout: float) -> list[dict[str, object]]:
-    """Capture content state without deciding whether the formal gate passes."""
+def status_once(host: str, port: int, timeout: float) -> dict[str, object]:
+    """Probe Marionette readiness without creating or changing a session."""
 
     def phase(name: str, state: str, error: BaseException | None = None) -> None:
         fields = (
@@ -328,8 +275,6 @@ def snapshot_once(host: str, port: int, timeout: float) -> list[dict[str, object
         client = _connect(host, port, time.monotonic() + timeout, phase=phase)
     except socket.timeout as error:
         raise GateError("Marionette diagnostic timed out before greeting completed") from error
-    session_created = False
-
     def command(stage: str, name: str, parameters: object | None = None) -> object:
         phase(stage, "start")
         try:
@@ -343,61 +288,14 @@ def snapshot_once(host: str, port: int, timeout: float) -> list[dict[str, object
         return result
 
     try:
-        session = command(
-            "new-session", "WebDriver:NewSession", {"strictFileInteractability": True}
-        )
-        if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
-            raise GateError("Marionette did not create a session")
-        session_created = True
-        handles = command("get-window-handles", "WebDriver:GetWindowHandles")
-        if not isinstance(handles, list) or not handles:
-            raise GateError("Marionette returned no browser windows")
-        snapshots = []
-        for handle in handles:
-            if not isinstance(handle, str):
-                raise GateError("Marionette returned an invalid window handle")
-            command(
-                "switch-to-window",
-                "WebDriver:SwitchToWindow",
-                {"handle": handle, "focus": False},
-            )
-            result = command(
-                "execute-script",
-                "WebDriver:ExecuteScript",
-                {
-                    "script": _DIAGNOSTIC_EXPRESSION,
-                    "args": [],
-                    "newSandbox": True,
-                    "sandbox": "default",
-                    "line": 1,
-                    "filename": "asterinas-browser-m5-pretitle-diagnostic",
-                },
-            )
-            value = result.get("value") if isinstance(result, dict) else None
-            if not isinstance(value, str):
-                raise GateError("Marionette diagnostic returned a non-string snapshot")
-            try:
-                snapshot = json.loads(value)
-            except json.JSONDecodeError as error:
-                raise GateError("Marionette diagnostic returned invalid JSON") from error
-            if not isinstance(snapshot, dict):
-                raise GateError("Marionette diagnostic returned a non-object snapshot")
-            snapshots.append(snapshot)
-        try:
-            command("delete-session", "WebDriver:DeleteSession")
-        except (GateError, OSError, TimeoutError):
-            # A diagnostic cleanup failure must not discard an already captured
-            # content snapshot. Closing the transport below still tears down the
-            # diagnostic-only connection.
-            pass
-        session_created = False
-        return snapshots
+        status = command("status", "WebDriver:Status")
+        if not isinstance(status, dict) or not isinstance(status.get("ready"), bool):
+            raise GateError("Marionette returned an invalid readiness status")
+        message = status.get("message")
+        if message is not None and not isinstance(message, str):
+            raise GateError("Marionette returned an invalid readiness message")
+        return status
     finally:
-        if session_created:
-            try:
-                client.command("WebDriver:DeleteSession")
-            except (GateError, OSError, TimeoutError):
-                pass
         client.close()
 
 
@@ -462,15 +360,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         validate_network_namespace(values.firefox_pid)
         if values.diagnose_once:
-            snapshots = snapshot_once(values.host, values.port, values.timeout)
+            status = status_once(values.host, values.port, values.timeout)
         else:
             run_gate(values.host, values.port, values.timeout)
     except (GateError, OSError, TimeoutError) as error:
         parser.error(str(error))
     if values.diagnose_once:
         print(
-            "DEBIAN_BROWSER_M5_DIAGNOSTIC snapshot="
-            + json.dumps(snapshots, separators=(",", ":"), sort_keys=True)
+            "DEBIAN_BROWSER_M5_DIAGNOSTIC status="
+            + json.dumps(status, separators=(",", ":"), sort_keys=True)
         )
         return 0
     print(PASS_LINE)

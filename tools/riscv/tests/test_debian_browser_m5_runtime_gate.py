@@ -246,55 +246,23 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         )
 
     @mock.patch.object(gate, "Marionette", _Client)
-    def test_pre_title_diagnostic_captures_content_and_paint_state_once(self) -> None:
-        diagnostic = {
-            "url": gate.PROBE_URL,
-            "title": "Mozilla Firefox",
-            "readyState": "loading",
-            "markers": [],
-            "jsComplete": False,
-            "media": None,
-            "viewport": {"innerWidth": 1272, "innerHeight": 930, "devicePixelRatio": 1},
-            "paint": {"bodyBackground": "rgb(255, 255, 255)", "bodyColor": "rgb(0, 0, 0)", "bodyTextLength": 0},
-            "navigation": [],
-            "resources": [],
-        }
-        _Client.responses = [
-            {"sessionId": "session", "capabilities": {}},
-            ["probe"],
-            None,
-            {"value": json.dumps(diagnostic)},
-            {"value": None},
-        ]
+    def test_pre_title_diagnostic_reads_status_without_creating_session(self) -> None:
+        diagnostic = {"ready": False, "message": "Firefox is still starting"}
+        _Client.responses = [diagnostic]
         stderr = io.StringIO()
         with redirect_stderr(stderr):
-            self.assertEqual(gate.snapshot_once("127.0.0.1", 2828, 5), [diagnostic])
+            self.assertEqual(gate.status_once("127.0.0.1", 2828, 5), diagnostic)
         client = _Client.instance
         self.assertIsNotNone(client)
         self.assertTrue(client.closed)
         names = [name for name, _ in client.commands]
-        self.assertEqual(
-            names,
-            [
-                "WebDriver:NewSession",
-                "WebDriver:GetWindowHandles",
-                "WebDriver:SwitchToWindow",
-                "WebDriver:ExecuteScript",
-                "WebDriver:DeleteSession",
-            ],
-        )
-        execute = next(parameters for name, parameters in client.commands if name == "WebDriver:ExecuteScript")
-        script = execute["script"]
-        for field in ("document.title", "document.readyState", "jsComplete", "videoWidth", "videoHeight", "bodyBackground", "transferSize", "decodedBodySize"):
-            self.assertIn(field, script)
+        self.assertEqual(names, ["WebDriver:Status"])
         markers = stderr.getvalue()
-        expected = (
-            "tcp-connect", "greeting", "new-session", "get-window-handles",
-            "switch-to-window", "execute-script", "delete-session",
-        )
+        expected = ("tcp-connect", "greeting", "status")
         for phase in expected:
             self.assertIn(f"A_M5_PHASE phase={phase} state=start", markers)
             self.assertIn(f"A_M5_PHASE phase={phase} state=done", markers)
+        self.assertNotIn("phase=new-session", markers)
         self.assertIn("monotonic_ns=", markers)
         self.assertIn("wall_ns=", markers)
 
@@ -303,36 +271,20 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         client = marionette.return_value
         client.command.side_effect = socket.timeout("stalled")
         stderr = io.StringIO()
-        with redirect_stderr(stderr), self.assertRaisesRegex(gate.GateError, "during new-session"):
-            gate.snapshot_once("127.0.0.1", 2828, 5)
+        with redirect_stderr(stderr), self.assertRaisesRegex(gate.GateError, "during status"):
+            gate.status_once("127.0.0.1", 2828, 5)
         self.assertTrue(client.close.called)
         self.assertIn(
-            "A_M5_PHASE phase=new-session state=exception", stderr.getvalue()
+            "A_M5_PHASE phase=status state=exception", stderr.getvalue()
         )
         self.assertIn("exception_type=TimeoutError", stderr.getvalue())
 
     @mock.patch.object(gate, "Marionette", _Client)
-    def test_pre_title_diagnostic_keeps_snapshot_when_cleanup_times_out(self) -> None:
-        diagnostic = {"url": gate.PROBE_URL, "title": "probe"}
-
-        class CleanupTimeoutClient(_Client):
-            def command(self, name: str, parameters: object | None = None) -> object:
-                if name == "WebDriver:DeleteSession":
-                    raise socket.timeout("cleanup stalled")
-                return super().command(name, parameters)
-
-        CleanupTimeoutClient.responses = [
-            {"sessionId": "session", "capabilities": {}},
-            ["probe"],
-            None,
-            {"value": json.dumps(diagnostic)},
-        ]
-        with (
-            mock.patch.object(gate, "Marionette", CleanupTimeoutClient),
-            redirect_stderr(io.StringIO()),
-        ):
-            self.assertEqual(gate.snapshot_once("127.0.0.1", 2828, 5), [diagnostic])
-        self.assertTrue(CleanupTimeoutClient.instance.closed)
+    def test_pre_title_diagnostic_rejects_malformed_status(self) -> None:
+        _Client.responses = [{"message": "missing ready"}]
+        with self.assertRaisesRegex(gate.GateError, "invalid readiness status"):
+            gate.status_once("127.0.0.1", 2828, 5)
+        self.assertTrue(_Client.instance.closed)
 
     @mock.patch.object(gate.time, "sleep", return_value=None)
     def test_runner_retries_only_loopback_connection_refused(self, _sleep: mock.Mock) -> None:
@@ -431,6 +383,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("browser-m5-marionette-gate", evidence)
         self.assertIn("--diagnose-once", evidence)
         self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
+        self.assertIn("((diagnostic_timeout <= 30)) || diagnostic_timeout=30", evidence)
         self.assertIn('remaining=$((deadline - SECONDS))', evidence)
         self.assertIn('gate_timeout="$remaining"', evidence)
         self.assertIn("network_mode=private-loopback source=file", gate.PASS_LINE)
