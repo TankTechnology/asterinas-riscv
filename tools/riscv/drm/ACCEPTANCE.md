@@ -1,8 +1,12 @@
 # DRM acceptance protocol
 
-Unified acceptance protocol for the DRM workstream (`track/drm`). A single QEMU
-boot must prove three previously-independent kernel results coexist and work
-together:
+This historical M1-M5 protocol remains a regression reference.
+The current validation tiers, evidence requirements, and architecture exit
+criteria are defined in [`VALIDATION.md`](VALIDATION.md).
+
+Unified acceptance protocol for the DRM workstream (`track/drm`).
+A single QEMU boot must prove three previously-independent kernel results
+coexist and work together:
 
 1. **DRM / KMS desktop** — Xorg's `modesetting` driver drives `/dev/dri/card0`
    (virtio-gpu), and systemd reaches `graphical.target`.

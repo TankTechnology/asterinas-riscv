@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,6 +28,7 @@
 
 #define DRM_IOCTL_SET_CLIENT_CAP DRM_IOW(0x0d, struct drm_set_client_cap)
 #define DRM_IOCTL_SET_MASTER DRM_IO(0x1e)
+#define DRM_IOCTL_MODE_GETRESOURCES DRM_IOWR(0xa0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_CREATE_DUMB DRM_IOWR(0xb2, struct drm_mode_create_dumb)
 #define DRM_IOCTL_MODE_GETPLANERESOURCES DRM_IOWR(0xb5, struct drm_mode_get_plane_res)
 #define DRM_IOCTL_MODE_GETPLANE DRM_IOWR(0xb6, struct drm_mode_get_plane)
@@ -43,12 +45,29 @@
 #define DRM_MODE_OBJECT_PLANE 0xeeeeeeee
 
 #define DRM_MODE_ATOMIC_TEST_ONLY 0x0100
+#define DRM_MODE_ATOMIC_NONBLOCK 0x0200
 #define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
 
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
 #define DRM_CLIENT_CAP_ATOMIC 3
+#define DRM_CLIENT_CAP_WRITEBACK_CONNECTORS 5
 
 struct drm_set_client_cap { uint64_t capability; uint64_t value; };
+
+struct drm_mode_card_res {
+    uint64_t fb_id_ptr;
+    uint64_t crtc_id_ptr;
+    uint64_t connector_id_ptr;
+    uint64_t encoder_id_ptr;
+    uint32_t count_fbs;
+    uint32_t count_crtcs;
+    uint32_t count_connectors;
+    uint32_t count_encoders;
+    uint32_t min_width;
+    uint32_t max_width;
+    uint32_t min_height;
+    uint32_t max_height;
+};
 
 struct drm_mode_create_dumb {
     uint32_t height, width, bpp, flags;
@@ -127,16 +146,21 @@ struct drm_mode_destroy_blob {
 
 struct drm_mode_atomic {
     uint32_t flags;
-    uint32_t count_props;
+    uint32_t count_objs;
     uint64_t objs_ptr;
     uint64_t count_props_ptr;
     uint64_t props_ptr;
     uint64_t prop_values_ptr;
-    uint64_t blob_id;
-    uint64_t user_data;
     uint64_t reserved;
-    uint64_t reserved_ptr;
+    uint64_t user_data;
 };
+
+_Static_assert(sizeof(struct drm_mode_atomic) == 56,
+               "drm_mode_atomic must match the Linux UAPI");
+_Static_assert(offsetof(struct drm_mode_atomic, reserved) == 40,
+               "drm_mode_atomic.reserved offset must match Linux");
+_Static_assert(DRM_IOCTL_MODE_ATOMIC == 0xc03864bcUL,
+               "DRM_IOCTL_MODE_ATOMIC must use the Linux command number");
 
 struct drm_mode_modeinfo {
     uint32_t clock;
@@ -147,6 +171,9 @@ struct drm_mode_modeinfo {
     uint32_t type;
     char name[32];
 };
+
+_Static_assert(sizeof(struct drm_mode_modeinfo) == 68,
+               "drm_mode_modeinfo must match the Linux UAPI");
 
 static int failures;
 
@@ -174,6 +201,24 @@ static uint32_t find_prop(int fd, uint32_t obj_id, uint32_t obj_type, const char
     return 0;
 }
 
+static uint64_t get_prop_value(int fd, uint32_t obj_id, uint32_t obj_type,
+                               uint32_t wanted_prop) {
+    struct drm_mode_obj_get_properties q = { .obj_id = obj_id, .obj_type = obj_type };
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) < 0 || q.count_props > 32)
+        return UINT64_MAX;
+    uint32_t ids[32] = {0};
+    uint64_t vals[32] = {0};
+    q.props_ptr = (uint64_t)ids;
+    q.prop_values_ptr = (uint64_t)vals;
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) < 0)
+        return UINT64_MAX;
+    for (uint32_t i = 0; i < q.count_props; i++) {
+        if (ids[i] == wanted_prop)
+            return vals[i];
+    }
+    return UINT64_MAX;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     printf("M17 atomic modesetting verification\n");
@@ -189,23 +234,68 @@ int main(void) {
     if (fd < 0) return 1;
     CHECK(ioctl(fd, DRM_IOCTL_SET_MASTER, 0) == 0, "SET_MASTER");
 
+    struct drm_mode_atomic no_cap_atomic = {0};
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &no_cap_atomic) < 0 &&
+          errno == EOPNOTSUPP, "ATOMIC requires client capability errno=%d", errno);
+    struct drm_mode_get_plane_res no_cap_planes = {0};
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &no_cap_planes) == 0 &&
+          no_cap_planes.count_planes == 0,
+          "primary plane hidden until UNIVERSAL_PLANES is enabled");
+
     struct drm_set_client_cap cap = { .capability = DRM_CLIENT_CAP_UNIVERSAL_PLANES, .value = 1 };
     CHECK(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) == 0, "SET_CLIENT_CAP UNIVERSAL_PLANES");
     cap.capability = DRM_CLIENT_CAP_ATOMIC;
     CHECK(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) == 0, "SET_CLIENT_CAP ATOMIC");
+    cap.capability = DRM_CLIENT_CAP_WRITEBACK_CONNECTORS;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap) < 0 && errno == EINVAL,
+          "SET_CLIENT_CAP rejects unimplemented writeback errno=%d", errno);
+
+    /* --- globally unique KMS object discovery --- */
+    struct drm_mode_card_res resources = {0};
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) == 0 &&
+          resources.count_crtcs == 1 && resources.count_connectors == 1 &&
+          resources.count_encoders == 1,
+          "GETRESOURCES crtcs=%u connectors=%u encoders=%u",
+          resources.count_crtcs, resources.count_connectors, resources.count_encoders);
+    uint32_t crtc_id = 0, connector_id = 0, encoder_id = 0;
+    resources.crtc_id_ptr = (uint64_t)&crtc_id;
+    resources.connector_id_ptr = (uint64_t)&connector_id;
+    resources.encoder_id_ptr = (uint64_t)&encoder_id;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) == 0 &&
+          crtc_id != 0 && connector_id != 0 && encoder_id != 0 &&
+          crtc_id != connector_id && crtc_id != encoder_id && connector_id != encoder_id,
+          "unique core ids crtc=%u connector=%u encoder=%u",
+          crtc_id, connector_id, encoder_id);
 
     /* --- planes --- */
     struct drm_mode_get_plane_res pres = {0};
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres) == 0 && pres.count_planes == 1,
           "GETPLANERESOURCES count=%u", pres.count_planes);
-    uint32_t plane_id = 0;
+    uint32_t plane_id = 0xdeadbeef;
     pres.plane_id_ptr = (uint64_t)&plane_id;
+    pres.count_planes = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres) == 0 &&
+          pres.count_planes == 1 && plane_id == 0xdeadbeef,
+          "GETPLANERESOURCES respects zero capacity");
+    plane_id = 0;
+    pres.count_planes = 1;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres) == 0 && plane_id != 0,
           "GETPLANERESOURCES plane_id=%u", plane_id);
+    CHECK(plane_id != crtc_id && plane_id != connector_id && plane_id != encoder_id,
+          "unique plane id=%u", plane_id);
 
-    uint32_t formats[4] = {0};
-    struct drm_mode_get_plane pl = { .plane_id = plane_id,
-        .format_type_ptr = (uint64_t)formats };
+    uint32_t formats[4] = {0xdeadbeef, 0, 0, 0};
+    struct drm_mode_get_plane pl = {
+        .plane_id = plane_id, .format_type_ptr = (uint64_t)formats
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl) == 0 &&
+          pl.count_format_types == 2 && formats[0] == 0xdeadbeef,
+          "GETPLANE capacity query formats=%u", pl.count_format_types);
+    formats[0] = 0;
+    pl.format_type_ptr = (uint64_t)formats;
+    pl.count_format_types = 4;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl) == 0 &&
           pl.possible_crtcs == 1 && pl.count_format_types == 2 &&
           formats[0] == 0x34325258 /* XR24 */,
@@ -213,29 +303,39 @@ int main(void) {
           pl.possible_crtcs, pl.count_format_types, formats[0]);
 
     /* --- property enumeration --- */
-    struct drm_mode_obj_get_properties op = { .obj_id = 1, .obj_type = DRM_MODE_OBJECT_CRTC };
+    struct drm_mode_obj_get_properties op = {
+        .obj_id = crtc_id, .obj_type = DRM_MODE_OBJECT_CRTC
+    };
     CHECK(ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &op) == 0 && op.count_props == 2,
           "CRTC props count=%u", op.count_props);
+    op.obj_id = connector_id;
     op.obj_type = DRM_MODE_OBJECT_CONNECTOR;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &op) == 0 && op.count_props == 1,
           "CONNECTOR props count=%u", op.count_props);
+    op.obj_id = plane_id;
     op.obj_type = DRM_MODE_OBJECT_PLANE;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &op) == 0 && op.count_props == 11,
           "PLANE props count=%u", op.count_props);
 
-    uint32_t p_active = find_prop(fd, 1, DRM_MODE_OBJECT_CRTC, "ACTIVE");
-    uint32_t p_mode_id = find_prop(fd, 1, DRM_MODE_OBJECT_CRTC, "MODE_ID");
-    uint32_t p_conn_crtc = find_prop(fd, 1, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
-    uint32_t p_fb_id = find_prop(fd, 1, DRM_MODE_OBJECT_PLANE, "FB_ID");
-    uint32_t p_plane_crtc = find_prop(fd, 1, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
-    uint32_t p_type = find_prop(fd, 1, DRM_MODE_OBJECT_PLANE, "type");
+    uint32_t p_active = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+    uint32_t p_mode_id = find_prop(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+    uint32_t p_conn_crtc = find_prop(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+    uint32_t p_fb_id = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+    uint32_t p_plane_crtc = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+    uint32_t p_type = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "type");
     CHECK(p_active && p_mode_id && p_conn_crtc && p_fb_id && p_plane_crtc && p_type,
           "property discovery active=%u mode_id=%u conn_crtc=%u fb=%u plane_crtc=%u type=%u",
           p_active, p_mode_id, p_conn_crtc, p_fb_id, p_plane_crtc, p_type);
 
     /* --- GETPROPERTY details --- */
-    uint64_t range[2] = {0};
-    struct drm_mode_get_property gp = { .prop_id = p_active, .values_ptr = (uint64_t)range };
+    uint64_t range[2] = {UINT64_MAX, UINT64_MAX};
+    struct drm_mode_get_property gp = {
+        .prop_id = p_active, .values_ptr = (uint64_t)range, .count_values = 1
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp) == 0 &&
+          gp.count_values == 2 && range[0] == 0 && range[1] == UINT64_MAX,
+          "GETPROPERTY respects partial value capacity");
+    gp.count_values = 2;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp) == 0 &&
           strcmp(gp.name, "ACTIVE") == 0 && gp.count_values == 2 &&
           range[0] == 0 && range[1] == 1 && (gp.flags & 0x2) /* RANGE */,
@@ -246,6 +346,7 @@ int main(void) {
     memset(&gp, 0, sizeof(gp));
     gp.prop_id = p_type;
     gp.enum_blob_ptr = (uint64_t)enums;
+    gp.count_enum_blobs = 3;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp) == 0 &&
           strcmp(gp.name, "type") == 0 && gp.count_enum_blobs == 3 &&
           strcmp(enums[1].name, "Primary") == 0 && enums[1].value == 1 &&
@@ -275,6 +376,19 @@ int main(void) {
     };
     CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &cb) == 0 && cb.blob_id != 0,
           "CREATEPROPBLOB id=%u", cb.blob_id);
+    uint8_t tiny_mode = 0;
+    struct drm_mode_create_blob tiny_cb = {
+        .data = (uint64_t)&tiny_mode, .length = sizeof(tiny_mode),
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &tiny_cb) == 0,
+          "CREATEPROPBLOB tiny validation fixture id=%u", tiny_cb.blob_id);
+
+    struct drm_mode_create_blob huge = {
+        .data = (uint64_t)&mode, .length = UINT32_MAX,
+    };
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &huge) < 0 && errno == EINVAL,
+          "CREATEPROPBLOB rejects oversized allocation errno=%d", errno);
 
     struct drm_mode_modeinfo mode2 = {0};
     struct drm_mode_get_blob gb = { .blob_id = cb.blob_id,
@@ -285,31 +399,84 @@ int main(void) {
           "GETPROPBLOB len=%u %ux%u", gb.length, mode2.hdisplay, mode2.vdisplay);
 
     /* --- atomic commit: TEST_ONLY then real --- */
-    uint32_t objs[6] = { 1, 1, 1, 1, 1, 1 };
+    uint32_t objs[3] = { crtc_id, connector_id, plane_id };
+    uint32_t prop_counts[3] = { 2, 1, 2 };
     uint32_t props[6] = { p_mode_id, p_active, p_conn_crtc, p_fb_id, p_plane_crtc, 0 };
-    uint64_t pvals[6] = { cb.blob_id, 1, 1, fb2.fb_id, 1, 0 };
+    uint64_t pvals[6] = { cb.blob_id, 1, crtc_id, fb2.fb_id, crtc_id, 0 };
     /* SRC_W/SRC_H: 16.16 fixed point */
-    uint32_t p_src_w = find_prop(fd, 1, DRM_MODE_OBJECT_PLANE, "SRC_W");
-    uint32_t p_src_h = find_prop(fd, 1, DRM_MODE_OBJECT_PLANE, "SRC_H");
+    uint32_t p_src_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+    uint32_t p_src_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
     props[4] = p_plane_crtc;
     if (p_src_w && p_src_h) {
         props[5] = p_src_w; pvals[5] = 640ull << 16;
+        prop_counts[2] = 3;
         /* keep it simple: SRC_W only; kernel accepts partial state */
     }
     struct drm_mode_atomic at = {0};
     at.flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET;
-    at.count_props = p_src_w ? 6 : 5;
+    at.count_objs = 3;
     at.objs_ptr = (uint64_t)objs;
+    at.count_props_ptr = (uint64_t)prop_counts;
     at.props_ptr = (uint64_t)props;
     at.prop_values_ptr = (uint64_t)pvals;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) == 0, "ATOMIC TEST_ONLY");
+    CHECK(get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_mode_id) == 0,
+          "ATOMIC TEST_ONLY leaves MODE_ID unchanged");
+
+    at.flags = DRM_MODE_ATOMIC_TEST_ONLY;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EINVAL,
+          "ATOMIC TEST_ONLY validates ALLOW_MODESET errno=%d", errno);
+    at.flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET;
+    pvals[0] = tiny_cb.blob_id;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EINVAL,
+          "ATOMIC TEST_ONLY validates mode blob size errno=%d", errno);
+    pvals[0] = cb.blob_id;
+    pvals[1] = 0;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EOPNOTSUPP,
+          "ATOMIC rejects unsupported pipeline disable errno=%d", errno);
+    pvals[1] = 1;
+
+    struct drm_mode_destroy_blob tiny_db = { .blob_id = tiny_cb.blob_id };
+    ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &tiny_db);
+
+    /* A property must be rejected when paired with the wrong object type. */
+    uint32_t bad_obj = crtc_id, bad_count = 1, bad_prop = p_fb_id;
+    uint64_t bad_value = fb2.fb_id;
+    struct drm_mode_atomic bad = {
+        .flags = DRM_MODE_ATOMIC_TEST_ONLY,
+        .count_objs = 1,
+        .objs_ptr = (uint64_t)&bad_obj,
+        .count_props_ptr = (uint64_t)&bad_count,
+        .props_ptr = (uint64_t)&bad_prop,
+        .prop_values_ptr = (uint64_t)&bad_value,
+    };
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &bad) < 0 && errno == EINVAL,
+          "ATOMIC rejects property/object mismatch errno=%d", errno);
+
+    bad.count_objs = 0;
+    bad.reserved = 1;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &bad) < 0 && errno == EINVAL,
+          "ATOMIC rejects nonzero reserved errno=%d", errno);
+
+    bad.reserved = 0;
+    bad.flags = DRM_MODE_ATOMIC_NONBLOCK;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &bad) < 0 && errno == EOPNOTSUPP,
+          "ATOMIC rejects unsupported NONBLOCK errno=%d", errno);
 
     at.flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) == 0, "ATOMIC commit ALLOW_MODESET");
 
     /* Values must now be visible via OBJ_GETPROPERTIES. */
     {
-        struct drm_mode_obj_get_properties vq = { .obj_id = 1, .obj_type = DRM_MODE_OBJECT_CRTC };
+        struct drm_mode_obj_get_properties vq = {
+            .obj_id = crtc_id, .obj_type = DRM_MODE_OBJECT_CRTC
+        };
         ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &vq);
         uint32_t ids[8] = {0}; uint64_t vals[8] = {0};
         vq.props_ptr = (uint64_t)ids;
@@ -325,9 +492,22 @@ int main(void) {
               (unsigned long long)mode_id_val, (unsigned long long)active_val);
     }
 
-    /* --- destroy blob --- */
+    /* A peer file cannot destroy this file's blob. */
     struct drm_mode_destroy_blob db = { .blob_id = cb.blob_id };
+    int peer_fd = open("/dev/dri/card0", O_RDWR);
+    errno = 0;
+    CHECK(peer_fd >= 0 && ioctl(peer_fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &db) < 0 &&
+          errno == EACCES, "peer blob destroy rejected errno=%d", errno);
+    if (peer_fd >= 0) close(peer_fd);
+
+    /* --- destroy blob; committed MODE_ID keeps it alive --- */
     CHECK(ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &db) == 0, "DESTROYPROPBLOB");
+    memset(&mode2, 0, sizeof(mode2));
+    gb.length = sizeof(mode2);
+    gb.data = (uint64_t)&mode2;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb) == 0 &&
+          mode2.hdisplay == 640 && mode2.vdisplay == 480,
+          "committed MODE_ID retains destroyed blob");
 
     /* --- render node must reject KMS ioctls --- */
     int rfd = open("/dev/dri/renderD128", O_RDWR);

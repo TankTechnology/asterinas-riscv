@@ -558,3 +558,46 @@ importing GLX client's context. Per-file resource membership is now maintained
 across handle import/close and rechecked from each `EXECBUFFER` BO list. The
 Xfce harness reports `command-stream: OK` and rejects all three former
 virglrenderer error markers.
+
+## 2026-08-27 atomic UAPI and KMS object correction
+
+The first architecture-and-validation pass found that the M17 kernel and its
+raw test shared the same non-Linux interpretation of `drm_mode_atomic`.
+They used the second field as a flattened property count, ignored the
+per-object count array, and extended the structure to 72 bytes.
+That produced a private ioctl number, so the earlier self-consistent gate did
+not prove compatibility with an unmodified libdrm atomic request.
+
+The wire type is now the Linux 56-byte structure and produces ioctl command
+`0xc03864bc`.
+The parser consumes unique object ids and per-object property counts, validates
+the complete bounded transaction, and publishes property state only after the
+fallible framebuffer presentation succeeds.
+CRTC, connector, encoder, and primary-plane ids are now distinct.
+This removes the earlier ambiguity that allowed a property to be accepted when
+it applied to any object type sharing id 1.
+
+The rebuilt Sv39/SMP=4 M17 guest passed 44/44 checks, including negative tests
+for an invalid property/object pairing and a nonzero reserved field.
+The complete Debian Mesa/Xorg/Xfce virgl path then passed DRI3 direct rendering,
+pixel validation, the command-stream error gate, and `XFCE_DRM_PASS`.
+The shader sample reported 10.210 FPS; total boot time was unusually high under
+the concurrent host load and is not used as a performance result.
+
+The same pass hardened query-array capacities and property blobs.
+Blob allocation is bounded and fallible, creation rolls back if its result
+cannot be copied to userspace, ownership belongs to the creating DRM file, and
+committed KMS state retains its reference after userspace destroys the blob.
+Unsupported asynchronous atomic commits now return `EOPNOTSUPP` instead of
+being silently executed synchronously.
+
+After the capability and lifetime hardening, the complete Xfce gate passed
+again with DRI3 direct rendering, the virgl renderer, the expected output
+pixel, 30 submitted frames, a clean command stream, and `XFCE_DRM_PASS`.
+The sample reported 9.214 FPS while other QEMU guests were active on the host,
+so this run is retained as a semantic regression result rather than a
+performance comparison.
+
+The low-cost validation tiers and the planned separation of DRM core state from
+the virtio-gpu backend are recorded in
+[`../drm/VALIDATION.md`](../drm/VALIDATION.md).

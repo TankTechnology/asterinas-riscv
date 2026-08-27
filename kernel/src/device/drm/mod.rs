@@ -73,10 +73,14 @@ const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260818";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D/3D driver";
 
-/// KMS object ids. The virtio-gpu device exposes a single CRTC/encoder/connector.
+/// KMS object ids.
+///
+/// DRM mode objects share one global id namespace. Keeping these ids distinct
+/// lets atomic requests resolve an object id to exactly one object type.
+/// The virtio-gpu device exposes one object of each kind.
 const CRTC_ID: u32 = 1;
-const ENCODER_ID: u32 = 1;
-const CONNECTOR_ID: u32 = 1;
+const CONNECTOR_ID: u32 = 2;
+const ENCODER_ID: u32 = 3;
 
 /// `DRM_MODE_CONNECTOR_VIRTUAL`, the connector type Linux's virtio-gpu reports.
 const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
@@ -99,12 +103,8 @@ const DRM_CAP_PRIME: u64 = 0x5;
 const DRM_PRIME_CAP_IMPORT_EXPORT: u64 = 0x3;
 
 /// `DRM_CLIENT_CAP_*` values accepted by `SET_CLIENT_CAP`.
-const DRM_CLIENT_CAP_STEREO_3D: u64 = 1;
 const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
 const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
-const DRM_CLIENT_CAP_ASPECT_RATIO: u64 = 4;
-const DRM_CLIENT_CAP_WRITEBACK_CONNECTORS: u64 = 5;
-const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
 /// `DRM_MODE_OBJECT_*` type constants for `MODE_OBJ_GETPROPERTIES` and `MODE_ATOMIC`.
 const DRM_MODE_OBJECT_CRTC: u32 = 0xcccccccc;
@@ -130,7 +130,42 @@ const MAX_DRM_EVENTS: usize = 1024;
 const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
 
 /// Our single primary plane id.
-const PRIMARY_PLANE_ID: u32 = 1;
+const PRIMARY_PLANE_ID: u32 = 4;
+
+/// An atomic-capable KMS object exposed by this device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AtomicKmsObject {
+    Crtc,
+    Connector,
+    PrimaryPlane,
+}
+
+impl AtomicKmsObject {
+    fn from_id(id: u32) -> Option<Self> {
+        match id {
+            CRTC_ID => Some(Self::Crtc),
+            CONNECTOR_ID => Some(Self::Connector),
+            PRIMARY_PLANE_ID => Some(Self::PrimaryPlane),
+            _ => None,
+        }
+    }
+
+    fn id(self) -> u32 {
+        match self {
+            Self::Crtc => CRTC_ID,
+            Self::Connector => CONNECTOR_ID,
+            Self::PrimaryPlane => PRIMARY_PLANE_ID,
+        }
+    }
+
+    fn object_type(self) -> u32 {
+        match self {
+            Self::Crtc => DRM_MODE_OBJECT_CRTC,
+            Self::Connector => DRM_MODE_OBJECT_CONNECTOR,
+            Self::PrimaryPlane => DRM_MODE_OBJECT_PLANE,
+        }
+    }
+}
 
 /// Size of the single contiguous dumb-buffer pool, in bytes.
 ///
@@ -591,7 +626,7 @@ mod tests {
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct DumbBuffer {
     offset: usize,
     size: usize,
@@ -612,7 +647,7 @@ impl DumbBuffer {
 }
 
 /// A registered framebuffer referencing a dumb buffer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Framebuffer {
     object_id: u32,
     width: u32,
@@ -627,7 +662,7 @@ struct Framebuffer {
 // ---------------------------------------------------------------------------
 
 /// Whether this handle was opened from the primary node or the render node.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum DriNodeType {
     Primary,
     Render,
@@ -707,6 +742,10 @@ struct DriHandle {
     owner_pid: u32,
     was_master: AtomicBool,
     authenticated: Arc<AtomicBool>,
+    /// Whether this file enabled `DRM_CLIENT_CAP_UNIVERSAL_PLANES`.
+    universal_planes: AtomicBool,
+    /// Whether this file enabled `DRM_CLIENT_CAP_ATOMIC`.
+    atomic_modesetting: AtomicBool,
     /// Legacy virgl context associated with this open DRM file.
     context: Mutex<VirglContext>,
     /// Serializes validation, device updates, and per-file cursor state.
@@ -770,6 +809,8 @@ impl DriHandle {
             owner_pid: current!().pid(),
             was_master: AtomicBool::new(is_authenticated),
             authenticated: Arc::new(AtomicBool::new(is_authenticated)),
+            universal_planes: AtomicBool::new(false),
+            atomic_modesetting: AtomicBool::new(false),
             context: Mutex::new(VirglContext {
                 id: context_id,
                 is_created: false,
@@ -1108,6 +1149,14 @@ impl DriHandle {
         Ok(())
     }
 
+    /// Checks that one more page-flip event can be queued.
+    fn check_flip_event_capacity(&self) -> Result<()> {
+        if self.inner.lock().events.len() >= MAX_DRM_EVENTS {
+            return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
+        }
+        Ok(())
+    }
+
     /// Pops pending page-flip events into `writer`.
     fn read_events(&self, writer: &mut VmWriter) -> Result<usize> {
         if writer.avail() == 0 {
@@ -1207,6 +1256,9 @@ impl Drop for DriHandle {
         if let Some(magic) = self.inner.lock().auth_magic {
             self.gpu_manager.auth_magics.lock().remove(&magic);
         }
+        self.gpu_manager
+            .property_manager
+            .release_file_blobs(self.file_id);
 
         let context = self.context.get_mut();
         self.gpu_manager.wait_for_all_fences();
@@ -1357,13 +1409,25 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ SetClientCap => {
                 let cap = cmd.read()?;
+                if cap.value > 1 {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "DRM client cap value must be 0 or 1"
+                    );
+                }
+                let enabled = cap.value == 1;
                 match cap.capability {
-                    DRM_CLIENT_CAP_STEREO_3D
-                    | DRM_CLIENT_CAP_UNIVERSAL_PLANES
-                    | DRM_CLIENT_CAP_ATOMIC
-                    | DRM_CLIENT_CAP_ASPECT_RATIO
-                    | DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
-                    | DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => Ok(0),
+                    DRM_CLIENT_CAP_UNIVERSAL_PLANES => {
+                        self.universal_planes.store(enabled, Ordering::Release);
+                        Ok(0)
+                    }
+                    DRM_CLIENT_CAP_ATOMIC => {
+                        self.atomic_modesetting.store(enabled, Ordering::Release);
+                        if enabled {
+                            self.universal_planes.store(true, Ordering::Release);
+                        }
+                        Ok(0)
+                    }
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM client cap")
                     }
@@ -1542,7 +1606,7 @@ impl PerOpenFileOps for DriHandle {
                         "KMS ioctl not available on render node"
                     );
                 }
-                plane::get_plane_resources(cmd)
+                plane::get_plane_resources(self, cmd)
             }
             cmd @ ModeGetPlane => {
                 if self.is_render_node() {
@@ -1551,9 +1615,16 @@ impl PerOpenFileOps for DriHandle {
                         "KMS ioctl not available on render node"
                     );
                 }
-                plane::get_plane(cmd)
+                plane::get_plane(self, cmd)
             }
             cmd @ ModeAtomic => {
+                if !self.atomic_modesetting.load(Ordering::Acquire) {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "DRM_CLIENT_CAP_ATOMIC is not enabled"
+                    );
+                }
+                let _page_flip_operation = self.page_flip_operation.lock();
                 let mut kms_state = self.lock_kms_as_master()?;
                 atomic::mode_atomic(self, &mut kms_state, cmd)
             }
@@ -1603,10 +1674,14 @@ impl PerOpenFileOps for DriHandle {
                 if req.flags & !(DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC) != 0 {
                     return_errno_with_message!(Errno::EINVAL, "unsupported page flip flags");
                 }
-                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0
-                    && self.inner.lock().events.len() >= MAX_DRM_EVENTS
-                {
-                    return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
+                if req.flags & DRM_MODE_PAGE_FLIP_ASYNC != 0 {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "asynchronous page flips are not implemented"
+                    );
+                }
+                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+                    self.check_flip_event_capacity()?;
                 }
                 kms::present_fb(self, &mut kms_state, req.fb_id)?;
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
@@ -2097,15 +2172,13 @@ struct DrmModeFbDirtyCmd {
 #[derive(Clone, Copy, Debug, Default, Pod)]
 struct DrmModeAtomic {
     flags: u32,
-    count_props: u32,
+    count_objs: u32,
     objs_ptr: u64,
     count_props_ptr: u64,
     props_ptr: u64,
     prop_values_ptr: u64,
-    blob_id: u64,
-    user_data: u64,
     reserved: u64,
-    reserved_ptr: u64,
+    user_data: u64,
 }
 
 /// `struct drm_mode_create_blob`.

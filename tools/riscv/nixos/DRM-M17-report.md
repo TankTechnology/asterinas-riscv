@@ -1,9 +1,35 @@
 # DRM-M17: Atomic Modesetting + virgl Raw-Ioctl Verification
 
-**Status:** M17 atomic modesetting **PASS (24/24)**; virgl 3D raw-ioctl
+**Status:** M17 atomic modesetting **PASS (44/44)**; virgl 3D raw-ioctl
 path **PASS (15/15, incl. pixel round-trip through host virglrenderer)**.
-The Mesa/EGL userspace path is blocked by Alpine packaging, not the kernel
-(see below).
+The later Debian Mesa path also passes direct DRI3 rendering; the historical
+Alpine packaging limitation is retained below for context.
+
+## 2026-08-27 atomic UAPI correction
+
+The original 24-check M17 gate used a private flattened interpretation of
+`drm_mode_atomic`: its second field was treated as a total property count and
+`count_props_ptr` was ignored.
+The kernel and test therefore agreed with each other but not with the Linux
+wire ABI.
+
+The corrected 56-byte structure now uses `count_objs`, an object-id array, a
+per-object property-count array, and flattened property/value arrays exactly
+as Linux UAPI clients send them.
+CRTC, connector, encoder, and primary-plane ids are globally unique
+(`1`, `2`, `3`, and `4`), so each atomic property can be validated against one
+unambiguous object type.
+The parser bounds objects and properties, rejects null arrays, duplicate
+objects/properties, nonzero reserved fields, invalid object references, and
+property/object mismatches before changing state.
+
+The replacement guest gate passed 44/44 checks.
+It additionally proves the Linux ioctl number `0xc03864bc`, unique object
+enumeration, TEST_ONLY state preservation, object/property mismatch rejection,
+and reserved-field rejection.
+The complete Debian Mesa/Xorg/Xfce virgl regression also passed with DRI3,
+direct rendering, a correct output pixel, no command-stream errors, and
+`XFCE_DRM_PASS`.
 
 ## What changed since M16
 
@@ -17,7 +43,7 @@ there was no `MODE_GETPROPERTY` / `MODE_GETPROPBLOB`, so no real userspace
 unusable dead code. This milestone completes the discovery surface:
 
 - `MODE_GETPLANERESOURCES` / `MODE_GETPLANE` (0xb5/0xb6) — single primary
-  plane (id 1), XR24/AR24 formats, `possible_crtcs = 1`.
+  plane (id 4), XR24/AR24 formats, `possible_crtcs = 1`.
 - `MODE_OBJ_GETPROPERTIES` (0xb9) — real per-object-type property lists:
   CRTC {ACTIVE, MODE_ID}, connector {CRTC_ID}, plane {type, FB_ID, CRTC_ID,
   SRC_X/Y/W/H, CRTC_X/Y/W/H}; values read back from the property store with
@@ -94,23 +120,29 @@ by a prior workaround; it is restored via a proper
 
 ## Verification
 
-### M17: atomic modesetting — PASS (24/24)
+### M17: atomic modesetting — PASS (44/44)
 
 `tools/riscv/nixos/m17/atomictest.c` runs as `/init` on a minimal
 initramfs (`build_m17.sh`, `boot_m17.py`, artifacts in `target/drm-m17/`),
 QEMU `virtio-gpu-device`, smp=4 (the DTB carries 4 CPUs; smp mismatch is
 the known M10 failure mode).
 
-Checks: open/SET_MASTER, SET_CLIENT_CAP UNIVERSAL_PLANES+ATOMIC, plane
-resources/plane info, property counts per object type (2/1/11), property
+Checks: open/SET_MASTER, SET_CLIENT_CAP UNIVERSAL_PLANES+ATOMIC, globally
+unique KMS object ids, plane resources/plane info, property counts per object
+type (2/1/11), property
 discovery by name, GETPROPERTY details (ACTIVE range [0,1]; type enum with
-Primary entry + IMMUTABLE), CREATE_DUMB + ADDFB2, blob create/read-back/
-destroy round-trip (68-byte `drm_mode_modeinfo`), ATOMIC TEST_ONLY,
-ATOMIC ALLOW_MODESET commit, OBJ_GETPROPERTIES read-back of committed
-MODE_ID/ACTIVE, and render-node rejection (EOPNOTSUPP) of the KMS ioctls.
+Primary entry + IMMUTABLE), CREATE_DUMB + ADDFB2, bounded blob create/read-back,
+per-file blob ownership, committed-blob lifetime, Linux-layout ATOMIC
+TEST_ONLY, TEST_ONLY state preservation, two-stage array capacity handling,
+invalid object/property and reserved-field rejection, explicit NONBLOCK
+rejection, per-file client-capability gates, rejection of an unimplemented
+writeback capability, TEST_ONLY commit-equivalent validation, explicit rejection
+of the not-yet-implemented pipeline-disable transition, ATOMIC ALLOW_MODESET
+commit, OBJ_GETPROPERTIES read-back of committed MODE_ID/ACTIVE, and render-node
+rejection (EOPNOTSUPP) of KMS ioctls.
 
 ```
-Summary: PASS=24 FAIL=0
+Summary: PASS=44 FAIL=0
 M17_ATOMIC_PASS
 ```
 
@@ -171,10 +203,15 @@ turns out to be required.
 
 ## Known limitations
 
-- Atomic commits are synchronous; `DRM_MODE_ATOMIC_NONBLOCK` is accepted
-  and ignored. No page-flip events.
+- Atomic commits are synchronous; `DRM_MODE_ATOMIC_NONBLOCK` is rejected with
+  `EOPNOTSUPP` until a true asynchronous path exists.
+- Page-flip completion events are supported, but are queued immediately after
+  synchronous presentation rather than from a hardware-vblank IRQ.
 - The MODE_ID blob is validated for size but the mode is not re-applied
   to hardware (virtio-gpu scanout has a fixed boot resolution).
+- Atomic pipeline disable (`ACTIVE=0`, `MODE_ID=0`, `FB_ID=0`, or a cleared
+  CRTC binding) returns `EOPNOTSUPP` until its hardware and property-state
+  transition is implemented transactionally.
 - `RESOURCE_BLOB`/`HOST_VISIBLE`/`CONTEXT_INIT` GETPARAMs report 0;
   Mesa uses the default virgl context (ctx_id 0).
 - Alpine Mesa cannot drive the virgl path: its gallium driver set

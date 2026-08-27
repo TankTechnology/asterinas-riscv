@@ -156,6 +156,22 @@ Render nodes do not use this legacy authentication flow.
 Syncobj arrays, alternate rings, and input fence fds are not supported.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
 
+The primary node exposes one CRTC, connector, encoder, and primary plane with
+globally unique object IDs.
+The primary plane is enumerated after the file enables
+`DRM_CLIENT_CAP_UNIVERSAL_PLANES`; atomic ioctls require
+`DRM_CLIENT_CAP_ATOMIC` on that file.
+Both legacy KMS and the Linux `drm_mode_atomic` object/count/property layout
+are supported.
+Atomic `TEST_ONLY`, `ALLOW_MODESET`, and `DRM_MODE_PAGE_FLIP_EVENT` requests
+are validated; atomic `NONBLOCK` is rejected with `EOPNOTSUPP` because commits
+are currently synchronous.
+Flip-completion events are queued after synchronous presentation, not from a
+hardware-vblank interrupt.
+Legacy `DRM_MODE_PAGE_FLIP_ASYNC` is likewise rejected with `EOPNOTSUPP`.
+Property blobs are bounded to 64 KiB, owned by the creating DRM file, and kept
+alive while committed KMS state references them.
+
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/ioctl.2.html).
 
