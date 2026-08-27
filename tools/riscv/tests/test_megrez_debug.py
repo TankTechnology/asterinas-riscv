@@ -284,7 +284,7 @@ class MegrezDebugSimulationTests(unittest.TestCase):
         paths = {
             "kernel": artifact_directory / "kernel",
             "initramfs": artifact_directory / "initramfs",
-            "qemu_dtb": self.output / "qemu-virt.dtb",
+            "qemu_dtb": artifact_directory / "qemu-virt.dtb",
             "megrez_dtb": artifact_directory / "megrez.dtb",
         }
         for name, path in paths.items():
