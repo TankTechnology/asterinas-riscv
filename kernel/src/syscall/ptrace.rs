@@ -80,7 +80,15 @@ pub fn sys_ptrace(
             let tracee = ctx.posix_thread.get_tracee(tid)?;
             let tracee = tracee.as_posix_thread().unwrap();
 
-            tracee.enqueue_signal(Box::new(UserSignal::new_kill(SIGKILL, ctx)));
+            let signal = Box::new(UserSignal::new_kill(SIGKILL, ctx));
+            crate::process::signal::provenance::trace_user_thread_enqueue(
+                signal.as_ref(),
+                "ptrace-kill",
+                "thread",
+                ctx,
+                tracee,
+            );
+            tracee.enqueue_signal(signal);
         }
         #[cfg(target_arch = "x86_64")]
         PtraceRequest::PTRACE_SINGLESTEP => {

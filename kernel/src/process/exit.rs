@@ -4,8 +4,16 @@ use core::sync::atomic::Ordering;
 
 use super::{INIT_PROCESS_PID, Pid, Process, pid_table};
 use crate::{
-    events::IoEvents, fs::cgroupfs::CgroupMembership, prelude::*,
-    process::signal::{constants::SIGKILL, signals::kernel::KernelSignal},
+    events::IoEvents,
+    fs::cgroupfs::CgroupMembership,
+    prelude::*,
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{
+            constants::SIGKILL, provenance::trace_kernel_process_enqueue,
+            signals::kernel::KernelSignal,
+        },
+    },
 };
 
 /// Exits the current POSIX process.
@@ -61,6 +69,11 @@ fn kill_pid_ns_members(ns_init: &Process) {
         if vpid == 1 {
             continue;
         }
+        trace_kernel_process_enqueue(
+            "pid-namespace-init-exit",
+            ns_init.main_thread().as_posix_thread().unwrap(),
+            &process,
+        );
         process.enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
     }
 }
