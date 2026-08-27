@@ -1197,9 +1197,11 @@ EOF
         "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
     local evidence_unit_dependencies=""
     local evidence_service_namespace=""
+    local evidence_service_environment=""
     if [[ "$generation" == m5 ]]; then
         evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
         evidence_service_namespace='PrivateNetwork=yes'
+        evidence_service_environment='Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=3600'
     fi
     cat >"$stage/etc/systemd/system/$service_name-evidence.service" <<EOF
 [Unit]
@@ -1211,6 +1213,7 @@ $evidence_unit_dependencies
 [Service]
 Type=oneshot
 $evidence_service_namespace
+$evidence_service_environment
 ExecStart=/usr/lib/asterinas/desktop-$generation-evidence
 RemainAfterExit=yes
 
