@@ -41,6 +41,24 @@ def _make_session() -> board.BoardSession:
 
 
 class MilestoneDetectionTests(unittest.TestCase):
+    def test_session_can_reuse_a_caller_owned_serial_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "serial.log"
+            with mock.patch.object(board, "open_serial") as open_serial:
+                session = board.BoardSession.from_fd(
+                    17,
+                    str(log),
+                    confirm=False,
+                    final_marker="READY",
+                )
+            try:
+                self.assertEqual(session.fd, 17)
+                self.assertFalse(session.confirm)
+                self.assertEqual(session._markers["userspace"], "READY")
+                open_serial.assert_not_called()
+            finally:
+                session.log.close()
+
     def test_all_milestones_match_their_markers(self):
         samples = {
             "kernel_enter": "U-Boot 2024.01-gdbb5f9e3 ... Starting kernel ...\nEnter riscv_boot\n",

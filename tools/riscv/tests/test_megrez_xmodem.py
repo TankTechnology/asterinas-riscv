@@ -4,6 +4,7 @@ import os
 import pty
 import select
 import tempfile
+import termios
 import threading
 import time
 import unittest
@@ -14,7 +15,9 @@ from tools.riscv import megrez_xmodem as xmodem
 
 
 class MegrezXmodemTests(unittest.TestCase):
-    def _run_pty_transfer(self, *, current_baud: int) -> None:
+    def _run_pty_transfer(
+        self, *, current_baud: int, descriptor_api: bool = False
+    ) -> None:
         payload = (b"Asterinas-XMODEM-PTY-" * 70) + b"done"
         address = 0x83000000
         errors: list[BaseException] = []
@@ -108,12 +111,21 @@ class MegrezXmodemTests(unittest.TestCase):
             ):
                 artifact = Path(directory) / "artifact"
                 artifact.write_bytes(payload)
-                result = xmodem.transfer(
-                    slave_name,
-                    artifact,
-                    address,
-                    current_baud=current_baud,
-                )
+                if descriptor_api:
+                    result = xmodem.transfer_fd(
+                        slave_fd,
+                        artifact,
+                        address,
+                        current_baud=current_baud,
+                    )
+                    os.fstat(slave_fd)
+                else:
+                    result = xmodem.transfer(
+                        slave_name,
+                        artifact,
+                        address,
+                        current_baud=current_baud,
+                    )
             self.assertEqual(
                 result.blocks,
                 (len(payload) + xmodem.BLOCK_SIZE - 1) // xmodem.BLOCK_SIZE,
@@ -124,6 +136,14 @@ class MegrezXmodemTests(unittest.TestCase):
                 received[len(payload) :],
                 bytes((xmodem.PAD,)) * (len(received) - len(payload)),
             )
+            attributes = termios.tcgetattr(slave_fd)
+            expected_speed = (
+                termios.B115200
+                if current_baud == xmodem.INITIAL_BAUD
+                else termios.B1500000
+            )
+            self.assertEqual(attributes[4], expected_speed)
+            self.assertEqual(attributes[5], expected_speed)
         finally:
             thread.join(timeout=5)
             os.close(master_fd)
@@ -137,6 +157,12 @@ class MegrezXmodemTests(unittest.TestCase):
 
     def test_pty_existing_transfer_baud(self) -> None:
         self._run_pty_transfer(current_baud=xmodem.TRANSFER_BAUD)
+
+    def test_pty_descriptor_transfer_keeps_owned_fd_open(self) -> None:
+        self._run_pty_transfer(
+            current_baud=xmodem.INITIAL_BAUD,
+            descriptor_api=True,
+        )
 
     def test_crc_and_one_kibibyte_packet_match_xmodem(self) -> None:
         self.assertEqual(xmodem.crc16_xmodem(b"123456789"), 0x31C3)
@@ -321,6 +347,7 @@ class MegrezXmodemTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("baud", xmodem.INITIAL_BAUD),
                 ("sleep", xmodem.BAUD_SETTLE_SECONDS),
                 ("write", bytes((0x1B,))),
                 ("prompt", None),
