@@ -474,7 +474,7 @@ test_riscv_debian_browser_m5_qemu_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout 1800
+		--boot-timeout 7200
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:

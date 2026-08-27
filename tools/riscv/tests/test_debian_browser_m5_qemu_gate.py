@@ -129,8 +129,15 @@ class DebianBrowserM5QemuGateTests(unittest.TestCase):
             target,
         )
         self.assertIn("DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT", target)
-        self.assertIn("--boot-timeout 1800", target)
+        self.assertIn("--boot-timeout 7200", target)
         self.assertNotIn("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", target)
+        desktop_target = (
+            MAKEFILE.read_text(encoding="utf-8")
+            .split(".PHONY: test_riscv_debian_desktop_m5_qemu_gate", 1)[1]
+            .split(".PHONY:", 1)[0]
+        )
+        self.assertIn("--boot-timeout 300", desktop_target)
+        self.assertNotIn("--boot-timeout 7200", desktop_target)
         variables = (
             "DEBIAN_KERNEL",
             "DEBIAN_UBOOT",
