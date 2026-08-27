@@ -373,6 +373,64 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "DEBIAN_BROWSER_M5_NETNS firefox=private initial=distinct\n",
             )
 
+    def test_network_observer_waits_past_sixty_seconds_for_firefox_exec(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        observer = repository / "tools/riscv/debian/rootfs/browser_m5_network_observer.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proc = root / "proc"
+            fake_bin = root / "bin"
+            console = root / "console"
+            fake_seconds = root / "fake-seconds"
+            bash_environment = root / "bash-environment"
+            (proc / "self/ns").mkdir(parents=True)
+            (proc / "42/ns").mkdir(parents=True)
+            fake_bin.mkdir()
+            (proc / "initial-netns").touch()
+            (proc / "browser-netns").touch()
+            (proc / "self/ns/net").symlink_to(proc / "initial-netns")
+            (proc / "42/ns/net").symlink_to(proc / "browser-netns")
+            (proc / "42/comm").write_text("(sd-executor)\n")
+            systemctl = fake_bin / "systemctl"
+            systemctl.write_text("#!/bin/sh\nprintf '42\\n'\n")
+            systemctl.chmod(0o755)
+            bash_environment.write_text(
+                """sleep() {
+    SECONDS=$((SECONDS + $1))
+    printf '%s\\n' "$SECONDS" >"$ASTERINAS_BROWSER_M5_FAKE_SECONDS"
+    if ((SECONDS > 60)); then
+        printf '%s\\n' firefox-esr >"$ASTERINAS_BROWSER_M5_PROC_ROOT/42/comm"
+    fi
+}
+""",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["/bin/bash", str(observer)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "BASH_ENV": str(bash_environment),
+                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+                    "ASTERINAS_BROWSER_M5_PROC_ROOT": str(proc),
+                    "ASTERINAS_BROWSER_M5_FAKE_SECONDS": str(fake_seconds),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            elapsed = int(fake_seconds.read_text())
+            self.assertGreater(elapsed, 60)
+            self.assertLess(elapsed, 300)
+            self.assertEqual(
+                console.read_text(),
+                "DEBIAN_BROWSER_M5_NETNS firefox=private initial=distinct\n",
+            )
+
     def test_profile_guarantees_small_stdlib_client_runtime(self) -> None:
         profile = get_profile("browser-m5")
         self.assertIn("python3-minimal", profile.requested_packages)
