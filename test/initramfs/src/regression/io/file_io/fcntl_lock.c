@@ -147,9 +147,19 @@ FN_TEST(socketpair_setlkw_and_close_releases_lock)
 		.l_start = 0,
 		.l_len = 0,
 	};
+	char byte;
+	struct iovec iov = {
+		.iov_base = &byte,
+		.iov_len = sizeof(byte),
+	};
+	struct msghdr message = {
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+	};
 
 	/* systemd uses this lock to serialize shareable network namespace setup. */
 	TEST_SUCC(fcntl(sockets[0], F_SETLKW, &lock));
+	TEST_ERRNO(recvmsg(sockets[0], &message, MSG_PEEK | MSG_DONTWAIT), EAGAIN);
 	TEST_RES(child_try_fd_write_lock(sockets[0], 0, 0), _ret == EAGAIN);
 	/* The peer socket has its own sockfs inode and must not share this lock. */
 	TEST_RES(child_try_fd_write_lock(sockets[1], 0, 0), _ret == 0);

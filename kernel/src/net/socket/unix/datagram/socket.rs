@@ -102,7 +102,7 @@ impl UnixDatagramSocket {
         reader: &mut dyn MultiRead,
         mut aux_data: AuxiliaryData,
         remote: Option<UnixSocketAddr>,
-        _flags: SendFlags,
+        flags: SendFlags,
         timeout: Option<Duration>,
     ) -> Result<usize> {
         if self.is_write_shutdown.load(Ordering::Relaxed) {
@@ -119,7 +119,7 @@ impl UnixDatagramSocket {
             })?
         };
 
-        let res = if self.is_nonblocking() {
+        let res = if self.is_nonblocking() || flags.contains(SendFlags::MSG_DONTWAIT) {
             queue.try_send(reader, &mut aux_data, &self.local_receiver)
         } else {
             queue.block_send(timeout, || {
@@ -314,10 +314,13 @@ impl Socket for UnixDatagramSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
+        let mut try_recv = || self.local_receiver.try_recv(writer, flags);
         let (output, control_messages, peer_addr) =
-            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
-                self.local_receiver.try_recv(writer, flags)
-            })?;
+            if self.is_nonblocking() || flags.contains(RecvFlags::MSG_DONTWAIT) {
+                try_recv()
+            } else {
+                self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), try_recv)
+            }?;
 
         let message_header = MessageHeader::new(Some(peer_addr.into()), control_messages);
 
