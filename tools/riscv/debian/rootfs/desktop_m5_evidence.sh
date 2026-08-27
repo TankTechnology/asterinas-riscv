@@ -10,6 +10,7 @@ readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-300}"
 readonly USER_NAME=asterinas
 readonly USER_ID=1000
 browser_pid=""
+diagnostic_emitted=false
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_M5_FAIL reason=$1"; exit 1; }
@@ -41,7 +42,28 @@ ready() {
     [[ "${window_tree,,}" == *"asterinas offline browser m5 probe"* ]] || return 1
 }
 
+diagnostic_ready() {
+    browser_pid="$(systemctl show --property MainPID --value asterinas-browser-m5.service 2>/dev/null)" || return 1
+    [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    [[ "$(cat "/proc/$browser_pid/comm" 2>/dev/null)" == firefox-esr ]] || return 1
+    [[ "$(cat /home/asterinas/.mozilla/asterinas-browser-m5/MarionetteActivePort 2>/dev/null)" == 2828 ]] || return 1
+}
+
 while ! ready; do
+    if [[ "$diagnostic_emitted" == false ]] && diagnostic_ready; then
+        remaining=$((deadline - SECONDS))
+        ((remaining > 0)) || fail browser-timeout
+        diagnostic_timeout="$remaining"
+        ((diagnostic_timeout <= 300)) || diagnostic_timeout=300
+        if diagnostic_evidence="$(/usr/lib/asterinas/browser-m5-marionette-gate \
+            --firefox-pid "$browser_pid" --timeout "$diagnostic_timeout" \
+            --diagnose-once 2>>"$CONSOLE")"; then
+            emit "$diagnostic_evidence"
+        else
+            emit "DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable"
+        fi
+        diagnostic_emitted=true
+    fi
     ((SECONDS < deadline)) || fail browser-timeout
     sleep 1
 done

@@ -217,6 +217,47 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             ],
         )
 
+    @mock.patch.object(gate, "Marionette", _Client)
+    def test_pre_title_diagnostic_captures_content_and_paint_state_once(self) -> None:
+        diagnostic = {
+            "url": gate.PROBE_URL,
+            "title": "Mozilla Firefox",
+            "readyState": "loading",
+            "markers": [],
+            "jsComplete": False,
+            "media": None,
+            "viewport": {"innerWidth": 1272, "innerHeight": 930, "devicePixelRatio": 1},
+            "paint": {"bodyBackground": "rgb(255, 255, 255)", "bodyColor": "rgb(0, 0, 0)", "bodyTextLength": 0},
+            "navigation": [],
+            "resources": [],
+        }
+        _Client.responses = [
+            {"sessionId": "session", "capabilities": {}},
+            ["probe"],
+            None,
+            {"value": json.dumps(diagnostic)},
+            {"value": None},
+        ]
+        self.assertEqual(gate.snapshot_once("127.0.0.1", 2828, 5), [diagnostic])
+        client = _Client.instance
+        self.assertIsNotNone(client)
+        self.assertTrue(client.closed)
+        names = [name for name, _ in client.commands]
+        self.assertEqual(
+            names,
+            [
+                "WebDriver:NewSession",
+                "WebDriver:GetWindowHandles",
+                "WebDriver:SwitchToWindow",
+                "WebDriver:ExecuteScript",
+                "WebDriver:DeleteSession",
+            ],
+        )
+        execute = next(parameters for name, parameters in client.commands if name == "WebDriver:ExecuteScript")
+        script = execute["script"]
+        for field in ("document.title", "document.readyState", "jsComplete", "videoWidth", "videoHeight", "bodyBackground", "transferSize", "decodedBodySize"):
+            self.assertIn(field, script)
+
     @mock.patch.object(gate.time, "sleep", return_value=None)
     def test_runner_retries_only_loopback_connection_refused(self, _sleep: mock.Mock) -> None:
         snapshot = self._snapshot()
@@ -312,6 +353,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("video.currentTime", client)
         self.assertNotIn("script.evaluate", client)
         self.assertIn("browser-m5-marionette-gate", evidence)
+        self.assertIn("--diagnose-once", evidence)
+        self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
         self.assertIn('remaining=$((deadline - SECONDS))', evidence)
         self.assertIn('gate_timeout="$remaining"', evidence)
         self.assertIn("network_mode=private-loopback source=file", gate.PASS_LINE)
