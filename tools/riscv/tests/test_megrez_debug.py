@@ -23,6 +23,11 @@ from tools.riscv.megrez_debug_contract import (
     StageResult,
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
+from tools.riscv.megrez_debug_board import (
+    BoardTransport,
+    BoardTransportError,
+    ensure_board_artifacts,
+)
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 
@@ -520,6 +525,115 @@ class MegrezDebugSimulationTests(unittest.TestCase):
             StageResult.from_bytes((self.output / "result.json").read_bytes()),
             expected,
         )
+
+
+class MegrezDebugBoardTransportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = []
+        for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+            path = self.directory / name
+            path.write_bytes(f"{name}-payload".encode())
+            artifacts.append(ArtifactIdentity.from_path(name, path, addresses[name]))
+        self.plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(artifacts),
+            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=180,
+        )
+
+    def test_all_ram_cache_hits_skip_every_xmodem_transfer(self) -> None:
+        commands: list[tuple[str, float]] = []
+        transfers: list[tuple[int, Path, int]] = []
+        identities = {item.name: item for item in self.plan.artifacts}
+        by_address = {
+            identities[name].load_address: identities[name]
+            for name in ("kernel", "initramfs", "megrez_dtb")
+        }
+
+        def command(text: str, timeout: float) -> str:
+            commands.append((text, timeout))
+            address = int(text.split()[1], 16)
+            identity = by_address[address]
+            return f"{text}\r\nCRC32 for 0x{address:x} ... ==> {identity.crc32}\r\n=> "
+
+        transport = BoardTransport(
+            fd=7,
+            command=command,
+            transfer=lambda fd, path, address: transfers.append((fd, path, address)),
+        )
+
+        outcomes = ensure_board_artifacts(self.plan, transport, timeout=2.5)
+
+        self.assertEqual(tuple(item.status for item in outcomes), ("cache-hit",) * 3)
+        self.assertEqual(transfers, [])
+        self.assertEqual(len(commands), 3)
+        for name, (text, timeout) in zip(
+            ("kernel", "initramfs", "megrez_dtb"), commands
+        ):
+            identity = identities[name]
+            self.assertEqual(
+                text,
+                f"crc32 0x{identity.load_address:x} 0x{identity.size:x}",
+            )
+            self.assertEqual(timeout, 2.5)
+
+    def test_cache_miss_transfers_once_then_requires_matching_crc(self) -> None:
+        identity = next(item for item in self.plan.artifacts if item.name == "kernel")
+        resident_crc = "00000000"
+        transfers: list[tuple[int, Path, int]] = []
+
+        def command(text: str, _timeout: float) -> str:
+            return (
+                f"{text}\r\nCRC32 for 0x{identity.load_address:x} ... "
+                f"==> {resident_crc}\r\n=> "
+            )
+
+        def transfer(fd: int, path: Path, address: int) -> None:
+            nonlocal resident_crc
+            transfers.append((fd, path, address))
+            resident_crc = identity.crc32
+
+        outcome = BoardTransport(fd=9, command=command, transfer=transfer).ensure(
+            identity, timeout=3.0
+        )
+
+        self.assertEqual(outcome.status, "transferred")
+        self.assertEqual(
+            transfers,
+            [(9, Path(identity.path), identity.load_address)],
+        )
+
+    def test_malformed_or_still_mismatched_crc_fails_closed(self) -> None:
+        identity = next(item for item in self.plan.artifacts if item.name == "kernel")
+
+        for output, message in (
+            ("=> ", "crc-result"),
+            (
+                f"CRC32 for 0x{identity.load_address:x} ... ==> 00000000\r\n=> ",
+                "post-transfer-crc",
+            ),
+        ):
+            with self.subTest(message=message):
+                transport = BoardTransport(
+                    fd=11,
+                    command=lambda _text, _timeout, value=output: value,
+                    transfer=lambda _fd, _path, _address: None,
+                )
+                with self.assertRaisesRegex(BoardTransportError, message):
+                    transport.ensure(identity, timeout=1.0)
 
 
 class MegrezDebugCliTests(unittest.TestCase):

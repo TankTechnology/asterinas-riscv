@@ -133,9 +133,9 @@ Add a descriptor-based transfer API so one owner holds the serial fd across prom
 - prompt detection at 115200 and 1.5 Mbps;
 - exact `crc32 ADDRESS SIZE` cache hit/mismatch;
 - three hits produce zero XMODEM blocks;
-- first miss uses `loadx ADDRESS 1500000`; later misses use `loadx ADDRESS`;
+- every miss uses `loadx ADDRESS 1500000` for high-speed payload transfer and follows U-Boot's automatic return to 115200;
 - every transfer rechecks exact size/CRC;
-- transient `setenv baudrate 115200` restores U-Boot and host termios before boot;
+- U-Boot's `press ESC` completion restores host termios to 115200 before ESC/prompt and before boot;
 - no `saveenv`/reset, bounded transcript, short I/O/CRC/signal failure.
 
 Do not accept a mock call list as baud proof; inspect the real PTY slave termios speeds.
@@ -152,7 +152,7 @@ Expected: fd/batch transfer and explicit restore APIs are missing.
 
 - [ ] **Step 3: Implement the narrow transport**
 
-Keep `transfer(device, ...)` as a wrapper. Add an fd primitive and exact cache probe. Restore baud non-persistently with `setenv baudrate 115200`, U-Boot's switch handshake, host termios update, Enter, and a fresh prompt. If restoration fails, classify `transport-baud-restore` and forbid `booti`.
+Keep `transfer(device, ...)` as a wrapper. Add an fd primitive and exact cache probe. For every miss, let `loadx ADDRESS 1500000` switch only that transfer: when U-Boot prints `press ESC`, first restore host termios to 115200, then send ESC and require a fresh prompt. If restoration fails, classify `transport-baud-restore` and forbid `booti`.
 
 - [ ] **Step 4: Run GREEN and commit**
 

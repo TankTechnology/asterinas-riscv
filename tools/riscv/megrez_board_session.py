@@ -226,7 +226,41 @@ class BoardSession:
         confirm: bool = True,
         final_marker: str = MILESTONES["userspace"],
     ):
-        self.fd = open_serial(device)
+        self._initialize(
+            open_serial(device),
+            log_path,
+            confirm=confirm,
+            final_marker=final_marker,
+        )
+
+    @classmethod
+    def from_fd(
+        cls,
+        fd: int,
+        log_path: str,
+        confirm: bool = True,
+        final_marker: str = MILESTONES["userspace"],
+    ):
+        """Build a session around a caller-owned serial descriptor."""
+
+        session = cls.__new__(cls)
+        session._initialize(
+            fd,
+            log_path,
+            confirm=confirm,
+            final_marker=final_marker,
+        )
+        return session
+
+    def _initialize(
+        self,
+        fd: int,
+        log_path: str,
+        *,
+        confirm: bool,
+        final_marker: str,
+    ) -> None:
+        self.fd = fd
         self.log = open(log_path, "a", buffering=1)
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
