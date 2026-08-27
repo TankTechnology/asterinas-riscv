@@ -122,6 +122,11 @@ The successful path is:
 8. NetSurf opens that external resource in the existing desktop session and
    the browser evidence service verifies the expected window and process.
 
+The M5 network evidence service is ordered before the M4 desktop service, so
+the serial milestones for a fresh physical boot are M5 network READY, M4
+desktop READY, and then M6 remote-browser evidence. The physical gate must use
+that actual systemd order rather than accepting markers from an older boot.
+
 No host proxy variable is copied into the guest. QEMU may use host slirp as
 its packet transport, while Megrez sends packets through its physical RJ45
 controller and LAN gateway.
@@ -144,12 +149,12 @@ cannot satisfy the board gate.
 Update the Megrez gate to require, in order:
 
 1. selected GMAC identity and negotiated link;
-2. the existing Debian desktop READY marker;
-3. Megrez address and host-gate boot-profile evidence, including the expected
+2. Megrez address and host-gate boot-profile evidence, including the expected
    gateway;
-4. DNS resolution of `www.baidu.com` through the reviewed LAN resolver;
-5. certificate-validated HTTPS success;
-6. successful Baidu PNG retrieval;
+3. DNS resolution of `www.baidu.com` through the reviewed LAN resolver;
+4. certificate-validated HTTPS success;
+5. successful Baidu PNG retrieval;
+6. the existing Debian desktop READY marker;
 7. NetSurf process/window evidence for the remote resource.
 
 The gate drains and scans the complete serial transcript for panic, oops,
