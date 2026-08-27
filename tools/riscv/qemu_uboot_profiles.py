@@ -314,6 +314,27 @@ ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+MEGREZ_TCP_PROBE = ValidationScenario(
+    name="megrez-tcp-probe",
+    bootargs="console=ttyS0 loglevel=info init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            b"ASTERINAS_GMAC_TCP_PROBE_READY",
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=b"ASTERINAS_GMAC_TCP_PROBE_READY",
+    forbidden_markers=ASTERINAS_USERSPACE_SMOKE.forbidden_markers,
+    audit_policy=AuditPolicy.ASTERINAS_STRICT,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=90.0,
+    post_terminal_timeout=0.25,
+)
+
 LTP_SYSCALL_GATE = ValidationScenario(
     name="asterinas-ltp-syscall-gate",
     bootargs="console=ttyS0 loglevel=error init=/init",
@@ -590,6 +611,13 @@ GENERIC_SV39 = QemuUbootProfile(
     validation=ASTERINAS_USERSPACE_SMOKE,
 )
 
+GENERIC_SV39_SMP4_TCP_PROBE = QemuUbootProfile(
+    name="generic-sv39-smp4-tcp-probe",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=MEGREZ_TCP_PROBE,
+)
+
 GENERIC_SV39_LTP_SMP1 = QemuUbootProfile(
     name="generic-sv39-ltp-smp1",
     machine=QEMU_VIRT,
@@ -723,6 +751,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
         profile.name: profile
         for profile in (
             GENERIC_SV39,
+            GENERIC_SV39_SMP4_TCP_PROBE,
             GENERIC_SV39_LTP_SMP1,
             GENERIC_SV39_LTP_SMP4,
             GENERIC_SV39_DRM_CURSOR_SMP4,

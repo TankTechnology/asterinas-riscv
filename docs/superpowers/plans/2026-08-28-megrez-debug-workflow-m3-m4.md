@@ -12,7 +12,7 @@
 
 ---
 
-### Task 1: Register the exact generic Sv39/SMP=4 userspace profile
+### Task 1: Register the exact generic Sv39/SMP=4 TCP-probe profile
 
 **Files:**
 - Modify: `tools/riscv/qemu_uboot_profiles.py`
@@ -20,13 +20,13 @@
 
 - [ ] **Step 1: Write the failing profile test**
 
-Require `profile_by_name("generic-sv39-smp4")` to use `QEMU_VIRT_SMP4`, `UBOOT_BOOTI`, and `ASTERINAS_USERSPACE_SMOKE`. Assert four harts, four `riscv,sv39` CPU nodes, the registered generic-Sv39 CPU override, and no slow-run permit.
+Require `profile_by_name("generic-sv39-smp4-tcp-probe")` to use `QEMU_VIRT_SMP4`, `UBOOT_BOOTI`, and a `MEGREZ_TCP_PROBE` scenario whose terminal line is `ASTERINAS_GMAC_TCP_PROBE_READY`. Assert four harts, four `riscv,sv39` CPU nodes, the registered generic-Sv39 CPU override, and no slow-run permit.
 
 ```python
-profile = profile_by_name("generic-sv39-smp4")
+profile = profile_by_name("generic-sv39-smp4-tcp-probe")
 self.assertIs(profile.machine, QEMU_VIRT_SMP4)
 self.assertIs(profile.boot_flow, UBOOT_BOOTI)
-self.assertIs(profile.validation, ASTERINAS_USERSPACE_SMOKE)
+self.assertIs(profile.validation, MEGREZ_TCP_PROBE)
 self.assertEqual(profile.machine.hart_count, 4)
 self.assertEqual(profile.machine.mmu_types, ("riscv,sv39",) * 4)
 ```
@@ -43,11 +43,11 @@ Expected: the requested profile is not registered.
 - [ ] **Step 3: Add only the missing profile composition**
 
 ```python
-GENERIC_SV39_SMP4 = QemuUbootProfile(
-    name="generic-sv39-smp4",
+GENERIC_SV39_SMP4_TCP_PROBE = QemuUbootProfile(
+    name="generic-sv39-smp4-tcp-probe",
     machine=QEMU_VIRT_SMP4,
     boot_flow=UBOOT_BOOTI,
-    validation=ASTERINAS_USERSPACE_SMOKE,
+    validation=MEGREZ_TCP_PROBE,
 )
 ```
 
@@ -77,7 +77,7 @@ git commit -m "test(riscv): register Sv39 SMP4 smoke profile"
 
 - [ ] **Step 1: Write failing adapter and CLI tests**
 
-Use an injected subprocess runner and freeze this sequence: revalidate the plan; invalidate stale stage result; run `prepare_qemu_uboot_booti.sh prepare` with the plan kernel/initramfs and `generic-sv39-smp4`; require the generated payload DTB to equal `qemu_dtb`; run `qemu_uboot_booti.py run`; require its guarded result to pass; atomically publish `StageResult(stage="fast", plan_sha256=...)` with relative evidence paths.
+Use an injected subprocess runner and freeze this sequence: revalidate the plan; invalidate stale stage result; run `prepare_qemu_uboot_booti.sh prepare` with the plan kernel/initramfs and `generic-sv39-smp4-tcp-probe`; require the generated payload DTB to equal `qemu_dtb`; run `qemu_uboot_booti.py run`; require its guarded result to pass; atomically publish `StageResult(stage="fast", plan_sha256=...)` with relative evidence paths.
 
 Cover prepare/QEMU failure, DTB drift, false or malformed runner results, signal interruption, stale success, unsafe output, arbitrary cwd, and successful evidence publication. No failure may leave `passed:true`.
 
@@ -285,8 +285,8 @@ git diff --check
 ```bash
 python3 tools/riscv/megrez_debug.py simulate \
   target/megrez-debug/plan.json --tier fast \
-  --output-directory target/megrez-debug/fast \
-  --uboot-build-directory target/megrez-debug/uboot
+  --output-directory target/qemu-uboot/megrez-debug/fast \
+  --uboot-build-directory target/qemu-uboot/megrez-debug/uboot
 ```
 
 Require real argv/log evidence for Sv39 and four harts, ordered Asterinas/guest markers, clean QEMU exit, and a passing result with the exact plan hash.
@@ -296,7 +296,7 @@ Require real argv/log evidence for Sv39 and four harts, ordered Asterinas/guest 
 ```bash
 python3 tools/riscv/megrez_debug.py board \
   target/megrez-debug/plan.json /dev/ttyUSB0 \
-  --simulation-result target/megrez-debug/fast/result.json \
+  --simulation-result target/qemu-uboot/megrez-debug/fast/result.json \
   --output-directory target/megrez-debug/board --timeout 300
 ```
 
