@@ -223,11 +223,7 @@ pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
     };
 
     if was_active {
-        handle
-            .gpu_manager
-            .gpu
-            .disable_scanout()
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+        handle.gpu_manager.disable_scanout()?;
     }
 
     let mut inner = handle.inner.lock();
@@ -253,11 +249,7 @@ pub(super) fn set_crtc(
         return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
     }
     if req.fb_id == 0 {
-        handle
-            .gpu_manager
-            .gpu
-            .disable_scanout()
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+        handle.gpu_manager.disable_scanout()?;
         kms_state.scanout = None;
         handle.gpu_manager.property_manager.reset_atomic_state();
         return Ok(());
@@ -396,6 +388,7 @@ pub(super) fn scanout_prepared_fb(
             framebuffer.height,
         )
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
+    gpu_manager.vblank_clock.start();
     Ok(())
 }
 

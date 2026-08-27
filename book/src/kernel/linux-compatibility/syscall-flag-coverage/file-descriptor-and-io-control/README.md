@@ -178,8 +178,15 @@ Requested flip-completion events reserve queue capacity before the state
 exchange and are published after the corresponding hardware update succeeds.
 An asynchronous hardware failure is logged and does not publish a false
 completion event.
-Synchronous commits queue their completion event after presentation.
-Neither path currently derives completion from a hardware-vblank interrupt.
+The virtio-gpu transport has no physical-vblank notification,
+so the KMS layer uses a shared software refresh clock
+derived from the advertised 60 Hz mode.
+Legacy and atomic flip events,
+their sequence/timestamp fields,
+and atomic output fences converge on the next refresh boundary after presentation.
+The clock is isolated behind the KMS completion interface,
+so a hardware-backed display driver can replace it
+with a real vblank interrupt source.
 Legacy `DRM_MODE_PAGE_FLIP_ASYNC` is likewise rejected with `EOPNOTSUPP`.
 Property blobs are bounded to 64 KiB, owned by the creating DRM file, and kept
 alive while committed KMS state references them.

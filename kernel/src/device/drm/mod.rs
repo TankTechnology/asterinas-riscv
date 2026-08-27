@@ -27,6 +27,7 @@ mod prime;
 mod property;
 mod queue;
 mod resource_tracking;
+mod vblank;
 mod virgl_resource;
 mod virtio_gpu;
 
@@ -50,7 +51,7 @@ use ostd::mm::{Paddr, VmIo};
 use self::resource_tracking::VirglContextCounts;
 use self::{
     cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2},
-    queue::{AtomicCommitQueue, DrmEventQueue},
+    queue::{AtomicCommitQueue, DrmEventQueue, VblankCompletionQueue},
     resource_tracking::{DrmResourceSnapshot, VirglContextTracker},
 };
 use crate::{
@@ -85,6 +86,15 @@ const DRM_MAJOR: u16 = 226;
 const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260818";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D/3D driver";
+
+/// Refresh rate advertised by the single synthesized virtio-gpu mode.
+const DEFAULT_REFRESH_HZ: u32 = 60;
+const HORIZONTAL_FRONT_PORCH: u32 = 16;
+const HORIZONTAL_SYNC_WIDTH: u32 = 16;
+const HORIZONTAL_BACK_PORCH: u32 = 16;
+const VERTICAL_FRONT_PORCH: u32 = 1;
+const VERTICAL_SYNC_WIDTH: u32 = 1;
+const VERTICAL_BACK_PORCH: u32 = 2;
 
 /// KMS object ids.
 ///
@@ -237,8 +247,8 @@ struct GpuManager {
     virgl_contexts: VirglContextTracker,
     /// Property manager for atomic modesetting.
     property_manager: property::PropertyManager,
-    /// Monotonic page-flip sequence number (our "vblank counter").
-    flip_sequence: AtomicU32,
+    /// Display-refresh sequence and timestamp source for KMS completions.
+    vblank_clock: vblank::VblankClock,
     /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
     next_fence_id: AtomicU64,
     /// Tracked asynchronous command fences associated with each GEM object.
@@ -370,7 +380,7 @@ impl GpuManager {
             next_context_id: AtomicU32::new(1),
             virgl_contexts: VirglContextTracker::new(),
             property_manager: property::PropertyManager::new(),
-            flip_sequence: AtomicU32::new(0),
+            vblank_clock: vblank::VblankClock::new(),
             next_fence_id: AtomicU64::new(1),
             resource_fences: SpinLock::new(BTreeMap::new()),
             fence_associations: AtomicU64::new(0),
@@ -380,6 +390,15 @@ impl GpuManager {
             next_auth_magic: AtomicU32::new(1),
             next_file_id: AtomicU64::new(1),
         }
+    }
+
+    /// Disables scanout and its display clock as one backend transition.
+    fn disable_scanout(&self) -> Result<()> {
+        self.gpu
+            .disable_scanout()
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+        self.vblank_clock.stop();
+        Ok(())
     }
 
     /// Returns the global GpuManager, initialised on first call.
@@ -777,6 +796,17 @@ mod tests {
     }
 
     #[ktest]
+    fn synthesized_mode_pixel_clock_matches_refresh_rate() {
+        let mode = build_mode(1280, 800);
+        let total_pixels = u64::from(mode.htotal) * u64::from(mode.vtotal);
+        let expected_hz = total_pixels * u64::from(DEFAULT_REFRESH_HZ);
+        let pixel_clock_hz = u64::from(mode.clock) * 1000;
+
+        assert!(expected_hz.abs_diff(pixel_clock_hz) < 1000);
+        assert_eq!(mode.vrefresh, DEFAULT_REFRESH_HZ);
+    }
+
+    #[ktest]
     fn context_cleanup_remains_observable_until_confirmed() {
         let tracker = VirglContextTracker::new();
         tracker.record_created(7);
@@ -931,6 +961,8 @@ struct DriHandle {
     page_flip_operation: Mutex<()>,
     /// Keeps nonblocking atomic commits ordered with other KMS operations.
     atomic_commit_queue: Arc<AtomicCommitQueue>,
+    /// Delivers legacy flip events at refresh boundaries with one worker.
+    vblank_completion_queue: Arc<VblankCompletionQueue>,
     inner: SpinLock<DriInner>,
     event_queue: Arc<DrmEventQueue>,
 }
@@ -991,6 +1023,7 @@ impl DriHandle {
             event_read_operation: Mutex::new(()),
             page_flip_operation: Mutex::new(()),
             atomic_commit_queue: Arc::new(AtomicCommitQueue::new()),
+            vblank_completion_queue: Arc::new(VblankCompletionQueue::new()),
             inner: SpinLock::new(DriInner {
                 auth_magic: None,
                 handles: BTreeMap::new(),
@@ -1324,9 +1357,8 @@ impl DriHandle {
     }
 
     /// Queues a page-flip completion event for this file.
-    fn queue_flip_event(&self, user_data: u64) -> Result<()> {
-        self.event_queue
-            .queue_flip_event(&self.gpu_manager, user_data)
+    fn queue_flip_event(&self, vblank: vblank::VblankSnapshot, user_data: u64) -> Result<()> {
+        self.event_queue.queue_flip_event(vblank, user_data)
     }
 
     /// Checks that one more page-flip event can be queued.
@@ -1338,6 +1370,7 @@ impl DriHandle {
     fn lock_page_flip_operation(&self) -> Result<MutexGuard<'_, ()>> {
         let operation = self.page_flip_operation.lock();
         self.atomic_commit_queue.ensure_idle()?;
+        self.vblank_completion_queue.wait_until_idle();
         Ok(operation)
     }
 
@@ -1408,6 +1441,7 @@ impl Drop for DriHandle {
         // The worker owns references to per-file event state and framebuffer
         // backing. Wait before tearing down the remaining per-file namespace.
         self.atomic_commit_queue.wait_until_idle();
+        self.vblank_completion_queue.wait_until_idle();
         let mut kms_state = self.gpu_manager.kms_state.lock();
         let _cursor_operation = self.cursor_operation.lock();
         let (resource_id, position) = {
@@ -1415,7 +1449,7 @@ impl Drop for DriHandle {
             (inner.cursor.resource_id, inner.cursor.position)
         };
         if kms_state.scanout_owned_by(self.file_id) {
-            if let Err(error) = self.gpu_manager.gpu.disable_scanout() {
+            if let Err(error) = self.gpu_manager.disable_scanout() {
                 warn!("cannot disable scanout on DRM file close: {:?}", error);
             }
             kms_state.scanout = None;
@@ -1847,9 +1881,11 @@ impl PerOpenFileOps for DriHandle {
                         "asynchronous page flips are not implemented"
                     );
                 }
-                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-                    self.check_flip_event_capacity()?;
-                }
+                let event_slot = if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+                    Some(self.event_queue.reserve()?)
+                } else {
+                    None
+                };
                 let framebuffer = *self
                     .inner
                     .lock()
@@ -1869,8 +1905,13 @@ impl PerOpenFileOps for DriHandle {
                 self.gpu_manager
                     .property_manager
                     .set_legacy_page_flip_state(req.fb_id, framebuffer.width, framebuffer.height);
-                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-                    self.queue_flip_event(req.user_data)?;
+                if let Some(event_slot) = event_slot {
+                    let gpu_manager = self.gpu_manager.clone();
+                    let user_data = req.user_data;
+                    self.vblank_completion_queue.submit(Box::new(move || {
+                        let vblank = gpu_manager.vblank_clock.wait_for_next();
+                        event_slot.queue(vblank, user_data);
+                    }));
                 }
                 Ok(0)
             }
@@ -2021,19 +2062,30 @@ fn build_mode(width: u32, height: u32) -> DrmModeModeInfo {
     let n = name_bytes.len().min(name.len() - 1);
     name[..n].copy_from_slice(&name_bytes[..n]);
 
+    let hsync_start = width.saturating_add(HORIZONTAL_FRONT_PORCH);
+    let hsync_end = hsync_start.saturating_add(HORIZONTAL_SYNC_WIDTH);
+    let htotal = hsync_end.saturating_add(HORIZONTAL_BACK_PORCH);
+    let vsync_start = height.saturating_add(VERTICAL_FRONT_PORCH);
+    let vsync_end = vsync_start.saturating_add(VERTICAL_SYNC_WIDTH);
+    let vtotal = vsync_end.saturating_add(VERTICAL_BACK_PORCH);
     DrmModeModeInfo {
-        clock: width.saturating_mul(height).saturating_mul(60) / 1000,
+        // Pixel clock is expressed in kHz and includes blanking intervals.
+        // Keeping it consistent with the totals makes libdrm derive 60 Hz.
+        clock: htotal
+            .saturating_mul(vtotal)
+            .saturating_mul(DEFAULT_REFRESH_HZ)
+            / 1000,
         hdisplay: width as u16,
-        hsync_start: (width + 16) as u16,
-        hsync_end: (width + 32) as u16,
-        htotal: (width + 48) as u16,
+        hsync_start: hsync_start as u16,
+        hsync_end: hsync_end as u16,
+        htotal: htotal as u16,
         hskew: 0,
         vdisplay: height as u16,
-        vsync_start: (height + 1) as u16,
-        vsync_end: (height + 2) as u16,
-        vtotal: (height + 4) as u16,
+        vsync_start: vsync_start as u16,
+        vsync_end: vsync_end as u16,
+        vtotal: vtotal as u16,
         vscan: 0,
-        vrefresh: 60,
+        vrefresh: DEFAULT_REFRESH_HZ,
         flags: 0,
         type_: DRM_MODE_TYPE_PREFERRED,
         name,

@@ -2,14 +2,11 @@
 
 //! Per-file queues for atomic hardware work and DRM completion events.
 
-use core::sync::atomic::Ordering;
-
-use aster_time::read_monotonic_time;
 use ostd::sync::WaitQueue;
 
 use super::{
-    CRTC_ID, DRM_EVENT_FLIP_COMPLETE, DrmEventVblank, GpuManager, MAX_DRM_EVENTS,
-    MAX_PENDING_ATOMIC_COMMITS,
+    CRTC_ID, DRM_EVENT_FLIP_COMPLETE, DrmEventVblank, MAX_DRM_EVENTS, MAX_PENDING_ATOMIC_COMMITS,
+    vblank::VblankSnapshot,
 };
 use crate::{
     events::IoEvents,
@@ -19,6 +16,7 @@ use crate::{
 };
 
 type AtomicCommitWork = Box<dyn FnOnce() + Send>;
+type VblankCompletionWork = Box<dyn FnOnce() + Send>;
 
 struct AtomicCommitQueueState {
     work_items: VecDeque<AtomicCommitWork>,
@@ -167,6 +165,93 @@ impl Drop for AtomicCommitReservation {
     }
 }
 
+struct VblankCompletionQueueState {
+    work_items: VecDeque<VblankCompletionWork>,
+    is_worker_running: bool,
+}
+
+/// Runs delayed legacy KMS completions without allocating one thread per flip.
+pub(super) struct VblankCompletionQueue {
+    state: SpinLock<VblankCompletionQueueState>,
+    waiters: WaitQueue,
+}
+
+impl VblankCompletionQueue {
+    pub(super) fn new() -> Self {
+        Self {
+            state: SpinLock::new(VblankCompletionQueueState {
+                work_items: VecDeque::new(),
+                is_worker_running: false,
+            }),
+            waiters: WaitQueue::new(),
+        }
+    }
+
+    pub(super) fn submit(self: &Arc<Self>, work: VblankCompletionWork) {
+        let should_spawn_worker = {
+            let mut state = self.state.lock();
+            state.work_items.push_back(work);
+            if state.is_worker_running {
+                false
+            } else {
+                state.is_worker_running = true;
+                true
+            }
+        };
+        if should_spawn_worker {
+            let queue = self.clone();
+            ThreadOptions::new(move || queue.run()).spawn();
+        }
+    }
+
+    fn run(self: Arc<Self>) {
+        let mut worker = VblankCompletionWorker {
+            queue: self.clone(),
+            has_finished: false,
+        };
+        loop {
+            let work = {
+                let mut state = self.state.lock();
+                let Some(work) = state.work_items.pop_front() else {
+                    state.is_worker_running = false;
+                    worker.has_finished = true;
+                    drop(state);
+                    self.waiters.wake_all();
+                    return;
+                };
+                work
+            };
+            work();
+        }
+    }
+
+    pub(super) fn wait_until_idle(&self) {
+        self.waiters.wait_until(|| {
+            let state = self.state.lock();
+            (!state.is_worker_running).then_some(())
+        });
+    }
+}
+
+struct VblankCompletionWorker {
+    queue: Arc<VblankCompletionQueue>,
+    has_finished: bool,
+}
+
+impl Drop for VblankCompletionWorker {
+    fn drop(&mut self) {
+        if self.has_finished {
+            return;
+        }
+        error!("DRM vblank completion worker exited unexpectedly");
+        let mut state = self.queue.state.lock();
+        state.work_items.clear();
+        state.is_worker_running = false;
+        drop(state);
+        self.queue.waiters.wake_all();
+    }
+}
+
 struct DrmEventQueueState {
     events: VecDeque<DrmEventVblank>,
     reserved_slots: usize,
@@ -189,8 +274,8 @@ impl DrmEventQueue {
         }
     }
 
-    pub(super) fn queue_flip_event(&self, gpu_manager: &GpuManager, user_data: u64) -> Result<()> {
-        let event = new_flip_event(gpu_manager, user_data);
+    pub(super) fn queue_flip_event(&self, vblank: VblankSnapshot, user_data: u64) -> Result<()> {
+        let event = new_flip_event(vblank, user_data);
         let mut state = self.state.lock();
         if state.events.len() + state.reserved_slots >= MAX_DRM_EVENTS {
             return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
@@ -248,16 +333,14 @@ impl DrmEventQueue {
     }
 }
 
-fn new_flip_event(gpu_manager: &GpuManager, user_data: u64) -> DrmEventVblank {
-    let now = read_monotonic_time();
-    let sequence = gpu_manager.flip_sequence.fetch_add(1, Ordering::Relaxed);
+fn new_flip_event(vblank: VblankSnapshot, user_data: u64) -> DrmEventVblank {
     DrmEventVblank {
         type_: DRM_EVENT_FLIP_COMPLETE,
         length: size_of::<DrmEventVblank>() as u32,
         user_data,
-        tv_sec: now.as_secs() as u32,
-        tv_usec: now.subsec_micros(),
-        sequence,
+        tv_sec: vblank.timestamp.as_secs() as u32,
+        tv_usec: vblank.timestamp.subsec_micros(),
+        sequence: vblank.sequence as u32,
         crtc_id: CRTC_ID,
     }
 }
@@ -269,8 +352,8 @@ pub(super) struct DrmEventReservation {
 }
 
 impl DrmEventReservation {
-    pub(super) fn queue(mut self, gpu_manager: &GpuManager, user_data: u64) {
-        let event = new_flip_event(gpu_manager, user_data);
+    pub(super) fn queue(mut self, vblank: VblankSnapshot, user_data: u64) {
+        let event = new_flip_event(vblank, user_data);
         let mut state = self.queue.state.lock();
         debug_assert!(state.reserved_slots > 0);
         state.reserved_slots -= 1;
@@ -323,6 +406,31 @@ mod tests {
         assert!(queue.ensure_idle().is_err());
         drop(reservation);
         assert!(queue.ensure_idle().is_ok());
+    }
+
+    #[ktest]
+    fn vblank_completion_queue_preserves_submission_order() {
+        let queue = Arc::new(VblankCompletionQueue::new());
+        let completed: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
+        for sequence in 0..3 {
+            let completed = completed.clone();
+            queue.submit(Box::new(move || completed.lock().push(sequence)));
+        }
+
+        queue.wait_until_idle();
+        assert_eq!(*completed.lock(), vec![0, 1, 2]);
+    }
+
+    #[ktest]
+    fn flip_event_uses_supplied_vblank_snapshot() {
+        let clock = super::super::vblank::VblankClock::new();
+        let snapshot = clock.snapshot();
+        let event = new_flip_event(snapshot, 42);
+
+        assert_eq!(event.user_data, 42);
+        assert_eq!(event.sequence, snapshot.sequence as u32);
+        assert_eq!(event.tv_sec, snapshot.timestamp.as_secs() as u32);
+        assert_eq!(event.tv_usec, snapshot.timestamp.subsec_micros());
     }
 
     #[ktest]

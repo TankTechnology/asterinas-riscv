@@ -147,15 +147,20 @@ pub(super) fn mode_atomic(
     let result = commit_atomic_state(
         &handle.gpu_manager,
         handle.file_id,
-        &handle.event_queue,
         kms_state,
         &updates,
         hardware_update,
-        req.flags,
-        req.user_data,
     );
     match result {
         Ok(value) => {
+            let vblank = if output_fence.is_some() || req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+                handle.gpu_manager.vblank_clock.wait_for_next()
+            } else {
+                handle.gpu_manager.vblank_clock.snapshot()
+            };
+            if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+                handle.queue_flip_event(vblank, req.user_data)?;
+            }
             if let Some(output) = output_fence {
                 output.fence.signal_success();
             }
@@ -783,11 +788,16 @@ fn submit_nonblocking_commit(
 
         match result {
             Ok(()) => {
+                let vblank = if output_fence.is_some() || event_slot.is_some() {
+                    gpu_manager.vblank_clock.wait_for_next()
+                } else {
+                    gpu_manager.vblank_clock.snapshot()
+                };
                 if let Some(output_fence) = output_fence {
                     output_fence.signal_success();
                 }
                 if let Some(event_slot) = event_slot {
-                    event_slot.queue(&gpu_manager, user_data);
+                    event_slot.queue(vblank, user_data);
                 }
             }
             Err(error) => {
@@ -836,10 +846,7 @@ fn apply_nonblocking_hardware_update(
         PreparedAtomicHardwareUpdate::Present { framebuffer, .. } => {
             kms::scanout_prepared_fb(gpu_manager, framebuffer)
         }
-        PreparedAtomicHardwareUpdate::Disable => gpu_manager
-            .gpu
-            .disable_scanout()
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed")),
+        PreparedAtomicHardwareUpdate::Disable => gpu_manager.disable_scanout(),
     }
 }
 
@@ -870,12 +877,9 @@ fn property_values(
 fn commit_atomic_state(
     gpu_manager: &super::GpuManager,
     file_id: u64,
-    event_queue: &super::DrmEventQueue,
     kms_state: &mut super::KmsState,
     updates: &[AtomicObjectUpdate],
     hardware_update: PreparedAtomicHardwareUpdate,
-    flags: u32,
-    user_data: u64,
 ) -> Result<i32> {
     let property_manager = &gpu_manager.property_manager;
 
@@ -891,19 +895,13 @@ fn commit_atomic_state(
             kms::present_prepared_fb(gpu_manager, kms_state, file_id, framebuffer_id, framebuffer)?;
         }
         PreparedAtomicHardwareUpdate::Disable => {
-            gpu_manager
-                .gpu
-                .disable_scanout()
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+            gpu_manager.disable_scanout()?;
             kms_state.scanout = None;
         }
     }
 
     property_manager.set_values(property_values(updates));
 
-    if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-        event_queue.queue_flip_event(gpu_manager, user_data)?;
-    }
     Ok(0)
 }
 

@@ -755,10 +755,9 @@ Mesa EGL/GBM/KMS rendering, ending in `MINI_VIRGL_PASS`. M22 separately passed
 these TCG functional runs are not treated as performance measurements.
 
 Known compatibility gaps remain explicit: the virtual CRTC advertises no
-gamma table, and completion events currently follow virtio-gpu command
-completion rather than a physical vblank clock. These are follow-up
-interoperability and pacing items, not hidden prerequisites for the validated
-virgl scanout path.
+gamma table. At this point in the history, completion events still followed
+virtio-gpu command completion rather than a display clock; the later display
+clock section below closes that pacing gap.
 
 ## 2026-08-28 atomic explicit synchronization
 
@@ -782,3 +781,31 @@ atomic `modetest`, then rendered four real virgl frames through both legacy
 and atomic `kmscube`. The dedicated Mesa client performed a test-only commit,
 four nonblocking commits with output-fence polling, and chained each completed
 output fence into the next plane update; all four frames and checksums passed.
+
+## 2026-08-28 software vblank clock and paced completions
+
+The virtio-gpu transport has command-completion fences
+but no physical vblank interrupt.
+The DRM implementation now isolates that limitation
+behind a device-wide `VblankClock`,
+following the same timer-backed model that Linux DRM offers
+to drivers without a hardware vblank source.
+The clock advances from monotonic time while scanout is active
+and freezes without resetting its sequence when the CRTC is disabled.
+
+Legacy page-flip events are scheduled asynchronously for the next refresh
+boundary. Synchronous and nonblocking atomic paths now release
+`OUT_FENCE_PTR` and publish `DRM_EVENT_FLIP_COMPLETE` at that same boundary,
+using one sequence and timestamp source rather than incrementing a counter per
+submitted commit.
+Slow rendering can therefore skip elapsed sequence numbers,
+as a real display clock does.
+The synthesized mode's pixel clock also includes blanking totals,
+so libdrm derives the same 60 Hz rate used by the KMS clock.
+
+The post-change Sv39 gate again passed public legacy and atomic `modetest` and
+`kmscube`, PRIME sharing, raw virgl rendering, and the Mesa explicit-sync
+client, ending in `MINI_VIRGL_PASS`.
+TCG render throughput remains a functional measurement only;
+the important result is that public clients continued to make progress
+while events and fences were paced by a display clock.
