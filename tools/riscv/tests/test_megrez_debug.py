@@ -22,6 +22,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 
@@ -257,6 +258,268 @@ class MegrezDebugPlanTests(unittest.TestCase):
         self.assertTrue(encoded.endswith(b"\n"))
         with self.assertRaises(DebugContractError):
             replace(result, plan_sha256="f" * 63).validate()
+
+
+class MegrezDebugSimulationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.repository = Path(self.temporary_directory.name)
+        self.output = self.repository / "target/qemu-uboot/megrez-debug/fast"
+        self.build = self.repository / "target/qemu-uboot/megrez-debug/build"
+        self.output.mkdir(parents=True)
+        self.build.mkdir(parents=True)
+        artifact_directory = self.repository / "artifacts"
+        artifact_directory.mkdir()
+        paths = {
+            "kernel": artifact_directory / "kernel",
+            "initramfs": artifact_directory / "initramfs",
+            "qemu_dtb": self.output / "qemu-virt.dtb",
+            "megrez_dtb": artifact_directory / "megrez.dtb",
+        }
+        for name, path in paths.items():
+            path.write_bytes(f"{name}-payload".encode())
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        self.plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(
+                ArtifactIdentity.from_path(name, paths[name], addresses[name])
+                for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
+            ),
+            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=180,
+        )
+
+    def _runner(
+        self,
+        calls: list[tuple[tuple[str, ...], dict[str, object]]],
+        *,
+        generated_dtb: bytes = b"qemu_dtb-payload",
+        passed: bool = True,
+    ):
+        def run(
+            arguments: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append((tuple(arguments), kwargs))
+            if arguments[-1] == "prepare":
+                (self.output / "qemu-virt.dtb").write_bytes(generated_dtb)
+                (self.output / "boot.ext4").write_bytes(b"boot-disk")
+                (self.output / "artifacts.json").write_text("{}\n")
+                (self.output / "qemu-dtb-audit.json").write_text("{}\n")
+                (self.build / "u-boot").write_bytes(b"u-boot")
+            else:
+                result_path = Path(arguments[arguments.index("--result") + 1])
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "passed": passed,
+                            "profile": "generic-sv39-smp4-tcp-probe",
+                            "status": "PASS" if passed else "FAIL",
+                            "terminal_classification": "BOOT_COMPLETED",
+                            "effective_bootargs": self.plan.bootargs,
+                            "qemu_argv": [
+                                "qemu-system-riscv64",
+                                "-smp",
+                                "4",
+                                "-cpu",
+                                (
+                                    "rv64,sv48=false,svpbmt=true,zkr=true,"
+                                    "svadu=false,svade=true"
+                                ),
+                            ],
+                        }
+                    )
+                )
+                (self.output / "serial.log").write_text("serial\n")
+                (self.output / "marker-event.txt").write_text("marker\n")
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        return run
+
+    def test_fast_simulation_reuses_prepare_and_runner_then_binds_plan(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        result = simulate_fast(
+            self.plan,
+            self.output,
+            self.build,
+            run_command=self._runner(calls),
+            repository_root=self.repository,
+        )
+
+        self.assertEqual(result.stage, "fast")
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "fast-pass")
+        self.assertEqual(result.plan_sha256, self.plan.plan_sha256)
+        self.assertEqual(
+            result.evidence,
+            (
+                "serial.log",
+                "marker-event.txt",
+                "qemu-result.json",
+                "qemu-dtb-audit.json",
+            ),
+        )
+        self.assertEqual(len(calls), 2)
+        prepare, prepare_options = calls[0]
+        self.assertEqual(prepare[-1], "prepare")
+        environment = prepare_options["env"]
+        self.assertIsInstance(environment, dict)
+        assert isinstance(environment, dict)
+        self.assertEqual(
+            environment["QEMU_UBOOT_PROFILE"],
+            "generic-sv39-smp4-tcp-probe",
+        )
+        self.assertEqual(environment["QEMU_UBOOT_OUT_DIR"], str(self.output))
+        self.assertEqual(environment["QEMU_UBOOT_BUILD_DIR"], str(self.build))
+        self.assertIs(prepare_options["capture_output"], False)
+        run, _run_options = calls[1]
+        self.assertIn("generic-sv39-smp4-tcp-probe", run)
+        self.assertEqual(Path(run[run.index("--result") + 1]).name, "qemu-result.json")
+
+    def test_fast_simulation_invalidates_stale_results_before_prepare(self) -> None:
+        for name in ("result.json", "qemu-result.json"):
+            (self.output / name).write_text('{"passed":true}\n')
+
+        def fail(
+            arguments: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(arguments, 7, "", "prepare failed")
+
+        with self.assertRaisesRegex(SimulationError, "prepare-failed"):
+            simulate_fast(
+                self.plan,
+                self.output,
+                self.build,
+                run_command=fail,
+                repository_root=self.repository,
+            )
+
+        self.assertFalse((self.output / "result.json").exists())
+        self.assertFalse((self.output / "qemu-result.json").exists())
+
+    def test_fast_simulation_rejects_generated_dtb_drift_before_qemu(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        with self.assertRaisesRegex(SimulationError, "qemu-dtb-drift"):
+            simulate_fast(
+                self.plan,
+                self.output,
+                self.build,
+                run_command=self._runner(calls, generated_dtb=b"changed-dtb"),
+                repository_root=self.repository,
+            )
+
+        self.assertEqual(len(calls), 1)
+
+    def test_fast_simulation_rejects_a_false_guarded_result(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        with self.assertRaisesRegex(SimulationError, "qemu-gate-failed"):
+            simulate_fast(
+                self.plan,
+                self.output,
+                self.build,
+                run_command=self._runner(calls, passed=False),
+                repository_root=self.repository,
+            )
+
+    def test_fast_simulation_rejects_malformed_result_and_output_symlink(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        def malformed(
+            arguments: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            completed = self._runner(calls)(arguments, **kwargs)
+            if arguments[-1] != "prepare":
+                (self.output / "qemu-result.json").write_text("not-json")
+            return completed
+
+        with self.assertRaisesRegex(SimulationError, "qemu-result-invalid"):
+            simulate_fast(
+                self.plan,
+                self.output,
+                self.build,
+                run_command=malformed,
+                repository_root=self.repository,
+            )
+
+        outside = self.repository / "outside"
+        outside.mkdir()
+        unsafe = self.repository / "target/qemu-uboot/unsafe"
+        unsafe.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(SimulationError, "simulation-output-unsafe"):
+            simulate_fast(
+                self.plan,
+                unsafe,
+                self.build,
+                run_command=self._runner([]),
+                repository_root=self.repository,
+            )
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_fast_simulation_propagates_interrupt_after_stale_invalidation(
+        self,
+    ) -> None:
+        stale = self.output / "result.json"
+        stale.write_text('{"passed":true}\n')
+
+        def interrupted(
+            _arguments: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            simulate_fast(
+                self.plan,
+                self.output,
+                self.build,
+                run_command=interrupted,
+                repository_root=self.repository,
+            )
+        self.assertFalse(stale.exists())
+
+    def test_simulate_cli_atomically_publishes_the_stage_result(self) -> None:
+        plan_path = self.repository / "plan.json"
+        plan_path.write_bytes(self.plan.canonical_bytes())
+        expected = StageResult(
+            schema_version=1,
+            stage="fast",
+            passed=True,
+            reason="fast-pass",
+            plan_sha256=self.plan.plan_sha256,
+            evidence=("serial.log",),
+        )
+        from tools.riscv import megrez_debug
+
+        with mock.patch.object(megrez_debug, "simulate_fast", return_value=expected):
+            status = megrez_debug.main(
+                (
+                    "simulate",
+                    str(plan_path),
+                    "--tier",
+                    "fast",
+                    "--output-directory",
+                    str(self.output),
+                    "--uboot-build-directory",
+                    str(self.build),
+                )
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            StageResult.from_bytes((self.output / "result.json").read_bytes()),
+            expected,
+        )
 
 
 class MegrezDebugCliTests(unittest.TestCase):

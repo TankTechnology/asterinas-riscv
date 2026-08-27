@@ -19,6 +19,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 
 KERNEL_ADDRESS = 0x80200000
 INITRAMFS_ADDRESS = 0x83000000
@@ -195,6 +196,12 @@ def _parser() -> argparse.ArgumentParser:
     check = subparsers.add_parser("check", help="revalidate every plan artifact")
     check.add_argument("plan", type=Path)
 
+    simulate = subparsers.add_parser("simulate", help="run a plan-bound QEMU gate")
+    simulate.add_argument("plan", type=Path)
+    simulate.add_argument("--tier", choices=("fast",), required=True)
+    simulate.add_argument("--output-directory", required=True, type=Path)
+    simulate.add_argument("--uboot-build-directory", required=True, type=Path)
+
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)
     board.add_argument("device")
@@ -215,6 +222,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
             _check_artifacts(plan)
             print(f"MEGREZ_DEBUG_CHECK_PASS plan={plan.plan_sha256}")
             return 0
+        if values.command == "simulate":
+            plan = _load_plan(values.plan)
+            _check_artifacts(plan)
+            result = simulate_fast(
+                plan,
+                values.output_directory,
+                values.uboot_build_directory,
+            )
+            _atomic_write(
+                values.output_directory / "result.json", result.canonical_bytes()
+            )
+            return 0
 
         plan = _load_plan(values.plan)
         if values.dry_run:
@@ -222,7 +241,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return 0
         _validate_simulation(values.simulation_result, plan)
         raise WorkflowError("plan-board-not-implemented")
-    except (DebugContractError, OSError, WorkflowError) as error:
+    except (DebugContractError, OSError, SimulationError, WorkflowError) as error:
         print(f"megrez-debug: {error}", file=sys.stderr)
         return 2
 
