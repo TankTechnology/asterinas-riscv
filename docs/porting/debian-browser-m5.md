@@ -42,8 +42,11 @@ and a finite positive playback position at the end of that duration.
 Missing, duplicated, reordered, forged, or externally sourced evidence fails
 closed.  This page-level observation does not claim that Firefox made no other
 background network connections; socket-level isolation/evidence is separate.
-Accordingly, its pass record says only `network_mode=firefox-offline` and
-`source=file`; it does not assert system-wide network silence.
+The content gate joins Firefox's private network namespace and requires its only
+interface to be loopback.  Accordingly, its pass record says
+`network_mode=private-loopback`, `source=file`, and
+`direct_nonloopback_ip=unavailable`; it does not assert system-wide network
+silence.
 
 This deliberately does not use CDP: Mozilla removed CDP support after Firefox
 140.  It also does not require geckodriver or Selenium.  The gate retains the
