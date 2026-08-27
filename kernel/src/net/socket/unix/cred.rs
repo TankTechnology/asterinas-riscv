@@ -20,6 +20,14 @@ impl SocketCred<ReadOp> {
 
         Self { pid, cred }
     }
+
+    #[cfg(ktest)]
+    pub(super) fn new_test_root() -> Self {
+        Self {
+            pid: 1,
+            cred: Credentials::<ReadOp>::new_root(),
+        }
+    }
 }
 
 impl SocketCred<ReadDupOp> {
@@ -31,6 +39,14 @@ impl SocketCred<ReadDupOp> {
             .credentials_dup();
 
         Self { pid, cred }
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn new_test_root() -> Self {
+        Self {
+            pid: 1,
+            cred: Credentials::<ReadDupOp>::new_root(),
+        }
     }
 }
 

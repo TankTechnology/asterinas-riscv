@@ -32,6 +32,10 @@ pub(super) struct SocketNode(NodeHandle);
 #[derive(Clone)]
 pub(super) struct StreamStorageNode(NodeHandle);
 
+/// A listening stream socket's pending-connection queue.
+#[derive(Clone)]
+pub(super) struct StreamBacklogNode(NodeHandle);
+
 /// A datagram receive queue that can own in-flight descriptors.
 #[derive(Clone)]
 pub(super) struct DatagramQueueNode(NodeHandle);
@@ -79,6 +83,18 @@ impl StreamStorageNode {
     pub(super) fn new() -> Self {
         Self(NodeHandle::new(NodeKind::StreamStorage))
     }
+
+    #[cfg(ktest)]
+    pub(super) fn downgrade(&self) -> WeakNode {
+        WeakNode(Arc::downgrade(&self.0.0))
+    }
+}
+
+impl StreamBacklogNode {
+    /// Creates a stable identity for one stream backlog.
+    pub(super) fn new() -> Self {
+        Self(NodeHandle::new(NodeKind::StreamBacklog))
+    }
 }
 
 impl DatagramQueueNode {
@@ -95,6 +111,12 @@ impl ScmGraphNode for SocketNode {
 }
 
 impl ScmGraphNode for StreamStorageNode {
+    fn node_handle(&self) -> &NodeHandle {
+        &self.0
+    }
+}
+
+impl ScmGraphNode for StreamBacklogNode {
     fn node_handle(&self) -> &NodeHandle {
         &self.0
     }
@@ -247,6 +269,7 @@ struct NodeId(u64);
 enum NodeKind {
     Socket,
     StreamStorage,
+    StreamBacklog,
     DatagramQueue,
 }
 
@@ -458,6 +481,27 @@ fn next_node_id() -> NodeId {
         )
         .expect("SCM graph exhausted its node ID space");
     NodeId(id)
+}
+
+#[cfg(ktest)]
+pub(super) struct WeakNode(Weak<NodeIdentity>);
+
+#[cfg(ktest)]
+impl WeakNode {
+    pub(super) fn is_alive(&self) -> bool {
+        self.0.strong_count() != 0
+    }
+}
+
+#[cfg(ktest)]
+pub(super) fn permanent_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    scm_graph()
+        .lock()
+        .edges
+        .get(&from.node_handle().id())
+        .and_then(|targets| targets.get(&to.node_handle().id()))
+        .map(|counts| counts.get(EdgeClass::Permanent))
+        .unwrap_or(0)
 }
 
 #[cfg(ktest)]
