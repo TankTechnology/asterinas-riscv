@@ -537,9 +537,6 @@ impl Socket for UnixStreamSocket {
             }
         }
         let mut auxiliary_data = AuxiliaryData::from_control(control_messages)?;
-        // Keep the pre-B1 compatibility policy at the protocol boundary, after parsing has
-        // released the sender's file-table borrow and before any stream queue lock is acquired.
-        auxiliary_data.enforce_legacy_send_policy()?;
 
         if flags.contains(SendFlags::MSG_DONTWAIT) {
             self.try_send(reader, &mut auxiliary_data, flags)
