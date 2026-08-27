@@ -10,6 +10,7 @@ readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_COMMAND_TIMEOUT_SECONDS
 readonly CAPTURE_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS:-10}"
 readonly FOCUS_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS:-1}"
 readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
+readonly NETSURF_LOG="${ASTERINAS_BROWSER_M7_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
 readonly HOME_URL='https://www.baidu.com/'
 readonly SEARCH_QUERY='asterinas-riscv'
 readonly USER_ID=1000
@@ -73,6 +74,22 @@ emit_title_diagnostic() {
     emit "DEBIAN_BROWSER_M7_DIAGNOSTIC phase=$phase title_hex=$title_hex"
 }
 
+emit_netsurf_log_diagnostic() {
+    local tail_hex
+    if [[ ! -f "$NETSURF_LOG" || -L "$NETSURF_LOG" ]]; then
+        emit "DEBIAN_BROWSER_M7_NETSURF_LOG unavailable=missing-or-unsafe"
+        return
+    fi
+    tail_hex="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" tail -c 2048 -- "$NETSURF_LOG" |
+            od -An -v -tx1 | tr -d ' \n'
+    )" || {
+        emit "DEBIAN_BROWSER_M7_NETSURF_LOG unavailable=read-failed"
+        return
+    }
+    emit "DEBIAN_BROWSER_M7_NETSURF_LOG tail_hex=$tail_hex"
+}
+
 wait_for_home_title() {
     local deadline=$((SECONDS + TIMEOUT_SECONDS))
     local title_lower
@@ -84,6 +101,7 @@ wait_for_home_title() {
             return
         fi
         if ((SECONDS >= deadline)); then
+            emit_netsurf_log_diagnostic
             emit_title_diagnostic home
             fail home-title-timeout
         fi
@@ -101,6 +119,7 @@ wait_for_search_title() {
             return
         fi
         if ((SECONDS >= deadline)); then
+            emit_netsurf_log_diagnostic
             emit_title_diagnostic search
             fail search-title-timeout
         fi
