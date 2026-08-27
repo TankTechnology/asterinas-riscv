@@ -11,8 +11,9 @@ import json
 import math
 import os
 import socket
+import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 
 PROBE_URL = "file:///usr/share/asterinas/browser-m5/index.html"
@@ -107,19 +108,35 @@ class GateError(RuntimeError):
 
 
 class Marionette:
-    def __init__(self, host: str, port: int, timeout: float) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        timeout: float,
+        phase: Callable[[str, str, BaseException | None], None] | None = None,
+    ) -> None:
         if host not in {"127.0.0.1", "::1"}:
             raise GateError("Marionette endpoint must be loopback")
         self._deadline = time.monotonic() + timeout
-        self._socket = socket.create_connection((host, port), timeout=timeout)
+        self._phase = phase or (lambda _phase, _state, _error=None: None)
+        self._phase("tcp-connect", "start", None)
+        try:
+            self._socket = socket.create_connection((host, port), timeout=timeout)
+        except BaseException as error:
+            self._phase("tcp-connect", "exception", error)
+            raise
+        self._phase("tcp-connect", "done", None)
         self._next_id = 1
+        self._phase("greeting", "start", None)
         try:
             hello = self._receive()
             if hello != {"applicationType": "gecko", "marionetteProtocol": 3}:
                 raise GateError("unexpected Marionette protocol greeting")
-        except BaseException:
+        except BaseException as error:
+            self._phase("greeting", "exception", error)
             self.close()
             raise
+        self._phase("greeting", "done", None)
 
     def _remaining(self) -> float:
         remaining = self._deadline - time.monotonic()
@@ -269,13 +286,20 @@ def validate_network_namespace(firefox_pid: int) -> None:
         raise GateError("Firefox network namespace is not loopback-only")
 
 
-def _connect(host: str, port: int, deadline: float) -> Marionette:
+def _connect(
+    host: str,
+    port: int,
+    deadline: float,
+    phase: Callable[[str, str, BaseException | None], None] | None = None,
+) -> Marionette:
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise GateError("Marionette endpoint did not become ready before deadline")
         try:
-            return Marionette(host, port, remaining)
+            if phase is None:
+                return Marionette(host, port, remaining)
+            return Marionette(host, port, remaining, phase=phase)
         except OSError as error:
             if error.errno != errno.ECONNREFUSED:
                 raise
@@ -288,22 +312,57 @@ def _connect(host: str, port: int, deadline: float) -> Marionette:
 def snapshot_once(host: str, port: int, timeout: float) -> list[dict[str, object]]:
     """Capture content state without deciding whether the formal gate passes."""
 
-    client = _connect(host, port, time.monotonic() + timeout)
-    session_created = False
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        fields = (
+            f"A_M5_PHASE phase={name} state={state} "
+            f"monotonic_ns={time.monotonic_ns()} wall_ns={time.time_ns()}"
+        )
+        if error is not None:
+            fields += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(fields, file=sys.stderr, flush=True)
+
     try:
-        session = client.command("WebDriver:NewSession", {"strictFileInteractability": True})
+        client = _connect(host, port, time.monotonic() + timeout, phase=phase)
+    except socket.timeout as error:
+        raise GateError("Marionette diagnostic timed out before greeting completed") from error
+    session_created = False
+
+    def command(stage: str, name: str, parameters: object | None = None) -> object:
+        phase(stage, "start")
+        try:
+            result = client.command(name, parameters)
+        except BaseException as error:
+            phase(stage, "exception", error)
+            if isinstance(error, socket.timeout):
+                raise GateError(f"Marionette diagnostic timed out during {stage}") from error
+            raise
+        phase(stage, "done")
+        return result
+
+    try:
+        session = command(
+            "new-session", "WebDriver:NewSession", {"strictFileInteractability": True}
+        )
         if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
             raise GateError("Marionette did not create a session")
         session_created = True
-        handles = client.command("WebDriver:GetWindowHandles")
+        handles = command("get-window-handles", "WebDriver:GetWindowHandles")
         if not isinstance(handles, list) or not handles:
             raise GateError("Marionette returned no browser windows")
         snapshots = []
         for handle in handles:
             if not isinstance(handle, str):
                 raise GateError("Marionette returned an invalid window handle")
-            client.command("WebDriver:SwitchToWindow", {"handle": handle, "focus": False})
-            result = client.command(
+            command(
+                "switch-to-window",
+                "WebDriver:SwitchToWindow",
+                {"handle": handle, "focus": False},
+            )
+            result = command(
+                "execute-script",
                 "WebDriver:ExecuteScript",
                 {
                     "script": _DIAGNOSTIC_EXPRESSION,
@@ -324,7 +383,13 @@ def snapshot_once(host: str, port: int, timeout: float) -> list[dict[str, object
             if not isinstance(snapshot, dict):
                 raise GateError("Marionette diagnostic returned a non-object snapshot")
             snapshots.append(snapshot)
-        client.command("WebDriver:DeleteSession")
+        try:
+            command("delete-session", "WebDriver:DeleteSession")
+        except (GateError, OSError, TimeoutError):
+            # A diagnostic cleanup failure must not discard an already captured
+            # content snapshot. Closing the transport below still tears down the
+            # diagnostic-only connection.
+            pass
         session_created = False
         return snapshots
     finally:
