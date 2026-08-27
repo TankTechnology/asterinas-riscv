@@ -26,6 +26,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     MEGREZ_SV48_SVADE_FAST,
     MEGREZ_SV48_SVADU_FAST,
     QEMU_VIRT,
+    QEMU_VIRT_SMP4,
     SIFIVE_U,
     SIFIVE_U_ASTERINAS_SMOKE,
     SIFIVE_U_LINUX_REFERENCE,
@@ -417,6 +418,29 @@ class ContractCompositionTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(FrozenInstanceError):
                     setattr(value, field, "changed")
+
+    def test_generic_sv39_smp4_tcp_probe_uses_its_own_terminal(self) -> None:
+        profile = profile_by_name("generic-sv39-smp4-tcp-probe")
+
+        self.assertIs(profile.machine, QEMU_VIRT_SMP4)
+        self.assertIs(profile.boot_flow, UBOOT_BOOTI)
+        self.assertEqual(profile.validation.name, "megrez-tcp-probe")
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"ASTERINAS_GMAC_TCP_PROBE_READY",
+        )
+        self.assertEqual(
+            profile.validation.milestones[-1].line,
+            b"ASTERINAS_GMAC_TCP_PROBE_READY",
+        )
+        self.assertEqual(profile.machine.hart_count, 4)
+        self.assertEqual(profile.machine.mmu_types, ("riscv,sv39",) * 4)
+        self.assertEqual(
+            profile.cpu,
+            "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        )
+        self.assertFalse(profile.requires_resource_gate)
+        validate_registered_profile(profile)
 
     def test_existing_profiles_retain_their_public_policy(self) -> None:
         expected = {
