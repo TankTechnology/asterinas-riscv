@@ -1,12 +1,143 @@
 """Focused tests for the bounded Megrez XMODEM sender."""
 
+import os
+import pty
+import select
+import tempfile
+import threading
+import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tools.riscv import megrez_xmodem as xmodem
 
 
 class MegrezXmodemTests(unittest.TestCase):
+    def _run_pty_transfer(self, *, current_baud: int) -> None:
+        payload = (b"Asterinas-XMODEM-PTY-" * 70) + b"done"
+        address = 0x83000000
+        errors: list[BaseException] = []
+        received = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        slave_name = os.ttyname(slave_fd)
+        deadline = time.monotonic() + 5.0
+
+        def read_exact(length: int) -> bytes:
+            data = bytearray()
+            while len(data) < length:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"PTY peer timed out after {len(data)}/{length}")
+                readable, _, _ = select.select([master_fd], [], [], remaining)
+                if not readable:
+                    raise TimeoutError("PTY peer read deadline expired")
+                chunk = os.read(master_fd, length - len(data))
+                if not chunk:
+                    raise EOFError("PTY peer observed EOF")
+                data.extend(chunk)
+            return bytes(data)
+
+        def read_until(marker: bytes) -> bytes:
+            data = bytearray()
+            while marker not in data:
+                data.extend(read_exact(1))
+                if len(data) > 4096:
+                    raise AssertionError("PTY command exceeds 4 KiB")
+            return bytes(data)
+
+        def peer() -> None:
+            try:
+                expected_command = (
+                    f"loadx 0x{address:x} {xmodem.TRANSFER_BAUD}\r".encode()
+                    if current_baud == xmodem.INITIAL_BAUD
+                    else f"loadx 0x{address:x}\r".encode()
+                )
+                self.assertEqual(read_until(b"\r"), expected_command)
+                if current_baud == xmodem.INITIAL_BAUD:
+                    os.write(
+                        master_fd,
+                        b"## Switch baudrate to 1500000 bps and press ENTER ...",
+                    )
+                    self.assertEqual(read_exact(1), b"\r")
+                os.write(master_fd, bytes((xmodem.CRC_REQUEST,)))
+
+                expected_blocks = (
+                    len(payload) + xmodem.BLOCK_SIZE - 1
+                ) // xmodem.BLOCK_SIZE
+                for index in range(expected_blocks):
+                    packet = read_exact(3 + xmodem.BLOCK_SIZE + 2)
+                    self.assertEqual(packet[0], xmodem.STX)
+                    self.assertEqual(packet[1], (index + 1) & 0xFF)
+                    self.assertEqual(packet[2], 0xFF - packet[1])
+                    block = packet[3 : 3 + xmodem.BLOCK_SIZE]
+                    self.assertEqual(
+                        int.from_bytes(packet[-2:], "big"),
+                        xmodem.crc16_xmodem(block),
+                    )
+                    received.extend(block)
+                    os.write(master_fd, bytes((xmodem.ACK,)))
+
+                self.assertEqual(read_exact(1), bytes((xmodem.EOT,)))
+                os.write(master_fd, bytes((xmodem.ACK,)))
+                completion = (
+                    f"\r\nTotal Size = 0x{len(payload):08x} = {len(payload)} Bytes\r\n"
+                    f"Start Addr = 0x{address:x}\r\n"
+                ).encode()
+                if current_baud == xmodem.INITIAL_BAUD:
+                    os.write(master_fd, completion + b"press ESC")
+                    sent_at = time.monotonic()
+                    self.assertEqual(read_exact(1), bytes((0x1B,)))
+                    self.assertGreaterEqual(time.monotonic() - sent_at, 0.005)
+                    os.write(master_fd, b"\r\n=> ")
+                else:
+                    os.write(master_fd, completion + b"=> ")
+                    readable, _, _ = select.select([master_fd], [], [], 0.05)
+                    self.assertFalse(
+                        readable, "same-baud completion sent an unexpected ESC"
+                    )
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=peer, daemon=True)
+        thread.start()
+        try:
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                mock.patch.object(xmodem, "BAUD_SETTLE_SECONDS", 0.01),
+            ):
+                artifact = Path(directory) / "artifact"
+                artifact.write_bytes(payload)
+                result = xmodem.transfer(
+                    slave_name,
+                    artifact,
+                    address,
+                    current_baud=current_baud,
+                )
+            self.assertEqual(
+                result.blocks,
+                (len(payload) + xmodem.BLOCK_SIZE - 1) // xmodem.BLOCK_SIZE,
+            )
+            self.assertEqual(result.retries, 0)
+            self.assertEqual(received[: len(payload)], payload)
+            self.assertEqual(
+                received[len(payload) :],
+                bytes((xmodem.PAD,)) * (len(received) - len(payload)),
+            )
+        finally:
+            thread.join(timeout=5)
+            os.close(master_fd)
+            os.close(slave_fd)
+        self.assertFalse(thread.is_alive(), "PTY peer thread did not terminate")
+        if errors:
+            raise errors[0]
+
+    def test_pty_initial_baud_transfer(self) -> None:
+        self._run_pty_transfer(current_baud=xmodem.INITIAL_BAUD)
+
+    def test_pty_existing_transfer_baud(self) -> None:
+        self._run_pty_transfer(current_baud=xmodem.TRANSFER_BAUD)
+
     def test_crc_and_one_kibibyte_packet_match_xmodem(self) -> None:
         self.assertEqual(xmodem.crc16_xmodem(b"123456789"), 0x31C3)
 
