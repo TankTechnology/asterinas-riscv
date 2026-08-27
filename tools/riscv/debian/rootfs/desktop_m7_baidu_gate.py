@@ -76,12 +76,15 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
         self._home_screenshot_metadata: dict[str, int] = {}
         self._search_screenshot = b""
         self._search_screenshot_metadata: dict[str, int] = {}
+        self._failure_screenshot = b""
+        self._failure_screenshot_metadata: dict[str, int] = {}
 
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
         self._require_output().invalidate(
             "desktop-m7-baidu-home.ppm",
             "desktop-m7-baidu-search.ppm",
+            "desktop-m7-baidu-failure.ppm",
         )
 
     @staticmethod
@@ -97,28 +100,44 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
 
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         super().run_protocol(session, config)
-        self._wait_marker(session, DESKTOP_M7_HOME_MARKER.encode(), config)
-        (
-            self._home_screenshot,
-            self._home_screenshot_metadata,
-        ) = capture_rendered_ppm(
-            session["monitor"],
-            session["directory"] / "desktop-m7-baidu-home.ppm",
-            time.monotonic() + config.command_timeout,
-        )
-        self._wait_marker(session, DESKTOP_M7_SEARCH_MARKER.encode(), config)
-        session["serial"].wait_for(
-            DESKTOP_M7_READY_MARKER.encode(),
-            time.monotonic() + config.boot_timeout,
-        )
-        (
-            self._search_screenshot,
-            self._search_screenshot_metadata,
-        ) = capture_rendered_ppm(
-            session["monitor"],
-            session["directory"] / "desktop-m7-baidu-search.ppm",
-            time.monotonic() + config.command_timeout,
-        )
+        try:
+            self._wait_marker(session, DESKTOP_M7_HOME_MARKER.encode(), config)
+            (
+                self._home_screenshot,
+                self._home_screenshot_metadata,
+            ) = capture_rendered_ppm(
+                session["monitor"],
+                session["directory"] / "desktop-m7-baidu-home.ppm",
+                time.monotonic() + config.command_timeout,
+            )
+            self._wait_marker(session, DESKTOP_M7_SEARCH_MARKER.encode(), config)
+            session["serial"].wait_for(
+                DESKTOP_M7_READY_MARKER.encode(),
+                time.monotonic() + config.boot_timeout,
+            )
+            (
+                self._search_screenshot,
+                self._search_screenshot_metadata,
+            ) = capture_rendered_ppm(
+                session["monitor"],
+                session["directory"] / "desktop-m7-baidu-search.ppm",
+                time.monotonic() + config.command_timeout,
+            )
+        except GateFailure:
+            try:
+                (
+                    self._failure_screenshot,
+                    self._failure_screenshot_metadata,
+                ) = capture_rendered_ppm(
+                    session["monitor"],
+                    session["directory"] / "desktop-m7-baidu-failure.ppm",
+                    time.monotonic() + config.command_timeout,
+                )
+            except GateTermination:
+                raise
+            except Exception:
+                pass
+            raise
 
     def publish(
         self,
@@ -141,8 +160,15 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
                 self._search_screenshot,
                 mode=0o600,
             )
+        if self._failure_screenshot:
+            output.atomic_write(
+                "desktop-m7-baidu-failure.ppm",
+                self._failure_screenshot,
+                mode=0o600,
+            )
         result["homepage_screenshot"] = self._home_screenshot_metadata
         result["search_screenshot"] = self._search_screenshot_metadata
+        result["failure_screenshot"] = self._failure_screenshot_metadata
         super().publish(config, prepared, transcript, result)
 
 
