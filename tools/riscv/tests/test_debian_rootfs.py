@@ -3816,6 +3816,10 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         master, slave = os.openpty()
         self.addCleanup(os.close, master)
         os.set_inheritable(slave, True)
+        passed_path = self.directory / "passed-fd"
+        passed_path.write_bytes(b"fd contents")
+        passed_fd = os.open(passed_path, os.O_RDONLY | os.O_CLOEXEC)
+        self.addCleanup(os.close, passed_fd)
         previous_mask = signal.pthread_sigmask(
             signal.SIG_BLOCK, {signal.SIGHUP, signal.SIGTERM}
         )
@@ -3823,24 +3827,30 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         script = (
             "import os,signal,sys; "
             "m=signal.pthread_sigmask(signal.SIG_BLOCK, []); "
-            "inherited=1; "
+            "stdio_inherited=1; passed_inherited=1; "
             "\ntry: os.fstat(int(sys.argv[1]))\n"
-            "except OSError: inherited=0\n"
+            "except OSError: stdio_inherited=0\n"
+            "try: os.fstat(int(sys.argv[2]))\n"
+            "except OSError: passed_inherited=0\n"
             "print(os.getpid(),os.getsid(0),int(signal.SIGHUP in m),"
-            "int(signal.SIGTERM in m),inherited,flush=True)"
+            "int(signal.SIGTERM in m),stdio_inherited,passed_inherited,flush=True)"
         )
         process = launch_process(
-            (sys.executable, "-c", script, str(slave)), stdio_fd=slave
+            (sys.executable, "-c", script, str(slave), str(passed_fd)),
+            stdio_fd=slave,
+            pass_fds=(passed_fd,),
         )
         os.close(slave)
         output = SerialConsole(master, process=process, max_bytes=256).drain(
             self._deadline()
         )
         self.assertEqual(process.wait(self._deadline()), 0)
-        pid, sid, hup_blocked, term_blocked, inherited = output.decode().split()
+        pid, sid, hup_blocked, term_blocked, stdio_inherited, passed_inherited = (
+            output.decode().split()
+        )
         self.assertEqual(pid, sid)
         self.assertEqual((hup_blocked, term_blocked), ("0", "0"))
-        self.assertEqual(inherited, "0")
+        self.assertEqual((stdio_inherited, passed_inherited), ("0", "1"))
 
     def test_cleanup_kills_group_after_leader_exit(self) -> None:
         child_pid_file = self.directory / "child.pid"
@@ -4347,7 +4357,7 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
             with (
                 mock.patch.object(
                     gate_backend_module, "launch_process", return_value=process
-                ),
+                ) as launch,
                 mock.patch.object(
                     gate_backend_module.HmpMonitor,
                     "connect",
@@ -4366,11 +4376,18 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                     config, {"boot_disk": boot, "root_disk": root}, 1
                 )
                 session_directory = session["directory"]
+                output_fd = operations._require_output()._operation_fd
                 self.assertEqual(session_directory.parent, Path("/tmp"))
                 self.assertLess(
                     len(os.fsencode(session_directory / "monitor.sock")), 108
                 )
-                self.assertTrue(os.path.samefile(root, session_directory / root.name))
+                self.assertFalse((session_directory / root.name).exists())
+                launched_argv = launch.call_args.args[0]
+                self.assertIn(
+                    f"file=/proc/self/fd/{output_fd}/{root.name}",
+                    " ".join(launched_argv),
+                )
+                self.assertEqual(launch.call_args.kwargs["pass_fds"], (output_fd,))
                 operations.close_monitor(session)
                 operations.cleanup_process(session, config)
                 self.assertEqual(operations.drain_serial(session, config), b"")

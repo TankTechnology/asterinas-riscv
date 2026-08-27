@@ -261,20 +261,9 @@ class ConcreteOperations:
         try:
             uboot = directory / "u-boot"
             self._materialize("u_boot", uboot)
-            boot = directory / "boot.ext4"
-            root = directory / "debian-root.run.ext2"
-            os.link(
-                "boot.ext4",
-                boot,
-                src_dir_fd=output._operation_fd,
-                follow_symlinks=False,
-            )
-            os.link(
-                "debian-root.run.ext2",
-                root,
-                src_dir_fd=output._operation_fd,
-                follow_symlinks=False,
-            )
+            pinned_output = Path(f"/proc/self/fd/{output._operation_fd}")
+            boot = pinned_output / "boot.ext4"
+            root = pinned_output / "debian-root.run.ext2"
             monitor_path = directory / "monitor.sock"
             argv = self._qemu_argv(
                 uboot=uboot,
@@ -286,7 +275,11 @@ class ConcreteOperations:
             )
             self._attempted_argv.append(argv)
             master, slave = os.openpty()
-            process = launch_process(argv, stdio_fd=slave)
+            process = launch_process(
+                argv,
+                stdio_fd=slave,
+                pass_fds=(output._operation_fd,),
+            )
             os.close(slave)
             slave = -1
             serial = SerialConsole(
