@@ -5,6 +5,7 @@ pub mod constants;
 mod pause;
 mod pending;
 mod poll;
+pub(crate) mod provenance;
 pub mod sig_action;
 pub mod sig_disposition;
 pub mod sig_mask;
@@ -123,6 +124,7 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
     };
 
     let sig_num = signal.num();
+    provenance::trace_delivery(sig_num, ctx);
     match sig_action {
         SigAction::Ign => {
             debug!("Ignore signal {:?}", sig_num);
