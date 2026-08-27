@@ -1685,6 +1685,10 @@ printf '0x200001 "Asterinas Terminal": ("xterm" "XTerm")\n'
             f"package\triscv64\t1.0\t{digest}\n",
             encoding="utf-8",
         )
+        (work_directory / "packages.lock").write_text(
+            "package\triscv64\t1.0\n",
+            encoding="utf-8",
+        )
         cache_directory = self.directory / "cache"
         sha256_directory = cache_directory / "sha256"
         outside_directory = self.directory / "outside"
