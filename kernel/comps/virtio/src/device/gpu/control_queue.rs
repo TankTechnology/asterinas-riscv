@@ -1,160 +1,272 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Serialized virtio-gpu control queue submission and completion.
+//! Concurrent virtio-gpu control queue submission and completion.
 //!
-//! [`ControlQueue::operation`] is a sleeping mutex that permits exactly one
-//! in-flight request and protects any request buffer prepared by its guard's
-//! owner. [`ControlQueue::inner`] protects the virtqueue and completion slot
-//! from both task and IRQ context. The IRQ handler only takes `inner`, stores
-//! one completion without allocating, releases the IRQ-disabled lock, and then
-//! wakes the task. Device notification likewise happens after releasing
-//! `inner`, using the separately cloned notifier.
+//! Each submitted descriptor token owns a separate [`ControlRequest`].
+//! This lets unrelated control commands remain in flight together while the
+//! IRQ handler dispatches used-ring entries to the matching waiter.
+//! The queue spinlock protects the virtqueue and token map, while per-request
+//! state protects completion delivery.
+//! Device notification and waiter wakeups happen after releasing the queue lock.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::hint::spin_loop;
 
 use aster_util::mem_obj_slice::Slice;
 use ostd::{
     mm::dma::DmaStream,
-    sync::{LocalIrqDisabled, Mutex, MutexGuard, SpinLock, WaitQueue},
+    sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
 
 use super::VirtioGpuCtrlHdr;
-use crate::queue::{PopUsedError, VirtQueue, VirtQueueNotifier};
+use crate::queue::{AddBufsError, PopUsedError, VirtQueue, VirtQueueNotifier};
 
 pub(super) struct ControlQueue {
-    operation: Mutex<()>,
     inner: SpinLock<ControlQueueInner, LocalIrqDisabled>,
     notifier: VirtQueueNotifier,
-    completion_waiters: WaitQueue,
+    descriptors_available: WaitQueue,
+    descriptor_capacity: usize,
 }
 
 struct ControlQueueInner {
     queue: VirtQueue,
     irq_wait_enabled: bool,
-    completed: Option<Result<(u16, u32), PopUsedError>>,
+    pending: TokenMap<Arc<ControlRequest>>,
 }
 
-pub(super) struct ControlOperation<'a> {
+struct TokenMap<T> {
+    slots: Vec<Option<T>>,
+}
+
+struct ControlRequest {
+    completion: SpinLock<Option<Result<u32, PopUsedError>>, LocalIrqDisabled>,
+    waiters: WaitQueue,
+    // Every descriptor's memory must remain alive until the device returns
+    // the token, even if completion is delayed.
+    _dma_bufs: Vec<Arc<DmaStream>>,
+}
+
+#[must_use = "a submitted control request must be completed"]
+pub(super) struct ControlTicket<'a> {
     queue: &'a ControlQueue,
-    _guard: MutexGuard<'a, ()>,
+    request: Arc<ControlRequest>,
+    token: u16,
+}
+
+enum DispatchResult {
+    NotReady,
+    InvalidToken {
+        token: u32,
+        queue_size: usize,
+    },
+    Completed {
+        request: Arc<ControlRequest>,
+        result: Result<u32, PopUsedError>,
+    },
 }
 
 impl ControlQueue {
     pub(super) fn new(queue: VirtQueue) -> Arc<Self> {
         let notifier = queue.notifier();
+        let descriptor_capacity = queue.available_desc();
         Arc::new(Self {
-            operation: Mutex::new(()),
             inner: SpinLock::new(ControlQueueInner {
                 queue,
                 irq_wait_enabled: false,
-                completed: None,
+                pending: TokenMap::new(descriptor_capacity),
             }),
             notifier,
-            completion_waiters: WaitQueue::new(),
+            descriptors_available: WaitQueue::new(),
+            descriptor_capacity,
         })
     }
 
-    pub(super) fn lock(&self) -> ControlOperation<'_> {
-        ControlOperation {
-            queue: self,
-            _guard: self.operation.lock(),
-        }
-    }
-
     pub(super) fn enable_irq_wait(&self) {
-        // Serialize the mode switch with submissions. Otherwise a request
-        // that chose polling could have its response consumed by the IRQ
-        // handler after this flag changes and wait forever.
-        let _operation = self.operation.lock();
         self.inner.lock().irq_wait_enabled = true;
     }
 
     pub(super) fn handle_irq(&self) {
-        let completed = {
-            let mut inner = self.inner.lock();
-            if !inner.irq_wait_enabled || inner.completed.is_some() {
-                return;
-            }
-            let completed = match inner
-                .queue
-                .pop_used_once_with_min_bytes(size_of::<VirtioGpuCtrlHdr>())
-            {
-                Err(PopUsedError::NotReady) => return,
-                Err(error @ PopUsedError::InvalidToken { .. }) => {
-                    drop(inner);
-                    ostd::error!("invalid virtio-gpu control completion: {:?}", error);
-                    // The device did not return the submitted descriptor
-                    // token. Keep the operation and its DMA buffers alive;
-                    // treating this as completion could permit DMA into freed
-                    // or reused memory.
-                    return;
+        // A device may coalesce several used-ring updates into one interrupt.
+        // Bound the work by the queue size so a malformed device cannot keep
+        // the IRQ handler spinning forever.
+        for _ in 0..self.descriptor_capacity {
+            match self.dispatch_one() {
+                DispatchResult::NotReady => return,
+                DispatchResult::InvalidToken { token, queue_size } => {
+                    ostd::error!(
+                        "invalid virtio-gpu control token: {} (queue size: {})",
+                        token,
+                        queue_size,
+                    );
                 }
-                result => result,
-            };
-            inner.completed = Some(completed);
-            completed
-        };
-        if let Err(error) = completed {
-            ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                DispatchResult::Completed { request, result } => {
+                    if let Err(error) = result {
+                        ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                    }
+                    request.complete(result);
+                    self.descriptors_available.wake_one();
+                }
+            }
         }
-        self.completion_waiters.wake_all();
+    }
+
+    pub(super) fn submit_dma_bufs<'a>(
+        &'a self,
+        inputs: &[&Slice<Arc<DmaStream>>],
+        outputs: &[&Slice<Arc<DmaStream>>],
+    ) -> ControlTicket<'a> {
+        let dma_bufs = inputs
+            .iter()
+            .chain(outputs)
+            .map(|slice| slice.mem_obj().clone())
+            .collect();
+        let request = Arc::new(ControlRequest {
+            completion: SpinLock::new(None),
+            waiters: WaitQueue::new(),
+            _dma_bufs: dma_bufs,
+        });
+        let mut pending_request = Some(request.clone());
+
+        let (token, should_notify) = self.descriptors_available.wait_until(|| {
+            let mut inner = self.inner.lock();
+            let token = match inner.queue.add_dma_bufs(inputs, outputs) {
+                Ok(token) => token,
+                Err(AddBufsError::BufferTooSmall) => return None,
+                Err(AddBufsError::InvalidArgs) => panic!("invalid control queue buffers"),
+            };
+            inner.pending.insert(
+                token,
+                pending_request
+                    .take()
+                    .expect("control request submitted more than once"),
+            );
+            Some((token, inner.queue.should_notify()))
+        });
+
+        if should_notify {
+            self.notifier.notify();
+        }
+        ControlTicket {
+            queue: self,
+            request,
+            token,
+        }
+    }
+
+    fn dispatch_one(&self) -> DispatchResult {
+        let mut inner = self.inner.lock();
+        let completion = inner
+            .queue
+            .pop_used_once_with_min_bytes(size_of::<VirtioGpuCtrlHdr>());
+        let (token, result) = match completion {
+            Err(PopUsedError::NotReady) => return DispatchResult::NotReady,
+            Err(PopUsedError::InvalidToken { token, queue_size }) => {
+                return DispatchResult::InvalidToken { token, queue_size };
+            }
+            Err(error @ PopUsedError::InvalidLength { token, .. }) => (token, Err(error)),
+            Ok((token, used_len)) => (token, Ok(used_len)),
+        };
+        let request = inner
+            .pending
+            .remove(token)
+            .expect("completed control request has no token owner");
+        DispatchResult::Completed { request, result }
     }
 }
 
-impl ControlOperation<'_> {
-    pub(super) fn submit_dma_bufs(
-        &self,
-        inputs: &[&Slice<Arc<DmaStream>>],
-        outputs: &[&Slice<Arc<DmaStream>>],
-    ) {
-        let should_notify = {
-            let mut inner = self.queue.inner.lock();
-            inner
-                .queue
-                .add_dma_bufs(inputs, outputs)
-                .expect("add control queue buffers");
-            inner.queue.should_notify()
-        };
-        if should_notify {
-            self.queue.notifier.notify();
+impl<T> TokenMap<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            slots: core::iter::repeat_with(|| None).take(capacity).collect(),
         }
     }
 
-    pub(super) fn wait_for_used(&self, min_bytes: usize) -> Result<(u16, u32), PopUsedError> {
+    fn insert(&mut self, token: u16, value: T) {
+        let slot = self
+            .slots
+            .get_mut(token as usize)
+            .expect("control descriptor token is out of range");
+        if slot.is_some() {
+            panic!("control descriptor token is already pending");
+        }
+        *slot = Some(value);
+    }
+
+    fn remove(&mut self, token: u16) -> Option<T> {
+        self.slots.get_mut(token as usize)?.take()
+    }
+}
+
+impl ControlRequest {
+    fn complete(&self, result: Result<u32, PopUsedError>) {
+        let old_completion = self.completion.lock().replace(result);
+        debug_assert!(old_completion.is_none());
+        self.waiters.wake_all();
+    }
+
+    fn take_completion(&self) -> Option<Result<u32, PopUsedError>> {
+        self.completion.lock().take()
+    }
+}
+
+impl ControlTicket<'_> {
+    pub(super) fn wait_for_used(self) -> Result<(u16, u32), PopUsedError> {
         let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
-        if !irq_wait_enabled {
+        let result = if irq_wait_enabled {
+            self.request
+                .waiters
+                .wait_until(|| self.request.take_completion())
+        } else {
             loop {
-                let result = self
-                    .queue
-                    .inner
-                    .lock()
-                    .queue
-                    .pop_used_once_with_min_bytes(min_bytes);
-                match result {
-                    Err(PopUsedError::NotReady) => spin_loop(),
-                    Err(error @ PopUsedError::InvalidToken { .. }) => {
-                        ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                if let Some(completion) = self.request.take_completion() {
+                    break completion;
+                }
+                match self.queue.dispatch_one() {
+                    DispatchResult::NotReady => spin_loop(),
+                    DispatchResult::InvalidToken { token, queue_size } => {
+                        ostd::error!(
+                            "invalid virtio-gpu control token: {} (queue size: {})",
+                            token,
+                            queue_size,
+                        );
                     }
-                    Err(error) => {
-                        ostd::error!("invalid virtio-gpu control completion: {:?}", error);
-                        return Err(error);
+                    DispatchResult::Completed { request, result } => {
+                        if let Err(error) = result {
+                            ostd::error!("invalid virtio-gpu control completion: {:?}", error);
+                        }
+                        request.complete(result);
+                        self.queue.descriptors_available.wake_one();
                     }
-                    Ok(completed) => return Ok(completed),
                 }
             }
-        }
+        }?;
+        Ok((self.token, result))
+    }
+}
 
-        self.queue.completion_waiters.wait_until(|| {
-            let mut inner = self.queue.inner.lock();
-            let completed = inner.completed.take()?;
-            debug_assert!(
-                completed
-                    .as_ref()
-                    .is_ok_and(|(_, len)| *len as usize >= min_bytes)
-                    || completed.is_err()
-            );
-            Some(completed)
-        })
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::TokenMap;
+
+    #[ktest]
+    fn token_map_routes_out_of_order_completions() {
+        let mut pending = TokenMap::new(8);
+        pending.insert(2, "first");
+        pending.insert(6, "second");
+
+        assert_eq!(pending.remove(6), Some("second"));
+        assert_eq!(pending.remove(2), Some("first"));
+    }
+
+    #[ktest]
+    fn token_map_reuses_a_completed_token() {
+        let mut pending = TokenMap::new(2);
+        pending.insert(0, 10);
+        assert_eq!(pending.remove(0), Some(10));
+
+        pending.insert(0, 20);
+        assert_eq!(pending.remove(0), Some(20));
     }
 }

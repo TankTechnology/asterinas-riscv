@@ -230,7 +230,11 @@ pub(super) fn virtgpu_resource_create(
     handle.gpu_manager.drain_pending_resource_cleanup();
 
     // Allocate a new virtio-gpu resource id
-    let res_handle = handle.gpu_manager.gpu.allocate_resource_id();
+    let res_handle = handle
+        .gpu_manager
+        .gpu
+        .allocate_resource_id()
+        .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu resource ids exhausted"))?;
 
     // If a GEM buffer handle is provided, look up the backing memory.
     // Otherwise allocate a fresh dumb buffer so the resource has a GEM

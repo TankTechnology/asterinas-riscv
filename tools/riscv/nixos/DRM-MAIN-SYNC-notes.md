@@ -418,3 +418,52 @@ The next synchronization slice is to allow multiple in-flight control
 requests, associate their descriptor tokens with persistent fence state, and
 implement nonblocking `VIRTGPU_WAIT_NOWAIT`. This commit does not change the
 current synchronous EXECBUFFER/fence ABI by itself.
+
+## 2026-08-27 token-routed control completions
+
+The runtime control queue no longer has a device-wide operation mutex or one
+global completion slot. Each submitted descriptor head token is entered in a
+fixed-size token map with its own completion state and wait queue. The IRQ
+handler drains a bounded number of coalesced used entries, removes the matching
+request from the token map, and wakes only that request. If the descriptor ring
+is full, submitters sleep until one completion releases a chain instead of
+panicking or spinning.
+
+Each pending request owns references to every DMA buffer in its descriptor
+chain. This keeps device-visible memory alive independently for concurrent
+requests and preserves the earlier invalid-token safety rule. The IRQ path
+does not allocate, perform notification I/O under the queue spinlock, or wake
+an unbounded queue of descriptor waiters. Small fixed commands still share one
+DMA page behind a separate sleeping mutex, while independently allocated
+`SUBMIT_3D` and variable-size capset buffers can use the concurrent queue.
+Early boot remains polling-compatible.
+
+Validation on the resulting tree:
+
+- the RISC-V kernel build passed with only the seven pre-existing unrelated
+  warnings;
+- token-map kernel tests cover out-of-order completion routing and safe token
+  reuse; the component ktest image compiled, while the current host OSDK test
+  launcher selected `qemu-system-x86_64 -machine virt` and therefore could not
+  boot the RISC-V test image;
+- a real OSDK RISC-V guest with `virtio-gpu-gl-device` passed the baseline raw
+  virgl suite and then 12 simultaneous independent virgl clients:
+  `M21_CONTROLQ_CONCURRENT_RESULT passes=12 failures=0` and
+  `M21_CONTROLQ_CONCURRENT_PASS`.
+
+The post-implementation review also hardened four adjacent failure paths:
+state-changing commands now accept only `OK_NODATA`; resource IDs report
+exhaustion instead of wrapping; descriptor lengths are validated before queue
+mutation and cannot truncate or overflow; and a malformed cursor completion is
+returned as an error instead of leaving the caller in a polling loop. The real
+guest stress gate was rerun after these fixes and again passed all 12 clients.
+
+Two broader items remain follow-up work rather than blockers for this slice.
+Failed cleanup of a replaced scanout or cursor resource still needs a persistent
+deferred-retry set, and spinlock-protected users outside the GPU driver still
+need migration to the queue's non-logging pop helper and detached notifier.
+
+The ioctl ABI is still synchronous: callers receive a response only after the
+control ticket completes, and `VIRTGPU_WAIT_NOWAIT` remains unsupported. The
+next slice is to keep fence state beyond the submitting syscall, expose a
+nonblocking completion query, and connect it to resource/context timelines.

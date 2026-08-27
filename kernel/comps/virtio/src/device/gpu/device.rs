@@ -28,17 +28,16 @@ use super::{
     VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
     VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
-    config::VirtioGpuConfig,
-    control_queue::{ControlOperation, ControlQueue},
+    config::VirtioGpuConfig, control_queue::ControlQueue,
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
-    queue::VirtQueue,
+    queue::{PopUsedError, VirtQueue},
     transport::DeviceTransport,
 };
 
-/// Number of descriptors per virtqueue.
-const QUEUE_SIZE: u16 = 64;
+/// Maximum number of descriptors selected for one virtqueue.
+const MAX_QUEUE_SIZE: u16 = 64;
 
 /// Cursor requests have no device-written response body.
 const CURSOR_COMPLETION_BYTES: usize = 0;
@@ -89,7 +88,10 @@ pub struct GpuDevice {
     /// The cursor queue carries the hardware-cursor commands
     /// (`UPDATE_CURSOR`/`MOVE_CURSOR`).
     cursor_queue: Mutex<VirtQueue>,
-    control_buf: Arc<DmaStream>,
+    /// Shared page for small control commands. Holding this sleeping mutex
+    /// only serializes users of this page; independently allocated 3D command
+    /// buffers can be submitted concurrently.
+    control_buf: Mutex<Arc<DmaStream>>,
     /// DMA buffer containing the request submitted to the cursor virtqueue.
     cursor_buf: Arc<DmaStream>,
     /// Backing memory of the scanout resource, in B8G8R8X8.
@@ -134,13 +136,13 @@ impl GpuDevice {
         let control_queue_size = control_queue_size(
             device_transport
                 .max_queue_size(VQ_CONTROL)
-                .unwrap_or(QUEUE_SIZE),
+                .unwrap_or(MAX_QUEUE_SIZE),
         )
         .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
         let cursor_queue_size = cursor_queue_size(
             device_transport
                 .max_queue_size(VQ_CURSOR)
-                .unwrap_or(QUEUE_SIZE),
+                .unwrap_or(MAX_QUEUE_SIZE),
         )
         .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
         let control_queue = ControlQueue::new(VirtQueue::new(
@@ -167,10 +169,8 @@ impl GpuDevice {
         // Boot-time requests still poll because task scheduling is not ready.
         device_transport.finish_init();
 
-        let (scanout_width, scanout_height) = {
-            let operation = control_queue.lock();
-            query_display_info(&operation, &control_buf, config.num_scanouts)?
-        };
+        let (scanout_width, scanout_height) =
+            query_display_info(&control_queue, &control_buf, config.num_scanouts)?;
         ostd::info!(
             "virtio-gpu: {} scanout(s), primary {}x{}",
             config.num_scanouts,
@@ -188,7 +188,7 @@ impl GpuDevice {
             _transport: SpinLock::new(device_transport),
             control_queue,
             cursor_queue: Mutex::new(cursor_queue),
-            control_buf,
+            control_buf: Mutex::new(control_buf),
             cursor_buf,
             framebuffer,
             scanout_width,
@@ -232,8 +232,10 @@ impl GpuDevice {
     }
 
     /// Allocates a resource id unique to this device instance.
-    pub fn allocate_resource_id(&self) -> u32 {
-        self.next_resource_id.fetch_add(1, Ordering::Relaxed)
+    pub fn allocate_resource_id(&self) -> Result<u32, VirtioDeviceError> {
+        self.next_resource_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, next_resource_id)
+            .map_err(|_| VirtioDeviceError::InvalidQueueArgs)
     }
 
     /// Presents an externally-owned guest buffer as scanout 0.
@@ -267,7 +269,7 @@ impl GpuDevice {
             return Ok(());
         }
 
-        let resource_id = self.allocate_resource_id();
+        let resource_id = self.allocate_resource_id()?;
         self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
         let prepare_result = (|| {
             self.attach_backing(resource_id, addr, size)?;
@@ -327,7 +329,7 @@ impl GpuDevice {
         y: i32,
     ) -> Result<u32, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
-        let resource_id = self.allocate_resource_id();
+        let resource_id = self.allocate_resource_id()?;
         let mut created = false;
         let result = (|| {
             self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, width, height)?;
@@ -499,10 +501,10 @@ impl GpuDevice {
             width,
             height,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -530,17 +532,17 @@ impl GpuDevice {
             padding: 0,
         };
 
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let req_slice = Slice::new(
-            self.control_buf.clone(),
+            control_buf.clone(),
             CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len,
         );
         req_slice.write_val(0, &attach).unwrap();
         req_slice.write_val(attach_len, &entry).unwrap();
 
         let (code, _) = submit_control(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             req_len,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -559,10 +561,10 @@ impl GpuDevice {
             scanout_id,
             resource_id,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -582,10 +584,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -599,10 +601,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -615,10 +617,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -657,10 +659,10 @@ impl GpuDevice {
             flags,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -683,10 +685,10 @@ impl GpuDevice {
             context_init,
             debug_name: name,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -698,10 +700,10 @@ impl GpuDevice {
         let req = super::VirtioGpuCtxDestroy {
             hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_DESTROY, ctx_id),
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -719,10 +721,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -740,10 +742,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -809,8 +811,13 @@ impl GpuDevice {
         req_slice.write_val(0, &req).unwrap();
         req_slice.write_bytes(req_len, data).unwrap();
 
-        let queue = self.control_queue.lock();
-        let (code, _) = submit_control_at(&queue, &submit_buf, total_len, total_len, resp_len)?;
+        let (code, _) = submit_control_at(
+            &self.control_queue,
+            &submit_buf,
+            total_len,
+            total_len,
+            resp_len,
+        )?;
         check_ok(code)
     }
 
@@ -825,13 +832,13 @@ impl GpuDevice {
             padding: 0,
         };
         let resp_len = size_of::<super::VirtioGpuRespCapsetInfo>();
-        let queue = self.control_queue.lock();
-        let code = control_cmd(&queue, &self.control_buf, &req, resp_len)?;
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(&self.control_queue, &control_buf, &req, resp_len)?;
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET_INFO {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
         let resp_slice = Slice::new(
-            self.control_buf.clone(),
+            control_buf.clone(),
             CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
         );
         resp_slice.sync_from_device().unwrap();
@@ -899,8 +906,8 @@ impl GpuDevice {
         let req_slice = Slice::new(capset_buf.clone(), 0..req_len);
         req_slice.write_val(0, &req).unwrap();
 
-        let queue = self.control_queue.lock();
-        let (code, used_len) = submit_control_at(&queue, &capset_buf, req_len, req_len, resp_len)?;
+        let (code, used_len) =
+            submit_control_at(&self.control_queue, &capset_buf, req_len, req_len, resp_len)?;
         if code != super::VIRTIO_GPU_RESP_OK_CAPSET {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
@@ -941,10 +948,10 @@ impl GpuDevice {
             stride,
             layer_stride,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -977,10 +984,10 @@ impl GpuDevice {
             stride,
             layer_stride,
         };
-        let queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -1028,7 +1035,7 @@ fn ctrl_hdr_3d(type_: u32, ctx_id: u32) -> VirtioGpuCtrlHdr {
 
 fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     match code {
-        VIRTIO_GPU_RESP_OK_NODATA | VIRTIO_GPU_RESP_OK_DISPLAY_INFO => Ok(()),
+        VIRTIO_GPU_RESP_OK_NODATA => Ok(()),
         _ => {
             ostd::warn!("virtio-gpu control request failed: response = {:#x}", code);
             Err(VirtioDeviceError::UnsupportedConfig)
@@ -1044,7 +1051,7 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
 /// example `GET_CAPSET` returns the actual capset size, not the maximum),
 /// so the used length is validated against the header size, not `resp_len`.
 fn submit_control(
-    queue: &ControlOperation<'_>,
+    queue: &ControlQueue,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_len: usize,
@@ -1058,7 +1065,7 @@ fn submit_control(
 /// command stream so they are not constrained by the fixed small-command
 /// layout in [`GpuDevice::control_buf`].
 fn submit_control_at(
-    queue: &ControlOperation<'_>,
+    queue: &ControlQueue,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_offset: usize,
@@ -1068,10 +1075,9 @@ fn submit_control_at(
     req_slice.sync_to_device().unwrap();
 
     let resp_slice = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
-    queue.submit_dma_bufs(&[&req_slice], &[&resp_slice]);
-
-    let (_, used_len) = queue
-        .wait_for_used(size_of::<VirtioGpuCtrlHdr>())
+    let ticket = queue.submit_dma_bufs(&[&req_slice], &[&resp_slice]);
+    let (_, used_len) = ticket
+        .wait_for_used()
         .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
     let used_len = (used_len as usize).min(resp_len);
 
@@ -1081,7 +1087,7 @@ fn submit_control_at(
 
 /// Sends a fixed-size control request and waits for its response.
 fn control_cmd<T: ostd_pod::Pod>(
-    queue: &ControlOperation<'_>,
+    queue: &ControlQueue,
     buf: &Arc<DmaStream>,
     req: &T,
     resp_len: usize,
@@ -1111,13 +1117,14 @@ fn cursor_cmd<T: ostd_pod::Pod>(
         queue.notify();
     }
     loop {
-        if queue
-            .pop_used_with_min_bytes(CURSOR_COMPLETION_BYTES)
-            .is_ok()
-        {
-            return Ok(());
+        match queue.pop_used_once_with_min_bytes(CURSOR_COMPLETION_BYTES) {
+            Ok(_) => return Ok(()),
+            Err(PopUsedError::NotReady) => spin_loop(),
+            Err(error) => {
+                ostd::error!("invalid virtio-gpu cursor completion: {:?}", error);
+                return Err(VirtioDeviceError::UnsupportedConfig);
+            }
         }
-        spin_loop();
     }
 }
 
@@ -1132,7 +1139,7 @@ fn control_queue_size(device_max: u16) -> Option<u16> {
 }
 
 fn queue_size_up_to_cap(device_max: u16, min_size: u16) -> Option<u16> {
-    let capped = device_max.min(QUEUE_SIZE);
+    let capped = device_max.min(MAX_QUEUE_SIZE);
     if capped < min_size {
         return None;
     }
@@ -1145,7 +1152,7 @@ fn queue_size_up_to_cap(device_max: u16, min_size: u16) -> Option<u16> {
 
 /// Queries the display info and returns scanout 0's dimensions.
 fn query_display_info(
-    queue: &ControlOperation<'_>,
+    queue: &ControlQueue,
     buf: &Arc<DmaStream>,
     num_scanouts: u32,
 ) -> Result<(u32, u32), VirtioDeviceError> {
@@ -1183,6 +1190,10 @@ fn framebuffer_len(width: u32, height: u32) -> Option<u32> {
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(BPP))
         .and_then(|bytes| u32::try_from(bytes).ok())
+}
+
+fn next_resource_id(current: u32) -> Option<u32> {
+    current.checked_add(1)
 }
 
 static GPU_DEVICE_ID: AtomicUsize = AtomicUsize::new(0);
@@ -1225,5 +1236,17 @@ mod tests {
             framebuffer_len(u16::MAX as u32 + 1, u16::MAX as u32 + 1),
             None
         );
+    }
+
+    #[ktest]
+    fn state_changing_commands_require_nodata_response() {
+        assert!(check_ok(VIRTIO_GPU_RESP_OK_NODATA).is_ok());
+        assert!(check_ok(VIRTIO_GPU_RESP_OK_DISPLAY_INFO).is_err());
+    }
+
+    #[ktest]
+    fn resource_ids_do_not_wrap_into_reserved_values() {
+        assert_eq!(next_resource_id(2), Some(3));
+        assert_eq!(next_resource_id(u32::MAX), None);
     }
 }

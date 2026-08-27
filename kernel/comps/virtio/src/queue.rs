@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Virtqueue
+//! Split-ring virtqueue management for virtio device drivers.
+//!
+//! [`VirtQueue`] owns the descriptor table and available/used rings configured
+//! by a transport. Device drivers submit DMA buffer chains and reclaim them by
+//! token after the device publishes used-ring entries.
 
 use alloc::{sync::Arc, vec::Vec};
 use core::{
@@ -22,6 +26,9 @@ use crate::{
         ConfigManager, VirtioTransport, VirtioTransportError, pci::legacy::VirtioPciLegacyTransport,
     },
 };
+
+/// Device-set used-ring flag that suppresses available-buffer notifications.
+const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 
 /// The mechanism for bulk data transport on virtio devices.
 ///
@@ -45,7 +52,7 @@ pub struct VirtQueue {
     /// number of descriptors if the device expects a larger queue, but the driver expects a smaller
     /// one.
     ///
-    /// This is _not_ the queue size specified by the driver, which is `desc.len()`.
+    /// This is _not_ the queue size specified by the driver, which is `descs.len()`.
     device_queue_size: u16,
     /// The number of used descriptors.
     num_used: u16,
@@ -105,8 +112,16 @@ pub enum AddBufsError {
 #[derive(Clone, Copy, Debug)]
 pub enum PopUsedError {
     NotReady,
-    InvalidToken { token: u32, queue_size: usize },
-    InvalidLength { len: u32, min: usize, max: u32 },
+    InvalidToken {
+        token: u32,
+        queue_size: usize,
+    },
+    InvalidLength {
+        token: u16,
+        len: u32,
+        min: usize,
+        max: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -281,9 +296,9 @@ impl VirtQueue {
 
     /// Adds input and output DMA buffers to the virtqueue and returns a token.
     ///
-    /// When successful, the result token is guaranteed to be valid. It will not exceed the queue
-    /// size, and the same token will not be returned twice, unless it has been removed from the
-    /// queue by [`Self::pop_used`] in the meantime.
+    /// When successful, the result token is guaranteed to be valid. It is strictly less than the
+    /// queue size, and the same token will not be returned twice unless it has been removed from
+    /// the queue by [`Self::pop_used`] in the meantime.
     ///
     /// # Errors
     ///
@@ -305,13 +320,25 @@ impl VirtQueue {
         if inputs.is_empty() && outputs.is_empty() {
             return Err(AddBufsError::InvalidArgs);
         }
+        if inputs
+            .iter()
+            .any(|buf| buf.len() == 0 || u32::try_from(buf.len()).is_err())
+        {
+            return Err(AddBufsError::InvalidArgs);
+        }
+        let output_len = outputs.iter().try_fold(0u32, |total, output| {
+            let len = u32::try_from(output.len()).ok()?;
+            (len != 0).then_some(())?;
+            total.checked_add(len)
+        });
+        let Some(output_len) = output_len else {
+            return Err(AddBufsError::InvalidArgs);
+        };
         if inputs.len() + outputs.len() > self.available_desc() {
             return Err(AddBufsError::BufferTooSmall);
         }
 
         let head = self.free_head.unwrap();
-        let mut output_len = 0;
-
         // Allocate descriptors from the free list.
         let mut last = self.free_head;
         let mut current = self.free_head;
@@ -320,6 +347,7 @@ impl VirtQueue {
             set_dma_buf(
                 &desc.ptr.borrow_vm().restrict::<TRights![Write, Dup]>(),
                 *input,
+                u32::try_from(input.len()).unwrap(),
             );
             field_ptr!(&desc.ptr, Descriptor, flags)
                 .write_once(&DescFlags::NEXT)
@@ -334,9 +362,10 @@ impl VirtQueue {
         }
         for output in outputs.iter() {
             let desc = &self.descs[current.unwrap() as usize];
-            output_len += set_dma_buf(
+            set_dma_buf(
                 &desc.ptr.borrow_vm().restrict::<TRights![Write, Dup]>(),
                 *output,
+                u32::try_from(output.len()).unwrap(),
             );
             field_ptr!(&desc.ptr, Descriptor, flags)
                 .write_once(&(DescFlags::NEXT | DescFlags::WRITE))
@@ -413,11 +442,10 @@ impl VirtQueue {
     ///   not yet been removed from the queue by this method.
     /// - The length is valid. It will not exceed the length of the original DMA buffer.
     ///
-    /// If the device malfunctions, it may report a token or length that violates these guarantees.
-    /// Such reports are logged as errors and ignored; the reported token is not returned to the
-    /// caller, preventing an invalid token from corrupting upper-layer state. If the device
-    /// continues to malfunction, the queue may become stuck because the affected buffer cannot be
-    /// reclaimed.
+    /// If the device reports an invalid token, no submitted chain can safely be identified or
+    /// reclaimed, so the entry is ignored and the queue may become stuck. If a known token has an
+    /// invalid length, ownership has still returned to the driver; its chain is recycled and the
+    /// error is returned to the caller.
     ///
     /// # Errors
     ///
@@ -446,8 +474,19 @@ impl VirtQueue {
                 Err(PopUsedError::InvalidToken { token, queue_size }) => {
                     ostd::error!("invalid used token: {} (queue size: {})", token, queue_size,);
                 }
-                Err(PopUsedError::InvalidLength { len, min, max }) => {
-                    ostd::error!("invalid used length: {} (expected {}..={})", len, min, max,);
+                Err(PopUsedError::InvalidLength {
+                    token,
+                    len,
+                    min,
+                    max,
+                }) => {
+                    ostd::error!(
+                        "invalid used length for token {}: {} (expected {}..={})",
+                        token,
+                        len,
+                        min,
+                        max,
+                    );
                 }
                 result => return result,
             }
@@ -473,7 +512,9 @@ impl VirtQueue {
         let last_used_slot = self.last_used_idx & (self.device_queue_size - 1);
         let element_ptr = {
             let mut ptr = self.used.borrow_vm();
-            ptr.byte_add(offset_of!(UsedRing, ring) + last_used_slot as usize * 8);
+            ptr.byte_add(
+                offset_of!(UsedRing, ring) + last_used_slot as usize * size_of::<UsedElem>(),
+            );
             ptr.cast::<UsedElem>()
         };
         let index = field_ptr!(&element_ptr, UsedElem, id).read_once().unwrap();
@@ -492,6 +533,7 @@ impl VirtQueue {
         };
         if len > dma_len || (len as usize) < min_bytes {
             let error = PopUsedError::InvalidLength {
+                token: index as u16,
                 len,
                 min: min_bytes,
                 max: dma_len,
@@ -542,7 +584,7 @@ impl VirtQueue {
         fence(Ordering::SeqCst);
 
         let flags = field_ptr!(&self.used, UsedRing, flags).read_once().unwrap();
-        flags & 0x0001u16 == 0u16
+        flags & VIRTQ_USED_F_NO_NOTIFY == 0
     }
 
     /// Creates a handle that can notify the device independently of the queue.
@@ -604,22 +646,15 @@ pub struct Descriptor {
 
 type DescriptorPtr<'a> = SafePtr<Descriptor, &'a Arc<DmaCoherent>, TRightSet<TRights![Dup, Write]>>;
 
-fn set_dma_buf<T: DmaBuf>(desc_ptr: &DescriptorPtr, buf: &T) -> u32 {
+fn set_dma_buf<T: DmaBuf>(desc_ptr: &DescriptorPtr, buf: &T, len: u32) {
     let daddr = buf.daddr();
-    let len = buf.len();
-
-    debug_assert!(len < (u32::MAX) as usize);
-    // TODO: Should we skip the empty DMA buffer or just return an error?
-    debug_assert_ne!(len, 0);
 
     field_ptr!(desc_ptr, Descriptor, addr)
         .write_once(&(daddr as u64))
         .unwrap();
     field_ptr!(desc_ptr, Descriptor, len)
-        .write_once(&(len as u32))
+        .write_once(&len)
         .unwrap();
-
-    len as u32
 }
 
 bitflags! {
