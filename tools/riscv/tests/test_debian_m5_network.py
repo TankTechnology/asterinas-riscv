@@ -110,9 +110,10 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages
-            + ("curl", "fonts-wqy-microhei", "iproute2", "iputils-ping", "xdotool"),
+            m4.identity_packages + ("curl", "iproute2", "iputils-ping", "xdotool"),
         )
+        self.assertIn("fonts-wqy-microhei", m5.requested_packages)
+        self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
         profile = get_profile("desktop-m5-network")
