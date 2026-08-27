@@ -7,13 +7,22 @@ export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-m4-session.log"
+readonly URL_FILE="${ASTERINAS_DESKTOP_URL_FILE:-/run/asterinas-desktop-url}"
 
 if [[ "${1-}" == --xsession ]]; then
+    browser_url="file:///usr/share/asterinas/desktop-m4-welcome.html"
+    if [[ -f "$URL_FILE" && ! -L "$URL_FILE" ]]; then
+        candidate="$(<"$URL_FILE")"
+        if ((${#candidate} <= 2048)) && \
+            [[ "$candidate" =~ ^https?://[^[:space:][:cntrl:]]+$ ]]; then
+            browser_url="$candidate"
+        fi
+    fi
     /usr/bin/matchbox-window-manager -use_titlebar yes &
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
     /usr/bin/pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &
-    /usr/bin/netsurf-gtk file:///usr/share/asterinas/desktop-m4-welcome.html &
+    /usr/bin/netsurf-gtk "$browser_url" &
     /usr/bin/sleep 1
     /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Terminal" &
     wait "$window_manager_pid"

@@ -11,9 +11,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_NETWORK_MILESTONES,
+    DESKTOP_M5_QEMU_MILESTONES,
     classify_desktop_m5_network,
+    classify_desktop_m5_qemu,
+)
+from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
+    DESKTOP_M5_QEMU_BOOTARGS,
+    DesktopM5QemuOperations,
+    desktop_m5_qemu_argv,
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
@@ -21,6 +29,7 @@ from tools.riscv.debian.rootfs.profiles import get_profile
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
+MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
 )
@@ -41,11 +50,11 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.assertEqual(m5.root_uuid, "182e1ea4-296d-5383-8bcb-ea67e40db074")
         self.assertEqual(
             m5.requested_packages,
-            tuple(sorted(m4.requested_packages + ("iproute2", "iputils-ping"))),
+            tuple(sorted(m4.requested_packages + ("curl", "iproute2", "iputils-ping"))),
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages + ("iproute2", "iputils-ping"),
+            m4.identity_packages + ("curl", "iproute2", "iputils-ping"),
         )
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
@@ -167,6 +176,10 @@ configure_and_normalize_rootfs
             "ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence",
             unit.read_text(),
         )
+        self.assertIn("Before=asterinas-desktop-m4.service", unit.read_text())
+        self.assertNotIn(
+            "After=asterinas-desktop-m4-evidence.service", unit.read_text()
+        )
         self.assertTrue(
             (
                 stage / "etc/systemd/system/graphical.target.wants" / unit.name
@@ -256,6 +269,103 @@ exit 0
             ["DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout"],
         )
         self.assertFalse(ping_log.exists())
+
+    def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
+        console = self.directory / "qemu-console"
+        console.write_text("", encoding="utf-8")
+        cmdline = self.directory / "cmdline"
+        cmdline.write_text(
+            "console=ttyS0 asterinas.debian_network=qemu-slirp\n",
+            encoding="utf-8",
+        )
+        resolv_conf = self.directory / "resolv.conf"
+        url_file = self.directory / "desktop-url"
+        fake_bin = self.directory / "qemu-bin"
+        fake_bin.mkdir()
+        curl_log = self.directory / "curl.log"
+        for name, body in {
+            "getent": "#!/bin/sh\nprintf '%s\\n' '110.242.68.66 STREAM www.baidu.com'\n",
+            "curl": "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$ASTERINAS_M5_CURL_LOG\"\nprintf '200\\t10.0.2.15'\n",
+            "ip": "#!/bin/sh\nexit 97\n",
+            "ping": "#!/bin/sh\nexit 98\n",
+        }.items():
+            executable = fake_bin / name
+            executable.write_text(body, encoding="utf-8")
+            executable.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
+            ASTERINAS_M5_CURL_LOG=str(curl_log),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text().splitlines(), list(DESKTOP_M5_QEMU_MILESTONES)
+        )
+        self.assertEqual(resolv_conf.read_text(), "nameserver 10.0.2.3\n")
+        self.assertEqual(url_file.read_text(), "https://www.baidu.com/\n")
+        self.assertIn("https://www.baidu.com/", curl_log.read_text())
+
+    def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:
+        transcript = (
+            "\n".join((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)) + "\n"
+        ).encode()
+
+        result = classify_desktop_m5_qemu(transcript, expected_debian_release="13.6")
+
+        self.assertTrue(result.passed, result.reason)
+        reversed_result = classify_desktop_m5_qemu(
+            "\n".join(
+                reversed((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES))
+            ).encode(),
+            expected_debian_release="13.6",
+        )
+        self.assertEqual(reversed_result.reason, "desktop milestones out of order")
+        self.assertIn("asterinas.debian_network=qemu-slirp", DESKTOP_M5_QEMU_BOOTARGS)
+        self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
+        self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
+
+    def test_qemu_adapter_adds_only_one_slirp_virtio_net_device(self) -> None:
+        for name in ("u-boot", "boot.ext4", "root.ext2"):
+            (self.directory / name).write_bytes(name.encode())
+
+        arguments = desktop_m5_qemu_argv(
+            uboot=self.directory / "u-boot",
+            boot_disk=self.directory / "boot.ext4",
+            root_disk=self.directory / "root.ext2",
+            monitor_socket=self.directory / "monitor.sock",
+        )
+
+        self.assertNotIn("-nic", arguments)
+        self.assertEqual(arguments.count("user,id=net0"), 1)
+        self.assertEqual(arguments.count("virtio-net-device,netdev=net0"), 1)
+        for device in (
+            "bochs-display",
+            "virtio-keyboard-device",
+            "virtio-tablet-device",
+        ):
+            self.assertIn(device, arguments)
+
+    def test_qemu_make_gate_allows_the_cold_desktop_to_finish(self) -> None:
+        target = (
+            MAKEFILE.read_text(encoding="utf-8")
+            .split(".PHONY: test_riscv_debian_desktop_m5_qemu_gate", 1)[1]
+            .split(".PHONY:", 1)[0]
+        )
+
+        self.assertIn("--boot-timeout 300", target)
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
         transcript = "\n".join(DESKTOP_M5_NETWORK_MILESTONES).encode()

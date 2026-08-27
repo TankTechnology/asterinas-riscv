@@ -709,8 +709,8 @@ configure_desktop_m5_network() {
     cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
-After=asterinas-desktop-m4-evidence.service
-Wants=asterinas-desktop-m4-evidence.service
+After=local-fs.target
+Before=asterinas-desktop-m4.service
 
 [Service]
 Type=oneshot
