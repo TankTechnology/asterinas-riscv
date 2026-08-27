@@ -306,6 +306,9 @@ def run_gate(host: str, port: int, timeout: float) -> None:
         session = client.command("WebDriver:NewSession", {"strictFileInteractability": True})
         if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
             raise GateError("Marionette did not create a session")
+        navigation = client.command("WebDriver:Navigate", {"url": PROBE_URL})
+        if navigation is not None:
+            raise GateError("Marionette returned an invalid Navigate result")
         while True:
             handles = client.command("WebDriver:GetWindowHandles")
             if not isinstance(handles, list) or not handles:
@@ -367,7 +370,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     if values.diagnose_once:
         print(
-            "DEBIAN_BROWSER_M5_DIAGNOSTIC status="
+            f"DEBIAN_BROWSER_M5_DIAGNOSTIC ready={str(status['ready']).lower()} status="
             + json.dumps(status, separators=(",", ":"), sort_keys=True)
         )
         return 0
