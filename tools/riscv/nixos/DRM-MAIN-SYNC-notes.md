@@ -718,3 +718,44 @@ of a 165 MiB initramfs. A small bootstrap initramfs mounts and chroots into that
 disk. This removes large initramfs decompression from each iteration while
 retaining the Debian Mesa/LLVM closure. The complete PRIME, raw virgl, and
 Mesa/GBM/KMS gate ended with `MINI_VIRGL_PASS`.
+
+## 2026-08-28 public DRM clients and nonblocking atomic commits
+
+The compact RISC-V validation image now includes Debian's `modetest` and
+`kmscube`, including their discovered ELF, Mesa, GBM, and DRI dependencies.
+The public-client gate enumerates KMS resources, performs both legacy and
+atomic modesets with `modetest`, then renders four virgl frames through both
+the legacy and atomic `kmscube` paths. It rejects software rendering, failed
+commits, missing atomic support, and incomplete output rather than relying on
+the exit status alone. The existing PRIME, raw virgl, and EGL checks remain in
+the complete gate.
+
+`kmscube` exposed that merely accepting `DRM_MODE_ATOMIC_NONBLOCK` while
+waiting synchronously—or allowing only one in-flight request—does not satisfy
+the public UAPI. Each DRM file now has a bounded FIFO for nonblocking atomic
+commits. Validation and the logical KMS/property state exchange finish before
+the ioctl returns; pinned framebuffer backing keeps queued scanouts alive;
+the worker applies hardware changes in submission order and publishes the
+reserved page-flip event only after a successful hardware update. File close
+waits for the queue, and dropping DRM master is rejected while work remains,
+so an old master's worker cannot overwrite a new master's scanout. Legacy KMS
+operations fail with `EBUSY` while queued atomic hardware work is
+pending so that they cannot overtake it. Event capacity is reserved before
+logical state publication, preventing accepted commits from overbooking the
+per-file event queue. Invalid `TEST_ONLY | PAGE_FLIP_EVENT` requests are now
+rejected. `DIRTYFB` refreshes only the currently active framebuffer and no
+longer performs an unintended logical page flip. The work and event queues
+live in a focused module rather than adding more coordination machinery to the
+DRM root module.
+
+The final Sv39 run passed public resource enumeration, legacy and atomic
+`modetest`, legacy and atomic virgl `kmscube`, PRIME sharing, raw virgl, and
+Mesa EGL/GBM/KMS rendering, ending in `MINI_VIRGL_PASS`. M22 separately passed
+50 checks, zero failures, and all 32 resource-lifetime rounds. Frame rates from
+these TCG functional runs are not treated as performance measurements.
+
+Known compatibility gaps remain explicit: the virtual CRTC advertises no
+gamma table, atomic `IN_FENCE_FD`/`OUT_FENCE_PTR` properties are not exposed,
+and completion events currently follow virtio-gpu command completion rather
+than a physical vblank clock. These are follow-up interoperability and pacing
+items, not hidden prerequisites for the validated virgl scanout path.

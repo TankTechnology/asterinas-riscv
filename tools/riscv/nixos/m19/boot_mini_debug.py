@@ -9,10 +9,12 @@ line (M19_GL_RENDERER) + the MESA-DBG / MINI_EGL_RC markers.
 
 Log lands at /tmp/m20-mesavirgl3-stdout.log.
 """
+import argparse
 import os
 import pty
 import re
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -24,7 +26,14 @@ DTB = REPO / "target/drm-m19/qemu-virt.dtb"
 UBOOT = REPO / "target/drm-m19/u-boot"
 MINI_CPIO = Path("/tmp/mini-virgl2.cpio.gz")
 MINI_ROOT_DISK = Path("/tmp/mini-virgl2.ext2")
-RAW_ONLY = "--raw-only" in sys.argv
+
+parser = argparse.ArgumentParser(description="Run the RISC-V DRM/Mesa mini-root gate")
+mode = parser.add_mutually_exclusive_group()
+mode.add_argument("--raw-only", action="store_true", help="stop after the raw virgl test")
+mode.add_argument("--public-only", action="store_true", help="stop after modetest and kmscube")
+args = parser.parse_args()
+RAW_ONLY = args.raw_only
+PUBLIC_ONLY = args.public_only
 
 BOOT_DIR = Path("/tmp/mini-boot")
 BOOTDISK = BOOT_DIR / "boot.ext4"
@@ -54,7 +63,7 @@ def build_bootdisk():
     BOOT_DIR.mkdir(parents=True, exist_ok=True)
     stage = BOOT_DIR / ".stage"
     if stage.exists():
-        subprocess.run(["rm", "-rf", str(stage)])
+        shutil.rmtree(stage)
     stage.mkdir(parents=True)
     subprocess.run(["cp", str(KERNEL), str(stage / "asterinas.booti")], check=True)
     subprocess.run(["cp", str(MINI_CPIO), str(stage / "initramfs.cpio.gz")], check=True)
@@ -155,7 +164,12 @@ def run() -> bytes:
             output += data
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
-            completion_marker = b"MINI_RAW_RC=" if RAW_ONLY else b"MINI_EGL_RC="
+            if PUBLIC_ONLY:
+                completion_marker = b"MINI_PUBLIC_KMS_DONE"
+            elif RAW_ONLY:
+                completion_marker = b"MINI_RAW_DONE"
+            else:
+                completion_marker = b"MINI_EGL_DONE"
             if completion_marker in output:
                 break
             if b"panic" in output or b"Panic" in output:
@@ -184,12 +198,31 @@ def main() -> int:
             print(f"  {s}")
     print(f"\n[full log] {LOG}")
     required_markers = [
-        "M20_PRIME_PASS",
-        "MINI_PRIME_RC=0",
-        "M16_VIRGL_RAW_PASS",
-        "MINI_RAW_RC=0",
+        "MINI_PUBLIC_KMS_DONE",
+        "MINI_MODETEST_ENUM_BEGIN",
+        "MINI_MODETEST_ENUM_RC=0",
+        "MINI_MODETEST_LEGACY_BEGIN",
+        "MINI_MODETEST_LEGACY_RC=0",
+        "MINI_MODETEST_ATOMIC_BEGIN",
+        "MINI_MODETEST_ATOMIC_RC=0",
+        "MINI_KMSCUBE_LEGACY_BEGIN",
+        "MINI_KMSCUBE_LEGACY_RC=0",
+        "MINI_KMSCUBE_ATOMIC_BEGIN",
+        "MINI_KMSCUBE_ATOMIC_RC=0",
+        "Rendered 4 frames",
+        'renderer: "virgl (',
+        "Connectors:",
+        "CRTCs:",
+        "Planes:",
     ]
-    if not RAW_ONLY:
+    if not PUBLIC_ONLY:
+        required_markers.extend((
+            "M20_PRIME_PASS",
+            "MINI_PRIME_RC=0",
+            "M16_VIRGL_RAW_PASS",
+            "MINI_RAW_RC=0",
+        ))
+    if not RAW_ONLY and not PUBLIC_ONLY:
         required_markers.extend((
             "M19_GL_RENDERER virgl",
             "M19_FRAMES_DISTINCT 4",
@@ -202,15 +235,27 @@ def main() -> int:
         "M19_EGL_FAIL",
         "M19_GL_RENDERER llvmpipe",
         "M19_GL_RENDERER softpipe",
+        'renderer: "llvmpipe',
+        'renderer: "softpipe',
+        "failed to commit:",
+        "no atomic modesetting support",
         "Illegal resource",
         "illegal resource",
         "error decoding command",
     ]
-    return_codes = re.findall(r"MINI_(?:PRIME|RAW|EGL)_RC=(-?\d+)", text)
+    return_codes = re.findall(
+        r"MINI_(?:MODETEST_ENUM|MODETEST_LEGACY|MODETEST_ATOMIC|"
+        r"KMSCUBE_LEGACY|KMSCUBE_ATOMIC|PRIME|RAW|EGL)_RC=(-?\d+)",
+        text,
+    )
+    kmscube_reports = len(re.findall(r"Rendered 4 frames", text))
+    kmscube_virgl_reports = len(re.findall(r'renderer: "virgl \(', text))
     passed = (
         all(marker in text for marker in required_markers)
         and not any(marker in text for marker in forbidden_markers)
         and all(code == "0" for code in return_codes)
+        and kmscube_reports == 2
+        and kmscube_virgl_reports == 2
         and "panic" not in text.lower()
     )
     print("MINI_VIRGL_PASS" if passed else "MINI_VIRGL_FAIL")

@@ -41,6 +41,8 @@ mkdir -p "${ROOTFS}/root"
     "${ROOTFS}/usr/lib/riscv64-linux-gnu/libEGL.so.1" \
     "${ROOTFS}/usr/lib/riscv64-linux-gnu/libGLESv2.so.2" \
     "${ROOTFS}/usr/lib/riscv64-linux-gnu/libgbm.so.1"
+"${GNUCC}" -O2 -shared -fPIC -o "${ROOTFS}/root/ioctltrace.so" \
+    "$(dirname "${BASH_SOURCE[0]}")/ioctltrace.c" -ldl
 "${MUSLCC}" -O2 -static -o "${ROOTFS}/root/virgltest" \
     "${REPO_ROOT}/tools/riscv/nixos/m16/virgltest.c"
 "${MUSLCC}" -O2 -static -pthread -o "${ROOTFS}/root/primetest" \

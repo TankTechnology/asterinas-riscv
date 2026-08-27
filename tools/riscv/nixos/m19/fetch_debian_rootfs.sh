@@ -23,7 +23,7 @@ DEBS="${WORK}/debs"
 INDEX="${WORK}/Packages"
 MIRROR="https://deb.debian.org/debian"
 
-SEEDS="${SEEDS:-kmscube libegl1 libgbm1 libegl-mesa0 libgl1-mesa-dri mesa-libgallium libgles2 busybox-static xserver-xorg-core xserver-xorg-input-evdev libx11-6}"
+SEEDS="${SEEDS:-kmscube libdrm-tests libegl1 libgbm1 libegl-mesa0 libgl1-mesa-dri mesa-libgallium libgles2 busybox-static xserver-xorg-core xserver-xorg-input-evdev libx11-6}"
 
 mkdir -p "${ROOTFS}" "${DEBS}"
 
@@ -96,8 +96,17 @@ while ((${#QUEUE[@]})); do
 
     echo "==> $real"
     deb="${DEBS}/$(basename "$filename")"
+    expected_sha256="$(package_field "$real" SHA256)"
+    if [[ -f "$deb" ]] && ! echo "${expected_sha256}  ${deb}" | sha256sum -c --status; then
+        echo "    WARN: removing corrupt cached package $(basename "$deb")"
+        rm -f "$deb"
+    fi
     if [[ ! -f "$deb" ]]; then
-        curl -sfL "${MIRROR}/${filename}" -o "$deb"
+        partial_deb="${deb}.part"
+        rm -f "${partial_deb}"
+        curl --remove-on-error -sfL "${MIRROR}/${filename}" -o "${partial_deb}"
+        echo "${expected_sha256}  ${partial_deb}" | sha256sum -c --status
+        mv "${partial_deb}" "$deb"
     fi
     (cd "${ROOTFS}" && ar x "$deb" data.tar.xz && tar -xJf data.tar.xz && rm -f data.tar.xz)
 
