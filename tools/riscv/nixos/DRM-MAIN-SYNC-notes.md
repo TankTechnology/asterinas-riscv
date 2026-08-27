@@ -467,3 +467,65 @@ The ioctl ABI is still synchronous: callers receive a response only after the
 control ticket completes, and `VIRTGPU_WAIT_NOWAIT` remains unsupported. The
 next slice is to keep fence state beyond the submitting syscall, expose a
 nonblocking completion query, and connect it to resource/context timelines.
+
+## 2026-08-27 asynchronous resource fences and NOWAIT
+
+`VIRTGPU_EXECBUFFER` no longer waits for a fenced `SUBMIT_3D` response before
+returning.
+It creates a persistent fence around an owned control ticket, queues the
+command, and lets the control-queue IRQ signal both blocking waiters and
+pollers.
+An output fence fd is pending until token completion, although a fast device may
+signal it before the ioctl copies the descriptor to userspace.
+It becomes readable through `Pollee` notification when the matching descriptor
+token completes.
+Response DMA synchronization and validation remain in task context.
+
+Each GEM object named by an EXECBUFFER handle list tracks all currently
+unfinished fences, rather than only the most recent fence. This preserves
+cross-context safety when a shared object is used by overlapping submissions.
+Because the virgl command stream is opaque and untrusted clients can omit a
+referenced object from that list, the manager also keeps a conservative
+device-wide set of all in-flight fences. Context teardown and final GEM release
+wait on that set before destroying host-visible state.
+EXECBUFFER capture is serialized with final GEM release; closing the last
+reference waits for every retained fence before issuing `RESOURCE_UNREF`, so
+the host cannot render through a resource that has already been destroyed.
+Completed fences are pruned on later submission or explicitly consumed by
+`WAIT`.
+
+Every successful `RESOURCE_ATTACH_BACKING` also retains an owning reference to
+the DMA pool until `RESOURCE_UNREF` succeeds. If unref fails, the owner remains
+live rather than exposing freed guest memory to a host device that may still
+retain the backing table.
+
+`VIRTGPU_WAIT_NOWAIT` is now implemented.
+It returns `EBUSY` while any tracked resource fence is pending and succeeds
+without sleeping once all are complete.
+Blocking `WAIT` consumes the same fence set instead of submitting an additional
+NOP barrier. Fence and resource ID allocators use checked atomic updates and
+report exhaustion rather than wrapping into old IDs.
+
+Validation on the final tree:
+
+- the RISC-V kernel compiled with only the seven pre-existing unrelated
+  warnings;
+- a real RISC-V OSDK guest with `virtio-gpu-gl-device` passed asynchronous
+  fence-fd polling, the pre/post-completion NOWAIT probe, rendered-pixel and
+  double-buffer checks, and the complete raw virgl suite;
+- the 12-client control-queue stress gate again reported
+  `M21_CONTROLQ_CONCURRENT_RESULT passes=12 failures=0` and
+  `M21_CONTROLQ_CONCURRENT_PASS`, with no invalid completion or panic.
+
+The RISC-V ktest build currently stops in the unrelated syscall path because
+`kernel/src/syscall/riscv_flush_icache.rs` calls an `ostd::arch::flush_icache`
+symbol that this branch does not export. The normal RISC-V build exercises the
+DRM changes successfully; fixing that branch-level ktest mismatch is tracked
+separately from this fence slice.
+
+The next merge-preparation work is to add checked, format-aware validation for
+userspace-supplied 3D resource geometry and transfer ranges, resolve deferred
+cleanup for directly presented scanout/cursor resources, and finish generic
+virtqueue I/O migration away from logging/error paths under spinlocks. After
+that, the DRM stack can be rebased onto the latest main branch and split into
+upstream-sized commits.

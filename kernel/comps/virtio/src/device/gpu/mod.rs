@@ -94,6 +94,19 @@ pub const MAX_SCANOUTS: usize = 16;
 /// rendering).
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 
+/// Receives notification when an asynchronous GPU command leaves the device.
+///
+/// Implementations must be safe to call from interrupt context and should
+/// defer response parsing or other potentially blocking work to task context.
+pub trait GpuCommandCompletion: Send + Sync {
+    fn complete(&self);
+}
+
+/// Owns guest memory that remains attached to a host GPU resource.
+pub trait GpuBackingOwner: Send + Sync {}
+
+impl<T: Send + Sync> GpuBackingOwner for T {}
+
 /// Common control header (5.7.6.3).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]

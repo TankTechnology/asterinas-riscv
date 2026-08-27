@@ -6,8 +6,8 @@
 //!
 //! - `/dev/dri/card0` (major=226, minor=0) — primary node with full KMS +
 //!   dumb-buffer + GEM ioctls.
-//! - `/dev/dri/renderD128` (major=226, minor=128) — render node with
-//!   GEM + dumb-buffer ioctls only (no KMS).
+//! - `/dev/dri/renderD128` (major=226, minor=128) — render node with GEM,
+//!   PRIME, virgl 3D, transfer, execution, and fence ioctls (no KMS).
 //!
 //! Dumb buffers are carved out of a single physically-contiguous [`Vmo`] pool
 //! so that (a) `mmap` can map any buffer via the standard `Mappable::Vmo` path
@@ -68,7 +68,7 @@ const DRM_MAJOR: u16 = 226;
 /// from this string.
 const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260818";
-const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D driver";
+const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D/3D driver";
 
 /// KMS object ids. The virtio-gpu device exposes a single CRTC/encoder/connector.
 const CRTC_ID: u32 = 1;
@@ -172,6 +172,8 @@ struct GpuManager {
     pending_resource_cleanup: SpinLock<BTreeSet<u32>>,
     /// Serializes the global GEM-object to host-resource transaction.
     resource_creation: Mutex<()>,
+    /// Serializes EXECBUFFER resource capture with final GEM release.
+    exec_resource_transaction: Mutex<()>,
     next_gem_id: AtomicU32,
     /// Monotonic virgl context id allocator (context id 0 is reserved).
     next_context_id: AtomicU32,
@@ -181,6 +183,14 @@ struct GpuManager {
     flip_sequence: AtomicU32,
     /// Monotonic virtio-gpu fence id allocator (3D SUBMIT_3D fences).
     next_fence_id: AtomicU64,
+    /// Tracked asynchronous command fences associated with each GEM object.
+    resource_fences: SpinLock<BTreeMap<u32, Vec<Arc<fence::Fence>>>>,
+    /// Device-wide fence set used as a conservative lifetime barrier.
+    ///
+    /// Virgl command streams are opaque, so userspace may omit a referenced
+    /// resource from the BO list. Final resource and context destruction wait
+    /// on this set even when no per-object association was supplied.
+    inflight_fences: SpinLock<Vec<Arc<fence::Fence>>>,
     /// Device-wide DRM-master and KMS transaction state.
     kms_state: Mutex<KmsState>,
     next_file_id: AtomicU64,
@@ -264,11 +274,14 @@ impl GpuManager {
             gem_resources: SpinLock::new(BTreeMap::new()),
             pending_resource_cleanup: SpinLock::new(BTreeSet::new()),
             resource_creation: Mutex::new(()),
+            exec_resource_transaction: Mutex::new(()),
             next_gem_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
             next_fence_id: AtomicU64::new(1),
+            resource_fences: SpinLock::new(BTreeMap::new()),
+            inflight_fences: SpinLock::new(Vec::new()),
             kms_state: Mutex::new(KmsState::new(width, height)),
             next_file_id: AtomicU64::new(1),
         }
@@ -330,6 +343,7 @@ impl GpuManager {
 
     /// Drops one GEM owner and reports whether final host cleanup was confirmed.
     fn release_gem_object_and_report_cleanup(&self, object_id: u32) -> Result<HostCleanupStatus> {
+        let _transaction = self.exec_resource_transaction.lock();
         let released = {
             let mut objects = self.gem_objects.lock();
             let object = objects
@@ -354,7 +368,21 @@ impl GpuManager {
             }
         }
 
+        self.wait_for_all_fences();
         let resource = self.gem_resources.lock().remove(&object_id);
+        let fences = self
+            .resource_fences
+            .lock()
+            .remove(&object_id)
+            .unwrap_or_default();
+        for fence in fences {
+            if let Err(error) = fence.wait() {
+                warn!(
+                    "virtio-gpu fence failed before releasing GEM object {}: {:?}",
+                    object_id, error
+                );
+            }
+        }
         let mut cleanup_status = HostCleanupStatus::Confirmed;
         if let Some(resource_id) = resource.map(GemResourceState::resource_id) {
             if let Err(error) = self.gpu.resource_unref(resource_id) {
@@ -385,12 +413,77 @@ impl GpuManager {
         debug_assert!(previous.is_none());
     }
 
+    fn allocate_fence_id(&self) -> Result<u64> {
+        self.next_fence_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, next_fence_id)
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu fence ids exhausted"))
+    }
+
+    fn associate_resource_fence(&self, object_ids: &BTreeSet<u32>, fence: &Arc<fence::Fence>) {
+        let mut inflight = self.inflight_fences.lock();
+        inflight.retain(|previous| !previous.is_signaled());
+        inflight.push(fence.clone());
+        drop(inflight);
+
+        let mut resource_fences = self.resource_fences.lock();
+        for object_id in object_ids {
+            let fences = resource_fences.entry(*object_id).or_default();
+            fences.retain(|previous| !previous.is_signaled());
+            fences.push(fence.clone());
+        }
+    }
+
+    fn resource_fences(&self, object_id: u32) -> Vec<Arc<fence::Fence>> {
+        self.resource_fences
+            .lock()
+            .get(&object_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn clear_resource_fences(&self, object_id: u32, completed: &[Arc<fence::Fence>]) {
+        let mut resource_fences = self.resource_fences.lock();
+        let Some(current) = resource_fences.get_mut(&object_id) else {
+            return;
+        };
+        current.retain(|fence| {
+            !completed
+                .iter()
+                .any(|completed| Arc::ptr_eq(fence, completed))
+        });
+        if current.is_empty() {
+            resource_fences.remove(&object_id);
+        }
+    }
+
+    fn wait_for_all_fences(&self) {
+        let fences = self.inflight_fences.lock().clone();
+        for fence in &fences {
+            if let Err(error) = fence.wait() {
+                warn!(
+                    "virtio-gpu fence failed before lifetime teardown: {:?}",
+                    error
+                );
+            }
+        }
+        let mut inflight = self.inflight_fences.lock();
+        inflight.retain(|current| {
+            !fences
+                .iter()
+                .any(|completed| Arc::ptr_eq(current, completed))
+        });
+    }
+
     /// Retries resources that outlived their GEM objects without holding a spinlock.
     fn drain_pending_resource_cleanup(&self) {
         retry_pending_resources(&self.pending_resource_cleanup, |resource_id| {
             self.gpu.resource_unref(resource_id).is_ok()
         });
     }
+}
+
+fn next_fence_id(current: u64) -> Option<u64> {
+    current.checked_add(1)
 }
 
 fn retry_pending_resources(
@@ -481,6 +574,12 @@ mod tests {
         assert_eq!(attempted_resources, vec![10, 11]);
         assert_eq!(*pending_resources.lock(), BTreeSet::from([10, 12]));
     }
+
+    #[ktest]
+    fn fence_ids_do_not_wrap() {
+        assert_eq!(next_fence_id(1), Some(2));
+        assert_eq!(next_fence_id(u64::MAX), None);
+    }
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
@@ -558,7 +657,7 @@ impl Device for DriPrimary {
         Ok(Box::new(DriHandle::new(
             self.gpu_manager.clone(),
             DriNodeType::Primary,
-        )))
+        )?))
     }
 }
 
@@ -580,7 +679,7 @@ impl Device for DriRender {
         Ok(Box::new(DriHandle::new(
             self.gpu_manager.clone(),
             DriNodeType::Render,
-        )))
+        )?))
     }
 }
 
@@ -603,6 +702,8 @@ struct DriHandle {
     cursor_operation: Mutex<()>,
     /// Serializes event dequeue/copy/requeue transactions between readers.
     event_read_operation: Mutex<()>,
+    /// Serializes page-flip event capacity checks with hardware commits.
+    page_flip_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
     /// Notifies readers/pollers when page-flip events are queued.
     pollee: Pollee,
@@ -628,14 +729,20 @@ struct DriInner {
 }
 
 impl DriHandle {
-    fn new(gpu_manager: Arc<GpuManager>, node_type: DriNodeType) -> Self {
-        let context_id = gpu_manager.next_context_id.fetch_add(1, Ordering::Relaxed);
-        let file_id = gpu_manager.next_file_id.fetch_add(1, Ordering::Relaxed);
+    fn new(gpu_manager: Arc<GpuManager>, node_type: DriNodeType) -> Result<Self> {
+        let context_id = gpu_manager
+            .next_context_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "virgl context ids exhausted"))?;
+        let file_id = gpu_manager
+            .next_file_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "DRM file ids exhausted"))?;
         if matches!(node_type, DriNodeType::Primary) {
             let mut kms_state = gpu_manager.kms_state.lock();
             kms_state.master_file_id.get_or_insert(file_id);
         }
-        Self {
+        Ok(Self {
             gpu_manager,
             node_type,
             file_id,
@@ -645,6 +752,7 @@ impl DriHandle {
             }),
             cursor_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
+            page_flip_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -654,7 +762,7 @@ impl DriHandle {
                 cursor: CursorState::default(),
             }),
             pollee: Pollee::new(),
-        }
+        })
     }
 
     /// Returns true if KMS ioctls are forbidden on this handle.
@@ -839,6 +947,7 @@ impl Drop for DriHandle {
         drop(kms_state);
 
         let context = self.context.get_mut();
+        self.gpu_manager.wait_for_all_fences();
         if context.is_created
             && let Err(error) = self.gpu_manager.gpu.ctx_destroy(context.id)
         {
@@ -1209,6 +1318,7 @@ impl PerOpenFileOps for DriHandle {
                 Ok(0)
             }
             cmd @ ModePageFlip => {
+                let _page_flip_operation = self.page_flip_operation.lock();
                 let mut kms_state = self.lock_kms_as_master()?;
                 let req = cmd.read()?;
                 if req.crtc_id != CRTC_ID {
@@ -1219,6 +1329,11 @@ impl PerOpenFileOps for DriHandle {
                 }
                 if req.flags & !(DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC) != 0 {
                     return_errno_with_message!(Errno::EINVAL, "unsupported page flip flags");
+                }
+                if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0
+                    && self.inner.lock().events.len() >= MAX_DRM_EVENTS
+                {
+                    return_errno_with_message!(Errno::EBUSY, "DRM event queue is full");
                 }
                 kms::present_fb(self, &mut kms_state, req.fb_id)?;
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {

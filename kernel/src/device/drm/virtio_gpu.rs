@@ -6,8 +6,6 @@
 //! These are the kernel-side entry points for Mesa's virgl driver. They
 //! translate DRM ioctl structs into virtio-gpu control queue commands.
 
-use core::sync::atomic::Ordering;
-
 use super::{
     DumbBuffer, GemResourceState,
     dumb::{PendingDumbBuffer, PendingPoolAllocation},
@@ -213,8 +211,8 @@ pub(super) fn virtgpu_getparam(
 /// RESOURCE_CREATE: create a 3D resource on the virtio-gpu device.
 ///
 /// Maps a GEM buffer (via bo_handle) to a virtio-gpu 3D resource.
-/// If bo_handle is 0, creates a resource without backing (for
-/// render targets that are written to by the GPU).
+/// If `bo_handle` is zero, allocates a new dumb buffer and returns its GEM
+/// handle as the resource backing.
 pub(super) fn virtgpu_resource_create(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -332,10 +330,11 @@ pub(super) fn virtgpu_resource_create(
         resource_created = true;
 
         if let Some((_, addr, size)) = backing {
+            let owner = handle.gpu_manager.ensure_pool()?;
             handle
                 .gpu_manager
                 .gpu
-                .attach_backing(res_handle, addr as u64, size)
+                .attach_backing(res_handle, addr as u64, size, owner)
                 .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
             req.size = size;
         } else {
@@ -481,18 +480,10 @@ pub(super) fn virtgpu_get_caps(
     if capset_info.capset_max_size == 0 {
         return_errno_with_message!(Errno::EINVAL, "capset not supported by device");
     }
-    // `cap_set_ver == 0` asks for the newest version the device supports.
-    // This virglrenderer advertises max_version=2 but returns a zeroed v2
-    // capset (only v1 carries real data), so pin to v1.
-    let version = if req.cap_set_ver == 0 {
-        1
-    } else {
-        req.cap_set_ver as u32
-    };
     let capset_data = handle
         .gpu_manager
         .gpu
-        .get_capset(cap_set_id, version)
+        .get_capset(cap_set_id, req.cap_set_ver)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 
     // Copy the capset data to userspace
@@ -516,10 +507,12 @@ const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
 ///
 /// This is the core ioctl for virgl rendering. Mesa encodes GL commands
 /// in a virgl command buffer and submits them via this ioctl. When the caller
-/// sets `VIRTGPU_EXECBUF_FENCE_FD_OUT` in `flags`, the submission is fenced:
-/// the device defers its response until the command completes, so by the time
-/// this ioctl returns the render is done, and we hand back a pre-signaled
-/// [`super::fence::FenceFile`] fd in `fence_fd`.
+/// Every submission receives a persistent fence and is queued without waiting
+/// for rendering to finish.
+/// Setting `VIRTGPU_EXECBUF_FENCE_FD_OUT` controls whether that fence is also
+/// returned as a [`super::fence::FenceFile`].
+/// The file becomes readable when the control-queue IRQ observes the fenced
+/// response; a fast device may signal it before the ioctl copies out the fd.
 pub(super) fn virtgpu_execbuffer(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -559,7 +552,11 @@ pub(super) fn virtgpu_execbuffer(
         cmd_buf.resize(command_size, 0);
         current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
 
-        // Validate the GEM buffer handles in the resource list
+        let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
+
+        // Validate and collect the GEM object ids in the resource list so the
+        // resulting fence can become each object's current reservation fence.
+        let mut object_ids = BTreeSet::new();
         if req.num_bo_handles > 0 {
             if req.bo_handles == 0 {
                 return_errno_with_message!(Errno::EINVAL, "missing execbuffer handle list");
@@ -581,34 +578,34 @@ pub(super) fn virtgpu_execbuffer(
             let guard = handle.gpu_manager.gem_objects.lock();
             for chunk in raw.as_chunks::<4>().0 {
                 let bo_h = u32::from_le_bytes(*chunk);
-                let valid = inner
-                    .handles
-                    .get(&bo_h)
-                    .is_some_and(|object_id| guard.contains_key(object_id));
-                if !valid {
+                let Some(object_id) = inner.handles.get(&bo_h).copied() else {
                     return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
+                };
+                if !guard.contains_key(&object_id) {
+                    return_errno_with_message!(Errno::EINVAL, "stale GEM handle in execbuffer");
                 }
+                object_ids.insert(object_id);
             }
         }
 
         let ctx_id = handle.ensure_virgl_context()?;
         let mut resp = req;
+        let fence_id = handle.gpu_manager.allocate_fence_id()?;
+        let fence = Arc::new(super::fence::Fence::new());
+        let ticket = handle
+            .gpu_manager
+            .gpu
+            .submit_3d_fenced_async(ctx_id, req.size, &cmd_buf, fence_id, fence.clone())
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
+        fence.attach(ticket);
+        handle
+            .gpu_manager
+            .associate_resource_fence(&object_ids, &fence);
+        drop(resource_transaction);
 
         let mut installed_fence_fd = None;
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
-            // Fenced submit: blocks until the host finishes the command.
-            let fence_id = handle
-                .gpu_manager
-                .next_fence_id
-                .fetch_add(1, Ordering::Relaxed);
-            handle
-                .gpu_manager
-                .gpu
-                .submit_3d_fenced(ctx_id, req.size, &cmd_buf, fence_id)
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-
-            // The fence is already signaled; hand back a pollable fd.
-            let fence_file = Arc::new(super::fence::FenceFile::new());
+            let fence_file = Arc::new(super::fence::FenceFile::new(fence));
             let fd = file_table
                 .unwrap()
                 .write()
@@ -616,11 +613,6 @@ pub(super) fn virtgpu_execbuffer(
             resp.fence_fd = u32::from(fd) as i32;
             installed_fence_fd = Some(fd);
         } else {
-            handle
-                .gpu_manager
-                .gpu
-                .submit_3d(ctx_id, req.size, &cmd_buf)
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
             resp.fence_fd = -1;
         }
 
@@ -779,10 +771,7 @@ pub(super) fn virtgpu_map(
 /// `VIRTGPU_WAIT_NOWAIT` — reports busy instead of waiting.
 const VIRTGPU_WAIT_NOWAIT: u32 = 0x01;
 
-/// A one-dword `VIRGL_CCMD_NOP` command stream.
-const VIRGL_NOP: [u8; 4] = [0; 4];
-
-/// WAIT: waits for all earlier work on this file's virgl timeline.
+/// WAIT: waits for every tracked command that references this GEM object.
 pub(super) fn virtgpu_wait(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -808,30 +797,30 @@ pub(super) fn virtgpu_wait(
         return_errno_with_message!(Errno::EINVAL, "GEM object has no 3D resource");
     }
 
-    // The transport currently has no nonblocking used-ring query for a
-    // resource timeline. Reject NOWAIT explicitly rather than sleeping or
-    // claiming completion.
-    if req.flags & VIRTGPU_WAIT_NOWAIT != 0 {
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "nonblocking virtio-gpu wait is unavailable"
-        );
+    let fences = handle.gpu_manager.resource_fences(object_id);
+    if fences.is_empty() {
+        cmd.write(&req)?;
+        return Ok(0);
     }
 
-    // Virtio 1.3 section 5.7.6.7 requires a fenced response to be delayed
-    // until the associated command and all earlier commands on this context's
-    // timeline have completed. A fenced virgl NOP is therefore a timeline
-    // barrier without replaying or mutating the resource.
-    let context_id = handle.ensure_virgl_context()?;
-    let fence_id = handle
-        .gpu_manager
-        .next_fence_id
-        .fetch_add(1, Ordering::Relaxed);
-    handle
-        .gpu_manager
-        .gpu
-        .submit_3d_fenced(context_id, VIRGL_NOP.len() as u32, &VIRGL_NOP, fence_id)
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu wait failed"))?;
+    if req.flags & VIRTGPU_WAIT_NOWAIT != 0 {
+        for fence in &fences {
+            if !fence.try_finish()? {
+                return_errno_with_message!(Errno::EBUSY, "virtio-gpu resource is busy");
+            }
+        }
+    } else {
+        let mut wait_result = Ok(());
+        for fence in &fences {
+            if let Err(error) = fence.wait()
+                && wait_result.is_ok()
+            {
+                wait_result = Err(error);
+            }
+        }
+        wait_result?;
+    }
+    handle.gpu_manager.clear_resource_fences(object_id, &fences);
 
     cmd.write(&req)?;
     Ok(0)

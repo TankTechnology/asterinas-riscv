@@ -33,9 +33,13 @@ ioctl(fd, op = BLKGETSIZE64 | BLKSSZGET, ..);
 drm_handle_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_MODE_CREATE_DUMB |
                  DRM_IOCTL_PRIME_FD_TO_HANDLE |
                  DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
+drm_fence_ops = DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
 
 // Create or import DRM GEM handles
 ioctl(fd, op = <drm_handle_ops>, ..);
+
+// Submit virgl work and query or wait for resource fences
+ioctl(fd, op = <drm_fence_ops>, ..);
 
 // Control Trust Domain Extensions (TDX) guest devices
 ioctl(fd, op = TDX_CMD_GET_REPORT0, ..);

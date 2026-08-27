@@ -5,7 +5,7 @@
 // self-contained test drives the raw ioctls instead:
 //
 //   GETPARAM 3D_FEATURES / SUPPORTED_CAPSET_IDS
-//   GET_CAPS virgl capset (cap_set_ver 0 -> newest)
+//   GET_CAPS virgl capset versions 0, 1, and 2
 //   CREATE_DUMB + MAP_DUMB + mmap
 //   RESOURCE_CREATE (3D, with backing) + TRANSFER_TO_HOST + TRANSFER_FROM_HOST
 //   EXECBUFFER with a single VIRGL_CMD_NOP dword
@@ -50,6 +50,7 @@
 
 #define VIRTGPU_EXECBUF_FENCE_FD_IN  0x01
 #define VIRTGPU_EXECBUF_FENCE_FD_OUT 0x02
+#define VIRTGPU_WAIT_NOWAIT           0x01
 
 #define PIPE_TEXTURE_2D 2
 #define PIPE_FORMAT_B8G8R8X8_UNORM 1
@@ -182,7 +183,7 @@ int main(void) {
     CHECK(rc == 0 && (val & ((1 << VIRTIO_GPU_CAPSET_VIRGL) | (1 << VIRTIO_GPU_CAPSET_VIRGL2))) != 0,
           "GETPARAM CAPSETS=0x%llx", (unsigned long long)val);
 
-    /* GET_CAPS: virgl capset. Try version 0 (=newest) and explicit v1/v2. */
+    /* GET_CAPS: try virgl capset versions 0, 1, and 2. */
     uint8_t caps[512];
     for (uint64_t ver = 0; ver <= 2; ver++) {
         memset(caps, 0, sizeof(caps));
@@ -214,6 +215,10 @@ int main(void) {
     CHECK(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &md) == 0, "MAP_DUMB");
     uint32_t *pixels = mmap(NULL, cd.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, md.offset);
     CHECK(pixels != MAP_FAILED, "mmap dumb");
+    if (pixels == MAP_FAILED) {
+        close(fd);
+        return 1;
+    }
 
     /* Fill with a known pattern. */
     for (int i = 0; i < TEX_W * TEX_H; i++)
@@ -317,6 +322,14 @@ int main(void) {
         rc = ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
         CHECK(rc == 0 && eb.fence_fd >= 0,
               "EXECBUFFER fenced render fence_fd=%d", eb.fence_fd);
+        struct drm_virtgpu_3d_wait nowait = {
+            .handle = cd.handle,
+            .flags = VIRTGPU_WAIT_NOWAIT,
+        };
+        errno = 0;
+        rc = ioctl(fd, DRM_IOCTL_VIRTGPU_WAIT, &nowait);
+        CHECK(rc == 0 || (rc == -1 && errno == EBUSY),
+              "WAIT NOWAIT reports ready or busy errno=%d", errno);
         if (eb.fence_fd >= 0) {
             struct pollfd pfd = { .fd = eb.fence_fd, .events = POLLIN };
             int prc = poll(&pfd, 1, 5000);
@@ -324,6 +337,9 @@ int main(void) {
                   "render fence poll signaled revents=0x%x", pfd.revents);
             close(eb.fence_fd);
         }
+        errno = 0;
+        CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_WAIT, &nowait) == 0,
+              "WAIT NOWAIT succeeds after fence errno=%d", errno);
 
         memset(pixels, 0, cd.size);
         CHECK(ioctl(fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &up) == 0,
@@ -338,9 +354,8 @@ int main(void) {
               "render reached backing (red clear)");
     }
 
-    /* Fenced EXECBUFFER: request an out-fence and poll it. The kernel fences
-     * the SUBMIT_3D (deferred response until completion) and returns a
-     * pre-signaled fence_fd, so the poll must return POLLIN immediately. */
+    /* Fenced EXECBUFFER: request an out-fence and poll it. The kernel returns
+     * before completion; the control-queue IRQ makes the fd readable. */
     {
         uint32_t nop2 = 0;
         struct drm_virtgpu_execbuffer feb = {
@@ -372,6 +387,10 @@ int main(void) {
         uint32_t *pixels_b = mmap(NULL, cd2.size, PROT_READ | PROT_WRITE, MAP_SHARED,
                                   fd, md2.offset);
         CHECK(pixels_b != MAP_FAILED, "mmap dumb B");
+        if (pixels_b == MAP_FAILED) {
+            close(fd);
+            return 1;
+        }
 
         struct drm_virtgpu_resource_create rcB = {
             .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_B8G8R8X8_UNORM,

@@ -5,7 +5,7 @@
 //! The driver covers the 2D control queue, hardware cursor, and virgl 3D
 //! command paths. EDID and newer resource/context features remain disabled.
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc, vec::Vec};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -19,16 +19,18 @@ use ostd::{
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
-    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR,
-    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
-    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
-    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
-    config::VirtioGpuConfig, control_queue::ControlQueue,
+    GpuBackingOwner, GpuCommandCompletion, MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
+    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne,
+    VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d,
+    VirtioGpuResourceFlush, VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d,
+    VirtioGpuUpdateCursor,
+    config::VirtioGpuConfig,
+    control_queue::{ControlQueue, ControlTicket},
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
@@ -41,6 +43,32 @@ const MAX_QUEUE_SIZE: u16 = 64;
 
 /// Cursor requests have no device-written response body.
 const CURSOR_COMPLETION_BYTES: usize = 0;
+
+/// An asynchronous fenced GPU command whose response can be collected later.
+#[must_use = "an asynchronous GPU command must be observed or retained"]
+pub struct GpuCommandTicket {
+    control: ControlTicket,
+    response: Slice<Arc<DmaStream>>,
+    response_len: usize,
+}
+
+impl GpuCommandTicket {
+    /// Waits for device completion and validates the command response.
+    pub fn wait(self) -> Result<(), VirtioDeviceError> {
+        let (code, _) = self.wait_for_response()?;
+        check_ok(code)
+    }
+
+    fn wait_for_response(self) -> Result<(u32, usize), VirtioDeviceError> {
+        let (_, used_len) = self
+            .control
+            .wait_for_used()
+            .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
+        let used_len = (used_len as usize).min(self.response_len);
+        self.response.sync_from_device().unwrap();
+        Ok((self.response.read_val::<u32>(0).unwrap(), used_len))
+    }
+}
 
 /// Upper bound for a device-advertised virgl capability blob.
 const MAX_CAPSET_SIZE: usize = 1024 * 1024;
@@ -96,6 +124,8 @@ pub struct GpuDevice {
     cursor_buf: Arc<DmaStream>,
     /// Backing memory of the scanout resource, in B8G8R8X8.
     framebuffer: Arc<DmaStream>,
+    /// Owners of memory that remains attached to live host resources.
+    backing_owners: SpinLock<BTreeMap<u32, Arc<dyn GpuBackingOwner>>>,
     scanout_width: u32,
     scanout_height: u32,
     framebuffer_len: u32,
@@ -191,6 +221,7 @@ impl GpuDevice {
             control_buf: Mutex::new(control_buf),
             cursor_buf,
             framebuffer,
+            backing_owners: SpinLock::new(BTreeMap::new()),
             scanout_width,
             scanout_height,
             framebuffer_len,
@@ -249,6 +280,7 @@ impl GpuDevice {
         &self,
         addr: u64,
         size: u32,
+        owner: Arc<dyn GpuBackingOwner>,
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
@@ -272,7 +304,7 @@ impl GpuDevice {
         let resource_id = self.allocate_resource_id()?;
         self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
         let prepare_result = (|| {
-            self.attach_backing(resource_id, addr, size)?;
+            self.attach_backing(resource_id, addr, size, owner)?;
             self.transfer_to_host_2d(resource_id, r, 0)?;
             self.set_scanout(SCANOUT_ID, resource_id, r)
         })();
@@ -321,6 +353,7 @@ impl GpuDevice {
         &self,
         addr: u64,
         size: u32,
+        owner: Arc<dyn GpuBackingOwner>,
         width: u32,
         height: u32,
         hot_x: u32,
@@ -334,7 +367,7 @@ impl GpuDevice {
         let result = (|| {
             self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, width, height)?;
             created = true;
-            self.attach_backing(resource_id, addr, size)?;
+            self.attach_backing(resource_id, addr, size, owner)?;
             self.transfer_to_host_2d(
                 resource_id,
                 VirtioGpuRect {
@@ -456,6 +489,7 @@ impl GpuDevice {
             RESOURCE_ID,
             self.framebuffer.daddr() as u64,
             self.framebuffer_len,
+            self.framebuffer.clone(),
         )?;
         ostd::info!("virtio-gpu: ATTACH_BACKING ok");
 
@@ -516,6 +550,7 @@ impl GpuDevice {
         resource_id: u32,
         addr: u64,
         length: u32,
+        owner: Arc<dyn GpuBackingOwner>,
     ) -> Result<(), VirtioDeviceError> {
         let attach_len = size_of::<VirtioGpuResourceAttachBacking>();
         let entry_len = size_of::<VirtioGpuMemEntry>();
@@ -546,7 +581,10 @@ impl GpuDevice {
             req_len,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        check_ok(code)?;
+        let previous = self.backing_owners.lock().insert(resource_id, owner);
+        debug_assert!(previous.is_none());
+        Ok(())
     }
 
     fn set_scanout(
@@ -624,7 +662,9 @@ impl GpuDevice {
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        check_ok(code)?;
+        self.backing_owners.lock().remove(&resource_id);
+        Ok(())
     }
 
     /// 3D: create a 3D resource (texture, render target, or buffer).
@@ -773,6 +813,27 @@ impl GpuDevice {
         self.submit_3d_with_fence(ctx_id, size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)
     }
 
+    /// Queues a fenced virgl command without waiting for device completion.
+    pub fn submit_3d_fenced_async(
+        &self,
+        ctx_id: u32,
+        size: u32,
+        data: &[u8],
+        fence_id: u64,
+        completion: Arc<dyn GpuCommandCompletion>,
+    ) -> Result<GpuCommandTicket, VirtioDeviceError> {
+        let (submit_buf, total_len, resp_len) =
+            build_submit_3d(ctx_id, size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)?;
+        Ok(submit_control_at_ticket(
+            &self.control_queue,
+            &submit_buf,
+            total_len,
+            total_len,
+            resp_len,
+            Some(completion),
+        ))
+    }
+
     fn submit_3d_with_fence(
         &self,
         ctx_id: u32,
@@ -781,35 +842,8 @@ impl GpuDevice {
         flags: u32,
         fence_id: u64,
     ) -> Result<(), VirtioDeviceError> {
-        use super::VirtioGpuCmdSubmit;
-        if data.len() != size as usize {
-            return Err(VirtioDeviceError::InvalidQueueArgs);
-        }
-        let mut hdr = ctrl_hdr_3d(super::VIRTIO_GPU_CMD_SUBMIT_3D, ctx_id);
-        hdr.flags = flags;
-        hdr.fence_id = fence_id;
-        let req = VirtioGpuCmdSubmit {
-            hdr,
-            size,
-            padding: 0,
-        };
-        let req_len = size_of::<VirtioGpuCmdSubmit>();
-        let total_len = req_len
-            .checked_add(data.len())
-            .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
-        let resp_len = size_of::<VirtioGpuCtrlHdr>();
-        let buffer_len = total_len + resp_len;
-        let submit_buf = Arc::new(
-            DmaStream::alloc(buffer_len.div_ceil(PAGE_SIZE), false)
-                .map_err(VirtioDeviceError::ResourceAlloc)?,
-        );
-
-        let req_slice = Slice::new(
-            submit_buf.clone(),
-            CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
-        );
-        req_slice.write_val(0, &req).unwrap();
-        req_slice.write_bytes(req_len, data).unwrap();
+        let (submit_buf, total_len, resp_len) =
+            build_submit_3d(ctx_id, size, data, flags, fence_id)?;
 
         let (code, _) = submit_control_at(
             &self.control_queue,
@@ -1043,6 +1077,47 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     }
 }
 
+fn build_submit_3d(
+    ctx_id: u32,
+    size: u32,
+    data: &[u8],
+    flags: u32,
+    fence_id: u64,
+) -> Result<(Arc<DmaStream>, usize, usize), VirtioDeviceError> {
+    use super::VirtioGpuCmdSubmit;
+
+    if data.len() != size as usize {
+        return Err(VirtioDeviceError::InvalidQueueArgs);
+    }
+    let mut hdr = ctrl_hdr_3d(super::VIRTIO_GPU_CMD_SUBMIT_3D, ctx_id);
+    hdr.flags = flags;
+    hdr.fence_id = fence_id;
+    let req = VirtioGpuCmdSubmit {
+        hdr,
+        size,
+        padding: 0,
+    };
+    let req_len = size_of::<VirtioGpuCmdSubmit>();
+    let total_len = req_len
+        .checked_add(data.len())
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+    let resp_len = size_of::<VirtioGpuCtrlHdr>();
+    let buffer_len = total_len
+        .checked_add(resp_len)
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+    let submit_buf = Arc::new(
+        DmaStream::alloc(buffer_len.div_ceil(PAGE_SIZE), false)
+            .map_err(VirtioDeviceError::ResourceAlloc)?,
+    );
+    let req_slice = Slice::new(
+        submit_buf.clone(),
+        CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
+    );
+    req_slice.write_val(0, &req).unwrap();
+    req_slice.write_bytes(req_len, data).unwrap();
+    Ok((submit_buf, total_len, resp_len))
+}
+
 /// Submits a control request of `req_len` bytes (already written into the
 /// buffer by the caller) and waits for a response of at most `resp_len`
 /// bytes, returning the response type code and the actual used length.
@@ -1051,7 +1126,7 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
 /// example `GET_CAPSET` returns the actual capset size, not the maximum),
 /// so the used length is validated against the header size, not `resp_len`.
 fn submit_control(
-    queue: &ControlQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_len: usize,
@@ -1065,29 +1140,38 @@ fn submit_control(
 /// command stream so they are not constrained by the fixed small-command
 /// layout in [`GpuDevice::control_buf`].
 fn submit_control_at(
-    queue: &ControlQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_offset: usize,
     resp_len: usize,
 ) -> Result<(u32, usize), VirtioDeviceError> {
+    submit_control_at_ticket(queue, buf, req_len, resp_offset, resp_len, None).wait_for_response()
+}
+
+fn submit_control_at_ticket(
+    queue: &Arc<ControlQueue>,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+    resp_offset: usize,
+    resp_len: usize,
+    listener: Option<Arc<dyn GpuCommandCompletion>>,
+) -> GpuCommandTicket {
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.sync_to_device().unwrap();
 
-    let resp_slice = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
-    let ticket = queue.submit_dma_bufs(&[&req_slice], &[&resp_slice]);
-    let (_, used_len) = ticket
-        .wait_for_used()
-        .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
-    let used_len = (used_len as usize).min(resp_len);
-
-    resp_slice.sync_from_device().unwrap();
-    Ok((resp_slice.read_val::<u32>(0).unwrap(), used_len))
+    let response = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
+    let control = queue.submit_dma_bufs(&[&req_slice], &[&response], listener);
+    GpuCommandTicket {
+        control,
+        response,
+        response_len: resp_len,
+    }
 }
 
 /// Sends a fixed-size control request and waits for its response.
 fn control_cmd<T: ostd_pod::Pod>(
-    queue: &ControlQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     req: &T,
     resp_len: usize,
@@ -1152,7 +1236,7 @@ fn queue_size_up_to_cap(device_max: u16, min_size: u16) -> Option<u16> {
 
 /// Queries the display info and returns scanout 0's dimensions.
 fn query_display_info(
-    queue: &ControlQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     num_scanouts: u32,
 ) -> Result<(u32, u32), VirtioDeviceError> {

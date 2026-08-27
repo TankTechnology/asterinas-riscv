@@ -270,6 +270,7 @@ pub(super) fn present_fb(
     kms_state: &mut super::KmsState,
     fb_id: u32,
 ) -> Result<()> {
+    let backing_owner = handle.gpu_manager.ensure_pool()?;
     let (addr, size, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
@@ -298,7 +299,7 @@ pub(super) fn present_fb(
     handle
         .gpu_manager
         .gpu
-        .present_framebuffer(addr as u64, size, width, height)
+        .present_framebuffer(addr as u64, size, backing_owner, width, height)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
 
     kms_state.commit_scanout(handle.file_id, fb_id, width, height);
@@ -382,6 +383,7 @@ pub(super) fn get_encoder(
 /// CURSOR / CURSOR2: validate and apply one hardware-cursor update.
 pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> Result<()> {
     let _cursor_operation = handle.cursor_operation.lock();
+    let backing_owner = handle.gpu_manager.ensure_pool()?;
     let (update, position, backing) = {
         let inner = handle.inner.lock();
         let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
@@ -445,7 +447,15 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
                     .gpu_manager
                     .gpu
                     .update_cursor(
-                        addr, size, width, height, hot_x, hot_y, position.x, position.y,
+                        addr,
+                        size,
+                        backing_owner,
+                        width,
+                        height,
+                        hot_x,
+                        hot_y,
+                        position.x,
+                        position.y,
                     )
                     .map_err(|_| {
                         Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")

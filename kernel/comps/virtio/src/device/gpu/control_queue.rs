@@ -18,7 +18,7 @@ use ostd::{
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
 
-use super::VirtioGpuCtrlHdr;
+use super::{GpuCommandCompletion, VirtioGpuCtrlHdr};
 use crate::queue::{AddBufsError, PopUsedError, VirtQueue, VirtQueueNotifier};
 
 pub(super) struct ControlQueue {
@@ -41,14 +41,15 @@ struct TokenMap<T> {
 struct ControlRequest {
     completion: SpinLock<Option<Result<u32, PopUsedError>>, LocalIrqDisabled>,
     waiters: WaitQueue,
+    listener: SpinLock<Option<Arc<dyn GpuCommandCompletion>>, LocalIrqDisabled>,
     // Every descriptor's memory must remain alive until the device returns
     // the token, even if completion is delayed.
     _dma_bufs: Vec<Arc<DmaStream>>,
 }
 
 #[must_use = "a submitted control request must be completed"]
-pub(super) struct ControlTicket<'a> {
-    queue: &'a ControlQueue,
+pub(super) struct ControlTicket {
+    queue: Arc<ControlQueue>,
     request: Arc<ControlRequest>,
     token: u16,
 }
@@ -110,11 +111,12 @@ impl ControlQueue {
         }
     }
 
-    pub(super) fn submit_dma_bufs<'a>(
-        &'a self,
+    pub(super) fn submit_dma_bufs(
+        self: &Arc<Self>,
         inputs: &[&Slice<Arc<DmaStream>>],
         outputs: &[&Slice<Arc<DmaStream>>],
-    ) -> ControlTicket<'a> {
+        listener: Option<Arc<dyn GpuCommandCompletion>>,
+    ) -> ControlTicket {
         let dma_bufs = inputs
             .iter()
             .chain(outputs)
@@ -123,6 +125,7 @@ impl ControlQueue {
         let request = Arc::new(ControlRequest {
             completion: SpinLock::new(None),
             waiters: WaitQueue::new(),
+            listener: SpinLock::new(listener),
             _dma_bufs: dma_bufs,
         });
         let mut pending_request = Some(request.clone());
@@ -147,7 +150,7 @@ impl ControlQueue {
             self.notifier.notify();
         }
         ControlTicket {
-            queue: self,
+            queue: self.clone(),
             request,
             token,
         }
@@ -202,6 +205,10 @@ impl ControlRequest {
         let old_completion = self.completion.lock().replace(result);
         debug_assert!(old_completion.is_none());
         self.waiters.wake_all();
+        let listener = self.listener.lock().take();
+        if let Some(listener) = listener {
+            listener.complete();
+        }
     }
 
     fn take_completion(&self) -> Option<Result<u32, PopUsedError>> {
@@ -209,7 +216,7 @@ impl ControlRequest {
     }
 }
 
-impl ControlTicket<'_> {
+impl ControlTicket {
     pub(super) fn wait_for_used(self) -> Result<(u16, u32), PopUsedError> {
         let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
         let result = if irq_wait_enabled {
