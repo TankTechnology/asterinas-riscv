@@ -4,8 +4,8 @@
 //!
 //! Parses the Linux `drm_mode_atomic` object/property wire format.
 //! It validates the complete request before updating the single virtio-gpu KMS pipeline.
-//! The parser keeps Linux's per-object property counts instead of exposing a
-//! driver-specific flattened ABI.
+//! The parser keeps Linux's per-object property counts
+//! instead of exposing a driver-specific flattened ABI.
 
 use ostd::mm::VmIo;
 
@@ -37,6 +37,35 @@ struct AtomicObjectUpdate {
     properties: Vec<AtomicPropertyUpdate>,
 }
 
+/// Complete software state proposed by one atomic request.
+///
+/// This is built from the committed property state before applying any user
+/// updates. Validation and hardware decisions therefore observe one coherent
+/// state instead of interpreting each property in isolation.
+#[derive(Clone, Debug)]
+struct ProposedKmsState {
+    active: bool,
+    mode: Option<super::property::PropertyBlobRef>,
+    connector_crtc: Option<u32>,
+    plane_fb: Option<u32>,
+    plane_crtc: Option<u32>,
+    src_x: u64,
+    src_y: u64,
+    src_w: u64,
+    src_h: u64,
+    crtc_x: i64,
+    crtc_y: i64,
+    crtc_w: u64,
+    crtc_h: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AtomicHardwareUpdate {
+    None,
+    Present(u32),
+    Disable,
+}
+
 /// Applies one validated atomic KMS transaction.
 pub(super) fn mode_atomic(
     handle: &super::DriHandle,
@@ -47,7 +76,17 @@ pub(super) fn mode_atomic(
     validate_request_header(&req)?;
 
     let updates = read_and_validate_updates(handle, &req)?;
-    let framebuffer_id = validate_atomic_state(handle, &updates, req.flags)?;
+    let current_state = ProposedKmsState::from_committed(handle)?;
+    let mut proposed_state = current_state.clone();
+    proposed_state.apply_updates(&updates)?;
+    let hardware_update = validate_atomic_state(
+        handle,
+        kms_state,
+        &current_state,
+        &proposed_state,
+        &updates,
+        req.flags,
+    )?;
     if req.flags & DRM_MODE_ATOMIC_TEST_ONLY != 0 {
         return Ok(0);
     }
@@ -56,7 +95,7 @@ pub(super) fn mode_atomic(
         handle,
         kms_state,
         &updates,
-        framebuffer_id,
+        hardware_update,
         req.flags,
         req.user_data,
     )
@@ -239,24 +278,11 @@ fn validate_property_value(
                 Error::with_message(Errno::EINVAL, "object property value overflows")
             })?)
         }
-        PropertyType::Enum => {
-            return_errno_with_message!(Errno::EINVAL, "unsupported mutable enum property");
-        }
+        PropertyType::Enum => PropertyValue::Enum(
+            u32::try_from(value)
+                .map_err(|_| Error::with_message(Errno::EINVAL, "enum property value overflows"))?,
+        ),
     };
-    match (property.kind, &value) {
-        (PropertyKind::Active, PropertyValue::Range(0))
-        | (PropertyKind::ModeId, PropertyValue::Blob(None))
-        | (
-            PropertyKind::ConnectorCrtcId | PropertyKind::PlaneCrtcId | PropertyKind::PlaneFbId,
-            PropertyValue::Object(0),
-        ) => {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "atomic pipeline disable is not implemented"
-            );
-        }
-        _ => {}
-    }
     Ok(value)
 }
 
@@ -289,34 +315,187 @@ fn validate_object_reference(
     Ok(())
 }
 
-fn validate_atomic_state(
-    handle: &super::DriHandle,
-    updates: &[AtomicObjectUpdate],
-    flags: u32,
-) -> Result<Option<u32>> {
-    let mut framebuffer_id = None;
-    let mut mode_blob = None;
+impl ProposedKmsState {
+    fn empty() -> Self {
+        Self {
+            active: false,
+            mode: None,
+            connector_crtc: None,
+            plane_fb: None,
+            plane_crtc: None,
+            src_x: 0,
+            src_y: 0,
+            src_w: 0,
+            src_h: 0,
+            crtc_x: 0,
+            crtc_y: 0,
+            crtc_w: 0,
+            crtc_h: 0,
+        }
+    }
 
-    for update in updates {
-        for property_update in &update.properties {
-            match (&property_update.property.kind, &property_update.value) {
-                (PropertyKind::ModeId, PropertyValue::Blob(Some(blob))) => {
-                    mode_blob = Some(blob);
-                }
-                (PropertyKind::PlaneFbId, PropertyValue::Object(id)) if *id != 0 => {
-                    framebuffer_id = Some(*id);
-                }
-                _ => {}
+    fn from_committed(handle: &super::DriHandle) -> Result<Self> {
+        let property_manager = &handle.gpu_manager.property_manager;
+        let mut state = Self::empty();
+        for object in [
+            AtomicKmsObject::Crtc,
+            AtomicKmsObject::Connector,
+            AtomicKmsObject::PrimaryPlane,
+        ] {
+            for property_id in property_manager.property_ids_for_object(object.object_type()) {
+                let property = property_manager.lookup_property(*property_id)?;
+                let value =
+                    property_manager.current_value(object.id(), object.object_type(), &property);
+                state.apply_property(property.kind, &value)?;
             }
         }
+        Ok(state)
     }
 
-    if let Some(blob) = mode_blob {
-        if flags & DRM_MODE_ATOMIC_ALLOW_MODESET == 0 {
-            return_errno_with_message!(Errno::EINVAL, "mode change requires ALLOW_MODESET");
+    fn apply_updates(&mut self, updates: &[AtomicObjectUpdate]) -> Result<()> {
+        for update in updates {
+            for property_update in &update.properties {
+                self.apply_property(property_update.property.kind, &property_update.value)?;
+            }
         }
-        validate_mode_blob(blob)?;
+        Ok(())
     }
+
+    fn apply_property(&mut self, kind: PropertyKind, value: &PropertyValue) -> Result<()> {
+        match (kind, value) {
+            (PropertyKind::Active, PropertyValue::Range(value)) => self.active = *value != 0,
+            (PropertyKind::ModeId, PropertyValue::Blob(blob)) => self.mode = blob.clone(),
+            (PropertyKind::ConnectorCrtcId, PropertyValue::Object(id)) => {
+                self.connector_crtc = (*id != 0).then_some(*id);
+            }
+            (PropertyKind::PlaneFbId, PropertyValue::Object(id)) => {
+                self.plane_fb = (*id != 0).then_some(*id);
+            }
+            (PropertyKind::PlaneCrtcId, PropertyValue::Object(id)) => {
+                self.plane_crtc = (*id != 0).then_some(*id);
+            }
+            (PropertyKind::SrcX, PropertyValue::Range(value)) => self.src_x = *value,
+            (PropertyKind::SrcY, PropertyValue::Range(value)) => self.src_y = *value,
+            (PropertyKind::SrcW, PropertyValue::Range(value)) => self.src_w = *value,
+            (PropertyKind::SrcH, PropertyValue::Range(value)) => self.src_h = *value,
+            (PropertyKind::CrtcX, PropertyValue::SignedRange(value)) => self.crtc_x = *value,
+            (PropertyKind::CrtcY, PropertyValue::SignedRange(value)) => self.crtc_y = *value,
+            (PropertyKind::CrtcW, PropertyValue::Range(value)) => self.crtc_w = *value,
+            (PropertyKind::CrtcH, PropertyValue::Range(value)) => self.crtc_h = *value,
+            (PropertyKind::PlaneType, PropertyValue::Enum(_)) => {}
+            _ => {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "property value does not match its internal kind"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn mode_id(&self) -> Option<u32> {
+        self.mode.as_ref().map(|blob| blob.id())
+    }
+
+    fn modeset_changed_from(&self, current: &Self) -> bool {
+        self.active != current.active
+            || self.mode_id() != current.mode_id()
+            || self.connector_crtc != current.connector_crtc
+    }
+
+    fn scanout_framebuffer(&self) -> Option<u32> {
+        if self.active { self.plane_fb } else { None }
+    }
+
+    fn validate_topology(&self) -> Result<()> {
+        let crtc_enabled = self.mode.is_some();
+        let connector_attached = self.connector_crtc.is_some();
+        if crtc_enabled != connector_attached {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "CRTC mode and connector routing must be enabled together"
+            );
+        }
+        if self.active && !crtc_enabled {
+            return_errno_with_message!(Errno::EINVAL, "active CRTC has no mode or connector");
+        }
+        if self.plane_fb.is_some() != self.plane_crtc.is_some() {
+            return_errno_with_message!(Errno::EINVAL, "plane FB and CRTC must be set together");
+        }
+        Ok(())
+    }
+
+    fn validate(&self, handle: &super::DriHandle) -> Result<()> {
+        self.validate_topology()?;
+        let mode = self.mode.as_ref().map(validate_mode_blob).transpose()?;
+        let framebuffer = if let Some(framebuffer_id) = self.plane_fb {
+            Some(
+                *handle
+                    .inner
+                    .lock()
+                    .framebuffers
+                    .get(&framebuffer_id)
+                    .ok_or_else(|| {
+                        Error::with_message(Errno::EINVAL, "unknown scanout framebuffer id")
+                    })?,
+            )
+        } else {
+            None
+        };
+        if self.active && framebuffer.is_none() {
+            return_errno_with_message!(Errno::EINVAL, "active CRTC has no primary plane");
+        }
+        if let Some(framebuffer) = framebuffer {
+            self.validate_plane_geometry(&framebuffer)?;
+            if let Some(mode) = mode
+                && (u32::from(mode.hdisplay) != framebuffer.width
+                    || u32::from(mode.vdisplay) != framebuffer.height)
+            {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "mode, plane, and framebuffer dimensions differ"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_plane_geometry(&self, framebuffer: &super::Framebuffer) -> Result<()> {
+        let source_width = u64::from(framebuffer.width) << 16;
+        let source_height = u64::from(framebuffer.height) << 16;
+        if self.src_x != 0
+            || self.src_y != 0
+            || self.src_w != source_width
+            || self.src_h != source_height
+            || self.crtc_x != 0
+            || self.crtc_y != 0
+            || self.crtc_w != u64::from(framebuffer.width)
+            || self.crtc_h != u64::from(framebuffer.height)
+        {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "only full-frame scanout without cropping or scaling is supported"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_atomic_state(
+    handle: &super::DriHandle,
+    kms_state: &super::KmsState,
+    current_state: &ProposedKmsState,
+    proposed_state: &ProposedKmsState,
+    updates: &[AtomicObjectUpdate],
+    flags: u32,
+) -> Result<AtomicHardwareUpdate> {
+    proposed_state.validate(handle)?;
+    if proposed_state.modeset_changed_from(current_state)
+        && flags & DRM_MODE_ATOMIC_ALLOW_MODESET == 0
+    {
+        return_errno_with_message!(Errno::EINVAL, "mode change requires ALLOW_MODESET");
+    }
+
     if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
         let includes_crtc = updates
             .iter()
@@ -324,41 +503,64 @@ fn validate_atomic_state(
         if !includes_crtc {
             return_errno_with_message!(Errno::EINVAL, "atomic event has no CRTC");
         }
+        if !current_state.active && !proposed_state.active {
+            return_errno_with_message!(Errno::EINVAL, "atomic event targets an inactive CRTC");
+        }
         if flags & DRM_MODE_ATOMIC_TEST_ONLY == 0 {
             handle.check_flip_event_capacity()?;
         }
     }
 
-    Ok(framebuffer_id)
+    if updates.is_empty() {
+        return Ok(AtomicHardwareUpdate::None);
+    }
+    if let Some(framebuffer_id) = proposed_state.scanout_framebuffer() {
+        return Ok(AtomicHardwareUpdate::Present(framebuffer_id));
+    }
+    if kms_state.scanout.is_some() {
+        return Ok(AtomicHardwareUpdate::Disable);
+    }
+    Ok(AtomicHardwareUpdate::None)
 }
 
 fn commit_atomic_state(
     handle: &super::DriHandle,
     kms_state: &mut super::KmsState,
     updates: &[AtomicObjectUpdate],
-    framebuffer_id: Option<u32>,
+    hardware_update: AtomicHardwareUpdate,
     flags: u32,
     user_data: u64,
 ) -> Result<i32> {
     let property_manager = &handle.gpu_manager.property_manager;
 
     // Device presentation is the only fallible state change. Perform it
-    // before publishing property values so a failed present cannot leave a
+    // before publishing property values so a failed update cannot leave a
     // partially committed software state.
-    if let Some(framebuffer_id) = framebuffer_id {
-        kms::present_fb(handle, kms_state, framebuffer_id)?;
+    match hardware_update {
+        AtomicHardwareUpdate::None => {}
+        AtomicHardwareUpdate::Present(framebuffer_id) => {
+            kms::present_fb(handle, kms_state, framebuffer_id)?;
+        }
+        AtomicHardwareUpdate::Disable => {
+            handle
+                .gpu_manager
+                .gpu
+                .disable_scanout()
+                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+            kms_state.scanout = None;
+        }
     }
 
-    for update in updates {
-        for property_update in &update.properties {
-            property_manager.set_value(
+    property_manager.set_values(updates.iter().flat_map(|update| {
+        update.properties.iter().map(|property_update| {
+            (
                 update.object.id(),
                 update.object.object_type(),
                 property_update.property.id,
-                property_update.value.clone(),
-            );
-        }
-    }
+                &property_update.value,
+            )
+        })
+    }));
 
     if flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
         handle.queue_flip_event(user_data)?;
@@ -366,12 +568,25 @@ fn commit_atomic_state(
     Ok(0)
 }
 
-/// Checks that a mode blob contains a complete `drm_mode_modeinfo`.
-fn validate_mode_blob(blob: &super::property::PropertyBlobRef) -> Result<()> {
-    if blob.data().len() < size_of::<DrmModeModeInfo>() {
-        return_errno_with_message!(Errno::EINVAL, "mode blob too small");
+/// Decodes and validates one exact `drm_mode_modeinfo` blob.
+fn validate_mode_blob(blob: &super::property::PropertyBlobRef) -> Result<DrmModeModeInfo> {
+    if blob.data().len() != size_of::<DrmModeModeInfo>() {
+        return_errno_with_message!(Errno::EINVAL, "mode blob has an invalid size");
     }
-    Ok(())
+    let mode = DrmModeModeInfo::from_first_bytes(blob.data());
+    if mode.clock == 0
+        || mode.hdisplay == 0
+        || mode.hdisplay > mode.hsync_start
+        || mode.hsync_start > mode.hsync_end
+        || mode.hsync_end > mode.htotal
+        || mode.vdisplay == 0
+        || mode.vdisplay > mode.vsync_start
+        || mode.vsync_start > mode.vsync_end
+        || mode.vsync_end > mode.vtotal
+    {
+        return_errno_with_message!(Errno::EINVAL, "mode timings are invalid");
+    }
+    Ok(mode)
 }
 
 #[cfg(ktest)]
@@ -400,5 +615,24 @@ mod tests {
         assert_ne!(CRTC_ID, CONNECTOR_ID);
         assert_ne!(CRTC_ID, PRIMARY_PLANE_ID);
         assert_ne!(CONNECTOR_ID, PRIMARY_PLANE_ID);
+    }
+
+    #[ktest]
+    fn proposed_state_rejects_incoherent_topology() {
+        let mut state = ProposedKmsState::empty();
+        assert!(state.validate_topology().is_ok());
+
+        state.active = true;
+        assert!(state.validate_topology().is_err());
+        state.active = false;
+
+        state.connector_crtc = Some(CRTC_ID);
+        assert!(state.validate_topology().is_err());
+        state.connector_crtc = None;
+
+        state.plane_fb = Some(7);
+        assert!(state.validate_topology().is_err());
+        state.plane_crtc = Some(CRTC_ID);
+        assert!(state.validate_topology().is_ok());
     }
 }

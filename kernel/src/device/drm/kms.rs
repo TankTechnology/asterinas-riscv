@@ -103,11 +103,10 @@ pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u3
         }
         object_id
     };
+    let fb_id = handle.gpu_manager.allocate_framebuffer_id()?;
     handle.gpu_manager.retain_gem_object(object_id)?;
 
     let mut inner = handle.inner.lock();
-    let fb_id = inner.next_fb_id;
-    inner.next_fb_id += 1;
     inner.framebuffers.insert(
         fb_id,
         Framebuffer {
@@ -191,11 +190,10 @@ pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<
         }
         object_id
     };
+    let fb_id = handle.gpu_manager.allocate_framebuffer_id()?;
     handle.gpu_manager.retain_gem_object(object_id)?;
 
     let mut inner = handle.inner.lock();
-    let fb_id = inner.next_fb_id;
-    inner.next_fb_id += 1;
     inner.framebuffers.insert(
         fb_id,
         Framebuffer {
@@ -235,6 +233,7 @@ pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
     inner.framebuffers.remove(&fb_id);
     if was_active {
         kms_state.scanout = None;
+        handle.gpu_manager.property_manager.reset_atomic_state();
     }
     drop(inner);
     handle
@@ -259,9 +258,39 @@ pub(super) fn set_crtc(
             .disable_scanout()
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
         kms_state.scanout = None;
+        handle.gpu_manager.property_manager.reset_atomic_state();
         return Ok(());
     }
-    present_fb(handle, kms_state, req.fb_id)
+    let framebuffer = *handle
+        .inner
+        .lock()
+        .framebuffers
+        .get(&req.fb_id)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+    if req.mode_valid == 0
+        || u32::from(req.mode.hdisplay) != framebuffer.width
+        || u32::from(req.mode.vdisplay) != framebuffer.height
+    {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "legacy mode and framebuffer dimensions differ"
+        );
+    }
+    let mode = handle
+        .gpu_manager
+        .property_manager
+        .create_kernel_blob(req.mode.as_bytes().to_vec())?;
+    present_fb(handle, kms_state, req.fb_id)?;
+    handle
+        .gpu_manager
+        .property_manager
+        .set_legacy_modeset_state(
+            Some(mode),
+            Some(req.fb_id),
+            framebuffer.width,
+            framebuffer.height,
+        );
+    Ok(())
 }
 
 /// Presents a framebuffer on the scanout, copying its pixels to the host.

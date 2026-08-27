@@ -111,6 +111,9 @@ abstractions:
    validated transaction before changing state.
    Property identity is a typed kernel enum rather than a userspace-visible
    display string.
+   The first transactional implementation now validates the complete proposed
+   single-pipeline state, publishes it only after hardware success, and keeps
+   legacy SETCRTC/PAGE_FLIP state coherent with atomic property queries.
 3. Separate generic DRM file, GEM, PRIME, KMS, and event state from the
    virtio-gpu command backend.
 4. Express GEM handles, host resources, context attachments, and fences as
@@ -121,6 +124,11 @@ abstractions:
    creation, context state, and the control queue.
 6. Add resource accounting and trace points before attempting page-flip or
    buffer-copy performance optimizations.
+
+The current property-blob store enforces 64 KiB per blob, 4 MiB in total, and
+256 live blobs. The next accounting step is to expose debug counters for GEM,
+host resources, context attachments, deferred cleanup, and fences so stress
+tests can assert that every counter returns to its baseline.
 
 The backend boundary is considered useful only after both the virtio-gpu tests
 and a small fake-backend state test can consume it.

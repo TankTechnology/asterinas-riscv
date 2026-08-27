@@ -29,6 +29,7 @@
 #define DRM_IOCTL_SET_CLIENT_CAP DRM_IOW(0x0d, struct drm_set_client_cap)
 #define DRM_IOCTL_SET_MASTER DRM_IO(0x1e)
 #define DRM_IOCTL_MODE_GETRESOURCES DRM_IOWR(0xa0, struct drm_mode_card_res)
+#define DRM_IOCTL_MODE_GETCRTC DRM_IOWR(0xa1, struct drm_mode_crtc)
 #define DRM_IOCTL_MODE_CREATE_DUMB DRM_IOWR(0xb2, struct drm_mode_create_dumb)
 #define DRM_IOCTL_MODE_GETPLANERESOURCES DRM_IOWR(0xb5, struct drm_mode_get_plane_res)
 #define DRM_IOCTL_MODE_GETPLANE DRM_IOWR(0xb6, struct drm_mode_get_plane)
@@ -174,6 +175,17 @@ struct drm_mode_modeinfo {
 
 _Static_assert(sizeof(struct drm_mode_modeinfo) == 68,
                "drm_mode_modeinfo must match the Linux UAPI");
+
+struct drm_mode_crtc {
+    uint64_t set_connectors_ptr;
+    uint32_t count_connectors;
+    uint32_t crtc_id;
+    uint32_t fb_id;
+    uint32_t x, y;
+    uint32_t gamma_size;
+    uint32_t mode_valid;
+    struct drm_mode_modeinfo mode;
+};
 
 static int failures;
 
@@ -323,7 +335,17 @@ int main(void) {
     uint32_t p_fb_id = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
     uint32_t p_plane_crtc = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
     uint32_t p_type = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "type");
-    CHECK(p_active && p_mode_id && p_conn_crtc && p_fb_id && p_plane_crtc && p_type,
+    uint32_t p_src_x = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+    uint32_t p_src_y = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+    uint32_t p_src_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+    uint32_t p_src_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+    uint32_t p_crtc_x = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+    uint32_t p_crtc_y = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+    uint32_t p_crtc_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+    uint32_t p_crtc_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+    CHECK(p_active && p_mode_id && p_conn_crtc && p_fb_id && p_plane_crtc && p_type &&
+          p_src_x && p_src_y && p_src_w && p_src_h &&
+          p_crtc_x && p_crtc_y && p_crtc_w && p_crtc_h,
           "property discovery active=%u mode_id=%u conn_crtc=%u fb=%u plane_crtc=%u type=%u",
           p_active, p_mode_id, p_conn_crtc, p_fb_id, p_plane_crtc, p_type);
 
@@ -355,10 +377,10 @@ int main(void) {
           gp.name, gp.count_enum_blobs, enums[1].name, gp.flags);
 
     /* --- dumb buffer + ADDFB2 --- */
-    struct drm_mode_create_dumb cdumb = { .width = 640, .height = 480, .bpp = 32 };
+    struct drm_mode_create_dumb cdumb = { .width = 1280, .height = 800, .bpp = 32 };
     CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cdumb) == 0, "CREATE_DUMB");
     struct drm_mode_fb_cmd2 fb2 = {0};
-    fb2.width = 640; fb2.height = 480;
+    fb2.width = 1280; fb2.height = 800;
     fb2.pixel_format = 0x34325258; /* XR24 */
     fb2.handles[0] = cdumb.handle;
     fb2.pitches[0] = cdumb.pitch;
@@ -367,10 +389,12 @@ int main(void) {
 
     /* --- property blob round-trip --- */
     struct drm_mode_modeinfo mode = {0};
-    mode.hdisplay = 640; mode.vdisplay = 480;
-    mode.htotal = 800; mode.vtotal = 525;
-    mode.clock = 25175; mode.vrefresh = 60;
-    strcpy(mode.name, "640x480");
+    mode.hdisplay = 1280; mode.hsync_start = 1296;
+    mode.hsync_end = 1312; mode.htotal = 1328;
+    mode.vdisplay = 800; mode.vsync_start = 801;
+    mode.vsync_end = 802; mode.vtotal = 804;
+    mode.clock = 61440; mode.vrefresh = 60;
+    strcpy(mode.name, "1280x800");
     struct drm_mode_create_blob cb = {
         .data = (uint64_t)&mode, .length = sizeof(mode),
     };
@@ -382,6 +406,12 @@ int main(void) {
     };
     CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &tiny_cb) == 0,
           "CREATEPROPBLOB tiny validation fixture id=%u", tiny_cb.blob_id);
+    struct drm_mode_modeinfo invalid_mode = {0};
+    struct drm_mode_create_blob invalid_cb = {
+        .data = (uint64_t)&invalid_mode, .length = sizeof(invalid_mode),
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &invalid_cb) == 0,
+          "CREATEPROPBLOB invalid-mode fixture id=%u", invalid_cb.blob_id);
 
     struct drm_mode_create_blob huge = {
         .data = (uint64_t)&mode, .length = UINT32_MAX,
@@ -395,23 +425,24 @@ int main(void) {
         .data = (uint64_t)&mode2, .length = sizeof(mode2) };
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb) == 0 &&
           gb.length == sizeof(mode) &&
-          mode2.hdisplay == 640 && mode2.vdisplay == 480,
+          mode2.hdisplay == 1280 && mode2.vdisplay == 800,
           "GETPROPBLOB len=%u %ux%u", gb.length, mode2.hdisplay, mode2.vdisplay);
 
     /* --- atomic commit: TEST_ONLY then real --- */
     uint32_t objs[3] = { crtc_id, connector_id, plane_id };
-    uint32_t prop_counts[3] = { 2, 1, 2 };
-    uint32_t props[6] = { p_mode_id, p_active, p_conn_crtc, p_fb_id, p_plane_crtc, 0 };
-    uint64_t pvals[6] = { cb.blob_id, 1, crtc_id, fb2.fb_id, crtc_id, 0 };
-    /* SRC_W/SRC_H: 16.16 fixed point */
-    uint32_t p_src_w = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
-    uint32_t p_src_h = find_prop(fd, plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
-    props[4] = p_plane_crtc;
-    if (p_src_w && p_src_h) {
-        props[5] = p_src_w; pvals[5] = 640ull << 16;
-        prop_counts[2] = 3;
-        /* keep it simple: SRC_W only; kernel accepts partial state */
-    }
+    uint32_t prop_counts[3] = { 2, 1, 10 };
+    uint32_t props[13] = {
+        p_mode_id, p_active, p_conn_crtc,
+        p_fb_id, p_plane_crtc,
+        p_src_x, p_src_y, p_src_w, p_src_h,
+        p_crtc_x, p_crtc_y, p_crtc_w, p_crtc_h,
+    };
+    uint64_t pvals[13] = {
+        cb.blob_id, 1, crtc_id,
+        fb2.fb_id, crtc_id,
+        0, 0, 1280ull << 16, 800ull << 16,
+        0, 0, 1280, 800,
+    };
     struct drm_mode_atomic at = {0};
     at.flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET;
     at.count_objs = 3;
@@ -432,15 +463,32 @@ int main(void) {
     errno = 0;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EINVAL,
           "ATOMIC TEST_ONLY validates mode blob size errno=%d", errno);
+    pvals[0] = invalid_cb.blob_id;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EINVAL,
+          "ATOMIC TEST_ONLY validates mode timings errno=%d", errno);
     pvals[0] = cb.blob_id;
-    pvals[1] = 0;
+    pvals[8] = 0;
     errno = 0;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) < 0 && errno == EOPNOTSUPP,
-          "ATOMIC rejects unsupported pipeline disable errno=%d", errno);
+          "ATOMIC rejects unsupported plane geometry errno=%d", errno);
+    pvals[8] = 800ull << 16;
+    pvals[1] = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &at) == 0 &&
+          get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_active) == 0,
+          "ATOMIC TEST_ONLY validates disable without publishing state");
     pvals[1] = 1;
 
     struct drm_mode_destroy_blob tiny_db = { .blob_id = tiny_cb.blob_id };
     ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &tiny_db);
+    struct drm_mode_destroy_blob invalid_db = { .blob_id = invalid_cb.blob_id };
+    ioctl(fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &invalid_db);
+
+    struct drm_mode_atomic no_plane = at;
+    no_plane.count_objs = 2;
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &no_plane) < 0 && errno == EINVAL,
+          "ATOMIC rejects active CRTC without a primary plane errno=%d", errno);
 
     /* A property must be rejected when paired with the wrong object type. */
     uint32_t bad_obj = crtc_id, bad_count = 1, bad_prop = p_fb_id;
@@ -492,6 +540,40 @@ int main(void) {
               (unsigned long long)mode_id_val, (unsigned long long)active_val);
     }
 
+    /* ACTIVE may disable and restore a configured pipeline transactionally. */
+    uint32_t active_obj = crtc_id, active_count = 1, active_prop = p_active;
+    uint64_t active_value = 0;
+    struct drm_mode_atomic active_update = {
+        .flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET,
+        .count_objs = 1,
+        .objs_ptr = (uint64_t)&active_obj,
+        .count_props_ptr = (uint64_t)&active_count,
+        .props_ptr = (uint64_t)&active_prop,
+        .prop_values_ptr = (uint64_t)&active_value,
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &active_update) == 0 &&
+          get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_active) == 1,
+          "ATOMIC disable TEST_ONLY preserves active state");
+    active_update.flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &active_update) == 0 &&
+          get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_active) == 0,
+          "ATOMIC disables active pipeline");
+    struct drm_mode_crtc crtc = { .crtc_id = crtc_id };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &crtc) == 0 &&
+          crtc.fb_id == 0 && crtc.mode_valid == 0,
+          "GETCRTC observes disabled scanout fb=%u mode_valid=%u",
+          crtc.fb_id, crtc.mode_valid);
+    active_value = 1;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &active_update) == 0 &&
+          get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_active) == 1,
+          "ATOMIC restores configured pipeline");
+    memset(&crtc, 0, sizeof(crtc));
+    crtc.crtc_id = crtc_id;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &crtc) == 0 &&
+          crtc.fb_id == fb2.fb_id && crtc.mode_valid == 1,
+          "GETCRTC observes restored scanout fb=%u mode_valid=%u",
+          crtc.fb_id, crtc.mode_valid);
+
     /* A peer file cannot destroy this file's blob. */
     struct drm_mode_destroy_blob db = { .blob_id = cb.blob_id };
     int peer_fd = open("/dev/dri/card0", O_RDWR);
@@ -506,8 +588,31 @@ int main(void) {
     gb.length = sizeof(mode2);
     gb.data = (uint64_t)&mode2;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb) == 0 &&
-          mode2.hdisplay == 640 && mode2.vdisplay == 480,
+          mode2.hdisplay == 1280 && mode2.vdisplay == 800,
           "committed MODE_ID retains destroyed blob");
+
+    /* Fully detach the connector, CRTC mode, and primary plane. */
+    uint32_t disable_objs[3] = { crtc_id, connector_id, plane_id };
+    uint32_t disable_counts[3] = { 2, 1, 2 };
+    uint32_t disable_props[5] = {
+        p_active, p_mode_id, p_conn_crtc, p_fb_id, p_plane_crtc
+    };
+    uint64_t disable_values[5] = { 0, 0, 0, 0, 0 };
+    struct drm_mode_atomic disable = {
+        .flags = DRM_MODE_ATOMIC_ALLOW_MODESET,
+        .count_objs = 3,
+        .objs_ptr = (uint64_t)disable_objs,
+        .count_props_ptr = (uint64_t)disable_counts,
+        .props_ptr = (uint64_t)disable_props,
+        .prop_values_ptr = (uint64_t)disable_values,
+    };
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &disable) == 0 &&
+          get_prop_value(fd, crtc_id, DRM_MODE_OBJECT_CRTC, p_mode_id) == 0 &&
+          get_prop_value(fd, plane_id, DRM_MODE_OBJECT_PLANE, p_fb_id) == 0,
+          "ATOMIC fully disconnects CRTC, connector, and plane");
+    errno = 0;
+    CHECK(ioctl(fd, DRM_IOCTL_MODE_GETPROPBLOB, &gb) < 0 && errno == EINVAL,
+          "disconnected MODE_ID releases destroyed blob errno=%d", errno);
 
     /* --- render node must reject KMS ioctls --- */
     int rfd = open("/dev/dri/renderD128", O_RDWR);

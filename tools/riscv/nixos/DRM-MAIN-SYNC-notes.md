@@ -601,3 +601,41 @@ performance comparison.
 The low-cost validation tiers and the planned separation of DRM core state from
 the virtio-gpu backend are recorded in
 [`../drm/VALIDATION.md`](../drm/VALIDATION.md).
+
+## 2026-08-27 transactional KMS state follow-up
+
+Atomic commits now build a complete proposed KMS state from the last committed
+state plus the request, validate the resulting topology, mode, framebuffer,
+and plane geometry, and only then touch virtio-gpu hardware. Property values
+are published under one lock after the fallible hardware operation succeeds.
+TEST_ONLY follows the same validation path without publishing state or issuing
+commands.
+
+The legacy SETCRTC and PAGE_FLIP paths now mirror their successful state into
+the same property model. Closing the scanout owner or removing its active
+framebuffer resets that model to a coherent disabled state. Framebuffer IDs are
+allocated device-wide, preventing a stale property value from aliasing a new
+per-file framebuffer.
+
+Pipeline shutdown is no longer a validation stub. `ACTIVE=0` and a complete
+disconnect issue a real virtio-gpu scanout disable, publish the disabled state,
+and can subsequently restore the original mode and primary plane. Modes are
+decoded as exact 68-byte `drm_mode_modeinfo` values and checked for valid timing
+relationships. Because the current backend presents a complete framebuffer,
+the plane validator accepts only an origin-zero, unscaled, uncropped rectangle
+whose dimensions agree with both the framebuffer and mode; unsupported crop or
+scale requests fail explicitly.
+
+The M17 Sv39/SMP=4 guest passes 55/55 checks, including invalid timing,
+invalid geometry, active-without-plane, TEST_ONLY disable, real disable,
+restore, and full-disconnect cases. The complete NixOS Xorg/Xfce regression
+also passes after the stricter validation: DRI3 direct rendering, virgl,
+expected pixel read-back, 30 rendered frames, clean command stream, and
+`XFCE_DRM_PASS`. The sample measured 7.149 FPS and is retained as a semantic
+regression run rather than a cross-run performance conclusion.
+
+Property blobs now have both per-blob and device-wide accounting (64 KiB per
+blob, 4 MiB and 256 live blobs device-wide). Virtio-gpu scanout replacement
+prepares and flushes the new resource before `SET_SCANOUT`; failed unrefs are
+retained for retry, and fixed-size control commands reject truncated device
+responses instead of consuming stale DMA-buffer contents.

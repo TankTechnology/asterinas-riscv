@@ -213,6 +213,8 @@ struct GpuManager {
     /// Serializes EXECBUFFER resource capture with final GEM release.
     exec_resource_transaction: Mutex<()>,
     next_gem_id: AtomicU32,
+    /// Device-wide framebuffer object ID allocator.
+    next_framebuffer_id: AtomicU32,
     /// Monotonic virgl context id allocator (context id 0 is reserved).
     next_context_id: AtomicU32,
     /// Property manager for atomic modesetting.
@@ -317,6 +319,7 @@ impl GpuManager {
             resource_creation: Mutex::new(()),
             exec_resource_transaction: Mutex::new(()),
             next_gem_id: AtomicU32::new(1),
+            next_framebuffer_id: AtomicU32::new(1),
             next_context_id: AtomicU32::new(1),
             property_manager: property::PropertyManager::new(),
             flip_sequence: AtomicU32::new(0),
@@ -362,6 +365,13 @@ impl GpuManager {
             .as_ref()
             .and_then(|pool| pool.paddr())
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
+    }
+
+    /// Allocates a framebuffer ID from the device-wide mode-object namespace.
+    fn allocate_framebuffer_id(&self) -> Result<u32> {
+        self.next_framebuffer_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "framebuffer IDs exhausted"))
     }
 
     /// Adds one owner to an existing GEM object and returns its buffer.
@@ -732,9 +742,10 @@ impl Device for DriRender {
 
 /// Per-open-file DRM state.
 ///
-/// GEM/dumb-buffer handles and framebuffer ids are namespaced per file,
-/// matching Linux's per-`drm_file` handle space. The pool and GEM object
-/// table are shared across all opens via [`GpuManager`].
+/// GEM/dumb-buffer handles are namespaced per file.
+/// Framebuffer IDs come from a device-wide namespace but ownership remains
+/// attached to the creating file.
+/// The pool and GEM object table are shared across all opens via [`GpuManager`].
 struct DriHandle {
     gpu_manager: Arc<GpuManager>,
     node_type: DriNodeType,
@@ -779,7 +790,6 @@ struct DriInner {
     object_handle_counts: BTreeMap<u32, usize>,
     next_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
-    next_fb_id: u32,
     /// Pending page-flip completion events, readable via `read()`.
     events: VecDeque<DrmEventVblank>,
     /// Cursor resource and position owned by this open DRM file.
@@ -826,7 +836,6 @@ impl DriHandle {
                 object_handle_counts: BTreeMap::new(),
                 next_handle: 1,
                 framebuffers: BTreeMap::new(),
-                next_fb_id: 1,
                 events: VecDeque::new(),
                 cursor: CursorState::default(),
             }),
@@ -1241,6 +1250,7 @@ impl Drop for DriHandle {
                 warn!("cannot disable scanout on DRM file close: {:?}", error);
             }
             kms_state.scanout = None;
+            self.gpu_manager.property_manager.reset_atomic_state();
         }
         if let Some(resource_id) = resource_id {
             let _ = self
@@ -1683,7 +1693,25 @@ impl PerOpenFileOps for DriHandle {
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
                     self.check_flip_event_capacity()?;
                 }
+                let framebuffer = *self
+                    .inner
+                    .lock()
+                    .framebuffers
+                    .get(&req.fb_id)
+                    .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+                if kms_state.scanout.is_none()
+                    || framebuffer.width != kms_state.current_width
+                    || framebuffer.height != kms_state.current_height
+                {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "page flip framebuffer does not match the active mode"
+                    );
+                }
                 kms::present_fb(self, &mut kms_state, req.fb_id)?;
+                self.gpu_manager
+                    .property_manager
+                    .set_legacy_page_flip_state(req.fb_id, framebuffer.width, framebuffer.height);
                 if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
                     self.queue_flip_event(req.user_data)?;
                 }

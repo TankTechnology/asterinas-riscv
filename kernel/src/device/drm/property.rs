@@ -10,9 +10,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use ostd::mm::VmIo;
 
 use super::{
-    AtomicKmsObject, CRTC_ID, DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC,
+    AtomicKmsObject, CONNECTOR_ID, CRTC_ID, DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC,
     DRM_MODE_OBJECT_PLANE, DRM_PLANE_TYPE_PRIMARY, DrmModeCreatePropertyBlob,
     DrmModeDestroyPropertyBlob, DrmModeGetBlob, DrmModeGetProperty, DrmModeObjGetProperties,
+    PRIMARY_PLANE_ID,
 };
 use crate::{
     context::current_userspace,
@@ -32,6 +33,10 @@ const DRM_PROP_NAME_LEN: usize = 32;
 /// ceiling leaves room for future color-management blobs without allowing one
 /// ioctl to request an effectively unbounded kernel allocation.
 const MAX_PROPERTY_BLOB_SIZE: usize = 64 * 1024;
+/// Maximum aggregate storage consumed by live property blobs.
+const MAX_PROPERTY_BLOB_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum number of blobs in the device-wide ID namespace.
+const MAX_PROPERTY_BLOBS: usize = 256;
 
 /// Internal identity of a property, independent of its UAPI display name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,20 +57,21 @@ pub(super) enum PropertyKind {
     CrtcH,
 }
 
-/// Property type enum matching the DRM UAPI property type constants.
+/// Internal category of a DRM property value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PropertyType {
-    Range = 0,
-    Blob = 2,
-    Object = 3,
-    SignedRange = 4,
-    Enum = 5,
+    Range,
+    Blob,
+    Object,
+    SignedRange,
+    Enum,
 }
 
 impl PropertyType {
     /// Maps to the `DRM_MODE_PROP_*` bits of the UAPI `flags` field
     /// (`struct drm_mode_get_property`).
     fn uapi_flags(self) -> u32 {
+        // Linux UAPI: include/uapi/drm/drm_mode.h (`DRM_MODE_PROP_*`).
         const DRM_MODE_PROP_RANGE: u32 = 1 << 1;
         const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
         const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
@@ -107,6 +113,25 @@ pub(super) enum PropertyValue {
     SignedRange(i64),
     Object(u32),
     Blob(Option<PropertyBlobRef>),
+    Enum(u32),
+}
+
+fn default_property_value(property: &Property) -> PropertyValue {
+    match property.kind {
+        PropertyKind::Active
+        | PropertyKind::SrcX
+        | PropertyKind::SrcY
+        | PropertyKind::SrcW
+        | PropertyKind::SrcH
+        | PropertyKind::CrtcW
+        | PropertyKind::CrtcH => PropertyValue::Range(0),
+        PropertyKind::CrtcX | PropertyKind::CrtcY => PropertyValue::SignedRange(0),
+        PropertyKind::ModeId => PropertyValue::Blob(None),
+        PropertyKind::ConnectorCrtcId | PropertyKind::PlaneFbId | PropertyKind::PlaneCrtcId => {
+            PropertyValue::Object(0)
+        }
+        PropertyKind::PlaneType => PropertyValue::Enum(DRM_PLANE_TYPE_PRIMARY),
+    }
 }
 
 /// A property blob (variable-length binary data referenced by id).
@@ -118,9 +143,9 @@ pub(super) struct PropertyBlob {
 
 /// A live reference to a property blob.
 ///
-/// The blob remains discoverable after its creator destroys the userspace
-/// handle while a committed property still references it. The last reference
-/// removes an ownerless blob from the global id namespace.
+/// The blob remains discoverable after its creator destroys the userspace handle
+/// while a committed property still references it.
+/// The last reference removes an ownerless blob from the global ID namespace.
 #[derive(Debug)]
 pub(super) struct PropertyBlobRef {
     blob: Arc<PropertyBlob>,
@@ -151,14 +176,14 @@ impl Drop for PropertyBlobRef {
         let Some(store) = self.store.upgrade() else {
             return;
         };
-        let mut blobs = store.blobs.lock();
-        let should_remove = blobs.get(&self.blob.id).is_some_and(|entry| {
+        let mut state = store.state.lock();
+        let should_remove = state.blobs.get(&self.blob.id).is_some_and(|entry| {
             entry.owner_file_id.is_none()
                 && Arc::ptr_eq(&entry.blob, &self.blob)
                 && Arc::strong_count(&entry.blob) == 2
         });
         if should_remove {
-            blobs.remove(&self.blob.id);
+            state.remove(self.blob.id);
         }
     }
 }
@@ -168,15 +193,31 @@ struct BlobEntry {
     owner_file_id: Option<u64>,
 }
 
+struct BlobStoreState {
+    blobs: BTreeMap<u32, BlobEntry>,
+    total_bytes: usize,
+}
+
+impl BlobStoreState {
+    fn remove(&mut self, blob_id: u32) {
+        if let Some(entry) = self.blobs.remove(&blob_id) {
+            self.total_bytes -= entry.blob.data.len();
+        }
+    }
+}
+
 struct BlobStore {
-    blobs: SpinLock<BTreeMap<u32, BlobEntry>>,
+    state: SpinLock<BlobStoreState>,
     next_blob_id: AtomicU32,
 }
 
 impl BlobStore {
     fn new() -> Self {
         Self {
-            blobs: SpinLock::new(BTreeMap::new()),
+            state: SpinLock::new(BlobStoreState {
+                blobs: BTreeMap::new(),
+                total_bytes: 0,
+            }),
             next_blob_id: AtomicU32::new(1),
         }
     }
@@ -187,23 +228,49 @@ impl BlobStore {
             .map_err(|_| Error::with_message(Errno::ENOSPC, "property blob ids exhausted"))
     }
 
-    fn create(self: &Arc<Self>, data: Vec<u8>, owner_file_id: u64) -> Result<u32> {
+    fn create_with_owner(
+        self: &Arc<Self>,
+        data: Vec<u8>,
+        owner_file_id: Option<u64>,
+    ) -> Result<u32> {
         let id = self.alloc_id()?;
         let blob = Arc::new(PropertyBlob { id, data });
-        self.blobs.lock().insert(
+        let mut state = self.state.lock();
+        let new_total = state
+            .total_bytes
+            .checked_add(blob.data.len())
+            .filter(|total| *total <= MAX_PROPERTY_BLOB_BYTES)
+            .ok_or_else(|| {
+                Error::with_message(Errno::ENOSPC, "property blob byte quota exceeded")
+            })?;
+        if state.blobs.len() >= MAX_PROPERTY_BLOBS {
+            return_errno_with_message!(Errno::ENOSPC, "property blob count quota exceeded");
+        }
+        state.blobs.insert(
             id,
             BlobEntry {
                 blob,
-                owner_file_id: Some(owner_file_id),
+                owner_file_id,
             },
         );
+        state.total_bytes = new_total;
         Ok(id)
+    }
+
+    fn create(self: &Arc<Self>, data: Vec<u8>, owner_file_id: u64) -> Result<u32> {
+        self.create_with_owner(data, Some(owner_file_id))
+    }
+
+    fn create_kernel_ref(self: &Arc<Self>, data: Vec<u8>) -> Result<PropertyBlobRef> {
+        let blob_id = self.create_with_owner(data, None)?;
+        self.lookup(blob_id)
     }
 
     fn lookup(self: &Arc<Self>, blob_id: u32) -> Result<PropertyBlobRef> {
         let blob = self
-            .blobs
+            .state
             .lock()
+            .blobs
             .get(&blob_id)
             .map(|entry| entry.blob.clone())
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown blob id"))?;
@@ -214,8 +281,9 @@ impl BlobStore {
     }
 
     fn destroy(&self, blob_id: u32, owner_file_id: u64) -> Result<()> {
-        let mut blobs = self.blobs.lock();
-        let entry = blobs
+        let mut state = self.state.lock();
+        let entry = state
+            .blobs
             .get_mut(&blob_id)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown blob id"))?;
         if entry.owner_file_id != Some(owner_file_id) {
@@ -223,18 +291,26 @@ impl BlobStore {
         }
         entry.owner_file_id = None;
         if Arc::strong_count(&entry.blob) == 1 {
-            blobs.remove(&blob_id);
+            state.remove(blob_id);
         }
         Ok(())
     }
 
     fn release_owner(&self, owner_file_id: u64) {
-        self.blobs.lock().retain(|_, entry| {
+        let mut state = self.state.lock();
+        let mut released_bytes = 0usize;
+        state.blobs.retain(|_, entry| {
             if entry.owner_file_id == Some(owner_file_id) {
                 entry.owner_file_id = None;
             }
-            entry.owner_file_id.is_some() || Arc::strong_count(&entry.blob) > 1
+            if entry.owner_file_id.is_none() && Arc::strong_count(&entry.blob) == 1 {
+                released_bytes += entry.blob.data.len();
+                false
+            } else {
+                true
+            }
         });
+        state.total_bytes -= released_bytes;
     }
 }
 
@@ -274,7 +350,19 @@ impl PropertyManager {
     /// Registers a property and records it as applicable to `obj_type`.
     fn define(&mut self, obj_type: u32, prop: Property) {
         let id = prop.id;
+        let object_id = match obj_type {
+            DRM_MODE_OBJECT_CRTC => CRTC_ID,
+            DRM_MODE_OBJECT_CONNECTOR => CONNECTOR_ID,
+            DRM_MODE_OBJECT_PLANE => PRIMARY_PLANE_ID,
+            _ => unreachable!(),
+        };
+        let default_value = default_property_value(&prop);
         self.properties.lock().insert(id, Arc::new(prop));
+        self.object_props
+            .lock()
+            .entry((object_id, obj_type))
+            .or_default()
+            .insert(id, default_value);
         match obj_type {
             DRM_MODE_OBJECT_CRTC => self.crtc_props.push(id),
             DRM_MODE_OBJECT_CONNECTOR => self.connector_props.push(id),
@@ -429,20 +517,132 @@ impl PropertyManager {
             .and_then(|m| m.get(&prop_id).cloned())
     }
 
-    /// Sets a property value for an object.
-    pub(super) fn set_value(&self, obj_id: u32, obj_type: u32, prop_id: u32, value: PropertyValue) {
-        let previous = self
-            .object_props
-            .lock()
-            .entry((obj_id, obj_type))
-            .or_default()
-            .insert(prop_id, value);
-        drop(previous);
+    /// Gets a property's committed value or its typed default.
+    pub(super) fn current_value(
+        &self,
+        obj_id: u32,
+        obj_type: u32,
+        property: &Property,
+    ) -> PropertyValue {
+        self.get_value(obj_id, obj_type, property.id)
+            .unwrap_or_else(|| default_property_value(property))
+    }
+
+    /// Snapshots one object's property values under a single state lock.
+    fn snapshot_values(&self, obj_id: u32, obj_type: u32, prop_ids: &[u32]) -> Result<Vec<u64>> {
+        let mut snapshot = Vec::with_capacity(prop_ids.len());
+        let object_props = self.object_props.lock();
+        let values = object_props
+            .get(&(obj_id, obj_type))
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown DRM object state"))?;
+        for prop_id in prop_ids {
+            let value = values
+                .get(prop_id)
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown object property"))?;
+            snapshot.push(value_to_u64(value));
+        }
+        Ok(snapshot)
+    }
+
+    /// Publishes a validated set of property values under one state lock.
+    pub(super) fn set_values<'a>(
+        &self,
+        values: impl Iterator<Item = (u32, u32, u32, &'a PropertyValue)>,
+    ) {
+        let mut object_props = self.object_props.lock();
+        for (obj_id, obj_type, prop_id, value) in values {
+            let property_values = object_props
+                .get_mut(&(obj_id, obj_type))
+                .expect("DRM object property state must be initialized");
+            let slot = property_values
+                .get_mut(&prop_id)
+                .expect("DRM property state must be initialized");
+            *slot = value.clone();
+        }
+    }
+
+    /// Resets all mutable KMS properties to a coherent disabled state.
+    pub(super) fn reset_atomic_state(&self) {
+        let properties = self.properties.lock();
+        let mut object_props = self.object_props.lock();
+        for values in object_props.values_mut() {
+            for (property_id, value) in values {
+                let property = properties
+                    .get(property_id)
+                    .expect("DRM property definition must outlive its state");
+                *value = default_property_value(property);
+            }
+        }
+    }
+
+    /// Publishes the KMS state produced by a successful legacy modeset.
+    pub(super) fn set_legacy_modeset_state(
+        &self,
+        mode: Option<PropertyBlobRef>,
+        framebuffer_id: Option<u32>,
+        width: u32,
+        height: u32,
+    ) {
+        let enabled = mode.is_some() && framebuffer_id.is_some();
+        let properties = self.properties.lock();
+        let mut object_props = self.object_props.lock();
+        for values in object_props.values_mut() {
+            for (property_id, value) in values {
+                let property = properties
+                    .get(property_id)
+                    .expect("DRM property definition must outlive its state");
+                *value = match property.kind {
+                    PropertyKind::Active => PropertyValue::Range(u64::from(enabled)),
+                    PropertyKind::ModeId => PropertyValue::Blob(mode.clone()),
+                    PropertyKind::ConnectorCrtcId | PropertyKind::PlaneCrtcId => {
+                        PropertyValue::Object(if enabled { CRTC_ID } else { 0 })
+                    }
+                    PropertyKind::PlaneFbId => PropertyValue::Object(framebuffer_id.unwrap_or(0)),
+                    PropertyKind::SrcX | PropertyKind::SrcY => PropertyValue::Range(0),
+                    PropertyKind::SrcW => PropertyValue::Range(u64::from(width) << 16),
+                    PropertyKind::SrcH => PropertyValue::Range(u64::from(height) << 16),
+                    PropertyKind::CrtcX | PropertyKind::CrtcY => PropertyValue::SignedRange(0),
+                    PropertyKind::CrtcW => PropertyValue::Range(u64::from(width)),
+                    PropertyKind::CrtcH => PropertyValue::Range(u64::from(height)),
+                    PropertyKind::PlaneType => PropertyValue::Enum(DRM_PLANE_TYPE_PRIMARY),
+                };
+            }
+        }
+    }
+
+    /// Updates the plane state after a successful legacy page flip.
+    pub(super) fn set_legacy_page_flip_state(&self, framebuffer_id: u32, width: u32, height: u32) {
+        let properties = self.properties.lock();
+        let mut object_props = self.object_props.lock();
+        let values = object_props
+            .get_mut(&(PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE))
+            .expect("primary-plane property state must be initialized");
+        for (property_id, value) in values {
+            let property = properties
+                .get(property_id)
+                .expect("DRM property definition must outlive its state");
+            *value = match property.kind {
+                PropertyKind::PlaneFbId => PropertyValue::Object(framebuffer_id),
+                PropertyKind::PlaneCrtcId => PropertyValue::Object(CRTC_ID),
+                PropertyKind::SrcX | PropertyKind::SrcY => PropertyValue::Range(0),
+                PropertyKind::SrcW => PropertyValue::Range(u64::from(width) << 16),
+                PropertyKind::SrcH => PropertyValue::Range(u64::from(height) << 16),
+                PropertyKind::CrtcX | PropertyKind::CrtcY => PropertyValue::SignedRange(0),
+                PropertyKind::CrtcW => PropertyValue::Range(u64::from(width)),
+                PropertyKind::CrtcH => PropertyValue::Range(u64::from(height)),
+                _ => continue,
+            };
+        }
     }
 
     /// Creates a blob owned by one open DRM file.
     pub(super) fn create_blob(&self, data: Vec<u8>, owner_file_id: u64) -> Result<u32> {
         self.blob_store.create(data, owner_file_id)
+    }
+
+    /// Creates an ownerless blob retained only by committed kernel state.
+    pub(super) fn create_kernel_blob(&self, data: Vec<u8>) -> Result<PropertyBlobRef> {
+        self.blob_store.create_kernel_ref(data)
     }
 
     /// Destroys a blob owned by one open DRM file.
@@ -510,24 +710,13 @@ fn value_to_u64(value: &PropertyValue) -> u64 {
         PropertyValue::SignedRange(x) => *x as u64,
         PropertyValue::Object(x) => *x as u64,
         PropertyValue::Blob(blob) => blob.as_ref().map_or(0, |blob| u64::from(blob.id())),
-    }
-}
-
-/// The default value of a property that userspace has not explicitly set.
-///
-/// The display is active from boot, so `ACTIVE` defaults to 1 and `CRTC_ID`
-/// references default to the device's single CRTC.
-fn default_value(prop: &Property) -> u64 {
-    match prop.kind {
-        PropertyKind::Active => 1,
-        PropertyKind::ConnectorCrtcId | PropertyKind::PlaneCrtcId => u64::from(CRTC_ID),
-        PropertyKind::PlaneType => DRM_PLANE_TYPE_PRIMARY as u64,
-        _ => 0,
+        PropertyValue::Enum(x) => *x as u64,
     }
 }
 
 /// Copies a NUL-padded name into a fixed `DRM_PROP_NAME_LEN` field.
 fn copy_name(name: &str, out: &mut [u8; DRM_PROP_NAME_LEN]) {
+    out.fill(0);
     let len = name.len().min(DRM_PROP_NAME_LEN - 1);
     out[..len].copy_from_slice(&name.as_bytes()[..len]);
 }
@@ -557,12 +746,8 @@ pub(super) fn get_obj_properties(
     let total = prop_ids.len() as u32;
     if req.props_ptr != 0 && req.prop_values_ptr != 0 {
         let count = (req.count_props as usize).min(prop_ids.len());
-        for (i, prop_id) in prop_ids[..count].iter().enumerate() {
-            let prop = prop_mgr.lookup_property(*prop_id)?;
-            let value = prop_mgr
-                .get_value(req.obj_id, req.obj_type, *prop_id)
-                .map(|v| value_to_u64(&v))
-                .unwrap_or_else(|| default_value(&prop));
+        let values = prop_mgr.snapshot_values(req.obj_id, req.obj_type, &prop_ids[..count])?;
+        for (i, (prop_id, value)) in prop_ids[..count].iter().zip(values).enumerate() {
             current_userspace!().write_val(
                 user_array_slot(req.props_ptr, i, size_of::<u32>())?,
                 prop_id,
@@ -677,5 +862,51 @@ mod tests {
 
         drop(committed_reference);
         assert!(store.lookup(blob_id).is_err());
+    }
+
+    #[ktest]
+    fn atomic_properties_start_in_a_coherent_disabled_state() {
+        let manager = PropertyManager::new();
+        for (object_id, object_type) in [
+            (CRTC_ID, DRM_MODE_OBJECT_CRTC),
+            (CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR),
+            (PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE),
+        ] {
+            for property_id in manager.property_ids_for_object(object_type) {
+                let property = manager.lookup_property(*property_id).unwrap();
+                let value = manager.current_value(object_id, object_type, &property);
+                match property.kind {
+                    PropertyKind::Active => assert!(matches!(value, PropertyValue::Range(0))),
+                    PropertyKind::ModeId => {
+                        assert!(matches!(value, PropertyValue::Blob(None)))
+                    }
+                    PropertyKind::ConnectorCrtcId
+                    | PropertyKind::PlaneFbId
+                    | PropertyKind::PlaneCrtcId => {
+                        assert!(matches!(value, PropertyValue::Object(0)))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[ktest]
+    fn property_names_are_nul_padded() {
+        let mut output = [0xff; DRM_PROP_NAME_LEN];
+        copy_name("ACTIVE", &mut output);
+        assert_eq!(&output[..7], b"ACTIVE\0");
+        assert!(output[7..].iter().all(|byte| *byte == 0));
+    }
+
+    #[ktest]
+    fn blob_store_enforces_a_device_wide_count_quota() {
+        let store = Arc::new(BlobStore::new());
+        for owner in 0..MAX_PROPERTY_BLOBS {
+            store.create(vec![0], owner as u64).unwrap();
+        }
+        assert!(store.create(vec![0], u64::MAX).is_err());
+        store.release_owner(0);
+        assert!(store.create(vec![0], u64::MAX).is_ok());
     }
 }

@@ -1,6 +1,6 @@
 # DRM-M17: Atomic Modesetting + virgl Raw-Ioctl Verification
 
-**Status:** M17 atomic modesetting **PASS (44/44)**; virgl 3D raw-ioctl
+**Status:** M17 atomic modesetting **PASS (55/55)**; virgl 3D raw-ioctl
 path **PASS (15/15, incl. pixel round-trip through host virglrenderer)**.
 The later Debian Mesa path also passes direct DRI3 rendering; the historical
 Alpine packaging limitation is retained below for context.
@@ -23,10 +23,11 @@ The parser bounds objects and properties, rejects null arrays, duplicate
 objects/properties, nonzero reserved fields, invalid object references, and
 property/object mismatches before changing state.
 
-The replacement guest gate passed 44/44 checks.
+The replacement guest gate now passes 55/55 checks.
 It additionally proves the Linux ioctl number `0xc03864bc`, unique object
 enumeration, TEST_ONLY state preservation, object/property mismatch rejection,
-and reserved-field rejection.
+reserved-field rejection, complete proposed-state validation, transactional
+pipeline disable/restore, and coherent property read-back.
 The complete Debian Mesa/Xorg/Xfce virgl regression also passed with DRI3,
 direct rendering, a correct output pixel, no command-stream errors, and
 `XFCE_DRM_PASS`.
@@ -47,7 +48,8 @@ unusable dead code. This milestone completes the discovery surface:
 - `MODE_OBJ_GETPROPERTIES` (0xb9) — real per-object-type property lists:
   CRTC {ACTIVE, MODE_ID}, connector {CRTC_ID}, plane {type, FB_ID, CRTC_ID,
   SRC_X/Y/W/H, CRTC_X/Y/W/H}; values read back from the property store with
-  defaults (ACTIVE=1, CRTC_ID=1, type=Primary).
+  coherent disabled defaults (ACTIVE=0, MODE_ID=0, object references=0,
+  type=Primary).
 - `MODE_GETPROPERTY` (0xaa) — name/flags/range; UAPI flag bits
   (RANGE/ENUM/BLOB/OBJECT/SIGNED_RANGE) mapped from the internal property
   type; plane `type` is ENUM + IMMUTABLE with Overlay/Primary/Cursor entries.
@@ -120,7 +122,7 @@ by a prior workaround; it is restored via a proper
 
 ## Verification
 
-### M17: atomic modesetting — PASS (44/44)
+### M17: atomic modesetting — PASS (55/55)
 
 `tools/riscv/nixos/m17/atomictest.c` runs as `/init` on a minimal
 initramfs (`build_m17.sh`, `boot_m17.py`, artifacts in `target/drm-m17/`),
@@ -136,13 +138,15 @@ per-file blob ownership, committed-blob lifetime, Linux-layout ATOMIC
 TEST_ONLY, TEST_ONLY state preservation, two-stage array capacity handling,
 invalid object/property and reserved-field rejection, explicit NONBLOCK
 rejection, per-file client-capability gates, rejection of an unimplemented
-writeback capability, TEST_ONLY commit-equivalent validation, explicit rejection
-of the not-yet-implemented pipeline-disable transition, ATOMIC ALLOW_MODESET
-commit, OBJ_GETPROPERTIES read-back of committed MODE_ID/ACTIVE, and render-node
+writeback capability, TEST_ONLY commit-equivalent validation, exact mode-blob
+and timing validation, full-frame source/destination geometry validation,
+rejection of an active CRTC without its primary plane, transactional pipeline
+disable/restore and full disconnect, ATOMIC ALLOW_MODESET commit,
+OBJ_GETPROPERTIES read-back of committed MODE_ID/ACTIVE, and render-node
 rejection (EOPNOTSUPP) of KMS ioctls.
 
 ```
-Summary: PASS=44 FAIL=0
+Summary: PASS=55 FAIL=0
 M17_ATOMIC_PASS
 ```
 
@@ -207,11 +211,12 @@ turns out to be required.
   `EOPNOTSUPP` until a true asynchronous path exists.
 - Page-flip completion events are supported, but are queued immediately after
   synchronous presentation rather than from a hardware-vblank IRQ.
-- The MODE_ID blob is validated for size but the mode is not re-applied
-  to hardware (virtio-gpu scanout has a fixed boot resolution).
-- Atomic pipeline disable (`ACTIVE=0`, `MODE_ID=0`, `FB_ID=0`, or a cleared
-  CRTC binding) returns `EOPNOTSUPP` until its hardware and property-state
-  transition is implemented transactionally.
+- Modes are validated exactly, including timing relationships and agreement
+  with the framebuffer dimensions. The virtio-gpu backend still exposes one
+  fixed scanout rather than dynamic connector mode programming.
+- The primary plane currently implements only an unscaled, uncropped,
+  origin-zero full-frame scanout. Other valid DRM plane geometries return
+  `EOPNOTSUPP` instead of being silently ignored.
 - `RESOURCE_BLOB`/`HOST_VISIBLE`/`CONTEXT_INIT` GETPARAMs report 0;
   Mesa uses the default virgl context (ctx_id 0).
 - Alpine Mesa cannot drive the virgl path: its gallium driver set

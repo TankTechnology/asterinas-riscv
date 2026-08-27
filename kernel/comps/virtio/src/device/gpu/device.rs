@@ -2,10 +2,17 @@
 
 //! Implements virtio-gpu device instances (device ID 16).
 //!
-//! The driver covers the 2D control queue, hardware cursor, and virgl 3D
-//! command paths. EDID and newer resource/context features remain disabled.
+//! The driver covers the 2D control queue, hardware cursor,
+//! and virgl 3D command paths.
+//! EDID and newer resource/context features remain disabled.
 
-use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -70,6 +77,9 @@ impl GpuCommandTicket {
             .wait_for_used()
             .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
         let used_len = (used_len as usize).min(self.response_len);
+        if used_len < size_of::<u32>() {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
         self.response.sync_from_device().unwrap();
         Ok((self.response.read_val::<u32>(0).unwrap(), used_len))
     }
@@ -131,6 +141,8 @@ pub struct GpuDevice {
     framebuffer: Arc<DmaStream>,
     /// Owners of memory that remains attached to live host resources.
     backing_owners: SpinLock<BTreeMap<u32, Arc<dyn GpuBackingOwner>>>,
+    /// Resource IDs whose host cleanup failed and must be retried.
+    pending_resource_cleanup: SpinLock<BTreeSet<u32>>,
     scanout_width: u32,
     scanout_height: u32,
     framebuffer_len: u32,
@@ -227,6 +239,7 @@ impl GpuDevice {
             cursor_buf,
             framebuffer,
             backing_owners: SpinLock::new(BTreeMap::new()),
+            pending_resource_cleanup: SpinLock::new(BTreeSet::new()),
             scanout_width,
             scanout_height,
             framebuffer_len,
@@ -277,8 +290,8 @@ impl GpuDevice {
     /// Presents an externally-owned guest buffer as scanout 0.
     ///
     /// Runs the full 2D pipeline for a caller-provided framebuffer: create a
-    /// resource, attach `addr`/`size` of guest memory as its backing store, set
-    /// it as scanout 0, transfer the pixels to the host, and flush. Any
+    /// resource, attach `addr`/`size` of guest memory as its backing store,
+    /// transfer and flush the pixels, and finally set it as scanout 0. Any
     /// previously presented resource is unref'd after the replacement becomes
     /// active so repeated presents neither leak resources nor detach scanout 0.
     pub fn present_framebuffer(
@@ -289,6 +302,7 @@ impl GpuDevice {
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
+        self.drain_pending_resource_cleanup();
         let r = VirtioGpuRect {
             x: 0,
             y: 0,
@@ -311,10 +325,11 @@ impl GpuDevice {
         let prepare_result = (|| {
             self.attach_backing(resource_id, addr, size, owner)?;
             self.transfer_to_host_2d(resource_id, r, 0)?;
+            self.flush(resource_id, r)?;
             self.set_scanout(SCANOUT_ID, resource_id, r)
         })();
         if let Err(error) = prepare_result {
-            let _ = self.resource_unref(resource_id);
+            self.defer_resource_unref(resource_id);
             return Err(error);
         }
 
@@ -328,13 +343,14 @@ impl GpuDevice {
         if let Some(previous) = previous {
             // Switch scanout first, then release the old resource so scanout 0
             // is never transiently detached.
-            let _ = self.resource_unref(previous.resource_id);
+            self.defer_resource_unref(previous.resource_id);
         }
-        self.flush(resource_id, r)
+        Ok(())
     }
 
     /// Disables scanout 0 and releases the resource used for direct display.
     pub fn disable_scanout(&self) -> Result<(), VirtioDeviceError> {
+        self.drain_pending_resource_cleanup();
         let mut presented = self.present_resource.lock();
         self.set_scanout(
             SCANOUT_ID,
@@ -347,7 +363,7 @@ impl GpuDevice {
             },
         )?;
         if let Some(previous) = presented.take() {
-            let _ = self.resource_unref(previous.resource_id);
+            self.defer_resource_unref(previous.resource_id);
         }
         Ok(())
     }
@@ -367,6 +383,7 @@ impl GpuDevice {
         y: i32,
     ) -> Result<u32, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         let resource_id = self.allocate_resource_id()?;
         let mut created = false;
         let result = (|| {
@@ -394,14 +411,14 @@ impl GpuDevice {
         })();
         if let Err(error) = result {
             if created {
-                let _ = self.resource_unref(resource_id);
+                self.defer_resource_unref(resource_id);
             }
             return Err(error);
         }
 
         let previous = self.cursor_resource.swap(resource_id, Ordering::AcqRel);
         if previous != 0 {
-            let _ = self.resource_unref(previous);
+            self.defer_resource_unref(previous);
         }
         Ok(resource_id)
     }
@@ -409,16 +426,18 @@ impl GpuDevice {
     /// Moves the active hardware cursor without replacing its image.
     pub fn move_cursor(&self, x: i32, y: i32) -> Result<(), VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         self.submit_cursor(VIRTIO_GPU_CMD_MOVE_CURSOR, 0, 0, 0, x, y)
     }
 
     /// Hides the hardware cursor and releases its active resource.
     pub fn hide_cursor(&self, x: i32, y: i32) -> Result<(), VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         self.submit_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, x, y)?;
         let previous = self.cursor_resource.swap(0, Ordering::AcqRel);
         if previous != 0 {
-            let _ = self.resource_unref(previous);
+            self.defer_resource_unref(previous);
         }
         Ok(())
     }
@@ -434,12 +453,13 @@ impl GpuDevice {
         y: i32,
     ) -> Result<bool, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         if self.cursor_resource.load(Ordering::Acquire) != resource_id {
             return Ok(false);
         }
         self.submit_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, x, y)?;
         self.cursor_resource.store(0, Ordering::Release);
-        let _ = self.resource_unref(resource_id);
+        self.defer_resource_unref(resource_id);
         Ok(true)
     }
 
@@ -670,6 +690,23 @@ impl GpuDevice {
         check_ok(code)?;
         self.backing_owners.lock().remove(&resource_id);
         Ok(())
+    }
+
+    /// Attempts cleanup and records the resource for a later retry on failure.
+    fn defer_resource_unref(&self, resource_id: u32) {
+        if self.resource_unref(resource_id).is_err() {
+            self.pending_resource_cleanup.lock().insert(resource_id);
+        }
+    }
+
+    /// Retries resource cleanup without holding a spin lock across device I/O.
+    fn drain_pending_resource_cleanup(&self) {
+        let pending = core::mem::take(&mut *self.pending_resource_cleanup.lock());
+        for resource_id in pending {
+            if self.resource_unref(resource_id).is_err() {
+                self.pending_resource_cleanup.lock().insert(resource_id);
+            }
+        }
     }
 
     /// 3D: create a 3D resource (texture, render target, or buffer).
@@ -1184,7 +1221,10 @@ fn control_cmd<T: ostd_pod::Pod>(
     let req_len = size_of::<T>();
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.write_val(0, req).unwrap();
-    let (code, _used_len) = submit_control(queue, buf, req_len, resp_len)?;
+    let (code, used_len) = submit_control(queue, buf, req_len, resp_len)?;
+    if used_len < resp_len {
+        return Err(VirtioDeviceError::UnsupportedConfig);
+    }
     Ok(code)
 }
 
