@@ -274,17 +274,29 @@ def launch_process(
     *,
     stdio_fd: int | None = None,
     environment: Mapping[str, str] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> GateProcess:
     """Launch a process in a new session with normal termination signal masks."""
 
     if not argv or any(not isinstance(argument, str) for argument in argv):
         raise ValueError("argv must contain strings")
+    preserved = tuple(pass_fds)
+    if (
+        len(set(preserved)) != len(preserved)
+        or any(
+            isinstance(descriptor, bool) or descriptor < 3 for descriptor in preserved
+        )
+        or (stdio_fd is not None and stdio_fd in preserved)
+    ):
+        raise ValueError("pass_fds must contain unique non-stdio descriptors")
     file_actions: list[tuple[int, ...]] = []
     if stdio_fd is not None:
         for destination in (0, 1, 2):
             file_actions.append((os.POSIX_SPAWN_DUP2, stdio_fd, destination))
         if stdio_fd not in (0, 1, 2):
             file_actions.append((os.POSIX_SPAWN_CLOSE, stdio_fd))
+    for descriptor in preserved:
+        file_actions.append((os.POSIX_SPAWN_DUP2, descriptor, descriptor))
     launcher_argv = ("/usr/bin/setsid", "--", *argv)
     pid = os.posix_spawn(
         launcher_argv[0],
