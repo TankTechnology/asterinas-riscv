@@ -32,6 +32,7 @@ import sys
 import termios
 import time
 from dataclasses import dataclass
+from typing import TextIO
 
 BAUD = 115200
 TX_DELAY = 0.02
@@ -231,15 +232,17 @@ class BoardSession:
             log_path,
             confirm=confirm,
             final_marker=final_marker,
+            log_stream=None,
         )
 
     @classmethod
     def from_fd(
         cls,
         fd: int,
-        log_path: str,
+        log_path: str | None,
         confirm: bool = True,
         final_marker: str = MILESTONES["userspace"],
+        log_stream: TextIO | None = None,
     ):
         """Build a session around a caller-owned serial descriptor."""
 
@@ -249,19 +252,28 @@ class BoardSession:
             log_path,
             confirm=confirm,
             final_marker=final_marker,
+            log_stream=log_stream,
         )
         return session
 
     def _initialize(
         self,
         fd: int,
-        log_path: str,
+        log_path: str | None,
         *,
         confirm: bool,
         final_marker: str,
+        log_stream: TextIO | None,
     ) -> None:
         self.fd = fd
-        self.log = open(log_path, "a", buffering=1)
+        if log_stream is None:
+            if log_path is None:
+                raise ValueError("session log path or stream is required")
+            self.log = open(log_path, "a", buffering=1)
+        else:
+            if log_path is not None:
+                raise ValueError("session log path and stream are mutually exclusive")
+            self.log = log_stream
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
         self._milestone_tail = ""

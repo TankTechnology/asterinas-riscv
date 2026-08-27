@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import stat
 import sys
@@ -19,6 +20,11 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_debug_board import (
+    BoardRunFailure,
+    BoardTermination,
+    run_physical_board,
+)
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 
 KERNEL_ADDRESS = 0x80200000
@@ -29,6 +35,16 @@ MAX_PLAN_BYTES = 1024 * 1024
 
 class WorkflowError(RuntimeError):
     """One stable workflow failure that must not touch the board."""
+
+
+def _board_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("timeout must be a number") from error
+    if not 0 < timeout <= 300 or not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 300]")
+    return timeout
 
 
 def _read_regular(path: Path, *, label: str) -> bytes:
@@ -206,6 +222,8 @@ def _parser() -> argparse.ArgumentParser:
     board.add_argument("plan", type=Path)
     board.add_argument("device")
     board.add_argument("--simulation-result", required=True, type=Path)
+    board.add_argument("--output-directory", type=Path)
+    board.add_argument("--timeout", type=_board_timeout, default=300.0)
     board.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -239,9 +257,26 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if values.dry_run:
             print(json.dumps(_physical_actions(plan), separators=(",", ":")))
             return 0
+        _check_artifacts(plan)
         _validate_simulation(values.simulation_result, plan)
-        raise WorkflowError("plan-board-not-implemented")
-    except (DebugContractError, OSError, SimulationError, WorkflowError) as error:
+        if values.output_directory is None:
+            raise WorkflowError("board-output-directory-required")
+        result = run_physical_board(
+            plan,
+            values.device,
+            values.output_directory,
+            timeout=values.timeout,
+        )
+        return 0 if result.passed else 2
+    except BoardTermination as error:
+        return 128 + error.signum
+    except (
+        BoardRunFailure,
+        DebugContractError,
+        OSError,
+        SimulationError,
+        WorkflowError,
+    ) as error:
         print(f"megrez-debug: {error}", file=sys.stderr)
         return 2
 
