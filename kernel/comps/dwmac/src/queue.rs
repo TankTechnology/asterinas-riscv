@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Non-coherent queue-zero DMA rings and their bounded cursor state.
+//! Uncached queue-zero DMA rings and their bounded cursor state.
 
 extern crate alloc;
 
@@ -9,7 +9,7 @@ use alloc::{sync::Arc, vec::Vec};
 use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
 use ostd::mm::{
     HasDaddr, PAGE_SIZE, VmIo,
-    dma::{DmaStream, FromAndToDevice, FromDevice, ToDevice},
+    dma::{DmaCoherent, FromDevice, ToDevice},
 };
 use spin::Once;
 
@@ -148,7 +148,7 @@ pub(super) struct QueueProgress {
 
 /// One fresh 64-entry receive/transmit queue pair.
 pub(super) struct DmaQueue {
-    ring: DmaStream<FromAndToDevice>,
+    ring: DmaCoherent,
     rx_buffers: Vec<Option<RxBuffer>>,
     tx_buffers: Vec<Option<TxBuffer>>,
     rx_head: usize,
@@ -167,7 +167,10 @@ impl DmaQueue {
         TX_POOL
             .call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
         let rx_pool = RX_POOL.get().unwrap();
-        let ring = DmaStream::alloc(1, false).map_err(|_| QueueError::Allocation)?;
+        // Hardware and the CPU update adjacent 16-byte descriptors independently.
+        // An uncached mapping prevents one side from writing back a stale sibling
+        // descriptor while synchronizing their shared 64-byte cache line.
+        let ring = DmaCoherent::alloc(1, false).map_err(|_| QueueError::Allocation)?;
         let rx_ring = ring.daddr() + RX_RING_OFFSET;
         let mut queue = Self {
             ring,
@@ -187,10 +190,6 @@ impl DmaQueue {
             queue.write_descriptor(false, slot, &descriptor)?;
             queue.rx_buffers[slot] = Some(buffer);
         }
-        queue
-            .ring
-            .sync_to_device(0..RING_BYTES)
-            .map_err(|_| QueueError::DmaAccess)?;
         Ok(queue)
     }
 
@@ -327,9 +326,6 @@ impl DmaQueue {
     fn read_descriptor(&self, is_tx: bool, slot: usize) -> Result<Descriptor, QueueError> {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
-            .sync_from_device(offset..offset + size_of::<Descriptor>())
-            .map_err(|_| QueueError::DmaAccess)?;
-        self.ring
             .read_val(offset)
             .map_err(|_| QueueError::DmaAccess)
     }
@@ -343,9 +339,6 @@ impl DmaQueue {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
             .write_val(offset, descriptor)
-            .map_err(|_| QueueError::DmaAccess)?;
-        self.ring
-            .sync_to_device(offset..offset + size_of::<Descriptor>())
             .map_err(|_| QueueError::DmaAccess)
     }
 }
