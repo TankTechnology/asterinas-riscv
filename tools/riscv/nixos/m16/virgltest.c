@@ -234,7 +234,9 @@ int main(void) {
         .height = TEX_H,
         .depth = 1,
         .array_size = 1,
-        .last_level = 1,
+        // This raw gate transfers only level zero and provides one level of
+        // guest backing. Do not advertise an unbacked mip level.
+        .last_level = 0,
         .nr_samples = 0,
         .flags = 0,
         .bo_handle = cd.handle,
@@ -397,7 +399,7 @@ int main(void) {
         struct drm_virtgpu_resource_create rcB = {
             .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_B8G8R8X8_UNORM,
             .bind = PIPE_BIND_RENDER_TARGET, .width = TEX_W, .height = TEX_H,
-            .depth = 1, .array_size = 1, .last_level = 1,
+            .depth = 1, .array_size = 1, .last_level = 0,
             .bo_handle = cd2.handle,
         };
         rc = ioctl(fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &rcB);

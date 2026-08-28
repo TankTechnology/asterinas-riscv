@@ -25,6 +25,10 @@ const VIRGL_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const VIRGL_FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const VIRGL_FORMAT_A8R8G8B8_UNORM: u32 = 3;
 const VIRGL_FORMAT_X8R8G8B8_UNORM: u32 = 4;
+const VIRGL_FORMAT_R8G8B8A8_UNORM: u32 = 67;
+const VIRGL_FORMAT_X8B8G8R8_UNORM: u32 = 68;
+const VIRGL_FORMAT_A8B8G8R8_UNORM: u32 = 121;
+const VIRGL_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 const VIRGL_FORMAT_MAX: u32 = 482;
 const VIRGL_BIND_VALID_MASK: u32 = (1 << 0)
     | (1 << 1)
@@ -184,6 +188,48 @@ pub(super) fn validate_create(params: &Resource3dCreateParams) -> Result<()> {
     Ok(())
 }
 
+/// Returns the tightly packed size of formats whose guest layout we can prove.
+///
+/// Buffer resources use byte-addressed Gallium widths. Multisample and other
+/// texture formats remain valid GPU resources, but their guest layout is not
+/// inferred here and direct transfers are rejected below.
+pub(super) fn minimum_backing_size(params: &Resource3dCreateParams) -> Result<Option<u32>> {
+    if params.target == PIPE_BUFFER {
+        return Ok(Some(params.width));
+    }
+    if params.nr_samples > 1 {
+        return Ok(None);
+    }
+    let Some(bytes_per_pixel) = linear_bytes_per_pixel(params.format) else {
+        return Ok(None);
+    };
+
+    let mut total_bytes = 0u64;
+    for level in 0..=params.last_level {
+        let width = u64::from(mip_dimension(params.width, level));
+        let height = u64::from(mip_dimension(params.height, level));
+        let layers = match params.target {
+            PIPE_TEXTURE_3D => u64::from(mip_dimension(params.depth, level)),
+            PIPE_TEXTURE_1D_ARRAY
+            | PIPE_TEXTURE_2D_ARRAY
+            | PIPE_TEXTURE_CUBE
+            | PIPE_TEXTURE_CUBE_ARRAY => u64::from(params.array_size),
+            _ => 1,
+        };
+        let level_bytes = width
+            .checked_mul(height)
+            .and_then(|texels| texels.checked_mul(layers))
+            .and_then(|texels| texels.checked_mul(u64::from(bytes_per_pixel)))
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "resource backing overflows"))?;
+        total_bytes = total_bytes
+            .checked_add(level_bytes)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "resource backing overflows"))?;
+    }
+    let total_bytes = u32::try_from(total_bytes)
+        .map_err(|_| Error::with_message(Errno::EINVAL, "resource backing is too large"))?;
+    Ok(Some(total_bytes))
+}
+
 impl LiveGemResource {
     pub(super) fn validate_transfer(self, transfer: Transfer3d) -> Result<()> {
         let params = self.create;
@@ -264,10 +310,16 @@ impl LiveGemResource {
             _ => unreachable!(),
         }
 
-        if params.target != PIPE_BUFFER
-            && params.nr_samples <= 1
-            && let Some(bytes_per_pixel) = linear_bytes_per_pixel(params.format)
-        {
+        if params.target != PIPE_BUFFER {
+            if params.nr_samples > 1 {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "multisample resource transfers are unsupported"
+                );
+            }
+            let bytes_per_pixel = linear_bytes_per_pixel(params.format).ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "resource transfer layout is unsupported")
+            })?;
             self.validate_linear_transfer(transfer, bytes_per_pixel)?;
         }
         Ok(())
@@ -331,7 +383,11 @@ fn linear_bytes_per_pixel(format: u32) -> Option<u32> {
         VIRGL_FORMAT_B8G8R8A8_UNORM
         | VIRGL_FORMAT_B8G8R8X8_UNORM
         | VIRGL_FORMAT_A8R8G8B8_UNORM
-        | VIRGL_FORMAT_X8R8G8B8_UNORM => Some(4),
+        | VIRGL_FORMAT_X8R8G8B8_UNORM
+        | VIRGL_FORMAT_R8G8B8A8_UNORM
+        | VIRGL_FORMAT_X8B8G8R8_UNORM
+        | VIRGL_FORMAT_A8B8G8R8_UNORM
+        | VIRGL_FORMAT_R8G8B8X8_UNORM => Some(4),
         _ => None,
     }
 }
@@ -462,6 +518,30 @@ mod tests {
                 .validate_transfer(Transfer3d { level: 2, ..full })
                 .is_err()
         );
+    }
+
+    #[ktest]
+    fn drm_validation_backing_size_covers_linear_mip_chain() {
+        let mut create = texture_resource().create;
+        create.last_level = 1;
+        assert_eq!(
+            minimum_backing_size(&create).unwrap(),
+            Some(64 * 64 * 4 + 32 * 32 * 4)
+        );
+
+        create.format = 5;
+        assert_eq!(minimum_backing_size(&create).unwrap(), None);
+    }
+
+    #[ktest]
+    fn drm_validation_rejects_transfer_without_proven_layout() {
+        let mut resource = texture_resource();
+        resource.create.format = 5;
+        assert!(resource.validate_transfer(full_texture_transfer()).is_err());
+
+        resource.create.format = VIRGL_FORMAT_B8G8R8A8_UNORM;
+        resource.create.nr_samples = 2;
+        assert!(resource.validate_transfer(full_texture_transfer()).is_err());
     }
 
     #[ktest]

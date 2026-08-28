@@ -135,19 +135,6 @@ impl<'a> PendingGemHandle<'a> {
             .insert(self.gem_handle, object_id);
         debug_assert!(previous.is_none());
     }
-
-    /// Discards the reserved handle and reports final host-resource cleanup.
-    pub(super) fn discard(mut self) -> Result<super::HostCleanupStatus> {
-        let object = self.object.take().unwrap();
-        let object_id = object.into_raw();
-        let detach_result = self.owner.release_gem_handle_reference(object_id);
-        let cleanup_result = self
-            .owner
-            .gpu_manager
-            .release_gem_object_and_report_cleanup(object_id);
-        detach_result?;
-        cleanup_result
-    }
 }
 
 impl Drop for PendingGemHandle<'_> {
@@ -165,7 +152,7 @@ impl Drop for PendingGemHandle<'_> {
     }
 }
 
-/// GEM_CLOSE: drop a per-file handle, decrementing the object's ref count.
+/// Closes a `GEM_CLOSE` handle and decrements the object's reference count.
 pub(super) fn gem_close(handle: &super::DriHandle, gem_handle: u32) -> Result<()> {
     let _cursor_operation = handle.cursor_operation.lock();
     let object_id = {
@@ -185,7 +172,7 @@ pub(super) fn gem_close(handle: &super::DriHandle, gem_handle: u32) -> Result<()
     release_result
 }
 
-/// GEM_FLINK: return the object's id as a global 32-bit name.
+/// Returns the object's global 32-bit `GEM_FLINK` name.
 pub(super) fn gem_flink(handle: &super::DriHandle, gem_handle: u32) -> Result<u32> {
     let inner = handle.inner.lock();
     let object_id = inner
@@ -212,7 +199,7 @@ pub(super) fn gem_flink(handle: &super::DriHandle, gem_handle: u32) -> Result<u3
     Ok(object_id)
 }
 
-/// GEM_OPEN: look up a global name and create a per-file handle.
+/// Opens a global `GEM_OPEN` name and reserves a per-file handle.
 pub(super) fn gem_open<'a>(
     handle: &'a super::DriHandle,
     name: u32,

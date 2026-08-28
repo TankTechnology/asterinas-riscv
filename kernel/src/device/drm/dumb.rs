@@ -3,8 +3,8 @@
 //! Dumb-buffer allocation, mapping, and destruction.
 //!
 //! Dumb buffers are carved from the shared pool in [`super::GpuManager`].
-//! Each allocation is wrapped in a [`super::GemObject`] and assigned a
-//! per-file handle.
+//! Each allocation is wrapped in a [`super::GemObject`]
+//! and assigned a per-file handle.
 
 use super::{
     DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DumbBuffer,
@@ -21,21 +21,21 @@ struct DumbPoolState {
 
 /// Page-granular first-fit allocator for the shared contiguous VMO.
 pub(super) struct DumbPool {
-    capacity: usize,
+    capacity_bytes: usize,
     state: Mutex<DumbPoolState>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct DumbPoolUsage {
-    pub(super) used_bytes: usize,
-    pub(super) high_water_bytes: usize,
+    used_bytes: usize,
+    high_water_bytes: usize,
 }
 
 /// A pool span that returns itself to the allocator after every owner releases it.
 pub(super) struct PoolAllocation {
     pool: Weak<DumbPool>,
     offset: usize,
-    size: usize,
+    size_bytes: usize,
 }
 
 /// A dumb buffer whose handle and pool span are not yet visible to userspace.
@@ -56,20 +56,14 @@ impl<'a> PendingDumbBuffer<'a> {
     pub(super) fn publish(self) {
         self.handle.publish();
     }
-
-    /// Discards the handle.
-    /// Host backing owners keep uncertain spans pinned.
-    pub(super) fn discard_after_failed_resource(self) -> Result<()> {
-        self.handle.discard().map(|_| ())
-    }
 }
 
 impl DumbPool {
-    pub(super) fn new(capacity: usize) -> Arc<Self> {
+    pub(super) fn new(capacity_bytes: usize) -> Arc<Self> {
         let mut free_ranges = BTreeMap::new();
-        free_ranges.insert(0, capacity);
+        free_ranges.insert(0, capacity_bytes);
         Arc::new(Self {
-            capacity,
+            capacity_bytes,
             state: Mutex::new(DumbPoolState {
                 free_ranges,
                 used_bytes: 0,
@@ -78,8 +72,11 @@ impl DumbPool {
         })
     }
 
-    pub(super) fn allocate(self: &Arc<Self>, size: usize) -> Result<Arc<PoolAllocation>> {
-        let allocated_size = size
+    pub(super) fn allocate(
+        self: &Arc<Self>,
+        requested_size_bytes: usize,
+    ) -> Result<Arc<PoolAllocation>> {
+        let allocated_size_bytes = requested_size_bytes
             .checked_add(PAGE_SIZE - 1)
             .and_then(|size| size.checked_div(PAGE_SIZE))
             .and_then(|pages| pages.checked_mul(PAGE_SIZE))
@@ -88,26 +85,28 @@ impl DumbPool {
         let selected = state
             .free_ranges
             .iter()
-            .find_map(|(&start, &end)| (end - start >= allocated_size).then_some((start, end)))
+            .find_map(|(&start, &end)| {
+                (end - start >= allocated_size_bytes).then_some((start, end))
+            })
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool is exhausted"))?;
         let (offset, free_end) = selected;
-        let end = offset.checked_add(allocated_size).ok_or_else(|| {
+        let end = offset.checked_add(allocated_size_bytes).ok_or_else(|| {
             Error::with_message(Errno::ENOMEM, "dumb buffer allocation overflows")
         })?;
-        if end > self.capacity {
+        if end > self.capacity_bytes {
             return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
         }
         state.free_ranges.remove(&offset);
         if end < free_end {
             state.free_ranges.insert(end, free_end);
         }
-        state.used_bytes += allocated_size;
+        state.used_bytes += allocated_size_bytes;
         state.high_water_bytes = state.high_water_bytes.max(state.used_bytes);
         drop(state);
         Ok(Arc::new(PoolAllocation {
             pool: Arc::downgrade(self),
             offset,
-            size: allocated_size,
+            size_bytes: allocated_size_bytes,
         }))
     }
 
@@ -125,8 +124,18 @@ impl PoolAllocation {
         self.offset
     }
 
-    pub(super) fn size(&self) -> usize {
-        self.size
+    pub(super) fn size_bytes(&self) -> usize {
+        self.size_bytes
+    }
+}
+
+impl DumbPoolUsage {
+    pub(super) fn used_bytes(self) -> usize {
+        self.used_bytes
+    }
+
+    pub(super) fn high_water_bytes(self) -> usize {
+        self.high_water_bytes
     }
 }
 
@@ -135,7 +144,7 @@ impl Debug for PoolAllocation {
         formatter
             .debug_struct("PoolAllocation")
             .field("offset", &self.offset)
-            .field("size", &self.size)
+            .field("size_bytes", &self.size_bytes)
             .finish()
     }
 }
@@ -147,7 +156,7 @@ impl Drop for PoolAllocation {
         };
         let mut state = pool.state.lock();
         let mut start = self.offset;
-        let mut end = self.offset + self.size;
+        let mut end = self.offset + self.size_bytes;
         if let Some((&previous_start, &previous_end)) = state.free_ranges.range(..start).next_back()
             && previous_end == start
         {
@@ -162,7 +171,7 @@ impl Drop for PoolAllocation {
         }
         let previous = state.free_ranges.insert(start, end);
         debug_assert!(previous.is_none());
-        state.used_bytes -= self.size;
+        state.used_bytes -= self.size_bytes;
     }
 }
 
@@ -173,13 +182,13 @@ pub(super) fn allocate_pool_span(
 ) -> Result<Arc<PoolAllocation>> {
     let pool_vmo = manager.ensure_pool()?;
     let allocation = manager.dumb_pool.allocate(size)?;
-    let range = allocation.offset()..allocation.offset() + allocation.size();
+    let range = allocation.offset()..allocation.offset() + allocation.size_bytes();
     pool_vmo.fill_zeros(range)?;
     Ok(allocation)
 }
 
-/// Creates a dumb buffer, allocating from the global pool and wrapping it
-/// in a GEM object.
+/// Creates a dumb buffer by allocating from the global pool
+/// and wrapping it in a GEM object.
 pub(super) fn create_dumb<'a>(
     handle: &'a super::DriHandle,
     req: &DrmModeCreateDumb,

@@ -13,6 +13,7 @@ use core::{
     fmt::Display,
     mem,
     sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use aster_virtio::device::gpu::{
@@ -562,6 +563,24 @@ impl Fence {
         self.finish_completed()
     }
 
+    /// Waits for completion until a signal or a bounded device deadline.
+    pub(super) fn wait_interruptible_or_timeout(&self, timeout: &Duration) -> Result<()> {
+        if timeout.is_zero() {
+            if self.try_finish()? {
+                return Ok(());
+            }
+            return_errno_with_message!(Errno::ETIME, "the fence wait timed out");
+        }
+        self.waiters.pause_until_or_timeout(
+            || {
+                self.poll_device_completion();
+                self.is_signaled().then_some(())
+            },
+            timeout,
+        )?;
+        self.finish_completed()
+    }
+
     fn wait_until_signaled(&self) {
         self.waiters.wait_until(|| {
             self.poll_device_completion();
@@ -752,7 +771,10 @@ impl FileLike for FenceFile {
 #[cfg(ktest)]
 mod tests {
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use aster_virtio::device::gpu::GpuCommandCompletion;
     use ostd::prelude::ktest;
@@ -765,6 +787,15 @@ mod tests {
         let fence = Fence::new();
         assert!(!fence.is_signaled());
         assert!(matches!(fence.try_finish(), Ok(false)));
+    }
+
+    #[ktest]
+    fn pending_fence_wait_honors_timeout() {
+        let fence = Fence::new();
+        let error = fence
+            .wait_interruptible_or_timeout(&Duration::ZERO)
+            .unwrap_err();
+        assert_eq!(error.error(), crate::error::Errno::ETIME);
     }
 
     #[ktest]

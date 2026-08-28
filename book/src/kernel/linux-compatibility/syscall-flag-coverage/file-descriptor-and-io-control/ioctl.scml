@@ -68,7 +68,8 @@ ioctl(fd, op = <drm_auth_ops>, ..);
 // Manage DRM GEM, DUMB-buffer, and PRIME handles and mappings
 ioctl(fd, op = <drm_buffer_ops>, ..);
 
-// Submit virgl work and query or wait for resource fences
+// Submit virgl work and query or wait for resource fences.
+// RESOURCE_CREATE accepts bo_handle = 0 or an existing GEM handle.
 ioctl(fd, op = <drm_virtgpu_ops>, ..);
 
 // Create, share, signal, transfer, query, and wait for DRM synchronization objects

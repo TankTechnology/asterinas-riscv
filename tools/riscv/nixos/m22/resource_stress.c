@@ -37,9 +37,14 @@
 #define VIRTGPU_EXECBUF_FENCE_FD_OUT 0x02
 #define PIPE_TEXTURE_2D 2
 #define PIPE_FORMAT_B8G8R8X8_UNORM 1
+#define PIPE_FORMAT_R8_UNORM 64
 #define PIPE_BIND_RENDER_TARGET 2
 #define STRESS_ROUNDS 32
 #define REUSE_CYCLES 4200
+#define TEST_WIDTH 64U
+#define TEST_HEIGHT 64U
+#define TEST_BITS_PER_PIXEL 32U
+#define FENCE_WAIT_TIMEOUT_MS 5000
 
 struct drm_gem_close {
     uint32_t handle;
@@ -262,9 +267,9 @@ static int create_dumb(int drm_fd, struct drm_mode_create_dumb *dumb,
                        struct drm_mode_map_dumb *map)
 {
     *dumb = (struct drm_mode_create_dumb) {
-        .width = 64,
-        .height = 64,
-        .bpp = 32,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .bpp = TEST_BITS_PER_PIXEL,
     };
     if (ioctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, dumb) < 0)
         return -1;
@@ -400,9 +405,9 @@ static int run_resource_boundary_tests(int control_fd,
     int result = -1;
     int worker_fd = open("/dev/dri/renderD128", O_RDWR);
     struct drm_mode_create_dumb dumb = {
-        .width = 64,
-        .height = 64,
-        .bpp = 32,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .bpp = TEST_BITS_PER_PIXEL,
     };
     if (worker_fd < 0 || ioctl(worker_fd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb) < 0)
         goto out;
@@ -411,8 +416,8 @@ static int run_resource_boundary_tests(int control_fd,
         .target = 9,
         .format = PIPE_FORMAT_B8G8R8X8_UNORM,
         .bind = PIPE_BIND_RENDER_TARGET,
-        .width = 64,
-        .height = 64,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
         .depth = 1,
         .array_size = 1,
         .bo_handle = dumb.handle,
@@ -421,6 +426,23 @@ static int run_resource_boundary_tests(int control_fd,
     int create_result = ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &invalid);
     CHECK(create_result < 0 && errno == EINVAL,
           "RESOURCE_CREATE rejects an unknown Gallium target");
+    if (create_result == 0)
+        goto out;
+
+    struct drm_virtgpu_resource_create undersized = {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .depth = 1,
+        .array_size = 1,
+        .size = 1,
+    };
+    errno = 0;
+    create_result = ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &undersized);
+    CHECK(create_result < 0 && errno == EINVAL,
+          "RESOURCE_CREATE rejects backing smaller than linear resource");
     if (create_result == 0)
         goto out;
 
@@ -437,11 +459,11 @@ static int run_resource_boundary_tests(int control_fd,
         .target = PIPE_TEXTURE_2D,
         .format = PIPE_FORMAT_B8G8R8X8_UNORM,
         .bind = PIPE_BIND_RENDER_TARGET,
-        .width = 64,
-        .height = 64,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
         .depth = 1,
         .array_size = 1,
-        .last_level = 1,
+        .last_level = 0,
         .bo_handle = dumb.handle,
     };
     if (ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &valid) < 0)
@@ -449,7 +471,7 @@ static int run_resource_boundary_tests(int control_fd,
 
     struct drm_virtgpu_3d_transfer transfer = {
         .bo_handle = dumb.handle,
-        .box = { .w = 64, .h = 64, .d = 1 },
+        .box = { .w = TEST_WIDTH, .h = TEST_HEIGHT, .d = 1 },
     };
     errno = 0;
     CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &transfer) == 0,
@@ -458,7 +480,7 @@ static int run_resource_boundary_tests(int control_fd,
     CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) == 0,
           "TRANSFER_FROM_HOST accepts the full level-zero texture");
 
-    transfer.box.x = 63;
+    transfer.box.x = TEST_WIDTH - 1;
     transfer.box.w = 2;
     transfer.box.h = 1;
     errno = 0;
@@ -467,8 +489,8 @@ static int run_resource_boundary_tests(int control_fd,
           "TRANSFER_FROM_HOST rejects a box outside resource geometry");
 
     transfer.box.x = 0;
-    transfer.box.w = 64;
-    transfer.box.h = 64;
+    transfer.box.w = TEST_WIDTH;
+    transfer.box.h = TEST_HEIGHT;
     transfer.offset = 1;
     errno = 0;
     CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) < 0 &&
@@ -481,6 +503,33 @@ static int run_resource_boundary_tests(int control_fd,
     CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &transfer) < 0 &&
               errno == EINVAL,
           "TRANSFER_TO_HOST rejects a missing mip level");
+
+    if (close_gem(worker_fd, dumb.handle) < 0)
+        goto out;
+    dumb.handle = 0;
+    struct drm_mode_map_dumb unknown_map;
+    if (create_dumb(worker_fd, &dumb, &unknown_map) < 0)
+        goto out;
+    struct drm_virtgpu_resource_create unknown_layout = {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_R8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .depth = 1,
+        .array_size = 1,
+        .bo_handle = dumb.handle,
+    };
+    if (ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &unknown_layout) < 0)
+        goto out;
+    transfer = (struct drm_virtgpu_3d_transfer) {
+        .bo_handle = dumb.handle,
+        .box = { .w = TEST_WIDTH, .h = TEST_HEIGHT, .d = 1 },
+    };
+    errno = 0;
+    CHECK(ioctl(worker_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &transfer) < 0 &&
+              errno == EINVAL,
+          "TRANSFER_FROM_HOST rejects an unproven guest layout");
 
     result = 0;
 
@@ -495,6 +544,102 @@ out:
             !reclaimable_counters_equal(baseline, &released)) {
             result = -1;
         }
+    }
+    return result;
+}
+
+static int run_resource_copyout_rollback_test(
+    int control_fd, const struct resource_snapshot *baseline)
+{
+    int result = -1;
+    int worker_fd = open("/dev/dri/renderD128", O_RDWR);
+    void *request_page = MAP_FAILED;
+    long page_size = sysconf(_SC_PAGESIZE);
+    struct drm_mode_create_dumb warmup = { 0 };
+    struct drm_mode_map_dumb warmup_map = { 0 };
+    if (worker_fd < 0 || page_size <= 0 ||
+        create_dumb(worker_fd, &warmup, &warmup_map) < 0)
+        goto out;
+
+    // Regression for resource-create copyout rollback discovered during the
+    // typed transaction refactor. Create the per-file context before the snapshot.
+    // The failure below must then return every resource, attachment, GEM, and
+    // pool counter exactly to this warmed state.
+    struct drm_virtgpu_resource_create warmup_resource = {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .depth = 1,
+        .array_size = 1,
+        .bo_handle = warmup.handle,
+    };
+    if (ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &warmup_resource) < 0 ||
+        close_gem(worker_fd, warmup.handle) < 0)
+        goto out;
+    warmup.handle = 0;
+
+    struct resource_snapshot warmed;
+    if (read_snapshot(control_fd, &warmed) < 0 ||
+        warmed.value[CONTEXTS] != baseline->value[CONTEXTS] + 1 ||
+        warmed.value[CONTEXT_ATTACHMENTS] != baseline->value[CONTEXT_ATTACHMENTS] ||
+        warmed.value[HOST_RESOURCES] != baseline->value[HOST_RESOURCES]) {
+        errno = EFAULT;
+        goto out;
+    }
+
+    request_page = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (request_page == MAP_FAILED)
+        goto out;
+    struct drm_virtgpu_resource_create *request = request_page;
+    *request = (struct drm_virtgpu_resource_create) {
+        .target = PIPE_TEXTURE_2D,
+        .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+        .bind = PIPE_BIND_RENDER_TARGET,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .depth = 1,
+        .array_size = 1,
+        .bo_handle = 0,
+    };
+    if (mprotect(request_page, (size_t)page_size, PROT_READ) < 0)
+        goto out;
+
+    errno = 0;
+    int create_result = ioctl(worker_fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, request);
+    int create_errno = errno;
+    if (mprotect(request_page, (size_t)page_size, PROT_READ | PROT_WRITE) < 0)
+        goto out;
+    CHECK(create_result < 0 && create_errno == EFAULT,
+          "RESOURCE_CREATE reports EFAULT when response copyout is read-only");
+    if (create_result >= 0 || create_errno != EFAULT) {
+        errno = create_errno;
+        goto out;
+    }
+
+    struct resource_snapshot rolled_back;
+    if (read_snapshot(control_fd, &rolled_back) < 0 ||
+        !reclaimable_counters_equal(&warmed, &rolled_back)) {
+        errno = EFAULT;
+        goto out;
+    }
+    CHECK(1, "RESOURCE_CREATE copyout failure rolls back host/GEM/pool state");
+    result = 0;
+
+out:
+    if (request_page != MAP_FAILED)
+        munmap(request_page, (size_t)page_size);
+    if (warmup.handle != 0 && worker_fd >= 0)
+        close_gem(worker_fd, warmup.handle);
+    if (worker_fd >= 0)
+        close(worker_fd);
+    if (result == 0) {
+        struct resource_snapshot released;
+        if (read_snapshot(control_fd, &released) < 0 ||
+            !reclaimable_counters_equal(baseline, &released))
+            result = -1;
     }
     return result;
 }
@@ -515,9 +660,9 @@ static int run_round(int control_fd, const struct resource_snapshot *baseline, i
         goto out;
 
     struct drm_mode_create_dumb dumb = {
-        .width = 64,
-        .height = 64,
-        .bpp = 32,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
+        .bpp = TEST_BITS_PER_PIXEL,
     };
     stage = "create dumb buffer";
     if (ioctl(worker_fd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb) < 0)
@@ -540,11 +685,11 @@ static int run_round(int control_fd, const struct resource_snapshot *baseline, i
         .target = PIPE_TEXTURE_2D,
         .format = PIPE_FORMAT_B8G8R8X8_UNORM,
         .bind = PIPE_BIND_RENDER_TARGET,
-        .width = 64,
-        .height = 64,
+        .width = TEST_WIDTH,
+        .height = TEST_HEIGHT,
         .depth = 1,
         .array_size = 1,
-        .last_level = 1,
+        .last_level = 0,
         .bo_handle = dumb.handle,
     };
     stage = "create host resource";
@@ -585,7 +730,7 @@ static int run_round(int control_fd, const struct resource_snapshot *baseline, i
     fence_fd = exec.fence_fd;
     struct pollfd poll_fd = { .fd = fence_fd, .events = POLLIN };
     stage = "wait for fence";
-    if (poll(&poll_fd, 1, 5000) <= 0 || !(poll_fd.revents & POLLIN) ||
+    if (poll(&poll_fd, 1, FENCE_WAIT_TIMEOUT_MS) <= 0 || !(poll_fd.revents & POLLIN) ||
         (poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)))
         goto out;
     close(fence_fd);
@@ -701,6 +846,8 @@ int main(void)
           "pool survives %d cycles exceeding old cumulative capacity", REUSE_CYCLES);
     CHECK(run_resource_boundary_tests(control_fd, &baseline) == 0,
           "rejected resource requests leave all counters at baseline");
+    CHECK(run_resource_copyout_rollback_test(control_fd, &baseline) == 0,
+          "resource copyout rollback restores the global baseline");
 
     uint64_t expected_map_offset = UINT64_MAX;
     for (int round = 0; round < STRESS_ROUNDS; round++) {

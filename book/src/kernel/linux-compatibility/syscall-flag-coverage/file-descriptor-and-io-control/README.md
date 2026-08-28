@@ -161,6 +161,11 @@ returns `EINVAL` and `ENOSPC`, respectively.
 At most 262,144 GEM-object/fence associations may be retained system-wide;
 new submissions return `ENOSPC` after that boundary.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
+Blocking waits are interruptible and use the same 15-second device deadline as Linux virtio-gpu.
+`DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` allocates and returns a new GEM handle when `bo_handle` is zero.
+As an Asterinas extension, a nonzero `bo_handle` may name an existing GEM object, allowing a dumb/KMS buffer to become the resource backing without a second allocation.
+For formats whose tightly packed layout is known, the GEM backing must cover the complete mip chain.
+Direct transfers are rejected when the guest layout cannot be proven.
 The supported virtio-gpu query and resource operations are `GETPARAM`,
 `RESOURCE_CREATE`, `RESOURCE_INFO`, `TRANSFER_TO_HOST`, `TRANSFER_FROM_HOST`,
 `GET_CAPS`, and `MAP`.

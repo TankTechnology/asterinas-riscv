@@ -496,8 +496,8 @@ impl GpuManager {
         let context_counts = self.virgl_contexts.counts();
         let backend = self.gpu.resource_snapshot();
         DrmResourceSnapshot {
-            dumb_pool_used_bytes: dumb_pool_usage.used_bytes,
-            dumb_pool_high_water_bytes: dumb_pool_usage.high_water_bytes,
+            dumb_pool_used_bytes: dumb_pool_usage.used_bytes(),
+            dumb_pool_high_water_bytes: dumb_pool_usage.high_water_bytes(),
             dumb_pool_capacity_bytes: DUMB_POOL_SIZE,
             gem_objects: gem_object_count,
             gem_references: self.gem_references.load(Ordering::Relaxed),
@@ -929,7 +929,7 @@ struct DumbBuffer {
 
 impl DumbBuffer {
     fn mapped_range(&self) -> Option<Range<usize>> {
-        Some(self.offset..self.offset.checked_add(self.allocation.size())?)
+        Some(self.offset..self.offset.checked_add(self.allocation.size_bytes())?)
     }
 }
 
@@ -1100,6 +1100,16 @@ struct DriInner {
 }
 
 impl DriHandle {
+    /// Resolves a per-file GEM handle to its device-wide object id.
+    fn object_id_for_handle(&self, gem_handle: u32) -> Result<u32> {
+        self.inner
+            .lock()
+            .handles
+            .get(&gem_handle)
+            .copied()
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))
+    }
+
     fn new(gpu_manager: Arc<GpuManager>, node_type: DriNodeType) -> Result<Self> {
         let context_id = gpu_manager
             .next_context_id

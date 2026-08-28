@@ -7,19 +7,16 @@
 //! They translate DRM ioctl structs into virtio-gpu control queue commands.
 
 mod execbuffer;
+mod resource_create;
 
-use aster_virtio::device::gpu::{
-    Resource3dCreateParams, VIRTIO_GPU_CAPSET_VIRGL, VIRTIO_GPU_CAPSET_VIRGL2,
-};
+use core::time::Duration;
+
+use aster_virtio::device::gpu;
 pub(super) use execbuffer::{DrmVirtgpuExecbuffer, virtgpu_execbuffer};
 use ostd::mm::VmIo;
+pub(super) use resource_create::{DrmVirtgpuResourceCreate, virtgpu_resource_create};
 
-use super::{
-    DumbBuffer, GemResourceState,
-    dumb::{self, PendingDumbBuffer},
-    gem::{GemObjectRef, PendingGemHandle},
-    virgl_resource::{LiveGemResource, Transfer3d},
-};
+use super::virgl_resource::Transfer3d;
 use crate::{context::current_userspace, prelude::*};
 
 // ---------------------------------------------------------------------------
@@ -28,33 +25,13 @@ use crate::{context::current_userspace, prelude::*};
 
 /// `struct drm_virtgpu_getparam`.
 ///
-/// Note: `value` is a userspace **pointer** to a `u64` that the kernel writes
-/// through, not an inline value field.
+/// Note: `value` is a userspace **pointer** to a `u64` that the kernel writes through,
+/// not an inline value field.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct DrmVirtgpuGetparam {
     pub param: u64,
     pub value: u64,
-}
-
-/// `struct drm_virtgpu_resource_create`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-pub(super) struct DrmVirtgpuResourceCreate {
-    pub target: u32,
-    pub format: u32,
-    pub bind: u32,
-    pub width: u32,
-    pub height: u32,
-    pub depth: u32,
-    pub array_size: u32,
-    pub last_level: u32,
-    pub nr_samples: u32,
-    pub flags: u32,
-    pub bo_handle: u32,  // in: existing GEM handle, or 0
-    pub res_handle: u32, // out: virtio-gpu resource handle
-    pub size: u32,
-    pub stride: u32,
 }
 
 /// `struct drm_virtgpu_resource_info`.
@@ -201,217 +178,6 @@ pub(super) fn virtgpu_getparam(
     Ok(0)
 }
 
-/// Creates a 3D resource on the virtio-gpu device.
-///
-/// Maps a GEM buffer (via bo_handle) to a virtio-gpu 3D resource.
-/// If `bo_handle` is zero, allocates a new dumb buffer and returns its GEM
-/// handle as the resource backing.
-pub(super) fn virtgpu_resource_create(
-    handle: &super::DriHandle,
-    cmd: crate::util::ioctl::Ioctl<
-        b'd',
-        0x44,
-        true,
-        crate::util::ioctl::InOutData<DrmVirtgpuResourceCreate>,
-    >,
-) -> Result<i32> {
-    let mut req = cmd.read()?;
-
-    let mut create = Resource3dCreateParams {
-        resource_id: 0,
-        target: req.target,
-        format: req.format,
-        bind: req.bind,
-        width: req.width,
-        height: req.height,
-        depth: req.depth,
-        array_size: req.array_size,
-        last_level: req.last_level,
-        nr_samples: req.nr_samples,
-        flags: req.flags,
-    };
-    super::virgl_resource::validate_create(&create)?;
-
-    // Allocate a new virtio-gpu resource id
-    let res_handle = handle
-        .gpu_manager
-        .gpu
-        .allocate_resource_id()
-        .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu resource ids exhausted"))?;
-    create.resource_id = res_handle;
-
-    // If a GEM buffer handle is provided, look up the backing memory.
-    // Otherwise allocate a fresh dumb buffer so the resource has a GEM
-    // handle for scanout (ADDFB2 / KMS) and the rendered image is host-visible.
-    let mut new_dumb_buffer: Option<PendingDumbBuffer<'_>> = None;
-    let retained_backing_object: u32;
-    let backing = if req.bo_handle != 0 {
-        let inner = handle.inner.lock();
-        let object_id = *inner
-            .handles
-            .get(&req.bo_handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?;
-        drop(inner);
-        let base = handle.gpu_manager.pool_paddr()?;
-        let buffer = handle.gpu_manager.retain_gem_object(object_id)?;
-        retained_backing_object = object_id;
-        let size = match u32::try_from(buffer.size) {
-            Ok(size) => size,
-            Err(_) => {
-                let _ = handle.gpu_manager.release_gem_object(object_id);
-                return_errno_with_message!(Errno::EINVAL, "GEM backing is too large");
-            }
-        };
-        Some((
-            object_id,
-            base + buffer.offset,
-            size,
-            buffer.allocation.clone(),
-        ))
-    } else {
-        // Allocate a dumb buffer from the shared pool to back this resource.
-        let bpp = 32;
-        let pitch = if req.stride == 0 {
-            req.width.saturating_mul(bpp / 8)
-        } else {
-            req.stride
-        };
-        let size = if req.size == 0 {
-            (pitch as usize).saturating_mul(req.height as usize)
-        } else {
-            req.size as usize
-        };
-        let backing_size = u32::try_from(size)
-            .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
-        let base = handle.gpu_manager.pool_paddr()?;
-        let allocation = dumb::allocate_pool_span(&handle.gpu_manager, size)?;
-        let offset = allocation.offset();
-        let backing_owner = allocation.clone();
-
-        let object = GemObjectRef::insert_new(
-            &handle.gpu_manager,
-            DumbBuffer {
-                offset,
-                size,
-                width: req.width,
-                height: req.height,
-                bpp,
-                allocation,
-            },
-        )?;
-        let object_id = object.object_id();
-        let pending = PendingGemHandle::new(handle, object)?;
-        // Pin the object separately while the host-resource transaction runs.
-        handle.gpu_manager.retain_gem_object(object_id)?;
-        retained_backing_object = object_id;
-        new_dumb_buffer = Some(PendingDumbBuffer::new(pending));
-
-        Some((object_id, base + offset, backing_size, backing_owner))
-    };
-
-    let backing_object_id = backing.as_ref().map(|(object_id, _, _, _)| *object_id);
-    let resource_creation = handle.gpu_manager.resource_creation.lock();
-    handle.gpu_manager.drain_pending_context_cleanup();
-    handle.gpu_manager.drain_pending_resource_cleanup();
-    if let Some(object_id) = backing_object_id
-        && handle.gpu_manager.has_gem_resource(object_id)
-    {
-        let _ = handle
-            .gpu_manager
-            .release_gem_object(retained_backing_object);
-        return_errno_with_message!(Errno::EBUSY, "GEM object already has a 3D resource");
-    }
-
-    let mut resource_created = false;
-    let mut context_attached = false;
-    let operation = (|| -> Result<()> {
-        // The gallium pipe target (0 = buffer, 2 = 2D texture, ...) is passed
-        // through as-is.
-        handle
-            .gpu_manager
-            .gpu
-            .resource_create_3d(create)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-        resource_created = true;
-
-        if let Some((_, addr, size, owner)) = backing.as_ref() {
-            handle
-                .gpu_manager
-                .gpu
-                .attach_backing(res_handle, *addr as u64, *size, owner.clone())
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-            req.size = *size;
-        } else {
-            // Host-only resource: report a sensible size estimate.
-            req.size = req.width.saturating_mul(req.height).saturating_mul(4);
-        }
-
-        // Every 3D resource, including Gallium buffer resources (`target ==
-        // 0`), must be visible to the submitting context.
-        handle.attach_resource_to_context(res_handle)?;
-        context_attached = true;
-
-        req.res_handle = res_handle;
-        req.stride = req.width.saturating_mul(4);
-        if let Some(pending_buffer) = new_dumb_buffer.as_ref() {
-            req.bo_handle = pending_buffer.id();
-        }
-        cmd.write(&req)
-    })();
-
-    if let Err(error) = operation {
-        if context_attached {
-            let _ = handle.detach_resource_from_context(res_handle);
-        }
-        let resource_released =
-            !resource_created || handle.gpu_manager.gpu.resource_unref(res_handle).is_ok();
-        if !resource_released && let Some(object_id) = backing_object_id {
-            handle
-                .gpu_manager
-                .insert_gem_resource(object_id, GemResourceState::CleanupOnly(res_handle));
-        }
-        drop(resource_creation);
-        let transaction_release = handle
-            .gpu_manager
-            .release_gem_object(retained_backing_object);
-        let pending_release = new_dumb_buffer
-            .take()
-            .map(PendingDumbBuffer::discard_after_failed_resource)
-            .transpose();
-        if let Err(release_error) = transaction_release {
-            ostd::warn!(
-                "cannot release failed resource transaction for GEM object {}: {:?}",
-                retained_backing_object,
-                release_error
-            );
-        }
-        if let Err(release_error) = pending_release {
-            ostd::warn!(
-                "cannot discard unpublished GEM resource after failure: {:?}",
-                release_error
-            );
-        }
-        return Err(error);
-    }
-    if let Some(object_id) = backing_object_id {
-        handle.gpu_manager.insert_gem_resource(
-            object_id,
-            GemResourceState::Live(LiveGemResource {
-                create,
-                backing_size: req.size,
-            }),
-        );
-    }
-    drop(resource_creation);
-    handle
-        .gpu_manager
-        .release_gem_object(retained_backing_object)?;
-    if let Some(pending_buffer) = new_dumb_buffer {
-        pending_buffer.publish();
-    }
-    Ok(0)
-}
-
 /// Returns information about a virtio-gpu resource.
 pub(super) fn virtgpu_resource_info(
     handle: &super::DriHandle,
@@ -423,13 +189,7 @@ pub(super) fn virtgpu_resource_info(
     >,
 ) -> Result<i32> {
     let mut req = cmd.read()?;
-    let object_id = {
-        let inner = handle.inner.lock();
-        *inner
-            .handles
-            .get(&req.bo_handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
-    };
+    let object_id = handle.object_id_for_handle(req.bo_handle)?;
     let buffer_size = {
         let objects = handle.gpu_manager.gem_objects.lock();
         objects
@@ -472,7 +232,9 @@ pub(super) fn virtgpu_get_caps(
     }
 
     // Only virgl and virgl2 capsets are supported
-    if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2 {
+    if req.cap_set_id != gpu::VIRTIO_GPU_CAPSET_VIRGL
+        && req.cap_set_id != gpu::VIRTIO_GPU_CAPSET_VIRGL2
+    {
         return_errno_with_message!(Errno::EINVAL, "unsupported capset id");
     }
     let cap_set_id = req.cap_set_id;
@@ -487,6 +249,9 @@ pub(super) fn virtgpu_get_caps(
     // (VIRGL v1) instead of getting an empty capset blob.
     if capset_info.capset_max_size == 0 {
         return_errno_with_message!(Errno::EINVAL, "capset not supported by device");
+    }
+    if req.cap_set_ver > capset_info.capset_max_version {
+        return_errno_with_message!(Errno::EINVAL, "unsupported capset version");
     }
     let capset_data = handle
         .gpu_manager
@@ -536,13 +301,7 @@ pub(super) fn virtgpu_transfer_to_host(
         return_errno_with_message!(Errno::EINVAL, "layout overrides require blob resources");
     }
     let _resource_creation = handle.gpu_manager.resource_creation.lock();
-    let object_id = {
-        let inner = handle.inner.lock();
-        *inner
-            .handles
-            .get(&req.bo_handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
-    };
+    let object_id = handle.object_id_for_handle(req.bo_handle)?;
     let resource = handle
         .gpu_manager
         .live_gem_resource_metadata(object_id)
@@ -589,13 +348,7 @@ pub(super) fn virtgpu_transfer_from_host(
         return_errno_with_message!(Errno::EINVAL, "layout overrides require blob resources");
     }
     let _resource_creation = handle.gpu_manager.resource_creation.lock();
-    let object_id = {
-        let inner = handle.inner.lock();
-        *inner
-            .handles
-            .get(&req.bo_handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
-    };
+    let object_id = handle.object_id_for_handle(req.bo_handle)?;
     let resource = handle
         .gpu_manager
         .live_gem_resource_metadata(object_id)
@@ -633,13 +386,7 @@ pub(super) fn virtgpu_map(
     cmd: crate::util::ioctl::Ioctl<b'd', 0x41, true, crate::util::ioctl::InOutData<DrmVirtgpuMap>>,
 ) -> Result<i32> {
     let req = cmd.read()?;
-    let object_id = {
-        let inner = handle.inner.lock();
-        *inner
-            .handles
-            .get(&req.handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
-    };
+    let object_id = handle.object_id_for_handle(req.handle)?;
     let offset = {
         let objects = handle.gpu_manager.gem_objects.lock();
         objects
@@ -656,6 +403,7 @@ pub(super) fn virtgpu_map(
 
 /// `VIRTGPU_WAIT_NOWAIT` — reports busy instead of waiting.
 const VIRTGPU_WAIT_NOWAIT: u32 = 0x01;
+const VIRTGPU_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Waits for every tracked command that references this GEM object.
 pub(super) fn virtgpu_wait(
@@ -672,13 +420,7 @@ pub(super) fn virtgpu_wait(
         return_errno_with_message!(Errno::EINVAL, "unsupported virtgpu wait flags");
     }
 
-    let object_id = {
-        let inner = handle.inner.lock();
-        *inner
-            .handles
-            .get(&req.handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM handle"))?
-    };
+    let object_id = handle.object_id_for_handle(req.handle)?;
     if handle.gpu_manager.live_gem_resource(object_id).is_none() {
         return_errno_with_message!(Errno::EINVAL, "GEM object has no 3D resource");
     }
@@ -691,22 +433,39 @@ pub(super) fn virtgpu_wait(
 
     if req.flags & VIRTGPU_WAIT_NOWAIT != 0 {
         for fence in &fences {
-            if !fence.try_finish()? {
-                return_errno_with_message!(Errno::EBUSY, "virtio-gpu resource is busy");
+            match fence.try_finish() {
+                Ok(true) => handle
+                    .gpu_manager
+                    .clear_resource_fences(object_id, core::slice::from_ref(fence)),
+                Ok(false) => {
+                    return_errno_with_message!(Errno::EBUSY, "virtio-gpu resource is busy");
+                }
+                Err(error) => {
+                    if fence.is_signaled() {
+                        handle
+                            .gpu_manager
+                            .clear_resource_fences(object_id, core::slice::from_ref(fence));
+                    }
+                    return Err(error);
+                }
             }
         }
     } else {
-        let mut wait_result = Ok(());
         for fence in &fences {
-            if let Err(error) = fence.wait()
-                && wait_result.is_ok()
-            {
-                wait_result = Err(error);
+            let wait_result = fence.wait_interruptible_or_timeout(&VIRTGPU_WAIT_TIMEOUT);
+            if fence.is_signaled() {
+                handle
+                    .gpu_manager
+                    .clear_resource_fences(object_id, core::slice::from_ref(fence));
+            }
+            if let Err(error) = wait_result {
+                if error.error() == Errno::ETIME {
+                    return_errno_with_message!(Errno::EBUSY, "virtio-gpu resource wait timed out");
+                }
+                return Err(error);
             }
         }
-        wait_result?;
     }
-    handle.gpu_manager.clear_resource_fences(object_id, &fences);
 
     cmd.write(&req)?;
     Ok(0)

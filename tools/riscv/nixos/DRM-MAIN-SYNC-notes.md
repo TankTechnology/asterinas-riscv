@@ -995,3 +995,42 @@ as zero, four distinct Mesa virgl frames, and `MINI_VIRGL_PASS`.
 The next architecture slice should decompose `GpuManager`, the root ioctl
 dispatcher, and `virtgpu_resource_create`; these are maintainability debts
 recorded by the review, not confirmed runtime failures in this transaction.
+
+## 2026-08-28 transactional resource creation and backing validation
+
+`DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` now lives in
+`device/drm/virtio_gpu/resource_create.rs` and is expressed as validated,
+prepared, host-created, context-attached, copied-out, and published phases.
+The transaction owns its GEM pin, pending handle, backing allocation, context
+membership, host resource, and creation lock. Returning before publication
+unwinds these owners in a defined order; uncertain host unref is retained as a
+cleanup-only resource instead of prematurely freeing guest backing.
+
+Known tightly packed formats calculate a checked minimum backing size over the
+complete mip chain, array layers, cube faces, or 3D depth. Explicitly undersized
+new or existing GEM backing is rejected. Direct transfers similarly require a
+provable linear layout and reject unsupported or multisample layouts rather
+than sending an unbounded DMA range to the device. Automatic allocation grows
+to the calculated minimum when the wire `size` is zero. The raw M16 client now
+declares `last_level = 0` for its level-zero-only backing.
+
+The same review added capset-version validation and changed `VIRTGPU_WAIT` to
+an interruptible 15-second device deadline. Completed and failed fences are
+removed from resource associations before their result is returned, preventing
+permanent failed-fence retention. Pool capacities and allocation sizes now
+carry explicit byte units, repeated GEM-handle resolution uses one helper, and
+the Linux compatibility notes record Asterinas's existing-handle extension to
+resource creation.
+
+Targeted RISC-V ktests passed for backing-size calculation, unsupported layout
+rejection, zero-deadline pending-fence waiting, and `syncobj_regression`. The
+M22 fault/lifetime gate reported `55` passes, `0` failures, and `32/32` rounds,
+including exact rollback after a read-only response copyout. The final Sv39
+Mesa gate in `/tmp/drm-resource-final-gate-2.log` reported successful legacy
+and atomic kmscube, PRIME, syncobj, raw virgl, four explicit-sync frames, four
+distinct EGL frames, and `MINI_VIRGL_PASS`.
+
+An unfiltered ktest attempt is recorded separately from these green targeted
+gates: three existing vblank-queue tests failed and the run later stalled at a
+wait-for-submit test. This transaction does not claim that unrelated full-suite
+state as resolved.
