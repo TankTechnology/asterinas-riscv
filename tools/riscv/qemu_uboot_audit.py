@@ -187,7 +187,16 @@ def memory_layout_observer(
     return observe
 
 
-def _normalized_lines(serial_log: str) -> list[str]:
+def _normalized_lines(
+    serial_log: str,
+    *,
+    preserve_tokens: tuple[str, ...] = (),
+) -> list[str]:
+    # A concurrently emitted token can immediately follow a partial CSI prefix.
+    # Preserve only exact registered tokens before the ANSI matcher consumes the
+    # token's first byte as the CSI final byte (for example, ESC + "[" + "A...").
+    for token in preserve_tokens:
+        serial_log = serial_log.replace("\x1b[" + token, token)
     without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", serial_log)
     return without_ansi.replace("\r", "").splitlines()
 
@@ -562,7 +571,7 @@ def _audit_registered_milestones(
     if terminal_marker != profile.validation.completion_line.decode():
         raise ValueError("terminal marker differs from the registered scenario")
 
-    lines = _normalized_lines(serial_log)
+    lines = _normalized_lines(serial_log, preserve_tokens=(terminal_marker,))
     failures: list[str] = []
     terminal_indices = [
         index for index, line in enumerate(lines) if terminal_marker in line
