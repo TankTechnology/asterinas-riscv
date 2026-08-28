@@ -358,7 +358,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--firefox-pid", type=int, required=True)
     parser.add_argument("--diagnose-once", action="store_true")
     values = parser.parse_args(arguments)
-    if not 1 <= values.port <= 65535 or not 0 < values.timeout <= 300:
+    if not 1 <= values.port <= 65535 or not 0 < values.timeout <= 600:
         parser.error("port or timeout is outside the bounded contract")
     try:
         validate_network_namespace(values.firefox_pid)
