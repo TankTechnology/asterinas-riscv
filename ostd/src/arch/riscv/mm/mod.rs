@@ -400,6 +400,28 @@ mod tests {
         assert_eq!(back.cache, CachePolicy::WriteCombining);
     }
 
+    /// Uncacheable remains the strongly ordered MMIO policy. DMA RAM uses
+    /// WriteCombining/PBMT_NC instead, so these encodings must stay distinct.
+    #[ktest]
+    fn uncacheable_encodes_as_pbmt_io_and_round_trips() {
+        let prop = PageProperty {
+            flags: PageFlags::R | PageFlags::W,
+            cache: CachePolicy::Uncacheable,
+            priv_flags: PrivFlags::USER,
+        };
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+
+        let raw = pte.0;
+        assert_ne!(raw & PteFlags::PBMT_IO.bits(), 0, "PBMT_IO must be set");
+        assert_eq!(raw & PteFlags::PBMT_NC.bits(), 0, "PBMT_NC must be clear");
+
+        let repr = pte.to_repr(1 as PagingLevel);
+        let PteScalar::Mapped(_, back) = repr else {
+            panic!("PTE must remain mapped");
+        };
+        assert_eq!(back.cache, CachePolicy::Uncacheable);
+    }
+
     /// Without Svpbmt, WriteCombining must not panic (it degrades to the
     /// default cacheable policy, matching how Uncacheable is tolerated).
     #[ktest]
