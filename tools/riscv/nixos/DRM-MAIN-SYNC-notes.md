@@ -880,3 +880,38 @@ reported `M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd
 concurrency execbuffer` and `MINI_SYNCOBJ_RC=0`, then also passed PRIME, raw
 virgl, public legacy/atomic KMS, explicit synchronization, vblank UAPI, and four
 distinct Mesa virgl frames, ending in `MINI_VIRGL_PASS`.
+
+## 2026-08-28 submission-safe syncobj publication and lifetime stress
+
+`VIRTGPU_EXECBUFFER` now reserves every recoverable output-syncobj timeline
+slot before submitting the command to virtio-gpu. The reservation is an RAII
+publication token for both binary and timeline outputs: any validation,
+allocation, resource-lookup, or transport error before submission releases all
+unpublished capacity, while successful submission consumes every token without
+returning a partial `ENOSPC` or `ENOMEM` result. Concurrent timeline producers
+must preserve capacity promised to outstanding tokens.
+
+Long fence chains no longer flatten and re-register callbacks on every
+historical leaf. Each append adds at most two dependency edges, and completed
+chain nodes propagate through an iterative queue. This changes construction
+from quadratic callback growth to constant work per append while retaining
+non-recursive interrupt-stack behavior. Queue capacity is reserved before a
+chain is published and is capped at 16,384 outstanding chain nodes system-wide.
+Fence callbacks have cancellable RAII registrations, so replacing or resetting
+a syncobj removes callbacks attached to obsolete pending fences. Eventfd
+notification similarly takes
+one syncobj readiness snapshot and checks all watchers in one linear pass,
+rather than scanning all timeline points once per watcher. A system-wide RAII
+quota of 16,384 retained eventfd watchers complements the existing 4,096 limit
+per syncobj, bounding memory across files and objects.
+
+Kernel tests cover reservation publication, cancellation, concurrent appends,
+retention-limit accounting, in-flight waiter lifetime, and a 4,096-node fence
+chain. The static RISC-V ioctl client now also verifies that an exported
+syncobj survives destruction of its original handle and imports through a
+second DRM fd, performs 256 same-object timeline transfers, and reaches the
+exact eventfd-watcher boundary without hanging on a blocking eventfd read.
+The final Sv39 gate reported `M19_SYNCOBJ_PASS binary timeline transfer share
+sync_file eventfd concurrency execbuffer lifetime stress bounds`,
+`MINI_SYNCOBJ_RC=0`, a real Mesa virgl renderer, four distinct frames, and
+`MINI_VIRGL_PASS`.

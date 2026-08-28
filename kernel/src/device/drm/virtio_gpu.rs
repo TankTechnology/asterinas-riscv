@@ -12,7 +12,7 @@ use super::{
     DumbBuffer, GemResourceState,
     dumb::{PendingDumbBuffer, allocate_pool_span},
     gem::{GemObjectRef, PendingGemHandle},
-    syncobj::{MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject},
+    syncobj::{MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject, SyncobjPublication},
     virgl_resource::{LiveGemResource, Transfer3d},
 };
 use crate::{
@@ -634,13 +634,21 @@ pub(super) fn virtgpu_execbuffer(
                 .wait_for_dependency();
         }
 
-        let resource_creation = handle.gpu_manager.resource_creation.lock();
-        let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
+        // Reserve recoverable syncobj capacity before the command can reach
+        // the GPU, so publication cannot return a partial capacity failure.
+        let mut output_publications: Vec<SyncobjPublication> = Vec::new();
+        output_publications
+            .try_reserve_exact(output_syncobjs.len())
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot reserve output syncobjs"))?;
+        for descriptor in &output_syncobjs {
+            output_publications.push(descriptor.syncobj.reserve_publication(descriptor.point)?);
+        }
 
-        // Validate and collect the GEM object ids in the resource list so the
-        // resulting fence can become each object's current reservation fence.
-        let mut object_ids = BTreeSet::new();
-        if req.num_bo_handles > 0 {
+        // Copy the untrusted handle list before taking device-wide resource
+        // locks because the userspace access may fault and sleep.
+        let object_handles = if req.num_bo_handles == 0 {
+            Vec::new()
+        } else {
             if req.bo_handles == 0 {
                 return_errno_with_message!(Errno::EINVAL, "missing execbuffer handle list");
             }
@@ -656,11 +664,26 @@ pub(super) fn virtgpu_execbuffer(
                 .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate handle list"))?;
             raw.resize(byte_count, 0);
             current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
+            let mut handles = Vec::new();
+            handles
+                .try_reserve_exact(handle_count)
+                .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot decode handle list"))?;
+            for bytes in raw.as_chunks::<4>().0 {
+                handles.push(u32::from_le_bytes(*bytes));
+            }
+            handles
+        };
 
+        let resource_creation = handle.gpu_manager.resource_creation.lock();
+        let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
+
+        // Validate and collect the GEM object ids in the resource list so the
+        // resulting fence can become each object's current reservation fence.
+        let mut object_ids = BTreeSet::new();
+        if !object_handles.is_empty() {
             let inner = handle.inner.lock();
             let guard = handle.gpu_manager.gem_objects.lock();
-            for chunk in raw.as_chunks::<4>().0 {
-                let bo_h = u32::from_le_bytes(*chunk);
+            for bo_h in object_handles {
                 let Some(object_id) = inner.handles.get(&bo_h).copied() else {
                     return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
                 };
@@ -690,14 +713,8 @@ pub(super) fn virtgpu_execbuffer(
             .associate_resource_fence(&object_ids, &fence);
         drop(resource_creation);
 
-        for descriptor in &output_syncobjs {
-            if descriptor.point == 0 {
-                descriptor.syncobj.replace_fence(Some(fence.clone()));
-            } else {
-                descriptor
-                    .syncobj
-                    .add_point(descriptor.point, fence.clone())?;
-            }
+        for publication in output_publications {
+            publication.publish(fence.clone());
         }
         for descriptor in &input_syncobjs {
             if descriptor.reset {

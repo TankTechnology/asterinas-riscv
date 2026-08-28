@@ -9,6 +9,8 @@
 
 use core::{
     fmt::{Debug, Display},
+    mem,
+    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -17,7 +19,10 @@ use ostd::{
     sync::{LocalIrqDisabled, Waiter, Waker},
 };
 
-use super::{DriHandle, fence::Fence};
+use super::{
+    DriHandle,
+    fence::{Fence, FenceCallbackRegistration, FenceChainSlot},
+};
 use crate::{
     context::current_userspace,
     events::IoEvents,
@@ -54,6 +59,9 @@ pub(super) const MAX_SYNCOBJ_ARRAY_ITEMS: usize = 4096;
 const MAX_TIMELINE_POINTS: usize = 4096;
 /// Bounds strong eventfd references retained by one unavailable syncobj.
 const MAX_EVENT_WATCHERS: usize = 4096;
+/// Bounds eventfd references retained by all DRM clients system-wide.
+const MAX_SYSTEM_EVENT_WATCHERS: usize = 16384;
+static SYSTEM_EVENT_WATCHER_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Mirrors Linux's bounded wait for a fence to be submitted into a syncobj.
 const WAIT_FOR_SUBMIT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -154,7 +162,6 @@ enum SyncPayload {
     Timeline {
         signaled_point: u64,
         last_submitted: u64,
-        points: VecDeque<TimelinePoint>,
         current: Arc<Fence>,
     },
 }
@@ -162,6 +169,9 @@ enum SyncPayload {
 #[derive(Default)]
 struct SyncObjectState {
     payload: Option<SyncPayload>,
+    points: VecDeque<TimelinePoint>,
+    /// Capacity promised to unpublished timeline points.
+    reserved_point_count: usize,
 }
 
 /// A shareable DRM syncobj. Handles and exported syncobj fds own `Arc`s to it.
@@ -169,7 +179,8 @@ pub(super) struct SyncObject {
     state: SpinLock<SyncObjectState, LocalIrqDisabled>,
     signaled_fence: Arc<Fence>,
     watchers: SpinLock<Vec<Weak<Waker>>, LocalIrqDisabled>,
-    event_watchers: SpinLock<Vec<Arc<SyncobjEventWatcher>>, LocalIrqDisabled>,
+    fence_callbacks: SpinLock<Vec<FenceCallbackRegistration>, LocalIrqDisabled>,
+    event_watchers: SpinLock<EventWatcherList, LocalIrqDisabled>,
 }
 
 impl Debug for SyncObject {
@@ -191,18 +202,27 @@ impl SyncObject {
         let signaled_fence = Fence::new_signaled();
         let payload = signaled.then(|| SyncPayload::Binary(signaled_fence.clone()));
         Arc::new(Self {
-            state: SpinLock::new(SyncObjectState { payload }),
+            state: SpinLock::new(SyncObjectState {
+                payload,
+                ..Default::default()
+            }),
             signaled_fence,
             watchers: SpinLock::new(Vec::new()),
-            event_watchers: SpinLock::new(Vec::new()),
+            fence_callbacks: SpinLock::new(Vec::new()),
+            event_watchers: SpinLock::new(EventWatcherList::default()),
         })
     }
 
     pub(super) fn replace_fence(self: &Arc<Self>, fence: Option<Arc<Fence>>) {
+        let old_callbacks = mem::take(&mut *self.fence_callbacks.lock());
+        drop(old_callbacks);
         if let Some(fence) = fence.as_ref() {
             self.arm_fence(fence);
         }
-        self.state.lock().payload = fence.map(SyncPayload::Binary);
+        let mut state = self.state.lock();
+        state.payload = fence.map(SyncPayload::Binary);
+        state.points.clear();
+        drop(state);
         self.notify_watchers(true);
     }
 
@@ -217,63 +237,62 @@ impl SyncObject {
             return Ok(());
         }
 
+        let chain_slot = Fence::reserve_chain_slot()?;
         self.poll_timeline_completion();
         let mut state = self.state.lock();
         refresh_timeline(&mut state);
-        if matches!(
-            state.payload.as_ref(),
-            Some(SyncPayload::Timeline { points, .. }) if points.len() >= MAX_TIMELINE_POINTS
-        ) {
-            return_errno_with_message!(
-                Errno::ENOSPC,
-                "syncobj timeline has too many pending points"
-            );
-        }
-        let previous = match state.payload.as_ref() {
-            Some(SyncPayload::Binary(fence)) => Some(fence.clone()),
-            Some(SyncPayload::Timeline { current, .. }) => Some(current.clone()),
-            None => None,
-        };
-        let chained = Fence::chain(previous, fence);
-
-        match state.payload.as_mut() {
-            Some(SyncPayload::Timeline {
-                last_submitted,
-                points,
-                current,
-                ..
-            }) => {
-                points.try_reserve(1).map_err(|_| {
-                    Error::with_message(Errno::ENOMEM, "cannot grow syncobj timeline")
-                })?;
-                points.push_back(TimelinePoint {
-                    sequence: point,
-                    fence: chained.clone(),
-                });
-                *last_submitted = (*last_submitted).max(point);
-                *current = chained.clone();
-            }
-            _ => {
-                let mut points = VecDeque::new();
-                points.try_reserve_exact(1).map_err(|_| {
-                    Error::with_message(Errno::ENOMEM, "cannot create syncobj timeline")
-                })?;
-                points.push_back(TimelinePoint {
-                    sequence: point,
-                    fence: chained.clone(),
-                });
-                state.payload = Some(SyncPayload::Timeline {
-                    signaled_point: 0,
-                    last_submitted: point,
-                    points,
-                    current: chained.clone(),
-                });
-            }
-        }
+        reserve_point_storage(&mut state, 1)?;
+        let previous = current_fence(&state);
+        let chained = Fence::chain(previous, fence, chain_slot);
+        append_timeline_point(&mut state, point, chained.clone());
         drop(state);
         self.arm_fence(&chained);
         self.notify_watchers(true);
         Ok(())
+    }
+
+    /// Prepares one binary or timeline publication before a GPU submission.
+    pub(super) fn reserve_publication(self: &Arc<Self>, point: u64) -> Result<SyncobjPublication> {
+        if point == 0 {
+            return Ok(SyncobjPublication {
+                syncobj: self.clone(),
+                kind: SyncobjPublicationKind::Binary,
+            });
+        }
+
+        let chain_slot = Fence::reserve_chain_slot()?;
+        self.poll_timeline_completion();
+        let mut state = self.state.lock();
+        refresh_timeline(&mut state);
+        reserve_point_storage(&mut state, 1)?;
+        state.reserved_point_count += 1;
+        Ok(SyncobjPublication {
+            syncobj: self.clone(),
+            kind: SyncobjPublicationKind::Timeline {
+                point,
+                chain_slot: Some(chain_slot),
+                active: true,
+            },
+        })
+    }
+
+    fn publish_reserved_point(
+        self: &Arc<Self>,
+        point: u64,
+        fence: Arc<Fence>,
+        chain_slot: FenceChainSlot,
+    ) {
+        self.poll_timeline_completion();
+        let mut state = self.state.lock();
+        refresh_timeline(&mut state);
+        debug_assert!(state.reserved_point_count > 0);
+        state.reserved_point_count -= 1;
+        let previous = current_fence(&state);
+        let chained = Fence::chain(previous, fence, chain_slot);
+        append_timeline_point(&mut state, point, chained.clone());
+        drop(state);
+        self.arm_fence(&chained);
+        self.notify_watchers(true);
     }
 
     pub(super) fn add_signaled_point(self: &Arc<Self>, point: u64) -> Result<()> {
@@ -288,7 +307,6 @@ impl SyncObject {
             SyncPayload::Binary(fence) => (point == 0).then(|| fence.clone()),
             SyncPayload::Timeline {
                 signaled_point,
-                points,
                 current,
                 ..
             } => {
@@ -298,7 +316,8 @@ impl SyncObject {
                 if point <= *signaled_point {
                     return Some(self.signaled_fence.clone());
                 }
-                points
+                state
+                    .points
                     .iter()
                     .find(|entry| entry.sequence >= point)
                     .map(|entry| entry.fence.clone())
@@ -345,11 +364,16 @@ impl SyncObject {
 
     fn arm_fence(self: &Arc<Self>, fence: &Arc<Fence>) {
         let weak = Arc::downgrade(self);
-        fence.on_signal(move || {
+        let registration = fence.on_signal(move || {
             if let Some(syncobj) = weak.upgrade() {
                 syncobj.notify_watchers(false);
             }
         });
+        if let Some(registration) = registration {
+            let mut callbacks = self.fence_callbacks.lock();
+            callbacks.retain(FenceCallbackRegistration::is_active);
+            callbacks.push(registration);
+        }
     }
 
     fn poll_timeline_completion(&self) {
@@ -397,75 +421,303 @@ impl SyncObject {
         available_only: bool,
         event_file: Arc<dyn FileLike>,
     ) -> Result<()> {
+        let quota = EventWatcherQuota::reserve()?;
         let mut watchers = self.event_watchers.lock();
-        if watchers.len() >= MAX_EVENT_WATCHERS {
+        if watchers.entries.len() >= MAX_EVENT_WATCHERS {
             return_errno_with_message!(Errno::ENOSPC, "syncobj has too many eventfd watchers");
         }
-        watchers.try_reserve(1).map_err(|_| {
+        watchers.entries.try_reserve(1).map_err(|_| {
             Error::with_message(Errno::ENOMEM, "cannot register syncobj eventfd watcher")
         })?;
-        watchers.push(Arc::new(SyncobjEventWatcher {
+        let generation = watchers.next_generation;
+        watchers.next_generation = generation.checked_add(1).ok_or_else(|| {
+            Error::with_message(Errno::ENOSPC, "syncobj eventfd generation exhausted")
+        })?;
+        let watcher = Arc::new(SyncobjEventWatcher {
+            generation,
             point,
             available_only,
             event_file,
-        }));
+            _quota: quota,
+        });
+        watchers.entries.push(watcher.clone());
         drop(watchers);
-        self.notify_event_watchers(true);
+        // Only the newly registered watcher needs a readiness check. Scanning
+        // every older watcher here would make N registrations O(N^2).
+        let readiness = self.event_readiness(true);
+        self.notify_event_watcher(&watcher, readiness);
         Ok(())
     }
 
     fn notify_event_watchers(&self, poll_device: bool) {
-        let snapshot = self.event_watchers.lock().clone();
-        for watcher in snapshot {
-            let ready = self.find_fence(watcher.point).is_some_and(|fence| {
-                watcher.available_only
-                    || if poll_device {
-                        fence.poll_and_is_signaled()
-                    } else {
-                        fence.is_signaled()
-                    }
-            });
-            if ready {
-                let removed = {
-                    let mut registered = self.event_watchers.lock();
-                    registered
-                        .iter()
-                        .position(|candidate| Arc::ptr_eq(candidate, &watcher))
-                        .map(|index| registered.swap_remove(index))
-                };
-                if let Some(watcher) = removed {
-                    watcher
-                        .event_file
-                        .downcast_ref::<crate::syscall::EventFile>()
-                        .expect("syncobj event watcher lost its eventfd type")
-                        .signal();
+        // Watchers registered after this cutoff perform their own readiness
+        // check and must not consume this potentially stale snapshot.
+        let generation_cutoff = self.event_watchers.lock().next_generation;
+        let readiness = self.event_readiness(poll_device);
+        self.event_watchers.lock().entries.retain(|watcher| {
+            if watcher.generation < generation_cutoff
+                && readiness.is_ready(watcher.point, watcher.available_only)
+            {
+                watcher
+                    .event_file
+                    .downcast_ref::<crate::syscall::EventFile>()
+                    .expect("syncobj event watcher lost its eventfd type")
+                    .signal();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn notify_event_watcher(&self, watcher: &Arc<SyncobjEventWatcher>, readiness: EventReadiness) {
+        if readiness.is_ready(watcher.point, watcher.available_only) {
+            let removed = {
+                let mut registered = self.event_watchers.lock();
+                registered
+                    .entries
+                    .iter()
+                    .position(|candidate| Arc::ptr_eq(candidate, watcher))
+                    .map(|index| registered.entries.swap_remove(index))
+            };
+            if let Some(watcher) = removed {
+                watcher
+                    .event_file
+                    .downcast_ref::<crate::syscall::EventFile>()
+                    .expect("syncobj event watcher lost its eventfd type")
+                    .signal();
+            }
+        }
+    }
+
+    fn event_readiness(&self, poll_device: bool) -> EventReadiness {
+        let current = {
+            let state = self.state.lock();
+            current_fence(&state)
+        };
+        if poll_device {
+            if let Some(fence) = current.as_ref() {
+                fence.poll_and_is_signaled();
+            }
+        }
+
+        let mut state = self.state.lock();
+        refresh_timeline(&mut state);
+        match state.payload.as_ref() {
+            None => EventReadiness::Empty,
+            Some(SyncPayload::Binary(fence)) => EventReadiness::Binary {
+                signaled: fence.is_signaled(),
+            },
+            Some(SyncPayload::Timeline {
+                signaled_point,
+                last_submitted,
+                current,
+            }) => EventReadiness::Timeline {
+                signaled_point: *signaled_point,
+                last_submitted: *last_submitted,
+                current_signaled: current.is_signaled(),
+            },
+        }
+    }
+}
+
+struct SyncobjEventWatcher {
+    generation: u64,
+    point: u64,
+    available_only: bool,
+    event_file: Arc<dyn FileLike>,
+    _quota: EventWatcherQuota,
+}
+
+#[derive(Default)]
+struct EventWatcherList {
+    entries: Vec<Arc<SyncobjEventWatcher>>,
+    next_generation: u64,
+}
+
+#[derive(Clone, Copy)]
+enum EventReadiness {
+    Empty,
+    Binary {
+        signaled: bool,
+    },
+    Timeline {
+        signaled_point: u64,
+        last_submitted: u64,
+        current_signaled: bool,
+    },
+}
+
+impl EventReadiness {
+    fn is_ready(self, point: u64, available_only: bool) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::Binary { signaled } => point == 0 && (available_only || signaled),
+            Self::Timeline {
+                signaled_point,
+                last_submitted,
+                current_signaled,
+            } => {
+                if point == 0 {
+                    available_only || current_signaled
+                } else if available_only {
+                    point <= last_submitted
+                } else {
+                    point <= signaled_point
                 }
             }
         }
     }
 }
 
-struct SyncobjEventWatcher {
-    point: u64,
-    available_only: bool,
-    event_file: Arc<dyn FileLike>,
+struct EventWatcherQuota;
+
+impl EventWatcherQuota {
+    fn reserve() -> Result<Self> {
+        SYSTEM_EVENT_WATCHER_COUNT
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_SYSTEM_EVENT_WATCHERS).then_some(count + 1)
+            })
+            .map_err(|_| {
+                Error::with_message(Errno::ENOSPC, "system syncobj eventfd limit reached")
+            })?;
+        Ok(Self)
+    }
+}
+
+impl Drop for EventWatcherQuota {
+    fn drop(&mut self) {
+        let old_count = SYSTEM_EVENT_WATCHER_COUNT.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(old_count > 0);
+    }
+}
+
+fn current_fence(state: &SyncObjectState) -> Option<Arc<Fence>> {
+    match state.payload.as_ref() {
+        Some(SyncPayload::Binary(fence)) => Some(fence.clone()),
+        Some(SyncPayload::Timeline { current, .. }) => Some(current.clone()),
+        None => None,
+    }
+}
+
+fn reserve_point_storage(state: &mut SyncObjectState, extra: usize) -> Result<()> {
+    let retained = state
+        .points
+        .len()
+        .checked_add(state.reserved_point_count)
+        .and_then(|count| count.checked_add(extra))
+        .ok_or_else(|| Error::with_message(Errno::ENOSPC, "syncobj timeline size overflows"))?;
+    if retained > MAX_TIMELINE_POINTS {
+        return_errno_with_message!(
+            Errno::ENOSPC,
+            "syncobj timeline has too many pending points"
+        );
+    }
+
+    let additional = state
+        .reserved_point_count
+        .checked_add(extra)
+        .ok_or_else(|| Error::with_message(Errno::ENOSPC, "syncobj reservation overflows"))?;
+    state
+        .points
+        .try_reserve(additional)
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot grow syncobj timeline"))
+}
+
+fn append_timeline_point(state: &mut SyncObjectState, point: u64, fence: Arc<Fence>) {
+    debug_assert!(state.points.len() + state.reserved_point_count < state.points.capacity());
+    state.points.push_back(TimelinePoint {
+        sequence: point,
+        fence: fence.clone(),
+    });
+    match state.payload.as_mut() {
+        Some(SyncPayload::Timeline {
+            last_submitted,
+            current,
+            ..
+        }) => {
+            *last_submitted = (*last_submitted).max(point);
+            *current = fence;
+        }
+        _ => {
+            state.payload = Some(SyncPayload::Timeline {
+                signaled_point: 0,
+                last_submitted: point,
+                current: fence,
+            });
+        }
+    }
 }
 
 fn refresh_timeline(state: &mut SyncObjectState) {
-    let Some(SyncPayload::Timeline {
-        signaled_point,
-        points,
-        ..
-    }) = state.payload.as_mut()
-    else {
+    if !matches!(state.payload, Some(SyncPayload::Timeline { .. })) {
         return;
-    };
-    while points
+    }
+
+    let mut newest = None::<u64>;
+    while state
+        .points
         .front()
         .is_some_and(|entry| entry.fence.is_signaled())
     {
-        let entry = points.pop_front().unwrap();
-        *signaled_point = (*signaled_point).max(entry.sequence);
+        let entry = state.points.pop_front().unwrap();
+        newest = Some(newest.unwrap_or(0).max(entry.sequence));
+    }
+    if let (Some(newest), Some(SyncPayload::Timeline { signaled_point, .. })) =
+        (newest, state.payload.as_mut())
+    {
+        *signaled_point = (*signaled_point).max(newest);
+    }
+}
+
+/// Publication token that reserves recoverable capacity before submission.
+pub(super) struct SyncobjPublication {
+    syncobj: Arc<SyncObject>,
+    kind: SyncobjPublicationKind,
+}
+
+enum SyncobjPublicationKind {
+    Binary,
+    Timeline {
+        point: u64,
+        chain_slot: Option<FenceChainSlot>,
+        active: bool,
+    },
+}
+
+impl SyncobjPublication {
+    pub(super) fn publish(mut self, fence: Arc<Fence>) {
+        match &mut self.kind {
+            SyncobjPublicationKind::Binary => self.syncobj.replace_fence(Some(fence)),
+            SyncobjPublicationKind::Timeline {
+                point,
+                chain_slot,
+                active,
+            } => {
+                self.syncobj.publish_reserved_point(
+                    *point,
+                    fence,
+                    chain_slot
+                        .take()
+                        .expect("syncobj publication lost its fence slot"),
+                );
+                *active = false;
+            }
+        }
+    }
+}
+
+impl Drop for SyncobjPublication {
+    fn drop(&mut self) {
+        if !matches!(
+            &self.kind,
+            SyncobjPublicationKind::Timeline { active: true, .. }
+        ) {
+            return;
+        }
+        let mut state = self.syncobj.state.lock();
+        debug_assert!(state.reserved_point_count > 0);
+        state.reserved_point_count -= 1;
     }
 }
 
@@ -958,7 +1210,7 @@ fn absolute_timeout(timeout_nsec: i64) -> Option<ManagedTimeout<'static>> {
 
 #[cfg(ktest)]
 mod tests {
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::sync::atomic::AtomicBool;
 
     use ostd::prelude::ktest;
 
@@ -990,6 +1242,58 @@ mod tests {
     }
 
     #[ktest]
+    fn timeline_reservation_publishes_without_growing_storage() {
+        let syncobj = SyncObject::new();
+        let reservation = syncobj.reserve_publication(9).unwrap();
+        {
+            let state = syncobj.state.lock();
+            assert_eq!(state.reserved_point_count, 1);
+            assert!(state.points.capacity() >= state.points.len() + 1);
+        }
+
+        // A normal producer may append while the GPU submission owns its
+        // reservation; it must preserve enough capacity for both points.
+        let first = Arc::new(Fence::new());
+        syncobj.add_point(4, first.clone()).unwrap();
+        {
+            let state = syncobj.state.lock();
+            assert_eq!(state.reserved_point_count, 1);
+            assert!(state.points.capacity() >= state.points.len() + 1);
+        }
+
+        reservation.publish(Fence::new_signaled());
+        {
+            let state = syncobj.state.lock();
+            assert_eq!(state.reserved_point_count, 0);
+            assert_eq!(state.points.len(), 2);
+        }
+        assert!(!syncobj.find_fence(9).unwrap().is_signaled());
+        first.signal_success();
+        assert!(syncobj.find_fence(9).unwrap().is_signaled());
+    }
+
+    #[ktest]
+    fn dropping_timeline_reservation_releases_capacity() {
+        let syncobj = SyncObject::new();
+        let reservation = syncobj.reserve_publication(3).unwrap();
+        assert_eq!(syncobj.state.lock().reserved_point_count, 1);
+        drop(reservation);
+        assert_eq!(syncobj.state.lock().reserved_point_count, 0);
+        assert!(syncobj.find_fence(3).is_none());
+    }
+
+    #[ktest]
+    fn timeline_reservations_count_toward_retention_limit() {
+        let mut state = SyncObjectState::default();
+        reserve_point_storage(&mut state, MAX_TIMELINE_POINTS).unwrap();
+        state.reserved_point_count = MAX_TIMELINE_POINTS;
+        assert_eq!(
+            reserve_point_storage(&mut state, 1).unwrap_err().error(),
+            Errno::ENOSPC
+        );
+    }
+
+    #[ktest]
     fn wait_for_submit_wakes_on_future_fence() {
         let syncobj = SyncObject::new();
         let finished = Arc::new(AtomicBool::new(false));
@@ -1006,6 +1310,32 @@ mod tests {
             ostd::task::Task::yield_now();
         }
         syncobj.signal_binary();
+        waiter.join();
+        assert!(finished.load(Ordering::Acquire));
+    }
+
+    #[ktest]
+    fn in_flight_wait_retains_syncobj_after_original_owner_drops() {
+        let original = SyncObject::new();
+        let shared = original.clone();
+        let weak = Arc::downgrade(&original);
+        let finished = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let syncobj = original.clone();
+            let finished = finished.clone();
+            ThreadOptions::new(move || {
+                syncobj.wait_for_fence(0, true).unwrap();
+                finished.store(true, Ordering::Release);
+            })
+            .spawn()
+        };
+        while original.watchers.lock().is_empty() {
+            ostd::task::Task::yield_now();
+        }
+
+        drop(original);
+        assert!(weak.upgrade().is_some());
+        shared.signal_binary();
         waiter.join();
         assert!(finished.load(Ordering::Acquire));
     }

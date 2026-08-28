@@ -219,7 +219,7 @@ def main() -> int:
         required_markers.extend((
             "M20_PRIME_PASS",
             "MINI_PRIME_RC=0",
-            "M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer",
+            "M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer lifetime stress bounds",
             "MINI_SYNCOBJ_RC=0",
             "M16_VIRGL_RAW_PASS",
             "MINI_RAW_RC=0",

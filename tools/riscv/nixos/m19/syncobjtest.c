@@ -93,6 +93,7 @@ struct drm_virtgpu_execbuffer_syncobj {
 #define FD_SYNC_FILE (1u << 0)
 #define FD_TIMELINE (1u << 1)
 #define EXECBUF_SYNCOBJ_RESET (1u << 0)
+#define MAX_EVENT_WATCHERS 4096u
 
 static void fail(const char *stage) {
     printf("M19_SYNCOBJ_FAIL %s errno=%d\n", stage, errno);
@@ -110,6 +111,11 @@ static uint32_t create(int fd, uint32_t flags) {
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &request) < 0 || request.handle == 0)
         fail("create");
     return request.handle;
+}
+
+static void destroy(int fd, uint32_t handle) {
+    struct drm_syncobj_destroy request = { .handle = handle };
+    if (ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &request) < 0) fail("destroy");
 }
 
 static void array_ioctl(int fd, unsigned long command, uint32_t handle) {
@@ -266,7 +272,7 @@ int main(void) {
     close(sync_file.fd);
 
     uint32_t fourth = create(fd, 0);
-    int event = eventfd(0, EFD_CLOEXEC);
+    int event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (event < 0) fail("eventfd");
     struct drm_syncobj_eventfd event_request = {
         .handle = fourth,
@@ -276,6 +282,9 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &event_request) < 0)
         fail("syncobj_eventfd");
     timeline_signal(fd, fourth, 7);
+    struct pollfd event_poll = { .fd = event, .events = POLLIN };
+    if (poll(&event_poll, 1, 2000) != 1 || !(event_poll.revents & POLLIN))
+        fail("eventfd_poll");
     uint64_t event_value = 0;
     if (read(event, &event_value, sizeof(event_value)) != sizeof(event_value) || event_value != 1)
         fail("eventfd_read");
@@ -308,6 +317,27 @@ int main(void) {
         errno = thread.error;
         fail("wait_for_submit_thread");
     }
+
+    // A blocking ioctl must retain the syncobj after its original handle is
+    // destroyed, and a whole-syncobj fd must be importable on another DRM fd.
+    int other_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+    if (other_fd < 0) fail("open_second_drm_fd");
+    uint32_t lifetime = create(fd, 0);
+    struct drm_syncobj_handle lifetime_share = { .handle = lifetime };
+    if (ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &lifetime_share) < 0)
+        fail("lifetime_handle_to_fd");
+    destroy(fd, lifetime);
+    struct drm_syncobj_handle lifetime_import = { .fd = lifetime_share.fd };
+    if (ioctl(other_fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &lifetime_import) < 0)
+        fail("lifetime_fd_to_handle_after_destroy");
+    array_ioctl(other_fd, DRM_IOCTL_SYNCOBJ_SIGNAL, lifetime_import.handle);
+    binary.handles = (uint64_t)(uintptr_t)&lifetime_import.handle;
+    binary.flags = 0;
+    if (ioctl(other_fd, DRM_IOCTL_SYNCOBJ_WAIT, &binary) < 0)
+        fail("imported_wait_after_destroy");
+    close(lifetime_share.fd);
+    destroy(other_fd, lifetime_import.handle);
+    close(other_fd);
 
     uint32_t fifth = create(fd, 0);
     struct drm_virtgpu_execbuffer_syncobj input = {
@@ -352,12 +382,57 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &available) != -1 || errno != EINVAL)
         fail("execbuffer_input_reset");
 
-    uint32_t handles[] = { first, second, imported.handle, third, fourth, fifth };
+    // Repeated same-object transfers exercise dependency flattening rather
+    // than constructing a recursively expanding fence graph.
+    uint32_t stress = create(fd, 0);
+    output.handle = stress;
+    output.point = 1;
+    execution.num_in_syncobjs = 0;
+    execution.in_syncobjs = 0;
+    if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
+        fail("transfer_stress_submit");
+    struct drm_syncobj_transfer self_transfer = {
+        .src_handle = stress,
+        .dst_handle = stress,
+    };
+    for (uint64_t point = 1; point <= 256; ++point) {
+        self_transfer.src_point = point;
+        self_transfer.dst_point = point + 1;
+        if (ioctl(fd, DRM_IOCTL_SYNCOBJ_TRANSFER, &self_transfer) < 0)
+            fail("self_transfer_stress");
+    }
+    timeline_wait(fd, stress, 257, 0);
+    if (query(fd, stress, 0) != 257 || query(fd, stress, QUERY_LAST_SUBMITTED) != 257)
+        fail("self_transfer_stress_query");
+
+    // Retained eventfd references are deliberately bounded. Registering the
+    // The first unavailable point above the limit must fail without
+    // disturbing earlier watches.
+    uint32_t bounded = create(fd, 0);
+    int bounded_event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (bounded_event < 0) fail("bounded_eventfd");
+    struct drm_syncobj_eventfd bounded_request = {
+        .handle = bounded,
+        .flags = WAIT_AVAILABLE,
+        .fd = bounded_event,
+    };
+    for (uint64_t point = 1; point <= MAX_EVENT_WATCHERS; ++point) {
+        bounded_request.point = point;
+        if (ioctl(fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &bounded_request) < 0)
+            fail("eventfd_watcher_limit_fill");
+    }
+    bounded_request.point = MAX_EVENT_WATCHERS + 1;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &bounded_request) != -1 || errno != ENOSPC)
+        fail("eventfd_watcher_limit");
+    destroy(fd, bounded);
+    close(bounded_event);
+
+    uint32_t handles[] = { first, second, imported.handle, third, fourth, fifth, stress };
     for (size_t i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
-        struct drm_syncobj_destroy destroy = { .handle = handles[i] };
-        if (ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy) < 0) fail("destroy");
+        destroy(fd, handles[i]);
     }
     close(fd);
-    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer\n");
+    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer lifetime stress bounds\n");
     return 0;
 }
