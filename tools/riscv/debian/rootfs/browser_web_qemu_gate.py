@@ -91,6 +91,10 @@ _PARENT_SECURITY_LINE = re.compile(
     r"BROWSER_WEB_SECURITY parent_pid=([1-9][0-9]*) uid=1000 caps=zero "
     r"nnp=1 sandbox_disable=absent"
 )
+_SERVICE_SECURITY_LINE = re.compile(
+    r"BROWSER_WEB_SECURITY service_pid=([1-9][0-9]*) "
+    r"nrestarts=0 stable=1 active=1"
+)
 _CHILD_SECURITY_LINE = re.compile(
     r"BROWSER_WEB_SECURITY child_pid=([1-9][0-9]*) "
     r"role=(child|content|socket|rdd) caps=zero nnp=1 seccomp=([012])"
@@ -213,7 +217,8 @@ def _validate_curl_log(contents: bytes) -> None:
 
 def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
     lines = _text_lines(contents, "security.log")
-    parent_count = 0
+    parent_pid: str | None = None
+    service_pid: str | None = None
     child_pids: set[str] = set()
     content_seen = False
     hashes: dict[str, tuple[str, str]] = {}
@@ -223,8 +228,14 @@ def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
             if kind in hashes:
                 raise GateFailure("browser security hash evidence is duplicated")
             hashes[kind] = (digest, path)
-        elif _PARENT_SECURITY_LINE.fullmatch(line):
-            parent_count += 1
+        elif match := _PARENT_SECURITY_LINE.fullmatch(line):
+            if parent_pid is not None:
+                raise GateFailure("browser parent security evidence is duplicated")
+            parent_pid = match.group(1)
+        elif match := _SERVICE_SECURITY_LINE.fullmatch(line):
+            if service_pid is not None:
+                raise GateFailure("browser service stability evidence is duplicated")
+            service_pid = match.group(1)
         elif match := _CHILD_SECURITY_LINE.fullmatch(line):
             pid, role, seccomp = match.groups()
             if pid in child_pids:
@@ -243,12 +254,24 @@ def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
     if (
         set(hashes) != set(expected_paths)
         or any(hashes[kind][1] != path for kind, path in expected_paths.items())
-        or parent_count != 1
+        or parent_pid is None
+        or service_pid != parent_pid
         or not child_pids
         or not content_seen
     ):
         raise GateFailure("browser security evidence is incomplete")
     return hashes
+
+
+def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
+    logs = stderr + b"\n" + mozilla
+    if b"Exiting due to channel error." in logs.splitlines():
+        raise GateFailure("Firefox log records a channel-error exit")
+    if b"SCM_RIGHTS" in logs and (
+        re.search(rb"(^|[^A-Z])EPERM([^A-Z]|$)", logs)
+        or b"Operation not permitted" in logs
+    ):
+        raise GateFailure("Firefox log records SCM_RIGHTS permission failure")
 
 
 def validate_web_evidence(
@@ -266,6 +289,9 @@ def validate_web_evidence(
     for name in ("firefox-stderr.log", "firefox-mozilla.log"):
         if len(evidence[name]) > MAX_WEB_OPAQUE_LOG_BYTES:
             raise GateFailure(f"browser web log exceeds size cap: {name}")
+    _validate_firefox_logs(
+        evidence["firefox-stderr.log"], evidence["firefox-mozilla.log"]
+    )
 
     snapshots = {
         name: _decode_json(evidence[f"{name}.json"], f"{name}.json")

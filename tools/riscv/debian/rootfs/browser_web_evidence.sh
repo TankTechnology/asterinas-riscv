@@ -108,6 +108,19 @@ validate_dns_and_tls() {
     done
 }
 
+validate_firefox_logs() {
+    local log
+    for log in "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log; do
+        grep -Fxq 'Exiting due to channel error.' "$log" 2>/dev/null &&
+            fail firefox-channel-exit
+    done
+    if grep -Fq 'SCM_RIGHTS' "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log 2>/dev/null &&
+        grep -Eq '(^|[^A-Z])(EPERM|Operation not permitted)([^A-Z]|$)' \
+            "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log 2>/dev/null; then
+        fail firefox-scm-rights-eperm
+    fi
+}
+
 [[ -s "$SYSTEM_CA" ]] || fail system-ca-bundle
 grep -Eq '^FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' "$TRUST_STATIC_LOG" ||
     fail firefox-trust-static
@@ -132,6 +145,8 @@ while ((SECONDS < deadline)); do
     sleep 1
 done
 [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] || fail firefox-timeout
+[[ "$(systemctl show --property NRestarts --value asterinas-browser-web.service 2>/dev/null)" == 0 ]] ||
+    fail firefox-restarted-before-gate
 validate_parent_security "$browser_pid"
 remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail firefox-timeout
@@ -142,6 +157,14 @@ if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
 fi
 [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT baidu_home=pass baidu_search=pass bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified" ]] ||
     fail browser-content-output
+systemctl is-active --quiet asterinas-browser-web.service || fail firefox-not-active-after-gate
+[[ "$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null)" == "$browser_pid" ]] ||
+    fail firefox-pid-changed-during-gate
+[[ "$(systemctl show --property NRestarts --value asterinas-browser-web.service 2>/dev/null)" == 0 ]] ||
+    fail firefox-restarted-during-gate
+validate_firefox_logs
+printf 'BROWSER_WEB_SECURITY service_pid=%s nrestarts=0 stable=1 active=1\n' \
+    "$browser_pid" >>"$SECURITY_LOG"
 validate_child_security "$browser_pid"
 emit "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_seccomp=2 sandbox=normal"
 emit "$content"
