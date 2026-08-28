@@ -53,6 +53,11 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
         self.assertGreater(len(report["prefix"]), 0)
         self.assertIn("dma-complete", report["cycle"])
         self.assertIn("poll-consume", report["cycle"])
+        self.assertLessEqual(len(report["prefix"]) + len(report["cycle"]), 12)
+        self.assertEqual(report["cycle"].count("dma-complete"), 2)
+        self.assertEqual(report["cycle"].count("poll-consume"), 2)
+        self.assertNotIn("service-timer", report["cycle"])
+        self.assertNotIn("service-tx", report["cycle"])
 
     def test_cli_rejects_noncanonical_arguments(self) -> None:
         for arguments in (
