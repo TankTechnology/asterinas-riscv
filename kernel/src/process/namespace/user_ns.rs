@@ -199,7 +199,9 @@ impl UserNamespace {
             .lock()
             .map_up(uid)
             .map(Uid::new)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "UID is not mapped in the user namespace"))
+            .ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "UID is not mapped in the user namespace")
+            })
     }
 
     /// Maps a GID visible inside this namespace to a global kernel GID.
@@ -208,7 +210,9 @@ impl UserNamespace {
             .lock()
             .map_up(gid)
             .map(Gid::new)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GID is not mapped in the user namespace"))
+            .ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "GID is not mapped in the user namespace")
+            })
     }
 
     /// Locks the UID map of this namespace.

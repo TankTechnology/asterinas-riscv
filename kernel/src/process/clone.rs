@@ -11,26 +11,27 @@ use ostd::{
 };
 
 use super::{
-    Credentials, Pid, Process, pid_table,
+    pid_table,
     posix_thread::{AsPosixThread, PosixThreadBuilder},
     rlimit::ResourceLimits,
     signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
+    Credentials, Pid, Process,
 };
 use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
     fs::{
-        cgroupfs::{CgroupMembership, CgroupSysNode, cgroup_node_from_fd},
+        cgroupfs::{cgroup_node_from_fd, CgroupMembership, CgroupSysNode},
         file::file_table::{FdFlags, FileTable, RawFileDesc},
         thread_info::ThreadFsInfo,
     },
     prelude::*,
     process::{
-        NsProxy, PidNamespace, UserNamespace,
         credentials::capabilities::CapSet,
         pid_file::PidFile,
-        posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
+        posix_thread::{allocate_posix_tid, PosixThread, ThreadLocal},
         stats::PROCESS_CREATION_COUNTER,
+        NsProxy, PidNamespace, UserNamespace,
     },
     sched::Nice,
     thread::{AsThread, Tid},
@@ -501,16 +502,24 @@ fn clone_child_task(
         thread_builder.build()
     };
 
-    process
-        .tasks()
-        .lock()
-        .insert(child_task.clone())
-        .map_err(|_| {
-            Error::with_message(
-                Errno::EINTR,
-                "the process has exited or has already executed a new program",
-            )
-        })?;
+    // Seccomp TSYNC uses the process task-set lock to make policy preflight
+    // and commit atomic with respect to thread creation and exit.  Inherit the
+    // parent's policy and publish the new task in the same critical section:
+    // otherwise a clone could read the old policy, wait behind TSYNC, and then
+    // publish an unsynchronized thread after TSYNC returns.
+    let mut tasks = process.tasks().lock();
+    let child_posix_thread = child_task.as_posix_thread().unwrap();
+    if let Some(filter) = posix_thread.seccomp_filter() {
+        child_posix_thread.set_seccomp_filter(filter);
+    }
+    child_posix_thread.set_seccomp_mode(posix_thread.seccomp_mode());
+    tasks.insert(child_task.clone()).map_err(|_| {
+        Error::with_message(
+            Errno::EINTR,
+            "the process has exited or has already executed a new program",
+        )
+    })?;
+    drop(tasks);
 
     let child_thread = child_task.as_thread().unwrap();
     pid_table::pid_table_mut().insert_thread(child_tid, child_thread);
@@ -600,6 +609,16 @@ fn clone_child_process(
     // Inherit the parent's OOM score adjustment
     let child_oom_score_adj = process.oom_score_adj().load(Ordering::Relaxed);
 
+    // Take one seccomp snapshot while serialized with TSYNC. The child below
+    // belongs to a new thread group, so it may keep this snapshot even if the
+    // parent group advances after this critical section.
+    let (child_seccomp_mode, child_seccomp_filter) = {
+        let tasks = process.tasks().lock();
+        let snapshot = (posix_thread.seccomp_mode(), posix_thread.seccomp_filter());
+        drop(tasks);
+        snapshot
+    };
+
     let child_tid = allocate_posix_tid();
 
     let child = {
@@ -636,8 +655,8 @@ fn clone_child_process(
             .user_ns(child_user_ns.clone())
             .ns_proxy(child_ns_proxy)
             .default_timer_slack_ns(default_timer_slack_ns)
-            .seccomp_mode(posix_thread.seccomp_mode())
-            .seccomp_filter(posix_thread.seccomp_filter())
+            .seccomp_mode(child_seccomp_mode)
+            .seccomp_filter(child_seccomp_filter)
             .sched_policy(ctx.thread.sched_attr().fork_child_policy())
         };
         #[cfg(target_arch = "x86_64")]

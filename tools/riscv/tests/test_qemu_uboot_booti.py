@@ -1060,6 +1060,93 @@ class DisplayEvidenceTests(_PreparedRunFixtures, unittest.TestCase):
 
 
 class PreparedRunTests(_PreparedRunFixtures, unittest.TestCase):
+    def test_registered_recovery_profile_binds_guest_reboot_and_session_wait(
+        self,
+    ) -> None:
+        profile = qemu_uboot_booti.profile_by_name(
+            "generic-sv39-smp4-software-reboot"
+        )
+        artifacts = self._run_artifacts()
+        session_result = replace(
+            self._successful_session(),
+            recovery_complete=True,
+            recovery_elapsed_seconds=60.0,
+            boot_to_recovery_elapsed_seconds=65.0,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            inputs = self._materialize_run_inputs(directory)
+            with (
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "load_artifact_manifest",
+                    return_value=artifacts,
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "qemu_argv",
+                    return_value=["qemu-system-riscv64"],
+                ) as argv,
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "qemu_version",
+                    return_value="QEMU emulator version test",
+                ),
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "run_serial_session",
+                    side_effect=(
+                        session_result,
+                        replace(session_result, recovery_complete=False),
+                    ),
+                ) as session,
+                mock.patch.object(
+                    qemu_uboot_booti,
+                    "audit_serial_log",
+                    return_value=self._passing_audit(
+                        profile,
+                        qemu_uboot_booti.BootScenario.POSITIVE,
+                    ),
+                ),
+            ):
+                result = qemu_uboot_booti.run_prepared(
+                    uboot=inputs["uboot"],
+                    boot_disk=inputs["boot_disk"],
+                    manifest=inputs["manifest"],
+                    serial_log=directory / "serial.log",
+                    marker_event=directory / "marker-event.txt",
+                    result_path=directory / "result.json",
+                    startup_timeout=1.0,
+                    command_timeout=1.0,
+                    boot_timeout=1.0,
+                    termination_grace=1.0,
+                    profile=profile,
+                )
+                incomplete = qemu_uboot_booti.run_prepared(
+                    uboot=inputs["uboot"],
+                    boot_disk=inputs["boot_disk"],
+                    manifest=inputs["manifest"],
+                    serial_log=directory / "incomplete-serial.log",
+                    marker_event=directory / "incomplete-marker-event.txt",
+                    result_path=directory / "incomplete-result.json",
+                    startup_timeout=1.0,
+                    command_timeout=1.0,
+                    boot_timeout=1.0,
+                    termination_grace=1.0,
+                    profile=profile,
+                )
+
+        self.assertTrue(argv.call_args_list[0].kwargs["guest_reboot"])
+        expectation = session.call_args_list[0].kwargs["reboot_expectation"]
+        self.assertEqual(
+            expectation.trigger_marker,
+            profile.validation.completion_line,
+        )
+        self.assertEqual(expectation.recovery_timeout, 90.0)
+        self.assertTrue(result.session.recovery_complete)
+        self.assertTrue(result.passed)
+        self.assertFalse(incomplete.passed)
+
     def test_progress_log_is_visible_while_serial_evidence_is_staged(
         self,
     ) -> None:
@@ -5207,11 +5294,79 @@ class AuditSerialLogTests(unittest.TestCase):
 
         self.assertTrue(audit.passed, audit.failures)
 
+    def test_registered_tcp_probe_accepts_an_interleaved_exact_terminal_token(
+        self,
+    ) -> None:
+        profile = qemu_uboot_booti.profile_by_name(
+            "generic-sv39-smp4-tcp-probe"
+        )
+        terminal = profile.validation.completion_line.decode()
+        serial_log = MEGREZ_POSITIVE_SERIAL_LOG.replace(
+            MEGREZ_BOOTARGS, profile.bootargs
+        ).replace(
+            qemu_uboot_audit.USERSPACE_MARKER_TEXT,
+            f"virtio interrupt prefix {terminal} kernel suffix",
+        )
+
+        audit = qemu_uboot_booti.audit_serial_log(
+            serial_log,
+            marker_event=self.successful_marker_event(),
+            profile=profile,
+            userspace_marker=terminal,
+        )
+
+        self.assertTrue(audit.passed, audit.failures)
+
     def test_registered_milestones_reject_a_reboot_after_the_terminal(self) -> None:
         self.assert_registered_failure(
             self.registered_serial_log() + "OpenSBI v1.7\n",
             "milestone repeated after terminal: FirmwareReady",
         )
+
+    def test_registered_recovery_accepts_one_fresh_firmware_epoch(self) -> None:
+        profile = qemu_uboot_booti.profile_by_name(
+            "generic-sv39-smp4-software-reboot"
+        )
+        serial_log = (
+            MEGREZ_POSITIVE_SERIAL_LOG.replace(MEGREZ_BOOTARGS, profile.bootargs)
+            .replace(
+                qemu_uboot_audit.USERSPACE_MARKER_TEXT,
+                (
+                    "ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60\n"
+                    + profile.validation.completion_line.decode()
+                ),
+            )
+            + "OpenSBI v1.7\nU-Boot 2026.07\n=> \n"
+        )
+
+        audit = qemu_uboot_booti.audit_serial_log(
+            serial_log,
+            marker_event=self.successful_marker_event(),
+            profile=profile,
+            userspace_marker=profile.validation.completion_line.decode(),
+        )
+
+        self.assertTrue(audit.passed, audit.failures)
+        mutations = (
+            serial_log.replace(
+                "ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60\n",
+                "",
+            ),
+            (
+                serial_log.rsplit("OpenSBI v1.7\n", 1)[0]
+                + "U-Boot 2026.07\nOpenSBI v1.7\n=> \n"
+            ),
+            serial_log.rsplit("=> \n", 1)[0],
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation[-160:]):
+                rejected = qemu_uboot_booti.audit_serial_log(
+                    mutation,
+                    marker_event=self.successful_marker_event(),
+                    profile=profile,
+                    userspace_marker=profile.validation.completion_line.decode(),
+                )
+                self.assertFalse(rejected.passed)
 
     def test_registered_milestones_reject_a_reboot_before_the_successful_chain(
         self,
@@ -6189,6 +6344,7 @@ for line in sys.stdin.buffer:
         output: bytes | tuple[bytes, ...],
         *,
         completion_line: bytes | None = None,
+        allow_completion_token: bool = False,
         boot_timeout: float = 0.05,
         pre_boot_output: bytes = b"",
     ) -> SESSION_MODULE.SessionResult:
@@ -6231,8 +6387,26 @@ for line in sys.stdin.buffer:
                 command_timeout=1.0,
                 boot_timeout=boot_timeout,
                 termination_grace=0.5,
+                allow_completion_token=allow_completion_token,
                 **kwargs,
             )
+
+    def test_completion_token_survives_console_prefix_and_chunk_split(self) -> None:
+        marker = b"ASTERINAS_GMAC_TCP_PROBE_READY exact-contract"
+
+        result = self._run_completion_output(
+            (
+                b"virtio interrupt prefix " + marker[:19],
+                marker[19:] + b" kernel suffix\n",
+            ),
+            completion_line=marker,
+            allow_completion_token=True,
+            boot_timeout=1.0,
+        )
+
+        self.assertTrue(result.marker_seen)
+        self.assertFalse(result.timed_out)
+        self.assertIsNone(result.failure)
 
     def test_completion_requires_an_exact_terminated_line(self) -> None:
         marker = SESSION_MODULE.USERSPACE_MARKER

@@ -22,17 +22,26 @@ are optional, and --mock-timeout sets the finite milestone deadline.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import ipaddress
 import json
 import math
 import os
+from pathlib import Path
 import re
 import select
+import stat
+import subprocess
 import sys
 import termios
 import time
 from dataclasses import dataclass
+from typing import TextIO
 
 BAUD = 115200
+YMODEM_BAUD = 1_500_000
+YMODEM_STAGING_ADDRESS = 0x9000_0000
+MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
 TX_DELAY = 0.02
 PROMPT = "=> "
 MILESTONES = {
@@ -43,10 +52,17 @@ MILESTONES = {
 FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
     "firmware-framebuffer": "Registered firmware framebuffer",
+    "installer": "DEBIAN_INSTALL_PASS",
 }
 MILESTONE_SEQUENCE = tuple(MILESTONES)
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
+TFTP_LOAD_RESULT_PATTERN = re.compile(
+    r"(?im)^\s*Bytes transferred\s*=\s*(\d+)\s+\([0-9a-f]+ hex\)\s*$"
+)
+YMODEM_LOAD_RESULT_PATTERN = re.compile(
+    r"(?im)^\s*## Total Size\s*=\s*0x[0-9a-f]+\s*=\s*(\d+)\s+Bytes\s*$"
+)
 CRC_RESULT_PATTERN = re.compile(
     r"(?im)^\s*CRC32 for\s+(0x)?([0-9a-f]+)\b[^\r\n]*==>\s*([0-9a-f]{8})\s*$"
 )
@@ -63,6 +79,8 @@ MILESTONE_TAIL_LENGTH = max(len(marker) for marker in MILESTONES.values()) - 1
 ARTIFACT_NAME_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
 )
+AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
+MAX_UBOOT_WAIT_BYTES = 256 * 1024
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = (
     "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
@@ -140,8 +158,6 @@ MEGREZ_FRAMEBUFFER = FramebufferHandoff(
 
 
 def open_serial(device: str):
-    import fcntl
-
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
     attrs = termios.tcgetattr(fd)
@@ -155,6 +171,41 @@ def open_serial(device: str):
     attrs[6][termios.VTIME] = 0
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
     return fd
+
+
+def _set_serial_baud(fd: int, baud: int) -> None:
+    speeds = {BAUD: termios.B115200, YMODEM_BAUD: termios.B1500000}
+    try:
+        speed = speeds[baud]
+    except KeyError as error:
+        raise ValueError(f"unsupported serial baud: {baud}") from error
+    attrs = termios.tcgetattr(fd)
+    attrs[4] = speed
+    attrs[5] = speed
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+
+def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> None:
+    """Send one held regular file to U-Boot's YMODEM receiver."""
+    original_flags = fcntl.fcntl(serial_fd, fcntl.F_GETFL)
+    try:
+        fcntl.fcntl(serial_fd, fcntl.F_SETFL, original_flags & ~os.O_NONBLOCK)
+        result = subprocess.run(
+            ["/usr/bin/sb", "-k", f"/proc/self/fd/{source_fd}"],
+            stdin=serial_fd,
+            stdout=serial_fd,
+            stderr=subprocess.PIPE,
+            pass_fds=(source_fd,),
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"YMODEM sender failed: {error}") from error
+    finally:
+        fcntl.fcntl(serial_fd, fcntl.F_SETFL, original_flags)
+    if result.returncode != 0:
+        diagnostic = result.stderr.decode(errors="replace")[-200:]
+        raise RuntimeError(f"YMODEM sender exited {result.returncode}: {diagnostic!r}")
 
 
 def read_available(fd: int, timeout: float) -> str:
@@ -211,6 +262,17 @@ def observe_milestones(
     return found, next_index, tail
 
 
+def validate_recovery_epoch(text: str) -> None:
+    """Require a new ordered firmware epoch after the current guest attempt."""
+    positions = (
+        text.find("OpenSBI v"),
+        text.find("U-Boot 2026.07"),
+        text.find(PROMPT),
+    )
+    if min(positions) < 0 or positions != tuple(sorted(positions)):
+        raise RuntimeError("automatic recovery did not reach a fresh U-Boot prompt")
+
+
 class BoardSession:
     def __init__(
         self,
@@ -219,8 +281,53 @@ class BoardSession:
         confirm: bool = True,
         final_marker: str = MILESTONES["userspace"],
     ):
-        self.fd = open_serial(device)
-        self.log = open(log_path, "a", buffering=1)
+        self._initialize(
+            open_serial(device),
+            log_path,
+            confirm=confirm,
+            final_marker=final_marker,
+            log_stream=None,
+        )
+
+    @classmethod
+    def from_fd(
+        cls,
+        fd: int,
+        log_path: str | None,
+        confirm: bool = True,
+        final_marker: str = MILESTONES["userspace"],
+        log_stream: TextIO | None = None,
+    ):
+        """Build a session around a caller-owned serial descriptor."""
+
+        session = cls.__new__(cls)
+        session._initialize(
+            fd,
+            log_path,
+            confirm=confirm,
+            final_marker=final_marker,
+            log_stream=log_stream,
+        )
+        return session
+
+    def _initialize(
+        self,
+        fd: int,
+        log_path: str | None,
+        *,
+        confirm: bool,
+        final_marker: str,
+        log_stream: TextIO | None,
+    ) -> None:
+        self.fd = fd
+        if log_stream is None:
+            if log_path is None:
+                raise ValueError("session log path or stream is required")
+            self.log = open(log_path, "a", buffering=1)
+        else:
+            if log_path is not None:
+                raise ValueError("session log path and stream are mutually exclusive")
+            self.log = log_stream
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
         self._milestone_tail = ""
@@ -243,10 +350,31 @@ class BoardSession:
             if not chunk:
                 continue
             self._log(chunk)
-            buf += chunk
+            buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
             if pattern in buf:
                 return buf
         raise TimeoutError(f"timed out waiting for {pattern!r}; last: {buf[-200:]!r}")
+
+    def wait_for_uboot_prompt(self, timeout: float) -> str:
+        """Wait for U-Boot and interrupt a newly observed autoboot once."""
+        buf = ""
+        interrupted = False
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            chunk = read_available(self.fd, min(1.0, remaining))
+            if not chunk:
+                continue
+            self._log(chunk)
+            buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
+            if not interrupted and any(marker in buf for marker in AUTOBOOT_MARKERS):
+                os.write(self.fd, b" ")
+                interrupted = True
+            if PROMPT in buf:
+                return buf
+        raise TimeoutError(f"timed out waiting for U-Boot prompt; last: {buf[-200:]!r}")
 
     def send(self, command: str) -> None:
         for i, byte in enumerate(command.encode()):
@@ -259,7 +387,7 @@ class BoardSession:
         self, command: str, expect: str | None = None, timeout: float = 15
     ) -> str:
         if self.confirm and command.startswith(
-            ("ext4load", "booti", "setenv bootargs")
+            ("ext4load", "tftpboot", "booti", "setenv bootargs")
         ):
             answer = input(f"send {command!r}? [y/N] ").strip().lower()
             if answer != "y":
@@ -291,9 +419,134 @@ class BoardSession:
         """Load one artifact and verify U-Boot's size and CRC32 evidence."""
         load_command = f"ext4load mmc 1:1 0x{address:x} /{filename}"
         load_output = self.command(load_command)
-        load_result = LOAD_RESULT_PATTERN.search(load_output)
+        return self._verify_loaded_artifact(
+            name, address, expected_crc32, load_output, LOAD_RESULT_PATTERN
+        )
+
+    def load_tftp_artifact(
+        self, name: str, filename: str, address: int, expected_crc32: str
+    ) -> int:
+        """Load one artifact over TFTP and verify its size, address, and CRC32."""
+        load_command = f"tftpboot 0x{address:x} {filename}"
+        load_output = self.command(load_command, timeout=120)
+        return self._verify_loaded_artifact(
+            name, address, expected_crc32, load_output, TFTP_LOAD_RESULT_PATTERN
+        )
+
+    def load_ymodem_artifact(
+        self,
+        name: str,
+        source_directory: Path,
+        filename: str,
+        address: int,
+        expected_crc32: str,
+    ) -> int:
+        """Load one pinned host file through U-Boot YMODEM at 1.5 Mbps."""
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        source_flags = os.O_RDONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+            source_flags |= os.O_NOFOLLOW
+        directory_fd = os.open(source_directory, directory_flags)
+        try:
+            source_fd = os.open(filename, source_flags, dir_fd=directory_fd)
+        finally:
+            os.close(directory_fd)
+        try:
+            metadata = os.fstat(source_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or not 0 < metadata.st_size <= MAX_YMODEM_SOURCE_BYTES
+            ):
+                raise RuntimeError(f"{name}: invalid YMODEM source")
+            command = f"loady {address:x} {YMODEM_BAUD}"
+            self.send(command)
+            opening = self.wait_for("press ENTER", timeout=15)
+            normalized = opening.replace("\r", "").splitlines()
+            if command not in (line.strip() for line in normalized):
+                raise RuntimeError(f"echo mismatch for {command!r}")
+            _set_serial_baud(self.fd, YMODEM_BAUD)
+            try:
+                os.write(self.fd, b"\r")
+                self.wait_for("Ready for binary", timeout=15)
+                _transfer_ymodem_file(self.fd, source_fd, 120.0)
+                completion = self.wait_for("press ESC", timeout=15)
+            except BaseException:
+                try:
+                    os.write(self.fd, b"\x18" * 8)
+                except OSError:
+                    pass
+                _set_serial_baud(self.fd, BAUD)
+                try:
+                    os.write(self.fd, b"\x1b\r")
+                    self.wait_for(PROMPT, timeout=15)
+                except (OSError, TimeoutError):
+                    pass
+                raise
+            _set_serial_baud(self.fd, BAUD)
+            os.write(self.fd, b"\x1b")
+            self.wait_for(PROMPT, timeout=15)
+        finally:
+            os.close(source_fd)
+
+        result = YMODEM_LOAD_RESULT_PATTERN.search(completion)
+        if result is None or int(result.group(1)) != metadata.st_size:
+            raise RuntimeError(f"{name}: YMODEM transfer size mismatch")
+        self._verify_memory_crc(name, address, metadata.st_size, expected_crc32)
+        return metadata.st_size
+
+    def load_ymodem_lzma_artifact(
+        self,
+        name: str,
+        source_directory: Path,
+        filename: str,
+        compressed_address: int,
+        output_address: int,
+        compressed_crc32: str,
+        output_size: int,
+        output_crc32: str,
+    ) -> None:
+        """Load an LZMA-alone image and verify the decompressed bytes."""
+        self.load_ymodem_artifact(
+            f"{name}-compressed",
+            source_directory,
+            filename,
+            compressed_address,
+            compressed_crc32,
+        )
+        self.command(
+            f"lzmadec 0x{compressed_address:x} 0x{output_address:x}", timeout=60
+        )
+        self._verify_memory_crc(name, output_address, output_size, output_crc32)
+
+    def _verify_memory_crc(
+        self, name: str, address: int, size: int, expected_crc32: str
+    ) -> None:
+        crc_output = self.command(f"crc32 0x{address:x} 0x{size:x}")
+        crc_result = CRC_RESULT_PATTERN.search(crc_output)
+        if crc_result is None:
+            raise RuntimeError(f"{name}: no parseable CRC32 result")
+        actual_address = int(crc_result.group(2), 16)
+        actual_crc32 = crc_result.group(3).lower()
+        if actual_address != address or actual_crc32 != expected_crc32:
+            raise RuntimeError(
+                f"{name}: CRC32 mismatch at 0x{actual_address:x}: "
+                f"expected {expected_crc32}, got {actual_crc32}"
+            )
+
+    def _verify_loaded_artifact(
+        self,
+        name: str,
+        address: int,
+        expected_crc32: str,
+        load_output: str,
+        load_pattern: re.Pattern[str],
+    ) -> int:
+        load_result = load_pattern.search(load_output)
         if load_result is None or int(load_result.group(1)) <= 0:
-            raise RuntimeError(f"{name}: no positive 'bytes read' result")
+            raise RuntimeError(
+                f"{name}: no positive transfer size ('bytes read' for MMC)"
+            )
 
         crc_command = f"crc32 0x{address:x} ${{filesize}}"
         crc_output = self.command(crc_command)
@@ -372,6 +625,44 @@ def safe_bootargs(value: str) -> str:
     return value
 
 
+def safe_ipv4(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected an IPv4 address") from error
+    if address.version != 4:
+        raise argparse.ArgumentTypeError("expected an IPv4 address")
+    return str(address)
+
+
+def safe_ipv4_netmask(value: str) -> str:
+    try:
+        network = ipaddress.IPv4Network(f"0.0.0.0/{value}")
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as error:
+        raise argparse.ArgumentTypeError(
+            "expected a contiguous IPv4 netmask"
+        ) from error
+    if str(network.netmask) != value:
+        raise argparse.ArgumentTypeError("expected a canonical IPv4 netmask")
+    return value
+
+
+def positive_size(value: str) -> int:
+    try:
+        size = int(value, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("size must be a decimal integer") from error
+    if size <= 0 or size > MAX_YMODEM_SOURCE_BYTES:
+        raise argparse.ArgumentTypeError("size must be in (0, 64 MiB]")
+    return size
+
+
+def crc32_value(value: str) -> str:
+    if re.fullmatch(r"[0-9a-fA-F]{8}", value) is None:
+        raise argparse.ArgumentTypeError("CRC32 must be eight hexadecimal digits")
+    return value.lower()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -387,6 +678,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--initrd", required=True, type=safe_artifact_name)
     p.add_argument("--dtb", required=True, type=safe_artifact_name)
     p.add_argument("--bootargs", type=safe_bootargs, default=DEFAULT_BOOTARGS)
+    p.add_argument(
+        "--load-transport",
+        choices=("mmc", "tftp", "ymodem"),
+        default="mmc",
+        help="artifact source (default: mmc)",
+    )
+    p.add_argument("--tftp-board-address", type=safe_ipv4, default="10.100.19.200")
+    p.add_argument("--tftp-server-address", type=safe_ipv4, default="10.100.19.216")
+    p.add_argument("--tftp-netmask", type=safe_ipv4_netmask, default="255.255.248.0")
+    p.add_argument("--ymodem-directory", type=Path)
+    p.add_argument("--booti-compressed-crc32", type=crc32_value)
+    p.add_argument("--booti-uncompressed-size", type=positive_size)
     p.add_argument(
         "--final-profile",
         choices=tuple(FINAL_MILESTONE_MARKERS),
@@ -412,11 +715,44 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=120.0,
         help="mock milestone deadline in seconds (default: 120)",
     )
+    p.add_argument(
+        "--uboot-timeout",
+        type=positive_finite_seconds,
+        default=60.0,
+        help="physical U-Boot prompt/autoboot deadline in seconds (default: 60)",
+    )
+    p.add_argument(
+        "--milestone-timeout",
+        type=positive_finite_seconds,
+        default=60.0,
+        help="physical post-boot milestone deadline in seconds (default: 60)",
+    )
+    p.add_argument(
+        "--require-recovery",
+        action="store_true",
+        help="require a fresh OpenSBI/U-Boot/prompt epoch after the final milestone",
+    )
     args = p.parse_args(argv)
     if not args.mock_qemu and args.expected_crc32 is None:
         p.error("--expected-crc32 is required outside --mock-qemu mode")
     if args.mock_qemu and args.firmware_framebuffer:
         p.error("--firmware-framebuffer is only supported in physical mode")
+    ymodem_contract = (
+        args.ymodem_directory,
+        args.booti_compressed_crc32,
+        args.booti_uncompressed_size,
+    )
+    if args.load_transport == "ymodem" and any(
+        value is None for value in ymodem_contract
+    ):
+        p.error(
+            "--load-transport ymodem requires --ymodem-directory, "
+            "--booti-compressed-crc32, and --booti-uncompressed-size"
+        )
+    if args.load_transport != "ymodem" and any(
+        value is not None for value in ymodem_contract
+    ):
+        p.error("YMODEM options require --load-transport ymodem")
     consoles = [
         token.removeprefix("console=")
         for token in args.bootargs.split()
@@ -476,17 +812,49 @@ def run_mock_qemu(device: str, timeout: float) -> int:
 
 def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> str:
     """Run the exact guarded U-Boot load, patch, and boot transaction."""
-    session.load_artifact("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
-    session.load_artifact("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
+    transport = getattr(args, "load_transport", "mmc")
+    loader = session.load_artifact
+    if transport == "tftp":
+        session.command(f"setenv ipaddr {args.tftp_board_address}")
+        session.command(f"setenv serverip {args.tftp_server_address}")
+        session.command(f"setenv netmask {args.tftp_netmask}")
+        loader = session.load_tftp_artifact
+    initrd_size: int | None = None
+    if transport == "ymodem":
+        session.load_ymodem_lzma_artifact(
+            "booti",
+            args.ymodem_directory,
+            args.booti,
+            YMODEM_STAGING_ADDRESS,
+            0x80200000,
+            args.booti_compressed_crc32,
+            args.booti_uncompressed_size,
+            args.expected_crc32["booti"],
+        )
+        session.load_artifact("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
+    else:
+        loader("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
+        loader("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
     if args.firmware_framebuffer:
         for command in MEGREZ_FRAMEBUFFER.commands():
             session.command(command)
-    session.load_artifact(
-        "initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"]
+    if transport == "ymodem":
+        initrd_size = session.load_ymodem_artifact(
+            "initrd",
+            args.ymodem_directory,
+            args.initrd,
+            0x83000000,
+            args.expected_crc32["initrd"],
+        )
+    else:
+        loader("initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"])
+    session.command(
+        "setenv initrd_size ${filesize}"
+        if initrd_size is None
+        else f"setenv initrd_size 0x{initrd_size:x}"
     )
-    session.command("setenv initrd_size ${filesize}")
     session.command(f'setenv bootargs "{args.bootargs}"')
     session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
     session.command(MEGREZ_USB_HOST_COMMAND)
@@ -513,21 +881,28 @@ def main(argv: list[str]) -> int:
         # A board already stopped at U-Boot is silent after the serial port is
         # reopened. Wake the prompt before waiting for evidence from this session.
         session.send("")
-        boot = session.wait_for(PROMPT, timeout=60)
+        boot = session.wait_for_uboot_prompt(timeout=args.uboot_timeout)
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
 
         session.note_milestone(boot_loaded_artifacts(session, args))
 
-        # Watch for remaining milestones for up to 60s.
-        end = time.monotonic() + 60
+        end = time.monotonic() + args.milestone_timeout
         while time.monotonic() < end and len(session.milestones) != len(MILESTONES):
             text = read_available(session.fd, min(5, end - time.monotonic()))
             if text:
                 session._log(text)
                 session.note_milestone(text)
         print(json.dumps(session.milestones))
-        return 0 if len(session.milestones) == len(MILESTONES) else 2
+        if len(session.milestones) != len(MILESTONES):
+            return 2
+        if args.require_recovery:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return 2
+            recovery = session.wait_for_uboot_prompt(timeout=remaining)
+            validate_recovery_epoch(recovery)
+        return 0
     finally:
         session.log.close()
         os.close(session.fd)

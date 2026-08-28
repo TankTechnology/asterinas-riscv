@@ -15,7 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Mapping
 from tools.riscv.debian.rootfs.contract import (
-    _load_package_checksums,
+    load_package_checksums,
     load_manifest,
     validate_frozen_root,
 )
@@ -61,6 +61,7 @@ ARTIFACT_NAMES = (
     "boot2.serial.log",
     "result.json",
 )
+QEMU_RUNTIME_DIRECTORY = Path("/tmp")
 
 
 def _hash_fd(descriptor: int) -> str:
@@ -152,7 +153,7 @@ class ConcreteOperations:
         paths = self.input_paths
         manifest = load_manifest(paths["manifest"])
         validate_frozen_root(paths["root_image"], manifest, paths["packages_lock"])
-        checksums = _load_package_checksums(paths["package_checksums"])
+        checksums = load_package_checksums(paths["package_checksums"])
         if checksums != manifest.downloaded_packages:
             raise GateFailure("package-checksums do not match the manifest")
         with tempfile.TemporaryDirectory(prefix="debian-gate-dtb-") as directory:
@@ -250,33 +251,19 @@ class ConcreteOperations:
             raise GateFailure("output directory identity changed before launch")
         directory = Path(
             tempfile.mkdtemp(
-                prefix=f".debian-qemu-b{boot_number}-",
-                dir=config.output_directory,
+                prefix=f"asterinas-debian-qemu-b{boot_number}-",
+                dir=QEMU_RUNTIME_DIRECTORY,
             )
         )
-        if not os.path.samestat(directory.parent.lstat(), pinned_status):
-            shutil.rmtree(directory, ignore_errors=True)
-            raise GateFailure("output directory identity changed during launch")
         os.chmod(directory, 0o700)
         master = slave = -1
         process = None
         try:
             uboot = directory / "u-boot"
             self._materialize("u_boot", uboot)
-            boot = directory / "boot.ext4"
-            root = directory / "debian-root.run.ext2"
-            os.link(
-                "boot.ext4",
-                boot,
-                src_dir_fd=output._operation_fd,
-                follow_symlinks=False,
-            )
-            os.link(
-                "debian-root.run.ext2",
-                root,
-                src_dir_fd=output._operation_fd,
-                follow_symlinks=False,
-            )
+            pinned_output = Path(f"/proc/self/fd/{output._operation_fd}")
+            boot = pinned_output / "boot.ext4"
+            root = pinned_output / "debian-root.run.ext2"
             monitor_path = directory / "monitor.sock"
             argv = self._qemu_argv(
                 uboot=uboot,
@@ -288,7 +275,11 @@ class ConcreteOperations:
             )
             self._attempted_argv.append(argv)
             master, slave = os.openpty()
-            process = launch_process(argv, stdio_fd=slave)
+            process = launch_process(
+                argv,
+                stdio_fd=slave,
+                pass_fds=(output._operation_fd,),
+            )
             os.close(slave)
             slave = -1
             serial = SerialConsole(

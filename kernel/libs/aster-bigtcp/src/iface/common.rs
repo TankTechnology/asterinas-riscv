@@ -17,17 +17,17 @@ use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
 use ostd::sync::{SpinLock, SpinLockGuard};
 use smoltcp::{
-    iface::{Context, packet::Packet},
+    iface::{packet::Packet, Context},
     phy::Device,
     wire::{IpAddress, IpEndpoint, Ipv4Cidr, Ipv4Packet, Ipv6Address, Ipv6Cidr, Ipv6Packet},
 };
 
 use super::{
-    Iface,
     poll::{FnHelper, PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
     time::get_network_timestamp,
+    Iface,
 };
 use crate::{
     errors::BindError,
@@ -88,7 +88,20 @@ impl<E: Ext> IfaceCommon<E> {
         interface: smoltcp::iface::Interface,
         sched_poll: E::ScheduleNextPoll,
     ) -> Self {
-        let index = INTERFACE_INDEX_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
+        // Linux reserves interface index 1 for the loopback device in every
+        // network namespace.  In particular, systemd configures a freshly
+        // created namespace by addressing `lo` through the fixed
+        // `LOOPBACK_IFINDEX` value instead of resolving its name first.
+        //
+        // Non-loopback interfaces are still allocated globally for now.  A
+        // fresh namespace contains only its own loopback interface, so using
+        // index 1 for every loopback is namespace-correct and cannot collide
+        // with a visible non-loopback interface.
+        let index = if type_ == InterfaceType::LOOPBACK {
+            1
+        } else {
+            INTERFACE_INDEX_ALLOCATOR.fetch_add(1, Ordering::Relaxed)
+        };
 
         Self {
             index,
@@ -135,10 +148,12 @@ impl<E: Ext> IfaceCommon<E> {
     }
 }
 
-/// An allocator that allocates a unique index for each interface.
+/// An allocator for non-loopback interfaces.
 //
-// FIXME: This allocator is specific to each network namespace.
-static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(1);
+// FIXME: This allocator should be specific to each network namespace once
+// namespaces can contain non-loopback interfaces.  Index 1 is reserved for
+// the namespace-local loopback interface.
+static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(2);
 
 // Lock order: `interface` -> `sockets`
 impl<E: Ext> IfaceCommon<E> {
@@ -229,11 +244,11 @@ impl<E: Ext> IfaceCommon<E> {
     where
         D: Device + ?Sized,
         P: for<'pkt, 'cx, 'tx> FnHelper<
-                &'pkt [u8],
-                &'cx mut Context,
-                D::TxToken<'tx>,
-                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
-            >,
+            &'pkt [u8],
+            &'cx mut Context,
+            D::TxToken<'tx>,
+            Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
+        >,
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
         let mut interface = self.interface();

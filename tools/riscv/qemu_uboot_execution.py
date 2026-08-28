@@ -32,7 +32,7 @@ from qemu_uboot_profiles import (
 )
 from qemu_ppm import PpmAudit
 from qemu_uboot_secure_io import PinnedPublication
-from qemu_uboot_session import SerialInteraction, SessionResult
+from qemu_uboot_session import RebootExpectation, SerialInteraction, SessionResult
 from qemu_uboot_variants import (
     FIRST_PROCESS_CONSOLE_LOSS,
     QemuUbootVariant,
@@ -416,6 +416,7 @@ def execute_prepared(
                 if display_capture is not None
                 else None
             )
+            recovery = profile.validation.recovery
             qemu_arguments = dependencies.qemu_argv(
                 uboot=staged.uboot,
                 boot_disk=staged.boot_disk,
@@ -423,6 +424,7 @@ def execute_prepared(
                 snapshot_disk=snapshot_disk,
                 device_set=device_set,
                 device_paths=device_paths,
+                **({"guest_reboot": True} if recovery is not None else {}),
             )
             version = dependencies.qemu_version(qemu_arguments[0])
             commands = boot_commands(
@@ -459,6 +461,10 @@ def execute_prepared(
                     termination_grace=termination_grace,
                     command_observer=memory_layout_observer(artifacts),
                     completion_line=completion_line,
+                    allow_completion_token=(
+                        profile.validation.audit_policy
+                        is AuditPolicy.REGISTERED_MILESTONES
+                    ),
                     post_terminal_timeout=profile.validation.post_terminal_timeout,
                     milestone_expectations=(
                         profile.validation.milestones
@@ -470,6 +476,17 @@ def execute_prepared(
                     ),
                     serial_interaction=serial_interaction,
                     terminal_action=(framebuffer_evidence.terminal_action if framebuffer_evidence else None),
+                    **(
+                        {
+                            "reboot_expectation": RebootExpectation(
+                                trigger_marker=recovery.trigger_marker,
+                                recovery_timeout=recovery.recovery_timeout,
+                                milestones=recovery.milestones,
+                            )
+                        }
+                        if recovery is not None
+                        else {}
+                    ),
                 )
                 serial_capture.flush()
                 os.fsync(serial_capture.fileno())
@@ -540,6 +557,8 @@ def execute_prepared(
                 passed = passed and session.marker_seen and not session.timed_out
                 passed = passed and session.failure is None
             passed = passed and audit.effective_bootargs == effective
+            if recovery is not None:
+                passed = passed and session.recovery_complete
             if passed and scenario is not BootScenario.POSITIVE:
                 terminal_classification = TerminalClassification.EXPECTED_NEGATIVE
             elif passed and profile.validation.scope is ResultScope.COMPLETE_BOOT:

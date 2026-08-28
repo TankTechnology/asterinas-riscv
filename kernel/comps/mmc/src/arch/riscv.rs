@@ -22,6 +22,7 @@ const CLOCK_FREQUENCY: u32 = 208_000_000;
 const CLOCK_MMIO_START: usize = 0x5182_8000;
 const CLOCK_MMIO_SIZE: usize = 0x8_0000;
 const CLOCK_CORE_OFFSET: usize = 0x164;
+const CLOCK_CORE_SIZE: usize = size_of::<u32>();
 const CLOCK_AHB_OFFSET: usize = 0x148;
 const CLOCK_CONFIG_OFFSET: usize = 0x14c;
 const CLOCK_CORE_ENABLE: u32 = 1 << 16;
@@ -142,7 +143,8 @@ fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
     let max_frequency = fields.max_frequency.unwrap();
     Ok(PlatformConfig {
         mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
-        clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
+        clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
+            ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
         interrupt: INTERRUPT,
         bus_width: BUS_WIDTH,
         clock_frequency: fields.clock_frequency.unwrap(),
@@ -399,15 +401,15 @@ impl MmioHost {
             .map_err(|_| HostError::Unsupported)
     }
 
-    fn read_clock32(&self, offset: usize) -> Result<u32, HostError> {
+    fn read_core_clock(&self) -> Result<u32, HostError> {
         self.clock_mmio
-            .read_once(offset)
+            .read_once(0)
             .map_err(|_| HostError::Unsupported)
     }
 
-    fn write_clock32(&self, offset: usize, value: u32) -> Result<(), HostError> {
+    fn write_core_clock(&self, value: u32) -> Result<(), HostError> {
         self.clock_mmio
-            .write_once(offset, &value)
+            .write_once(0, &value)
             .map_err(|_| HostError::Unsupported)
     }
 
@@ -444,8 +446,8 @@ impl HostController for MmioHost {
             host_clock & !CLOCK_CARD_ENABLE,
         )?;
 
-        let old_core = self.read_clock32(CLOCK_CORE_OFFSET)?;
-        self.write_clock32(CLOCK_CORE_OFFSET, old_core & !CLOCK_CORE_ENABLE)?;
+        let old_core = self.read_core_clock()?;
+        self.write_core_clock(old_core & !CLOCK_CORE_ENABLE)?;
         for _ in 0..POLL_BUDGET {
             spin_loop();
         }
@@ -454,11 +456,11 @@ impl HostController for MmioHost {
         if config.select_416mhz {
             new_core |= CLOCK_CORE_SELECT_416MHZ;
         }
-        self.write_clock32(CLOCK_CORE_OFFSET, new_core)?;
+        self.write_core_clock(new_core)?;
         for _ in 0..POLL_BUDGET / 10 {
             spin_loop();
         }
-        self.write_clock32(CLOCK_CORE_OFFSET, new_core | CLOCK_CORE_ENABLE)?;
+        self.write_core_clock(new_core | CLOCK_CORE_ENABLE)?;
         for _ in 0..POLL_BUDGET {
             spin_loop();
         }
@@ -570,7 +572,8 @@ mod tests {
             validate(valid_fields()).unwrap(),
             PlatformConfig {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
-                clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
+                clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
+                    ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
@@ -637,7 +640,8 @@ mod tests {
             select_config([other_sdio, valid_fields()]),
             Ok(Some(PlatformConfig {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
-                clock_mmio_range: CLOCK_MMIO_START..CLOCK_MMIO_START + 0x1000,
+                clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
+                    ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,

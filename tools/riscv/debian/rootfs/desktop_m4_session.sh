@@ -7,13 +7,32 @@ export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-m4-session.log"
+readonly URL_FILE="${ASTERINAS_DESKTOP_URL_FILE:-/run/asterinas-desktop-url}"
 
 if [[ "${1-}" == --xsession ]]; then
-    /usr/bin/matchbox-window-manager -use_titlebar yes &
+    browser_url="file:///usr/share/asterinas/desktop-m4-welcome.html"
+    browser_arguments=()
+    if [[ -f "$URL_FILE" && ! -L "$URL_FILE" ]]; then
+        candidate="$(<"$URL_FILE")"
+        if ((${#candidate} <= 2048)) && \
+            [[ "$candidate" =~ ^https?://[^[:space:][:cntrl:]]+$ ]]; then
+            browser_url="$candidate"
+            browser_arguments+=(--enable_javascript=1)
+        fi
+    fi
+    /usr/bin/openbox &
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
-    /usr/bin/pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &
-    /usr/bin/netsurf-gtk file:///usr/share/asterinas/desktop-m4-welcome.html &
+    /usr/bin/pcmanfm --desktop --profile Asterinas &
+    /usr/bin/lxpanel --profile Asterinas &
+    if [[ "${ASTERINAS_DESKTOP_BROWSER_VERBOSE:-0}" == 1 ]]; then
+        : >"$HOME/netsurf-m7.log"
+        chmod 0600 "$HOME/netsurf-m7.log"
+        /usr/bin/netsurf-gtk -v "${browser_arguments[@]}" "$browser_url" \
+            >"$HOME/netsurf-m7.log" 2>&1 &
+    else
+        /usr/bin/netsurf-gtk "${browser_arguments[@]}" "$browser_url" &
+    fi
     /usr/bin/sleep 1
     /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Terminal" &
     wait "$window_manager_pid"

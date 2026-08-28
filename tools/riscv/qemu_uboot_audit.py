@@ -25,6 +25,7 @@ from qemu_uboot_commands import (
 from qemu_uboot_profiles import (
     GENERIC_SV39,
     AuditPolicy,
+    MilestoneExpectation,
     QemuUbootProfile,
     ResultScope,
     validate_registered_profile,
@@ -563,13 +564,23 @@ def _audit_registered_milestones(
 
     lines = _normalized_lines(serial_log)
     failures: list[str] = []
+    terminal_indices = [
+        index for index, line in enumerate(lines) if terminal_marker in line
+    ]
+    terminal_count = len(terminal_indices)
+    recovery = profile.validation.recovery
+    milestone_lines = (
+        lines[: terminal_indices[0] + 1]
+        if recovery is not None and terminal_count == 1
+        else lines
+    )
     milestone_indices: list[tuple[MilestoneExpectation, list[int]]] = []
     last_index = -1
     for expectation in profile.validation.milestones:
         marker = expectation.line.decode()
         indices = [
             line_index
-            for line_index, line in enumerate(lines)
+            for line_index, line in enumerate(milestone_lines)
             if marker in line
         ]
         milestone_indices.append((expectation, indices))
@@ -596,22 +607,54 @@ def _audit_registered_milestones(
     ]
     if len(booti_lines) != 1:
         failures.append(f"expected exactly one booti command, got {len(booti_lines)}")
-    terminal_indices = [
-        index for index, line in enumerate(lines) if line == terminal_marker
-    ]
-    terminal_count = len(terminal_indices)
     if terminal_count != 1:
         failures.append(f"expected exactly one terminal marker, got {terminal_count}")
     else:
         terminal_index = terminal_indices[0]
-        for expectation, indices in milestone_indices:
-            if expectation.stage is profile.validation.terminal:
-                continue
-            if any(index > terminal_index for index in indices):
+        if recovery is None:
+            for expectation, indices in milestone_indices:
+                if expectation.stage is profile.validation.terminal:
+                    continue
+                if any(index > terminal_index for index in indices):
+                    failures.append(
+                        "milestone repeated after terminal: "
+                        f"{expectation.stage.value}"
+                    )
+        else:
+            armed_indices = [
+                index
+                for index, line in enumerate(lines[:terminal_index])
+                if line == recovery.armed_marker.decode()
+            ]
+            if len(armed_indices) != 1:
                 failures.append(
-                    "milestone repeated after terminal: "
-                    f"{expectation.stage.value}"
+                    "expected exactly one recovery armed marker before terminal"
                 )
+            recovery_indices: list[int] = []
+            for name, marker_bytes in recovery.milestones:
+                marker = marker_bytes.decode().strip()
+                matches = [
+                    index
+                    for index, line in enumerate(
+                        lines[terminal_index + 1 :],
+                        start=terminal_index + 1,
+                    )
+                    if (line.strip() == marker if name == "prompt" else marker in line)
+                ]
+                if len(matches) != 1:
+                    failures.append(
+                        f"expected exactly one post-terminal recovery {name} marker"
+                    )
+                else:
+                    recovery_indices.append(matches[0])
+            if len(recovery_indices) == len(recovery.milestones) and any(
+                current >= following
+                for current, following in zip(
+                    recovery_indices,
+                    recovery_indices[1:],
+                )
+            ):
+                failures.append("post-terminal recovery markers are out of order")
 
     required_fragments = (
         "OpenSBI v",

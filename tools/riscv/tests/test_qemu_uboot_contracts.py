@@ -19,6 +19,8 @@ TOOLS = Path(__file__).resolve().parents[1]
 RUNNER = TOOLS / "qemu_uboot_booti.py"
 sys.path.insert(0, str(TOOLS))
 
+import qemu_uboot_devices as qemu_devices  # noqa: E402
+
 from qemu_uboot_profiles import (  # noqa: E402
     ASTERINAS_USERSPACE_SMOKE,
     GENERIC_SV39,
@@ -26,6 +28,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     MEGREZ_SV48_SVADE_FAST,
     MEGREZ_SV48_SVADU_FAST,
     QEMU_VIRT,
+    QEMU_VIRT_SMP4,
     SIFIVE_U,
     SIFIVE_U_ASTERINAS_SMOKE,
     SIFIVE_U_LINUX_REFERENCE,
@@ -41,6 +44,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     QemuMachine,
     QemuUbootProfile,
     ResultScope,
+    RecoveryContract,
     StorageTransport,
     ValidationScenario,
     profile_by_name,
@@ -58,11 +62,12 @@ from qemu_uboot_devices import (  # noqa: E402
     render_device_argv,
     validate_registered_device_set,
 )
-from qemu_uboot_dtb import generated_dtb_qemu_argv  # noqa: E402
+from qemu_uboot_dtb import canonicalize_dtb, generated_dtb_qemu_argv  # noqa: E402
 from qemu_uboot_dtb import (  # noqa: E402
     GeneratedDtbAudit,
     generated_dtb_audit_record,
     load_generated_dtb_audit,
+    remove_rng_seed_if_present,
 )
 from megrez_contract import artifact_identity  # noqa: E402
 from qemu_uboot_artifacts import (  # noqa: E402
@@ -100,6 +105,22 @@ class ContractCompositionTests(unittest.TestCase):
         )
         with self.assertRaises(FrozenInstanceError):
             MEGREZ_BASIC.name = "changed"
+
+    def test_tcp_probe_network_renders_one_slirp_virtio_nic(self) -> None:
+        self.assertTrue(hasattr(qemu_devices, "VIRTIO_NET_SLIRP"))
+        device_set = qemu_devices.VIRTIO_NET_SLIRP
+
+        self.assertIs(device_set_by_name("virtio-net-slirp"), device_set)
+        self.assertEqual(device_set.devices, (DeviceKind.VIRTIO_NET,))
+        self.assertEqual(
+            render_device_argv(device_set, None),
+            (
+                "-netdev",
+                "user,id=net0",
+                "-device",
+                "virtio-net-device,netdev=net0",
+            ),
+        )
 
     def test_replaced_device_set_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "registered device set"):
@@ -418,6 +439,95 @@ class ContractCompositionTests(unittest.TestCase):
                 with self.assertRaises(FrozenInstanceError):
                     setattr(value, field, "changed")
 
+    def test_generic_sv39_smp4_tcp_probe_uses_its_own_terminal(self) -> None:
+        profile = profile_by_name("generic-sv39-smp4-tcp-probe")
+
+        self.assertIsNot(profile.machine, QEMU_VIRT_SMP4)
+        self.assertEqual(profile.machine.name, "qemu-virt-smp4-frozen-dtb")
+        self.assertTrue(profile.remove_rng_seed)
+        self.assertEqual(profile.required_random_source, "zkr")
+        self.assertIs(profile.boot_flow, UBOOT_BOOTI)
+        self.assertEqual(profile.validation.name, "megrez-tcp-probe")
+        self.assertIs(
+            profile.validation.audit_policy,
+            AuditPolicy.REGISTERED_MILESTONES,
+        )
+        self.assertEqual(
+            profile.bootargs,
+            "console=ttyS0 loglevel=info init=/init "
+            "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+            "asterinas.reboot_after=60",
+        )
+        self.assertEqual(
+            profile.validation.completion_line,
+            (
+                b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+                b"status=200 sizes=16384,65536,1048576,16777216 "
+                b"completed_bytes=17907712 pattern=mod251"
+            ),
+        )
+        self.assertEqual(
+            profile.validation.milestones[-1].line,
+            (
+                b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+                b"status=200 sizes=16384,65536,1048576,16777216 "
+                b"completed_bytes=17907712 pattern=mod251"
+            ),
+        )
+        self.assertEqual(profile.machine.hart_count, 4)
+        self.assertEqual(profile.machine.mmu_types, ("riscv,sv39",) * 4)
+        self.assertEqual(
+            profile.cpu,
+            "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        )
+        self.assertIsNone(profile.validation.recovery)
+
+    def test_generic_sv39_smp4_recovery_is_a_frozen_registered_contract(
+        self,
+    ) -> None:
+        profile = profile_by_name("generic-sv39-smp4-software-reboot")
+
+        self.assertEqual(profile.machine.name, "qemu-virt-smp4-frozen-dtb")
+        self.assertEqual(
+            profile.bootargs,
+            profile_by_name("generic-sv39-smp4-tcp-probe").bootargs,
+        )
+        self.assertEqual(profile.validation.name, "megrez-tcp-probe-recovery")
+        self.assertEqual(
+            profile.validation.recovery,
+            RecoveryContract(
+                armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60",
+                trigger_marker=profile.validation.completion_line,
+                recovery_timeout=90.0,
+            ),
+        )
+        self.assertFalse(profile.requires_resource_gate)
+        validate_registered_profile(profile)
+
+    def test_rng_seed_removal_canonicalizes_the_exact_dtb_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            outputs = []
+            for index, seed in enumerate(("01 02 03 04", "f1 e2 d3 c4")):
+                dts = directory / f"seed-{index}.dts"
+                dtb = directory / f"seed-{index}.dtb"
+                dts.write_text(
+                    "/dts-v1/;\n"
+                    "/ {\n"
+                    '  compatible = "qemu,test";\n'
+                    "  chosen { rng-seed = [" + seed + "]; };\n"
+                    "};\n"
+                )
+                subprocess.run(
+                    ["dtc", "-q", "-I", "dts", "-O", "dtb", "-o", dtb, dts],
+                    check=True,
+                )
+                self.assertTrue(remove_rng_seed_if_present(dtb))
+                canonicalize_dtb(dtb)
+                outputs.append(dtb.read_bytes())
+
+            self.assertEqual(outputs[0], outputs[1])
+
     def test_existing_profiles_retain_their_public_policy(self) -> None:
         expected = {
             GENERIC_SV39: (
@@ -626,24 +736,37 @@ class ContractCompositionTests(unittest.TestCase):
         virt = _parse_args(
             [
                 "run",
-                "--uboot", "/tmp/u-boot",
-                "--boot-disk", "/tmp/boot.ext4",
-                "--manifest", "/tmp/artifacts.json",
-                "--serial-log", "/tmp/serial.log",
-                "--marker-event", "/tmp/marker.txt",
-                "--result", "/tmp/result.json",
+                "--uboot",
+                "/tmp/u-boot",
+                "--boot-disk",
+                "/tmp/boot.ext4",
+                "--manifest",
+                "/tmp/artifacts.json",
+                "--serial-log",
+                "/tmp/serial.log",
+                "--marker-event",
+                "/tmp/marker.txt",
+                "--result",
+                "/tmp/result.json",
             ]
         )
         sifive = _parse_args(
             [
                 "run",
-                "--profile", SIFIVE_U_ASTERINAS_SMOKE.name,
-                "--uboot", "/tmp/u-boot.bin",
-                "--boot-disk", "/tmp/boot.ext4",
-                "--manifest", "/tmp/artifacts.json",
-                "--serial-log", "/tmp/serial.log",
-                "--marker-event", "/tmp/marker.txt",
-                "--result", "/tmp/result.json",
+                "--profile",
+                SIFIVE_U_ASTERINAS_SMOKE.name,
+                "--uboot",
+                "/tmp/u-boot.bin",
+                "--boot-disk",
+                "/tmp/boot.ext4",
+                "--manifest",
+                "/tmp/artifacts.json",
+                "--serial-log",
+                "/tmp/serial.log",
+                "--marker-event",
+                "/tmp/marker.txt",
+                "--result",
+                "/tmp/result.json",
             ]
         )
 
@@ -754,8 +877,7 @@ class ContractCompositionTests(unittest.TestCase):
     def test_common_boot_flow_renders_only_the_registered_transport(self) -> None:
         virt = tuple(command.text for command in boot_commands())
         sifive = tuple(
-            command.text
-            for command in boot_commands(profile=SIFIVE_U_ASTERINAS_SMOKE)
+            command.text for command in boot_commands(profile=SIFIVE_U_ASTERINAS_SMOKE)
         )
 
         self.assertIn("virtio scan", virt)
@@ -888,12 +1010,18 @@ class ContractCompositionTests(unittest.TestCase):
     def test_cli_rejects_nonfinite_or_nonpositive_timeouts(self) -> None:
         prefix = [
             "run",
-            "--uboot", "/tmp/u-boot",
-            "--boot-disk", "/tmp/boot.ext4",
-            "--manifest", "/tmp/artifacts.json",
-            "--serial-log", "/tmp/serial.log",
-            "--marker-event", "/tmp/marker.txt",
-            "--result", "/tmp/result.json",
+            "--uboot",
+            "/tmp/u-boot",
+            "--boot-disk",
+            "/tmp/boot.ext4",
+            "--manifest",
+            "/tmp/artifacts.json",
+            "--serial-log",
+            "/tmp/serial.log",
+            "--marker-event",
+            "/tmp/marker.txt",
+            "--result",
+            "/tmp/result.json",
         ]
         for option, value in (
             ("--startup-timeout", "0"),
@@ -1097,7 +1225,9 @@ class ThirdBoardContractTests(unittest.TestCase):
             StorageTransport.VIRTIO_EXT4,
         )
         # A non-override machine must keep its default DTB untouched.
-        self.assertIsNone(profile_by_name("sifive-u-asterinas-smoke").machine.root_compatible_override)
+        self.assertIsNone(
+            profile_by_name("sifive-u-asterinas-smoke").machine.root_compatible_override
+        )
 
     def test_third_board_scenario_completes_in_userspace(self) -> None:
         scenario = profile_by_name("third-board-asterinas-smoke").validation

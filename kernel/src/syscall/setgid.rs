@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::SyscallReturn;
-use crate::{
-    prelude::*,
-    process::posix_thread::ContextPthreadAdminApi,
-};
+use crate::{prelude::*, process::posix_thread::ContextPthreadAdminApi};
 
 pub fn sys_setgid(gid: i32, ctx: &Context) -> Result<SyscallReturn> {
     if gid < 0 {

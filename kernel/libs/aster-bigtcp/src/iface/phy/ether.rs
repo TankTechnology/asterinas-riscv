@@ -53,8 +53,8 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
     pub fn new(
         driver: D,
         ether_addr: EthernetAddress,
-        ip_cidr: Ipv4Cidr,
-        gateway: Ipv4Address,
+        ip_cidr: Option<Ipv4Cidr>,
+        gateway: Option<Ipv4Address>,
         name: CString,
         sched_poll: E::ScheduleNextPoll,
         flags: InterfaceFlags,
@@ -64,14 +64,18 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             let now = get_network_timestamp();
 
             let mut interface = smoltcp::iface::Interface::new(config, device, now);
-            interface.update_ip_addrs(|ip_addrs| {
-                debug_assert!(ip_addrs.is_empty());
-                ip_addrs.push(wire::IpCidr::Ipv4(ip_cidr)).unwrap();
-            });
-            interface
-                .routes_mut()
-                .add_default_ipv4_route(gateway)
-                .unwrap();
+            if let Some(ip_cidr) = ip_cidr {
+                interface.update_ip_addrs(|ip_addrs| {
+                    debug_assert!(ip_addrs.is_empty());
+                    ip_addrs.push(wire::IpCidr::Ipv4(ip_cidr)).unwrap();
+                });
+            }
+            if let Some(gateway) = gateway {
+                interface
+                    .routes_mut()
+                    .add_default_ipv4_route(gateway)
+                    .unwrap();
+            }
             interface
         });
 

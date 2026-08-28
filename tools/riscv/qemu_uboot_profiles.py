@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -162,6 +163,34 @@ class BootFlow:
 
 
 @dataclass(frozen=True)
+class RecoveryContract:
+    """One immutable guest-triggered firmware recovery expectation."""
+
+    armed_marker: bytes
+    trigger_marker: bytes
+    recovery_timeout: float
+    milestones: tuple[tuple[str, bytes], ...] = (
+        ("opensbi", b"OpenSBI v"),
+        ("uboot", b"U-Boot 2026.07"),
+        ("prompt", b"\n=> "),
+    )
+
+    def __post_init__(self) -> None:
+        for name, marker in (
+            ("armed", self.armed_marker),
+            ("trigger", self.trigger_marker),
+        ):
+            if not marker or b"\n" in marker or b"\r" in marker:
+                raise ValueError(f"recovery {name} marker must be one line")
+        if not math.isfinite(self.recovery_timeout) or self.recovery_timeout <= 0:
+            raise ValueError("recovery timeout must be finite and positive")
+        if not self.milestones or any(
+            not name or not marker for name, marker in self.milestones
+        ):
+            raise ValueError("recovery milestones must be named and non-empty")
+
+
+@dataclass(frozen=True)
 class ValidationScenario:
     """One fixed guest expectation and its externally reported scope."""
 
@@ -177,6 +206,7 @@ class ValidationScenario:
     command_timeout: float
     boot_timeout: float
     post_terminal_timeout: float
+    recovery: RecoveryContract | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.bootargs:
@@ -206,6 +236,11 @@ class ValidationScenario:
             raise ValueError("validation scenario timeouts must be positive")
         if self.post_terminal_timeout < 0:
             raise ValueError("post-terminal timeout must not be negative")
+        if self.recovery is not None:
+            if self.recovery.trigger_marker != self.completion_line:
+                raise ValueError("recovery trigger must equal the completion line")
+            if self.post_terminal_timeout != 0:
+                raise ValueError("recovery scenario cannot use post-terminal delay")
 
 
 @dataclass(frozen=True)
@@ -312,6 +347,48 @@ ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
     command_timeout=10.0,
     boot_timeout=60.0,
     post_terminal_timeout=0.25,
+)
+
+MEGREZ_TCP_PROBE_READY_LINE = (
+    b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+    b"status=200 sizes=16384,65536,1048576,16777216 "
+    b"completed_bytes=17907712 pattern=mod251"
+)
+
+MEGREZ_TCP_PROBE = ValidationScenario(
+    name="megrez-tcp-probe",
+    bootargs=(
+        "console=ttyS0 loglevel=info init=/init "
+        "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+        "asterinas.reboot_after=60"
+    ),
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            MEGREZ_TCP_PROBE_READY_LINE,
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=MEGREZ_TCP_PROBE_READY_LINE,
+    forbidden_markers=ASTERINAS_USERSPACE_SMOKE.forbidden_markers,
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=90.0,
+    post_terminal_timeout=0.25,
+)
+
+MEGREZ_TCP_PROBE_RECOVERY = replace(
+    MEGREZ_TCP_PROBE,
+    name="megrez-tcp-probe-recovery",
+    post_terminal_timeout=0.0,
+    recovery=RecoveryContract(
+        armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60",
+        trigger_marker=MEGREZ_TCP_PROBE_READY_LINE,
+        recovery_timeout=90.0,
+    ),
 )
 
 LTP_SYSCALL_GATE = ValidationScenario(
@@ -423,6 +500,13 @@ QEMU_VIRT_SMP4 = replace(
     name="qemu-virt-smp4",
     hart_count=4,
     mmu_types=("riscv,sv39",) * 4,
+)
+
+QEMU_VIRT_SMP4_FROZEN_DTB = replace(
+    QEMU_VIRT_SMP4,
+    name="qemu-virt-smp4-frozen-dtb",
+    remove_rng_seed=True,
+    provenance="QEMU virt SMP=4 with rng-seed removed for exact DTB identity",
 )
 
 SIFIVE_U = MachineContract(
@@ -590,6 +674,20 @@ GENERIC_SV39 = QemuUbootProfile(
     validation=ASTERINAS_USERSPACE_SMOKE,
 )
 
+GENERIC_SV39_SMP4_TCP_PROBE = QemuUbootProfile(
+    name="generic-sv39-smp4-tcp-probe",
+    machine=QEMU_VIRT_SMP4_FROZEN_DTB,
+    boot_flow=UBOOT_BOOTI,
+    validation=MEGREZ_TCP_PROBE,
+)
+
+GENERIC_SV39_SMP4_SOFTWARE_REBOOT = QemuUbootProfile(
+    name="generic-sv39-smp4-software-reboot",
+    machine=QEMU_VIRT_SMP4_FROZEN_DTB,
+    boot_flow=UBOOT_BOOTI,
+    validation=MEGREZ_TCP_PROBE_RECOVERY,
+)
+
 GENERIC_SV39_LTP_SMP1 = QemuUbootProfile(
     name="generic-sv39-ltp-smp1",
     machine=QEMU_VIRT,
@@ -723,6 +821,8 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
         profile.name: profile
         for profile in (
             GENERIC_SV39,
+            GENERIC_SV39_SMP4_TCP_PROBE,
+            GENERIC_SV39_SMP4_SOFTWARE_REBOOT,
             GENERIC_SV39_LTP_SMP1,
             GENERIC_SV39_LTP_SMP4,
             GENERIC_SV39_DRM_CURSOR_SMP4,

@@ -164,7 +164,162 @@ make test_riscv_debian_systemd_m2_gate \
 
 The target requires every frozen artifact and never invokes debootstrap, a
 mirror, or `build_rootfs.sh`. Network is permitted only while constructing the
-signed base root. QEMU is always launched with `-nic none`.
+signed base root. The M1 and M2 gates are always launched with `-nic none`;
+the explicit M5 gate below is the only slirp-enabled exception.
+
+### QEMU M5 HTTPS desktop gate
+
+Build the `desktop-m5-network` root when the external-network desktop is the
+intended input. This profile adds the `curl` command as a frozen package
+identity. The QEMU gate uses slirp only for the guest data path; it does not
+inherit host proxy variables, TAP configuration, or a Linux guest kernel.
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m5-network
+make test_riscv_debian_desktop_m5_qemu_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/qemu-gate"
+```
+
+The gate requires ordered DNS and HTTPS evidence for `www.baidu.com`, the
+exact slirp local address `10.0.2.15`, all M4 application-window milestones,
+and a non-blank framebuffer capture. ICMP ping sockets and `ip` route dumps
+are not part of this browser gate because those Linux interfaces remain
+separate compatibility work; UDP DNS and TCP/TLS are tested directly.
+
+NetSurf can render ordinary raster and SVG page assets supplied by its Debian
+dependencies. Its JavaScript engine is intentionally not a modern Chromium
+compatibility claim: JavaScript must be reported by a separate local DOM smoke
+test and is not allowed to turn a successful DNS/HTTPS gate into a failure.
+The current non-blank framebuffer check proves the desktop, not that the
+foreground window has finished rendering Baidu.
+
+### QEMU M6 browser evidence gate
+
+After rebuilding the `desktop-m5-network` root, use the M6 gate to foreground
+and capture a Baidu-hosted PNG in NetSurf before navigating the same window to
+a fixed local JavaScript fixture. The direct image isolates HTTPS transfer and
+image decoding from the modern Baidu homepage's script workload:
+
+```bash
+make test_riscv_debian_desktop_m6_browser_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/m6-qemu-gate"
+```
+
+`desktop-m6-browser.ppm` records the foreground Baidu logo image and
+`desktop-m6-javascript.ppm` records the local fixture after classification.
+`result.json` reports `limited-pass`, `disabled`, or `failed`. A
+`limited-pass` proves only that the packaged NetSurf engine executed a local
+script-only navigation from the pending fixture to a fixed pass document; it
+is not a claim of Chromium-compatible JavaScript. The changing remote pixels
+are inspected as visual evidence and are not compared to a fixed hash.
+Rendering the full modern Baidu homepage is a later compatibility target, not
+a prerequisite for this foundational gate.
+
+### QEMU M7 real Baidu page evidence
+
+The M7 gate reuses the M6 network, desktop, remote-image, and local-JavaScript
+evidence before starting a fresh NetSurf process with JavaScript disabled. It
+loads Baidu's official mobile page because the HTTPS desktop endpoint falls
+back to an approximately 700-KiB legacy document that NetSurf 3.11 does not
+finish laying out. The mobile document is approximately 80 KiB and retains
+the real Baidu logo, search form, remote stylesheets, and image requests.
+
+```bash
+make test_riscv_debian_desktop_m7_baidu_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m7-baidu/m7-qemu"
+```
+
+`desktop-m7-baidu-home.ppm` is published only after the title identifies a
+real page from `https://m.baidu.com/`. A search-result frame and a passing
+`result.json` additionally require the submitted query to return a result
+title. If Baidu sends its `wappass.baidu.com` security challenge, the gate
+publishes `desktop-m7-baidu-failure.ppm` and remains failed. The challenge is
+evidence that DNS, HTTPS, navigation, and rendering reached Baidu, but it is
+not accepted as search-result evidence.
+
+The 2026-08-28 generic-Sv39/SMP=4 run reached the homepage milestone and
+captured a visible Baidu logo and search box. The subsequent `asterinas`
+query rendered `百度安全验证`, so the final M7 result remained failed with
+`search-title-timeout`. The current image also lacks a CJK font, leaving some
+Chinese text as missing-glyph boxes. These are user-space/browser and remote
+service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
+VirtIO input, Xorg, or framebuffer failure.
+
+### Megrez static-RJ45 browser gate
+
+The physical browser milestone reuses the signed `desktop-m5-network` root
+and the kernel's reviewed static profile. The exact guest identity is:
+
+```text
+asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1
+interface=eth0
+primary DNS=10.2.0.5
+fallback DNS=10.2.0.6
+```
+
+Install a newly built ext2 image with
+`tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
+back eMMC partition 2. Linux may stage immutable boot files but is not an
+accepted runtime or installer kernel. Serve the current Image, frozen Megrez
+DTB, and Stage1 from a private TFTP root on `10.100.19.216`, then compute the
+two changing U-Boot CRC32 values and run the bounded gate:
+
+```bash
+crc32_file() {
+  python3 -c 'import pathlib,sys,zlib; print(f"{zlib.crc32(pathlib.Path(sys.argv[1]).read_bytes()):08x}")' "$1"
+}
+BOOTI_CRC32="$(crc32_file target/megrez-browser-network/tftp/asterinas-browser-net.booti)"
+STAGE1_CRC32="$(crc32_file target/megrez-browser-network/tftp/debian-browser-stage1.cpio)"
+python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
+  --booti asterinas-browser-net.booti \
+  --dtb eic7700-milkv-megrez.dtb \
+  --initrd debian-browser-stage1.cpio \
+  --expected-crc32 "booti=$BOOTI_CRC32,dtb=4afcb20e,initrd=$STAGE1_CRC32" \
+  --host-interface enp12s0 --load-transport tftp \
+  --tftp-board-address 10.100.19.200 \
+  --tftp-server-address 10.100.19.216 \
+  --tftp-netmask 255.255.248.0 \
+  --output-directory target/megrez-browser-network/gate \
+  --boot-timeout 300 --drain-timeout 5
+```
+
+The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
+evidence, M5 READY, M4 desktop READY, M6 remote image, one JavaScript status,
+and matching M6 READY. `limited-pass`, `disabled`, and `failed` describe only
+the packaged NetSurf JavaScript engine; none claims Chromium compatibility.
+The gate drains the full serial transcript before publishing `passed: true`.
+It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
+Asterinas network path does not provide the Linux ping-socket contract, and a
+ping result would not prove that browser traffic works.
+
+This is a bounded useful-network contract, not a general Linux network stack
+milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
+recovery, live GMAC failover, USB Ethernet, Wi-Fi, Firefox, and modern
+JavaScript remain outside this gate.
 
 ## Evidence and cleanup
 

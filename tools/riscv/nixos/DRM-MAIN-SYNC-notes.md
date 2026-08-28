@@ -1034,3 +1034,35 @@ An unfiltered ktest attempt is recorded separately from these green targeted
 gates: three existing vblank-queue tests failed and the run later stalled at a
 wait-for-submit test. This transaction does not claim that unrelated full-suite
 state as resolved.
+
+## 2026-08-28 Debian and Megrez main-line integration
+
+The DRM branch merged the public GitHub `main` tip
+`bb55702cff8826514b4e44609d0d3e9e7be57634`, absorbing 157 commits since the
+previous merge base. The imported work includes the Debian desktop M5 network,
+M6 browser-evidence, and M7 Baidu-page contracts; the Megrez Debian installer,
+pre-board, debug, and GMAC workflows; the new DWMAC component and bounded RX/TX
+models; and the supporting Unix-socket credentials, user-namespace, seccomp,
+and process-identity changes. Main did not modify the DRM implementation
+directly.
+
+Six textual conflicts occurred in `user_ns.rs`, `seccomp.rs`, and the
+`setfsuid`, `setfsgid`, `setuid`, and `setgid` syscalls. They were resolved to
+the later main-line implementations, which contain the complete privilege,
+unmapped-ID, immutable filter-chain, and atomic TSYNC semantics rather than the
+older branch variants. The merged RISC-V Sv39 kernel compiled successfully,
+including the new `aster-dwmac` component.
+
+The imported contract suites passed: 191 Debian rootfs/systemd/desktop/network/
+browser tests, 33 Megrez GMAC tests, 11 DWMAC liveness-model tests, 68 Megrez
+debug/pre-board tests, and 52 Megrez installer/board-session tests. These are
+host-side and QEMU contract gates; this integration checkpoint does not claim a
+new physical-Megrez board run or a complete interactive Debian desktop boot.
+
+The post-merge DRM M22 QEMU gate reported 55 passes, 0 failures, and 32/32
+resource-reclamation rounds. The final Mesa gate in
+`/tmp/drm-main-debian-integration-gate.log` reported zero return codes for
+legacy and atomic kmscube, PRIME, syncobj, raw virgl, and EGL, including four
+explicit-sync frames, and ended with `MINI_VIRGL_PASS`. Thus the imported
+Debian/network/board work does not regress the exercised
+Mesa-to-DRM-to-virtio-gpu-to-virglrenderer path.
