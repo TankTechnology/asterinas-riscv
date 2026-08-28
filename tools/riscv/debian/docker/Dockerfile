@@ -15,7 +15,9 @@ ARG DEBIAN_ARCHIVE_KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg='7:6.1.1-3ubuntu5' \
+        flex \
         fontconfig='2.15.0-1.1ubuntu2' \
+        bison \
         python3-dev \
         python3-setuptools \
         systemd='255.4-1ubuntu8.17' \
