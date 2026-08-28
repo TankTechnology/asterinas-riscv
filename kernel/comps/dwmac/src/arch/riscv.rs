@@ -55,8 +55,7 @@ const ETH_AXI_REQUEST: u32 = 1;
 const TX_CLOCK_GATE: u32 = 1;
 const TX_CLOCK_PARENT_MASK: u32 = 1 << 1;
 const TX_CLOCK_DIVISOR_MASK: u32 = 0x7f << 4;
-const GMAC4_MIN_VERSION: u8 = 0x40;
-const GMAC5_MAX_VERSION: u8 = 0x5f;
+const EIC7700_DWMAC_VERSION: u8 = 0x52;
 const MDIO_BUSY: u32 = 1;
 const MDIO_WRITE: u32 = 1 << 2;
 const MDIO_READ: u32 = 3 << 2;
@@ -629,7 +628,7 @@ fn validate_controllers(registers: &mut dyn PlatformRegisters) -> Result<[u8; 2]
     for alias in [0, 1] {
         let version =
             registers.read(RegisterBank::Gmac(alias), MAC_VERSION.offset() as usize)? as u8;
-        if !(GMAC4_MIN_VERSION..=GMAC5_MAX_VERSION).contains(&version) {
+        if version != EIC7700_DWMAC_VERSION {
             return Err(PlatformError::UnsupportedController);
         }
         versions[usize::from(alias)] = version;
@@ -961,6 +960,20 @@ mod tests {
     }
 
     #[ktest]
+    fn requires_documented_dwmac_5_20_on_both_ports() {
+        let mut exact = VersionRegisters([0x52, 0x52]);
+        assert_eq!(validate_controllers(&mut exact).unwrap(), [0x52, 0x52]);
+
+        for versions in [[0x51, 0x52], [0x52, 0x53], [0x52, 0x51]] {
+            let mut registers = VersionRegisters(versions);
+            assert_eq!(
+                validate_controllers(&mut registers),
+                Err(PlatformError::UnsupportedController)
+            );
+        }
+    }
+
+    #[ktest]
     fn official_platform_sequence_is_exact_and_read_back() {
         let port = validate_port(frozen_port(1)).unwrap();
         let mut registers = FakeRegisters::default();
@@ -993,6 +1006,46 @@ mod tests {
     struct FakeRegisters {
         writes: Vec<(RegisterBank, usize, u32)>,
         readbacks: Vec<(RegisterBank, usize, u32)>,
+    }
+
+    struct VersionRegisters([u8; 2]);
+
+    impl PlatformRegisters for VersionRegisters {
+        fn read(&mut self, bank: RegisterBank, offset: usize) -> Result<u32, PlatformError> {
+            if offset != MAC_VERSION.offset() as usize {
+                return Err(PlatformError::RegisterAccess);
+            }
+            let RegisterBank::Gmac(alias) = bank else {
+                return Err(PlatformError::RegisterAccess);
+            };
+            self.0
+                .get(usize::from(alias))
+                .copied()
+                .map(u32::from)
+                .ok_or(PlatformError::RegisterAccess)
+        }
+
+        fn write(
+            &mut self,
+            _bank: RegisterBank,
+            _offset: usize,
+            _value: u32,
+        ) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
+
+        fn write_readback(
+            &mut self,
+            _bank: RegisterBank,
+            _offset: usize,
+            _value: u32,
+        ) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
+
+        fn wait_reset_pulse(&mut self) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
     }
 
     impl PlatformRegisters for FakeRegisters {
