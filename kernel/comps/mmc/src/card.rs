@@ -571,4 +571,27 @@ mod tests {
         assert_eq!(host.data_resets, 0);
         host.assert_done();
     }
+
+    #[ktest]
+    fn writes_one_standard_sdhci_request_with_one_command() {
+        const BLOCKS: usize = 1024;
+        let card = Card {
+            rca: 1,
+            nr_sectors: 2048,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::DataCommand(25, 2, BLOCKS as u16, Response::Short(0))].into();
+        let mut sectors = vec![0u8; BLOCKS * SECTOR_SIZE];
+        sectors[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sectors[(BLOCKS - 1) * SECTOR_SIZE..(BLOCKS - 1) * SECTOR_SIZE + 4]
+            .copy_from_slice(&2u32.to_le_bytes());
+
+        card.write_sectors(&mut host, 2, &sectors).unwrap();
+
+        assert_eq!(host.written_words.len(), BLOCKS * SECTOR_SIZE / 4);
+        assert_eq!(host.written_words[0], 1);
+        assert_eq!(host.written_words[(BLOCKS - 1) * SECTOR_SIZE / 4], 2);
+        assert_eq!(host.data_resets, 0);
+        host.assert_done();
+    }
 }
