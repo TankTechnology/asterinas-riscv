@@ -25,6 +25,7 @@ use crate::{
         signal::{
             HandlePendingSignal, PauseReason, SigStack,
             constants::{SIGCHLD, SIGKILL},
+            provenance::trace_kernel_thread_enqueue,
             signals::kernel::KernelSignal,
         },
     },
@@ -80,7 +81,7 @@ pub fn do_execve(
     task_set.start_execve();
 
     // Terminate all other threads
-    sigkill_other_threads(ctx.task, &task_set);
+    sigkill_other_threads(ctx.task, &task_set, "execve-sibling");
     drop(task_set);
 
     let former_tid = ctx.posix_thread.tid();
@@ -101,6 +102,7 @@ pub fn do_execve(
         ctx.posix_thread
             .ptrace_may_stop_on(PtraceEvent::Exec(former_tid), ctx, user_context);
     } else {
+        trace_kernel_thread_enqueue("execve-fatal-failure", ctx.posix_thread, ctx.posix_thread);
         ctx.posix_thread
             .enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
     }

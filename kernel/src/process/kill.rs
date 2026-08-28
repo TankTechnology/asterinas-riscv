@@ -3,7 +3,12 @@
 use super::{
     Pgid, Pid, Process, pid_table,
     posix_thread::AsPosixThread,
-    signal::{constants::SIGCONT, sig_num::SigNum, signals::Signal},
+    signal::{
+        constants::SIGCONT,
+        provenance::{trace_user_process_enqueue, trace_user_thread_enqueue},
+        sig_num::SigNum,
+        signals::Signal,
+    },
 };
 use crate::{
     prelude::*,
@@ -30,11 +35,18 @@ pub fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<
 
         if !ctx.posix_thread.has_signal_blocked(signal.num()) {
             // Killing the current thread does not raise any permission issues.
+            trace_user_thread_enqueue(
+                signal.as_ref(),
+                "kill-or-pidfd",
+                "self-thread",
+                ctx,
+                ctx.posix_thread,
+            );
             ctx.posix_thread.enqueue_signal(signal);
             return Ok(());
         }
 
-        return kill_process(ctx.process.as_ref(), Some(signal), ctx);
+        return kill_process(ctx.process.as_ref(), Some(signal), "process", ctx);
     }
 
     // Slow path
@@ -49,7 +61,7 @@ pub fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<
     }
     .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process does not exist"))?;
 
-    kill_process(&process, signal, ctx)
+    kill_process(&process, signal, "process", ctx)
 }
 
 /// Sends a signal to all processes in a group, using the current process
@@ -83,6 +95,7 @@ pub fn kill_group<S: Signal + Clone>(pgid: Pgid, signal: Option<S>, ctx: &Contex
         let res = kill_process(
             &process,
             signal.clone().map(|s| Box::new(s) as Box<dyn Signal>),
+            "process-group",
             ctx,
         );
         if res.is_err_and(|err| err.error() != Errno::EPERM) {
@@ -140,6 +153,13 @@ pub fn tgkill(
     if let Some(signal) = signal {
         // We've checked the permission issues above.
         // FIXME: We should take some lock while checking the permission to avoid race conditions.
+        trace_user_thread_enqueue(
+            signal.as_ref(),
+            "tkill-tgkill-or-pidfd",
+            "thread",
+            ctx,
+            target_posix_thread,
+        );
         target_posix_thread.enqueue_signal(signal);
     }
 
@@ -174,6 +194,7 @@ pub fn kill_all<S: Signal + Clone>(signal: Option<S>, ctx: &Context) -> Result<(
         let res = kill_process(
             &process,
             signal.clone().map(|s| Box::new(s) as Box<dyn Signal>),
+            "all-processes",
             ctx,
         );
         if res.is_err_and(|err| err.error() != Errno::EPERM) {
@@ -184,12 +205,18 @@ pub fn kill_all<S: Signal + Clone>(signal: Option<S>, ctx: &Context) -> Result<(
     result
 }
 
-fn kill_process(process: &Process, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<()> {
+fn kill_process(
+    process: &Process,
+    signal: Option<Box<dyn Signal>>,
+    route: &'static str,
+    ctx: &Context,
+) -> Result<()> {
     let signum = signal.as_ref().map(|signal| signal.num());
     let target_main_thread = process.main_thread();
     check_signal_perm(target_main_thread.as_posix_thread().unwrap(), ctx, signum)?;
 
     if let Some(signal) = signal {
+        trace_user_process_enqueue(signal.as_ref(), "kill-or-pidfd", route, ctx, process);
         process.enqueue_signal(signal);
     }
 

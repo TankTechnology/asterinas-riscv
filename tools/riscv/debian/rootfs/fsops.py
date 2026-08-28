@@ -28,6 +28,7 @@ _PUBLISHED_PATHS = (
     "source-metadata/InRelease",
     "source-metadata/package-checksums",
 )
+_M5_PUBLISHED_PATHS = _PUBLISHED_PATHS + ("source-metadata/Security-InRelease",)
 
 
 class FsOpsError(ValueError):
@@ -216,10 +217,10 @@ def admit_cache_entry(
         os.close(source_descriptor)
 
 
-def _open_publication_sources(source_root: Path) -> list[int]:
+def _open_publication_sources(source_root: Path, paths: Sequence[str]) -> list[int]:
     sources: list[int] = []
     try:
-        for relative_path in _PUBLISHED_PATHS:
+        for relative_path in paths:
             sources.append(_open_regular_file(source_root / relative_path))
     except BaseException:
         for descriptor in sources:
@@ -397,10 +398,13 @@ def _publish_entries(
         raise PublishInterrupted(pending_signal)
 
 
-def publish_set(output_directory: Path, source_root: Path) -> None:
+def publish_set(
+    output_directory: Path, source_root: Path, *, include_security_inrelease: bool = False
+) -> None:
     """Publishes the exact rootfs artifact set with rollback on process failure."""
 
-    sources = _open_publication_sources(source_root)
+    paths = _M5_PUBLISHED_PATHS if include_security_inrelease else _PUBLISHED_PATHS
+    sources = _open_publication_sources(source_root, paths)
     entries: list[_PublishFile] = []
     try:
         with _open_directory(
@@ -416,7 +420,7 @@ def publish_set(output_directory: Path, source_root: Path) -> None:
             try:
                 for source, relative_path in zip(
                     sources,
-                    _PUBLISHED_PATHS,
+                    paths,
                     strict=True,
                 ):
                     path = Path(relative_path)
@@ -474,6 +478,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     publication = subparsers.add_parser("publish-set")
     publication.add_argument("--output-dir", required=True, type=Path)
     publication.add_argument("--source-root", required=True, type=Path)
+    publication.add_argument("--include-security-inrelease", action="store_true")
     stage1 = subparsers.add_parser("publish-stage1")
     stage1.add_argument("--output-dir", required=True, type=Path)
     stage1.add_argument("--init-source", required=True, type=Path)
@@ -489,7 +494,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if namespace.command == "cache-admit":
             admit_cache_entry(namespace.cache_dir, namespace.source, namespace.sha256)
         elif namespace.command == "publish-set":
-            publish_set(namespace.output_dir, namespace.source_root)
+            publish_set(
+                namespace.output_dir,
+                namespace.source_root,
+                include_security_inrelease=namespace.include_security_inrelease,
+            )
         else:
             publish_stage1(
                 namespace.output_dir,

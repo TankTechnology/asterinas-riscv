@@ -562,6 +562,7 @@ class DebianStage1Tests(unittest.TestCase):
             "systemd-desktop-root-label",
             "systemd-application-desktop-root-label",
             "systemd-network-desktop-root-label",
+            "systemd-browser-root-label",
             "systemd-handoff-sequence",
             "systemd-exec",
         )
@@ -1795,6 +1796,10 @@ esac
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         (work_directory / "package-index-checksums").write_text(
             f"package\triscv64\t1.0\t{digest}\n",
+            encoding="utf-8",
+        )
+        (work_directory / "packages.lock").write_text(
+            "package\triscv64\t1.0\n",
             encoding="utf-8",
         )
         cache_directory = self.directory / "cache"
@@ -4476,6 +4481,47 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
 
 
 class DebianRootfsGateBackendSessionTests(unittest.TestCase):
+    def test_validation_uses_manifest_schema_for_package_checksums(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            inputs = []
+            for index in range(8):
+                path = directory / f"input-{index}"
+                path.write_bytes(str(index).encode())
+                inputs.append(path)
+            output = directory / "output"
+            output.mkdir()
+            config = GateConfig(*inputs, output)
+            downloaded_packages = (
+                ("firefox-esr", "riscv64", "140.14.0esr-1", "0" * 64, "security"),
+            )
+            manifest = mock.Mock(
+                schema_version=6,
+                downloaded_packages=downloaded_packages,
+                suite="trixie",
+                architecture="riscv64",
+                debian_release="13.6",
+                root_image_sha256="1" * 64,
+                packages_lock_sha256="2" * 64,
+                gate_packages=(),
+            )
+            with (
+                mock.patch.object(gate_backend_module, "load_manifest", return_value=manifest),
+                mock.patch.object(gate_backend_module, "validate_frozen_root"),
+                mock.patch.object(
+                    gate_backend_module,
+                    "load_package_checksums",
+                    return_value=downloaded_packages,
+                ) as load_checksums,
+                mock.patch.object(gate_backend_module, "verify_four_hart_dtb", return_value=4),
+                gate_backend_module.ConcreteOperations(config) as operations,
+            ):
+                operations.validate_inputs(config, operations.snapshot_inputs(config))
+
+            load_checksums.assert_called_once_with(
+                mock.ANY, schema_version=manifest.schema_version
+            )
+
     def test_session_uses_hardlinked_same_root_and_removes_directory_after_drain(
         self,
     ) -> None:

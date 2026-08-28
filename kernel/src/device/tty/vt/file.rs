@@ -105,6 +105,12 @@ impl FileOps for VtFile {
 }
 
 impl PerOpenFileOps for VtFile {
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        // A VT file owns terminal, console, and open-counter state. VtConsole's process links are
+        // weak, and none of this state can retain an arbitrary file description.
+        true
+    }
+
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a TTY");
     }

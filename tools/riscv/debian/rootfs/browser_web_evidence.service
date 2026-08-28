@@ -1,0 +1,16 @@
+[Unit]
+Description=Asterinas Debian online Firefox evidence
+After=basic.target
+Wants=asterinas-desktop-m5.service
+Requires=asterinas-browser-web.service
+After=asterinas-browser-web.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS=5400
+TimeoutStartSec=5700s
+ExecStart=/usr/lib/asterinas/browser-web-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

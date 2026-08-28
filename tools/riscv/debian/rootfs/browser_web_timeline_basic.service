@@ -1,0 +1,13 @@
+[Unit]
+Description=Asterinas online browser basic-target timeline
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/browser-web-timeline basic
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target
