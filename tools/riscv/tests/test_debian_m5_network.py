@@ -83,8 +83,65 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 "ASTERINAS_GMAC_TCP_PROBE_FAIL "
                 "reason=connect-poll errno=110 attempts=3\n"
                 "MEGREZ_TCP_PROBE_SELF_TEST PASS\n"
+                "MEGREZ_TCP_STRESS_SELF_TEST PASS "
+                "bytes=16777216 pattern=mod251\n"
             ),
         )
+
+    def test_native_megrez_tcp_probe_validates_streamed_stress_response(self) -> None:
+        executable = self.directory / "megrez-tcp-stress-self-test"
+        compile_result = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DMEGREZ_TCP_PROBE_SELF_TEST",
+                "-DMEGREZ_TCP_STRESS_BYTES=131072",
+                str(MEGREZ_TCP_PROBE_SOURCE),
+                "-o",
+                str(executable),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+
+        result = subprocess.run(
+            [str(executable)], check=False, capture_output=True, text=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "MEGREZ_TCP_STRESS_SELF_TEST PASS bytes=131072 pattern=mod251\n",
+            result.stdout,
+        )
+
+    def test_native_megrez_tcp_probe_production_branch_compiles_strictly(self) -> None:
+        executable = self.directory / "megrez-tcp-stress-init"
+        result = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-no-pie",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                str(MEGREZ_TCP_PROBE_SOURCE),
+                "-o",
+                str(executable),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_profile_extends_m4_with_exact_network_identity(self) -> None:
         m4 = get_profile("desktop-m4")

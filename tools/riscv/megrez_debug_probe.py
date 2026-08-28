@@ -11,6 +11,9 @@ from types import TracebackType
 PROBE_HOST = "10.100.19.216"
 PROBE_PORT = 18080
 MAX_REQUEST_BYTES = 64 * 1024
+PROBE_STRESS_BYTES = 16 * 1024 * 1024
+MAX_PROBE_PAYLOAD_BYTES = 64 * 1024 * 1024
+PROBE_CHUNK_BYTES = 64 * 1024
 PROBE_BODY = b"ASTERINAS_TCP_PROBE_OK\n"
 PROBE_RESPONSE = (
     b"HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\n" + PROBE_BODY
@@ -27,7 +30,13 @@ class ProbeServerError(RuntimeError):
 class ProbeServer:
     """Serve the fixed Megrez TCP-probe response for one gate lifecycle."""
 
-    def __init__(self, *, host: str = PROBE_HOST, port: int = PROBE_PORT) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = PROBE_HOST,
+        port: int = PROBE_PORT,
+        payload_bytes: int | None = PROBE_STRESS_BYTES,
+    ) -> None:
         if not isinstance(host, str) or not host:
             raise ValueError("probe host must be a non-empty string")
         if (
@@ -36,8 +45,15 @@ class ProbeServer:
             or not 0 <= port <= 65535
         ):
             raise ValueError("probe port must be in [0, 65535]")
+        if payload_bytes is not None and (
+            isinstance(payload_bytes, bool)
+            or not isinstance(payload_bytes, int)
+            or not 0 < payload_bytes <= MAX_PROBE_PAYLOAD_BYTES
+        ):
+            raise ValueError("probe payload bytes must be in [1, 64 MiB]")
         self._host = host
         self._port = port
+        self._payload_bytes = payload_bytes
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -91,12 +107,23 @@ class ProbeServer:
             if not chunk:
                 break
             request.extend(chunk)
-        response = (
-            PROBE_RESPONSE
-            if self._valid_request(bytes(request))
-            else NOT_FOUND_RESPONSE
+        if not self._valid_request(bytes(request)):
+            connection.sendall(NOT_FOUND_RESPONSE)
+            return
+        if self._payload_bytes is None:
+            connection.sendall(PROBE_RESPONSE)
+            return
+
+        connection.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + str(self._payload_bytes).encode("ascii")
+            + b"\r\nConnection: close\r\n\r\n"
         )
-        connection.sendall(response)
+        offset = 0
+        while offset < self._payload_bytes:
+            amount = min(PROBE_CHUNK_BYTES, self._payload_bytes - offset)
+            connection.sendall(bytes((offset + index) % 251 for index in range(amount)))
+            offset += amount
 
     def _serve(self) -> None:
         assert self._listener is not None
