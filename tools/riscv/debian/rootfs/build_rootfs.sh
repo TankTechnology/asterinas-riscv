@@ -1083,6 +1083,8 @@ configure_desktop() {
             "$stage/usr/lib/asterinas/browser-m5-marionette-gate"
         install -D -m 0755 -- "$script_directory/browser_m5_firefox.sh" \
             "$stage/usr/lib/asterinas/browser-m5-firefox"
+        install -D -m 0755 -- "$script_directory/browser_m5_window_observer.sh" \
+            "$stage/usr/lib/asterinas/browser-m5-window-observer"
         install -D -m 0755 -- "$script_directory/browser_m5_network_observer.sh" \
             "$stage/usr/lib/asterinas/browser-m5-network-observer"
         install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
