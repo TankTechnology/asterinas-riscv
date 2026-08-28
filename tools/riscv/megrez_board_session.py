@@ -53,8 +53,8 @@ FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
     "firmware-framebuffer": "Registered firmware framebuffer",
     "installer": "DEBIAN_INSTALL_PASS",
+    "verifier": "DEBIAN_VERIFY_PASS",
 }
-MILESTONE_SEQUENCE = tuple(MILESTONES)
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
 TFTP_LOAD_RESULT_PATTERN = re.compile(
@@ -240,7 +240,8 @@ def observe_milestones(
     window = tail + text
     found: list[str] = []
     cursor = 0
-    while next_index < len(MILESTONE_SEQUENCE):
+    milestone_sequence = tuple(markers)
+    while next_index < len(milestone_sequence):
         occurrences = [
             (position, name)
             for name, marker in markers.items()
@@ -249,7 +250,7 @@ def observe_milestones(
         if not occurrences:
             break
         position, name = min(occurrences)
-        expected = MILESTONE_SEQUENCE[next_index]
+        expected = milestone_sequence[next_index]
         if name != expected:
             raise RuntimeError(
                 f"milestone out of order: expected {expected}, observed {name}"
@@ -332,8 +333,16 @@ class BoardSession:
         self.milestones: dict[str, float] = {}
         self._milestone_tail = ""
         self._next_milestone = 0
-        self._markers = dict(MILESTONES)
-        self._markers["userspace"] = final_marker
+        if final_marker == MILESTONES["userspace"]:
+            self._markers = dict(MILESTONES)
+        else:
+            # Profile-specific markers are authoritative on their own.  The
+            # decorative kernel banner is not a stable interface and is absent
+            # from some otherwise successful physical boots.
+            self._markers = {
+                "kernel_enter": MILESTONES["kernel_enter"],
+                "userspace": final_marker,
+            }
 
     def _log(self, text: str) -> None:
         self.log.write(text)
@@ -888,13 +897,14 @@ def main(argv: list[str]) -> int:
         session.note_milestone(boot_loaded_artifacts(session, args))
 
         end = time.monotonic() + args.milestone_timeout
-        while time.monotonic() < end and len(session.milestones) != len(MILESTONES):
+        expected_milestones = 3 if args.final_profile == "generic" else 2
+        while time.monotonic() < end and len(session.milestones) != expected_milestones:
             text = read_available(session.fd, min(5, end - time.monotonic()))
             if text:
                 session._log(text)
                 session.note_milestone(text)
         print(json.dumps(session.milestones))
-        if len(session.milestones) != len(MILESTONES):
+        if len(session.milestones) != expected_milestones:
             return 2
         if args.require_recovery:
             remaining = end - time.monotonic()

@@ -38,6 +38,15 @@ _INSTALLER_COMMANDS = (
     "sync",
 )
 _NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "mkfifo", "rm", "tee", "wget")
+_VERIFY_INSTALLER_COMMANDS = (
+    "blockdev",
+    "dd",
+    "mkdir",
+    "mount",
+    "reboot",
+    "sha256sum",
+    "sleep",
+)
 _INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
@@ -445,6 +454,36 @@ fail reboot-returned
 """.encode()
 
 
+def render_verify_init(root_sha256: str, root_size: int) -> bytes:
+    """Render a read-only Megrez root-image verifier."""
+    if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
+        raise InstallerError("root SHA-256 must be lowercase hexadecimal")
+    if root_size <= 0 or root_size % INSTALL_WRITE_BLOCK_SIZE:
+        raise InstallerError("root size must be a positive multiple of 1 MiB")
+    read_blocks = root_size // INSTALL_WRITE_BLOCK_SIZE
+    return f"""#!/bin/sh
+set -o pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+hold() {{ while :; do sleep 3600; done; }}
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+emit() {{ printf '%s\\n' "$1" >/dev/ttyS0; }}
+fail() {{ emit "DEBIAN_VERIFY_FAIL reason=$1"; reboot -f; hold; }}
+target=/dev/mmcblk0p2
+[ -b "$target" ] || fail target-not-block-device
+[ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock count={read_blocks} 2>/dev/null | sha256sum)
+[ "$#" = 2 ] && [ "$2" = "-" ] || fail image-hash-output
+[ "$1" = "{root_sha256}" ] || fail image-hash
+emit "DEBIAN_VERIFY_PASS sha256=$1 bytes={root_size}"
+reboot -f
+fail reboot-returned
+""".encode()
+
+
 def _added_entry(name: str, mode: int, data: bytes, ino: int) -> NewcEntry:
     return NewcEntry(name, mode, ino, 2 if stat.S_ISDIR(mode) else 1, 0, 0, 0, 0, data)
 
@@ -566,13 +605,47 @@ def build_network_archive(
     _publish_archive(output, _encode_archive(entries))
 
 
+def build_verify_archive(
+    base_cpio: Path,
+    root_image: Path,
+    output: Path,
+    root_sha256: str,
+) -> None:
+    """Build a small read-only verifier for an already installed root image."""
+    entries = list(parse_newc(base_cpio.read_bytes()))
+    _validate_installer_runtime(entries, _VERIFY_INSTALLER_COMMANDS)
+    actual_hash = sha256_file(root_image)
+    if actual_hash != root_sha256:
+        raise InstallerError("root image SHA-256 mismatch")
+    if "init" not in {entry.name for entry in entries}:
+        raise InstallerError("base initramfs has no init")
+    init_data = render_verify_init(root_sha256, root_image.stat().st_size)
+    entries = [
+        NewcEntry(
+            entry.name,
+            stat.S_IFREG | 0o755 if entry.name == "init" else entry.mode,
+            entry.ino,
+            entry.nlink,
+            entry.devmajor,
+            entry.devminor,
+            entry.rdevmajor,
+            entry.rdevminor,
+            init_data if entry.name == "init" else entry.data,
+        )
+        for entry in entries
+    ]
+    _publish_archive(output, _encode_archive(entries))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-cpio", type=Path, required=True)
     parser.add_argument("--root-image", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--packages-lock", type=Path, required=True)
-    parser.add_argument("--root-url")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--root-url")
+    mode.add_argument("--verify-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -585,7 +658,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
         validate_frozen_root(namespace.root_image, manifest, namespace.packages_lock)
         if namespace.root_image.stat().st_size != ROOT_IMAGE_SIZE:
             raise InstallerError("Megrez Debian root image must be exactly 1 GiB")
-        if namespace.root_url is None:
+        if namespace.verify_only:
+            build_verify_archive(
+                namespace.base_cpio,
+                namespace.root_image,
+                namespace.output,
+                manifest.root_image_sha256,
+            )
+        elif namespace.root_url is None:
             build_archive(
                 namespace.base_cpio,
                 namespace.root_image,
