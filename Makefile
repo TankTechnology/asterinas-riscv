@@ -300,12 +300,18 @@ test_riscv_megrez_gmac_unit:
 test_riscv_megrez_debug_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debug \
-		tools.riscv.tests.test_megrez_debug_desktop -v
+		tools.riscv.tests.test_megrez_debug_desktop \
+		tools.riscv.tests.test_megrez_preboard -v
 
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debug_desktop -v
+
+.PHONY: test_riscv_megrez_preboard
+test_riscv_megrez_preboard:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_preboard -v
 
 .PHONY: test_riscv_megrez_debug_fast
 test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit
