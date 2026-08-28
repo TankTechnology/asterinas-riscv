@@ -219,6 +219,17 @@ def observe_milestones(
     return found, next_index, tail
 
 
+def validate_recovery_epoch(text: str) -> None:
+    """Require a new ordered firmware epoch after the current guest attempt."""
+    positions = (
+        text.find("OpenSBI v"),
+        text.find("U-Boot 2026.07"),
+        text.find(PROMPT),
+    )
+    if min(positions) < 0 or positions != tuple(sorted(positions)):
+        raise RuntimeError("automatic recovery did not reach a fresh U-Boot prompt")
+
+
 class BoardSession:
     def __init__(
         self,
@@ -553,6 +564,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=60.0,
         help="physical post-boot milestone deadline in seconds (default: 60)",
     )
+    p.add_argument(
+        "--require-recovery",
+        action="store_true",
+        help="require a fresh OpenSBI/U-Boot/prompt epoch after the final milestone",
+    )
     args = p.parse_args(argv)
     if not args.mock_qemu and args.expected_crc32 is None:
         p.error("--expected-crc32 is required outside --mock-qemu mode")
@@ -672,7 +688,15 @@ def main(argv: list[str]) -> int:
                 session._log(text)
                 session.note_milestone(text)
         print(json.dumps(session.milestones))
-        return 0 if len(session.milestones) == len(MILESTONES) else 2
+        if len(session.milestones) != len(MILESTONES):
+            return 2
+        if args.require_recovery:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return 2
+            recovery = session.wait_for_uboot_prompt(timeout=remaining)
+            validate_recovery_epoch(recovery)
+        return 0
     finally:
         session.log.close()
         os.close(session.fd)
