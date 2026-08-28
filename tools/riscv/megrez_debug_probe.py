@@ -28,6 +28,7 @@ PROBE_CHUNK_BYTES = 64 * 1024
 PROBE_BODY = b"ASTERINAS_TCP_PROBE_OK\n"
 TCP_INFO_SAMPLE_LIMIT = 4096
 TCP_INFO_SAMPLE_INTERVAL = 0.02
+TCP_INFO_POST_SEND_SECONDS = 0.25
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PROBE_RESPONSE = (
     b"HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\n" + PROBE_BODY
@@ -81,6 +82,7 @@ class _ConnectionTrace:
         self._peer = str(peer[0]) if peer else "unknown"
         self._requested_bytes: int | None = None
         self._application_bytes_accepted = 0
+        self._last_application_send_us = 0
         self._payload_bytes_accepted = 0
         self._outcome = "in-progress"
         self._sampling_error: str | None = None
@@ -98,6 +100,9 @@ class _ConnectionTrace:
     def record_send(self, amount: int, *, payload: bool) -> None:
         with self._lock:
             self._application_bytes_accepted += amount
+            self._last_application_send_us = (
+                time.monotonic_ns() - self._started_ns
+            ) // 1000
             if payload:
                 self._payload_bytes_accepted += amount
 
@@ -123,6 +128,7 @@ class _ConnectionTrace:
                 "peer": self._peer,
                 "requested_bytes": self._requested_bytes,
                 "application_bytes_accepted": self._application_bytes_accepted,
+                "last_application_send_us": self._last_application_send_us,
                 "payload_bytes_accepted": self._payload_bytes_accepted,
                 "outcome": self._outcome,
                 "sampling_error": self._sampling_error,
@@ -226,6 +232,7 @@ class ProbeServer:
             "plan_sha256": plan_sha256,
             "sample_interval_ms": int(TCP_INFO_SAMPLE_INTERVAL * 1000),
             "sample_limit": TCP_INFO_SAMPLE_LIMIT,
+            "post_send_observation_ms": int(TCP_INFO_POST_SEND_SECONDS * 1000),
             "connections": [trace.snapshot() for trace in traces],
         }
 
@@ -344,6 +351,7 @@ class ProbeServer:
                     payload=True,
                 )
                 offset += amount
+            self._stop.wait(TCP_INFO_POST_SEND_SECONDS)
             if self._payload_sizes is not None:
                 self._next_payload += 1
             trace.finish("complete")
