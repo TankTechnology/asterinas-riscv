@@ -202,6 +202,7 @@ silently attempting a large local bootstrap build.
 ```bash
 timeout 1200 docker run --name codex-dwmac-tx-reclaim-build --rm \
   --network=none \
+  -e CARGO_NET_OFFLINE=true \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -v /home/ubuntu/.rustup:/root/.rustup:ro \
   -v /home/ubuntu/.cargo/registry:/root/.cargo/registry:ro \
@@ -214,7 +215,12 @@ timeout 1200 docker run --name codex-dwmac-tx-reclaim-build --rm \
 
 Expected: exit 0 and a non-empty
 `target/osdk/aster-kernel/aster-kernel-osdk-bin.Image`. Inspect the build log for
-`riscv_sv39_mode`; a default/Sv48 build is not acceptable.
+`riscv_sv39_mode`; a default/Sv48 build is not acceptable. Before starting,
+unlink the exact old generated Image after recording its known failed-run hash;
+this prevents a failed build from leaving a stale file that could be frozen as
+new evidence. `CARGO_NET_OFFLINE=true` is required because the complete locked
+crate set is already cached but Cargo otherwise tries to refresh the registry
+index even under `--network=none`.
 
 - [ ] **Step 4: Freeze all four payloads under new names**
 
