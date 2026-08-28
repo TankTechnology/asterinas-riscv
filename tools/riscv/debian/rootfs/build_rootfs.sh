@@ -1025,6 +1025,8 @@ configure_desktop() {
     local session_source
     local evidence_source
     local service_name="asterinas-desktop-$generation"
+    local desktop_standard_output=journal+console
+    local desktop_standard_error=journal+console
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1032,6 +1034,13 @@ configure_desktop() {
     evidence_source="$script_directory/desktop_${generation}_evidence.sh"
     if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
         evidence_source="$script_directory/browser_web_evidence.sh"
+    fi
+    if [[ "$generation" == m5 ]]; then
+        # M5 gates write their authoritative markers directly to /dev/console.
+        # Keep the high-volume desktop/Xorg stream in the journal instead of
+        # duplicating it on the emulated serial console.
+        desktop_standard_output=journal
+        desktop_standard_error=journal
     fi
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
@@ -1224,8 +1233,8 @@ SupplementaryGroups=video input
 PAMName=login
 TTYPath=/dev/tty1
 StandardInput=tty
-StandardOutput=journal+console
-StandardError=journal+console
+StandardOutput=$desktop_standard_output
+StandardError=$desktop_standard_error
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
