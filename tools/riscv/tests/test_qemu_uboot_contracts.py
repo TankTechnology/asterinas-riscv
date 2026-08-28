@@ -455,7 +455,7 @@ class ContractCompositionTests(unittest.TestCase):
             profile.bootargs,
             "console=ttyS0 loglevel=info init=/init "
             "asterinas.net=eic7700-rj45,10.100.19.200/21 "
-            "asterinas.reboot_after=180",
+            "asterinas.reboot_after=60",
         )
         self.assertEqual(
             profile.validation.completion_line,

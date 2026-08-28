@@ -10,6 +10,11 @@
 #define PROBE_BODY "ASTERINAS_TCP_PROBE_OK\n"
 #define RESPONSE_HEADER_LIMIT (64U * 1024U)
 #define RESPONSE_READ_BYTES (8U * 1024U)
+#define PROBE_DEADLINE_MILLISECONDS 45000
+#define PROBE_RECOVERY_MILLISECONDS 60000
+
+_Static_assert(PROBE_DEADLINE_MILLISECONDS < PROBE_RECOVERY_MILLISECONDS,
+               "probe deadline must leave time for terminal evidence");
 
 #ifndef MEGREZ_TCP_STRESS_BYTES
 #define MEGREZ_TCP_STRESS_BYTES (16U * 1024U * 1024U)
@@ -295,6 +300,10 @@ int main(void)
            "sizes=%zu,%zu,%zu,%zu pattern=mod251\n",
            PROBE_STRESS_SIZES[0], PROBE_STRESS_SIZES[1],
            PROBE_STRESS_SIZES[2], PROBE_STRESS_SIZES[3]);
+    printf("MEGREZ_TCP_TIMING_SELF_TEST PASS "
+           "deadline_ms=%d recovery_margin_ms=%d\n",
+           PROBE_DEADLINE_MILLISECONDS,
+           PROBE_RECOVERY_MILLISECONDS - PROBE_DEADLINE_MILLISECONDS);
     return 0;
 }
 
@@ -313,7 +322,6 @@ int main(void)
 
 #define PROBE_ADDRESS "10.100.19.216"
 #define PROBE_PORT 18080
-#define PROBE_DEADLINE_MILLISECONDS 60000
 #define CONNECT_ATTEMPT_MILLISECONDS 3000
 
 static struct probe_failure last_failure = {

@@ -86,6 +86,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 "MEGREZ_TCP_PROBE_SELF_TEST PASS\n"
                 "MEGREZ_TCP_STRESS_SELF_TEST PASS "
                 "sizes=16384,65536,1048576,16777216 pattern=mod251\n"
+                "MEGREZ_TCP_TIMING_SELF_TEST PASS "
+                "deadline_ms=45000 recovery_margin_ms=15000\n"
             ),
         )
 
