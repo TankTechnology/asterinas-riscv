@@ -667,26 +667,27 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             for executable in fake_bin.iterdir():
                 executable.chmod(0o755)
 
+            test_environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+                "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
+                "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
+                "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
+                "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
+                "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
+                "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
+                "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
+                "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
+                "ASTERINAS_DESKTOP_M5_SECURITY_LOG": str(security_log),
+                "ASTERINAS_M5_TEST_CALLS": str(calls),
+                "ASTERINAS_M5_TEST_GATE_ARGS": str(gate_args),
+                "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
+            }
             result = subprocess.run(
                 ["/bin/bash", str(evidence)],
                 cwd=repository,
-                env={
-                    **os.environ,
-                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
-                    "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
-                    "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
-                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
-                    "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
-                    "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
-                    "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
-                    "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
-                    "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
-                    "ASTERINAS_DESKTOP_M5_SECURITY_LOG": str(security_log),
-                    "ASTERINAS_M5_TEST_CALLS": str(calls),
-                    "ASTERINAS_M5_TEST_GATE_ARGS": str(gate_args),
-                    "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
-                },
+                env=test_environment,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -732,23 +733,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             rejected = subprocess.run(
                 ["/bin/bash", str(evidence)],
                 cwd=repository,
-                env={
-                    **os.environ,
-                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
-                    "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
-                    "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
-                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
-                    "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
-                    "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
-                    "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
-                    "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
-                    "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
-                    "ASTERINAS_DESKTOP_M5_SECURITY_LOG": str(security_log),
-                    "ASTERINAS_M5_TEST_CALLS": str(calls),
-                    "ASTERINAS_M5_TEST_GATE_ARGS": str(gate_args),
-                    "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
-                },
+                env=test_environment,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -756,6 +741,45 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             self.assertEqual(rejected.returncode, 1)
             self.assertIn(
                 "DEBIAN_BROWSER_M5_FAIL reason=security-content-seccomp-unavailable",
+                console.read_text(),
+            )
+
+            (proc / "43/status").write_text(
+                status_without_seccomp + "Seccomp:\t2\n"
+            )
+            parent_status = (proc / "42/status").read_text()
+            (proc / "42/status").write_text(
+                parent_status.replace("NoNewPrivs:\t1\n", "")
+            )
+            calls.write_text("")
+            console.write_text("")
+            navigator_ready.unlink()
+            no_nnp = subprocess.run(
+                ["/bin/bash", str(evidence)], cwd=repository,
+                env=test_environment, check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(no_nnp.returncode, 1)
+            self.assertIn(
+                "DEBIAN_BROWSER_M5_FAIL reason=security-parent-no-new-privileges-unavailable",
+                console.read_text(),
+            )
+
+            # Both readiness predicates are already true, so the while body is
+            # skipped. The post-loop guard must still reject this parent.
+            (proc / "42/status").write_text(
+                parent_status.replace(
+                    "CapEff:\t0000000000000000", "CapEff:\t0000000000000001"
+                )
+            )
+            navigator_ready.write_text("browser_pid=42 sequence=1 seconds=1\n")
+            console.write_text("")
+            direct_ready = subprocess.run(
+                ["/bin/bash", str(evidence)], cwd=repository,
+                env=test_environment, check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(direct_ready.returncode, 1)
+            self.assertIn(
+                "DEBIAN_BROWSER_M5_FAIL reason=security-capability-parent-CapEff",
                 console.read_text(),
             )
 
@@ -780,7 +804,9 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn('security_checked_pid=""', evidence)
         self.assertIn('[[ "$security_checked_pid" != "$browser_pid" ]]', evidence)
         self.assertIn('security_checked_pid="$browser_pid"', evidence)
+        self.assertIn("marionette_ready=false", evidence)
         self.assertNotIn("security_checked=false", evidence)
+        self.assertIn("fail security-parent-no-new-privileges-unavailable", evidence)
         self.assertIn("fail security-content-seccomp-unavailable", evidence)
         self.assertIn("fail security-content-seccomp", evidence)
 
