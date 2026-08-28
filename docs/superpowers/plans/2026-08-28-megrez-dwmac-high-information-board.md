@@ -268,7 +268,12 @@ git commit -m "test(net): expose bounded DWMAC datapath progress"
 ### Task 5: Execute the preboard safety gate
 
 **Files:**
-- No source changes expected
+- Modify: `tools/riscv/debian/rootfs/megrez_tcp_probe_init.c`
+- Modify: `tools/riscv/qemu_uboot_profiles.py`
+- Modify: `tools/riscv/qemu_uboot_execution.py`
+- Modify: `tools/riscv/qemu_uboot_audit.py`
+- Modify: `tools/riscv/megrez_preboard.py`
+- Test: the corresponding focused RISC-V host suites
 - Create ignored evidence below `target/megrez-debug/dwmac-high-info/`
 
 - [ ] **Step 1: Run the complete cheap gate once**
@@ -283,6 +288,8 @@ Build the exact Sv39/SMP4 kernel and probe initramfs in the pinned container.
 Run the existing QEMU generic TCP test with the same initramfs and
 `asterinas.reboot_after=60`; require the probe terminal marker, automatic
 restart boundary, no panic/oops, and no leftover QEMU/container process.
+The guest probe must terminate by 45 seconds so FAIL/PASS evidence has a
+15-second publication margin before the fixed recovery deadline.
 
 - [ ] **Step 3: Freeze artifact identity**
 

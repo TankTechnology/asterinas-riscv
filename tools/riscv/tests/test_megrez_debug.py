@@ -818,6 +818,7 @@ class MegrezDebugSimulationTests(unittest.TestCase):
             "virtio-net-slirp",
         )
         self.assertNotIn("--bootargs-override", run)
+        self.assertEqual(run.count("--serial-log"), 1)
         self.assertEqual(Path(run[run.index("--result") + 1]).name, "qemu-result.json")
 
     def test_fast_simulation_invalidates_stale_results_before_prepare(self) -> None:

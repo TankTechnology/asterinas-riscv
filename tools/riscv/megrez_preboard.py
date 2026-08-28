@@ -35,6 +35,16 @@ MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TRANSFER_NAMES = ("kernel", "initramfs", "megrez_dtb")
+_RECOVERY_BOOTARGS = (
+    "console=ttyS0 loglevel=info init=/init "
+    "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+    "asterinas.reboot_after=60"
+)
+_RECOVERY_TRIGGER = (
+    b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+    b"status=200 sizes=16384,65536,1048576,16777216 "
+    b"completed_bytes=17907712 pattern=mod251"
+)
 _RECOVERY_FIELDS = frozenset(
     (
         "schema_version",
@@ -312,13 +322,16 @@ def _validate_native_recovery(native: dict[str, Any], kernel: ArtifactIdentity) 
         or not isinstance(audit, dict)
         or audit.get("passed") is not True
         or audit.get("failures") != []
-        or audit.get("armed_marker_count") != 1
-        or audit.get("trigger_marker_count") != 1
         or audit.get("booti_command_count") != 1
-        or audit.get("boot_disk_unchanged") is not True
+        or native.get("boot_disk_sha256_before")
+        != native.get("boot_disk_sha256_after")
+        or not isinstance(native.get("boot_disk_sha256_before"), str)
+        or _SHA256.fullmatch(native["boot_disk_sha256_before"]) is None
         or native.get("passed") is not True
         or native.get("profile") != "generic-sv39-smp4-software-reboot"
-        or native.get("scenario") != "timer"
+        or native.get("validation_scenario") != "megrez-tcp-probe-recovery"
+        or native.get("scenario") != "positive"
+        or native.get("effective_bootargs") != _RECOVERY_BOOTARGS
         or not isinstance(session, dict)
         or session.get("booti_sent_count") != 1
         or session.get("recovery_complete") is not True
@@ -334,6 +347,7 @@ def _validate_native_recovery(native: dict[str, Any], kernel: ArtifactIdentity) 
         or _argument_value(arguments, "-monitor") != "none"
         or "-enable-kvm" in arguments
         or "-accel" in arguments
+        or "-no-reboot" in arguments
     ):
         raise PreboardError("native recovery contract mismatch")
 
@@ -354,8 +368,8 @@ def _kernel_hash_from_sums(payload: bytes) -> str:
 
 
 def _validate_recovery_transcript(transcript: bytes) -> None:
-    armed = transcript.find(b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=")
-    trigger = transcript.find(b"ASTERINAS_REBOOT_TIMER_READY", armed + 1)
+    armed = transcript.find(b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60")
+    trigger = transcript.find(_RECOVERY_TRIGGER, armed + 1)
     opensbi = transcript.find(b"OpenSBI v", trigger + 1)
     uboot = transcript.find(b"U-Boot 2026.07", opensbi + 1)
     prompt = transcript.find(b"=> ", uboot + 1)
