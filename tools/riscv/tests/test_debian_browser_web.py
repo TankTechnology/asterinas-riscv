@@ -40,7 +40,12 @@ from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
     validate_web_evidence,
 )
 from tools.riscv.debian.rootfs import browser_startup_cache_check as cache_check
-from tools.riscv.debian.rootfs.contract import ContractError, load_manifest, write_manifest
+from tools.riscv.debian.rootfs.contract import (
+    ContractError,
+    _gate_versions,
+    load_manifest,
+    write_manifest,
+)
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DESKTOP_M5_QEMU_BOOTARGS
@@ -281,6 +286,15 @@ class BrowserWebContractTests(unittest.TestCase):
         ).stdout.splitlines()
         self.assertEqual(printed, list(profile.requested_packages))
 
+    def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
+        profile = get_profile("browser-web")
+        rows = tuple(
+            (name, "all" if name == "ca-certificates" else "riscv64", "1")
+            for name in profile.identity_packages
+        )
+        versions = _gate_versions(rows, profile)
+        self.assertEqual(versions["ca-certificates"], "1")
+
     def test_schema_seven_manifest_load_mismatch_and_source_role(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
@@ -439,9 +453,9 @@ class BrowserWebContractTests(unittest.TestCase):
     def test_build_time_cache_checker_is_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         for command in (
-            'systemd-sysusers --root="$stage"',
+            'chroot "$stage" /usr/bin/systemd-sysusers',
             'chroot "$stage" /sbin/ldconfig',
-            'journalctl --root="$stage" --update-catalog',
+            'chroot "$stage" /usr/bin/journalctl --update-catalog',
             'chroot "$stage" /usr/bin/fc-cache -f',
             ': >"$stage/etc/.updated"',
             ': >"$stage/var/.updated"',
@@ -450,6 +464,8 @@ class BrowserWebContractTests(unittest.TestCase):
         cache_function = builder.split("finalize_browser_startup_caches()", 1)[1].split(
             "configure_desktop_m5_network()", 1
         )[0]
+        self.assertNotIn('systemd-sysusers --root', cache_function)
+        self.assertNotIn('journalctl --root', cache_function)
         self.assertNotIn("|| true", cache_function)
         self.assertNotIn("systemctl mask", cache_function)
         self.assertNotIn("/dev/null", cache_function)

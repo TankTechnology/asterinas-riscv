@@ -945,8 +945,11 @@ finalize_browser_startup_caches() {
     local cache_sha256
     local dry_run
 
-    systemd-sysusers --root="$stage"
-    dry_run="$(systemd-sysusers --dry-run --root="$stage" 2>&1)"
+    # The target owns the sysusers and journal catalog formats. Running the
+    # builder host's systemd tools here breaks as soon as Debian's target
+    # systemd is newer (for example, systemd 257's `u!` sysusers modifier).
+    chroot "$stage" /usr/bin/systemd-sysusers
+    dry_run="$(chroot "$stage" /usr/bin/systemd-sysusers --dry-run 2>&1)"
     [[ -z "$dry_run" ]] || die "staged sysusers database is not converged"
 
     chroot "$stage" /sbin/ldconfig
@@ -957,7 +960,7 @@ finalize_browser_startup_caches() {
         chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
-    journalctl --root="$stage" --update-catalog
+    chroot "$stage" /usr/bin/journalctl --update-catalog
     chroot "$stage" /usr/bin/fc-cache -f
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
