@@ -296,7 +296,7 @@ sha256sum "$VALIDATION_ROOT/plan.json" | tee "$VALIDATION_ROOT/PLAN.SHA256"
 
 ```bash
 timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-fast --rm \
-  --network=none --user "$(id -u):$(id -g)" \
+  --network=host --user "$(id -u):$(id -g)" \
   -v "$PWD:$PWD" -w "$PWD" \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
   python3 -m tools.riscv.megrez_debug simulate \
@@ -317,7 +317,7 @@ Megrez DWMAC hardware path; this gate validates the kernel/probe/boot protocol.
 RECOVERY_ROOT="$PWD/target/qemu-uboot/dwmac-tx-reclaim-validation-recovery"
 install -d -m 0755 "$RECOVERY_ROOT"
 timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-recovery --rm \
-  --network=none --user "$(id -u):$(id -g)" \
+  --network=host --user "$(id -u):$(id -g)" \
   -v "$PWD:$PWD" -w "$PWD" \
   -e ASTERINAS_RISCV_BOOTI="$ARTIFACT_ROOT/asterinas.booti" \
   -e ASTERINAS_INITRAMFS="$ARTIFACT_ROOT/megrez-tcp-probe.cpio.gz" \
