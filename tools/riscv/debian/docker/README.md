@@ -7,7 +7,7 @@ caches before QEMU starts. It also contains FFmpeg so the checked-in Firefox
 media fixture is validated instead of silently skipped.
 The Python build headers and `setuptools` required by the repository's U-Boot
 preparation script are included as well, along with the `bison`/`flex`
-generators and OpenSSL development headers used by U-Boot's Kconfig/build.
+generators and OpenSSL/GnuTLS development headers used by U-Boot's Kconfig/build.
 
 Ubuntu's base package does not contain the Debian 13 archive keys. The image
 therefore installs the fixed Trixie `debian-archive-keyring` package after
