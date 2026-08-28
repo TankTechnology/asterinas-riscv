@@ -6,6 +6,11 @@ finalize the target root filesystem's sysusers, journal, linker, and font
 caches before QEMU starts. It also contains FFmpeg so the checked-in Firefox
 media fixture is validated instead of silently skipped.
 
+Ubuntu's base package does not contain the Debian 13 archive keys. The image
+therefore installs the fixed Trixie `debian-archive-keyring` package after
+checking its published SHA-256 digest; signed release validation remains
+fail-closed.
+
 Build it from the repository root:
 
 ```bash
