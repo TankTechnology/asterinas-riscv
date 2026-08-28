@@ -294,6 +294,7 @@ impl<D: DmaDirection> DmaStream<D> {
                 if !can_sync_dma() {
                     // CPU access uses either a page-based uncached mapping or
                     // the retained platform alias.
+                    // The KVA is mapped as uncachable.
                     return;
                 }
                 kva.range()
