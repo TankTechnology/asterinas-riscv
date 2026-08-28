@@ -1143,6 +1143,63 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertTrue(all(0 < value < 300 for value in budgets))
         self.assertEqual(budgets, sorted(budgets, reverse=True))
 
+    def test_guest_failure_waits_for_a_fresh_uboot_recovery(self) -> None:
+        operations = self.Operations(
+            [
+                "Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_FAIL rea",
+                "son=receive-poll errno=110 attempts=1 current_bytes=14600 ",
+                "completed_bytes=0\npll config ok\nFirmware version:1.4\n",
+                "U-Boot 2020.01\n=> ",
+            ]
+        )
+
+        result = run_board(
+            self.plan,
+            BoardRunConfig(timeout=120.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "guest-failure-recovered:receive-poll")
+        self.assertEqual(operations.booti_count, 1)
+        self.assertEqual(operations.published, result)
+
+    def test_terminal_requires_post_terminal_recovery_and_is_unique(self) -> None:
+        failure = (
+            "ASTERINAS_GMAC_TCP_PROBE_FAIL reason=receive-poll errno=110 "
+            "attempts=1 current_bytes=14600 completed_bytes=0\n"
+        )
+        cases = (
+            (
+                ["=> \nEnter riscv_boot\n" + failure],
+                "recovery-not-observed",
+            ),
+            (
+                ["Enter riscv_boot\n" + failure + failure],
+                "guest-terminal-duplicate",
+            ),
+            (
+                [
+                    "Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n",
+                    "ASTERINAS_GMAC_TCP_PROBE_READY\n=> ",
+                ],
+                "guest-terminal-duplicate",
+            ),
+        )
+        for chunks, reason in cases:
+            with self.subTest(reason=reason):
+                operations = self.Operations(chunks)
+                result = run_board(
+                    self.plan,
+                    BoardRunConfig(timeout=120.0),
+                    operations,
+                    clock=lambda: 10.0,
+                )
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(operations.booti_count, 1)
+
     def test_marker_and_timeout_failures_never_retry_booti(self) -> None:
         cases = (
             (["ASTERINAS_GMAC_TCP_PROBE_READY\n"], "guest-marker-order"),
@@ -1150,7 +1207,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
             (["Enter riscv_boot\n"], "guest-timeout"),
             (
                 ["Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n"],
-                "uboot-recovery-timeout",
+                "recovery-not-observed",
             ),
         )
         for chunks, reason in cases:
