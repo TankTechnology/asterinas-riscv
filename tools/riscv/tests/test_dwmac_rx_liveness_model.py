@@ -51,6 +51,8 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "counterexample")
         self.assertEqual(report["property"], "bounded-rx-poll")
         self.assertGreater(len(report["prefix"]), 0)
+        self.assertIn("raise-timer", report["prefix"])
+        self.assertIn("raise-tx", report["prefix"])
         self.assertIn("dma-complete", report["cycle"])
         self.assertIn("poll-consume", report["cycle"])
         self.assertLessEqual(len(report["prefix"]) + len(report["cycle"]), 12)
@@ -79,6 +81,44 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
                 self.assertIn("usage:", result.stderr)
+
+    def test_bounded_protocol_has_no_starvation_or_lost_wakeup(self) -> None:
+        result = self.run_model("bounded")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["protocol"], "bounded")
+        self.assertEqual(report["verdict"], "verified-within-model")
+        self.assertEqual(
+            report["properties"],
+            [
+                "descriptor-ownership",
+                "bounded-rx-poll",
+                "eventual-rearm-or-reschedule",
+                "no-lost-rx-wakeup",
+                "tx-timer-progress",
+            ],
+        )
+        self.assertGreater(report["explored_states"], 0)
+
+    def test_all_reduced_ring_sizes_are_verified(self) -> None:
+        for ring_size in ("2", "3", "4"):
+            with self.subTest(ring_size=ring_size):
+                result = subprocess.run(
+                    [
+                        str(self.binary),
+                        "--protocol",
+                        "bounded",
+                        "--ring-size",
+                        ring_size,
+                        "--json",
+                    ],
+                    cwd=REPOSITORY_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

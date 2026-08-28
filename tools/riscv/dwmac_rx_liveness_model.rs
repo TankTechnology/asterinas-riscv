@@ -40,6 +40,8 @@ enum Action {
     DmaComplete,
     DeliverIrq,
     StartRxPoll,
+    RaiseTx,
+    RaiseTimer,
     PollConsume,
     PollFinishEmpty,
     PollFinishBudget,
@@ -50,10 +52,12 @@ enum Action {
 }
 
 impl Action {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::DmaComplete,
         Self::DeliverIrq,
         Self::StartRxPoll,
+        Self::RaiseTx,
+        Self::RaiseTimer,
         Self::PollConsume,
         Self::PollFinishEmpty,
         Self::PollFinishBudget,
@@ -68,6 +72,8 @@ impl Action {
             Self::DmaComplete => "dma-complete",
             Self::DeliverIrq => "deliver-irq",
             Self::StartRxPoll => "start-rx-poll",
+            Self::RaiseTx => "raise-tx",
+            Self::RaiseTimer => "raise-timer",
             Self::PollConsume => "poll-consume",
             Self::PollFinishEmpty => "poll-finish-empty",
             Self::PollFinishBudget => "poll-finish-budget",
@@ -110,6 +116,14 @@ struct Report {
     cycle: Vec<Action>,
 }
 
+enum Outcome {
+    Counterexample(Report),
+    Verified {
+        protocol: Protocol,
+        explored_states: usize,
+    },
+}
+
 fn parse_args() -> Result<(Protocol, usize), String> {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments.len() != 5
@@ -143,14 +157,14 @@ fn initial_state(ring_size: usize, _protocol: Protocol) -> State {
         irq_asserted: false,
         rx_pending: false,
         tx_pending: false,
-        timer_pending: true,
+        timer_pending: false,
         polling: false,
         budget_left: 0,
         end_phase: EndPhase::None,
     }
 }
 
-fn successors(state: &State, _protocol: Protocol) -> Vec<(Action, State)> {
+fn successors(state: &State, protocol: Protocol) -> Vec<(Action, State)> {
     let mut result = Vec::new();
 
     if state.owners[state.dma_cursor] == Owner::Dma {
@@ -171,24 +185,60 @@ fn successors(state: &State, _protocol: Protocol) -> Vec<(Action, State)> {
         next.tx_pending = true;
         result.push((Action::DeliverIrq, next));
     }
-    if state.rx_pending && !state.polling && state.end_phase == EndPhase::None {
+    if state.rx_pending
+        && !state.tx_pending
+        && !state.timer_pending
+        && !state.polling
+        && state.end_phase == EndPhase::None
+    {
         let mut next = state.clone();
         next.rx_pending = false;
         next.polling = true;
+        if protocol == Protocol::Bounded {
+            next.budget_left = u8::try_from(next.owners.len()).unwrap();
+        }
         result.push((Action::StartRxPoll, next));
     }
-    if state.polling && state.owners[state.rx_head] == Owner::CpuComplete {
+    if state.polling && !state.tx_pending {
+        let mut next = state.clone();
+        next.tx_pending = true;
+        result.push((Action::RaiseTx, next));
+    }
+    if state.polling && !state.timer_pending {
+        let mut next = state.clone();
+        next.timer_pending = true;
+        result.push((Action::RaiseTimer, next));
+    }
+    if state.polling
+        && state.owners[state.rx_head] == Owner::CpuComplete
+        && (protocol == Protocol::Current || state.budget_left > 0)
+    {
         let mut next = state.clone();
         next.owners[next.rx_head] = Owner::Dma;
         next.rx_head = (next.rx_head + 1) % next.owners.len();
         next.tail = next.rx_head;
+        if protocol == Protocol::Bounded {
+            next.budget_left -= 1;
+        }
         result.push((Action::PollConsume, next));
     }
-    if state.polling && state.owners[state.rx_head] == Owner::Dma {
+    if state.polling
+        && state.owners[state.rx_head] == Owner::Dma
+        && (protocol == Protocol::Current || state.budget_left > 0)
+    {
         let mut next = state.clone();
         next.polling = false;
+        next.budget_left = 0;
+        next.rx_pending = next.owners.contains(&Owner::CpuComplete);
         next.end_phase = EndPhase::ClearStatus;
         result.push((Action::PollFinishEmpty, next));
+    }
+    if protocol == Protocol::Bounded && state.polling && state.budget_left == 0 {
+        let mut next = state.clone();
+        next.polling = false;
+        next.rx_pending = next.owners.contains(&Owner::CpuComplete);
+        next.end_phase = EndPhase::ClearStatus;
+        result.push((Action::PollFinishBudget, next));
     }
     if state.end_phase == EndPhase::ClearStatus {
         let mut next = state.clone();
@@ -198,8 +248,13 @@ fn successors(state: &State, _protocol: Protocol) -> Vec<(Action, State)> {
     }
     if state.end_phase == EndPhase::Rearm {
         let mut next = state.clone();
-        next.irq_masked = false;
         next.end_phase = EndPhase::None;
+        if protocol == Protocol::Bounded && next.owners.contains(&Owner::CpuComplete) {
+            next.irq_masked = true;
+            next.rx_pending = true;
+        } else {
+            next.irq_masked = false;
+        }
         result.push((Action::Rearm, next));
     }
     if !state.polling && state.end_phase == EndPhase::None && state.tx_pending {
@@ -229,6 +284,9 @@ fn validate_state(state: &State) -> Result<(), &'static str> {
     }
     if state.polling && state.end_phase != EndPhase::None {
         return Err("poll-and-end-phase-overlap");
+    }
+    if !state.polling && state.budget_left != 0 {
+        return Err("budget-outside-poll");
     }
     if state.end_phase != EndPhase::None && !state.irq_masked {
         return Err("poll-end-with-unmasked-irq");
@@ -342,6 +400,67 @@ fn shortest_starvation_lasso(
     })
 }
 
+fn is_lost_rx_wakeup(state: &State) -> bool {
+    state.owners.contains(&Owner::CpuComplete)
+        && !state.rx_pending
+        && !state.polling
+        && state.end_phase == EndPhase::None
+        && !state.irq_masked
+        && !state.irq_asserted
+}
+
+fn shortest_obligation_cycle<F>(
+    graph: &HashMap<State, Vec<(Action, State)>>,
+    obligation: F,
+    progress: &[Action],
+) -> Option<Vec<Action>>
+where
+    F: Fn(&State) -> bool,
+{
+    let mut starts: Vec<&State> = graph.keys().filter(|state| obligation(state)).collect();
+    starts.sort();
+    for start in starts {
+        let mut queue = VecDeque::from([(start.clone(), Vec::new())]);
+        let mut seen = HashSet::from([start.clone()]);
+        while let Some((state, path)) = queue.pop_front() {
+            for (action, successor) in graph.get(&state).unwrap() {
+                if progress.contains(action) || !obligation(successor) {
+                    continue;
+                }
+                let mut next_path = path.clone();
+                next_path.push(*action);
+                if successor == start {
+                    return Some(next_path);
+                }
+                if seen.insert(successor.clone()) {
+                    queue.push_back((successor.clone(), next_path));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_rearm_or_reschedule_cycle(
+    graph: &HashMap<State, Vec<(Action, State)>>,
+) -> Option<Vec<Action>> {
+    shortest_obligation_cycle(
+        graph,
+        |state| state.irq_masked && !state.rx_pending,
+        &[Action::Rearm, Action::StartRxPoll],
+    )
+}
+
+fn find_tx_timer_starvation_cycle(
+    graph: &HashMap<State, Vec<(Action, State)>>,
+) -> Option<Vec<Action>> {
+    shortest_obligation_cycle(
+        graph,
+        |state| state.tx_pending || state.timer_pending,
+        &[Action::ServiceTx, Action::ServiceTimer],
+    )
+}
+
 fn action_array(actions: &[Action]) -> String {
     let names: Vec<String> = actions
         .iter()
@@ -360,16 +479,42 @@ fn print_counterexample(report: &Report) {
     );
 }
 
-fn run(protocol: Protocol, ring_size: usize) -> Result<Report, &'static str> {
+fn print_verified(protocol: Protocol, explored_states: usize) {
+    println!(
+        "{{\"protocol\":\"{}\",\"verdict\":\"verified-within-model\",\"explored_states\":{},\"properties\":[\"descriptor-ownership\",\"bounded-rx-poll\",\"eventual-rearm-or-reschedule\",\"no-lost-rx-wakeup\",\"tx-timer-progress\"]}}",
+        protocol.name(),
+        explored_states,
+    );
+}
+
+fn run(protocol: Protocol, ring_size: usize) -> Result<Outcome, &'static str> {
     let initial = initial_state(ring_size, protocol);
     let graph = reachable_graph(initial.clone(), protocol)?;
-    let (prefix, cycle) =
-        shortest_starvation_lasso(&graph, &initial).ok_or("counterexample-not-found")?;
-    Ok(Report {
+    let starvation = shortest_starvation_lasso(&graph, &initial);
+    if protocol == Protocol::Current {
+        let (prefix, cycle) = starvation.ok_or("counterexample-not-found")?;
+        return Ok(Outcome::Counterexample(Report {
+            protocol,
+            explored_states: graph.len(),
+            prefix,
+            cycle,
+        }));
+    }
+    if starvation.is_some() {
+        return Err("bounded-rx-poll");
+    }
+    if graph.keys().any(is_lost_rx_wakeup) {
+        return Err("lost-rx-wakeup");
+    }
+    if find_rearm_or_reschedule_cycle(&graph).is_some() {
+        return Err("rearm-or-reschedule-starvation");
+    }
+    if find_tx_timer_starvation_cycle(&graph).is_some() {
+        return Err("tx-timer-starvation");
+    }
+    Ok(Outcome::Verified {
         protocol,
         explored_states: graph.len(),
-        prefix,
-        cycle,
     })
 }
 
@@ -382,13 +527,98 @@ fn main() -> ExitCode {
         }
     };
     match run(protocol, ring_size) {
-        Ok(report) => {
+        Ok(Outcome::Counterexample(report)) => {
             print_counterexample(&report);
             ExitCode::from(1)
+        }
+        Ok(Outcome::Verified {
+            protocol,
+            explored_states,
+        }) => {
+            print_verified(protocol, explored_states);
+            ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("model error: {error}");
             ExitCode::from(3)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply(state: &State, protocol: Protocol, action: Action) -> State {
+        successors(state, protocol)
+            .into_iter()
+            .find_map(|(candidate, next)| (candidate == action).then_some(next))
+            .unwrap_or_else(|| panic!("action {action:?} is not enabled for {state:?}"))
+    }
+
+    #[test]
+    fn dma_completion_transfers_exactly_one_descriptor_to_cpu() {
+        let state = initial_state(2, Protocol::Current);
+        let completed = apply(&state, Protocol::Current, Action::DmaComplete);
+        assert_eq!(completed.owners, [Owner::CpuComplete, Owner::Dma]);
+        assert_eq!(completed.dma_cursor, 1);
+        assert!(completed.irq_asserted);
+    }
+
+    #[test]
+    fn current_protocol_wraps_to_the_same_starvation_state() {
+        let mut state = initial_state(2, Protocol::Current);
+        for action in [
+            Action::DmaComplete,
+            Action::DeliverIrq,
+            Action::ServiceTx,
+            Action::StartRxPoll,
+            Action::RaiseTx,
+            Action::RaiseTimer,
+        ] {
+            state = apply(&state, Protocol::Current, action);
+        }
+        let checkpoint = state.clone();
+        for action in [
+            Action::DmaComplete,
+            Action::PollConsume,
+            Action::DmaComplete,
+            Action::PollConsume,
+        ] {
+            state = apply(&state, Protocol::Current, action);
+        }
+        assert_eq!(state, checkpoint);
+    }
+
+    #[test]
+    fn bounded_protocol_preserves_arrival_between_clear_and_rearm() {
+        let mut state = initial_state(2, Protocol::Bounded);
+        state.irq_masked = true;
+        state.end_phase = EndPhase::ClearStatus;
+        state = apply(&state, Protocol::Bounded, Action::ClearStatus);
+        state = apply(&state, Protocol::Bounded, Action::DmaComplete);
+        state = apply(&state, Protocol::Bounded, Action::Rearm);
+        assert!(state.irq_masked);
+        assert!(state.rx_pending);
+        assert_eq!(state.owners[0], Owner::CpuComplete);
+    }
+
+    #[test]
+    fn bounded_protocol_stops_at_the_exact_budget() {
+        let mut state = initial_state(2, Protocol::Bounded);
+        state.owners.fill(Owner::CpuComplete);
+        state.irq_masked = true;
+        state.rx_pending = true;
+        state = apply(&state, Protocol::Bounded, Action::StartRxPoll);
+        assert_eq!(state.budget_left, 2);
+        state = apply(&state, Protocol::Bounded, Action::PollConsume);
+        state = apply(&state, Protocol::Bounded, Action::PollConsume);
+        assert_eq!(state.budget_left, 0);
+        let actions: Vec<Action> = successors(&state, Protocol::Bounded)
+            .into_iter()
+            .map(|(action, _)| action)
+            .collect();
+        assert!(actions.contains(&Action::PollFinishBudget));
+        assert!(!actions.contains(&Action::PollConsume));
     }
 }
