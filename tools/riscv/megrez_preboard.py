@@ -391,8 +391,11 @@ def create_recovery_evidence(
         plan.validate()
     except Exception as error:
         raise PreboardError(f"recovery plan invalid: {error}") from error
-    if plan.schema_version != 2 or plan.profile != "debian-browser":
-        raise PreboardError("recovery requires a Debian browser plan")
+    if (plan.schema_version, plan.profile) not in (
+        (1, "tcp-probe"),
+        (2, "debian-browser"),
+    ):
+        raise PreboardError("recovery requires a Megrez probe or browser plan")
     identities = {identity.name: identity for identity in plan.artifacts}
     native_payload, native_hash = _read_held(native_result, label="recovery-result")
     serial_payload, serial_hash = _read_held(serial_log, label="recovery-serial")
