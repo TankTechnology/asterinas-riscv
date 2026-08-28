@@ -53,6 +53,25 @@ pub(super) struct RxDiagnosticsReport {
 #[derive(Debug, Default)]
 pub(super) struct RxDiagnostics(RxDiagnosticsReport);
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TxDiagnosticsReport {
+    pub(super) observed: u64,
+    pub(super) arp: u64,
+    pub(super) ipv4_other: u64,
+    pub(super) tcp_syn: u64,
+    pub(super) tcp_ack_only: u64,
+    pub(super) tcp_data: u64,
+    pub(super) tcp_other: u64,
+    pub(super) other: u64,
+    pub(super) malformed: u64,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TxDiagnostics {
+    report: TxDiagnosticsReport,
+    reported_tcp_data: bool,
+}
+
 impl RxDiagnostics {
     pub(super) fn can_sample_frame(&self) -> bool {
         self.0.observed < FRAME_SAMPLE_LIMIT
@@ -89,6 +108,52 @@ impl RxDiagnostics {
     pub(super) const fn report(&self) -> RxDiagnosticsReport {
         self.0
     }
+}
+
+impl TxDiagnostics {
+    /// Records one frame and reports whether it is the first TCP data frame.
+    pub(super) fn record_frame(&mut self, frame: &[u8]) -> bool {
+        if self.report.observed >= FRAME_SAMPLE_LIMIT {
+            return false;
+        }
+
+        self.report.observed = self.report.observed.saturating_add(1);
+        let class = classify_tx_frame(frame);
+        let counter = match class {
+            TxFrameClass::Arp => &mut self.report.arp,
+            TxFrameClass::Ipv4Other => &mut self.report.ipv4_other,
+            TxFrameClass::Malformed => &mut self.report.malformed,
+            TxFrameClass::Other => &mut self.report.other,
+            TxFrameClass::TcpAckOnly => &mut self.report.tcp_ack_only,
+            TxFrameClass::TcpData => &mut self.report.tcp_data,
+            TxFrameClass::TcpOther => &mut self.report.tcp_other,
+            TxFrameClass::TcpSyn => &mut self.report.tcp_syn,
+        };
+        *counter = counter.saturating_add(1);
+
+        if class == TxFrameClass::TcpData && !self.reported_tcp_data {
+            self.reported_tcp_data = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) const fn report(&self) -> TxDiagnosticsReport {
+        self.report
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TxFrameClass {
+    Arp,
+    Ipv4Other,
+    Malformed,
+    Other,
+    TcpAckOnly,
+    TcpData,
+    TcpOther,
+    TcpSyn,
 }
 
 fn classify_frame(frame: &[u8]) -> RxFrameClass {
@@ -128,5 +193,55 @@ fn classify_ipv4(packet: &[u8]) -> RxFrameClass {
         TCP_FLAG_SYN => RxFrameClass::TcpSyn,
         TCP_FLAGS_SYN_ACK => RxFrameClass::TcpSynAck,
         _ => RxFrameClass::TcpOther,
+    }
+}
+
+fn classify_tx_frame(frame: &[u8]) -> TxFrameClass {
+    let Some(ethernet_header) = frame.get(..ETHERNET_HEADER_LEN) else {
+        return TxFrameClass::Malformed;
+    };
+    let ethernet_protocol = u16::from_be_bytes([ethernet_header[12], ethernet_header[13]]);
+    match ethernet_protocol {
+        ETHERNET_PROTOCOL_ARP => TxFrameClass::Arp,
+        ETHERNET_PROTOCOL_IPV4 => classify_tx_ipv4(&frame[ETHERNET_HEADER_LEN..]),
+        _ => TxFrameClass::Other,
+    }
+}
+
+fn classify_tx_ipv4(packet: &[u8]) -> TxFrameClass {
+    let Some(minimum_header) = packet.get(..IPV4_MIN_HEADER_LEN) else {
+        return TxFrameClass::Malformed;
+    };
+    let version = minimum_header[0] >> 4;
+    let header_len = usize::from(minimum_header[0] & 0x0f) * 4;
+    let total_len = usize::from(u16::from_be_bytes([minimum_header[2], minimum_header[3]]));
+    if version != 4
+        || header_len < IPV4_MIN_HEADER_LEN
+        || total_len < header_len
+        || packet.get(..total_len).is_none()
+    {
+        return TxFrameClass::Malformed;
+    }
+    if minimum_header[9] != IPV4_PROTOCOL_TCP {
+        return TxFrameClass::Ipv4Other;
+    }
+
+    let Some(tcp_header) = packet.get(header_len..header_len + TCP_MIN_HEADER_LEN) else {
+        return TxFrameClass::Malformed;
+    };
+    let tcp_header_len = usize::from(tcp_header[12] >> 4) * 4;
+    if tcp_header_len < TCP_MIN_HEADER_LEN || header_len + tcp_header_len > total_len {
+        return TxFrameClass::Malformed;
+    }
+    let flags = tcp_header[13];
+    let payload_len = total_len - header_len - tcp_header_len;
+    if payload_len > 0 {
+        TxFrameClass::TcpData
+    } else if flags & TCP_FLAG_SYN != 0 {
+        TxFrameClass::TcpSyn
+    } else if flags & TCP_FLAG_ACK != 0 {
+        TxFrameClass::TcpAckOnly
+    } else {
+        TxFrameClass::TcpOther
     }
 }
