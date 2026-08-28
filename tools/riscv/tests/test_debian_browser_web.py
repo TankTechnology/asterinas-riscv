@@ -503,7 +503,10 @@ class BrowserWebContractTests(unittest.TestCase):
             )
 
         for log_name, log in (
-            ("firefox-stderr.log", b"Exiting due to channel error.\n"),
+            (
+                "firefox-stderr.log",
+                b"[Parent 42] Exiting due to channel error.\n",
+            ),
             (
                 "firefox-mozilla.log",
                 b"EPERM SCM_RIGHTS contains a file container\n",
@@ -511,6 +514,13 @@ class BrowserWebContractTests(unittest.TestCase):
         ):
             with self.subTest(log_name=log_name), self.assertRaises(GateFailure):
                 validate_web_evidence({**evidence, log_name: log})
+
+        split_nonfatal = {
+            **evidence,
+            "firefox-stderr.log": b"SCM_RIGHTS diagnostic enabled\n",
+            "firefox-mozilla.log": b"unrelated operation returned EPERM\n",
+        }
+        validate_web_evidence(split_nonfatal)
 
         for changed in (
             b"BROWSER_WEB_SECURITY service_pid=999 nrestarts=0 stable=1 active=1",
