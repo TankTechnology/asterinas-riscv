@@ -120,6 +120,14 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_current_counterexample_is_deterministic(self) -> None:
+        first = self.run_model("current")
+        second = self.run_model("current")
+        self.assertEqual(first.returncode, 1)
+        self.assertEqual(second.returncode, 1)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(first.stderr, second.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
