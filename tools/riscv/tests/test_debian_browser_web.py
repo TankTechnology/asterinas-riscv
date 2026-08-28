@@ -7,6 +7,7 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 import struct
 import subprocess
 import tempfile
@@ -38,6 +39,7 @@ from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
     classify_browser_web_qemu,
     validate_web_evidence,
 )
+from tools.riscv.debian.rootfs import browser_startup_cache_check as cache_check
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest, write_manifest
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
@@ -433,6 +435,215 @@ class BrowserWebContractTests(unittest.TestCase):
         ):
             with self.assertRaises(GateFailure):
                 validate_web_evidence({**evidence, "timeline.log": timeline})
+
+    def test_build_time_cache_checker_is_fail_closed(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        for command in (
+            'systemd-sysusers --root="$stage"',
+            'chroot "$stage" /sbin/ldconfig',
+            'journalctl --root="$stage" --update-catalog',
+            'chroot "$stage" /usr/bin/fc-cache -f',
+            ': >"$stage/etc/.updated"',
+            ': >"$stage/var/.updated"',
+        ):
+            self.assertIn(command, builder)
+        cache_function = builder.split("finalize_browser_startup_caches()", 1)[1].split(
+            "configure_desktop_m5_network()", 1
+        )[0]
+        self.assertNotIn("|| true", cache_function)
+        self.assertNotIn("systemctl mask", cache_function)
+        self.assertNotIn("/dev/null", cache_function)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                "etc/systemd/system", "usr/share/asterinas", "usr/lib/udev",
+                "usr/lib/systemd/system", "var/lib/systemd/catalog",
+                "var/cache/fontconfig",
+            ):
+                (root / relative).mkdir(parents=True, exist_ok=True)
+            passwd = root / "etc/passwd"
+            passwd.write_text("".join(
+                f"{name}:x:{uid}:{gid}:{name}:/:/usr/sbin/nologin\n"
+                for name, (uid, gid) in cache_check.EXPECTED_USERS.items()
+            ))
+            groups = root / "etc/group"
+            groups.write_text("".join(
+                f"{name}:x:{gid}:\n"
+                for name, gid in cache_check.EXPECTED_GROUPS.items()
+            ))
+            (root / "etc/shadow").write_text(
+                "root:!:0:0:99999:7:::\nasterinas:!:0:0:99999:7:::\n"
+            )
+            cache = root / "etc/ld.so.cache"
+            cache.write_bytes(b"glibc-ld.so.cache1.1fixture")
+            listing = root / "usr/share/asterinas/browser-startup-ldconfig.log"
+            listing.write_text(
+                f"LD_SO_CACHE_SHA256 {hashlib.sha256(cache.read_bytes()).hexdigest()}\n"
+                "libc.so.6 (libc6,double-float) => "
+                "/lib/riscv64-linux-gnu/libc.so.6\n"
+            )
+            (root / "usr/lib/udev/hwdb.bin").write_bytes(b"KSLPHHRH" + b"\0" * 24)
+            (root / "var/lib/systemd/catalog/database").write_bytes(
+                b"RHHHKSLP" + b"\0" * 24
+            )
+            (root / "var/cache/fontconfig/fixture.cache-9").write_bytes(
+                b"\x04\xfc\x02\xfc" + b"\0" * 28
+            )
+            unit = root / "etc/systemd/system/asterinas-browser-web.service"
+            unit.write_text(
+                "[Service]\nUser=asterinas\nAmbientCapabilities=\n"
+                "CapabilityBoundingSet=\nNoNewPrivileges=yes\n"
+            )
+            for maintenance_unit, required_lines in cache_check.MAINTENANCE_UNITS.items():
+                (root / "usr/lib/systemd/system" / maintenance_unit).write_text(
+                    "[Unit]\n" + "\n".join(required_lines) + "\n"
+                )
+            for marker in (root / "etc/.updated", root / "var/.updated"):
+                marker.touch()
+            os.utime(root / "usr", ns=(100, 100))
+            os.utime(root / "etc/ld.so.cache", ns=(100, 100))
+            with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", os.getuid()):
+                self.assertIn("ldconfig=riscv64", cache_check.check_cache_profile(root))
+
+                original = passwd.read_text()
+                for mutation in (
+                    original.replace("asterinas:x:1000:1000", "asterinas:x:1001:1000"),
+                    original + "duplicate:x:1000:1001::/:/bin/false\n",
+                    original.replace("messagebus:x:997:997", "messagebus:x:996:997"),
+                    "\n".join(
+                        line for line in original.splitlines()
+                        if not line.startswith("systemd-network:")
+                    ) + "\n",
+                    original + "uid-alias:x:998:998:alias:/:/usr/sbin/nologin\n",
+                ):
+                    passwd.write_text(mutation)
+                    with self.assertRaises(cache_check.CacheCheckError):
+                        cache_check.check_cache_profile(root)
+                passwd.write_text(original)
+
+                original_groups = groups.read_text()
+                for mutation in (
+                    original_groups.replace("render:x:992:\n", ""),
+                    original_groups + "render:x:991:\n",
+                    original_groups.replace("kvm:x:993:", "kvm:x:991:"),
+                    original_groups.replace("asterinas:x:1000:", "asterinas:x:1001:"),
+                    original_groups + "gid-alias:x:999:\n",
+                ):
+                    groups.write_text(mutation)
+                    with self.assertRaises(cache_check.CacheCheckError):
+                        cache_check.check_cache_profile(root)
+                groups.write_text(original_groups)
+
+                original_cache = cache.read_bytes()
+                cache.write_bytes(b"")
+                with self.assertRaises(cache_check.CacheCheckError):
+                    cache_check.check_cache_profile(root)
+                cache.write_bytes(original_cache)
+                cache.unlink()
+                cache.symlink_to("/dev/null")
+                with self.assertRaises(cache_check.CacheCheckError):
+                    cache_check.check_cache_profile(root)
+                cache.unlink()
+                cache.write_bytes(original_cache)
+                os.utime(cache, ns=(100, 100))
+                cache.write_bytes(b"host-cache-format")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                    cache_check.check_cache_profile(root)
+                cache.write_bytes(original_cache)
+
+                original_listing = listing.read_text()
+                cache.write_bytes(original_cache)
+                listing.write_text(original_listing.replace("riscv64-linux", "x86_64-linux"))
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "host paths"):
+                    cache_check.check_cache_profile(root)
+                listing.write_text(original_listing.replace(
+                    "/lib/riscv64-linux-gnu/libc.so.6", "/usr/lib/x86_64/libhost.so"
+                ))
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "host paths"):
+                    cache_check.check_cache_profile(root)
+                listing.write_text(original_listing)
+
+                cache.write_bytes(b"glibc-ld.so.cache1.1other-fixture")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "hash-bound"):
+                    cache_check.check_cache_profile(root)
+                cache.write_bytes(original_cache)
+
+                os.utime(cache, ns=(100, 100))
+                os.utime(root / "usr", ns=(200, 200))
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "cache is older"):
+                    cache_check.check_cache_profile(root)
+                os.utime(root / "usr", ns=(100, 100))
+
+                font = root / "var/cache/fontconfig/fixture.cache-9"
+                font.unlink()
+                (root / "var/cache/fontconfig/CACHEDIR.TAG").write_text("tag")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
+                    cache_check.check_cache_profile(root)
+                font.write_bytes(b"\x04\xfc\x02\xfc" + b"\0" * 28)
+                font.write_bytes(b"arbitrary-font-bytes")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
+                    cache_check.check_cache_profile(root)
+                font.write_bytes(b"\x04\xfc\x02\xfc" + b"\0" * 28)
+
+                catalog = root / "var/lib/systemd/catalog/database"
+                catalog.write_bytes(b"")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "empty cache input"):
+                    cache_check.check_cache_profile(root)
+                catalog.write_bytes(b"arbitrary-catalog")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                    cache_check.check_cache_profile(root)
+                catalog.write_bytes(b"RHHHKSLP" + b"\0" * 24)
+
+                hwdb = root / "usr/lib/udev/hwdb.bin"
+                original_hwdb = hwdb.read_bytes()
+                hwdb.write_bytes(b"arbitrary-hwdb")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                    cache_check.check_cache_profile(root)
+                hwdb.write_bytes(original_hwdb)
+                local_hwdb = root / "etc/udev/hwdb.bin"
+                local_hwdb.parent.mkdir(parents=True, exist_ok=True)
+                local_hwdb.write_bytes(b"KSLPHHRH" + b"\0" * 24)
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "suppressed"):
+                    cache_check.check_cache_profile(root)
+                local_hwdb.unlink()
+
+                stamp = root / "etc/.updated"
+                os.utime(root / "usr", ns=(200, 200))
+                os.utime(cache, ns=(200, 200))
+                os.utime(stamp, ns=(100, 100))
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "older than /usr"):
+                    cache_check.check_cache_profile(root)
+                os.utime(stamp, ns=(200, 200))
+                other_stamp = root / "var/.updated"
+                other_stamp.unlink()
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "missing or unsafe"):
+                    cache_check.check_cache_profile(root)
+
+                other_stamp.touch()
+                os.utime(other_stamp, ns=(200, 200))
+                maintenance = "systemd-sysusers.service"
+                override = root / "etc/systemd/system" / maintenance
+                override.symlink_to("/dev/null")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "masked or overridden"):
+                    cache_check.check_cache_profile(root)
+                override.unlink()
+                vendor = root / "usr/lib/systemd/system" / maintenance
+                vendor_contents = vendor.read_text()
+                vendor.unlink()
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "missing or unsafe"):
+                    cache_check.check_cache_profile(root)
+                vendor.write_text(vendor_contents)
+                dropin = root / "etc/systemd/system" / f"{maintenance}.d"
+                dropin.mkdir()
+                (dropin / "bypass.conf").write_text("[Service]\nExecStart=\nExecStart=/bin/true\n")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "masked or overridden"):
+                    cache_check.check_cache_profile(root)
+                (dropin / "bypass.conf").unlink()
+                dropin.rmdir()
+
+            with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", -1):
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "non-root-owned"):
+                    cache_check.check_cache_profile(root)
 
     def test_qemu_runner_has_one_slirp_virtio_nic_and_fail_closed_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

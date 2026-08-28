@@ -915,9 +915,6 @@ EOF
     fi
     rm -f -- "$stage/var/lib/dbus/machine-id"
     rm -f -- "$stage/var/lib/dpkg/lock" "$stage/var/lib/dpkg/lock-frontend"
-    rm -f -- "$stage/usr/bin/qemu-riscv64-static"
-    [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
-        die "qemu-riscv64-static remains in staged rootfs"
     rm -rf -- \
         "$stage/debootstrap" \
         "$stage/var/cache/apt/archives/"* \
@@ -925,7 +922,50 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
+    if [[ "$PROFILE" == browser-web ]]; then
+        finalize_browser_startup_caches "$stage"
+    fi
+    rm -f -- "$stage/usr/bin/qemu-riscv64-static"
+    [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
+        die "qemu-riscv64-static remains in staged rootfs"
+    if [[ "$PROFILE" == browser-web ]]; then
+        : >"$stage/etc/.updated"
+        : >"$stage/var/.updated"
+        python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+            >"$WORK_DIR/browser-startup-cache-check.log"
+        grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
+            "$WORK_DIR/browser-startup-cache-check.log" ||
+            die "browser startup cache checker did not emit its exact PASS"
+    fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+finalize_browser_startup_caches() {
+    local stage="$1"
+    local cache_sha256
+    local dry_run
+
+    systemd-sysusers --root="$stage"
+    dry_run="$(systemd-sysusers --dry-run --root="$stage" 2>&1)"
+    [[ -z "$dry_run" ]] || die "staged sysusers database is not converged"
+
+    chroot "$stage" /sbin/ldconfig
+    install -d -m 0755 -- "$stage/usr/share/asterinas"
+    cache_sha256="$(sha256sum "$stage/etc/ld.so.cache" | awk '{print $1}')"
+    {
+        printf 'LD_SO_CACHE_SHA256 %s\n' "$cache_sha256"
+        chroot "$stage" /sbin/ldconfig -p
+    } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
+
+    journalctl --root="$stage" --update-catalog
+    chroot "$stage" /usr/bin/fc-cache -f
+
+    [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
+    [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
+        die "staged journal catalog is absent"
+    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
+        die "staged fontconfig cache is absent"
 }
 
 configure_desktop_m5_network() {
