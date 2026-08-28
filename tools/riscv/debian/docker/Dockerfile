@@ -16,6 +16,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg='7:6.1.1-3ubuntu5' \
         fontconfig='2.15.0-1.1ubuntu2' \
+        python3-dev \
+        python3-setuptools \
         systemd='255.4-1ubuntu8.17' \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
