@@ -295,11 +295,15 @@ sha256sum "$VALIDATION_ROOT/plan.json" | tee "$VALIDATION_ROOT/PLAN.SHA256"
 - [ ] **Step 2: Run the fast generic-network simulation**
 
 ```bash
-python3 -m tools.riscv.megrez_debug simulate \
-  "$VALIDATION_ROOT/plan.json" \
-  --tier fast \
-  --output-directory target/qemu-uboot/dwmac-tx-reclaim-validation-fast \
-  --uboot-build-directory target/qemu-uboot/cache/u-boot-build
+timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-fast --rm \
+  --network=none --user "$(id -u):$(id -g)" \
+  -v "$PWD:$PWD" -w "$PWD" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  python3 -m tools.riscv.megrez_debug simulate \
+    "$VALIDATION_ROOT/plan.json" \
+    --tier fast \
+    --output-directory target/qemu-uboot/dwmac-tx-reclaim-validation-fast \
+    --uboot-build-directory target/qemu-uboot/cache/u-boot-build
 ```
 
 Expected: exact READY marker, `passed: true`, profile
@@ -312,23 +316,27 @@ Megrez DWMAC hardware path; this gate validates the kernel/probe/boot protocol.
 ```bash
 RECOVERY_ROOT="$PWD/target/qemu-uboot/dwmac-tx-reclaim-validation-recovery"
 install -d -m 0755 "$RECOVERY_ROOT"
-env \
-  ASTERINAS_RISCV_BOOTI="$ARTIFACT_ROOT/asterinas.booti" \
-  ASTERINAS_INITRAMFS="$ARTIFACT_ROOT/megrez-tcp-probe.cpio.gz" \
-  QEMU_UBOOT_PROFILE=generic-sv39-smp4-software-reboot \
-  QEMU_UBOOT_OUT_DIR="$RECOVERY_ROOT" \
-  QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
-  tools/riscv/prepare_qemu_uboot_booti.sh prepare
-python3 tools/riscv/qemu_uboot_booti.py run \
-  --profile generic-sv39-smp4-software-reboot \
-  --device-set virtio-net-slirp \
-  --uboot target/qemu-uboot/cache/u-boot-build/u-boot \
-  --boot-disk "$RECOVERY_ROOT/boot.ext4" \
-  --manifest "$RECOVERY_ROOT/artifacts.json" \
-  --dtb-audit "$RECOVERY_ROOT/qemu-dtb-audit.json" \
-  --serial-log "$RECOVERY_ROOT/serial.log" \
-  --marker-event "$RECOVERY_ROOT/marker-event.txt" \
-  --result "$RECOVERY_ROOT/qemu-result.json"
+timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-recovery --rm \
+  --network=none --user "$(id -u):$(id -g)" \
+  -v "$PWD:$PWD" -w "$PWD" \
+  -e ASTERINAS_RISCV_BOOTI="$ARTIFACT_ROOT/asterinas.booti" \
+  -e ASTERINAS_INITRAMFS="$ARTIFACT_ROOT/megrez-tcp-probe.cpio.gz" \
+  -e QEMU_UBOOT_PROFILE=generic-sv39-smp4-software-reboot \
+  -e QEMU_UBOOT_OUT_DIR="$RECOVERY_ROOT" \
+  -e QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  bash -c 'set -euo pipefail
+    tools/riscv/prepare_qemu_uboot_booti.sh prepare
+    python3 tools/riscv/qemu_uboot_booti.py run \
+      --profile generic-sv39-smp4-software-reboot \
+      --device-set virtio-net-slirp \
+      --uboot target/qemu-uboot/cache/u-boot-build/u-boot \
+      --boot-disk "$QEMU_UBOOT_OUT_DIR/boot.ext4" \
+      --manifest "$QEMU_UBOOT_OUT_DIR/artifacts.json" \
+      --dtb-audit "$QEMU_UBOOT_OUT_DIR/qemu-dtb-audit.json" \
+      --serial-log "$QEMU_UBOOT_OUT_DIR/serial.log" \
+      --marker-event "$QEMU_UBOOT_OUT_DIR/marker-event.txt" \
+      --result "$QEMU_UBOOT_OUT_DIR/qemu-result.json"'
 sha256sum "$ARTIFACT_ROOT/asterinas.booti" > "$RECOVERY_ROOT/SHA256SUMS"
 python3 -m tools.riscv.megrez_debug recovery \
   "$VALIDATION_ROOT/plan.json" \
