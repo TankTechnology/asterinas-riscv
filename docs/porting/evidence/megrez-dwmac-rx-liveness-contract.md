@@ -160,3 +160,38 @@ the exact masked/rescheduled state before changing the real driver. It must not
 bundle MMC deployment, xHCI, desktop, browser, PHY-selection, or unrelated
 network-stack work. QEMU remains regression evidence only; one Linux-staged
 Megrez run is the final hardware check.
+
+## Implemented bounded protocol and staged physical discriminator
+
+The production implementation is recorded by these commits:
+
+- `b6c709f5d`: dependency-free 32-packet poll-budget state machine and exact
+  host tests;
+- `57504e1bb`: `DwmacDevice` integration, including the post-status descriptor
+  recheck, masked rescheduling, and drained-only PLIC rearm;
+- `c72469ad9`: cumulative RX-budget diagnostics emitted only after rescheduled
+  work subsequently drains and the PLIC rearm succeeds;
+- `d4fe72bc0`: one-boot ordered 16 KiB, 64 KiB, 1 MiB, and 16 MiB TCP stress
+  protocol with exact progress and a final marker bound to all four sizes.
+
+The current abstract protocol still produces its deterministic starvation
+lasso. The bounded protocol exhaustively verifies reduced rings of size two,
+three, and four. The exact production poll module reports six host tests, and
+the RISC-V OSDK compile of `aster-dwmac`, `aster-network`, and `aster-kernel`
+passes in the pinned container.
+
+The physical discriminator is prepared but has not been run. In one Asterinas
+boot it will stop at the first failed stage and retain serial evidence for:
+
+- `ASTERINAS_GMAC_TCP_PROBE_PROGRESS`, with the exact stage and cumulative
+  completed bytes;
+- `ASTERINAS_GMAC_RX_POLL`, with cumulative receives, budget exhaustions,
+  reschedules, and successful PLIC rearms;
+- the existing panic/oops fatal markers and the automatic U-Boot recovery
+  prompt driven by `asterinas.reboot_after=180`.
+
+This reduces the remaining board work to one hardware-assumption check. A pass
+closes the unbounded-poll hypothesis. A failure with advancing bounded-poll
+counters redirects the investigation to DMA cache coherence, MMIO ordering,
+PLIC level behavior, or EIC7700-specific recovery rather than to another
+speculative scheduler change.
