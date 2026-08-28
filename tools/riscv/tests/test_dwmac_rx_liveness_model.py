@@ -306,6 +306,31 @@ class DwmacRxPollContractTests(unittest.TestCase):
                 self.assertIn(field, source)
         self.assertIn("take_progress_report", source)
 
+    def test_device_emits_dma_address_contract(self) -> None:
+        queue = QUEUE_SOURCE.read_text()
+        device = DEVICE_SOURCE.read_text()
+
+        for field in (
+            "ring_paddr: usize",
+            "ring_daddr: usize",
+            "ring_cpu_alias: Option<usize>",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, queue)
+        self.assertIn("ASTERINAS_GMAC_DMA_CONTRACT", device)
+        for field in (
+            "version={:#04x}",
+            "ring_paddr={:#018x}",
+            "ring_daddr={:#018x}",
+            "ring_cpu_alias={:#018x?}",
+            "tx_ring={:#018x}",
+            "rx_ring={:#018x}",
+            "tx_tail={:#018x}",
+            "rx_tail={:#018x}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, device)
+
 
 if __name__ == "__main__":
     unittest.main()
