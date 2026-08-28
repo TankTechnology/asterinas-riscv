@@ -3,6 +3,7 @@
 use alloc::{
     format,
     sync::{Arc, Weak},
+    vec,
     vec::Vec,
 };
 use core::{
@@ -11,7 +12,7 @@ use core::{
 };
 
 use aster_block::{
-    BlockDeviceMeta, EXTENDED_DEVICE_ID_ALLOCATOR, PartitionInfo, PartitionNode,
+    BlockDeviceMeta, EXTENDED_DEVICE_ID_ALLOCATOR, PartitionInfo, PartitionNode, SECTOR_SIZE,
     bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
 };
 use device_id::{DeviceId, MinorId};
@@ -20,8 +21,10 @@ use ostd::sync::{Mutex, SpinLock};
 use crate::{MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2, arch::MmioHost, card::Card};
 
 const DEVICE_MINORS: u32 = 16;
-const PIO_TRANSFER_SECTORS: usize = 8;
-const PIO_TRANSFER_BYTES: usize = PIO_TRANSFER_SECTORS * 512;
+// Match the standard SDHCI 512-KiB request boundary while remaining far below
+// the controller's 16-bit block-count limit.
+const PIO_TRANSFER_SECTORS: usize = 1024;
+const PIO_TRANSFER_BYTES: usize = PIO_TRANSFER_SECTORS * SECTOR_SIZE;
 const P2_START_LBA: u64 = 0x000f_a022;
 const P2_NR_SECTORS: u64 = 0x0080_0000;
 const P2_END_LBA: u64 = P2_START_LBA + P2_NR_SECTORS;
@@ -50,6 +53,20 @@ fn partition_write_allowed(
             .checked_add(first_lba)
             .and_then(|start| start.checked_add(nr_sectors))
             .is_some_and(|end| end <= P2_END_LBA)
+}
+
+fn pio_transfer_buffer_len(segment_len: usize) -> usize {
+    segment_len.min(PIO_TRANSFER_BYTES)
+}
+
+fn pio_transfer_buffer(bio: &SubmittedBio) -> Vec<u8> {
+    let segment_len = bio
+        .segments()
+        .iter()
+        .map(|segment| segment.nbytes())
+        .max()
+        .unwrap_or(SECTOR_SIZE);
+    vec![0u8; pio_transfer_buffer_len(segment_len)]
 }
 
 pub(super) fn register(host: MmioHost, card: Card) -> Result<(), ()> {
@@ -177,7 +194,7 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(logical_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut transfer = [0u8; PIO_TRANSFER_BYTES];
+        let mut transfer = pio_transfer_buffer(bio);
         for segment in bio.segments() {
             if !segment.nbytes().is_multiple_of(512) {
                 return BioStatus::IoError;
@@ -217,7 +234,7 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(first_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut transfer = [0u8; PIO_TRANSFER_BYTES];
+        let mut transfer = pio_transfer_buffer(bio);
         for segment in bio.segments() {
             if !segment.nbytes().is_multiple_of(512) {
                 return BioStatus::IoError;
@@ -294,5 +311,13 @@ mod tests {
             P2_START_LBA,
             P2_NR_SECTORS - 1
         ));
+    }
+
+    #[ktest]
+    fn bounds_pio_batches_at_the_standard_sdhci_request_size() {
+        assert_eq!(PIO_TRANSFER_SECTORS, 1024);
+        assert_eq!(pio_transfer_buffer_len(512), 512);
+        assert_eq!(pio_transfer_buffer_len(4096), 4096);
+        assert_eq!(pio_transfer_buffer_len(1024 * 1024), 512 * 1024);
     }
 }
