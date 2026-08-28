@@ -41,6 +41,11 @@ from tools.riscv.megrez_debug_desktop import (
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import ProbeServer, ProbeServerError
+from tools.riscv.megrez_preboard import (
+    PreboardError,
+    create_recovery_evidence,
+    issue_preboard_permit,
+)
 
 KERNEL_ADDRESS = 0x80200000
 INITRAMFS_ADDRESS = 0x83000000
@@ -288,6 +293,23 @@ def _parser() -> argparse.ArgumentParser:
     simulate.add_argument("--output-directory", required=True, type=Path)
     simulate.add_argument("--uboot-build-directory", type=Path)
 
+    recovery = subparsers.add_parser(
+        "recovery", help="bind a software-reboot QEMU result to a plan"
+    )
+    recovery.add_argument("plan", type=Path)
+    recovery.add_argument("--native-result", required=True, type=Path)
+    recovery.add_argument("--serial-log", required=True, type=Path)
+    recovery.add_argument("--sha256sums", required=True, type=Path)
+    recovery.add_argument("--output", required=True, type=Path)
+
+    preboard = subparsers.add_parser(
+        "preboard", help="issue a QEMU-backed physical boot permit"
+    )
+    preboard.add_argument("plan", type=Path)
+    preboard.add_argument("--desktop-result", required=True, type=Path)
+    preboard.add_argument("--recovery-result", required=True, type=Path)
+    preboard.add_argument("--output", required=True, type=Path)
+
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)
     board.add_argument("device")
@@ -337,6 +359,25 @@ def main(
                 values.output_directory / "result.json", result.canonical_bytes()
             )
             return 0
+        if values.command == "recovery":
+            plan = _load_plan(values.plan)
+            result = create_recovery_evidence(
+                plan,
+                values.native_result,
+                values.serial_log,
+                values.sha256sums,
+            )
+            _atomic_write(values.output, result.canonical_bytes())
+            return 0
+        if values.command == "preboard":
+            plan = _load_plan(values.plan)
+            issue_preboard_permit(
+                plan,
+                values.desktop_result,
+                values.recovery_result,
+                values.output,
+            )
+            return 0
 
         plan = _load_plan(values.plan)
         if values.dry_run:
@@ -361,6 +402,7 @@ def main(
         DebugContractError,
         DesktopSimulationError,
         OSError,
+        PreboardError,
         ProbeServerError,
         SimulationError,
         WorkflowError,
