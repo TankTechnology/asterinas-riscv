@@ -173,7 +173,7 @@ class DwmacRxPollContractTests(unittest.TestCase):
                 timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("5 passed", result.stdout)
+            self.assertIn("9 passed", result.stdout)
 
     def test_descriptor_handoff_matches_visibility_model(self) -> None:
         queue = QUEUE_SOURCE.read_text()
