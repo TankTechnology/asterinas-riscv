@@ -176,6 +176,39 @@ class MegrezPreboardTests(unittest.TestCase):
         self.assertTrue(result.second_firmware_epoch)
         self.assertTrue(result.fresh_uboot_prompt)
 
+    def test_recovery_adapter_binds_the_preboard_tcp_probe_plan(self) -> None:
+        tcp_plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(
+                self.identities[name]
+                for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
+            ),
+            bootargs=(
+                "console=ttyS0 loglevel=info init=/init "
+                "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+                "asterinas.reboot_after=60"
+            ),
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=60,
+        )
+        native = self.repository / "native-tcp-recovery.json"
+        serial = self.repository / "tcp-recovery.serial.log"
+        sums = self.repository / "TCP-SHA256SUMS"
+        native.write_text(json.dumps(self._native_recovery()))
+        serial.write_bytes(self._recovery_transcript())
+        sums.write_text(
+            f"{self.identities['kernel'].sha256}  /tmp/fs-root/asterinas.booti\n"
+        )
+
+        result = create_recovery_evidence(tcp_plan, native, serial, sums)
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.plan_sha256, tcp_plan.plan_sha256)
+        self.assertEqual(result.kernel_sha256, self.identities["kernel"].sha256)
+
     def test_recovery_adapter_rejects_hash_qemu_and_epoch_drift(self) -> None:
         native = self.repository / "native-recovery.json"
         serial = self.repository / "recovery.serial.log"

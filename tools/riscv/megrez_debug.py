@@ -48,6 +48,7 @@ from tools.riscv.megrez_debug_probe import (
 from tools.riscv.megrez_debian_install import InstallError, run_network_install
 from tools.riscv.megrez_preboard import (
     PreboardError,
+    RecoveryEvidence,
     create_recovery_evidence,
     issue_preboard_permit,
 )
@@ -276,6 +277,29 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
         raise WorkflowError("plan-simulation-mismatch")
 
 
+def _validate_recovery(path: Path, plan: DebugPlan) -> None:
+    try:
+        result = RecoveryEvidence.from_bytes(
+            _read_regular(path, label="plan-recovery")
+        )
+    except PreboardError as error:
+        raise WorkflowError(f"plan-recovery-invalid: {error}") from error
+    kernel = next(
+        (identity for identity in plan.artifacts if identity.name == "kernel"),
+        None,
+    )
+    if (
+        kernel is None
+        or not result.passed
+        or result.reason != "recovery-pass"
+        or result.plan_sha256 != plan.plan_sha256
+        or result.kernel_sha256 != kernel.sha256
+        or not result.second_firmware_epoch
+        or not result.fresh_uboot_prompt
+    ):
+        raise WorkflowError("plan-recovery-mismatch")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -341,6 +365,7 @@ def _parser() -> argparse.ArgumentParser:
     board.add_argument("plan", type=Path)
     board.add_argument("device")
     board.add_argument("--simulation-result", required=True, type=Path)
+    board.add_argument("--recovery-result", type=Path)
     board.add_argument("--output-directory", type=Path)
     board.add_argument("--timeout", type=_board_timeout, default=300.0)
     board.add_argument("--dry-run", action="store_true")
@@ -431,6 +456,9 @@ def main(
             return 0
         _check_artifacts(plan)
         _validate_simulation(values.simulation_result, plan)
+        if values.recovery_result is None:
+            raise WorkflowError("board-recovery-result-required")
+        _validate_recovery(values.recovery_result, plan)
         if values.output_directory is None:
             raise WorkflowError("board-output-directory-required")
         with probe_server_factory() as probe_server:
