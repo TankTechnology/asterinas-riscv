@@ -14,11 +14,13 @@ from tools.riscv.debian.rootfs.megrez_installer import (
     InstallerError,
     build_archive,
     build_network_archive,
+    build_verify_archive,
     main,
     parse_newc,
     plan_chunks,
     render_init,
     render_network_init,
+    render_verify_init,
 )
 
 
@@ -372,6 +374,40 @@ hash_status=$?
                 build_network_archive(base, image, first, image_hash, root_url)
             self.assertLess(first.stat().st_size, base.stat().st_size + 16 * 1024)
 
+    def test_verify_init_reads_exact_root_without_write_authority(self):
+        root_hash = hashlib.sha256(b"a" * (1024 * 1024)).hexdigest()
+
+        script = render_verify_init(root_hash, 1024 * 1024).decode()
+
+        self.assertIn('dd if="$target" bs=1048576 iflag=fullblock count=1', script)
+        self.assertIn(f'[ "$1" = "{root_hash}" ]', script)
+        self.assertIn("DEBIAN_VERIFY_PASS", script)
+        self.assertIn("DEBIAN_VERIFY_FAIL", script)
+        self.assertIn("printf '%s\\n' \"$1\" >/dev/ttyS0", script)
+        self.assertIn("reboot -f", script)
+        self.assertNotIn("dd of=", script)
+        self.assertNotIn("asterinas.mmc_write_partition2", script)
+
+    def test_verify_archive_is_deterministic_and_replaces_only_init(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = root / "base.cpio"
+            image = root / "root.ext2"
+            first = root / "first.cpio"
+            second = root / "second.cpio"
+            base.write_bytes(_archive(*_busybox_base_entries()))
+            image.write_bytes(b"a" * (1024 * 1024))
+            image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
+
+            build_verify_archive(base, image, first, image_hash)
+            build_verify_archive(base, image, second, image_hash)
+
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            entries = {entry.name: entry for entry in parse_newc(first.read_bytes())}
+            self.assertIn(b"DEBIAN_VERIFY_PASS", entries["init"].data)
+            self.assertNotIn(b"dd of=", entries["init"].data)
+            self.assertEqual(entries["init"].mode & 0o7777, 0o755)
+
     def test_cli_uses_the_manifest_root_image_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -444,6 +480,42 @@ hash_status=$?
                 self.assertEqual(main(arguments), 0)
 
             self.assertEqual(build.call_args.args[3:], ("a" * 64, root_url))
+
+    def test_cli_selects_read_only_verify_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "root.ext2"
+            with image.open("wb") as image_file:
+                image_file.truncate(1024 * 1024 * 1024)
+            arguments = [
+                "--base-cpio",
+                str(root / "base.cpio"),
+                "--root-image",
+                str(image),
+                "--manifest",
+                str(root / "manifest.json"),
+                "--packages-lock",
+                str(root / "packages.lock"),
+                "--verify-only",
+                "--output",
+                str(root / "verify.cpio"),
+            ]
+            identity = SimpleNamespace(root_image_sha256="a" * 64)
+            with (
+                mock.patch(
+                    "tools.riscv.debian.rootfs.megrez_installer.load_manifest",
+                    return_value=identity,
+                ),
+                mock.patch(
+                    "tools.riscv.debian.rootfs.megrez_installer.validate_frozen_root"
+                ),
+                mock.patch(
+                    "tools.riscv.debian.rootfs.megrez_installer.build_verify_archive"
+                ) as build,
+            ):
+                self.assertEqual(main(arguments), 0)
+
+            self.assertEqual(build.call_args.args[3], "a" * 64)
 
 
 if __name__ == "__main__":

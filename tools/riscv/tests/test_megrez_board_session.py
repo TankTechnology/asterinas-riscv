@@ -108,6 +108,19 @@ class MilestoneDetectionTests(unittest.TestCase):
         )
         self.assertEqual(tuple(session.milestones), tuple(board.MILESTONES))
 
+    def test_specific_profile_does_not_require_the_optional_banner(self):
+        session = board.BoardSession.from_fd(
+            -1,
+            None,
+            confirm=False,
+            final_marker=board.FINAL_MILESTONE_MARKERS["verifier"],
+            log_stream=io.StringIO(),
+        )
+        session.note_milestone(
+            "Enter riscv_boot\nDEBIAN_VERIFY_PASS sha256=abc bytes=1073741824\n"
+        )
+        self.assertEqual(tuple(session.milestones), ("kernel_enter", "userspace"))
+
 
 class ArgumentContractTests(unittest.TestCase):
     def test_physical_mode_parses_complete_crc_map(self):
@@ -294,6 +307,13 @@ class ArgumentContractTests(unittest.TestCase):
         self.assertEqual(
             board.FINAL_MILESTONE_MARKERS[installer.final_profile],
             "DEBIAN_INSTALL_PASS",
+        )
+        verifier = board.parse_args(
+            _required_args() + crc_args + ["--final-profile", "verifier"]
+        )
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS[verifier.final_profile],
+            "DEBIAN_VERIFY_PASS",
         )
         _parse_fails(
             _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
