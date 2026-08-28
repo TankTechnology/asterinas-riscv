@@ -36,10 +36,6 @@ readonly -a REQUIRED_TOOLS=(
     sha256sum
     curl
 )
-readonly -a STARTUP_CACHE_REQUIRED_TOOLS=(
-    systemd-sysusers
-    journalctl
-)
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
     rootfs-manifest.json
@@ -146,9 +142,6 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
-            if profile_uses_startup_caches "$PROFILE"; then
-                printf '%s\n' "${STARTUP_CACHE_REQUIRED_TOOLS[@]}"
-            fi
             if [[ "$PROFILE" == browser-m5 ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
@@ -332,11 +325,6 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
-    if profile_uses_startup_caches "$PROFILE"; then
-        for tool in "${STARTUP_CACHE_REQUIRED_TOOLS[@]}"; do
-            command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
-        done
-    fi
     if [[ "$PROFILE" == browser-m5 ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
@@ -971,8 +959,8 @@ finalize_browser_startup_caches() {
     local cache_sha256
     local dry_run
 
-    systemd-sysusers --root="$stage"
-    dry_run="$(systemd-sysusers --dry-run --root="$stage" 2>&1)"
+    chroot "$stage" /usr/bin/systemd-sysusers
+    dry_run="$(chroot "$stage" /usr/bin/systemd-sysusers --dry-run 2>&1)"
     [[ -z "$dry_run" ]] || die "staged sysusers database is not converged"
 
     chroot "$stage" /sbin/ldconfig
@@ -983,7 +971,7 @@ finalize_browser_startup_caches() {
         chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
-    journalctl --root="$stage" --update-catalog
+    chroot "$stage" /usr/bin/journalctl --update-catalog
     chroot "$stage" /usr/bin/fc-cache -f
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
