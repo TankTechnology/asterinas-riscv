@@ -59,6 +59,9 @@ FATAL_MARKERS = (
     "Oops:",
 )
 PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
+UBOOT_AUTOBOOT_PATTERN = re.compile(
+    r"(?:^|[\r\n])Hit any key to stop autoboot:\s*[0-9]+"
+)
 PROBE_FAILURE_PATTERN = re.compile(
     r"ASTERINAS_GMAC_TCP_PROBE_FAIL "
     r"reason=(?P<reason>[a-z0-9-]+) "
@@ -221,6 +224,8 @@ class BoardOperations(Protocol):
     def booti(self, plan: DebugPlan, timeout: float) -> None: ...
 
     def read_chunk(self, timeout: float) -> str: ...
+
+    def stop_recovery_autoboot(self, timeout: float) -> None: ...
 
     def close(self) -> None: ...
 
@@ -400,6 +405,10 @@ class RealBoardOperations:
             session._log(chunk)
         return chunk
 
+    def stop_recovery_autoboot(self, timeout: float) -> None:
+        del timeout
+        self._require_session().send("")
+
     def close(self) -> None:
         if self._fd is None:
             return
@@ -532,6 +541,8 @@ class _MarkerTracker:
         self._markers = markers
         self._index = 0
         self._terminal: GuestTerminal | None = None
+        self._autoboot_stop_pending = False
+        self._autoboot_stop_sent = False
         self._tail = ""
         self._tail_limit = (
             max(
@@ -553,6 +564,13 @@ class _MarkerTracker:
     @property
     def terminal(self) -> GuestTerminal | None:
         return self._terminal
+
+    def take_autoboot_stop_request(self) -> bool:
+        if not self._autoboot_stop_pending:
+            return False
+        self._autoboot_stop_pending = False
+        self._autoboot_stop_sent = True
+        return True
 
     def feed(self, chunk: str) -> bool:
         window = self._tail + chunk
@@ -595,6 +613,12 @@ class _MarkerTracker:
             self._terminal is not None
             and PROMPT_PATTERN.search(window, cursor) is not None
         )
+        if (
+            self._terminal is not None
+            and not self._autoboot_stop_sent
+            and UBOOT_AUTOBOOT_PATTERN.search(window, cursor) is not None
+        ):
+            self._autoboot_stop_pending = True
         self._tail = window[cursor:][-self._tail_limit :]
         return recovered
 
@@ -685,7 +709,12 @@ def run_board(
             if transcript_bytes > MAX_BOARD_TRANSCRIPT_BYTES:
                 raise BoardRunFailure("guest-transcript-limit")
             transcript.append(chunk)
-            if tracker.feed(chunk):
+            recovered = tracker.feed(chunk)
+            if not recovered and tracker.take_autoboot_stop_request():
+                operations.stop_recovery_autoboot(
+                    _remaining(deadline, clock, phase="recovery-autoboot")
+                )
+            if recovered:
                 terminal = tracker.terminal
                 assert terminal is not None
                 if terminal.passed:

@@ -1133,6 +1133,9 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
                 raise value
             return value
 
+        def stop_recovery_autoboot(self, timeout: float) -> None:
+            self.calls.append(("stop-autoboot", timeout))
+
         def close(self) -> None:
             self.calls.append(("close", None))
 
@@ -1233,6 +1236,30 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertEqual(result.reason, "guest-failure-recovered:receive-poll")
         self.assertEqual(operations.booti_count, 1)
         self.assertEqual(operations.published, result)
+
+    def test_post_terminal_autoboot_countdown_is_stopped_once(self) -> None:
+        operations = self.Operations(
+            [
+                "Hit any key to stop autoboot:  1\nEnter riscv_boot\n",
+                "ASTERINAS_GMAC_TCP_PROBE_READY\npll config ok\n",
+                "Hit any key to stop auto",
+                "boot:  29\n",
+                "U-Boot 2024.01\n=> ",
+            ]
+        )
+
+        result = run_board(
+            self.plan,
+            BoardRunConfig(timeout=120.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "board-pass")
+        self.assertEqual(operations.booti_count, 1)
+        stop_calls = [call for call in operations.calls if call[0] == "stop-autoboot"]
+        self.assertEqual(len(stop_calls), 1)
 
     def test_terminal_requires_post_terminal_recovery_and_is_unique(self) -> None:
         failure = (
@@ -1691,6 +1718,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             outcomes = operations.ensure_artifacts(plan, 10.0)
             operations.prepare_boot(plan, 10.0)
             operations.booti(plan, 10.0)
+            operations.stop_recovery_autoboot(10.0)
             operations.close()
             result = StageResult(
                 schema_version=1,
@@ -1708,7 +1736,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             operations.finish()
 
             self.assertEqual(closed, [23])
-            self.assertEqual(sends.count(""), 1)
+            self.assertEqual(sends.count(""), 2)
             initramfs = next(
                 item for item in plan.artifacts if item.name == "initramfs"
             )
