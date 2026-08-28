@@ -14,6 +14,7 @@
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -182,6 +183,29 @@ static void test_pipe_and_regular_leaf(void)
 	close(pipe_fds[1]);
 	close(carrier[0]);
 	close(carrier[1]);
+}
+
+static void test_pidfd_leaf(void)
+{
+	int carrier[2];
+	int received;
+	char payload;
+	int pidfd;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) != 0)
+		fail("pidfd carrier socketpair failed: %s", strerror(errno));
+	pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+	if (pidfd < 0)
+		fail("pidfd_open failed: %s", strerror(errno));
+	expect_send(carrier[0], &pidfd, 1, false);
+	if (receive_rights(carrier[1], 0, &received, 1, &payload) != 1 ||
+	    payload != 'x')
+		fail("pidfd SCM payload mismatch");
+	if (fcntl(received, F_GETFD) < 0)
+		fail("received pidfd is unusable: %s", strerror(errno));
+	close(received);
+	close(pidfd);
+	close_fds(carrier, 2);
 }
 
 static void test_slice5_closed_classes(void)
@@ -656,6 +680,7 @@ static void run_all_tests(void)
 	test_unrelated_socket(SOCK_STREAM, SOCK_SEQPACKET);
 	test_unrelated_socket(SOCK_SEQPACKET, SOCK_STREAM);
 	test_pipe_and_regular_leaf();
+	test_pidfd_leaf();
 	test_slice5_closed_classes();
 	test_self_cycle(SOCK_STREAM);
 	test_self_cycle(SOCK_SEQPACKET);
