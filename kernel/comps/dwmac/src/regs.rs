@@ -9,6 +9,8 @@ const MAC_RX_QUEUE0_ENABLE: RegisterField = RegisterField::new(0x0000_0003, 0);
 const MTL_TX_QUEUE0_ENABLE: RegisterField = RegisterField::new(0x0000_000c, 2);
 const MTL_TX_QUEUE0_SIZE: RegisterField = RegisterField::new(0x01ff_0000, 16);
 const MTL_RX_QUEUE0_SIZE: RegisterField = RegisterField::new(0x3ff0_0000, 20);
+const MTL_RX_MISSED_PACKET_COUNT: RegisterField = RegisterField::new(0x07ff_0000, 16);
+const MTL_RX_FIFO_OVERFLOW_PACKET_COUNT: RegisterField = RegisterField::new(0x0000_07ff, 0);
 
 const MAC_RX_QUEUE_ENABLED_DCB: u32 = 2;
 const MTL_TX_QUEUE_ENABLED: u32 = 2;
@@ -94,6 +96,15 @@ pub struct QueueZeroConfiguration {
     pub mtl_rx_operation_mode: u32,
 }
 
+/// One clear-on-read queue-zero receive-loss register sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MtlRxLossSnapshot {
+    pub missed_packets: u32,
+    pub missed_counter_overflow: bool,
+    pub fifo_overflow_packets: u32,
+    pub fifo_counter_overflow: bool,
+}
+
 pub const MAC_CONFIGURATION: RegisterOffset = RegisterOffset::new(0x0000);
 pub const MAC_PACKET_FILTER: RegisterOffset = RegisterOffset::new(0x0008);
 pub const MAC_INTERRUPT_STATUS: RegisterOffset = RegisterOffset::new(0x00b0);
@@ -107,6 +118,8 @@ pub const MAC_ADDRESS0_LOW: RegisterOffset = RegisterOffset::new(0x0304);
 pub const MAC_RX_QUEUE_CONTROL0: RegisterOffset = RegisterOffset::new(0x00a0);
 pub const MTL_TX_QUEUE0_OPERATION_MODE: RegisterOffset = RegisterOffset::new(0x0d00);
 pub const MTL_RX_QUEUE0_OPERATION_MODE: RegisterOffset = RegisterOffset::new(0x0d30);
+pub const MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER: RegisterOffset =
+    RegisterOffset::new(0x0d34);
 pub const DMA_MODE: RegisterOffset = RegisterOffset::new(0x1000);
 pub const DMA_SYSTEM_BUS_MODE: RegisterOffset = RegisterOffset::new(0x1004);
 pub const DMA_STATUS: RegisterOffset = RegisterOffset::new(0x1008);
@@ -175,6 +188,16 @@ pub const fn dma_system_bus_mode(tx_high: u32, rx_high: u32) -> u32 {
         | DMA_AXI_READ_LIMIT_2
         | DMA_AXI_BURSTS_16_8_4
         | extended
+}
+
+/// Decodes the documented clear-on-read MTL queue-zero receive-loss counters.
+pub const fn decode_mtl_rx_loss(register: u32) -> MtlRxLossSnapshot {
+    MtlRxLossSnapshot {
+        missed_packets: MTL_RX_MISSED_PACKET_COUNT.decode(register),
+        missed_counter_overflow: register & (1 << 27) != 0,
+        fifo_overflow_packets: MTL_RX_FIFO_OVERFLOW_PACKET_COUNT.decode(register),
+        fifo_counter_overflow: register & (1 << 11) != 0,
+    }
 }
 
 /// Enables queue zero and assigns the complete hardware-advertised FIFO to it.
