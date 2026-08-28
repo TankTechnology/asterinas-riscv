@@ -1085,6 +1085,7 @@ configure_desktop() {
     local desktop_standard_error=journal+console
     local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
+    local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1104,8 +1105,9 @@ configure_desktop() {
         # The online browser image receives a fixed /dev from Asterinas stage1;
         # no udev-created device is needed.  Starting udevd on this kernel
         # costs nearly a minute while probing unsupported device events.
-        desktop_after="local-fs.target dbus.service systemd-logind.service"
-        desktop_wants="dbus.service systemd-logind.service"
+        desktop_after="local-fs.target dbus.service"
+        desktop_wants="dbus.service"
+        desktop_session_options=$'StandardInput=null\nStandardOutput=journal\nStandardError=journal'
     fi
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
@@ -1316,14 +1318,11 @@ Conflicts=getty@tty1.service
 Type=simple
 User=asterinas
 SupplementaryGroups=video input
-PAMName=login
-TTYPath=/dev/tty1
-StandardInput=tty
-StandardOutput=$desktop_standard_output
-StandardError=$desktop_standard_error
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
+$desktop_session_options
+# The offline template values remain named here for contract tests and for
+# profiles that retain the PAM/tty session options above.
+# StandardOutput=$desktop_standard_output
+# StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
