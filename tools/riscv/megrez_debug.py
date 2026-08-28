@@ -35,6 +35,10 @@ from tools.riscv.megrez_debug_board import (
     BoardTermination,
     run_physical_board,
 )
+from tools.riscv.megrez_debug_desktop import (
+    DesktopSimulationError,
+    simulate_desktop,
+)
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import ProbeServer, ProbeServerError
 
@@ -280,9 +284,9 @@ def _parser() -> argparse.ArgumentParser:
 
     simulate = subparsers.add_parser("simulate", help="run a plan-bound QEMU gate")
     simulate.add_argument("plan", type=Path)
-    simulate.add_argument("--tier", choices=("fast",), required=True)
+    simulate.add_argument("--tier", choices=("fast", "desktop"), required=True)
     simulate.add_argument("--output-directory", required=True, type=Path)
-    simulate.add_argument("--uboot-build-directory", required=True, type=Path)
+    simulate.add_argument("--uboot-build-directory", type=Path)
 
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)
@@ -312,12 +316,22 @@ def main(
             return 0
         if values.command == "simulate":
             plan = _load_plan(values.plan)
-            _check_artifacts(plan)
-            with probe_server_factory():
-                result = simulate_fast(
+            if values.tier == "fast":
+                if values.uboot_build_directory is None:
+                    raise WorkflowError(
+                        "fast-simulation-uboot-build-directory-required"
+                    )
+                _check_artifacts(plan)
+                with probe_server_factory():
+                    result = simulate_fast(
+                        plan,
+                        values.output_directory,
+                        values.uboot_build_directory,
+                    )
+            else:
+                result = simulate_desktop(
                     plan,
                     values.output_directory,
-                    values.uboot_build_directory,
                 )
             _atomic_write(
                 values.output_directory / "result.json", result.canonical_bytes()
@@ -345,6 +359,7 @@ def main(
     except (
         BoardRunFailure,
         DebugContractError,
+        DesktopSimulationError,
         OSError,
         ProbeServerError,
         SimulationError,
