@@ -484,6 +484,12 @@ impl ScmGraph {
 }
 
 fn scm_graph() -> &'static SpinLock<ScmGraph> {
+    // Edge guards can be the last strong owner of a socket or queue and may
+    // therefore drop while another kernel spin lock has preemption disabled.
+    // A sleeping Mutex cannot be entered from that context. ScmGraph contains
+    // only IDs, weak registrations, and counters; removing graph entries cannot
+    // recursively drop another edge guard. Its small BTreeMap/Vec allocations
+    // use the IRQ-safe kernel allocator, like other SpinLock<BTreeMap> users.
     SCM_GRAPH.call_once(|| SpinLock::new(ScmGraph::default()))
 }
 
