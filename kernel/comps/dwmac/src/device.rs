@@ -401,6 +401,14 @@ impl AnyNetworkDevice for DwmacDevice {
             PollEndAction::Rearm => {
                 if self.irq.rearm().is_err() {
                     self.fatal = true;
+                } else if let Some(stats) = self.rx_poll.record_rearmed() {
+                    ostd::info!(
+                        "ASTERINAS_GMAC_RX_POLL received={} budget_exhaustions={} reschedules={} plic_rearms={}",
+                        stats.received,
+                        stats.budget_exhaustions,
+                        stats.reschedules,
+                        stats.plic_rearms,
+                    );
                 }
             }
             PollEndAction::Reschedule => {
