@@ -9,6 +9,7 @@ import unittest
 import zlib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
@@ -404,6 +405,39 @@ class MegrezPreboardTests(unittest.TestCase):
             )
         self.assertEqual(list(outside.iterdir()), [])
         self.assertFalse((original / self.output.name).exists())
+
+    def test_git_identity_rejects_tracked_drift_but_ignores_untracked_files(
+        self,
+    ) -> None:
+        from tools.riscv import megrez_preboard
+
+        responses = (
+            SimpleNamespace(stdout="c" * 40 + "\n"),
+            SimpleNamespace(stdout=""),
+        )
+        with mock.patch.object(
+            megrez_preboard.subprocess, "run", side_effect=responses
+        ) as run:
+            commit = megrez_preboard._git_identity(self.repository)
+
+        self.assertEqual(commit, "c" * 40)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+        )
+
+        with (
+            mock.patch.object(
+                megrez_preboard.subprocess,
+                "run",
+                side_effect=(
+                    responses[0],
+                    SimpleNamespace(stdout=" M kernel/src/lib.rs\n"),
+                ),
+            ),
+            self.assertRaisesRegex(PreboardError, "clean committed"),
+        ):
+            megrez_preboard._git_identity(self.repository)
 
 
 if __name__ == "__main__":
