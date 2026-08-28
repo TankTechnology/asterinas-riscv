@@ -67,7 +67,9 @@ def _busybox_base_entries() -> tuple[tuple[str, bytes, int], ...]:
     entries.extend(
         (f"usr/bin/{command}", b"busybox", 0o120777) for command in _INSTALLER_COMMANDS
     )
-    entries.append(("usr/bin/wget", b"busybox", 0o120777))
+    entries.extend(
+        (f"usr/bin/{command}", b"busybox", 0o120777) for command in ("tee", "wget")
+    )
     return tuple(entries)
 
 
@@ -232,7 +234,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
 
             self.assertEqual(output.read_bytes(), b"published")
 
-    def test_network_installer_streams_the_frozen_root_and_verifies_readback(self):
+    def test_network_installer_hashes_the_exact_stream_written_to_the_root(self):
         root_hash = hashlib.sha256(b"a" * 4096).hexdigest()
         root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
 
@@ -243,9 +245,11 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn(f"wget -T 30 -O - '{root_url}'", script)
         self.assertIn("| gzip -dc", script)
         self.assertLess(script.index("wget -T 30"), script.index("gzip -dc"))
-        self.assertLess(script.index("gzip -dc"), script.index('dd of="$target"'))
-        self.assertIn('dd of="$target" bs=4096 iflag=fullblock conv=notrunc', script)
-        self.assertIn('dd if="$target" bs=4096 count="1"', script)
+        self.assertLess(script.index("gzip -dc"), script.index('tee "$target"'))
+        self.assertLess(script.index('tee "$target"'), script.index("sha256sum"))
+        self.assertIn('stream_hash="$(wget -T 30', script)
+        self.assertIn(f'[ "$1" = "{root_hash}" ]', script)
+        self.assertNotIn('dd if="$target"', script)
         self.assertIn("DEBIAN_INSTALL_FETCH_OK", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
         self.assertLess(script.index("DEBIAN_INSTALL_PASS"), script.index("reboot -f"))
@@ -280,6 +284,20 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             self.assertFalse(
                 any(name.startswith("installer/chunks") for name in entries)
             )
+
+            base.write_bytes(
+                _archive(
+                    *(
+                        entry
+                        for entry in _busybox_base_entries()
+                        if entry[0] != "usr/bin/tee"
+                    )
+                )
+            )
+            with self.assertRaisesRegex(
+                InstallerError, "missing executable installer runtime"
+            ):
+                build_network_archive(base, image, first, image_hash, root_url)
             self.assertLess(first.stat().st_size, base.stat().st_size + 16 * 1024)
 
     def test_cli_uses_the_manifest_root_image_hash(self):

@@ -36,7 +36,7 @@ _INSTALLER_COMMANDS = (
     "sleep",
     "sync",
 )
-_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "wget")
+_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "tee", "wget")
 _INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
@@ -380,13 +380,12 @@ def _canonical_root_url(root_url: str) -> str:
 
 
 def render_network_init(root_sha256: str, root_size: int, root_url: str) -> bytes:
-    """Render an Asterinas-only LAN installer with bounded retries and readback."""
+    """Render an Asterinas-only LAN installer with bounded verified streaming."""
     if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
         raise InstallerError("root SHA-256 must be lowercase hexadecimal")
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
     quoted_url = f"'{_canonical_root_url(root_url)}'"
-    blocks = root_size // BLOCK_SIZE
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -404,22 +403,24 @@ target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
 [ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
 attempt=1
-fetched=0
+fetched_hash=
 while [ "$attempt" -le 3 ]; do
-    if wget -T 30 -O - {quoted_url} | gzip -dc | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock conv=notrunc count={blocks}; then
-        fetched=1
-        break
+    stream_hash=
+    if stream_hash="$(wget -T 30 -O - {quoted_url} | gzip -dc | tee "$target" | sha256sum)"; then
+        set -- $stream_hash
+        if [ "$#" = 2 ] && [ "$1" = "{root_sha256}" ] && [ "$2" = "-" ]; then
+            fetched_hash=$1
+            break
+        fi
     fi
     echo "DEBIAN_INSTALL_FETCH_RETRY attempt=$attempt"
     attempt=$((attempt + 1))
     sleep 2
 done
-[ "$fetched" = 1 ] || fail network-fetch
+[ "$fetched_hash" = "{root_sha256}" ] || fail network-fetch
 sync || fail network-sync
-set -- $(dd if="$target" bs={BLOCK_SIZE} count="{blocks}" 2>/dev/null | sha256sum)
-[ "$1" = "{root_sha256}" ] || fail final-image-hash
-echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$1"
-echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
+echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$fetched_hash"
+echo "DEBIAN_INSTALL_PASS sha256=$fetched_hash bytes={root_size}"
 sync || fail final-sync
 reboot -f
 fail reboot-returned

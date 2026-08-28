@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Complete the protected Asterinas-only Megrez Debian installation inside the 600-second recovery window by transferring a deterministic gzip representation of the frozen root image.
+**Goal:** Complete the protected Asterinas-only Megrez Debian installation inside a bounded recovery window by transferring a deterministic gzip representation of the frozen root image and avoiding a redundant 1 GiB readback.
 
 **Architecture:** Keep the signed uncompressed ext2 identity unchanged. Add one host-side atomic streaming gzip publisher, serve that file from the private LAN, and change only the installer data pipeline to decompress before writing the existing protected eMMC target.
 
@@ -19,10 +19,10 @@
 - [ ] **Step 1: Write failing tests**
 
 Add tests that require the rendered init script to contain
-`wget -T 30 -O - '<url>.gz' | gzip -dc | dd`, require two independently
-published gzip files to be byte-identical and decompress to the source, and
-require `run_network_install` to compress before build/server/serial while
-passing the `.gz` path to the server.
+`wget -T 30 -O - '<url>.gz' | gzip -dc | tee "$target" | sha256sum`, require
+two independently published gzip files to be byte-identical and decompress to
+the source, and require `run_network_install` to compress before
+build/server/serial while passing the `.gz` path to the server.
 
 - [ ] **Step 2: Run tests and record RED**
 
@@ -74,11 +74,15 @@ Render the network command as:
 ```sh
 wget -T 30 -O - 'http://10.100.19.216:8080/debian-root.ext2.gz' \
   | gzip -dc \
-  | dd of="$target" bs=4096 iflag=fullblock conv=notrunc count=262144
+  | tee "$target" \
+  | sha256sum
 ```
 
-Retain `set -o pipefail`, retry bounds, sync, the 1 GiB readback, and the
-manifest SHA-256 comparison.
+Retain `set -o pipefail`, retry bounds, sync, and the manifest SHA-256
+comparison. Parse the pipeline result strictly and require the exact root hash
+and `-` stdin name. Do not perform a second full-device read: the hash covers
+the exact decompressed byte stream that `tee` writes, not an independent media
+readback.
 
 - [ ] **Step 2: Run focused GREEN**
 
