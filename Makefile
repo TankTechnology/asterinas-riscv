@@ -301,6 +301,7 @@ test_riscv_megrez_debug_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debug \
 		tools.riscv.tests.test_megrez_debug_desktop \
+		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v
 
 .PHONY: test_riscv_megrez_debug_desktop
@@ -312,6 +313,14 @@ test_riscv_megrez_debug_desktop:
 test_riscv_megrez_preboard:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_preboard -v
+
+.PHONY: test_riscv_megrez_install_unit
+test_riscv_megrez_install_unit:
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_debian_installer \
+		tools.riscv.tests.test_megrez_board_session \
+		tools.riscv.tests.test_megrez_install_workflow -v
 
 .PHONY: test_riscv_megrez_debug_fast
 test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit

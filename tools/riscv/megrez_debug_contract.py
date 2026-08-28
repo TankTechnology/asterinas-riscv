@@ -82,7 +82,7 @@ RESULT_FIELDS = frozenset(
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 CRC32_PATTERN = re.compile(r"[0-9a-f]{8}")
-RESULT_STAGES = frozenset(("check", "fast", "desktop", "board"))
+RESULT_STAGES = frozenset(("check", "fast", "desktop", "install", "board"))
 
 
 class DebugContractError(ValueError):
