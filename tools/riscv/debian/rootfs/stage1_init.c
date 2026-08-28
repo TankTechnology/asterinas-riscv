@@ -64,6 +64,9 @@ static const unsigned char NETWORK_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM5";
 static const unsigned char BROWSER_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_BROWSERM5";
+/* The online browser profile has its own signed rootfs identity. */
+static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_BROWSERWEB";
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -202,7 +205,8 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, APPLICATION_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL);
+           ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }
 
 static const char *discover_root(struct Stage1Ops *ops,
