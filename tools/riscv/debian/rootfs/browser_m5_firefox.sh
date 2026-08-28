@@ -27,6 +27,9 @@ done
 export MOZ_LOG='timestamp,Widget:2,Marionette:2'
 export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
+# Xorg fbdev exposes neither GLX nor a usable GPU. Skip Firefox's otherwise
+# very slow glxtest helper while retaining the normal software renderer.
+export MOZ_AVOID_OPENGL_ALTOGETHER=1
 ASTERINAS_BROWSER_M5_PARENT_PID="$$" \
 ASTERINAS_BROWSER_M5_WINDOW_CONSOLE=/proc/self/fd/3 \
     "$WINDOW_OBSERVER" &

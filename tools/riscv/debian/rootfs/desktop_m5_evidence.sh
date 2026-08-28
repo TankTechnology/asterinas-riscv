@@ -11,6 +11,8 @@ readonly XORG_LOG="${ASTERINAS_DESKTOP_M5_XORG_LOG:-/home/asterinas/Xorg.0.log}"
 # prior 30-second gate was shorter than one observed 44.9-second greeting.
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-4500}"
 readonly FORMAL_GATE_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_FORMAL_GATE_TIMEOUT_SECONDS:-600}"
+readonly DIAGNOSTIC_ATTEMPT_LIMIT="${ASTERINAS_DESKTOP_M5_DIAGNOSTIC_ATTEMPT_LIMIT:-3}"
+readonly DIAGNOSTIC_INTERVAL_SECONDS="${ASTERINAS_DESKTOP_M5_DIAGNOSTIC_INTERVAL_SECONDS:-120}"
 readonly PROC_ROOT="${ASTERINAS_DESKTOP_M5_PROC_ROOT:-/proc}"
 readonly PROFILE_DIRECTORY="${ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY:-/home/asterinas/.mozilla/asterinas-browser-m5}"
 readonly NAVIGATOR_READY_FILE="${ASTERINAS_DESKTOP_M5_NAVIGATOR_READY_FILE:-$PROFILE_DIRECTORY/NavigatorWindowReady}"
@@ -24,12 +26,16 @@ readonly USER_ID=1000
 browser_pid=""
 marionette_ready=false
 security_checked_pid=""
+diagnostic_attempts=0
+next_diagnostic_second=0
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_M5_FAIL reason=$1"; exit 1; }
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$FORMAL_GATE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-formal-timeout
+[[ "$DIAGNOSTIC_ATTEMPT_LIMIT" =~ ^[1-9][0-9]*$ ]] || fail invalid-diagnostic-limit
+[[ "$DIAGNOSTIC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-diagnostic-interval
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 ready() {
     local command_line sessions
@@ -167,10 +173,16 @@ sample_firefox_processes() {
 while ! ready || ! navigator_ready; do
     if ready && [[ "$security_checked_pid" != "$browser_pid" ]]; then
         marionette_ready=false
+        diagnostic_attempts=0
+        next_diagnostic_second="$SECONDS"
         validate_parent_security
         security_checked_pid="$browser_pid"
     fi
-    if [[ "$marionette_ready" == false ]] && diagnostic_ready; then
+    if [[ "$marionette_ready" == false ]] &&
+        ((diagnostic_attempts < DIAGNOSTIC_ATTEMPT_LIMIT)) &&
+        ((SECONDS >= next_diagnostic_second)) && diagnostic_ready; then
+        diagnostic_attempts=$((diagnostic_attempts + 1))
+        emit "DEBIAN_BROWSER_M5_DIAGNOSTIC_SCHEDULE attempt=$diagnostic_attempts limit=$DIAGNOSTIC_ATTEMPT_LIMIT"
         remaining=$((deadline - SECONDS))
         ((remaining > 0)) || fail browser-timeout
         diagnostic_timeout="$remaining"
@@ -185,6 +197,7 @@ while ! ready || ! navigator_ready; do
         else
             emit "DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable"
         fi
+        next_diagnostic_second=$((SECONDS + DIAGNOSTIC_INTERVAL_SECONDS))
     fi
     ((SECONDS < deadline)) || fail browser-timeout
     sleep 1
