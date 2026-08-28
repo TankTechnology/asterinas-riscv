@@ -333,6 +333,9 @@ impl DwmacDevice {
             return u32::MAX;
         };
         let needs_rx_resume = dma_status_needs_rx_resume(status);
+        if needs_rx_resume {
+            self.rx_poll.record_rx_buffer_unavailable();
+        }
         if status & DMA_STATUS_FATAL_BUS != 0 {
             self.fatal = true;
         }
@@ -458,11 +461,12 @@ impl AnyNetworkDevice for DwmacDevice {
                     self.fatal = true;
                 } else if let Some(stats) = self.rx_poll.record_rearmed() {
                     ostd::info!(
-                        "ASTERINAS_GMAC_RX_POLL received={} budget_exhaustions={} reschedules={} plic_rearms={}",
+                        "ASTERINAS_GMAC_RX_POLL received={} budget_exhaustions={} reschedules={} plic_rearms={} rx_buffer_unavailable={}",
                         stats.received,
                         stats.budget_exhaustions,
                         stats.reschedules,
                         stats.plic_rearms,
+                        stats.rx_buffer_unavailable,
                     );
                 }
             }
@@ -477,11 +481,12 @@ impl AnyNetworkDevice for DwmacDevice {
             let diagnostics = self.rx_diagnostics.report();
             let tx_diagnostics = self.tx_diagnostics.report();
             ostd::info!(
-                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
+                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} rx_buffer_unavailable={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
                 rx.received,
                 rx.budget_exhaustions,
                 rx.reschedules,
                 rx.plic_rearms,
+                rx.rx_buffer_unavailable,
                 tx.tx_submitted,
                 tx.tx_reclaimed,
                 tx.tx_outstanding,

@@ -175,11 +175,7 @@ fn classify_ipv4(packet: &[u8]) -> RxFrameClass {
     let version = minimum_header[0] >> 4;
     let header_len = usize::from(minimum_header[0] & 0x0f) * 4;
     let total_len = usize::from(u16::from_be_bytes([minimum_header[2], minimum_header[3]]));
-    if version != 4
-        || header_len < IPV4_MIN_HEADER_LEN
-        || total_len < header_len
-        || packet.get(..total_len).is_none()
-    {
+    if version != 4 || header_len < IPV4_MIN_HEADER_LEN || total_len < header_len {
         return RxFrameClass::Malformed;
     }
     if minimum_header[9] != IPV4_PROTOCOL_TCP {
