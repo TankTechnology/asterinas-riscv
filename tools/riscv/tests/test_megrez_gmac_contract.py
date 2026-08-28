@@ -104,10 +104,12 @@ class _FakeFdtget:
         *,
         omit: tuple[str, str] | None = None,
         overrides: dict[tuple[str, str, str], str] | None = None,
+        extra_properties: dict[str, set[str]] | None = None,
     ):
         self.calls: list[tuple[str, ...]] = []
         self.omit = omit
         self.overrides = overrides or {}
+        self.extra_properties = extra_properties or {}
 
     def __call__(self, argv: list[str], **kwargs: object):
         del kwargs
@@ -119,6 +121,7 @@ class _FakeFdtget:
                 "/soc/ethernet@50400000": _port_properties(0),
                 "/soc/ethernet@50410000": _port_properties(1),
             }.get(node, set())
+            properties = properties | self.extra_properties.get(node, set())
             return subprocess.CompletedProcess(
                 command, 0, stdout="\n".join(sorted(properties)) + "\n", stderr=""
             )
@@ -437,6 +440,30 @@ class MegrezGmacContractTests(unittest.TestCase):
                     ),
                     run=runner,
                 )
+
+    def test_inspect_dtb_rejects_unsupported_dma_translation(self):
+        for alias_index, property_name in (
+            (0, "iommus"),
+            (1, "dma-ranges"),
+        ):
+            node = f"/soc/ethernet@504{alias_index}0000"
+            runner = _FakeFdtget(extra_properties={node: {property_name}})
+            with self.subTest(alias_index=alias_index, property_name=property_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    dtb = Path(directory) / "board.dtb"
+                    dtb.write_bytes(b"exact-dtb-fixture")
+                    with self.assertRaisesRegex(
+                        gmac.ContractError,
+                        rf"ethernet{alias_index}\.{property_name}: unsupported DMA translation",
+                    ):
+                        gmac.inspect_dtb(
+                            dtb,
+                            firmware_macs=(
+                                "00:48:54:71:00:47",
+                                "00:48:54:71:00:48",
+                            ),
+                            run=runner,
+                        )
 
     def test_inspect_dtb_rejects_multi_cell_scalar_properties(self):
         node = "/soc/ethernet@50400000"
