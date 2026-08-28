@@ -21,6 +21,7 @@ pub(crate) struct RxPollStats {
 pub(crate) struct RxPollBudget {
     processed: usize,
     stats: RxPollStats,
+    reported_received: u64,
     reported_reschedules: u64,
 }
 
@@ -59,10 +60,28 @@ impl RxPollBudget {
         Some(self.stats)
     }
 
+    pub(crate) fn take_progress_report(&mut self) -> Option<RxPollStats> {
+        if !should_report_progress(self.reported_received, self.stats.received) {
+            return None;
+        }
+        self.reported_received = self.stats.received;
+        Some(self.stats)
+    }
+
     #[cfg(test)]
     pub(crate) fn stats(&self) -> RxPollStats {
         self.stats
     }
+}
+
+fn should_report_progress(previous: u64, current: u64) -> bool {
+    if current <= previous || previous == u64::MAX {
+        return false;
+    }
+    let Some(threshold) = (previous + 1).checked_next_power_of_two() else {
+        return false;
+    };
+    current >= threshold
 }
 
 #[cfg(test)]
@@ -129,5 +148,35 @@ mod tests {
         assert_eq!(budget.finish(false, false), PollEndAction::Rearm);
         assert_eq!(budget.record_rearmed(), None);
         assert_eq!(budget.stats().plic_rearms, 1);
+    }
+
+    #[test]
+    fn progress_reports_only_after_crossing_power_of_two_thresholds() {
+        assert!(!should_report_progress(0, 0));
+        assert!(should_report_progress(0, 1));
+        assert!(!should_report_progress(4, 7));
+        assert!(should_report_progress(4, 8));
+        assert!(should_report_progress(7, 9));
+    }
+
+    #[test]
+    fn progress_cadence_rejects_duplicate_regression_and_saturation() {
+        assert!(!should_report_progress(8, 8));
+        assert!(!should_report_progress(8, 7));
+        assert!(!should_report_progress(u64::MAX, u64::MAX));
+        assert!(!should_report_progress(u64::MAX - 1, u64::MAX));
+    }
+
+    #[test]
+    fn progress_snapshot_is_consumed_once_per_threshold_crossing() {
+        let mut budget = RxPollBudget::default();
+        for _ in 0..7 {
+            budget.record_received();
+        }
+        assert_eq!(budget.take_progress_report().unwrap().received, 7);
+        assert_eq!(budget.take_progress_report(), None);
+        budget.record_received();
+        assert_eq!(budget.take_progress_report().unwrap().received, 8);
+        assert_eq!(budget.take_progress_report(), None);
     }
 }

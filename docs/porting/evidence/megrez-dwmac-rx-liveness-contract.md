@@ -76,6 +76,45 @@ reference, including wrap to the ring base. The audit does not identify the
 tail index calculation as the first root-cause candidate. The production-fix
 plan must still preserve sync-to-device before the ownership/tail writes.
 
+## Verified TX publication and completion rules
+
+`stmmac_main.c::stmmac_xmit` reserves the ring entries, maps and fills every
+buffer, prepares the descriptors, and advances `cur_tx` to the next free
+entry. It publishes the first descriptor's ownership last through
+`dwmac4_descs.c::dwmac4_set_tx_owner`, then calls
+`stmmac_flush_tx_descriptors`. The latter executes `wmb()` before computing
+the byte-address tail from `cur_tx` and calling
+`dwmac4_lib.c::dwmac4_set_tx_tail_ptr`. That function writes the tail directly
+to `DMA_CHAN_TX_END_ADDR`. Thus Linux makes the payload and complete descriptor
+chain visible before `OWN`, and makes `OWN` visible before the MMIO tail
+notification.
+
+`stmmac_main.c::stmmac_tx_clean` walks from `dirty_tx` toward `cur_tx` until it
+encounters a descriptor still owned by DMA. After observing cleared ownership
+it executes `dma_rmb()` before reading completion fields, unmaps the DMA
+buffer, clears the software entry, and advances `dirty_tx`. Both TX NAPI entry
+points pass an explicit budget to this function. This provides a bounded
+completion loop and prevents a buffer from being reused before the ownership
+transition is observed.
+
+Asterinas has the same ring-state shape. `TxBuffer::build` synchronizes the
+payload to the device before `DmaQueue::send` publishes its descriptor;
+`DmaQueue::write_descriptor` writes and synchronizes the complete descriptor
+before `DwmacDevice::send` writes the tail. Reclaim synchronizes the descriptor
+from the device, observes cleared ownership with an acquire fence, then drops
+the buffer and advances the consumer. The current Megrez noncoherent path also
+orders every EIC7700 L3-flush command with `fence iorw, iorw` before returning
+from descriptor synchronization.
+
+There is nevertheless a documented boundary difference: Linux has an
+explicit `wmb()` at the final ownership-to-tail handoff, while Asterinas relies
+on the selected DMA synchronization implementation before a later volatile
+MMIO write. No existing unit test proves that ordering for every RISC-V cache
+maintenance branch. The staged board experiment therefore records both TX
+publication/reclaim progress and the DMA channel status. This audit does not
+silently add a barrier or classify its absence as the root cause; a stopped TX
+counter with queued host data would make that the next narrow hypothesis.
+
 ## Verified DMA status clear and RBU restart rules
 
 `dwmac4_dma.h` defines channel receive interrupt, receive-buffer-unavailable,
