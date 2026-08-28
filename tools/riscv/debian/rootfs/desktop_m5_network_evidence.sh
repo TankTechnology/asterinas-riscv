@@ -147,6 +147,14 @@ qemu_network_evidence() {
     local local_address
 
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
+    if [[ "${ASTERINAS_DESKTOP_M5_NETWORK_MODE:-full}" == lightweight ]]; then
+        # Browser startup must not wait for a remote TLS probe.  The browser
+        # evidence service performs the authoritative DNS/TLS checks after the
+        # desktop and Firefox can start; this oneshot only publishes resolver
+        # configuration and releases the dependency immediately.
+        emit "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp-lightweight"
+        return 0
+    fi
     resolve_qemu_host www.baidu.com \
         >/dev/null 2>>"$CONSOLE" || fail qemu-dns
     emit "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com"
