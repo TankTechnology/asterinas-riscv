@@ -623,3 +623,52 @@ It passed the 17.9-MiB generic Sv39/SMP4 TCP QEMU gate and the independent
 the recovery result SHA-256 is
 `6f23a3d53f2156cab667b99cea0b3b13797c6594b71c7c887d008cd576ef9333`.
 No post-fix physical run is claimed in this milestone.
+
+## Post-fix bounded physical run
+
+The exact post-fix candidate above was subsequently used for one recovery-armed
+physical transaction. Preflight revalidated the frozen plan and both retained
+QEMU results. The runner transferred only missing artifacts, issued exactly one
+`booti`, and used no reset or persistent U-Boot command.
+
+The 16-KiB, 64-KiB, and 1-MiB stages completed. The 16-MiB stage ended at the
+guest's shared 45-second probe deadline with:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=receive-poll errno=110 attempts=4 current_bytes=524140 completed_bytes=1130496
+```
+
+The host accepted 983,040 payload bytes in that stage. Its final TCP sample
+remained established but recorded 48 retransmissions, a congestion window of
+3, and a 1.664-second RTO. The guest continued to receive and generate ACKs;
+the last sampled queue state was `tx_submitted=442 tx_reclaimed=441
+tx_outstanding=1`.
+
+Seventeen cumulative datapath observations all reported
+`rx_buffer_unavailable=0`. Every sampled descriptor error and the corrected
+bounded classifier's malformed count also remained zero. This rejects receive
+descriptor-ring exhaustion, malformed-descriptor handling, and TX reclaim as
+the immediate explanation for the sustained-transfer collapse. Reducing the
+serial diagnostic cadence from 86 RX-poll records in the earlier run to 7 did
+not make the 16-MiB transfer complete.
+
+The board runner reached its outer observation deadline immediately before it
+could classify recovery and therefore recorded `recovery-not-observed`. After
+the runner released the serial port, a bounded read at the normal U-Boot baud
+and one carriage return returned the stopped `=>` prompt. Thus the protected
+software reboot did recover the board; no physical reset was required.
+
+Evidence is retained under
+`target/megrez-debug/dwmac-rbu-0e209915d/board-run-20260828-rbu-single/`:
+
+- `serial.log`: `9f6f3801972241b0aa1dd07bea1a02871232afbf0be9edc3b6056cd4123fa55e`;
+- `transport.json`: `3e1218ff2bc1a66e48f9445251a2faae395d8461eda60416f9b024f67e22d45a`;
+- `probe-tcp-info.json`: `936502316153e1802636ea7a21e0c6842314802afc2552431bcb428c68f2df3f`;
+- `result.json`: `a83c5ae1fa043fc15c9ce5c3711bb1d18b49d26da001bd20068bec718ceb7842`.
+
+The next physical discriminator must therefore measure loss before the DMA
+descriptor ring. The EIC7700X TRM documents queue-zero missed-packet and FIFO
+overflow counters at DWMAC offset `0xd34`, with clear-on-read semantics. That
+counter can be accumulated at the existing bounded progress cadence and tested
+offline before another board transaction. No further ring-size or interrupt
+policy change is justified by this run.
