@@ -191,7 +191,7 @@ def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> Non
     try:
         fcntl.fcntl(serial_fd, fcntl.F_SETFL, original_flags & ~os.O_NONBLOCK)
         result = subprocess.run(
-            ["sb", "--ymodem", "--binary", f"/proc/self/fd/{source_fd}"],
+            ["/usr/bin/sb", "-k", f"/proc/self/fd/{source_fd}"],
             stdin=serial_fd,
             stdout=serial_fd,
             stderr=subprocess.PIPE,
@@ -468,10 +468,22 @@ class BoardSession:
             _set_serial_baud(self.fd, YMODEM_BAUD)
             try:
                 os.write(self.fd, b"\r")
+                self.wait_for("Ready for binary", timeout=15)
                 _transfer_ymodem_file(self.fd, source_fd, 120.0)
                 completion = self.wait_for("press ESC", timeout=15)
-            finally:
+            except BaseException:
+                try:
+                    os.write(self.fd, b"\x18" * 8)
+                except OSError:
+                    pass
                 _set_serial_baud(self.fd, BAUD)
+                try:
+                    os.write(self.fd, b"\x1b\r")
+                    self.wait_for(PROMPT, timeout=15)
+                except (OSError, TimeoutError):
+                    pass
+                raise
+            _set_serial_baud(self.fd, BAUD)
             os.write(self.fd, b"\x1b")
             self.wait_for(PROMPT, timeout=15)
         finally:
