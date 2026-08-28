@@ -35,6 +35,24 @@ memory barriers when publishing descriptor fields to a device.
 
 Source: <https://kernel.org/doc/html/next/core-api/dma-api-howto.html>
 
+The EIC7700X TRM Part 1, Table 3-39 documents D0 DRAM
+`0xc0_0000_0000..0xdf_ffff_ffff` as non-coherent System Port memory. The
+Asterinas range `0xc0_0000_0000..0xc4_0000_0000` is deliberately only the
+checked 16-GiB subset corresponding to the current board allocator, not the
+full 128-GiB SoC window. TRM pages 295 and 299-301 document the L3 `Flush64`
+write-back/invalidate mechanism used before switching CPU views.
+
+Primary source: [EIC7700X TRM release
+`v1.0.0-20250103`](https://github.com/eswincomputing/EIC7700X-SoC-Technical-Reference-Manual/releases/tag/v1.0.0-20250103),
+Part 1 SHA-256
+`f1d7adef279fae2c83cca7c27e31226180bdfbf01c42384c01bf6d369e195361`.
+
+Pinned ESWIN Linux commit
+[`fc6038c00e006226e3bd504d2679c534eabf5503`](https://github.com/eswincomputing/linux-stable/tree/fc6038c00e006226e3bd504d2679c534eabf5503)
+independently implements the same distinction: streaming DMA performs cache
+maintenance, while `arch_dma_set_uncached` converts D0 Memory Port addresses
+to the D0 System Port before mapping the CPU view uncached.
+
 ## Asterinas mapping path
 
 The Megrez descriptor ring follows this path:
@@ -110,14 +128,16 @@ U-Boot without a physical reset. A later ordering-instrumented run reclaimed
 only two descriptors, then filled the ring while RX continued to 153 packets.
 The host had already received frames described by later entries while the CPU
 still read the oldest entry as DMA-owned. That evidence, combined with the
-exact no-Svpbmt ISA string, identifies a stale cacheable CPU view of the
-descriptor ring rather than a missing PBMT_NC encoding on this hardware.
+exact no-Svpbmt ISA string, makes a stale cacheable CPU view the leading
+diagnosis rather than a missing PBMT_NC encoding on this hardware. It does not
+prove that diagnosis until a post-alias board run observes ownership progress
+or a more specific fault.
 
 ## Remaining assumptions and non-goals
 
 - The DWMAC device and CPU agree on the descriptor ring's physical address.
-- The EIC7700 System Port alias has the non-cacheable semantics documented by
-  the platform and already used by the USB DMA backend.
+- The checked EIC7700 System Port subset has the non-cacheable semantics
+  documented in the pinned TRM and mirrored by pinned vendor Linux.
 - This change retains the existing descriptor publication, reclaim, and MMIO
   ordering barriers; it does not redesign them.
 - This change does not model the EIC7700 cache hierarchy or DWMAC in QEMU.

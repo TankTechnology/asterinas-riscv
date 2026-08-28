@@ -355,11 +355,13 @@ transmitted descriptors beyond the first two while the CPU continued to see
 the oldest outstanding ownership word as set. The board recovered through the
 60-second software reboot and returned to U-Boot without a physical reset.
 
-The exact board DTB and boot log contain no Svpbmt extension. Therefore the
-ring's `WriteCombining` page property could not encode PBMT_NC and remained an
-ordinary cacheable PTE. The selected classification is
-**`tx-reclaim-partial/stale-cpu-view`**. This supersedes the earlier assumption
-that allocating `DmaCoherent(false)` alone made the ring uncached on Megrez.
+The EIC7700X TRM MCPU feature table, exact board DTB, and boot log contain no
+Svpbmt extension. Therefore the ring's `WriteCombining` page property could not
+encode PBMT_NC and remained an ordinary cacheable PTE. The selected diagnostic
+hypothesis is **`tx-reclaim-partial/stale-cpu-view`**. This supersedes the
+earlier assumption that allocating `DmaCoherent(false)` alone made the ring
+uncached on Megrez, but it remains a leading diagnosis rather than a proven
+physical root cause until the separately authorized post-alias run.
 
 The production fix makes DWMAC explicitly consume
 `DmaCoherent::into_uncached`. Svpbmt systems retain the page-based PBMT_NC
