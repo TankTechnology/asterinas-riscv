@@ -127,6 +127,8 @@ QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光�
 ## 文档地图与历史归档
 
 - [唯一可执行命令来源](../../tools/riscv/README.md)
+- [Megrez 网络硬件研究契约](evidence/megrez-network-hardware-research-contract.md)
+- [Megrez/EIC7700 网络硬件资料账本](evidence/megrez-network-hardware-source-ledger.md)
 - [QEMU framebuffer 显示链（已验证）](riscv-qemu-desktop.md)
 - [追加式证据索引](evidence/megrez-history-index.md)
 - [最新 PID 1 与恢复证据](evidence/2026-07-20-megrez-pid1-recovery.md)
