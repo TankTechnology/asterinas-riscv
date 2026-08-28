@@ -31,7 +31,11 @@ from tools.riscv.megrez_debug_contract import (
     StageResult,
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
-from tools.riscv.megrez_debug_probe import PROBE_STRESS_BYTES, ProbeServer
+from tools.riscv.megrez_debug_probe import (
+    PROBE_STRESS_BYTES,
+    PROBE_STRESS_SIZES,
+    ProbeServer,
+)
 from tools.riscv.megrez_debug_board import (
     BoardRunConfig,
     BoardRunFailure,
@@ -62,6 +66,9 @@ class MegrezDebugProbeServerTests(unittest.TestCase):
                     if not chunk:
                         break
                     response.extend(chunk)
+            with socket.create_connection(address, timeout=1.0) as connection:
+                connection.sendall(b"GET /wrong HTTP/1.0\r\n\r\n")
+                not_found = connection.recv(4096)
 
         self.assertEqual(
             bytes(response),
@@ -70,32 +77,49 @@ class MegrezDebugProbeServerTests(unittest.TestCase):
             b"Connection: close\r\n\r\n"
             b"ASTERINAS_TCP_PROBE_OK\n",
         )
+        self.assertEqual(
+            not_found,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rebound:
             rebound.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             rebound.bind(address)
 
     def test_server_streams_a_deterministic_payload_beyond_one_rx_ring(self) -> None:
-        payload_bytes = 128 * 1024
+        payload_sizes = (16 * 1024, 64 * 1024, 128 * 1024)
         with ProbeServer(
-            host="127.0.0.1", port=0, payload_bytes=payload_bytes
+            host="127.0.0.1", port=0, payload_sizes=payload_sizes
         ) as server:
             with socket.create_connection(server.address, timeout=1.0) as connection:
-                connection.sendall(
-                    b"GET /asterinas-probe HTTP/1.0\r\n"
-                    b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
-                )
-                response = bytearray()
-                while True:
-                    chunk = connection.recv(64 * 1024)
-                    if not chunk:
-                        break
-                    response.extend(chunk)
+                connection.sendall(b"GET /asterinas-probe/65536 HTTP/1.0\r\n\r\n")
+                self.assertTrue(connection.recv(4096).startswith(b"HTTP/1.1 404"))
+            for payload_bytes in payload_sizes:
+                with socket.create_connection(
+                    server.address, timeout=1.0
+                ) as connection:
+                    connection.sendall(
+                        f"GET /asterinas-probe/{payload_bytes} HTTP/1.0\r\n".encode()
+                        + b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                    )
+                    response = bytearray()
+                    while True:
+                        chunk = connection.recv(64 * 1024)
+                        if not chunk:
+                            break
+                        response.extend(chunk)
 
-        header, payload = bytes(response).split(b"\r\n\r\n", 1)
-        self.assertIn(f"Content-Length: {payload_bytes}".encode(), header)
-        self.assertEqual(len(payload), payload_bytes)
-        self.assertEqual(payload, bytes(index % 251 for index in range(payload_bytes)))
+                header, payload = bytes(response).split(b"\r\n\r\n", 1)
+                self.assertIn(f"Content-Length: {payload_bytes}".encode(), header)
+                self.assertEqual(len(payload), payload_bytes)
+                self.assertEqual(
+                    payload, bytes(index % 251 for index in range(payload_bytes))
+                )
+
         self.assertEqual(PROBE_STRESS_BYTES, 16 * 1024 * 1024)
+        self.assertEqual(
+            PROBE_STRESS_SIZES,
+            (16 * 1024, 64 * 1024, 1024 * 1024, 16 * 1024 * 1024),
+        )
 
 
 class MegrezDebugArtifactTests(unittest.TestCase):

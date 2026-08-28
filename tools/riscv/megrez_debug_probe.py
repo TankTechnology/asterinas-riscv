@@ -12,6 +12,12 @@ PROBE_HOST = "10.100.19.216"
 PROBE_PORT = 18080
 MAX_REQUEST_BYTES = 64 * 1024
 PROBE_STRESS_BYTES = 16 * 1024 * 1024
+PROBE_STRESS_SIZES = (
+    16 * 1024,
+    64 * 1024,
+    1024 * 1024,
+    PROBE_STRESS_BYTES,
+)
 MAX_PROBE_PAYLOAD_BYTES = 64 * 1024 * 1024
 PROBE_CHUNK_BYTES = 64 * 1024
 PROBE_BODY = b"ASTERINAS_TCP_PROBE_OK\n"
@@ -36,6 +42,7 @@ class ProbeServer:
         host: str = PROBE_HOST,
         port: int = PROBE_PORT,
         payload_bytes: int | None = PROBE_STRESS_BYTES,
+        payload_sizes: tuple[int, ...] | None = None,
     ) -> None:
         if not isinstance(host, str) or not host:
             raise ValueError("probe host must be a non-empty string")
@@ -51,9 +58,21 @@ class ProbeServer:
             or not 0 < payload_bytes <= MAX_PROBE_PAYLOAD_BYTES
         ):
             raise ValueError("probe payload bytes must be in [1, 64 MiB]")
+        if payload_sizes is not None and (
+            not payload_sizes
+            or any(
+                isinstance(size, bool)
+                or not isinstance(size, int)
+                or not 0 < size <= MAX_PROBE_PAYLOAD_BYTES
+                for size in payload_sizes
+            )
+        ):
+            raise ValueError("probe payload sizes must be in [1, 64 MiB]")
         self._host = host
         self._port = port
         self._payload_bytes = payload_bytes
+        self._payload_sizes = payload_sizes
+        self._next_payload = 0
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -91,13 +110,24 @@ class ProbeServer:
         self._thread.start()
         return self
 
-    @staticmethod
-    def _valid_request(request: bytes) -> bool:
+    def _requested_payload(self, request: bytes) -> tuple[bool, int | None]:
         first_line = request.split(b"\r\n", 1)[0]
-        return first_line in (
-            b"GET /asterinas-probe HTTP/1.0",
-            b"GET /asterinas-probe HTTP/1.1",
-        )
+        if self._payload_sizes is None:
+            if first_line in (
+                b"GET /asterinas-probe HTTP/1.0",
+                b"GET /asterinas-probe HTTP/1.1",
+            ):
+                return True, self._payload_bytes
+            return False, None
+        if self._next_payload >= len(self._payload_sizes):
+            return False, None
+        expected = self._payload_sizes[self._next_payload]
+        if first_line not in (
+            f"GET /asterinas-probe/{expected} HTTP/1.0".encode("ascii"),
+            f"GET /asterinas-probe/{expected} HTTP/1.1".encode("ascii"),
+        ):
+            return False, None
+        return True, expected
 
     def _handle(self, connection: socket.socket) -> None:
         request = bytearray()
@@ -107,23 +137,26 @@ class ProbeServer:
             if not chunk:
                 break
             request.extend(chunk)
-        if not self._valid_request(bytes(request)):
+        valid, payload_bytes = self._requested_payload(bytes(request))
+        if not valid:
             connection.sendall(NOT_FOUND_RESPONSE)
             return
-        if self._payload_bytes is None:
+        if payload_bytes is None:
             connection.sendall(PROBE_RESPONSE)
             return
 
         connection.sendall(
             b"HTTP/1.1 200 OK\r\nContent-Length: "
-            + str(self._payload_bytes).encode("ascii")
+            + str(payload_bytes).encode("ascii")
             + b"\r\nConnection: close\r\n\r\n"
         )
         offset = 0
-        while offset < self._payload_bytes:
-            amount = min(PROBE_CHUNK_BYTES, self._payload_bytes - offset)
+        while offset < payload_bytes:
+            amount = min(PROBE_CHUNK_BYTES, payload_bytes - offset)
             connection.sendall(bytes((offset + index) % 251 for index in range(amount)))
             offset += amount
+        if self._payload_sizes is not None:
+            self._next_payload += 1
 
     def _serve(self) -> None:
         assert self._listener is not None

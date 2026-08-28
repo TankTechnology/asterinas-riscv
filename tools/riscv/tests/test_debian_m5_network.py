@@ -81,10 +81,10 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             result.stdout,
             (
                 "ASTERINAS_GMAC_TCP_PROBE_FAIL "
-                "reason=connect-poll errno=110 attempts=3\n"
+                "reason=connect-poll errno=110 attempts=3 completed_bytes=0\n"
                 "MEGREZ_TCP_PROBE_SELF_TEST PASS\n"
                 "MEGREZ_TCP_STRESS_SELF_TEST PASS "
-                "bytes=16777216 pattern=mod251\n"
+                "sizes=16384,65536,1048576,16777216 pattern=mod251\n"
             ),
         )
 
@@ -99,7 +99,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 "-Wextra",
                 "-Werror",
                 "-DMEGREZ_TCP_PROBE_SELF_TEST",
-                "-DMEGREZ_TCP_STRESS_BYTES=131072",
+                "-DMEGREZ_TCP_STRESS_BYTES=2097152",
                 str(MEGREZ_TCP_PROBE_SOURCE),
                 "-o",
                 str(executable),
@@ -116,7 +116,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "MEGREZ_TCP_STRESS_SELF_TEST PASS bytes=131072 pattern=mod251\n",
+            "MEGREZ_TCP_STRESS_SELF_TEST PASS "
+            "sizes=16384,65536,1048576,2097152 pattern=mod251\n",
             result.stdout,
         )
 

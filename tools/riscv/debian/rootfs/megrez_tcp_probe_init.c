@@ -15,16 +15,32 @@
 #define MEGREZ_TCP_STRESS_BYTES (16U * 1024U * 1024U)
 #endif
 
+_Static_assert(MEGREZ_TCP_STRESS_BYTES >= 1024U * 1024U,
+               "final stress size must not precede the 1 MiB stage");
+
+static const size_t PROBE_STRESS_SIZES[] = {
+    16U * 1024U,
+    64U * 1024U,
+    1024U * 1024U,
+    MEGREZ_TCP_STRESS_BYTES,
+};
+
+#define PROBE_STRESS_SIZE_COUNT                                                \
+    (sizeof(PROBE_STRESS_SIZES) / sizeof(PROBE_STRESS_SIZES[0]))
+
 struct probe_failure {
     const char *reason;
     int error;
     unsigned int attempts;
+    size_t completed_bytes;
 };
 
 static void emit_failure(const struct probe_failure *failure)
 {
-    printf("ASTERINAS_GMAC_TCP_PROBE_FAIL reason=%s errno=%d attempts=%u\n",
-           failure->reason, failure->error, failure->attempts);
+    printf("ASTERINAS_GMAC_TCP_PROBE_FAIL reason=%s errno=%d attempts=%u "
+           "completed_bytes=%zu\n",
+           failure->reason, failure->error, failure->attempts,
+           failure->completed_bytes);
 }
 
 static const char *find_sequence(const char *data, size_t length,
@@ -75,10 +91,12 @@ struct response_stream {
     char header[RESPONSE_HEADER_LIMIT];
     size_t header_length;
     size_t body_length;
+    size_t expected_body_length;
     bool header_complete;
 };
 
-static bool response_header_is_valid(const char *header, size_t length)
+static bool response_header_is_valid(const char *header, size_t length,
+                                     size_t expected_body_length)
 {
     static const char status_10[] = "HTTP/1.0 200 ";
     static const char status_11[] = "HTTP/1.1 200 ";
@@ -106,13 +124,14 @@ static bool response_header_is_valid(const char *header, size_t length)
     while (cursor < end && *cursor >= '0' && *cursor <= '9') {
         size_t digit = (size_t)(*cursor - '0');
 
-        if (value > (MEGREZ_TCP_STRESS_BYTES - digit) / 10U) {
+        if (digit > expected_body_length ||
+            value > (expected_body_length - digit) / 10U) {
             return false;
         }
         value = value * 10U + digit;
         ++cursor;
     }
-    return value == MEGREZ_TCP_STRESS_BYTES && end - cursor >= 2 &&
+    return value == expected_body_length && end - cursor >= 2 &&
            cursor[0] == '\r' && cursor[1] == '\n';
 }
 
@@ -131,8 +150,8 @@ static bool response_stream_consume(struct response_stream *stream,
             memcmp(stream->header + stream->header_length -
                        (sizeof(separator) - 1),
                    separator, sizeof(separator) - 1) == 0) {
-            if (!response_header_is_valid(stream->header,
-                                          stream->header_length)) {
+            if (!response_header_is_valid(stream->header, stream->header_length,
+                                          stream->expected_body_length)) {
                 return false;
             }
             stream->header_complete = true;
@@ -142,7 +161,7 @@ static bool response_stream_consume(struct response_stream *stream,
     while (cursor < length) {
         unsigned char expected;
 
-        if (stream->body_length == MEGREZ_TCP_STRESS_BYTES) {
+        if (stream->body_length == stream->expected_body_length) {
             return false;
         }
         expected = (unsigned char)(stream->body_length % 251U);
@@ -158,7 +177,7 @@ static bool response_stream_consume(struct response_stream *stream,
 static bool response_stream_is_complete(const struct response_stream *stream)
 {
     return stream->header_complete &&
-           stream->body_length == MEGREZ_TCP_STRESS_BYTES;
+           stream->body_length == stream->expected_body_length;
 }
 
 #ifdef MEGREZ_TCP_PROBE_SELF_TEST
@@ -169,6 +188,7 @@ int main(void)
         .reason = "connect-poll",
         .error = 110,
         .attempts = 3,
+        .completed_bytes = 0,
     };
     static const char valid[] =
         "HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\n"
@@ -181,10 +201,7 @@ int main(void)
         "HTTP/1.0 200 OK\r\n\r\n" PROBE_BODY "unexpected";
     char stress_header[128];
     char stress_body[257];
-    struct response_stream stress = {0};
-    struct response_stream invalid = {0};
-    size_t offset = 0;
-    int header_length;
+    size_t size_index;
 
     if (!response_is_valid(valid, sizeof(valid) - 1) ||
         response_is_valid(bad_status, sizeof(bad_status) - 1) ||
@@ -192,41 +209,52 @@ int main(void)
         response_is_valid(trailing_data, sizeof(trailing_data) - 1)) {
         return 1;
     }
-    header_length = snprintf(stress_header, sizeof(stress_header),
-                             "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n"
-                             "Connection: close\r\n\r\n",
-                             (size_t)MEGREZ_TCP_STRESS_BYTES);
-    if (header_length <= 0 || (size_t)header_length >= sizeof(stress_header) ||
-        !response_stream_consume(&stress, stress_header, 7) ||
-        !response_stream_consume(&stress, stress_header + 7,
-                                 (size_t)header_length - 7)) {
-        return 1;
-    }
-    while (offset < MEGREZ_TCP_STRESS_BYTES) {
-        size_t amount = MEGREZ_TCP_STRESS_BYTES - offset;
-        size_t index;
+    for (size_index = 0; size_index < PROBE_STRESS_SIZE_COUNT; ++size_index) {
+        size_t expected = PROBE_STRESS_SIZES[size_index];
+        struct response_stream stress = {.expected_body_length = expected};
+        struct response_stream invalid = {.expected_body_length = expected};
+        size_t offset = 0;
+        int header_length = snprintf(
+            stress_header, sizeof(stress_header),
+            "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n"
+            "Connection: close\r\n\r\n",
+            expected);
 
-        if (amount > sizeof(stress_body)) {
-            amount = sizeof(stress_body);
-        }
-        for (index = 0; index < amount; ++index) {
-            stress_body[index] = (char)((offset + index) % 251U);
-        }
-        if (!response_stream_consume(&stress, stress_body, amount)) {
+        if (header_length <= 0 ||
+            (size_t)header_length >= sizeof(stress_header) ||
+            !response_stream_consume(&stress, stress_header, 7) ||
+            !response_stream_consume(&stress, stress_header + 7,
+                                     (size_t)header_length - 7)) {
             return 1;
         }
-        offset += amount;
-    }
-    if (!response_stream_is_complete(&stress) ||
-        !response_stream_consume(&invalid, stress_header,
-                                 (size_t)header_length) ||
-        response_stream_consume(&invalid, "\x01", 1)) {
-        return 1;
+        while (offset < expected) {
+            size_t amount = expected - offset;
+            size_t index;
+
+            if (amount > sizeof(stress_body)) {
+                amount = sizeof(stress_body);
+            }
+            for (index = 0; index < amount; ++index) {
+                stress_body[index] = (char)((offset + index) % 251U);
+            }
+            if (!response_stream_consume(&stress, stress_body, amount)) {
+                return 1;
+            }
+            offset += amount;
+        }
+        if (!response_stream_is_complete(&stress) ||
+            !response_stream_consume(&invalid, stress_header,
+                                     (size_t)header_length) ||
+            response_stream_consume(&invalid, "\x01", 1)) {
+            return 1;
+        }
     }
     emit_failure(&failure);
     puts("MEGREZ_TCP_PROBE_SELF_TEST PASS");
-    printf("MEGREZ_TCP_STRESS_SELF_TEST PASS bytes=%zu pattern=mod251\n",
-           (size_t)MEGREZ_TCP_STRESS_BYTES);
+    printf("MEGREZ_TCP_STRESS_SELF_TEST PASS "
+           "sizes=%zu,%zu,%zu,%zu pattern=mod251\n",
+           PROBE_STRESS_SIZES[0], PROBE_STRESS_SIZES[1],
+           PROBE_STRESS_SIZES[2], PROBE_STRESS_SIZES[3]);
     return 0;
 }
 
@@ -252,6 +280,7 @@ static struct probe_failure last_failure = {
     .reason = "not-started",
     .error = 0,
     .attempts = 0,
+    .completed_bytes = 0,
 };
 
 static void record_failure(const char *reason, int error)
@@ -372,16 +401,25 @@ static int connect_probe(int64_t overall_deadline)
     return fd;
 }
 
-static bool send_request(int fd, int64_t deadline)
+static bool send_request(int fd, int64_t deadline, size_t payload_bytes)
 {
-    static const char request[] =
-        "GET /asterinas-probe HTTP/1.0\r\n"
-        "Host: " PROBE_ADDRESS "\r\n"
-        "Connection: close\r\n\r\n";
+    char request[192];
     size_t written = 0;
+    int request_length = snprintf(
+        request, sizeof(request),
+        "GET /asterinas-probe/%zu HTTP/1.0\r\n"
+        "Host: " PROBE_ADDRESS "\r\n"
+        "Connection: close\r\n\r\n",
+        payload_bytes);
 
-    while (written < sizeof(request) - 1) {
-        ssize_t amount = send(fd, request + written, sizeof(request) - 1 - written, 0);
+    if (request_length <= 0 || (size_t)request_length >= sizeof(request)) {
+        record_failure("request", 0);
+        return false;
+    }
+
+    while (written < (size_t)request_length) {
+        ssize_t amount =
+            send(fd, request + written, (size_t)request_length - written, 0);
 
         if (amount > 0) {
             written += (size_t)amount;
@@ -404,10 +442,10 @@ static bool send_request(int fd, int64_t deadline)
     return true;
 }
 
-static bool receive_response(int fd, int64_t deadline)
+static bool receive_response(int fd, int64_t deadline, size_t payload_bytes)
 {
     char response[RESPONSE_READ_BYTES];
-    struct response_stream stream = {0};
+    struct response_stream stream = {.expected_body_length = payload_bytes};
 
     for (;;) {
         ssize_t amount;
@@ -444,8 +482,11 @@ static _Noreturn void terminal(bool passed)
 {
     if (passed) {
         printf("ASTERINAS_GMAC_TCP_PROBE_READY peer=" PROBE_ADDRESS
-               ":18080 status=200 bytes=%zu pattern=mod251\n",
-               (size_t)MEGREZ_TCP_STRESS_BYTES);
+               ":18080 status=200 sizes=%zu,%zu,%zu,%zu "
+               "completed_bytes=%zu pattern=mod251\n",
+               PROBE_STRESS_SIZES[0], PROBE_STRESS_SIZES[1],
+               PROBE_STRESS_SIZES[2], PROBE_STRESS_SIZES[3],
+               last_failure.completed_bytes);
     } else {
         emit_failure(&last_failure);
     }
@@ -459,6 +500,7 @@ int main(void)
 {
     int64_t start = monotonic_milliseconds();
     int64_t deadline;
+    size_t size_index;
 
     signal(SIGPIPE, SIG_IGN);
     if (start < 0) {
@@ -466,21 +508,42 @@ int main(void)
         terminal(false);
     }
     deadline = start + PROBE_DEADLINE_MILLISECONDS;
-    while (monotonic_milliseconds() < deadline) {
-        ++last_failure.attempts;
-        int fd = connect_probe(deadline);
+    for (size_index = 0; size_index < PROBE_STRESS_SIZE_COUNT; ++size_index) {
+        size_t payload_bytes = PROBE_STRESS_SIZES[size_index];
+        bool completed = false;
 
-        if (fd >= 0) {
-            bool passed = send_request(fd, deadline) && receive_response(fd, deadline);
+        while (monotonic_milliseconds() < deadline) {
+            int fd;
+            bool passed;
 
-            close(fd);
-            if (passed) {
-                terminal(true);
+            ++last_failure.attempts;
+            fd = connect_probe(deadline);
+            if (fd < 0) {
+                if (size_index != 0) {
+                    terminal(false);
+                }
+                sleep_one_second();
+                continue;
             }
+            passed = send_request(fd, deadline, payload_bytes) &&
+                     receive_response(fd, deadline, payload_bytes);
+            close(fd);
+            if (!passed) {
+                terminal(false);
+            }
+            last_failure.completed_bytes += payload_bytes;
+            printf("ASTERINAS_GMAC_TCP_PROBE_PROGRESS bytes=%zu "
+                   "completed_bytes=%zu pattern=mod251\n",
+                   payload_bytes, last_failure.completed_bytes);
+            fflush(stdout);
+            completed = true;
+            break;
         }
-        sleep_one_second();
+        if (!completed) {
+            terminal(false);
+        }
     }
-    terminal(false);
+    terminal(true);
 }
 
 #endif
