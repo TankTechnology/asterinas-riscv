@@ -15,7 +15,12 @@ POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
+DWMAC_DIAGNOSTICS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/diagnostics.rs"
 RISCV_PLATFORM_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/arch/riscv.rs"
+BIGTCP_DIAGNOSTICS_SOURCE = (
+    REPOSITORY_ROOT / "kernel/libs/aster-bigtcp/src/iface/tcp_diagnostics.rs"
+)
+BIGTCP_POLL_SOURCE = REPOSITORY_ROOT / "kernel/libs/aster-bigtcp/src/iface/poll.rs"
 
 
 class DwmacRxLivenessModelTests(unittest.TestCase):
@@ -137,6 +142,152 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
 
 
 class DwmacRxPollContractTests(unittest.TestCase):
+    def test_packet_diagnostics_distinguish_syn_ack_and_descriptor_drops(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = Path(directory) / "packet-diagnostics.rs"
+            binary = Path(directory) / "packet-diagnostics"
+            harness.write_text(
+                f'''#[path = r"{DWMAC_DIAGNOSTICS_SOURCE}"]
+mod diagnostics;
+
+use diagnostics::{{RxDescriptorDrop, RxDiagnostics}};
+
+fn ethernet_frame(ethertype: u16, protocol: u8, tcp_flags: u8) -> [u8; 54] {{
+    let mut frame = [0u8; 54];
+    frame[12..14].copy_from_slice(&ethertype.to_be_bytes());
+    frame[14] = 0x45;
+    frame[16..18].copy_from_slice(&40u16.to_be_bytes());
+    frame[23] = protocol;
+    frame[47] = tcp_flags;
+    frame
+}}
+
+fn main() {{
+    let mut diagnostics = RxDiagnostics::default();
+    diagnostics.record_frame(&ethernet_frame(0x0806, 0, 0));
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x02));
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x12));
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x10));
+    diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0));
+    diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0));
+    diagnostics.record_frame(&[0u8; 13]);
+    diagnostics.record_descriptor_drop(RxDescriptorDrop::Fragmented);
+    diagnostics.record_descriptor_drop(RxDescriptorDrop::ReceiveError);
+    diagnostics.record_descriptor_drop(RxDescriptorDrop::FrameTooLong);
+    diagnostics.record_descriptor_drop(RxDescriptorDrop::Other);
+
+    let report = diagnostics.report();
+    assert_eq!(report.observed, 7);
+    assert_eq!(report.arp, 1);
+    assert_eq!(report.ipv4_other, 1);
+    assert_eq!(report.tcp_syn, 1);
+    assert_eq!(report.tcp_syn_ack, 1);
+    assert_eq!(report.tcp_other, 1);
+    assert_eq!(report.other, 1);
+    assert_eq!(report.malformed, 1);
+    assert_eq!(report.descriptor_fragmented, 1);
+    assert_eq!(report.descriptor_receive_error, 1);
+    assert_eq!(report.descriptor_frame_too_long, 1);
+    assert_eq!(report.descriptor_other, 1);
+}}
+'''
+            )
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    str(harness),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_syn_ack_trace_advances_monotonically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = Path(directory) / "tcp-diagnostics.rs"
+            binary = Path(directory) / "tcp-diagnostics"
+            harness.write_text(
+                f'''#[path = r"{BIGTCP_DIAGNOSTICS_SOURCE}"]
+mod tcp_diagnostics;
+
+use tcp_diagnostics::{{SynAckStage, SynAckTrace}};
+
+fn main() {{
+    let trace = SynAckTrace::new();
+    assert_eq!(SynAckStage::Parsed.as_str(), "parsed");
+    assert_eq!(SynAckStage::ConnectionFound.as_str(), "connection-found");
+    assert_eq!(SynAckStage::SocketAccepted.as_str(), "socket-accepted");
+    assert!(trace.record(SynAckStage::Parsed));
+    assert!(!trace.record(SynAckStage::Parsed));
+    assert!(trace.record(SynAckStage::ConnectionFound));
+    assert!(!trace.record(SynAckStage::Parsed));
+    assert!(trace.record(SynAckStage::SocketAccepted));
+    assert!(!trace.record(SynAckStage::ConnectionFound));
+}}
+'''
+            )
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    str(harness),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_diagnostics_are_wired_to_bounded_markers(self) -> None:
+        device = DEVICE_SOURCE.read_text()
+        poll = BIGTCP_POLL_SOURCE.read_text()
+
+        self.assertIn("rx_diagnostics: RxDiagnostics", device)
+        self.assertIn("self.rx_diagnostics.record_frame", device)
+        self.assertIn("self.rx_diagnostics.record_descriptor_drop", device)
+        self.assertIn("ASTERINAS_GMAC_RX_CLASS", device)
+        for field in (
+            "tcp_syn_ack={}",
+            "descriptor_fragmented={}",
+            "descriptor_receive_error={}",
+            "descriptor_frame_too_long={}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, device)
+
+        self.assertIn("ASTERINAS_TCP_SYN_ACK stage={}", poll)
+        self.assertIn("SynAckStage::Parsed", poll)
+        self.assertIn("SynAckStage::ConnectionFound", poll)
+        self.assertIn("SynAckStage::SocketAccepted", poll)
+
     def test_megrez_requires_documented_dwmac_5_20(self) -> None:
         source = RISCV_PLATFORM_SOURCE.read_text()
 

@@ -8,6 +8,7 @@ mod poll;
 mod poll_iface;
 mod port;
 mod sched;
+mod tcp_diagnostics;
 mod time;
 
 pub use common::{BoundPort, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceType};
