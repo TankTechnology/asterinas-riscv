@@ -109,8 +109,9 @@ There is nevertheless a documented boundary difference: Linux has an
 explicit `wmb()` at the final ownership-to-tail handoff, while Asterinas relies
 on the descriptor release fence before a later volatile MMIO write. The staged
 board experiment therefore records both TX publication/reclaim progress and
-the DMA channel status. The physical result below selects descriptor cache-line
-ownership rather than silently adding another MMIO barrier.
+the DMA channel status. The first physical result below selected descriptor
+cache-line ownership as a candidate rather than silently adding another MMIO
+barrier. The follow-up run tests whether an uncached ring is sufficient.
 
 ## Verified DMA status clear and RBU restart rules
 
@@ -270,8 +271,66 @@ SHA-256 identities:
 - `probe-tcp-info.json`: `485eb427cd07eaf77dc1e1c35275d589939014300c79dc70cec6228f3da243dd`;
 - `result.json`: `60422313642cddec0ff5e11bc581d4235e43995a54e16453873fe843ff13e213`.
 
-The uncached-ring fix has passed its deterministic interleaving model, all
-Megrez host tests, and the pinned RISC-V OSDK compile. It is not yet described
-as hardware-verified: a later frozen-plan run must demonstrate positive
-`tx_reclaimed` progress and complete the four TCP stages before that claim is
-made.
+The uncached-ring fix passed its deterministic interleaving model, all Megrez
+host tests, and the pinned RISC-V OSDK compile. The later frozen-plan run below
+does not show positive `tx_reclaimed` progress, so this document does not claim
+that the fix resolves the hardware failure.
+
+## Frozen uncached-ring physical validation
+
+The follow-up gate used a fresh Sv39, SMP=4 kernel containing commit
+`131381300`. The frozen plan SHA-256 is
+`c415f249e1802bf5a21522e266518ddebda314915dcdd7720010e414e4a4006d`.
+The kernel SHA-256 is
+`334b7bf431afd67e55a50dfb95c9e288f8f9c6b1ba551bd5008be05763c040ca`
+and its U-Boot CRC32 is `da9266aa`.
+
+Before the board was opened, the exact kernel and probe passed the generic
+Sv39/SMP4 QEMU TCP gate and a separate 60-second software-reboot gate.
+The physical runner then transferred only the stale kernel and DTB, reused the
+matching initramfs cache entry, and issued exactly one `booti`.
+The serial transcript contains no `saveenv` or `reset` command.
+
+The board booted all four harts and selected GMAC1 at 1000 Mbit/s full duplex.
+The guest completed the first 16-KiB receive stage:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_PROGRESS bytes=16384 completed_bytes=16384 pattern=mod251
+```
+
+During the second stage, RX continued while TX completion remained absent:
+
+```text
+rx=62  tx_submitted=52 tx_reclaimed=0 tx_outstanding=52 dma_status=0x00004484
+rx=94  tx_submitted=64 tx_reclaimed=0 tx_outstanding=64 dma_status=0x0000c4c4
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=receive-poll errno=110 attempts=2 current_bytes=0 completed_bytes=16384
+```
+
+The host probe accepted application writes for both the 16-KiB and 64-KiB
+bodies. Its retained `TCP_INFO` samples for both connections reached
+`bytes_sent=13201`, `bytes_acked=0`, and `unacked=10`.
+This is consistent with a TX path that stops making completion progress after
+initial traffic, rather than a pre-TX routing or link failure.
+
+The terminal failure was followed by fresh board firmware, OpenSBI, and U-Boot
+output. The runner stopped the recovered autoboot countdown and returned the
+board to a U-Boot prompt without a physical reset. Its final result is
+`passed: false` with reason `guest-failure-recovered:receive-poll`.
+
+The selected classification is **`tx-reclaim-still-stalled`**.
+Switching the descriptor ring to `DmaCoherent` did not make TX ownership
+transitions visible to the CPU on this board. The cache-line stale-writeback
+interleaving remains a valid model defect, but it is not a sufficient
+explanation for this physical failure. The next investigation must remain
+offline until it can discriminate descriptor-format/readback, DMA address and
+direction semantics, and the ownership-to-tail ordering boundary. This gate
+does not authorize a second physical run.
+
+Evidence is retained under
+`target/megrez-debug/dwmac-tx-reclaim-validation/board-run-20260828-153054/`
+with these SHA-256 identities:
+
+- `serial.log`: `48480fbe0b2a5796276dc73ab7413f973e99cef0c904fe1c95a16eaa6d3b622a`;
+- `transport.json`: `e68fe4d90ce9adbb924aa31ed743886afb4efef59ce89b526661198b7d404cf7`;
+- `probe-tcp-info.json`: `e2d3ddf20e970b1900f3837fcfdf4d780039c7c931cf9646eedb177ee8369571`;
+- `result.json`: `13c444d2257b0bf37b1ff7e33fc47b478890a2955bbe1fc5c6cc9d0552a3969d`.
