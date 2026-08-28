@@ -4510,7 +4510,7 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                 mock.patch.object(gate_backend_module, "validate_frozen_root"),
                 mock.patch.object(
                     gate_backend_module,
-                    "_load_package_checksums",
+                    "load_package_checksums",
                     return_value=downloaded_packages,
                 ) as load_checksums,
                 mock.patch.object(gate_backend_module, "verify_four_hart_dtb", return_value=4),
