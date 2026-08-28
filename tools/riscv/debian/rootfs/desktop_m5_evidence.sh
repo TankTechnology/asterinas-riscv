@@ -95,13 +95,11 @@ validate_parent_security() {
         'user_pref\("security\.sandbox\.[^"]+",[[:space:]]*0\)' "$prefs"; then
         fail security-pref-sandbox-disabled
     fi
-    if grep -q '^NoNewPrivs:' "$PROC_ROOT/$browser_pid/status"; then
-        grep -Eq '^NoNewPrivs:[[:space:]]+1$' "$PROC_ROOT/$browser_pid/status" ||
-            fail security-parent-no-new-privileges
-        nnp=enabled
-    else
-        nnp=kernel-status-unavailable
-    fi
+    grep -q '^NoNewPrivs:' "$PROC_ROOT/$browser_pid/status" ||
+        fail security-parent-no-new-privileges-unavailable
+    grep -Eq '^NoNewPrivs:[[:space:]]+1$' "$PROC_ROOT/$browser_pid/status" ||
+        fail security-parent-no-new-privileges
+    nnp=enabled
     printf 'A_M5_SECURITY role=parent pid=%s no_new_privs=%s sandbox_disable=absent sandbox_logging=enabled\n' \
         "$browser_pid" "$nnp" >>"$SECURITY_LOG"
     emit "DEBIAN_BROWSER_M5_SECURITY parent_caps=zero no_new_privs=$nnp sandbox_disable=absent sandbox_logging=enabled"
@@ -168,6 +166,7 @@ sample_firefox_processes() {
 
 while ! ready || ! navigator_ready; do
     if ready && [[ "$security_checked_pid" != "$browser_pid" ]]; then
+        marionette_ready=false
         validate_parent_security
         security_checked_pid="$browser_pid"
     fi
@@ -190,6 +189,14 @@ while ! ready || ! navigator_ready; do
     ((SECONDS < deadline)) || fail browser-timeout
     sleep 1
 done
+
+# The loop condition itself may observe both predicates for the first time and
+# skip the body. Never enter the formal gate without validating that exact PID.
+if [[ "$security_checked_pid" != "$browser_pid" ]]; then
+    marionette_ready=false
+    validate_parent_security
+    security_checked_pid="$browser_pid"
+fi
 
 remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail browser-timeout
