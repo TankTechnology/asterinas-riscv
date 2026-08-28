@@ -133,6 +133,17 @@ current-producer/one-past convention also used by Asterinas. Because the public
 TRM does not expose every descriptor bitfield, those remaining details stay at
 Level B rather than being promoted to hardware facts.
 
+TRM Part 4 PDF pages 202-203 document
+`MTL_RxQ0_Missed_Packet_Overflow_Cnt` at offset `0xd34`. Bits 26:16 count
+packets discarded by DMA buffer unavailability, bits 10:0 count packets
+discarded by receive-queue overflow, and bits 27 and 11 report counter
+overflow. All four fields clear when the register is read. Asterinas decodes
+and cumulatively records this register only at its existing bounded progress
+milestones. It does not enable a counter block or change queue state. This
+primary-source counter is the next discriminator between loss before the DMA
+ring and loss above the MAC after the post-fix physical run observed neither
+DMA RBU nor descriptor errors.
+
 ## RQ5: PLIC lifecycle
 
 The summary IRQs are documented as high-level sources. Asterinas masks the

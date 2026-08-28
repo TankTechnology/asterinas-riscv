@@ -2,6 +2,8 @@
 
 //! Bounded receive-path diagnostics for Megrez DWMAC bring-up.
 
+use crate::regs::MtlRxLossSnapshot;
+
 const ETHERNET_HEADER_LEN: usize = 14;
 const ETHERNET_PROTOCOL_ARP: u16 = 0x0806;
 const ETHERNET_PROTOCOL_IPV4: u16 = 0x0800;
@@ -52,6 +54,18 @@ pub(super) struct RxDiagnosticsReport {
 
 #[derive(Debug, Default)]
 pub(super) struct RxDiagnostics(RxDiagnosticsReport);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct MtlRxLossReport {
+    pub(super) missed_packets: u64,
+    pub(super) missed_counter_overflows: u64,
+    pub(super) fifo_overflow_packets: u64,
+    pub(super) fifo_counter_overflows: u64,
+    pub(super) read_failures: u64,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct MtlRxLossDiagnostics(MtlRxLossReport);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TxDiagnosticsReport {
@@ -106,6 +120,33 @@ impl RxDiagnostics {
     }
 
     pub(super) const fn report(&self) -> RxDiagnosticsReport {
+        self.0
+    }
+}
+
+impl MtlRxLossDiagnostics {
+    pub(super) fn record(&mut self, sample: MtlRxLossSnapshot) {
+        self.0.missed_packets = self
+            .0
+            .missed_packets
+            .saturating_add(u64::from(sample.missed_packets));
+        self.0.fifo_overflow_packets = self
+            .0
+            .fifo_overflow_packets
+            .saturating_add(u64::from(sample.fifo_overflow_packets));
+        if sample.missed_counter_overflow {
+            self.0.missed_counter_overflows = self.0.missed_counter_overflows.saturating_add(1);
+        }
+        if sample.fifo_counter_overflow {
+            self.0.fifo_counter_overflows = self.0.fifo_counter_overflows.saturating_add(1);
+        }
+    }
+
+    pub(super) fn record_read_failure(&mut self) {
+        self.0.read_failures = self.0.read_failures.saturating_add(1);
+    }
+
+    pub(super) const fn report(&self) -> MtlRxLossReport {
         self.0
     }
 }

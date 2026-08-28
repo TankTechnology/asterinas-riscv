@@ -20,7 +20,7 @@ use ostd::{
 use crate::{
     arch::{MegrezPlatform, PlatformError, SelectedPortInfo, dma_write_barrier},
     descriptor::DescriptorError,
-    diagnostics::{RxDescriptorDrop, RxDiagnostics, TxDiagnostics},
+    diagnostics::{MtlRxLossDiagnostics, RxDescriptorDrop, RxDiagnostics, TxDiagnostics},
     poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
@@ -31,9 +31,10 @@ use crate::{
         DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH, DMA_CHANNEL0_TX_RING_LENGTH,
         DMA_CHANNEL0_TX_TAIL_POINTER, DMA_MODE, DMA_SYSTEM_BUS_MODE, MAC_ADDRESS0_HIGH,
         MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_ENABLE,
-        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_OPERATION_MODE,
-        MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero, dma_interrupt_enable,
-        dma_status_needs_rx_resume, dma_system_bus_mode, encode_ring_length, encode_rx_buffer_size,
+        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER,
+        MTL_RX_QUEUE0_OPERATION_MODE, MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero,
+        decode_mtl_rx_loss, dma_interrupt_enable, dma_status_needs_rx_resume, dma_system_bus_mode,
+        encode_ring_length, encode_rx_buffer_size,
     },
 };
 
@@ -101,6 +102,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         irq,
         rx_poll: RxPollBudget::default(),
         rx_diagnostics: RxDiagnostics::default(),
+        mtl_rx_loss: MtlRxLossDiagnostics::default(),
         tx_diagnostics: TxDiagnostics::default(),
         fatal: false,
         capabilities: ethernet_capabilities(),
@@ -309,6 +311,7 @@ struct DwmacDevice {
     irq: DeferredMappedIrqLine,
     rx_poll: RxPollBudget,
     rx_diagnostics: RxDiagnostics,
+    mtl_rx_loss: MtlRxLossDiagnostics,
     tx_diagnostics: TxDiagnostics,
     fatal: bool,
     capabilities: DeviceCapabilities,
@@ -477,8 +480,13 @@ impl AnyNetworkDevice for DwmacDevice {
             PollEndAction::Stop => {}
         }
         if let Some(rx) = self.rx_poll.take_progress_report() {
+            match self.read(MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER.offset()) {
+                Ok(register) => self.mtl_rx_loss.record(decode_mtl_rx_loss(register)),
+                Err(_) => self.mtl_rx_loss.record_read_failure(),
+            }
             let tx = self.queue.progress();
             let diagnostics = self.rx_diagnostics.report();
+            let mtl_rx_loss = self.mtl_rx_loss.report();
             let tx_diagnostics = self.tx_diagnostics.report();
             ostd::info!(
                 "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} rx_buffer_unavailable={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
@@ -493,6 +501,14 @@ impl AnyNetworkDevice for DwmacDevice {
                 tx.rx_head,
                 tx.rx_tail,
                 dma_status,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_MTL_RX_LOSS missed_packets={} missed_counter_overflows={} fifo_overflow_packets={} fifo_counter_overflows={} read_failures={}",
+                mtl_rx_loss.missed_packets,
+                mtl_rx_loss.missed_counter_overflows,
+                mtl_rx_loss.fifo_overflow_packets,
+                mtl_rx_loss.fifo_counter_overflows,
+                mtl_rx_loss.read_failures,
             );
             ostd::info!(
                 "ASTERINAS_GMAC_RX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
