@@ -5368,6 +5368,31 @@ class AuditSerialLogTests(unittest.TestCase):
                 )
                 self.assertFalse(rejected.passed)
 
+    def test_registered_recovery_preserves_terminal_after_partial_ansi_prefix(
+        self,
+    ) -> None:
+        profile = qemu_uboot_booti.profile_by_name(
+            "generic-sv39-smp4-software-reboot"
+        )
+        terminal = profile.validation.completion_line.decode()
+        serial_log = (
+            MEGREZ_POSITIVE_SERIAL_LOG.replace(MEGREZ_BOOTARGS, profile.bootargs)
+            .replace(
+                qemu_uboot_audit.USERSPACE_MARKER_TEXT,
+                "ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60\n\x1b[" + terminal,
+            )
+            + "OpenSBI v1.7\nU-Boot 2026.07\n=> \n"
+        )
+
+        audit = qemu_uboot_booti.audit_serial_log(
+            serial_log,
+            marker_event=self.successful_marker_event(),
+            profile=profile,
+            userspace_marker=terminal,
+        )
+
+        self.assertTrue(audit.passed, audit.failures)
+
     def test_registered_milestones_reject_a_reboot_before_the_successful_chain(
         self,
     ) -> None:
