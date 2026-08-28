@@ -286,6 +286,40 @@ mod usb_kernel_op {
 
 mod dma_stream {
     use super::*;
+    #[cfg(target_arch = "riscv64")]
+    use crate::mm::dma::dma_stream::needs_guaranteed_uncached_view;
+
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn requires_real_uncached_view_without_coherence_or_cache_maintenance() {
+        assert!(needs_guaranteed_uncached_view(false, false));
+        assert!(!needs_guaranteed_uncached_view(true, false));
+        assert!(!needs_guaranteed_uncached_view(false, true));
+        assert!(!needs_guaranteed_uncached_view(true, true));
+    }
+
+    #[ktest]
+    fn split_preserves_stream_identity_and_uncached_alias() {
+        let segment = FrameAllocOptions::new()
+            .alloc_segment_with(2, |_| ())
+            .unwrap();
+        let dma_stream = DmaStream::<FromAndToDevice>::map(segment.into(), false).unwrap();
+        let paddr = dma_stream.paddr();
+        let daddr = dma_stream.daddr();
+        let alias = dma_stream.uncached_alias_paddr();
+
+        let (first, second) = dma_stream.split(PAGE_SIZE);
+
+        assert_eq!(first.paddr(), paddr);
+        assert_eq!(second.paddr(), paddr + PAGE_SIZE);
+        assert_eq!(first.daddr(), daddr);
+        assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
+    }
 
     #[ktest]
     fn streaming_map() {

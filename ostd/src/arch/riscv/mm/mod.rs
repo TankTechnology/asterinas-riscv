@@ -78,9 +78,9 @@ pub(crate) fn create_uncached_dma_alias(physical_range: Range<Paddr>) -> Result<
 
             // SAFETY: `alias_range` is the checked EIC7700 non-cacheable
             // system-port view of the allocated Die 0 DRAM range. The
-            // `DmaCoherent` owner retains the backing frames for at least as
-            // long as this mapping, and accesses through this view have no
-            // side effects beyond reading or writing those frames.
+            // The DMA object retains the backing frames for at least as long
+            // as this mapping, and accesses through this view have no side
+            // effects beyond reading or writing those frames.
             Ok(Some(unsafe {
                 IoMem::new(alias_range, PageFlags::RW, CachePolicy::Uncacheable)
             }))
