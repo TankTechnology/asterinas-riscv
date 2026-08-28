@@ -15,12 +15,24 @@ use smoltcp::{
     },
 };
 
-use super::{common::IpPacket, poll_iface::PollableIfaceMut};
+use super::{
+    common::IpPacket,
+    poll_iface::PollableIfaceMut,
+    tcp_diagnostics::{SynAckStage, SynAckTrace},
+};
 use crate::{
     ext::Ext,
     socket::{TcpConnectionBg, TcpProcessResult},
     socket_table::{ConnectionKey, ListenerKey, SocketTable},
 };
+
+static TCP_SYN_ACK_TRACE: SynAckTrace = SynAckTrace::new();
+
+fn record_syn_ack_stage(stage: SynAckStage) {
+    if TCP_SYN_ACK_TRACE.record(stage) {
+        ostd::info!("ASTERINAS_TCP_SYN_ACK stage={}", stage.as_str());
+    }
+}
 
 pub(super) struct PollContext<'a, E: Ext> {
     iface: PollableIfaceMut<'a, E>,
@@ -163,6 +175,9 @@ impl<E: Ext> PollContext<'_, E> {
             checksum_caps,
         )
         .ok()?;
+        if tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_some() {
+            record_syn_ack_stage(SynAckStage::Parsed);
+        }
 
         self.process_tcp_until_outgoing(ip_repr, &tcp_repr)
             .map(|(ip_repr, tcp_repr)| Packet::new(ip_repr, IpPayload::Tcp(tcp_repr)))
@@ -191,6 +206,7 @@ impl<E: Ext> PollContext<'_, E> {
         ip_repr: &IpRepr,
         tcp_repr: &TcpRepr,
     ) -> Option<(IpRepr, TcpRepr<'static>)> {
+        let is_syn_ack = tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_some();
         // Process packets belonging to existing connections first.
         // Note that we must do this first because SYN packets may match existing TIME-WAIT
         // sockets. See comments in `TcpConnectionBg::process` for details.
@@ -224,11 +240,17 @@ impl<E: Ext> PollContext<'_, E> {
             };
 
             if let Some(connection) = connection {
+                if is_syn_ack {
+                    record_syn_ack_stage(SynAckStage::ConnectionFound);
+                }
                 let (process_result, became_dead) =
                     connection.process(&mut self.iface, ip_repr, tcp_repr);
                 if *became_dead {
                     self.actions
                         .push(SocketTableAction::DelTcpConn(*connection.connection_key()));
+                }
+                if is_syn_ack && process_result != TcpProcessResult::NotProcessed {
+                    record_syn_ack_stage(SynAckStage::SocketAccepted);
                 }
                 match process_result {
                     TcpProcessResult::NotProcessed => {}
