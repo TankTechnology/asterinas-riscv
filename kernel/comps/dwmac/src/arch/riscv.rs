@@ -76,6 +76,8 @@ struct PortFields {
     interrupt_parent: Option<u32>,
     interrupt: Option<u32>,
     dma_noncoherent: bool,
+    iommu_absent: bool,
+    dma_ranges_absent: bool,
     clock_names_valid: bool,
     clock_cells: Option<[u32; 6]>,
     reset_name_valid: bool,
@@ -189,6 +191,8 @@ fn expected_fields(alias_index: u8) -> Option<PortFields> {
         interrupt_parent: Some(16),
         interrupt: None,
         dma_noncoherent: true,
+        iommu_absent: true,
+        dma_ranges_absent: true,
         clock_names_valid: true,
         clock_cells: None,
         reset_name_valid: true,
@@ -374,6 +378,8 @@ fn fields_from_node(tree: &Fdt<'_>, alias_index: u8, node: FdtNode<'_, '_>) -> P
         interrupt_parent: cells::<1>(node, "interrupt-parent").map(|cells| cells[0]),
         interrupt: cells::<1>(node, "interrupts").map(|cells| cells[0]),
         dma_noncoherent: node.property("dma-noncoherent").is_some(),
+        iommu_absent: node.property("iommus").is_none(),
+        dma_ranges_absent: node.property("dma-ranges").is_none(),
         clock_names_valid: exact_text(node, "clock-names", CLOCK_NAMES),
         clock_cells: cells(node, "clocks"),
         reset_name_valid: exact_text(node, "reset-names", RESET_NAME),
@@ -857,6 +863,8 @@ mod tests {
                 interrupt_parent: Some(16),
                 interrupt: Some(61),
                 dma_noncoherent: true,
+                iommu_absent: true,
+                dma_ranges_absent: true,
                 clock_names_valid: true,
                 clock_cells: Some([3, 550, 3, 551, 3, 552]),
                 reset_name_valid: true,
@@ -887,6 +895,8 @@ mod tests {
                 interrupt_parent: Some(16),
                 interrupt: Some(70),
                 dma_noncoherent: true,
+                iommu_absent: true,
+                dma_ranges_absent: true,
                 clock_names_valid: true,
                 clock_cells: Some([3, 550, 3, 551, 3, 553]),
                 reset_name_valid: true,
@@ -932,6 +942,12 @@ mod tests {
         let mut coherent = frozen_port(0);
         coherent.dma_noncoherent = false;
         cases.push(coherent);
+        let mut translated_by_iommu = frozen_port(0);
+        translated_by_iommu.iommu_absent = false;
+        cases.push(translated_by_iommu);
+        let mut translated_by_dma_ranges = frozen_port(1);
+        translated_by_dma_ranges.dma_ranges_absent = false;
+        cases.push(translated_by_dma_ranges);
         let mut wrong_irq = frozen_port(1);
         wrong_irq.interrupt = Some(61);
         cases.push(wrong_irq);
