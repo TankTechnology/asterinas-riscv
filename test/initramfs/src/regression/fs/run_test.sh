@@ -156,6 +156,7 @@ TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
 ./procfs/mountstats
 ./procfs/pid_mem
 ./procfs/proc_fd_open_fifo_after_setid
+./procfs/proc_status_sandbox
 ./procfs/proc_sys_kernel
 ./procfs/tid
 
