@@ -316,7 +316,7 @@ ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
 
 MEGREZ_TCP_PROBE_READY_LINE = (
     b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
-    b"status=200 body=ASTERINAS_TCP_PROBE_OK"
+    b"status=200 bytes=16777216 pattern=mod251"
 )
 
 MEGREZ_TCP_PROBE = ValidationScenario(
