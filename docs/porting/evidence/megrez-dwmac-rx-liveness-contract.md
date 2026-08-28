@@ -334,3 +334,46 @@ with these SHA-256 identities:
 - `transport.json`: `e68fe4d90ce9adbb924aa31ed743886afb4efef59ce89b526661198b7d404cf7`;
 - `probe-tcp-info.json`: `e2d3ddf20e970b1900f3837fcfdf4d780039c7c931cf9646eedb177ee8369571`;
 - `result.json`: `13c444d2257b0bf37b1ff7e33fc47b478890a2955bbe1fc5c6cc9d0552a3969d`.
+
+## Ordering-instrumented run and memory-type discriminator
+
+A later single-boot run used the frozen kernel SHA-256
+`8560f935cdaaec923c6acb0dcfd5659ca084327748feae20092c4d0f26fb1e39`.
+It completed the 16-KiB stage and made limited reclaim progress before the
+64-KiB stage filled the ring:
+
+```text
+tx_submitted=3  tx_reclaimed=2 tx_outstanding=1
+tx_submitted=11 tx_reclaimed=2 tx_outstanding=9
+tx_submitted=66 tx_reclaimed=2 tx_outstanding=64 rx=42  dma_status=0x00008444
+tx_submitted=66 tx_reclaimed=2 tx_outstanding=64 rx=153 dma_status=0x00000000
+```
+
+The host accepted the 64-KiB response and observed retransmission and a
+congestion-window collapse before the guest stalled. Hardware therefore
+transmitted descriptors beyond the first two while the CPU continued to see
+the oldest outstanding ownership word as set. The board recovered through the
+60-second software reboot and returned to U-Boot without a physical reset.
+
+The exact board DTB and boot log contain no Svpbmt extension. Therefore the
+ring's `WriteCombining` page property could not encode PBMT_NC and remained an
+ordinary cacheable PTE. The selected classification is
+**`tx-reclaim-partial/stale-cpu-view`**. This supersedes the earlier assumption
+that allocating `DmaCoherent(false)` alone made the ring uncached on Megrez.
+
+The production fix makes DWMAC explicitly consume
+`DmaCoherent::into_uncached`. Svpbmt systems retain the page-based PBMT_NC
+path; EIC7700 maps the checked hardware non-cacheable DRAM alias after cleaning
+the original view; unsupported RISC-V systems fail closed. Packet buffers,
+ring layout, interrupt policy, and tail-pointer protocol are unchanged.
+
+Evidence from the ordering run is retained under
+`target/megrez-debug/dwmac-ordering-20260828/board-run-ordering-single/`:
+
+- `serial.log`: `cccdc52be7b3ba392179414146532336c78af1c4f1b35e924a33995ce5d6025b`;
+- `transport.json`: `6764cf93f35c09d101529619fedf023a2a2f1291b14227866162a5574a3c2bfb`;
+- `probe-tcp-info.json`: `34350c9e6ddb944ce0d597d71be9d4c5314cdb34a405a3ddbb385a0b321aeadd`;
+- `result.json`: `532c3d25e49241636d88c69bd48b3a282af5c4c34cb760a75c9de96982aeab54`.
+
+No physical rerun is included in the alias implementation milestone. Its next
+board use must be separately frozen and recovery-armed.

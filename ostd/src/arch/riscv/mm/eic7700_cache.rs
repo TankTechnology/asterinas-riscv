@@ -21,6 +21,27 @@ const CACHE_LINE_SIZE: usize = 64;
 const DIE0_DRAM_START: usize = 0x8000_0000;
 const DIE0_DRAM_END: usize = 0x4_8000_0000;
 const DIE0_L3_FLUSH_REGISTER: usize = 0x0201_0200;
+const DIE0_UNCACHED_ALIAS_START: usize = 0xc0_0000_0000;
+const DIE0_UNCACHED_ALIAS_END: usize = 0xc4_0000_0000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UncachedDmaPath {
+    PageBased,
+    PlatformAlias,
+}
+
+pub(super) const fn select_uncached_dma_path(
+    has_svpbmt: bool,
+    has_platform_alias: bool,
+) -> Option<UncachedDmaPath> {
+    if has_svpbmt {
+        Some(UncachedDmaPath::PageBased)
+    } else if has_platform_alias {
+        Some(UncachedDmaPath::PlatformAlias)
+    } else {
+        None
+    }
+}
 
 static L3_FLUSH_REGISTER: Once<SpinLock<IoMem<Sensitive>>> = Once::new();
 
@@ -76,6 +97,15 @@ pub(super) fn has_uncached_dram_alias() -> bool {
     L3_FLUSH_REGISTER.get().is_some()
 }
 
+pub(super) fn uncached_alias_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
+    if range.start >= range.end || range.start < DIE0_DRAM_START || range.end > DIE0_DRAM_END {
+        return None;
+    }
+    let start = DIE0_UNCACHED_ALIAS_START.checked_add(range.start - DIE0_DRAM_START)?;
+    let end = DIE0_UNCACHED_ALIAS_START.checked_add(range.end - DIE0_DRAM_START)?;
+    (end <= DIE0_UNCACHED_ALIAS_END).then_some(start..end)
+}
+
 fn checked_cache_line_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
     if range.start >= range.end || range.start < DIE0_DRAM_START || range.end > DIE0_DRAM_END {
         return None;
@@ -88,7 +118,10 @@ fn checked_cache_line_range(range: Range<Paddr>) -> Option<Range<Paddr>> {
 
 #[cfg(ktest)]
 mod tests {
-    use super::{DIE0_DRAM_END, DIE0_DRAM_START, checked_cache_line_range, is_eic7700_compatible};
+    use super::{
+        DIE0_DRAM_END, DIE0_DRAM_START, UncachedDmaPath, checked_cache_line_range,
+        is_eic7700_compatible, select_uncached_dma_path, uncached_alias_range,
+    };
     use crate::prelude::ktest;
 
     #[ktest]
@@ -137,5 +170,41 @@ mod tests {
         };
         assert!(checked_cache_line_range(reversed).is_none());
         assert!(checked_cache_line_range(usize::MAX - 31..usize::MAX).is_none());
+    }
+
+    #[ktest]
+    fn selects_one_real_uncached_dma_path_or_fails_closed() {
+        assert_eq!(
+            select_uncached_dma_path(true, false),
+            Some(UncachedDmaPath::PageBased)
+        );
+        assert_eq!(
+            select_uncached_dma_path(false, true),
+            Some(UncachedDmaPath::PlatformAlias)
+        );
+        assert_eq!(select_uncached_dma_path(false, false), None);
+    }
+
+    #[ktest]
+    fn maps_die0_dram_into_the_hardware_uncached_alias() {
+        assert_eq!(
+            uncached_alias_range(0x2_a082_a000..0x2_a082_b000),
+            Some(0xc2_2082_a000..0xc2_2082_b000)
+        );
+        assert_eq!(
+            uncached_alias_range(DIE0_DRAM_START..DIE0_DRAM_START + 0x1000),
+            Some(0xc0_0000_0000..0xc0_0000_1000)
+        );
+        assert_eq!(
+            uncached_alias_range(DIE0_DRAM_END - 0x1000..DIE0_DRAM_END),
+            Some(0xc3_ffff_f000..0xc4_0000_0000)
+        );
+    }
+
+    #[ktest]
+    fn rejects_non_dram_and_empty_uncached_alias_ranges() {
+        assert!(uncached_alias_range(0x1000..0x2000).is_none());
+        assert!(uncached_alias_range(DIE0_DRAM_START..DIE0_DRAM_START).is_none());
+        assert!(uncached_alias_range(DIE0_DRAM_END..DIE0_DRAM_END + 0x1000).is_none());
     }
 }

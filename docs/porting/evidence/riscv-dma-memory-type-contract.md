@@ -4,11 +4,20 @@ Date: 2026-08-28
 
 ## Result
 
-Non-coherent DMA allocations on RISC-V now request `PBMT_NC` through the
-existing `CachePolicy::WriteCombining` representation. MMIO mappings continue
-to request `PBMT_IO` through `CachePolicy::Uncacheable`.
+Non-coherent DMA allocations on RISC-V request `PBMT_NC` through the existing
+`CachePolicy::WriteCombining` representation when the CPU implements Svpbmt.
+Megrez does not implement that extension: its four CPU nodes advertise
+`rv64imafdch_zicsr_zifencei_zba_zbb_sscofpmf`. On this board the same page-table
+request is therefore an ordinary cacheable mapping.
 
-This change establishes the page-table memory-type contract. It is not evidence
+Callers that require a real uncached CPU view now consume the allocation with
+`DmaCoherent::into_uncached`. The operation retains PBMT_NC when Svpbmt is
+present, otherwise it cleans the original EIC7700 DRAM range and retains the
+SoC's non-cacheable System Port alias. A RISC-V platform with neither mechanism
+fails closed. MMIO mappings continue to request `PBMT_IO` through
+`CachePolicy::Uncacheable`.
+
+This establishes the memory-type contract. It is not yet physical evidence
 that the Megrez DWMAC TX-reclaim failure is fixed.
 
 ## Specification authority
@@ -30,13 +39,17 @@ Source: <https://kernel.org/doc/html/next/core-api/dma-api-howto.html>
 
 The Megrez descriptor ring follows this path:
 
-1. `kernel/comps/dwmac/src/queue.rs` calls
-   `DmaCoherent::alloc(1, false)`.
+1. `kernel/comps/dwmac/src/queue.rs` calls `DmaCoherent::alloc(1, false)` and
+   immediately consumes it with `DmaCoherent::into_uncached`.
 2. `ostd/src/mm/dma/dma_coherent.rs` calls `alloc_kva` for a non-coherent
    device.
 3. `ostd/src/mm/dma/util.rs` now selects the normal non-cacheable DMA policy.
-4. `ostd/src/arch/riscv/mm/mod.rs` losslessly encodes that policy as
-   `PBMT_NC` when Svpbmt is present.
+4. `ostd/src/arch/riscv/mm/mod.rs` either retains the PBMT_NC mapping or asks
+   the EIC7700 backend for the checked
+   `0xc0_0000_0000..0xc4_0000_0000` non-cacheable DRAM alias.
+5. `DmaCoherent` retains that alias for the lifetime of the backing frames and
+   routes all safe CPU reads and writes through it; its physical and device
+   addresses remain those of the original DRAM.
 
 The selector is local to DMA allocations. Existing PLIC, xHCI, PCI BAR, and
 other `IoMem` users retain `CachePolicy::Uncacheable`, which continues to
@@ -73,11 +86,17 @@ The focused contracts now require:
 - non-coherent RISC-V DMA selects the `PBMT_NC` representation;
 - `WriteCombining` encodes `PBMT_NC`, clears `PBMT_IO`, and round-trips;
 - MMIO `Uncacheable` encodes `PBMT_IO`, clears `PBMT_NC`, and round-trips.
+- Svpbmt, EIC7700 alias, and fail-closed strategy selection are distinct;
+- the exact observed ring range `0x2_a082_a000..0x2_a082_b000` maps to
+  `0xc2_2082_a000..0xc2_2082_b000` with checked DRAM boundaries;
+- coherent allocations reject `into_uncached`, while non-coherent conversion
+  preserves size, physical address, device address, split behavior, and safe
+  reader/writer access.
 
-The existing host DWMAC model gate also remained green: 11 tests passed in
-0.632 seconds.
+The existing host DWMAC model gate also remained green: 12 tests passed in
+0.685 seconds.
 
-## Physical motivation
+## Physical motivation and correction
 
 The preceding Megrez run completed the first 16 KiB transfer, then timed out
 with:
@@ -87,22 +106,25 @@ tx_submitted=64 tx_reclaimed=0 tx_outstanding=64
 ```
 
 RX still reached 94 packets and the recovery path returned the board to
-U-Boot without a physical reset. This evidence is consistent with a TX
-descriptor visibility or completion problem, but it does not distinguish
-memory type, ordering barrier, tail-pointer protocol, or hardware behavior.
+U-Boot without a physical reset. A later ordering-instrumented run reclaimed
+only two descriptors, then filled the ring while RX continued to 153 packets.
+The host had already received frames described by later entries while the CPU
+still read the oldest entry as DMA-owned. That evidence, combined with the
+exact no-Svpbmt ISA string, identifies a stale cacheable CPU view of the
+descriptor ring rather than a missing PBMT_NC encoding on this hardware.
 
 ## Remaining assumptions and non-goals
 
 - The DWMAC device and CPU agree on the descriptor ring's physical address.
-- The running RISC-V system advertises and correctly implements Svpbmt.
-- `PBMT_NC` provides the intended uncached alias for Megrez DRAM.
-- This change does not add descriptor publication or reclaim barriers.
-- This change does not order descriptor stores against the MMIO tail write.
+- The EIC7700 System Port alias has the non-cacheable semantics documented by
+  the platform and already used by the USB DMA backend.
+- This change retains the existing descriptor publication, reclaim, and MMIO
+  ordering barriers; it does not redesign them.
 - This change does not model the EIC7700 cache hierarchy or DWMAC in QEMU.
 - This change does not claim byte-level cache coherence on hardware.
 - No QEMU or board run is part of this milestone.
 
-The next milestone must audit descriptor construction, ownership transfer,
-MMIO doorbell ordering, and reclaim reads against Linux `stmmac` and the
-RISC-V memory model. Its tests should inject delayed and reordered device
-visibility before authorizing one recovery-armed physical run.
+The next milestone is one separately frozen, recovery-armed physical run. It
+must first prove the built ring uses the alias path, then require progress
+beyond 64 KiB before extending the probe. No run is part of this implementation
+milestone.
