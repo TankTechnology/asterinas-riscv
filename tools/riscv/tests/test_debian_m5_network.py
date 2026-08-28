@@ -274,7 +274,9 @@ configure_and_normalize_rootfs
         ).read_text(encoding="utf-8")
         self.assertEqual(
             evidence_drop_in,
-            "[Service]\nEnvironment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
+            "# SPDX-License-Identifier: MPL-2.0\n"
+            "[Service]\n"
+            "Environment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
         )
 
     def _fake_network_tools(

@@ -16,10 +16,15 @@ import zlib
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from tools.riscv import megrez_debug as debug_module
 from tools.riscv.megrez_debug_contract import (
+    DEBIAN_BROWSER_ARTIFACT_ORDER,
+    DEBIAN_BROWSER_MARKERS,
     MAX_ARTIFACT_BYTES,
+    ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -161,6 +166,25 @@ class MegrezDebugArtifactTests(unittest.TestCase):
         ):
             ArtifactIdentity.from_path("kernel", artifact, 0x80200000)
 
+    def test_root_image_identity_requires_one_exact_gibibyte_and_zero_address(
+        self,
+    ) -> None:
+        root_image = self.directory / "debian-root.ext2"
+        with root_image.open("wb") as stream:
+            stream.truncate(ROOT_IMAGE_BYTES)
+
+        identity = ArtifactIdentity.from_path("root_image", root_image, 0)
+
+        self.assertEqual(identity.size, ROOT_IMAGE_BYTES)
+        self.assertEqual(identity.load_address, 0)
+        for invalid in (
+            replace(identity, size=ROOT_IMAGE_BYTES - 4096),
+            replace(identity, size=ROOT_IMAGE_BYTES + 4096),
+            replace(identity, load_address=0x80200000),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
+                invalid.validate()
+
 
 class MegrezDebugPlanTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -301,6 +325,250 @@ class MegrezDebugPlanTests(unittest.TestCase):
         self.assertTrue(encoded.endswith(b"\n"))
         with self.assertRaises(DebugContractError):
             replace(result, plan_sha256="f" * 63).validate()
+
+
+class MegrezDebugDebianPlanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        sizes = {
+            "root_image": ROOT_IMAGE_BYTES,
+        }
+        self.artifacts = tuple(
+            ArtifactIdentity(
+                name=name,
+                path=str((self.directory / name).absolute()),
+                load_address=addresses.get(name, 0),
+                size=sizes.get(name, 4096),
+                sha256=hashlib.sha256(name.encode()).hexdigest(),
+                crc32=f"{zlib.crc32(name.encode()):08x}",
+            )
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER
+        )
+
+    def _plan(self) -> DebugPlan:
+        return DebugPlan(
+            schema_version=2,
+            profile="debian-browser",
+            artifacts=self.artifacts,
+            bootargs=(
+                "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz "
+                "loglevel=info init=/init "
+                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+                "asterinas.reboot_after=600 -- --root-init=systemd"
+            ),
+            smp=4,
+            sv39=True,
+            markers=DEBIAN_BROWSER_MARKERS,
+            reboot_after=600,
+        )
+
+    def test_schema_two_round_trip_binds_every_debian_browser_input(self) -> None:
+        plan = self._plan()
+        encoded = plan.canonical_bytes()
+
+        self.assertEqual(plan, DebugPlan.from_bytes(encoded))
+        self.assertEqual(
+            tuple(identity.name for identity in plan.artifacts),
+            DEBIAN_BROWSER_ARTIFACT_ORDER,
+        )
+        self.assertEqual(plan.markers, DEBIAN_BROWSER_MARKERS)
+        self.assertEqual(plan.plan_sha256, hashlib.sha256(encoded).hexdigest())
+
+    def test_schema_two_rejects_a_narrower_or_reinterpreted_contract(self) -> None:
+        plan = self._plan()
+        root_index = DEBIAN_BROWSER_ARTIFACT_ORDER.index("root_image")
+        invalid_artifacts = list(plan.artifacts)
+        invalid_artifacts[root_index] = replace(
+            invalid_artifacts[root_index], size=ROOT_IMAGE_BYTES - 4096
+        )
+
+        for invalid in (
+            replace(plan, schema_version=1),
+            replace(plan, profile="tcp-probe"),
+            replace(plan, artifacts=plan.artifacts[:-1]),
+            replace(plan, artifacts=tuple(reversed(plan.artifacts))),
+            replace(plan, artifacts=tuple(invalid_artifacts)),
+            replace(plan, markers=plan.markers[:-1]),
+            replace(plan, smp=1),
+            replace(plan, sv39=False),
+            replace(plan, reboot_after=0),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
+                invalid.validate()
+
+    def test_schema_one_canonical_contract_remains_unchanged(self) -> None:
+        legacy = MegrezDebugPlanTests()
+        legacy.setUp()
+        self.addCleanup(legacy.doCleanups)
+        plan = legacy._plan()
+
+        self.assertEqual(plan.schema_version, 1)
+        self.assertEqual(plan.profile, "tcp-probe")
+        self.assertEqual(
+            tuple(identity.name for identity in plan.artifacts),
+            ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"),
+        )
+        self.assertEqual(plan, DebugPlan.from_bytes(plan.canonical_bytes()))
+
+
+class MegrezDebugDebianPlanCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.paths: dict[str, Path] = {}
+        for name in DEBIAN_BROWSER_ARTIFACT_ORDER:
+            path = self.directory / name
+            if name == "root_image":
+                with path.open("wb") as stream:
+                    stream.truncate(ROOT_IMAGE_BYTES)
+            else:
+                path.write_bytes(f"{name}-payload\n".encode())
+            self.paths[name] = path
+        self.root_identity = ArtifactIdentity.from_path(
+            "root_image", self.paths["root_image"], 0
+        )
+        self.package_rows = (
+            ("bash", "riscv64", "5.2", hashlib.sha256(b"bash").hexdigest()),
+        )
+        self.paths["package_checksums"].write_text(
+            "\t".join(self.package_rows[0]) + "\n",
+            encoding="utf-8",
+        )
+        self.manifest = SimpleNamespace(
+            profile="desktop-m5-network",
+            root_image_sha256=self.root_identity.sha256,
+            packages_lock_sha256=hashlib.sha256(
+                self.paths["packages_lock"].read_bytes()
+            ).hexdigest(),
+            signed_metadata_sha256=hashlib.sha256(
+                self.paths["in_release"].read_bytes()
+            ).hexdigest(),
+            downloaded_packages=self.package_rows,
+        )
+
+    def _arguments(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            profile="debian-browser",
+            kernel=self.paths["kernel"],
+            initramfs=self.paths["initramfs"],
+            qemu_dtb=self.paths["qemu_dtb"],
+            megrez_dtb=self.paths["megrez_dtb"],
+            u_boot=self.paths["u_boot"],
+            root_image=self.paths["root_image"],
+            root_manifest=self.paths["root_manifest"],
+            packages_lock=self.paths["packages_lock"],
+            package_checksums=self.paths["package_checksums"],
+            in_release=self.paths["in_release"],
+            bootargs=(
+                "console=tty0 console=ttyS0 loglevel=info init=/init "
+                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+                "asterinas.reboot_after=600 -- --root-init=systemd"
+            ),
+            marker=None,
+            reboot_after=600,
+        )
+
+    def test_create_plan_reuses_the_full_signed_rootfs_contract(self) -> None:
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=self.manifest, create=True
+            ) as load_manifest,
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=self.manifest,
+                create=True,
+            ) as validate_root,
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=self.package_rows,
+                create=True,
+            ) as load_checksums,
+        ):
+            plan = debug_module._create_plan(self._arguments())
+
+        self.assertEqual(plan.schema_version, 2)
+        self.assertEqual(plan.profile, "debian-browser")
+        self.assertEqual(plan.markers, DEBIAN_BROWSER_MARKERS)
+        self.assertEqual(
+            tuple(identity.name for identity in plan.artifacts),
+            DEBIAN_BROWSER_ARTIFACT_ORDER,
+        )
+        load_manifest.assert_called_once_with(self.paths["root_manifest"])
+        validate_root.assert_called_once_with(
+            self.paths["root_image"], self.manifest, self.paths["packages_lock"]
+        )
+        load_checksums.assert_called_once_with(self.paths["package_checksums"])
+
+    def test_create_plan_rejects_unbound_metadata_and_download_rows(self) -> None:
+        mismatched_rows = (
+            ("bash", "riscv64", "different", hashlib.sha256(b"bash").hexdigest()),
+        )
+        variants = (
+            SimpleNamespace(
+                **{
+                    **vars(self.manifest),
+                    "signed_metadata_sha256": "0" * 64,
+                }
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(self.manifest),
+                    "packages_lock_sha256": "0" * 64,
+                }
+            ),
+        )
+        for manifest in variants:
+            with (
+                self.subTest(manifest=manifest),
+                mock.patch.object(
+                    debug_module, "load_manifest", return_value=manifest, create=True
+                ),
+                mock.patch.object(
+                    debug_module,
+                    "validate_frozen_root",
+                    return_value=manifest,
+                    create=True,
+                ),
+                mock.patch.object(
+                    debug_module,
+                    "load_package_checksums",
+                    return_value=manifest.downloaded_packages,
+                    create=True,
+                ),
+                self.assertRaises(debug_module.WorkflowError),
+            ):
+                debug_module._create_plan(self._arguments())
+
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=self.manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=self.manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=mismatched_rows,
+                create=True,
+            ),
+            self.assertRaises(debug_module.WorkflowError),
+        ):
+            debug_module._create_plan(self._arguments())
 
 
 class MegrezDebugSimulationTests(unittest.TestCase):

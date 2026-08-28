@@ -16,7 +16,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
+from tools.riscv.debian.rootfs.contract import (
+    ContractError,
+    load_manifest,
+    load_package_checksums,
+    validate_frozen_root,
+)
 from tools.riscv.megrez_debug_contract import (
+    DEBIAN_BROWSER_ARTIFACT_ORDER,
+    DEBIAN_BROWSER_MARKERS,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -140,20 +148,66 @@ def _check_artifacts(plan: DebugPlan) -> None:
 
 
 def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
-    artifacts = (
+    boot_artifacts = (
         ArtifactIdentity.from_path("kernel", arguments.kernel, KERNEL_ADDRESS),
         ArtifactIdentity.from_path("initramfs", arguments.initramfs, INITRAMFS_ADDRESS),
         ArtifactIdentity.from_path("qemu_dtb", arguments.qemu_dtb, DTB_ADDRESS),
         ArtifactIdentity.from_path("megrez_dtb", arguments.megrez_dtb, DTB_ADDRESS),
     )
+    if arguments.profile == "tcp-probe":
+        if not arguments.marker:
+            raise WorkflowError("plan-markers-required")
+        artifacts = boot_artifacts
+        schema_version = 1
+        markers = tuple(arguments.marker)
+    else:
+        if arguments.marker:
+            raise WorkflowError("plan-browser-markers-are-profile-defined")
+        required = {
+            name: getattr(arguments, name)
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER[len(boot_artifacts) :]
+        }
+        missing = sorted(name for name, path in required.items() if path is None)
+        if missing:
+            raise WorkflowError(f"plan-missing-debian-artifacts: {missing}")
+        try:
+            manifest = load_manifest(required["root_manifest"])
+            manifest = validate_frozen_root(
+                required["root_image"], manifest, required["packages_lock"]
+            )
+            package_rows = load_package_checksums(required["package_checksums"])
+        except (ContractError, OSError) as error:
+            raise WorkflowError(f"plan-rootfs-invalid: {error}") from error
+        if manifest.profile != "desktop-m5-network":
+            raise WorkflowError("plan-rootfs-profile-mismatch")
+        if package_rows != manifest.downloaded_packages:
+            raise WorkflowError("plan-package-checksums-mismatch")
+        evidence_artifacts = tuple(
+            ArtifactIdentity.from_path(name, required[name], 0)
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER[len(boot_artifacts) :]
+        )
+        evidence_by_name = {identity.name: identity for identity in evidence_artifacts}
+        expected_hashes = {
+            "root_image": manifest.root_image_sha256,
+            "packages_lock": manifest.packages_lock_sha256,
+            "in_release": manifest.signed_metadata_sha256,
+        }
+        if any(
+            evidence_by_name[name].sha256 != expected
+            for name, expected in expected_hashes.items()
+        ):
+            raise WorkflowError("plan-rootfs-provenance-mismatch")
+        artifacts = (*boot_artifacts, *evidence_artifacts)
+        schema_version = 2
+        markers = DEBIAN_BROWSER_MARKERS
     plan = DebugPlan(
-        schema_version=1,
-        profile="tcp-probe",
+        schema_version=schema_version,
+        profile=arguments.profile,
         artifacts=artifacts,
         bootargs=arguments.bootargs,
         smp=4,
         sv39=True,
-        markers=tuple(arguments.marker),
+        markers=markers,
         reboot_after=arguments.reboot_after,
     )
     plan.validate()
@@ -203,12 +257,21 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     plan = subparsers.add_parser("plan", help="freeze one exact artifact set")
+    plan.add_argument(
+        "--profile", choices=("tcp-probe", "debian-browser"), default="tcp-probe"
+    )
     plan.add_argument("--kernel", required=True, type=Path)
     plan.add_argument("--initramfs", required=True, type=Path)
     plan.add_argument("--qemu-dtb", required=True, type=Path)
     plan.add_argument("--megrez-dtb", required=True, type=Path)
+    plan.add_argument("--u-boot", dest="u_boot", type=Path)
+    plan.add_argument("--root-image", type=Path)
+    plan.add_argument("--root-manifest", type=Path)
+    plan.add_argument("--packages-lock", type=Path)
+    plan.add_argument("--package-checksums", type=Path)
+    plan.add_argument("--in-release", type=Path)
     plan.add_argument("--bootargs", required=True)
-    plan.add_argument("--marker", action="append", required=True)
+    plan.add_argument("--marker", action="append")
     plan.add_argument("--reboot-after", type=int, default=180)
     plan.add_argument("--output", required=True, type=Path)
 
