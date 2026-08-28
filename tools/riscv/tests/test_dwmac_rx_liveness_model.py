@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ TX_CACHELINE_MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_tx_cacheline_mo
 POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
+DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
 
 
 class DwmacRxLivenessModelTests(unittest.TestCase):
@@ -162,7 +164,54 @@ class DwmacRxPollContractTests(unittest.TestCase):
                 timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("2 passed", result.stdout)
+            self.assertIn("5 passed", result.stdout)
+
+    def test_descriptor_handoff_matches_visibility_model(self) -> None:
+        queue = QUEUE_SOURCE.read_text()
+        descriptor = DESCRIPTOR_SOURCE.read_text()
+        device = DEVICE_SOURCE.read_text()
+
+        for step in (
+            "self.write_descriptor_body(",
+            "dma_write_barrier();",
+            "self.write_descriptor_control(",
+            "self.read_descriptor_control(",
+            "dma_read_barrier();",
+            "self.read_descriptor_body(",
+        ):
+            self.assertIn(step, queue)
+
+        write_steps = (
+            queue.index("self.write_descriptor_body("),
+            queue.index("dma_write_barrier();"),
+            queue.index("self.write_descriptor_control("),
+        )
+        self.assertEqual(write_steps, tuple(sorted(write_steps)))
+
+        read_steps = (
+            queue.index("self.read_descriptor_control("),
+            queue.index("dma_read_barrier();"),
+            queue.index("self.read_descriptor_body("),
+        )
+        self.assertEqual(read_steps, tuple(sorted(read_steps)))
+        self.assertIn(".read_once(control_offset)", queue)
+        self.assertIn(".write_once(control_offset, control)", queue)
+
+        tail_writes = list(
+            re.finditer(
+                r"(?:self\.)?write\(\s*DMA_CHANNEL0_(?:RX|TX)_TAIL_POINTER",
+                device,
+            )
+        )
+        self.assertGreaterEqual(len(tail_writes), 4)
+        for tail_write in tail_writes:
+            with self.subTest(tail_write=tail_write.group(0)):
+                preceding = device[
+                    max(0, tail_write.start() - 240) : tail_write.start()
+                ]
+                self.assertIn("dma_write_barrier();", preceding)
+
+        self.assertNotIn("fence(Ordering::", descriptor)
 
     def test_descriptor_ring_uses_uncached_coherent_memory(self) -> None:
         source = QUEUE_SOURCE.read_text()

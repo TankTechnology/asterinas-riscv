@@ -4,10 +4,18 @@ use core::{array, hint::spin_loop, ops::Range, time::Duration};
 
 use fdt::{Fdt, node::FdtNode};
 use ostd::{
-    arch::{boot::DEVICE_TREE, irq::InterruptSourceInFdt},
+    arch::{boot::DEVICE_TREE, device::io_mem, irq::InterruptSourceInFdt},
     io::IoMem,
     mm::io::VmIoOnce,
 };
+
+pub(super) fn dma_write_barrier() {
+    io_mem::fence();
+}
+
+pub(super) fn dma_read_barrier() {
+    io_mem::fence();
+}
 
 use crate::{
     phy::{Deadline, LinkState, MdioBus, MdioError},

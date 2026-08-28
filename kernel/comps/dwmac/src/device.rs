@@ -17,7 +17,7 @@ use ostd::{
 };
 
 use crate::{
-    arch::{MegrezPlatform, PlatformError, SelectedPortInfo},
+    arch::{MegrezPlatform, PlatformError, SelectedPortInfo, dma_write_barrier},
     poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
@@ -190,6 +190,7 @@ fn configure_selected(
     let ring_length = encode_ring_length(QUEUE_SIZE).map_err(|_| DeviceError::RegisterEncoding)?;
     write(DMA_CHANNEL0_TX_RING_LENGTH.offset(), ring_length)?;
     write(DMA_CHANNEL0_RX_RING_LENGTH.offset(), ring_length)?;
+    dma_write_barrier();
     write(
         DMA_CHANNEL0_TX_TAIL_POINTER.offset(),
         addresses.initial_tx_tail as u32,
@@ -323,14 +324,14 @@ impl DwmacDevice {
             self.fatal = true;
             return status;
         }
-        if needs_rx_resume
-            && self
-                .write(
-                    DMA_CHANNEL0_RX_TAIL_POINTER.offset(),
-                    self.queue.rx_resume_tail() as u32,
-                )
-                .is_err()
-        {
+        if needs_rx_resume && {
+            dma_write_barrier();
+            self.write(
+                DMA_CHANNEL0_RX_TAIL_POINTER.offset(),
+                self.queue.rx_resume_tail() as u32,
+            )
+            .is_err()
+        } {
             self.fatal = true;
         }
         status
@@ -356,13 +357,15 @@ impl AnyNetworkDevice for DwmacDevice {
 
     fn receive(&mut self) -> Result<RxBuffer, NetError> {
         let packet = self.queue.receive();
-        if let Some(tail) = self.queue.take_rx_tail()
-            && self
+        if let Some(tail) = self.queue.take_rx_tail() {
+            dma_write_barrier();
+            if self
                 .write(DMA_CHANNEL0_RX_TAIL_POINTER.offset(), tail as u32)
                 .is_err()
-        {
-            self.fatal = true;
-            return Err(NetError::NotReady);
+            {
+                self.fatal = true;
+                return Err(NetError::NotReady);
+            }
         }
         match packet {
             Ok(buffer) => {
@@ -385,6 +388,7 @@ impl AnyNetworkDevice for DwmacDevice {
             Err(QueueError::Full) => return Err(NetError::Busy),
             Err(_) => return Err(NetError::NotReady),
         };
+        dma_write_barrier();
         self.write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
             .map_err(|_| NetError::NotReady)
     }
