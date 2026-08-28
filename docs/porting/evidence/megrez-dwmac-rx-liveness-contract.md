@@ -368,6 +368,74 @@ with these SHA-256 identities:
 - `probe-tcp-info.json`: `e2d3ddf20e970b1900f3837fcfdf4d780039c7c931cf9646eedb177ee8369571`;
 - `result.json`: `13c444d2257b0bf37b1ff7e33fc47b478890a2955bbe1fc5c6cc9d0552a3969d`.
 
+## Current-main DMA-domain and TX-reclaim validation
+
+The later `asterinas-riscv` main integration at commit
+`f61a8352e0c0dfbbc8a0c721d78857d4206154e1` was rebuilt as Sv39 with four
+harts and validated with one physical `booti`. The frozen plan SHA-256 is
+`4b373462a071670ec92a5520185a46e9a8ee4e997f775d2769c8ee8eaa3ee1ee`;
+the kernel SHA-256 is
+`350e6f13c6ebc18fcbe163385f3b1ae608846fbb23584b5014c3f04e4eece93b`.
+Before the board was opened, that exact kernel and probe passed both the
+generic Sv39/SMP4 TCP QEMU gate and the independent 60-second software-reboot
+gate.
+
+The new one-shot DMA contract established the physical address-domain facts
+before datapath counters were interpreted:
+
+```text
+ASTERINAS_GMAC_DMA_CONTRACT version=0x52
+ring_paddr=0x00000002a0832000
+ring_daddr=0x00000002a0832000
+ring_cpu_alias=Some(0x000000c220832000)
+tx_ring=0x00000002a0832000 rx_ring=0x00000002a0832400
+tx_tail=0x00000002a0832000 rx_tail=0x00000002a0832800
+```
+
+Thus the shipped identity-DMA device tree, hardware DMA address, and PBMT
+non-cacheable CPU alias agree. The board selected GMAC1 with DWMAC revision
+`0x52`, 1000-Mbit/s full duplex, and MAC address `00:48:54:71:00:48`.
+
+Unlike the earlier runs, TX ownership made sustained forward progress. The
+bounded diagnostics advanced from `tx_submitted=2 tx_reclaimed=1` to:
+
+```text
+rx=128 tx_submitted=473 tx_reclaimed=472 tx_outstanding=1
+rx_reschedules=2 plic_rearms=419 dma_status=0x00008444
+```
+
+This closes the previous TX-reclaim failure on the current physical build: the
+ring neither filled to 64 entries nor stopped reclaiming. The host also learned
+the guest MAC in its ARP neighbour table. Nevertheless, the ordered probe
+reported:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=connect-poll errno=110 attempts=11 current_bytes=0 completed_bytes=0
+```
+
+The bound host trace contains zero accepted TCP connections. A historical
+packet capture from an earlier build shows repeated board-to-host TCP packets
+and immediate host replies, but that capture does not encode TCP flags and is
+not evidence from this exact run. Therefore this run is classified
+**`tx-reclaim-fixed/later-network-stall`**, with the first unresolved boundary
+between receipt of the host's TCP response and TCP socket state-machine
+acceptance. The current evidence does not distinguish a DWMAC RX
+descriptor/error-classification problem from a packet that reaches the network
+stack but fails socket matching; a later run must not choose between those
+without a read-only packet-class diagnostic prepared and tested offline.
+
+The terminal failure was followed by fresh board firmware, OpenSBI, U-Boot,
+and a new prompt. The 60-second recovery required no physical reset. The
+transport log contains exactly one `booti` and no `saveenv` or `reset` command.
+Evidence is retained under
+`target/megrez-debug/dwmac-board-f61a8352e/board-run-20260828-191525/` with
+these SHA-256 identities:
+
+- `serial.log`: `a7f0308b15882bc22b0933ba854ebf48671ec8ec9171a4f08209d656e21b5e68`;
+- `transport.json`: `4a886a2b702ddce87cd0a299131f08c54fa0650e5eb6ce4631d4be42c227b83d`;
+- `probe-tcp-info.json`: `fcf3ca88e92426bb5e3007dc57187c9b4224b67f1d22af05315dcf1003bd47b3`;
+- `result.json`: `acad4aa8f0cded228f774aafcf40bde4f2dff2d00f076dddaa894ba82a3b0de8`.
+
 ## Ordering-instrumented run and memory-type discriminator
 
 A later single-boot run used the frozen kernel SHA-256
