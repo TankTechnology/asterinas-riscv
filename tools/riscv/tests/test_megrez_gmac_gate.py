@@ -21,6 +21,7 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_MILESTONES,
+    _parse_args,
     GateConfig,
     GateFailure,
     GateTermination,
@@ -110,12 +111,62 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
             bootargs.split(),
         )
-        self.assertEqual(bootargs.split()[0:2], ["console=tty0", "console=ttyS0"])
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
+            bootargs.split(),
+        )
+        self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
+        for variable in (
+            "ASTERINAS_DESKTOP_M4_CONSOLE",
+            "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_BROWSER_M6_CONSOLE",
+            "ASTERINAS_BROWSER_M7_CONSOLE",
+        ):
+            self.assertIn(
+                f"systemd.setenv={variable}=/dev/ttyS0",
+                bootargs.split(),
+            )
         self.assertNotIn("saveenv", bootargs)
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
         self.assertNotIn("saveenv", recovery_bootargs)
+
+    def test_physical_gate_accepts_only_complete_ymodem_contract(self) -> None:
+        required = [
+            "/dev/ttyUSB0",
+            "--booti",
+            "kernel.lzma",
+            "--initrd",
+            "stage1.cpio",
+            "--dtb",
+            "board.dtb",
+            "--expected-crc32",
+            "booti=12345678,dtb=90abcdef,initrd=deadbeef",
+            "--host-interface",
+            "enp12s0",
+            "--output-directory",
+            "/tmp/gmac-gate",
+            "--load-transport",
+            "ymodem",
+        ]
+        with self.assertRaises(SystemExit):
+            _parse_args(required)
+
+        parsed = _parse_args(
+            required
+            + [
+                "--ymodem-directory",
+                "/tmp/transfer",
+                "--booti-compressed-crc32",
+                "13572468",
+                "--booti-uncompressed-size",
+                "14530072",
+            ]
+        )
+        self.assertEqual(parsed.load_transport, "ymodem")
+        self.assertEqual(parsed.booti_compressed_crc32, "13572468")
+        self.assertEqual(parsed.booti_uncompressed_size, 14530072)
 
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
@@ -163,6 +214,14 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("host_ping_count", result)
         self.assertEqual(result["javascript_status"], "limited-pass")
         self.assertIn(b"late harmless log", operations.published[0])
+
+    def test_quiet_serial_interval_is_not_treated_as_disconnect(self) -> None:
+        evidence = complete_browser_evidence()
+        operations = FakeOperations(chunks=(b"", evidence, b""))
+
+        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
+
+        self.assertTrue(result["passed"], result)
 
     def test_failure_or_fatal_drain_closes_and_never_passes(self) -> None:
         evidence = complete_browser_evidence()
