@@ -733,6 +733,15 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_desktop_network_profile_requires_prebuilt_startup_caches(self) -> None:
         builder = ROOTFS / "build_rootfs.sh"
+        tools = subprocess.run(
+            [str(builder), "--profile", "desktop-m5-network", "--print-tools"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        self.assertEqual(tools.count("systemd-sysusers"), 1)
+        self.assertEqual(tools.count("journalctl"), 1)
         for profile, expected in (
             ("desktop-m5-network", 0),
             ("browser-web", 0),
