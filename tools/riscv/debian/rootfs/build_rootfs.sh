@@ -1081,6 +1081,8 @@ configure_desktop() {
     local service_name="asterinas-desktop-$generation"
     local desktop_standard_output=journal+console
     local desktop_standard_error=journal+console
+    local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
+    local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1095,6 +1097,13 @@ configure_desktop() {
         # duplicating it on the emulated serial console.
         desktop_standard_output=journal
         desktop_standard_error=journal
+    fi
+    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        # The online browser image receives a fixed /dev from Asterinas stage1;
+        # no udev-created device is needed.  Starting udevd on this kernel
+        # costs nearly a minute while probing unsupported device events.
+        desktop_after="local-fs.target dbus.service systemd-logind.service"
+        desktop_wants="dbus.service systemd-logind.service"
     fi
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
@@ -1297,8 +1306,8 @@ EOF
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop session
-After=local-fs.target dbus.service systemd-udevd.service systemd-logind.service
-Wants=dbus.service systemd-udevd.service systemd-logind.service
+After=$desktop_after
+Wants=$desktop_wants
 Conflicts=getty@tty1.service
 
 [Service]
@@ -1375,6 +1384,8 @@ EOF
         # this kernel and can block sysinit indefinitely; mask only that unit.
         ln -s -- /dev/null \
             "$stage/etc/systemd/system/systemd-tmpfiles-setup-dev.service"
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-udevd.service"
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
             "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
