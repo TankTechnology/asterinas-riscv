@@ -15,7 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Mapping
 from tools.riscv.debian.rootfs.contract import (
-    _load_package_checksums,
+    load_package_checksums,
     load_manifest,
     validate_frozen_root,
 )
@@ -153,7 +153,7 @@ class ConcreteOperations:
         paths = self.input_paths
         manifest = load_manifest(paths["manifest"])
         validate_frozen_root(paths["root_image"], manifest, paths["packages_lock"])
-        checksums = _load_package_checksums(paths["package_checksums"])
+        checksums = load_package_checksums(paths["package_checksums"])
         if checksums != manifest.downloaded_packages:
             raise GateFailure("package-checksums do not match the manifest")
         with tempfile.TemporaryDirectory(prefix="debian-gate-dtb-") as directory:
