@@ -446,6 +446,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         client = (rootfs / "browser_m5_marionette_gate.py").read_text()
         self.assertNotIn("firefox-esr", session)
         self.assertIn("--marionette", firefox)
+        self.assertIn("MOZ_AVOID_OPENGL_ALTOGETHER=1", firefox)
+        self.assertNotIn("MOZ_DISABLE_", firefox)
         self.assertIn("browser-m5-window-observer", firefox)
         self.assertIn("browser_m5_window_observer.sh", rootfs_builder)
         self.assertIn("ASTERINAS_FIREFOX_X11_NAVIGATOR_VISIBLE", observer)
@@ -464,6 +466,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
         self.assertIn("((diagnostic_timeout <= 30)) || diagnostic_timeout=30", evidence)
         self.assertIn("FORMAL_GATE_TIMEOUT_SECONDS:-600", evidence)
+        self.assertIn("DIAGNOSTIC_ATTEMPT_LIMIT:-3", evidence)
+        self.assertIn("DIAGNOSTIC_INTERVAL_SECONDS:-120", evidence)
         self.assertIn("gate_timeout <= FORMAL_GATE_TIMEOUT_SECONDS", evidence)
         self.assertNotIn("diagnostic_emitted", evidence)
         self.assertIn("while ! ready || ! navigator_ready", evidence)
@@ -674,6 +678,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
                 "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
                 "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
+                "ASTERINAS_DESKTOP_M5_DIAGNOSTIC_INTERVAL_SECONDS": "1",
                 "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
                 "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
                 "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
@@ -705,6 +710,9 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             emitted = console.read_text()
             self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable", emitted)
             self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false", emitted)
+            self.assertEqual(
+                emitted.count("DEBIAN_BROWSER_M5_DIAGNOSTIC_SCHEDULE attempt="), 3
+            )
             self.assertNotIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true", emitted)
             self.assertIn(
                 "DEBIAN_BROWSER_M5_NAVIGATOR state=visible browser_pid=42 "
