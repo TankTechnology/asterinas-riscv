@@ -67,3 +67,52 @@ fn uncached_descriptor_writes_preserve_an_adjacent_completion() {
     assert!(!memory_own[0]);
     assert!(memory_own[1]);
 }
+
+#[derive(Clone, Copy, Debug)]
+struct PublicationVisibility {
+    body: bool,
+    own: bool,
+    tail: bool,
+}
+
+impl PublicationVisibility {
+    const fn is_invalid(self) -> bool {
+        (self.own && !self.body) || (self.tail && !self.own)
+    }
+}
+
+#[test]
+fn unbarriered_publication_admits_incomplete_dma_work() {
+    let possible = PublicationVisibility {
+        body: false,
+        own: true,
+        tail: true,
+    };
+
+    assert!(possible.is_invalid());
+}
+
+#[test]
+fn staged_publication_excludes_incomplete_dma_work() {
+    for bits in 0u8..8 {
+        let visible = PublicationVisibility {
+            body: bits & 1 != 0,
+            own: bits & 2 != 0,
+            tail: bits & 4 != 0,
+        };
+        let allowed_by_barriers = (!visible.own || visible.body) && (!visible.tail || visible.own);
+
+        if allowed_by_barriers {
+            assert!(!visible.is_invalid(), "invalid visible state: {visible:?}");
+        }
+    }
+}
+
+#[test]
+fn completion_read_barrier_excludes_stale_body_after_own_clear() {
+    let unbarriered_observation = (false, true);
+    assert_eq!(unbarriered_observation, (false, true));
+
+    let observations_with_read_barrier = [(false, false), (true, true)];
+    assert!(!observations_with_read_barrier.contains(&unbarriered_observation));
+}

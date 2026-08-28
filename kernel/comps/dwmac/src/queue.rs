@@ -8,12 +8,15 @@ use alloc::{sync::Arc, vec::Vec};
 
 use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
 use ostd::mm::{
-    HasDaddr, PAGE_SIZE, VmIo,
+    HasDaddr, PAGE_SIZE, VmIo, VmIoOnce,
     dma::{DmaCoherent, FromDevice, ToDevice},
 };
 use spin::Once;
 
-use crate::descriptor::{Descriptor, DescriptorError, DmaAddress};
+use crate::{
+    arch::{dma_read_barrier, dma_write_barrier},
+    descriptor::{Descriptor, DescriptorError, DmaAddress},
+};
 
 pub const QUEUE_SIZE: usize = 64;
 pub const BUFFER_SIZE: usize = 2048;
@@ -324,9 +327,26 @@ impl DmaQueue {
     }
 
     fn read_descriptor(&self, is_tx: bool, slot: usize) -> Result<Descriptor, QueueError> {
+        let control = self.read_descriptor_control(is_tx, slot)?;
+        if Descriptor::control_owned_by_dma(control) {
+            return Ok(Descriptor::from_parts([0; 3], control));
+        }
+        dma_read_barrier();
+        let body = self.read_descriptor_body(is_tx, slot)?;
+        Ok(Descriptor::from_parts(body, control))
+    }
+
+    fn read_descriptor_body(&self, is_tx: bool, slot: usize) -> Result<[u32; 3], QueueError> {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
             .read_val(offset)
+            .map_err(|_| QueueError::DmaAccess)
+    }
+
+    fn read_descriptor_control(&self, is_tx: bool, slot: usize) -> Result<u32, QueueError> {
+        let control_offset = Self::descriptor_offset(is_tx, slot) + 3 * size_of::<u32>();
+        self.ring
+            .read_once(control_offset)
             .map_err(|_| QueueError::DmaAccess)
     }
 
@@ -336,9 +356,32 @@ impl DmaQueue {
         slot: usize,
         descriptor: &Descriptor,
     ) -> Result<(), QueueError> {
+        self.write_descriptor_body(is_tx, slot, &descriptor.body_words())?;
+        dma_write_barrier();
+        self.write_descriptor_control(is_tx, slot, &descriptor.control_word())
+    }
+
+    fn write_descriptor_body(
+        &self,
+        is_tx: bool,
+        slot: usize,
+        body: &[u32; 3],
+    ) -> Result<(), QueueError> {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
-            .write_val(offset, descriptor)
+            .write_val(offset, body)
+            .map_err(|_| QueueError::DmaAccess)
+    }
+
+    fn write_descriptor_control(
+        &self,
+        is_tx: bool,
+        slot: usize,
+        control: &u32,
+    ) -> Result<(), QueueError> {
+        let control_offset = Self::descriptor_offset(is_tx, slot) + 3 * size_of::<u32>();
+        self.ring
+            .write_once(control_offset, control)
             .map_err(|_| QueueError::DmaAccess)
     }
 }
