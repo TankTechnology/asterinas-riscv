@@ -173,7 +173,9 @@ impl DmaQueue {
         // Hardware and the CPU update adjacent 16-byte descriptors independently.
         // An uncached mapping prevents one side from writing back a stale sibling
         // descriptor while synchronizing their shared 64-byte cache line.
-        let ring = DmaCoherent::alloc(1, false).map_err(|_| QueueError::Allocation)?;
+        let ring = DmaCoherent::alloc(1, false)
+            .and_then(DmaCoherent::into_uncached)
+            .map_err(|_| QueueError::Allocation)?;
         let rx_ring = ring.daddr() + RX_RING_OFFSET;
         let mut queue = Self {
             ring,

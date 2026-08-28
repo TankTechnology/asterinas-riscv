@@ -217,6 +217,11 @@ class DwmacRxPollContractTests(unittest.TestCase):
         source = QUEUE_SOURCE.read_text()
         self.assertIn("ring: DmaCoherent", source)
         self.assertIn("DmaCoherent::alloc(1, false)", source)
+        self.assertIn(".and_then(DmaCoherent::into_uncached)", source)
+        self.assertLess(
+            source.index(".and_then(DmaCoherent::into_uncached)"),
+            source.index("queue.write_descriptor(false, slot, &descriptor)"),
+        )
         self.assertNotIn("ring.sync_from_device", source)
         self.assertNotIn("ring.sync_to_device", source)
 

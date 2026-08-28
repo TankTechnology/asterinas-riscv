@@ -8,11 +8,12 @@ pub(crate) use util::{
 };
 
 use crate::{
-    Result,
+    Error, Result,
     arch::{
         boot::DEVICE_TREE,
         cpu::extension::{IsaExtensions, has_extensions},
     },
+    io::IoMem,
     mm::{
         PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
         dma::{DmaDirection, ToDevice},
@@ -52,6 +53,39 @@ pub(crate) fn sync_io_mem_to_device(
 
 pub(crate) fn has_uncached_dram_alias() -> bool {
     eic7700_cache::has_uncached_dram_alias()
+}
+
+/// Creates a CPU mapping that guarantees uncached access to a DMA range.
+///
+/// An existing PBMT_NC mapping already provides that guarantee. On EIC7700
+/// systems without Svpbmt, the cached mapping is cleaned before exposing the
+/// SoC's non-cacheable DRAM alias. Other RISC-V systems fail closed.
+pub(crate) fn create_uncached_dma_alias(physical_range: Range<Paddr>) -> Result<Option<IoMem>> {
+    use eic7700_cache::UncachedDmaPath;
+
+    let path = eic7700_cache::select_uncached_dma_path(
+        has_extensions(IsaExtensions::SVPBMT),
+        eic7700_cache::has_uncached_dram_alias(),
+    )
+    .ok_or(Error::AccessDenied)?;
+
+    match path {
+        UncachedDmaPath::PageBased => Ok(None),
+        UncachedDmaPath::PlatformAlias => {
+            eic7700_cache::sync_to_device(physical_range.clone())?;
+            let alias_range =
+                eic7700_cache::uncached_alias_range(physical_range).ok_or(Error::InvalidArgs)?;
+
+            // SAFETY: `alias_range` is the checked EIC7700 non-cacheable
+            // system-port view of the allocated Die 0 DRAM range. The
+            // `DmaCoherent` owner retains the backing frames for at least as
+            // long as this mapping, and accesses through this view have no
+            // side effects beyond reading or writing those frames.
+            Ok(Some(unsafe {
+                IoMem::new(alias_range, PageFlags::RW, CachePolicy::Uncacheable)
+            }))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
