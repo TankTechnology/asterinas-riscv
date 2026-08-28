@@ -177,14 +177,27 @@ version; silently combining properties is forbidden.
 | DWMAC revision | TRM MAC Version | accepts GMAC4/5, observes 5.20 | aligned |
 | ring count/status/interrupts | TRM Part 4 | count-minus-one and W1C masks | aligned |
 | DMA address | pinned DT/vendor DMA API | retains original device address | supported for pinned DT |
-| descriptor CPU mapping | TRM System Port + vendor Linux | checked uncached alias | aligned; post-fix hardware result pending |
-| packet-buffer synchronization | TRM cache flush + vendor Linux | streaming DMA uses Zicbom, PBMT_NC, or checked System Port alias | statically aligned; post-fix hardware result pending |
+| descriptor CPU mapping | TRM System Port + vendor Linux | checked uncached alias | aligned; physical ring-wrap gate passed |
+| packet-buffer synchronization | TRM cache flush + vendor Linux | streaming DMA uses Zicbom, PBMT_NC, or checked System Port alias | aligned; 16-MiB physical TCP stage passed |
 | PLIC lifecycle | TRM high-level IRQ | mask, complete, drain, rearm | aligned |
 
-## Remaining unknowns and next evidence
+## Physical closure and remaining unknowns
+
+The recovery-armed 2026-08-29 run at source commit `ed3a6508e` bound the
+documented address and cache contract to one physical result. The kernel used
+Sv39/SMP4, selected GMAC1 at 1000 Mbit/s full duplex, completed the ordered
+16-KiB, 64-KiB, 1-MiB, and 16-MiB TCP payloads, and reported 17,907,712 total
+bytes. The RX ring wrapped repeatedly while DMA RBU, MTL missed-packet, MTL
+FIFO-overflow, descriptor-error, and fatal markers remained clear. The armed
+software reboot returned the board to U-Boot without a physical reset.
+
+This result closes the two pending audit rows for the exact shipped Megrez DT
+and current allocator range. It does not turn the checked 16-GiB System Port
+subset into a claim about the full SoC window, and it does not authorize an
+IOMMU or translated `dma-ranges` configuration.
 
 No additional board probing is justified merely to rediscover a documented
-constant. Before another physical run, static and simulated checks should:
+constant. The retained static and simulated contract requires:
 
 1. prove every programmed ring/buffer address came from the pinned DMA address
    path and that an enabled IOMMU/translation is rejected;
@@ -201,6 +214,7 @@ unversioned third-party PDF. This limits claims about undocumented PHY quirks;
 it does not weaken the schematic fact that each RGMII path has its own PHY and
 MDIO bus.
 
-None of these items needs a board. After they pass, one recovery-armed physical
-run should validate the already selected packet-buffer fix rather than start a
-new open-ended diagnosis.
+The static checks in this list are now implemented and the selected fix has
+passed its one recovery-armed physical run. Future board experiments should
+target a new user-visible workload, such as Debian browser traffic, rather
+than repeat this closed diagnostic sequence.
