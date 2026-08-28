@@ -15,6 +15,7 @@ POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
+RISCV_PLATFORM_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/arch/riscv.rs"
 
 
 class DwmacRxLivenessModelTests(unittest.TestCase):
@@ -136,6 +137,14 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
 
 
 class DwmacRxPollContractTests(unittest.TestCase):
+    def test_megrez_requires_documented_dwmac_5_20(self) -> None:
+        source = RISCV_PLATFORM_SOURCE.read_text()
+
+        self.assertIn("const EIC7700_DWMAC_VERSION: u8 = 0x52;", source)
+        self.assertIn("version != EIC7700_DWMAC_VERSION", source)
+        self.assertNotIn("GMAC4_MIN_VERSION", source)
+        self.assertNotIn("GMAC5_MAX_VERSION", source)
+
     def test_tx_cacheline_model_exposes_packed_descriptor_race(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "dwmac-tx-cacheline-model"
