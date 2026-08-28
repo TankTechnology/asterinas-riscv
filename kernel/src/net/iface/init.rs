@@ -6,7 +6,7 @@ use core::{net::Ipv4Addr, slice::Iter, str::FromStr};
 use aster_bigtcp::{
     device::WithDevice,
     iface::{InterfaceFlags, InterfaceType},
-    wire::{Ipv4Address, Ipv4Cidr},
+    wire::{EthernetAddress, Ipv4Address, Ipv4Cidr},
 };
 use aster_softirq::BottomHalfDisabled;
 use spin::Once;
@@ -19,8 +19,10 @@ use crate::{
 
 static IFACES: Once<Vec<Arc<Iface>>> = Once::new();
 static NETWORK_PROFILES: Once<Vec<BootNetworkProfile>> = Once::new();
+static NEIGHBOR_PROFILES: Once<Vec<BootNeighborProfile>> = Once::new();
 
 aster_cmdline::define_repeatable_kv_param!("asterinas.net", NETWORK_PROFILES);
+aster_cmdline::define_repeatable_kv_param!("asterinas.neighbor", NEIGHBOR_PROFILES);
 
 fn loopback_iface() -> &'static Arc<Iface> {
     &IFACES.get().unwrap()[0]
@@ -105,6 +107,47 @@ impl FromStr for BootNetworkProfile {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BootNeighborProfile {
+    device_key: String,
+    address: Ipv4Address,
+    hardware_address: [u8; 6],
+}
+
+impl BootNeighborProfile {
+    fn device_key(&self) -> &str {
+        &self.device_key
+    }
+
+    const fn address(&self) -> Ipv4Address {
+        self.address
+    }
+
+    const fn hardware_address(&self) -> [u8; 6] {
+        self.hardware_address
+    }
+}
+
+impl FromStr for BootNeighborProfile {
+    type Err = BootProfileError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut fields = value.split(',');
+        let device_key = fields.next().ok_or(BootProfileError::InvalidValue)?;
+        let address = fields.next().ok_or(BootProfileError::InvalidValue)?;
+        let hardware_address = fields.next().ok_or(BootProfileError::InvalidValue)?;
+        if fields.next().is_some() || !is_valid_device_key(device_key) {
+            return Err(BootProfileError::InvalidValue);
+        }
+
+        Ok(Self {
+            device_key: device_key.into(),
+            address: parse_unicast_ipv4(address)?,
+            hardware_address: parse_unicast_ethernet(hardware_address)?,
+        })
+    }
+}
+
 fn is_valid_device_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 64
@@ -122,6 +165,22 @@ fn parse_unicast_ipv4(value: &str) -> Result<Ipv4Address, BootProfileError> {
     }
     let [a, b, c, d] = address.octets();
     Ok(Ipv4Address::new(a, b, c, d))
+}
+
+fn parse_unicast_ethernet(value: &str) -> Result<[u8; 6], BootProfileError> {
+    let mut fields = value.split(':');
+    let mut bytes = [0; 6];
+    for byte in &mut bytes {
+        let field = fields.next().ok_or(BootProfileError::InvalidValue)?;
+        if field.len() != 2 {
+            return Err(BootProfileError::InvalidValue);
+        }
+        *byte = u8::from_str_radix(field, 16).map_err(|_| BootProfileError::InvalidValue)?;
+    }
+    if fields.next().is_some() || bytes == [0; 6] || bytes[0] & 1 != 0 {
+        return Err(BootProfileError::InvalidValue);
+    }
+    Ok(bytes)
 }
 
 fn validate_profiles(
@@ -142,6 +201,31 @@ fn validate_profiles(
     Ok(())
 }
 
+fn validate_neighbors(
+    neighbors: &[BootNeighborProfile],
+    profiles: &[BootNetworkProfile],
+    device_keys: &[&str],
+) -> Result<(), BootProfileError> {
+    for (index, neighbor) in neighbors.iter().enumerate() {
+        if !device_keys.contains(&neighbor.device_key()) {
+            return Err(BootProfileError::UnknownDevice);
+        }
+        if neighbors[..index].iter().any(|other| {
+            other.device_key == neighbor.device_key && other.address == neighbor.address
+        }) {
+            return Err(BootProfileError::DuplicateDevice);
+        }
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.device_key() == neighbor.device_key())
+            .ok_or(BootProfileError::InvalidValue)?;
+        if profile.gateway() != Some(neighbor.address()) {
+            return Err(BootProfileError::InvalidValue);
+        }
+    }
+    Ok(())
+}
+
 pub fn init() {
     IFACES.call_once(|| {
         let devices = aster_network::all_devices();
@@ -154,6 +238,14 @@ pub fn init() {
                 &[]
             }
         };
+        let neighbors = NEIGHBOR_PROFILES.get().map(Vec::as_slice).unwrap_or(&[]);
+        let neighbors = match validate_neighbors(neighbors, profiles, &device_keys) {
+            Ok(()) => neighbors,
+            Err(error) => {
+                warn!("ignoring invalid asterinas.neighbor profiles: {:?}", error);
+                &[]
+            }
+        };
         let mut ifaces = Vec::with_capacity(devices.len() + 1);
 
         // Keep loopback first so physical interface indexes are deterministic.
@@ -163,7 +255,17 @@ pub fn init() {
             let profile = profiles
                 .iter()
                 .find(|profile| profile.device_key() == registration.key());
-            let iface = new_ethernet(&registration, index, profile);
+            let static_neighbors: Vec<_> = neighbors
+                .iter()
+                .filter(|neighbor| neighbor.device_key() == registration.key())
+                .map(|neighbor| {
+                    (
+                        neighbor.address(),
+                        EthernetAddress(neighbor.hardware_address()),
+                    )
+                })
+                .collect();
+            let iface = new_ethernet(&registration, index, profile, &static_neighbors);
             let recv_iface = iface.clone();
             aster_network::register_recv_callback(registration.key(), move || recv_iface.poll());
             let send_iface = iface.clone();
@@ -240,8 +342,9 @@ fn new_ethernet(
     registration: &aster_network::RegisteredNetworkDevice,
     index: usize,
     profile: Option<&BootNetworkProfile>,
+    static_neighbors: &[(Ipv4Address, EthernetAddress)],
 ) -> Arc<Iface> {
-    use aster_bigtcp::{iface::EtherIface, wire::EthernetAddress};
+    use aster_bigtcp::iface::EtherIface;
     use aster_network::AnyNetworkDevice;
 
     const VIRTIO_ADDRESS: Ipv4Address = Ipv4Address::new(10, 0, 2, 15);
@@ -286,6 +389,7 @@ fn new_ethernet(
         EthernetAddress(ether_addr),
         ip_cidr,
         gateway,
+        static_neighbors,
         CString::new(format!("eth{}", index)).unwrap(),
         PollScheduler::new(),
         flags,
@@ -317,6 +421,57 @@ mod tests {
 
         let without_gateway = BootNetworkProfile::from_str("Virtio-Net,10.0.2.15/24").unwrap();
         assert_eq!(without_gateway.gateway(), None);
+    }
+
+    #[ktest]
+    fn static_neighbor_must_match_the_configured_gateway() {
+        let profile =
+            BootNetworkProfile::from_str("eic7700-rj45,10.100.19.200/21,10.100.16.1").unwrap();
+        let neighbor =
+            BootNeighborProfile::from_str("eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43").unwrap();
+
+        assert_eq!(neighbor.device_key(), "eic7700-rj45");
+        assert_eq!(neighbor.address().to_string(), "10.100.16.1");
+        assert_eq!(
+            neighbor.hardware_address(),
+            [0x4c, 0xd6, 0x29, 0x18, 0x93, 0x43]
+        );
+        assert_eq!(
+            validate_neighbors(&[neighbor], &[profile], &["eic7700-rj45"]),
+            Ok(())
+        );
+    }
+
+    #[ktest]
+    fn static_neighbor_rejects_unsafe_or_unbound_entries() {
+        for value in [
+            "eic7700-rj45,10.100.16.1",
+            "eic7700-rj45,10.100.16.1,ff:ff:ff:ff:ff:ff",
+            "eic7700-rj45,10.100.16.1,01:00:5e:00:00:01",
+            "eic7700-rj45,10.100.16.1,4c:d6:29:18:93",
+            "eic7700-rj45,10.100.16.1,4c:d6:29:18:93:xx",
+        ] {
+            assert!(BootNeighborProfile::from_str(value).is_err(), "{value}");
+        }
+
+        let profile =
+            BootNetworkProfile::from_str("eic7700-rj45,10.100.19.200/21,10.100.16.1").unwrap();
+        let wrong_gateway =
+            BootNeighborProfile::from_str("eic7700-rj45,10.100.16.2,4c:d6:29:18:93:43").unwrap();
+        assert_eq!(
+            validate_neighbors(&[wrong_gateway], &[profile.clone()], &["eic7700-rj45"]),
+            Err(BootProfileError::InvalidValue)
+        );
+        let duplicate =
+            BootNeighborProfile::from_str("eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43").unwrap();
+        assert_eq!(
+            validate_neighbors(
+                &[duplicate.clone(), duplicate],
+                &[profile],
+                &["eic7700-rj45"]
+            ),
+            Err(BootProfileError::DuplicateDevice)
+        );
     }
 
     #[ktest]
