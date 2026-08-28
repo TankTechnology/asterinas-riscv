@@ -33,8 +33,10 @@ from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import (
     BoardSession,
     boot_loaded_artifacts,
+    crc32_value,
     parse_expected_crc32,
     positive_finite_seconds,
+    positive_size,
     read_available,
     safe_artifact_name,
     safe_ipv4,
@@ -45,7 +47,20 @@ from tools.riscv.megrez_board_session import (
 BOARD_ADDRESS = "10.100.19.200"
 HOST_ADDRESS = "10.100.19.216"
 GATEWAY_ADDRESS = "10.100.16.1"
+GATEWAY_HARDWARE_ADDRESS = "4c:d6:29:18:93:43"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
+NEIGHBOR_BOOTARG = (
+    f"asterinas.neighbor=eic7700-rj45,{GATEWAY_ADDRESS},{GATEWAY_HARDWARE_ADDRESS}"
+)
+SERIAL_EVIDENCE_BOOTARGS = " ".join(
+    f"systemd.setenv={name}=/dev/ttyS0"
+    for name in (
+        "ASTERINAS_DESKTOP_M4_CONSOLE",
+        "ASTERINAS_DESKTOP_M5_CONSOLE",
+        "ASTERINAS_BROWSER_M6_CONSOLE",
+        "ASTERINAS_BROWSER_M7_CONSOLE",
+    )
+)
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 PHYSICAL_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
@@ -152,8 +167,10 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
 
     restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
     return (
-        "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz loglevel=info "
-        f"init=/init {NETWORK_BOOTARG}{restart} -- --root-init=systemd"
+        "console=ttyS0 console=tty0 cpu_no_boost_1_6ghz loglevel=info "
+        f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARG}{restart} "
+        f"{SERIAL_EVIDENCE_BOOTARGS} "
+        "-- --root-init=systemd"
     )
 
 
@@ -275,7 +292,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
                 raise TimeoutError
             chunk = operations.read(deadline)
             if not chunk:
-                raise GateFailure("serial closed before browser READY")
+                continue
             _append_transcript(transcript, chunk)
         classification = classify_physical_transcript(bytes(transcript))
         if not classification.passed:
@@ -370,6 +387,9 @@ class PhysicalGateOperations:
             tftp_board_address=self.arguments.tftp_board_address,
             tftp_server_address=self.arguments.tftp_server_address,
             tftp_netmask=self.arguments.tftp_netmask,
+            ymodem_directory=self.arguments.ymodem_directory,
+            booti_compressed_crc32=self.arguments.booti_compressed_crc32,
+            booti_uncompressed_size=self.arguments.booti_uncompressed_size,
         )
         entered = boot_loaded_artifacts(session, boot_arguments)
         return (prompt + entered).encode(errors="replace")
@@ -406,12 +426,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtb", required=True, type=safe_artifact_name)
     parser.add_argument("--expected-crc32", required=True, type=parse_expected_crc32)
     parser.add_argument("--host-interface", required=True)
-    parser.add_argument("--load-transport", choices=("mmc", "tftp"), default="mmc")
+    parser.add_argument(
+        "--load-transport", choices=("mmc", "tftp", "ymodem"), default="mmc"
+    )
     parser.add_argument("--tftp-board-address", type=safe_ipv4, default=BOARD_ADDRESS)
     parser.add_argument("--tftp-server-address", type=safe_ipv4, default=HOST_ADDRESS)
     parser.add_argument(
         "--tftp-netmask", type=safe_ipv4_netmask, default="255.255.248.0"
     )
+    parser.add_argument("--ymodem-directory", type=Path)
+    parser.add_argument("--booti-compressed-crc32", type=crc32_value)
+    parser.add_argument("--booti-uncompressed-size", type=positive_size)
     parser.add_argument("--uboot-timeout", type=positive_finite_seconds, default=60.0)
     parser.add_argument("--reboot-after", type=bounded_reboot_seconds)
     parser.add_argument("--output-directory", required=True, type=Path)
@@ -420,9 +445,30 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(arguments: Sequence[str] | None = None) -> int:
+def _parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = _parser()
     values = parser.parse_args(arguments)
+    ymodem_contract = (
+        values.ymodem_directory,
+        values.booti_compressed_crc32,
+        values.booti_uncompressed_size,
+    )
+    if values.load_transport == "ymodem" and any(
+        value is None for value in ymodem_contract
+    ):
+        parser.error(
+            "--load-transport ymodem requires --ymodem-directory, "
+            "--booti-compressed-crc32, and --booti-uncompressed-size"
+        )
+    if values.load_transport != "ymodem" and any(
+        value is not None for value in ymodem_contract
+    ):
+        parser.error("YMODEM options require --load-transport ymodem")
+    return values
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    values = _parse_args(arguments)
     config = GateConfig(values.boot_timeout, values.drain_timeout)
     try:
         with TerminationSignals():
