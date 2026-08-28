@@ -36,6 +36,20 @@ def browser_web_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Admit exactly one default slirp backend and one virtio-net transport."""
 
     argv = desktop_m5_qemu_argv(**arguments)
+    root_drives = [
+        (index, value)
+        for index, value in enumerate(argv)
+        if value.startswith("if=none,format=raw,file=")
+        and ",id=rootdisk,cache=directsync" in value
+    ]
+    if len(root_drives) != 1:
+        raise ValueError("online web runner requires one writable run-copy disk")
+    root_index, root_drive = root_drives[0]
+    argv = (
+        *argv[:root_index],
+        root_drive.replace(",cache=directsync", ",cache=writeback"),
+        *argv[root_index + 1 :],
+    )
     if argv.count("-netdev") != 1 or argv.count("user,id=net0") != 1:
         raise ValueError("online web runner requires exactly one slirp backend")
     if argv.count("-device") < 1 or argv.count("virtio-net-device,netdev=net0") != 1:
