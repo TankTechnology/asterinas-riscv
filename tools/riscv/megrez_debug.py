@@ -433,12 +433,22 @@ def main(
         _validate_simulation(values.simulation_result, plan)
         if values.output_directory is None:
             raise WorkflowError("board-output-directory-required")
-        with probe_server_factory():
+        with probe_server_factory() as probe_server:
+            trace_provider = getattr(probe_server, "canonical_trace", None)
             result = run_physical_board(
                 plan,
                 values.device,
                 values.output_directory,
                 timeout=values.timeout,
+                **(
+                    {
+                        "probe_trace_provider": lambda plan_sha256: trace_provider(
+                            plan_sha256=plan_sha256
+                        )
+                    }
+                    if callable(trace_provider)
+                    else {}
+                ),
             )
         return 0 if result.passed else 2
     except BoardTermination as error:
