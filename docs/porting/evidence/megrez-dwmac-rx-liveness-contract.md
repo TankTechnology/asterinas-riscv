@@ -604,3 +604,22 @@ claim of a physical fix. They pass the 17-test host model and the pinned
 RISC-V OSDK and Clippy gates. A later high-information board run should use the
 new RBU count to decide whether ring pressure exists before changing ring size
 or interrupt policy.
+
+The old physical transcript contains 86 `ASTERINAS_GMAC_RX_POLL` records,
+13,247 bytes in those records alone. On RISC-V the fallback OSTD console holds
+an IRQ-disabled spin lock and writes each byte through the SBI console call.
+With only 64 receive descriptors, hot-path serial output is therefore a
+credible source of measurement perturbation, although the transcript alone
+does not prove it caused the loss. The power-of-two cadence reduces this class
+of output without removing the cumulative evidence.
+
+The exact post-fix candidate has kernel SHA-256
+`8ba500c776895599b887cdd400e0a70c99e873dd7cecd584278ae0d33f1c1b05`,
+U-Boot CRC32 `4a7ebb9c`, and frozen-plan SHA-256
+`2e22cf2b3c7e3f35c96f66c5666e31a73b662d165bf89625fe87beb537c8c888`.
+It passed the 17.9-MiB generic Sv39/SMP4 TCP QEMU gate and the independent
+60-second software-reboot gate. The fast result SHA-256 is
+`a291f119d899013ef5c21c248e5772fb7e5bb8fd627d92da3bc1628d3369eae5`;
+the recovery result SHA-256 is
+`6f23a3d53f2156cab667b99cea0b3b13797c6594b71c7c887d008cd576ef9333`.
+No post-fix physical run is claimed in this milestone.
