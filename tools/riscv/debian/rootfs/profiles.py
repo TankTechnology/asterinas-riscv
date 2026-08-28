@@ -211,6 +211,23 @@ _PROFILES["browser-m5"] = RootfsProfile(
     + ("firefox-esr", "python3-minimal"),
 )
 
+_PROFILES["browser-web"] = RootfsProfile(
+    name="browser-web",
+    schema_version=7,
+    root_label="ASTER_BROWSERWEB",
+    root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
+    requested_packages=_PROFILES["browser-m5"].requested_packages
+    + ("libnss3", "libnss3-tools", "p11-kit", "p11-kit-modules"),
+    identity_packages=_PROFILES["browser-m5"].identity_packages
+    + (
+        "ca-certificates",
+        "libnss3",
+        "libnss3-tools",
+        "p11-kit",
+        "p11-kit-modules",
+    ),
+)
+
 
 def get_profile(name: str) -> RootfsProfile:
     """Returns a frozen profile or rejects an unknown identity."""
