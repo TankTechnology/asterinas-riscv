@@ -403,7 +403,12 @@ impl Socket for UnixStreamSocket {
                 }
             };
 
-            let listener = match init.listen(backlog, self.pollee.clone(), self.is_seqpacket()) {
+            let listener = match init.listen(
+                backlog,
+                self.pollee.clone(),
+                self.is_seqpacket(),
+                &self.scm_node,
+            ) {
                 Ok(listener) => listener,
                 Err((err, init)) => {
                     return (State::Init(init), Err(err));

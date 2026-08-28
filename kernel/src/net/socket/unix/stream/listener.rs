@@ -22,7 +22,7 @@ use crate::{
         unix::{
             addr::{UnixSocketAddrBound, UnixSocketAddrKey},
             cred::SocketCred,
-            scm_graph::{SocketNode, StreamBacklogNode},
+            scm_graph::{PermanentEdge, SocketNode, StreamBacklogNode},
             stream::socket::OptionSet,
         },
         util::SockShutdownCmd,
@@ -34,6 +34,7 @@ use crate::{
 
 pub(super) struct Listener {
     backlog: Arc<Backlog>,
+    owner_edge: Option<PermanentEdge>,
     is_write_shutdown: AtomicBool,
 }
 
@@ -45,13 +46,15 @@ impl Listener {
         is_write_shutdown: bool,
         pollee: Pollee,
         is_seqpacket: bool,
+        owner: &SocketNode,
     ) -> Self {
-        let backlog = BACKLOG_TABLE
-            .add_backlog(addr, pollee, backlog, is_read_shutdown, is_seqpacket)
+        let (backlog, owner_edge) = BACKLOG_TABLE
+            .add_backlog(addr, pollee, backlog, is_read_shutdown, is_seqpacket, owner)
             .unwrap();
 
         Self {
             backlog,
+            owner_edge: Some(owner_edge),
             is_write_shutdown: AtomicBool::new(is_write_shutdown),
         }
     }
@@ -119,9 +122,12 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
+        // Drain pending connections first, then stop publishing this backlog, and only then detach
+        // the listening socket's real strong-ownership edge. No peer can add a new pending storage
+        // after shutdown, and no graph edge disappears while the listener can still reach it.
         self.backlog.shutdown();
-
         BACKLOG_TABLE.remove_backlog(&self.backlog.addr().to_key());
+        drop(self.owner_edge.take());
     }
 }
 
@@ -145,7 +151,8 @@ impl BacklogTable {
         backlog: usize,
         is_shutdown: bool,
         is_seqpacket: bool,
-    ) -> Option<Arc<Backlog>> {
+        owner: &SocketNode,
+    ) -> Option<(Arc<Backlog>, PermanentEdge)> {
         let addr_key = addr.to_key();
 
         let mut backlog_sockets = self.backlog_sockets.write();
@@ -161,10 +168,15 @@ impl BacklogTable {
             is_shutdown,
             is_seqpacket,
         ));
+        // Establish `listener socket -> backlog` before the global table exposes the backlog to a
+        // concurrent connect. The new backlog has no pending storage, so this edge cannot close a
+        // cycle. Constructing it before insertion also leaves no table entry on failure/panic.
+        let owner_edge = PermanentEdge::new(owner, &new_backlog.scm_node)
+            .expect("a new empty stream backlog cannot close an SCM ownership cycle");
         let old_backlog = backlog_sockets.insert(addr_key, new_backlog.clone());
         debug_assert!(old_backlog.is_none());
 
-        Some(new_backlog)
+        Some((new_backlog, owner_edge))
     }
 
     fn get_backlog(&self, addr_key: &UnixSocketAddrKey) -> Option<Arc<Backlog>> {
@@ -197,13 +209,19 @@ impl Backlog {
         is_shutdown: bool,
         is_seqpacket: bool,
     ) -> Self {
+        #[cfg(not(ktest))]
+        let listener_cred = SocketCred::<ReadDupOp>::new_current();
+        // The bare ktest runner has no POSIX current-thread context. Keep production construction
+        // unchanged while making the test configuration use an explicit, owned credential.
+        #[cfg(ktest)]
+        let listener_cred = SocketCred::<ReadDupOp>::new_test_root();
         Self::new_with_cred(
             addr,
             pollee,
             backlog,
             is_shutdown,
             is_seqpacket,
-            SocketCred::<ReadDupOp>::new_current(),
+            listener_cred,
         )
     }
 
@@ -395,7 +413,76 @@ mod test {
     use ostd::prelude::ktest;
 
     use super::*;
-    use crate::net::socket::unix::{UnixSocketAddr, scm_graph::permanent_edge_count};
+    use crate::net::socket::unix::{
+        UnixSocketAddr,
+        scm_graph::{ReservationError, ReservedEdges, permanent_edge_count, reserved_edge_count},
+    };
+
+    #[ktest]
+    fn stream_listener_edges_block_preaccept_self_scm_and_release_lifetimes() {
+        assert_listener_owner_lifetime(false, "STREAM");
+    }
+
+    #[ktest]
+    fn seqpacket_listener_edges_block_preaccept_self_scm_and_release_lifetimes() {
+        assert_listener_owner_lifetime(true, "SEQPACKET");
+    }
+
+    fn assert_listener_owner_lifetime(is_seqpacket: bool, socket_kind: &str) {
+        ostd::early_println!("B1_LISTENER_OWNER_{}_BEGIN", socket_kind);
+        let owner = SocketNode::new();
+        let weak_owner = owner.downgrade();
+        ostd::early_println!("B1_LISTENER_OWNER_{}_OWNER_CREATED", socket_kind);
+        let addr = UnixSocketAddr::Unnamed.bind().unwrap();
+        ostd::early_println!("B1_LISTENER_OWNER_{}_ADDRESS_BOUND", socket_kind);
+        let listener = Listener::new(addr, 1, false, false, Pollee::new(), is_seqpacket, &owner);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_LISTENER_CREATED", socket_kind);
+        let backlog_key = listener.addr().to_key();
+        let backlog_node = listener.backlog.scm_node.clone();
+        let weak_backlog = backlog_node.downgrade();
+
+        assert_eq!(permanent_edge_count(&owner, &backlog_node), 1);
+
+        let client_node = SocketNode::new();
+        let client = push_incoming(&listener.backlog, &client_node, is_seqpacket);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_INCOMING_PUSHED", socket_kind);
+        let pending_storage = client.storage_node();
+        assert_eq!(permanent_edge_count(&backlog_node, &pending_storage), 1);
+
+        // The pending server connection is owned by the listener backlog. Queuing the listener FD
+        // in that connection would close owner -> backlog -> storage -> owner and must be rejected.
+        let error = ReservedEdges::try_new(&pending_storage, &[owner.clone()])
+            .err()
+            .unwrap();
+        assert_eq!(error, ReservationError::Cycle);
+        assert_eq!(reserved_edge_count(&pending_storage, &owner), 0);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_CYCLE_REJECTED", socket_kind);
+
+        listener.shutdown(SockShutdownCmd::SHUT_RD, &Pollee::new());
+        assert_eq!(permanent_edge_count(&backlog_node, &pending_storage), 0);
+        assert_eq!(permanent_edge_count(&owner, &backlog_node), 1);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_SHUTDOWN_DRAINED", socket_kind);
+
+        drop(listener);
+        assert!(BACKLOG_TABLE.get_backlog(&backlog_key).is_none());
+        assert_eq!(permanent_edge_count(&owner, &backlog_node), 0);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_LISTENER_DROPPED", socket_kind);
+
+        drop(client);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_CLIENT_DROPPED", socket_kind);
+        drop(pending_storage);
+        drop(owner);
+        assert!(!weak_owner.is_alive());
+        drop(backlog_node);
+        assert!(!weak_backlog.is_alive());
+        // Make every remaining strong non-graph reference explicit so the final marker also proves
+        // that cleanup cannot be deferred to implicit local-variable drop order.
+        drop(client_node);
+        drop(backlog_key);
+        drop(weak_owner);
+        drop(weak_backlog);
+        ostd::early_println!("B1_LISTENER_OWNER_{}_WEAKS_RELEASED", socket_kind);
+    }
 
     #[ktest]
     fn backlog_full_fails_before_creating_owned_storage() {
@@ -420,7 +507,7 @@ mod test {
     fn pending_owner_transfers_to_accepted_socket() {
         let backlog = new_backlog(1);
         let client_node = SocketNode::new();
-        let client = push_incoming(&backlog, &client_node);
+        let client = push_incoming(&backlog, &client_node, false);
         let storage = client.storage_node();
         let weak_storage = storage.downgrade();
 
@@ -447,7 +534,7 @@ mod test {
     fn backlog_shutdown_drops_pending_owner_outside_lock() {
         let backlog = new_backlog(1);
         let client_node = SocketNode::new();
-        let client = push_incoming(&backlog, &client_node);
+        let client = push_incoming(&backlog, &client_node, false);
         let storage = client.storage_node();
 
         assert_eq!(permanent_edge_count(&backlog.scm_node, &storage), 1);
@@ -471,12 +558,12 @@ mod test {
         )
     }
 
-    fn push_incoming(backlog: &Backlog, client_node: &SocketNode) -> Connected {
+    fn push_incoming(backlog: &Backlog, client_node: &SocketNode, is_seqpacket: bool) -> Connected {
         match backlog.push_incoming(
             Init::new(),
             Pollee::new(),
             &OptionSet::new(),
-            false,
+            is_seqpacket,
             client_node,
         ) {
             Ok(connected) => connected,

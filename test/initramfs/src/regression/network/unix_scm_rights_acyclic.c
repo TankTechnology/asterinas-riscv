@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -537,6 +538,67 @@ static void test_listener_close_drains_preaccept_edges(void)
 	close(client);
 }
 
+static void
+test_preaccept_listener_self_cycle_and_address_reuse(int socket_type)
+{
+	struct sockaddr_un address = { .sun_family = AF_UNIX };
+	int listener, client, replacement;
+	socklen_t address_len;
+#ifndef __asterinas__
+	int accepted, received;
+	char payload;
+#endif
+
+	int name_len = snprintf(address.sun_path + 1,
+				sizeof(address.sun_path) - 1,
+				"b1-slice5-listener-self-%ld-%d",
+				(long)getpid(), socket_type);
+	if (name_len < 0 || (size_t)name_len >= sizeof(address.sun_path) - 1)
+		fail("listener-self abstract address is too long");
+	address_len = offsetof(struct sockaddr_un, sun_path) + 1 + name_len;
+
+	listener = socket(AF_UNIX, socket_type, 0);
+	client = socket(AF_UNIX, socket_type, 0);
+	if (listener < 0 || client < 0 ||
+	    bind(listener, (struct sockaddr *)&address, address_len) != 0 ||
+	    listen(listener, 1) != 0 ||
+	    connect(client, (struct sockaddr *)&address, address_len) != 0) {
+		fail("listener-self setup failed: %s", strerror(errno));
+	}
+
+	/*
+	 * Before accept, the listener owns the pending server storage through its
+	 * backlog. Queuing the listener in that storage would close a real ownership
+	 * cycle and must be rejected by Asterinas B1 even for an otherwise acyclic
+	 * stream send path. Linux accepts the cycle and is used only as the syscall
+	 * shape oracle.
+	 */
+#ifdef __asterinas__
+	expect_send(client, &listener, 1, true);
+#else
+	expect_send(client, &listener, 1, false);
+	accepted = accept(listener, NULL, NULL);
+	if (accepted < 0)
+		fail("listener-self accept failed: %s", strerror(errno));
+	receive_rights(accepted, 0, &received, 1, &payload);
+	close(received);
+	close(accepted);
+#endif
+
+	close(listener);
+	close(client);
+
+	// Listener drop must remove both the backlog table entry and its graph edge,
+	// so the exact same abstract address is immediately reusable.
+	replacement = socket(AF_UNIX, socket_type, 0);
+	if (replacement < 0 ||
+	    bind(replacement, (struct sockaddr *)&address, address_len) != 0 ||
+	    listen(replacement, 1) != 0)
+		fail("listener-self address was not reusable: %s",
+		     strerror(errno));
+	close(replacement);
+}
+
 static void test_fork_and_dup_identity(void)
 {
 	int carrier[2], passed[2];
@@ -607,6 +669,8 @@ static void run_all_tests(void)
 	test_blocking_retry();
 	test_receiver_close_drains_edges();
 	test_listener_close_drains_preaccept_edges();
+	test_preaccept_listener_self_cycle_and_address_reuse(SOCK_STREAM);
+	test_preaccept_listener_self_cycle_and_address_reuse(SOCK_SEQPACKET);
 	test_fork_and_dup_identity();
 	test_empty_seqpacket();
 }
