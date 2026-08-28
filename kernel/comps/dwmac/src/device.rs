@@ -13,11 +13,14 @@ use aster_softirq::BottomHalfDisabled;
 use ostd::{
     arch::irq::{DeferredMappedIrqLine, IRQ_CHIP},
     irq::IrqLine,
+    mm::VmWriter,
     sync::SpinLock,
 };
 
 use crate::{
     arch::{MegrezPlatform, PlatformError, SelectedPortInfo, dma_write_barrier},
+    descriptor::DescriptorError,
+    diagnostics::{RxDescriptorDrop, RxDiagnostics},
     poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
@@ -49,6 +52,7 @@ const MAC_CONFIG_PORT_SELECT: u32 = 1 << 15;
 const MAC_CONFIG_TX_ENABLE: u32 = 1 << 1;
 const MAC_CONFIG_RX_ENABLE: u32 = 1;
 const MAC_ADDRESS_ENABLE: u32 = 1 << 31;
+const RX_DIAGNOSTIC_PREFIX_LEN: usize = 94;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeviceError {
@@ -96,6 +100,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         queue,
         irq,
         rx_poll: RxPollBudget::default(),
+        rx_diagnostics: RxDiagnostics::default(),
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -302,6 +307,7 @@ struct DwmacDevice {
     queue: DmaQueue,
     irq: DeferredMappedIrqLine,
     rx_poll: RxPollBudget,
+    rx_diagnostics: RxDiagnostics,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -347,6 +353,32 @@ impl DwmacDevice {
         }
         status
     }
+
+    fn record_received_frame(&mut self, buffer: &RxBuffer) {
+        if !self.rx_diagnostics.can_sample_frame() {
+            return;
+        }
+
+        let mut prefix = [0u8; RX_DIAGNOSTIC_PREFIX_LEN];
+        let mut payload = buffer.payload();
+        let prefix_len = payload.remain().min(prefix.len());
+        payload.limit(prefix_len);
+        let copied = payload.read(&mut VmWriter::from(&mut prefix[..prefix_len]));
+        debug_assert_eq!(copied, prefix_len);
+        self.rx_diagnostics.record_frame(&prefix[..copied]);
+    }
+
+    fn record_receive_error(&mut self, error: QueueError) {
+        let drop = match error {
+            QueueError::Descriptor(DescriptorError::FragmentedFrame) => {
+                RxDescriptorDrop::Fragmented
+            }
+            QueueError::Descriptor(DescriptorError::FrameTooLong) => RxDescriptorDrop::FrameTooLong,
+            QueueError::Descriptor(DescriptorError::ReceiveError) => RxDescriptorDrop::ReceiveError,
+            _ => RxDescriptorDrop::Other,
+        };
+        self.rx_diagnostics.record_descriptor_drop(drop);
+    }
 }
 
 impl AnyNetworkDevice for DwmacDevice {
@@ -381,11 +413,13 @@ impl AnyNetworkDevice for DwmacDevice {
         match packet {
             Ok(buffer) => {
                 self.rx_poll.record_received();
+                self.record_received_frame(&buffer);
                 Ok(buffer)
             }
             Err(QueueError::Allocation) => Err(NetError::NoMemory),
             Err(QueueError::NotReady) => Err(NetError::NotReady),
-            Err(_) => {
+            Err(error) => {
+                self.record_receive_error(error);
                 self.service_status();
                 Err(NetError::NotReady)
             }
@@ -435,6 +469,7 @@ impl AnyNetworkDevice for DwmacDevice {
         }
         if let Some(rx) = self.rx_poll.take_progress_report() {
             let tx = self.queue.progress();
+            let diagnostics = self.rx_diagnostics.report();
             ostd::info!(
                 "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
                 rx.received,
@@ -447,6 +482,21 @@ impl AnyNetworkDevice for DwmacDevice {
                 tx.rx_head,
                 tx.rx_tail,
                 dma_status,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
+                diagnostics.observed,
+                diagnostics.arp,
+                diagnostics.ipv4_other,
+                diagnostics.tcp_syn,
+                diagnostics.tcp_syn_ack,
+                diagnostics.tcp_other,
+                diagnostics.other,
+                diagnostics.malformed,
+                diagnostics.descriptor_fragmented,
+                diagnostics.descriptor_receive_error,
+                diagnostics.descriptor_frame_too_long,
+                diagnostics.descriptor_other,
             );
         }
     }
