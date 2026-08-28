@@ -423,6 +423,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("basic.target.wants/asterinas-browser-web-timeline-basic.service", builder)
         self.assertIn('desktop_after="local-fs.target dbus.service"', builder)
         self.assertIn("desktop_session_options=$'StandardInput=null", builder)
+        self.assertIn("Environment=ASTERINAS_BROWSER_WEB_SESSION=1", builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
         self.assertIn('configure_desktop_m5_network "$stage" m5 false lightweight', builder)
