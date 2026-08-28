@@ -12,9 +12,8 @@ readonly GATE=/usr/lib/asterinas/browser-web-marionette-gate
 readonly CURL_LOG=/home/asterinas/browser-web-curl-evidence.log
 readonly SECURITY_LOG=/home/asterinas/browser-web-security-evidence.log
 readonly FIREFOX_STDERR=/home/asterinas/firefox-web-stderr.log
-readonly NSS_ROOT_MODULE=/usr/lib/riscv64-linux-gnu/libnssckbi.so
-readonly P11_ROOT_MODULE=/usr/lib/riscv64-linux-gnu/pkcs11/p11-kit-trust.so
 readonly SYSTEM_CA=/etc/ssl/certs/ca-certificates.crt
+readonly TRUST_STATIC_LOG=/usr/share/asterinas/browser-web-trust-static.log
 readonly USER_ID=1000
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
@@ -56,7 +55,7 @@ validate_parent_security() {
 }
 
 validate_child_security() {
-    local parent="$1" process pid cmdline role content_seen=false
+    local parent="$1" process pid cmdline role seccomp content_seen=false
     for process in "$PROC_ROOT"/[1-9]*; do
         [[ -d "$process" ]] || continue
         pid="${process##*/}"
@@ -68,14 +67,17 @@ validate_child_security() {
         [[ "$cmdline" == *" rdd "* ]] && role=rdd
         if [[ "$cmdline" == *" tab "* ]]; then role=content; content_seen=true; fi
         validate_zero_caps "$pid" "$role"
+        grep -Eq '^NoNewPrivs:[[:space:]]+1$' "$process/status" ||
+            fail "security-$role-no-new-privileges"
+        seccomp="$(sed -n 's/^Seccomp:[[:space:]]*//p' "$process/status")"
+        [[ "$seccomp" =~ ^[012]$ ]] || fail "security-$role-seccomp-missing"
         if [[ "$role" == content ]]; then
-            grep -Eq '^Seccomp:[[:space:]]+2$' "$process/status" ||
-                fail security-content-seccomp
+            [[ "$seccomp" == 2 ]] || fail security-content-seccomp
         fi
+        printf 'BROWSER_WEB_SECURITY child_pid=%s role=%s caps=zero nnp=1 seccomp=%s\n' \
+            "$pid" "$role" "$seccomp" >>"$SECURITY_LOG"
     done
     [[ "$content_seen" == true ]] || fail security-content-missing
-    grep -Ei 'sandbox|seccomp' "$FIREFOX_STDERR" 2>/dev/null | tail -100 \
-        >>"$SECURITY_LOG" || true
 }
 
 validate_dns_and_tls() {
@@ -107,11 +109,17 @@ validate_dns_and_tls() {
 }
 
 [[ -s "$SYSTEM_CA" ]] || fail system-ca-bundle
-[[ -r "$NSS_ROOT_MODULE" && -r "$P11_ROOT_MODULE" ]] || fail firefox-nss-root-module
-sha256sum "$SYSTEM_CA" "$NSS_ROOT_MODULE" "$P11_ROOT_MODULE" >"$SECURITY_LOG"
+grep -Eq '^FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' "$TRUST_STATIC_LOG" ||
+    fail firefox-trust-static
+: >"$CURL_LOG"
+: >"$SECURITY_LOG"
+printf 'SYSTEM_CA_SHA256 sha256=%s path=%s\n' \
+    "$(sha256sum "$SYSTEM_CA" | awk '{print $1}')" "$SYSTEM_CA" >>"$SECURITY_LOG"
+printf 'TRUST_STATIC_SHA256 sha256=%s path=%s\n' \
+    "$(sha256sum "$TRUST_STATIC_LOG" | awk '{print $1}')" "$TRUST_STATIC_LOG" >>"$SECURITY_LOG"
 validate_dns_and_tls
 emit "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
-emit "DEBIAN_BROWSER_WEB_TRUST ca=system nss=libnssckbi p11=p11-kit-trust cert_override=absent"
+emit "DEBIAN_BROWSER_WEB_TRUST_STATIC xul_ckbi=audited ca_bundle=audited package_closure=verified"
 
 browser_pid=""
 while ((SECONDS < deadline)); do
@@ -137,4 +145,5 @@ fi
 validate_child_security "$browser_pid"
 emit "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_seccomp=2 sandbox=normal"
 emit "$content"
+emit "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent"
 emit "DEBIAN_BROWSER_WEB_READY user=asterinas display=:0"
