@@ -15,18 +15,20 @@ installation from completing even after the receive had finished.
 The host will create a deterministic gzip representation of the frozen ext2
 image before it opens the serial device. The installer initramfs will fetch
 `http://10.100.19.216:8080/debian-root.ext2.gz`, stream it through
-`gzip -dc`, copy the exact resulting byte stream to `/dev/mmcblk0p2` with
-`tee`, and hash the same stream before declaring success. It will retain the
-existing `pipefail`, exact 4 GiB partition check, write-arming kernel
-parameters, sync, and original ext2 SHA-256 check without performing a second
-full-device read.
+`gzip -dc`, split the exact resulting bytes with `tee` between a SHA-256 FIFO
+and a 1 MiB-buffered `dd` writer for `/dev/mmcblk0p2`, and wait for both before
+declaring success. It will retain the existing `pipefail`, exact 4 GiB
+partition check, write-arming kernel parameters, sync, and original ext2
+SHA-256 check without performing a second full-device read.
 
 The compressed file is transport data only. The immutable identity remains
 the uncompressed root image recorded in the signed rootfs manifest and the
 Megrez plan. A bad, truncated, or replaced compressed stream cannot publish
-success because either the pipeline fails or the SHA-256 of the exact bytes
-accepted by `tee` differs. This validates the transport and write stream; it
-does not claim an independent post-write media readback.
+success because either the pipeline or background hasher fails, or the
+SHA-256 of the exact bytes split by `tee` differs. `dd` uses full 1 MiB input
+blocks so that the block device does not receive the small writes issued by
+BusyBox `tee`. This validates the transport and write stream; it does not claim
+an independent post-write media readback.
 
 ## Host-side publication
 
@@ -49,7 +51,8 @@ the recovery path; Linux is not used as the installer or runtime kernel.
 
 Focused tests will prove deterministic gzip bytes and round-trip identity,
 atomic preservation on failure, the exact
-`wget | gzip -dc | tee(target) | sha256sum` pipeline, the `.gz` private-LAN
-URL, compression-before-serial ordering, and stream-hash guard. The real
-artifact will then be compressed once and its size, gzip integrity, and
-decompressed SHA-256 will be checked before a new plan-bound board attempt.
+`sha256sum < fifo` plus `wget | gzip -dc | tee(fifo) | dd(target)` pipeline,
+the `.gz` private-LAN URL, compression-before-serial ordering, stream-hash
+guard, and corrupted-gzip failure propagation. The real artifact will then be
+compressed once and its size, gzip integrity, and decompressed SHA-256 will be
+checked before a new plan-bound board attempt.

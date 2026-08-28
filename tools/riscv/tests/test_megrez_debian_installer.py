@@ -2,6 +2,8 @@
 
 import gzip
 import hashlib
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,7 +70,8 @@ def _busybox_base_entries() -> tuple[tuple[str, bytes, int], ...]:
         (f"usr/bin/{command}", b"busybox", 0o120777) for command in _INSTALLER_COMMANDS
     )
     entries.extend(
-        (f"usr/bin/{command}", b"busybox", 0o120777) for command in ("tee", "wget")
+        (f"usr/bin/{command}", b"busybox", 0o120777)
+        for command in ("mkfifo", "rm", "tee", "wget")
     )
     return tuple(entries)
 
@@ -240,14 +243,23 @@ class MegrezDebianInstallerTests(unittest.TestCase):
 
         script = render_network_init(root_hash, 4096, root_url).decode()
 
+        self.assertIn("mkdir -p /proc /sys /dev /run", script)
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
         self.assertIn(f"wget -T 30 -O - '{root_url}'", script)
         self.assertIn("| gzip -dc", script)
         self.assertLess(script.index("wget -T 30"), script.index("gzip -dc"))
-        self.assertLess(script.index("gzip -dc"), script.index('tee "$target"'))
-        self.assertLess(script.index('tee "$target"'), script.index("sha256sum"))
-        self.assertIn('stream_hash="$(wget -T 30', script)
+        self.assertIn('mkfifo "$hash_fifo"', script)
+        self.assertIn('sha256sum < "$hash_fifo" > "$hash_result" &', script)
+        self.assertLess(script.index("gzip -dc"), script.index('tee "$hash_fifo"'))
+        self.assertLess(
+            script.index('tee "$hash_fifo"'), script.index('dd of="$target"')
+        )
+        self.assertIn(
+            'dd of="$target" bs=1048576 iflag=fullblock conv=notrunc count=1',
+            script,
+        )
+        self.assertIn('wait "$hash_pid"', script)
         self.assertIn(f'[ "$1" = "{root_hash}" ]', script)
         self.assertNotIn('dd if="$target"', script)
         self.assertIn("DEBIAN_INSTALL_FETCH_OK", script)
@@ -262,6 +274,66 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         ):
             with self.subTest(unsafe=unsafe), self.assertRaises(InstallerError):
                 render_network_init(root_hash, 4096, unsafe)
+
+    def test_buffered_tee_pipeline_hashes_exact_bytes_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tool_directory = root / "bin"
+            tool_directory.mkdir()
+            for command in ("dd", "gzip", "mkfifo", "rm", "sha256sum", "tee"):
+                (tool_directory / command).symlink_to("/usr/bin/busybox")
+            source = bytes(range(256)) * 16
+            compressed = root / "root.ext2.gz"
+            with compressed.open("wb") as compressed_file:
+                with gzip.GzipFile(
+                    filename="", mode="wb", fileobj=compressed_file, mtime=0
+                ) as archive:
+                    archive.write(source)
+            target = root / "target"
+            fifo = root / "hash.fifo"
+            result = root / "hash.result"
+            command = """
+rm -f "$FIFO" "$RESULT"
+mkfifo "$FIFO"
+sha256sum < "$FIFO" > "$RESULT" &
+hash_pid=$!
+gzip -dc "$SOURCE" | tee "$FIFO" | dd of="$TARGET" bs=1048576 iflag=fullblock conv=notrunc count=1
+pipeline_status=$?
+wait "$hash_pid"
+hash_status=$?
+[ "$pipeline_status" = 0 ] && [ "$hash_status" = 0 ]
+"""
+            environment = {
+                **os.environ,
+                "FIFO": str(fifo),
+                "RESULT": str(result),
+                "SOURCE": str(compressed),
+                "TARGET": str(target),
+                "PATH": str(tool_directory),
+            }
+
+            completed = subprocess.run(
+                ["/usr/bin/busybox", "ash", "-o", "pipefail", "-c", command],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(target.read_bytes(), source)
+            self.assertEqual(
+                result.read_text().split(), [hashlib.sha256(source).hexdigest(), "-"]
+            )
+
+            compressed.write_bytes(compressed.read_bytes()[:-8])
+            failed = subprocess.run(
+                ["/usr/bin/busybox", "ash", "-o", "pipefail", "-c", command],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(failed.returncode, 0)
 
     def test_network_archive_is_deterministic_and_does_not_embed_root_chunks(self):
         with tempfile.TemporaryDirectory() as temporary:
