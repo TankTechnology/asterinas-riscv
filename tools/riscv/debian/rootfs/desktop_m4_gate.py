@@ -34,7 +34,8 @@ DESKTOP_M4_MILESTONES = (
     "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
     "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
     "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
-    "DEBIAN_DESKTOP_M4_CLIENTS window-manager=matchbox file-manager=pcmanfm browser=netsurf terminal=xterm",
+    "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+    "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm browser=netsurf terminal=xterm",
     "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
 )
 

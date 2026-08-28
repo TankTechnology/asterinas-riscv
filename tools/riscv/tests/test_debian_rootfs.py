@@ -112,6 +112,13 @@ DESKTOP_M4_SESSION_SCRIPT = (
 DESKTOP_M4_WELCOME_PAGE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
 )
+DESKTOP_WALLPAPER = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_wallpaper.svg"
+DESKTOP_PCMANFM_CONFIG = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_pcmanfm.conf"
+)
+DESKTOP_LXPANEL_CONFIG = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_lxpanel.conf"
+)
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
@@ -981,12 +988,7 @@ class DebianRootfsBuilderTests(unittest.TestCase):
             cwd=self.directory,
         )
 
-        expected = tuple(
-            sorted(
-                get_profile("desktop-m3").requested_packages
-                + ("netsurf-gtk", "pcmanfm")
-            )
-        )
+        expected = get_profile("desktop-m4").requested_packages
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), list(expected))
         self.assertEqual(result.stderr, "")
@@ -1287,18 +1289,52 @@ WantedBy=multi-user.target
         session = stage / "usr/lib/asterinas/desktop-m4-session"
         evidence = stage / "usr/lib/asterinas/desktop-m4-evidence"
         welcome = stage / "usr/share/asterinas/desktop-m4-welcome.html"
+        wallpaper = stage / "usr/share/asterinas/desktop-wallpaper.svg"
+        pcmanfm_config = (
+            stage / "home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
+        )
+        lxpanel_config = stage / "home/asterinas/.config/lxpanel/Asterinas/panels/panel"
         self.assertEqual(session.read_bytes(), DESKTOP_M4_SESSION_SCRIPT.read_bytes())
         self.assertEqual(evidence.read_bytes(), DESKTOP_M4_EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(welcome.read_bytes(), DESKTOP_M4_WELCOME_PAGE.read_bytes())
+        self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
+        self.assertEqual(
+            pcmanfm_config.read_bytes(), DESKTOP_PCMANFM_CONFIG.read_bytes()
+        )
+        self.assertEqual(
+            lxpanel_config.read_bytes(), DESKTOP_LXPANEL_CONFIG.read_bytes()
+        )
         self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(welcome.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(wallpaper.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(pcmanfm_config.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(lxpanel_config.stat().st_mode), 0o644)
+        self.assertEqual(pcmanfm_config.stat().st_uid, 1000)
+        self.assertEqual(lxpanel_config.stat().st_uid, 1000)
+        desktop_launchers = sorted((stage / "home/asterinas/Desktop").glob("*.desktop"))
+        self.assertEqual(
+            [launcher.name for launcher in desktop_launchers],
+            [
+                "asterinas-browser.desktop",
+                "asterinas-files.desktop",
+                "asterinas-terminal.desktop",
+            ],
+        )
+        self.assertTrue(
+            all(
+                stat.S_IMODE(path.stat().st_mode) == 0o755 for path in desktop_launchers
+            )
+        )
+        self.assertTrue(all(path.stat().st_uid == 1000 for path in desktop_launchers))
         session_text = session.read_text()
-        self.assertIn("matchbox-window-manager -use_titlebar yes &", session_text)
+        self.assertIn("/usr/bin/openbox &", session_text)
+        self.assertNotIn("matchbox-window-manager", session_text)
         self.assertIn(
-            'pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &',
+            "pcmanfm --desktop --profile Asterinas &",
             session_text,
         )
+        self.assertIn("lxpanel --profile Asterinas &", session_text)
         self.assertIn(
             'browser_url="file:///usr/share/asterinas/desktop-m4-welcome.html"',
             session_text,
@@ -1312,8 +1348,9 @@ WantedBy=multi-user.target
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
         self.assertLess(
-            session_text.index("pcmanfm --no-desktop"), session_text.index("xterm")
+            session_text.index("pcmanfm --desktop"), session_text.index("xterm")
         )
+        self.assertLess(session_text.index("lxpanel"), session_text.index("xterm"))
         self.assertLess(session_text.index("netsurf-gtk"), session_text.index("xterm"))
         self.assertIn("<title>Asterinas Start</title>", welcome.read_text())
         self.assertEqual(
@@ -1353,10 +1390,11 @@ WantedBy=multi-user.target
 
         for missing in (
             "",
-            "pcmanfm",
+            "desktop-pcmanfm",
+            "lxpanel",
+            "openbox",
             "netsurf",
             "xterm",
-            "mapped-pcmanfm",
             "mapped-netsurf",
         ):
             with self.subTest(missing=missing or "none"):
@@ -1391,6 +1429,71 @@ WantedBy=multi-user.target
                             "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
                         ),
                         evidence,
+                    )
+
+    def test_desktop_m4_evidence_prepares_wallpaper_overview(self) -> None:
+        input_directory = self.directory / "desktop-m4-overview-input"
+        input_directory.mkdir()
+        (input_directory / "event0").touch()
+        (input_directory / "event1").touch()
+        xorg_log = self.directory / "desktop-m4-overview-Xorg.0.log"
+        xorg_log.write_text(
+            """(II) FBDEV(0): using shadow framebuffer
+(II) XINPUT: Adding extended input device \"Asterinas keyboard\"
+(II) XINPUT: Adding extended input device \"Asterinas pointer\"
+""",
+            encoding="utf-8",
+        )
+        fake_bin = self._make_desktop_m4_evidence_tools()
+
+        for missing in ("", "overview-xdotool"):
+            with self.subTest(missing=missing or "none"):
+                console = self.directory / f"desktop-m4-overview-{missing or 'ok'}"
+                xdotool_log = self.directory / f"xdotool-{missing or 'ok'}.log"
+                console.write_text("", encoding="utf-8")
+                environment = os.environ.copy()
+                environment.update(
+                    PATH=f"{fake_bin}:/usr/bin:/bin",
+                    ASTERINAS_DESKTOP_M4_CONSOLE=str(console),
+                    ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY=str(input_directory),
+                    ASTERINAS_DESKTOP_M4_XORG_LOG=str(xorg_log),
+                    ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS="0",
+                    ASTERINAS_DESKTOP_M4_TEST_MISSING=missing,
+                    ASTERINAS_DESKTOP_M4_XDOTOOL_LOG=str(xdotool_log),
+                    ASTERINAS_DESKTOP_SHOW_OVERVIEW="1",
+                )
+
+                result = subprocess.run(
+                    ["/bin/bash", str(DESKTOP_M4_EVIDENCE_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                if not missing:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        xdotool_log.read_text(encoding="utf-8").splitlines(),
+                        [
+                            "search --onlyvisible --class Netsurf-gtk",
+                            "search --onlyvisible --class XTerm",
+                            "search --onlyvisible --class Netsurf-gtk",
+                            "set_desktop_for_window 42 1",
+                            "search --onlyvisible --class XTerm",
+                            "set_desktop_for_window 43 1",
+                        ],
+                    )
+                    self.assertEqual(
+                        console.read_text(encoding="utf-8").splitlines(),
+                        list(DESKTOP_M4_MILESTONES),
+                    )
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertTrue(
+                        console.read_text(encoding="utf-8").endswith(
+                            "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
+                        )
                     )
 
     def test_desktop_m3_evidence_requires_complete_session(self) -> None:
@@ -1522,7 +1625,9 @@ printf '1 1000 asterinas seat0 tty1\n'
 """,
             "pgrep": """#!/bin/sh
 case "$ASTERINAS_DESKTOP_M4_TEST_MISSING:$*" in
-  'pcmanfm:'*'-x pcmanfm'|\
+  'desktop-pcmanfm:'*'--desktop'*|\
+  'lxpanel:'*'lxpanel'*|\
+  'openbox:'*'openbox'*|\
   'netsurf:'*'-x netsurf-gtk'|\
   'xterm:'*'-x xterm') exit 1 ;;
   *) exit 0 ;;
@@ -1530,10 +1635,18 @@ esac
 """,
             "xwininfo": """#!/bin/sh
 printf '0x200001 "Asterinas Terminal": ("xterm" "XTerm")\n'
-[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" = mapped-pcmanfm ] || \
-  printf '0x200002 "Asterinas Files": ("pcmanfm" "Pcmanfm")\n'
-[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" = mapped-netsurf ] || \
-  printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
+printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
+""",
+            "xdotool": """#!/bin/sh
+[ -z "${ASTERINAS_DESKTOP_M4_XDOTOOL_LOG:-}" ] || \
+  printf '%s\n' "$*" >>"$ASTERINAS_DESKTOP_M4_XDOTOOL_LOG"
+[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != overview-xdotool ] || exit 1
+[ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != mapped-netsurf ] || \
+  [ "$*" != 'search --onlyvisible --class Netsurf-gtk' ] || exit 1
+case "$*" in
+  'search --onlyvisible --class Netsurf-gtk') printf '42\n' ;;
+  'search --onlyvisible --class XTerm') printf '43\n' ;;
+esac
 """,
         }
         for name, script in scripts.items():
@@ -2587,18 +2700,46 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
         self.assertEqual(profile.root_uuid, "e13bd1e8-8719-539f-b5e7-5c7b5f5df3c8")
         self.assertEqual(
             profile.requested_packages,
-            tuple(
-                sorted(
-                    get_profile("desktop-m3").requested_packages
-                    + ("netsurf-gtk", "pcmanfm")
-                )
+            (
+                "bash",
+                "ca-certificates",
+                "coreutils",
+                "dbus",
+                "libpam-systemd",
+                "librsvg2-common",
+                "lxpanel",
+                "netsurf-gtk",
+                "openbox",
+                "pcmanfm",
+                "procps",
+                "systemd-sysv",
+                "udev",
+                "util-linux",
+                "x11-utils",
+                "xauth",
+                "xfonts-base",
+                "xinit",
+                "xserver-xorg-core",
+                "xserver-xorg-input-evdev",
+                "xserver-xorg-video-fbdev",
+                "xterm",
             ),
         )
         self.assertEqual(
             profile.identity_packages,
-            get_profile("desktop-m3").identity_packages
+            get_profile("minimal-m1").identity_packages
             + (
+                "systemd",
+                "systemd-sysv",
+                "dbus",
+                "udev",
+                "libpam-systemd",
+                "xserver-xorg-core",
+                "xterm",
+                "librsvg2-common",
+                "lxpanel",
                 "netsurf-gtk",
+                "openbox",
                 "pcmanfm",
             ),
         )
@@ -2711,8 +2852,10 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 SYSTEMD_M2_PACKAGE_ROWS
                 + (
                     ("libpam-systemd", "riscv64", "257.13-1"),
-                    ("matchbox-window-manager", "riscv64", "1.2.2-2"),
+                    ("librsvg2-common", "riscv64", "2.60.0+dfsg-1"),
+                    ("lxpanel", "riscv64", "0.10.1-4"),
                     ("netsurf-gtk", "riscv64", "3.11-2"),
+                    ("openbox", "riscv64", "3.6.1-12"),
                     ("pcmanfm", "riscv64", "1.4.0-1"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),

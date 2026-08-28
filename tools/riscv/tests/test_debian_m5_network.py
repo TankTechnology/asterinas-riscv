@@ -258,6 +258,24 @@ configure_and_normalize_rootfs
                 stage / "etc/systemd/system/graphical.target.wants" / browser_unit.name
             ).is_symlink()
         )
+        desktop_drop_in = (
+            stage
+            / "etc/systemd/system/asterinas-desktop-m4.service.d"
+            / "m7-browser-diagnostics.conf"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1", desktop_drop_in
+        )
+        self.assertNotIn("ASTERINAS_DESKTOP_SHOW_OVERVIEW", desktop_drop_in)
+        evidence_drop_in = (
+            stage
+            / "etc/systemd/system/asterinas-desktop-m4-evidence.service.d"
+            / "m5-overview.conf"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            evidence_drop_in,
+            "[Service]\nEnvironment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
+        )
 
     def _fake_network_tools(
         self, *, address: str, directory: Path | None = None
@@ -759,7 +777,8 @@ printf '200\t10.0.2.15'
             .split(".PHONY:", 1)[0]
         )
 
-        self.assertIn("--boot-timeout 300", target)
+        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
+        self.assertIn("DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420", MAKEFILE.read_text())
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
         self.assertEqual(DESKTOP_M5_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)
