@@ -689,6 +689,7 @@ class SerialContractTests(unittest.TestCase):
             side_effect=[
                 "loady 83000000 1500000\r\n"
                 "## Switch baudrate to 1500000 bps and press ENTER ...",
+                "## Ready for binary (ymodem) download to 0x83000000 at 1500000 bps...\r\n",
                 "## Total Size = 0x00000004 = 4 Bytes\r\n"
                 "## Switch baudrate to 115200 bps and press ESC ...",
                 "=> ",
@@ -731,7 +732,91 @@ class SerialContractTests(unittest.TestCase):
         self.assertEqual(
             write.call_args_list, [mock.call(41, b"\r"), mock.call(41, b"\x1b")]
         )
+        self.assertEqual(
+            session.wait_for.call_args_list,
+            [
+                mock.call("press ENTER", timeout=15),
+                mock.call("Ready for binary", timeout=15),
+                mock.call("press ESC", timeout=15),
+                mock.call(board.PROMPT, timeout=15),
+            ],
+        )
         session.command.assert_called_once_with("crc32 0x83000000 0x4")
+
+    def test_ymodem_sender_uses_known_good_u_boot_1k_mode(self):
+        serial_read, serial_write = os.pipe()
+        with tempfile.NamedTemporaryFile() as source:
+            source_fd = source.fileno()
+            completed = board.subprocess.CompletedProcess([], 0, stderr=b"")
+            with mock.patch.object(
+                board.subprocess, "run", return_value=completed
+            ) as run:
+                board._transfer_ymodem_file(serial_write, source_fd, 12.5)
+        os.close(serial_read)
+        os.close(serial_write)
+
+        run.assert_called_once_with(
+            ["/usr/bin/sb", "-k", f"/proc/self/fd/{source_fd}"],
+            stdin=serial_write,
+            stdout=serial_write,
+            stderr=board.subprocess.PIPE,
+            pass_fds=(source_fd,),
+            timeout=12.5,
+            check=False,
+        )
+
+    def test_ymodem_failure_cancels_receiver_and_restores_prompt(self):
+        session = self._session()
+        session.fd = 41
+        session.send = mock.Mock()
+        session.wait_for = mock.Mock(
+            side_effect=[
+                "loady 83000000 1500000\r\npress ENTER",
+                "Ready for binary",
+                "=> ",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "installer.cpio"
+            source.write_bytes(b"data")
+            with (
+                mock.patch.object(board, "_set_serial_baud") as set_baud,
+                mock.patch.object(
+                    board,
+                    "_transfer_ymodem_file",
+                    side_effect=RuntimeError("sender failed"),
+                ),
+                mock.patch.object(board.os, "write", return_value=1) as write,
+                self.assertRaisesRegex(RuntimeError, "sender failed"),
+            ):
+                session.load_ymodem_artifact(
+                    "initrd",
+                    Path(directory),
+                    "installer.cpio",
+                    0x83000000,
+                    "0123abcd",
+                )
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                mock.call(41, b"\r"),
+                mock.call(41, b"\x18" * 8),
+                mock.call(41, b"\x1b\r"),
+            ],
+        )
+        self.assertEqual(
+            set_baud.call_args_list,
+            [mock.call(41, board.YMODEM_BAUD), mock.call(41, board.BAUD)],
+        )
+        self.assertEqual(
+            session.wait_for.call_args_list,
+            [
+                mock.call("press ENTER", timeout=15),
+                mock.call("Ready for binary", timeout=15),
+                mock.call(board.PROMPT, timeout=15),
+            ],
+        )
 
     def test_ymodem_lzma_load_verifies_decompressed_kernel_identity(self):
         session = self._session()
