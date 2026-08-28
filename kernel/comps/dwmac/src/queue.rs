@@ -137,6 +137,15 @@ pub(super) struct QueueAddresses {
     pub initial_rx_tail: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct QueueProgress {
+    pub tx_submitted: u64,
+    pub tx_reclaimed: u64,
+    pub tx_outstanding: usize,
+    pub rx_head: usize,
+    pub rx_tail: usize,
+}
+
 /// One fresh 64-entry receive/transmit queue pair.
 pub(super) struct DmaQueue {
     ring: DmaStream<FromAndToDevice>,
@@ -146,6 +155,8 @@ pub(super) struct DmaQueue {
     rx_resume_tail: usize,
     rx_tail_to_write: Option<usize>,
     tx: RingState,
+    tx_submitted: u64,
+    tx_reclaimed: u64,
 }
 
 impl DmaQueue {
@@ -166,6 +177,8 @@ impl DmaQueue {
             rx_resume_tail: rx_ring + QUEUE_SIZE * size_of::<Descriptor>(),
             rx_tail_to_write: None,
             tx: RingState::new(QUEUE_SIZE),
+            tx_submitted: 0,
+            tx_reclaimed: 0,
         };
         for slot in 0..QUEUE_SIZE {
             let buffer = RxBuffer::new(0, rx_pool).map_err(|_| QueueError::Allocation)?;
@@ -217,6 +230,7 @@ impl DmaQueue {
         descriptor.publish_tx(DmaAddress::new(buffer.daddr() as u64), packet.len())?;
         self.write_descriptor(true, slot, &descriptor)?;
         self.tx_buffers[slot] = Some(buffer);
+        self.tx_submitted = self.tx_submitted.saturating_add(1);
         let next = (slot + 1) % QUEUE_SIZE;
         Ok(self.addresses().tx_ring + next * size_of::<Descriptor>())
     }
@@ -264,6 +278,7 @@ impl DmaQueue {
             self.write_descriptor(true, slot, &descriptor)?;
             self.tx_buffers[slot].take().ok_or(QueueError::DmaAccess)?;
             self.tx.reclaim_one();
+            self.tx_reclaimed = self.tx_reclaimed.saturating_add(1);
             processed += 1;
         }
         let more_pending = self.tx.consumer().is_some_and(|slot| {
@@ -282,6 +297,16 @@ impl DmaQueue {
 
     pub fn rx_resume_tail(&self) -> usize {
         self.rx_resume_tail
+    }
+
+    pub(super) fn progress(&self) -> QueueProgress {
+        QueueProgress {
+            tx_submitted: self.tx_submitted,
+            tx_reclaimed: self.tx_reclaimed,
+            tx_outstanding: self.tx.used(),
+            rx_head: self.rx_head,
+            rx_tail: self.rx_resume_tail,
+        }
     }
 
     fn advance_rx(&mut self) {
@@ -377,5 +402,32 @@ mod tests {
             assert_eq!(head, completed % QUEUE_SIZE);
             assert_eq!(tail, rx_ring + head * size_of::<Descriptor>());
         }
+    }
+
+    #[ktest]
+    fn tx_progress_matches_outstanding_across_wrap() {
+        let mut ring = RingState::new(4);
+        let mut submitted = 0u64;
+        let mut reclaimed = 0u64;
+
+        for _ in 0..3 {
+            ring.reserve().unwrap();
+            submitted += 1;
+        }
+        for _ in 0..2 {
+            ring.reclaim_one().unwrap();
+            reclaimed += 1;
+        }
+        for _ in 0..3 {
+            ring.reserve().unwrap();
+            submitted += 1;
+        }
+        for _ in 0..4 {
+            assert_eq!(submitted - reclaimed, ring.used() as u64);
+            ring.reclaim_one().unwrap();
+            reclaimed += 1;
+        }
+        assert_eq!(submitted, reclaimed);
+        assert_eq!(ring.used(), 0);
     }
 }
