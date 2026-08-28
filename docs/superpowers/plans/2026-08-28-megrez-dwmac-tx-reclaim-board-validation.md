@@ -452,12 +452,25 @@ python3 -m tools.riscv.megrez_debug board \
   --recovery-result "$VALIDATION_ROOT/recovery.json" \
   --output-directory "$BOARD_ROOT" \
   --timeout 300 \
-  --dry-run
+  --dry-run > "$VALIDATION_ROOT/dry-run-actions.json"
+python3 - "$VALIDATION_ROOT/dry-run-actions.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+actions = json.loads(Path(sys.argv[1]).read_text())
+names = [item["action"] for item in actions]
+assert names.count("boot-once") == 1
+assert names.count("cache-or-transfer") == 3
+assert names[-1] == "await-automatic-recovery"
+assert not {"saveenv", "reset", "boot-twice"}.intersection(names)
+PY
 ```
 
-Expected: the printed action list contains volatile RAM loads, CRC checks,
-temporary `setenv`, and one `booti`; it contains no `saveenv`, `reset`, or
-second `booti`. Dry-run must not open or mutate the board.
+Expected: the structural action list contains three volatile cache-or-transfer
+steps, one `boot-once`, marker capture, and automatic recovery; it contains no
+persistent environment write, reset, or second boot action. Dry-run must not
+open or mutate the board.
 
 - [ ] **Step 3: Record the immediate go/no-go decision**
 
