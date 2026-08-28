@@ -82,12 +82,12 @@ The result is translated to `StageResult(stage="recovery")`.
 ### Preboard Permit
 
 `megrez_debug.py preboard` validates the plan and requires matching passed
-`fast`, `desktop`, and `recovery` results. It reopens every artifact, reruns
+`desktop` and `recovery` results. It reopens every artifact, reruns
 the rootfs contract, checks both DTBs, checks the current Git commit, and
 atomically publishes `preboard.json` with:
 
 - schema and plan hash;
-- exact hashes of the three prerequisite results;
+- exact hashes of the two prerequisite results;
 - current commit;
 - board transfer names and expected CRC32 values;
 - recovery timeout and the sole allowed physical boot arguments.

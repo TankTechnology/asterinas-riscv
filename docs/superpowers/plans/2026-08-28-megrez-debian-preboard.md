@@ -58,7 +58,7 @@
 - Modify: `tools/riscv/tests/test_megrez_debug.py`
 - Modify: `Makefile`
 
-- [ ] Add RED tests for exact passed `fast`, `desktop`, and `recovery` results,
+- [ ] Add RED tests for exact passed `desktop` and `recovery` results,
   result-file one-open hashing, plan/commit/artifact drift, four-hart Sv39 DTB
   checks, recovery-kernel mismatch, stale permit invalidation, output swaps,
   and first/second signal behavior.
