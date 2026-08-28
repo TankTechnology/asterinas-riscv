@@ -115,6 +115,10 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
             bootargs.split(),
         )
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.16.28,d8:43:ae:b1:f8:12",
+            bootargs.split(),
+        )
         self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
         for variable in (
             "ASTERINAS_DESKTOP_M4_CONSOLE",

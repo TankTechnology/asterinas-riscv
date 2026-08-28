@@ -48,9 +48,15 @@ BOARD_ADDRESS = "10.100.19.200"
 HOST_ADDRESS = "10.100.19.216"
 GATEWAY_ADDRESS = "10.100.16.1"
 GATEWAY_HARDWARE_ADDRESS = "4c:d6:29:18:93:43"
+BAIDU_ADDRESS = "10.100.16.28"
+BAIDU_HARDWARE_ADDRESS = "d8:43:ae:b1:f8:12"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
-NEIGHBOR_BOOTARG = (
-    f"asterinas.neighbor=eic7700-rj45,{GATEWAY_ADDRESS},{GATEWAY_HARDWARE_ADDRESS}"
+NEIGHBOR_BOOTARGS = " ".join(
+    f"asterinas.neighbor=eic7700-rj45,{address},{hardware_address}"
+    for address, hardware_address in (
+        (GATEWAY_ADDRESS, GATEWAY_HARDWARE_ADDRESS),
+        (BAIDU_ADDRESS, BAIDU_HARDWARE_ADDRESS),
+    )
 )
 SERIAL_EVIDENCE_BOOTARGS = " ".join(
     f"systemd.setenv={name}=/dev/ttyS0"
@@ -168,7 +174,7 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
     restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
     return (
         "console=ttyS0 console=tty0 cpu_no_boost_1_6ghz loglevel=info "
-        f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARG}{restart} "
+        f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARGS}{restart} "
         f"{SERIAL_EVIDENCE_BOOTARGS} "
         "-- --root-init=systemd"
     )
