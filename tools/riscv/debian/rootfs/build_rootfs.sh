@@ -1396,10 +1396,15 @@ EOF
         mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-basic.service \
             "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-timeline-basic.service"
+        # graphical.target can remain blocked by the long-lived Xorg service
+        # on this minimal kernel.  Start the browser workload from
+        # multi-user.target instead; its wait-x preflight still enforces the
+        # actual display readiness before Firefox is exec'd.
+        mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- ../asterinas-browser-web.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web.service"
+            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-browser-web.service"
         ln -s -- ../asterinas-browser-web-evidence.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web-evidence.service"
+            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-browser-web-evidence.service"
     fi
     rm -f -- "$stage/etc/systemd/system/default.target"
     ln -s -- /lib/systemd/system/graphical.target \
