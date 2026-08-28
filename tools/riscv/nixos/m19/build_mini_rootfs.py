@@ -168,6 +168,11 @@ subprocess.run([
     DST_ROOT / "root/primetest",
     str(REPO / "tools/riscv/nixos/m19/primetest.c"),
 ], check=True)
+subprocess.run([
+    muslcc, "-O2", "-static", "-pthread", "-o",
+    DST_ROOT / "root/syncobjtest",
+    str(REPO / "tools/riscv/nixos/m19/syncobjtest.c"),
+], check=True)
 
 init = """#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev
@@ -199,6 +204,9 @@ echo MINI_PUBLIC_KMS_DONE
 echo MINI_PRIME_BEGIN
 /root/primetest 2>&1
 echo "MINI_PRIME_RC=$?"
+echo MINI_SYNCOBJ_BEGIN
+/root/syncobjtest 2>&1
+echo "MINI_SYNCOBJ_RC=$?"
 echo MINI_RAW_BEGIN
 LD_PRELOAD=/root/ioctltrace.so /root/virgltest 2>&1
 echo "MINI_RAW_RC=$?"

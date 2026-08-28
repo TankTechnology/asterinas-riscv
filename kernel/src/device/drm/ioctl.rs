@@ -14,6 +14,10 @@ use super::{
     DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes,
     DrmModeGetProperty, DrmModeMapDumb, DrmModeObjGetProperties, DrmPrimeHandle, DrmSetClientCap,
     DrmVersion, DrmWaitVblank,
+    syncobj::{
+        DrmSyncobjArray, DrmSyncobjCreate, DrmSyncobjDestroy, DrmSyncobjEventfd, DrmSyncobjHandle,
+        DrmSyncobjTimelineArray, DrmSyncobjTimelineWait, DrmSyncobjTransfer, DrmSyncobjWait,
+    },
     virtio_gpu::{
         DrmVirtgpu3dTransferFromHost, DrmVirtgpu3dTransferToHost, DrmVirtgpu3dWait,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
@@ -33,6 +37,20 @@ pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 pub(super) type WaitVblank = ioc!(DRM_IOCTL_WAIT_VBLANK, b'd', 0x3a, InOutData<DrmWaitVblank>);
 pub(super) type CrtcGetSequence = ioc!(DRM_IOCTL_CRTC_GET_SEQUENCE, b'd', 0x3b, InOutData<DrmCrtcGetSequence>);
 pub(super) type CrtcQueueSequence = ioc!(DRM_IOCTL_CRTC_QUEUE_SEQUENCE, b'd', 0x3c, InOutData<DrmCrtcQueueSequence>);
+
+// DRM synchronization objects and timeline synchronization.
+pub(super) type SyncobjCreate = ioc!(DRM_IOCTL_SYNCOBJ_CREATE, b'd', 0xbf, InOutData<DrmSyncobjCreate>);
+pub(super) type SyncobjDestroy = ioc!(DRM_IOCTL_SYNCOBJ_DESTROY, b'd', 0xc0, InOutData<DrmSyncobjDestroy>);
+pub(super) type SyncobjHandleToFd = ioc!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, b'd', 0xc1, InOutData<DrmSyncobjHandle>);
+pub(super) type SyncobjFdToHandle = ioc!(DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, b'd', 0xc2, InOutData<DrmSyncobjHandle>);
+pub(super) type SyncobjWait = ioc!(DRM_IOCTL_SYNCOBJ_WAIT, b'd', 0xc3, InOutData<DrmSyncobjWait>);
+pub(super) type SyncobjReset = ioc!(DRM_IOCTL_SYNCOBJ_RESET, b'd', 0xc4, InOutData<DrmSyncobjArray>);
+pub(super) type SyncobjSignal = ioc!(DRM_IOCTL_SYNCOBJ_SIGNAL, b'd', 0xc5, InOutData<DrmSyncobjArray>);
+pub(super) type SyncobjTimelineWait = ioc!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, b'd', 0xca, InOutData<DrmSyncobjTimelineWait>);
+pub(super) type SyncobjQuery = ioc!(DRM_IOCTL_SYNCOBJ_QUERY, b'd', 0xcb, InOutData<DrmSyncobjTimelineArray>);
+pub(super) type SyncobjTransfer = ioc!(DRM_IOCTL_SYNCOBJ_TRANSFER, b'd', 0xcc, InOutData<DrmSyncobjTransfer>);
+pub(super) type SyncobjTimelineSignal = ioc!(DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, b'd', 0xcd, InOutData<DrmSyncobjTimelineArray>);
+pub(super) type SyncobjEventfd = ioc!(DRM_IOCTL_SYNCOBJ_EVENTFD, b'd', 0xcf, InOutData<DrmSyncobjEventfd>);
 
 // GEM ioctls.
 pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);

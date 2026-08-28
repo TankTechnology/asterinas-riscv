@@ -12,6 +12,7 @@
 )]
 
 pub use clock_gettime::ClockId;
+pub(crate) use eventfd::EventFile;
 use ostd::{arch::cpu::context::UserContext, user::UserContextApi};
 pub use timer_create::create_timer;
 

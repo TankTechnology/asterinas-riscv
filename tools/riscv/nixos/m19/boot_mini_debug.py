@@ -194,7 +194,7 @@ def main() -> int:
         if ("MESA-DBG" in s or "M19_GL_" in s or "MINI_EGL_RC" in s
                 or "MESA-LOADER" in s or "using driver" in s
                 or "pipe_loader" in s or "VIRTGPU" in s or "MINI_PRIME" in s
-                or "M20_PRIME" in s or "MINI_RAW_RC" in s):
+                or "M20_PRIME" in s or "SYNCOBJ" in s or "MINI_RAW_RC" in s):
             print(f"  {s}")
     print(f"\n[full log] {LOG}")
     required_markers = [
@@ -219,6 +219,8 @@ def main() -> int:
         required_markers.extend((
             "M20_PRIME_PASS",
             "MINI_PRIME_RC=0",
+            "M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer",
+            "MINI_SYNCOBJ_RC=0",
             "M16_VIRGL_RAW_PASS",
             "MINI_RAW_RC=0",
         ))
@@ -233,6 +235,7 @@ def main() -> int:
         ))
     forbidden_markers = [
         "M20_PRIME_FAIL",
+        "M19_SYNCOBJ_FAIL",
         "M16_VIRGL_FAIL",
         "M19_EGL_FAIL",
         "M19_GL_RENDERER llvmpipe",
@@ -247,7 +250,7 @@ def main() -> int:
     ]
     return_codes = re.findall(
         r"MINI_(?:MODETEST_ENUM|MODETEST_LEGACY|MODETEST_ATOMIC|"
-        r"KMSCUBE_LEGACY|KMSCUBE_ATOMIC|PRIME|RAW|EGL)_RC=(-?\d+)",
+        r"KMSCUBE_LEGACY|KMSCUBE_ATOMIC|PRIME|SYNCOBJ|RAW|EGL)_RC=(-?\d+)",
         text,
     )
     kmscube_reports = len(re.findall(r"Rendered 4 frames", text))

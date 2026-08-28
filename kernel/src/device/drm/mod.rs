@@ -27,6 +27,7 @@ mod prime;
 mod property;
 mod queue;
 mod resource_tracking;
+mod syncobj;
 mod vblank;
 mod virgl_resource;
 mod virtio_gpu;
@@ -124,6 +125,8 @@ const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 6;
 const DRM_CAP_CURSOR_WIDTH: u64 = 8;
 const DRM_CAP_CURSOR_HEIGHT: u64 = 9;
 const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
+const DRM_CAP_SYNCOBJ: u64 = 0x13;
+const DRM_CAP_SYNCOBJ_TIMELINE: u64 = 0x14;
 /// `DRM_CAP_PRIME`.
 const DRM_CAP_PRIME: u64 = 0x5;
 /// `DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT`.
@@ -1047,6 +1050,9 @@ struct DriInner {
     /// Published and reserved per-file handles for each GEM object.
     object_handle_counts: BTreeMap<u32, usize>,
     next_handle: u32,
+    /// Per-file DRM synchronization-object handle table.
+    syncobjs: BTreeMap<u32, Arc<syncobj::SyncObject>>,
+    next_syncobj_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
     /// Cursor resource and position owned by this open DRM file.
     cursor: CursorState,
@@ -1094,6 +1100,8 @@ impl DriHandle {
                 handles: BTreeMap::new(),
                 object_handle_counts: BTreeMap::new(),
                 next_handle: 1,
+                syncobjs: BTreeMap::new(),
+                next_syncobj_handle: 1,
                 framebuffers: BTreeMap::new(),
                 cursor: CursorState::default(),
             }),
@@ -1683,6 +1691,8 @@ impl PerOpenFileOps for DriHandle {
                     DRM_CAP_CURSOR_WIDTH => u64::from(CURSOR_SIZE),
                     DRM_CAP_CURSOR_HEIGHT => u64::from(CURSOR_SIZE),
                     DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
+                    DRM_CAP_SYNCOBJ => 1,
+                    DRM_CAP_SYNCOBJ_TIMELINE => 1,
                     DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT_EXPORT,
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
@@ -1725,6 +1735,33 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ CrtcQueueSequence => {
                 vblank::queue_crtc_sequence(self, cmd)
+            }
+            cmd @ SyncobjCreate => {
+                syncobj::create(self, cmd)
+            }
+            cmd @ SyncobjDestroy => {
+                syncobj::destroy(self, cmd)
+            }
+            cmd @ SyncobjWait => {
+                syncobj::wait(self, cmd)
+            }
+            cmd @ SyncobjReset => {
+                syncobj::reset(self, cmd)
+            }
+            cmd @ SyncobjSignal => {
+                syncobj::signal(self, cmd)
+            }
+            cmd @ SyncobjTimelineWait => {
+                syncobj::timeline_wait(self, cmd)
+            }
+            cmd @ SyncobjQuery => {
+                syncobj::query(self, cmd)
+            }
+            cmd @ SyncobjTransfer => {
+                syncobj::transfer(self, cmd)
+            }
+            cmd @ SyncobjTimelineSignal => {
+                syncobj::timeline_signal(self, cmd)
             }
             cmd @ AuthMagic => {
                 let auth = cmd.read()?;
@@ -2081,6 +2118,15 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ VirtgpuExecbuffer => {
                 virtio_gpu::virtgpu_execbuffer(self, cmd, file_table)
+            }
+            cmd @ SyncobjHandleToFd => {
+                syncobj::handle_to_fd(self, cmd, file_table)
+            }
+            cmd @ SyncobjFdToHandle => {
+                syncobj::fd_to_handle(self, cmd, file_table)
+            }
+            cmd @ SyncobjEventfd => {
+                syncobj::eventfd(self, cmd, file_table)
             }
             cmd @ PrimeHandleToFd => {
                 let mut req = match cmd.read() {

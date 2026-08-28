@@ -35,6 +35,12 @@ drm_buffer_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_GEM_CLOSE |
                  DRM_IOCTL_MODE_DESTROY_DUMB | DRM_IOCTL_PRIME_HANDLE_TO_FD |
                  DRM_IOCTL_PRIME_FD_TO_HANDLE | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
 drm_fence_ops = DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
+drm_syncobj_ops = DRM_IOCTL_SYNCOBJ_CREATE | DRM_IOCTL_SYNCOBJ_DESTROY |
+                  DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE |
+                  DRM_IOCTL_SYNCOBJ_WAIT | DRM_IOCTL_SYNCOBJ_RESET |
+                  DRM_IOCTL_SYNCOBJ_SIGNAL | DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT |
+                  DRM_IOCTL_SYNCOBJ_QUERY | DRM_IOCTL_SYNCOBJ_TRANSFER |
+                  DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL | DRM_IOCTL_SYNCOBJ_EVENTFD;
 drm_auth_ops = DRM_IOCTL_GET_MAGIC | DRM_IOCTL_AUTH_MAGIC;
 drm_kms_query_ops = DRM_IOCTL_GET_CAP | DRM_IOCTL_MODE_GETRESOURCES |
                     DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETCONNECTOR |
@@ -58,6 +64,9 @@ ioctl(fd, op = <drm_buffer_ops>, ..);
 
 // Submit virgl work and query or wait for resource fences
 ioctl(fd, op = <drm_fence_ops>, ..);
+
+// Create, share, signal, transfer, query, and wait for DRM synchronization objects
+ioctl(fd, op = <drm_syncobj_ops>, ..);
 
 // Discover DRM KMS objects, planes, properties and blobs
 ioctl(fd, op = <drm_kms_query_ops>, ..);

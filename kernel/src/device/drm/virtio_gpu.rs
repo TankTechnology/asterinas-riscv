@@ -12,6 +12,7 @@ use super::{
     DumbBuffer, GemResourceState,
     dumb::{PendingDumbBuffer, allocate_pool_span},
     gem::{GemObjectRef, PendingGemHandle},
+    syncobj::{MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject},
     virgl_resource::{LiveGemResource, Transfer3d},
 };
 use crate::{
@@ -40,6 +41,15 @@ pub(super) struct DrmVirtgpuExecbuffer {
     pub num_out_syncobjs: u32,
     pub in_syncobjs: u64,
     pub out_syncobjs: u64,
+}
+
+/// One input or output syncobj descriptor in `drm_virtgpu_execbuffer`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuExecbufferSyncobj {
+    handle: u32,
+    flags: u32,
+    point: u64,
 }
 
 /// `struct drm_virtgpu_getparam`.
@@ -539,6 +549,9 @@ const VIRTGPU_EXECBUF_FENCE_FD_IN: u32 = 0x01;
 /// fd signaling when the submitted command completes).
 const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
 
+/// Reset an input syncobj after it has been consumed by the submission.
+const VIRTGPU_EXECBUF_SYNCOBJ_RESET: u32 = 0x01;
+
 /// Submits a virgl command stream to the host.
 ///
 /// Mesa encodes GL commands in a virgl command buffer and submits them through
@@ -563,14 +576,24 @@ pub(super) fn virtgpu_execbuffer(
         let req = cmd.read()?;
         if req.flags & !(VIRTGPU_EXECBUF_FENCE_FD_IN | VIRTGPU_EXECBUF_FENCE_FD_OUT) != 0
             || req.ring_idx != 0
-            || req.syncobj_stride != 0
-            || req.num_in_syncobjs != 0
-            || req.num_out_syncobjs != 0
-            || req.in_syncobjs != 0
-            || req.out_syncobjs != 0
         {
             return_errno_with_message!(Errno::EINVAL, "unsupported execbuffer synchronization");
         }
+
+        let input_syncobjs = parse_execbuffer_syncobjs(
+            handle,
+            req.in_syncobjs,
+            req.num_in_syncobjs,
+            req.syncobj_stride,
+            SyncobjDirection::Input,
+        )?;
+        let output_syncobjs = parse_execbuffer_syncobjs(
+            handle,
+            req.out_syncobjs,
+            req.num_out_syncobjs,
+            req.syncobj_stride,
+            SyncobjDirection::Output,
+        )?;
 
         // Read the command buffer from userspace
         if req.size == 0 || req.command == 0 {
@@ -603,6 +626,12 @@ pub(super) fn virtgpu_execbuffer(
                     Error::with_message(Errno::EINVAL, "execbuffer input fd is not a sync fence")
                 })?;
             fence_file.fence().wait_for_dependency();
+        }
+        for descriptor in &input_syncobjs {
+            descriptor
+                .syncobj
+                .wait_for_fence(descriptor.point, false)?
+                .wait_for_dependency();
         }
 
         let resource_creation = handle.gpu_manager.resource_creation.lock();
@@ -659,8 +688,25 @@ pub(super) fn virtgpu_execbuffer(
         handle
             .gpu_manager
             .associate_resource_fence(&object_ids, &fence);
-        drop(resource_transaction);
         drop(resource_creation);
+
+        for descriptor in &output_syncobjs {
+            if descriptor.point == 0 {
+                descriptor.syncobj.replace_fence(Some(fence.clone()));
+            } else {
+                descriptor
+                    .syncobj
+                    .add_point(descriptor.point, fence.clone())?;
+            }
+        }
+        for descriptor in &input_syncobjs {
+            if descriptor.reset {
+                descriptor.syncobj.replace_fence(None);
+            }
+        }
+        // Publish syncobj payloads in the same total order as control-queue
+        // submission, including across DRM files that share a syncobj fd.
+        drop(resource_transaction);
 
         let mut installed_fence_fd = None;
         if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
@@ -683,6 +729,83 @@ pub(super) fn virtgpu_execbuffer(
         }
         Ok(0)
     })())
+}
+
+struct ExecbufferSyncobj {
+    syncobj: Arc<SyncObject>,
+    point: u64,
+    reset: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SyncobjDirection {
+    Input,
+    Output,
+}
+
+fn parse_execbuffer_syncobjs(
+    handle: &super::DriHandle,
+    pointer: u64,
+    count: u32,
+    stride: u32,
+    direction: SyncobjDirection,
+) -> Result<Vec<ExecbufferSyncobj>> {
+    let count = count as usize;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if count > MAX_SYNCOBJ_ARRAY_ITEMS {
+        return_errno_with_message!(Errno::EINVAL, "too many execbuffer syncobjs");
+    }
+    // `handle` and `flags` must always be present. Older userspace may use a
+    // shorter descriptor without the optional timeline point.
+    if pointer == 0 || stride < 8 {
+        return_errno_with_message!(Errno::EINVAL, "invalid execbuffer syncobj array");
+    }
+
+    let stride = stride as usize;
+    let copy_len = stride.min(size_of::<DrmVirtgpuExecbufferSyncobj>());
+    let mut wire = Vec::new();
+    wire.try_reserve_exact(count)
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate syncobj descriptors"))?;
+    for index in 0..count {
+        let offset = index
+            .checked_mul(stride)
+            .and_then(|offset| pointer.checked_add(offset as u64))
+            .ok_or_else(|| {
+                Error::with_message(Errno::EFAULT, "syncobj descriptor address overflows")
+            })?;
+        let address = usize::try_from(offset).map_err(|_| {
+            Error::with_message(Errno::EFAULT, "syncobj descriptor address overflows")
+        })?;
+        let mut bytes = [0u8; size_of::<DrmVirtgpuExecbufferSyncobj>()];
+        current_userspace!().read_bytes(address, &mut bytes[..copy_len])?;
+        wire.push(DrmVirtgpuExecbufferSyncobj {
+            handle: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            flags: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            point: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        });
+    }
+
+    let handles: Vec<_> = wire.iter().map(|descriptor| descriptor.handle).collect();
+    let syncobjs = super::syncobj::lookup_syncobjs(handle, &handles)?;
+    wire.into_iter()
+        .zip(syncobjs)
+        .map(|(descriptor, syncobj)| {
+            if (direction == SyncobjDirection::Input
+                && descriptor.flags & !VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0)
+                || (direction == SyncobjDirection::Output && descriptor.flags != 0)
+            {
+                return_errno_with_message!(Errno::EINVAL, "unknown execbuffer syncobj flags");
+            }
+            Ok(ExecbufferSyncobj {
+                syncobj,
+                point: descriptor.point,
+                reset: direction == SyncobjDirection::Input
+                    && descriptor.flags & VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0,
+            })
+        })
+        .collect()
 }
 
 /// CONTEXT_INIT: reject explicit context initialization when the corresponding

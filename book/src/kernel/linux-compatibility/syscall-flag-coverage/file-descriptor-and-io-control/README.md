@@ -156,8 +156,17 @@ Render nodes do not use this legacy authentication flow.
 `VIRTGPU_EXECBUF_FENCE_FD_IN` and `VIRTGPU_EXECBUF_FENCE_FD_OUT`.
 The input fd gates submission until its sync fence signals;
 the output is a close-on-exec, pollable asynchronous fence fd.
-Syncobj arrays and alternate rings are not supported.
+Input and output syncobj arrays support binary payloads and timeline points;
+input descriptors may request reset after a successful submission.
+Alternate rings are not supported.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
+
+DRM synchronization objects support binary and timeline signaling and waits,
+reset, query, transfer, whole-object fd sharing, `sync_file` import and export,
+and one-shot eventfd notification.
+Wait-for-submit, wait-all, and wait-available behavior is implemented.
+The deadline flag is accepted as a compatibility scheduling hint;
+it does not currently alter GPU scheduling priority.
 
 The primary node exposes one CRTC, connector, encoder, and primary plane with
 globally unique object IDs.

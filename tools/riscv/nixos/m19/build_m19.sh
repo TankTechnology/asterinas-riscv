@@ -47,6 +47,8 @@ mkdir -p "${ROOTFS}/root"
     "${REPO_ROOT}/tools/riscv/nixos/m16/virgltest.c"
 "${MUSLCC}" -O2 -static -pthread -o "${ROOTFS}/root/primetest" \
     "$(dirname "${BASH_SOURCE[0]}")/primetest.c"
+"${MUSLCC}" -O2 -static -pthread -o "${ROOTFS}/root/syncobjtest" \
+    "$(dirname "${BASH_SOURCE[0]}")/syncobjtest.c"
 
 echo "==> packing initramfs (Debian rootfs, this takes a moment)"
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )

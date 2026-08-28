@@ -10,11 +10,12 @@
 
 use core::{
     fmt::Display,
-    sync::atomic::{AtomicU8, Ordering},
+    mem,
+    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
 use aster_virtio::device::gpu::{GpuCommandCompletion, device::GpuCommandTicket};
-use ostd::sync::WaitQueue;
+use ostd::sync::{LocalIrqDisabled, WaitQueue};
 
 use crate::{
     events::IoEvents,
@@ -26,8 +27,8 @@ use crate::{
     process::signal::{PollHandle, Pollable, Pollee},
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FenceState {
     Pending,
     Completed,
@@ -39,18 +40,84 @@ enum FenceState {
 pub(super) struct Fence {
     state: AtomicU8,
     ticket: Mutex<Option<GpuCommandTicket>>,
+    dependencies: SpinLock<Vec<Arc<Fence>>, LocalIrqDisabled>,
+    callbacks: SpinLock<Vec<Box<dyn FnOnce() + Send>>, LocalIrqDisabled>,
     pollee: Pollee,
     waiters: WaitQueue,
 }
 
 impl Fence {
     pub(super) fn new() -> Self {
+        Self::with_dependencies(Vec::new())
+    }
+
+    fn with_dependencies(dependencies: Vec<Arc<Fence>>) -> Self {
         Self {
             state: AtomicU8::new(FenceState::Pending as u8),
             ticket: Mutex::new(None),
+            dependencies: SpinLock::new(dependencies),
+            callbacks: SpinLock::new(Vec::new()),
             pollee: Pollee::new(),
             waiters: WaitQueue::new(),
         }
+    }
+
+    /// Returns an already-signaled software fence.
+    pub(super) fn new_signaled() -> Arc<Self> {
+        let fence = Arc::new(Self::new());
+        fence.signal_success();
+        fence
+    }
+
+    /// Builds a fence that signals after every dependency has completed.
+    ///
+    /// Error status is deliberately not propagated:
+    /// DRM synchronization treats a failed producer as a completed dependency,
+    /// just like a `sync_file` wait.
+    pub(super) fn chain(previous: Option<Arc<Self>>, current: Arc<Self>) -> Arc<Self> {
+        let mut pending = Vec::with_capacity(2);
+        if let Some(previous) = previous
+            && !Arc::ptr_eq(&previous, &current)
+        {
+            pending.push(previous);
+        }
+        pending.push(current);
+
+        // Flatten nested chains to their unsignaled leaves. Besides making
+        // polling linear in the dependency graph, this prevents completion of
+        // one old fence from recursively signaling thousands of timeline
+        // points on the interrupt stack.
+        let mut dependencies = Vec::new();
+        let mut visited = BTreeSet::new();
+        while let Some(dependency) = pending.pop() {
+            if !visited.insert(Arc::as_ptr(&dependency) as usize) || dependency.is_signaled() {
+                continue;
+            }
+            let nested = dependency.dependencies.lock().clone();
+            if nested.is_empty() {
+                dependencies.push(dependency);
+            } else {
+                pending.extend(nested);
+            }
+        }
+        if dependencies.is_empty() {
+            return Self::new_signaled();
+        }
+
+        // Keep the dependencies until the chained fence signals. Besides
+        // preserving their lifetime, this lets a syncobj waiter actively poll
+        // the underlying virtio command ticket when no fence fd is being
+        // polled by userspace.
+        let chained = Arc::new(Self::with_dependencies(dependencies.clone()));
+        let barrier = Arc::new(FenceBarrier {
+            remaining: AtomicUsize::new(dependencies.len()),
+            output: chained.clone(),
+        });
+        for dependency in dependencies {
+            let barrier = barrier.clone();
+            dependency.on_signal(move || barrier.complete_one());
+        }
+        chained
     }
 
     pub(super) fn attach(&self, ticket: GpuCommandTicket) {
@@ -59,7 +126,35 @@ impl Fence {
     }
 
     pub(super) fn is_signaled(&self) -> bool {
-        self.state() != FenceState::Pending
+        self.is_signaled_raw()
+    }
+
+    /// Actively advances device-backed dependencies before checking the state.
+    pub(super) fn poll_and_is_signaled(&self) -> bool {
+        self.poll_device_completion();
+        self.is_signaled_raw()
+    }
+
+    /// Runs `callback` exactly once after this fence becomes signaled.
+    ///
+    /// Registration is safe against a concurrent virtio completion: the state
+    /// is checked again while holding the callback lock, after the completion
+    /// side has published its state.
+    pub(super) fn on_signal(&self, callback_fn: impl FnOnce() + Send + 'static) {
+        if self.is_signaled() {
+            callback_fn();
+            return;
+        }
+
+        let mut callbacks = self.callbacks.lock();
+        // Do not poll while holding the callback lock: completing a ticket
+        // invokes `run_callbacks` and would deadlock on this same lock.
+        if self.is_signaled_raw() {
+            drop(callbacks);
+            callback_fn();
+        } else {
+            callbacks.push(Box::new(callback_fn));
+        }
     }
 
     /// Signals a software-backed fence after a successful KMS commit.
@@ -75,8 +170,18 @@ impl Fence {
     fn signal(&self, state: FenceState, events: IoEvents) {
         let old_state = self.state.swap(state as u8, Ordering::AcqRel);
         debug_assert_eq!(old_state, FenceState::Pending as u8);
+        self.run_callbacks();
         self.waiters.wake_all();
         self.pollee.notify(events);
+    }
+
+    fn run_callbacks(&self) {
+        // A signaled chain no longer needs to retain its dependency graph.
+        self.dependencies.lock().clear();
+        let callbacks = mem::take(&mut *self.callbacks.lock());
+        for callback in callbacks {
+            callback();
+        }
     }
 
     pub(super) fn try_finish(&self) -> Result<bool> {
@@ -110,9 +215,33 @@ impl Fence {
     }
 
     fn poll_device_completion(&self) {
-        if self.is_signaled() {
+        if self.is_signaled_raw() {
             return;
         }
+
+        // Walk chains iteratively so a long userspace timeline cannot consume
+        // the small kernel stack. Clone each edge before polling because a
+        // completion may signal its chain and clear that dependency list.
+        let mut pending = self.dependencies.lock().clone();
+        let mut visited = BTreeSet::new();
+        while let Some(dependency) = pending.pop() {
+            if !visited.insert(Arc::as_ptr(&dependency) as usize) {
+                continue;
+            }
+            if dependency.is_signaled_raw() {
+                continue;
+            }
+            pending.extend(dependency.dependencies.lock().iter().cloned());
+            dependency.poll_own_ticket();
+        }
+        if self.is_signaled_raw() {
+            return;
+        }
+
+        self.poll_own_ticket();
+    }
+
+    fn poll_own_ticket(&self) {
         if let Some(ticket) = self.ticket.lock().as_ref() {
             ticket.poll_completion();
         }
@@ -154,6 +283,10 @@ impl Fence {
         }
     }
 
+    fn is_signaled_raw(&self) -> bool {
+        self.state() != FenceState::Pending
+    }
+
     fn check_io_events(&self) -> IoEvents {
         self.poll_device_completion();
         if !self.is_signaled() {
@@ -172,8 +305,25 @@ impl GpuCommandCompletion for Fence {
             .state
             .swap(FenceState::Completed as u8, Ordering::AcqRel);
         debug_assert_eq!(old_state, FenceState::Pending as u8);
+        self.run_callbacks();
         self.waiters.wake_all();
-        self.pollee.notify(IoEvents::IN);
+        // `ERR` is always reported by poll, even when userspace did not ask
+        // for it. Wake those pollers now; `check_io_events` filters successful
+        // completions back to `IN` only.
+        self.pollee.notify(IoEvents::IN | IoEvents::ERR);
+    }
+}
+
+struct FenceBarrier {
+    remaining: AtomicUsize,
+    output: Arc<Fence>,
+}
+
+impl FenceBarrier {
+    fn complete_one(&self) {
+        if self.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.output.signal_success();
+        }
     }
 }
 
@@ -289,5 +439,48 @@ mod tests {
         fence.signal_success();
         waiter.join();
         assert!(finished.load(Ordering::Acquire));
+    }
+
+    #[ktest]
+    fn callback_handles_signal_registration_race_boundaries() {
+        let before = Arc::new(AtomicBool::new(false));
+        let fence = Fence::new();
+        {
+            let before = before.clone();
+            fence.on_signal(move || before.store(true, Ordering::Release));
+        }
+        assert!(!before.load(Ordering::Acquire));
+        fence.signal_success();
+        assert!(before.load(Ordering::Acquire));
+
+        let after = Arc::new(AtomicBool::new(false));
+        {
+            let after = after.clone();
+            fence.on_signal(move || after.store(true, Ordering::Release));
+        }
+        assert!(after.load(Ordering::Acquire));
+    }
+
+    #[ktest]
+    fn chained_fence_waits_for_every_dependency() {
+        let first = Arc::new(Fence::new());
+        let second = Arc::new(Fence::new());
+        let chained = Fence::chain(Some(first.clone()), second.clone());
+        second.signal_success();
+        assert!(!chained.is_signaled());
+        first.signal_failure();
+        assert!(chained.is_signaled());
+    }
+
+    #[ktest]
+    fn chained_fence_flattens_long_timeline_dependencies() {
+        let leaf = Arc::new(Fence::new());
+        let mut chained = Fence::chain(None, leaf.clone());
+        for _ in 0..1024 {
+            chained = Fence::chain(Some(chained), Fence::new_signaled());
+        }
+        assert_eq!(chained.dependencies.lock().len(), 1);
+        leaf.signal_success();
+        assert!(chained.is_signaled());
     }
 }

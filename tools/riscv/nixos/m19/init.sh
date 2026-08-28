@@ -18,6 +18,9 @@ export EGL_LOG_LEVEL=debug
 /bin/busybox echo M20_PRIME_BEGIN
 /root/primetest
 /bin/busybox echo "M20_PRIME_RC=$?"
+/bin/busybox echo M20_SYNCOBJ_BEGIN
+/root/syncobjtest
+/bin/busybox echo "M20_SYNCOBJ_RC=$?"
 /bin/busybox echo M19_VIRGL_RAW_BEGIN
 /root/virgltest
 /bin/busybox echo "M19_VIRGL_RAW_RC=$?"

@@ -845,3 +845,38 @@ For this gate, `build_mini_disk.sh` is the authoritative rebuild step: it
 regenerates both the ext2 Mesa root disk and the small bootstrap cpio consumed
 by `boot_mini_debug.py`. Running only `build_mini_rootfs.py` updates a staging
 tree but leaves the QEMU disk unchanged.
+
+## 2026-08-28 DRM syncobj and timeline synchronization
+
+The DRM file state now owns Linux-compatible syncobj handles backed by
+shareable synchronization objects. Binary reset/signal/wait operations and
+timeline points are supported together with whole-syncobj fd sharing,
+`sync_file` import/export, transfer, query, wait-for-submit, wait-available,
+wait-all, and one-shot eventfd notification. `DRM_CAP_SYNCOBJ` and
+`DRM_CAP_SYNCOBJ_TIMELINE` are reported on DRM clients. `WAIT_DEADLINE` is
+accepted as a compatibility hint but is not yet propagated into GPU scheduling.
+
+`VIRTGPU_EXECBUFFER` accepts Linux's input and output syncobj arrays, including
+the older eight-byte descriptor stride and optional timeline points. Input
+fences are consumed before GPU resource locks are acquired. Output points own
+the actual asynchronous virtio-gpu completion fence, and their publication is
+serialized in the same global order as control-queue submission. Binary input
+syncobjs can request reset after a successful submission.
+
+The fence layer separates passive state inspection from active device polling,
+so spinlock-protected resource and timeline bookkeeping never drives virtio
+callbacks. Timeline chains are flattened to unique unsignaled leaves; this
+keeps polling linear, prevents recursive completion from exhausting the kernel
+stack, and releases dependency graphs after signaling. Per-file handles,
+timeline points, ioctl arrays, and retained eventfd watchers have explicit
+bounds. Eventfd kernel signaling uses an IRQ-safe counter and preserves Linux's
+overflow state.
+
+The new static RISC-V client validates binary and timeline behavior, absolute
+timeouts, future submission wakeups, transfer, shared object fds, `sync_file`
+round trips, eventfd notification, concurrency, descriptor validation, input
+reset, and a real virtio-gpu EXECBUFFER output point. The full Sv39 QEMU gate
+reported `M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd
+concurrency execbuffer` and `MINI_SYNCOBJ_RC=0`, then also passed PRIME, raw
+virgl, public legacy/atomic KMS, explicit synchronization, vblank UAPI, and four
+distinct Mesa virgl frames, ending in `MINI_VIRGL_PASS`.
