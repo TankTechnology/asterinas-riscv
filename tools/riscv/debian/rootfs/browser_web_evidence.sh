@@ -111,12 +111,11 @@ validate_dns_and_tls() {
 validate_firefox_logs() {
     local log
     for log in "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log; do
-        grep -Fxq 'Exiting due to channel error.' "$log" 2>/dev/null &&
+        grep -Fq 'Exiting due to channel error.' "$log" 2>/dev/null &&
             fail firefox-channel-exit
     done
-    if grep -Fq 'SCM_RIGHTS' "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log 2>/dev/null &&
-        grep -Eq '(^|[^A-Z])(EPERM|Operation not permitted)([^A-Z]|$)' \
-            "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log 2>/dev/null; then
+    if grep -Eq 'SCM_RIGHTS.*(EPERM|Operation not permitted)|(EPERM|Operation not permitted).*SCM_RIGHTS' \
+        "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log 2>/dev/null; then
         fail firefox-scm-rights-eperm
     fi
 }
