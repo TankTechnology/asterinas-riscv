@@ -23,6 +23,7 @@ from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
     browser_web_qemu_argv,
     classify_browser_web_qemu,
 )
+from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DESKTOP_M5_QEMU_BOOTARGS
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 
@@ -131,6 +132,27 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("curl -k", evidence)
         self.assertNotIn("--insecure", evidence)
 
+    def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        offline_evidence = (ROOTFS / "desktop_m5_evidence.sh").read_text()
+        online_evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
+        self.assertIn("desktop_standard_output=journal", builder)
+        self.assertIn("desktop_standard_error=journal", builder)
+        self.assertIn("StandardOutput=$desktop_standard_output", builder)
+        self.assertIn("StandardError=$desktop_standard_error", builder)
+        self.assertNotIn("systemd.log_level=debug", DESKTOP_M5_QEMU_BOOTARGS)
+        for marker in (
+            "DEBIAN_BROWSER_M5_READY",
+            "DEBIAN_BROWSER_WEB_READY",
+        ):
+            with self.subTest(marker=marker):
+                evidence = offline_evidence if "_M5_" in marker else online_evidence
+                self.assertIn(marker, evidence)
+        self.assertIn(
+            'readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"',
+            online_evidence,
+        )
+
     def test_qemu_runner_has_one_slirp_virtio_nic_and_fail_closed_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -147,6 +169,11 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("-nic", argv)
         self.assertEqual(argv.count("user,id=net0"), 1)
         self.assertEqual(argv.count("virtio-net-device,netdev=net0"), 1)
+        root_drives = [value for value in argv if ",id=rootdisk," in value]
+        self.assertEqual(len(root_drives), 1)
+        self.assertIn("cache=writeback", root_drives[0])
+        self.assertNotIn("cache=directsync", root_drives[0])
+        self.assertNotIn("cache=unsafe", root_drives[0])
         passing = ("\n".join(BROWSER_WEB_MILESTONES) + "\n").encode()
         self.assertTrue(classify_browser_web_qemu(passing, expected_debian_release="13.6").passed)
         for marker in (
