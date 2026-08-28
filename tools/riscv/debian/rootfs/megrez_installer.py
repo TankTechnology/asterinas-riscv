@@ -406,7 +406,7 @@ target=/dev/mmcblk0p2
 attempt=1
 fetched=0
 while [ "$attempt" -le 3 ]; do
-    if wget -T 30 -O - {quoted_url} | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock conv=notrunc count={blocks}; then
+    if wget -T 30 -O - {quoted_url} | gzip -dc | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock conv=notrunc count={blocks}; then
         fetched=1
         break
     fi
