@@ -180,6 +180,7 @@ def web_evidence() -> dict[str, bytes]:
             f"SYSTEM_CA_SHA256 sha256={system_ca_hash} path=/etc/ssl/certs/ca-certificates.crt\n"
             f"TRUST_STATIC_SHA256 sha256={trust_hash} path=/usr/share/asterinas/browser-web-trust-static.log\n"
             "BROWSER_WEB_SECURITY parent_pid=100 uid=1000 caps=zero nnp=1 sandbox_disable=absent\n"
+            "BROWSER_WEB_SECURITY service_pid=100 nrestarts=0 stable=1 active=1\n"
             "BROWSER_WEB_SECURITY child_pid=101 role=content caps=zero nnp=1 seccomp=2\n"
             "BROWSER_WEB_SECURITY child_pid=102 role=socket caps=zero nnp=1 seccomp=2\n"
         ).encode(),
@@ -352,6 +353,10 @@ class BrowserWebContractTests(unittest.TestCase):
             self.assertIn(required, evidence)
         self.assertNotIn("curl -k", evidence)
         self.assertNotIn("--insecure", evidence)
+        self.assertGreaterEqual(evidence.count("--property NRestarts"), 2)
+        self.assertIn("--property MainPID", evidence)
+        self.assertIn("systemctl is-active --quiet", evidence)
+        self.assertIn("firefox-pid-changed-during-gate", evidence)
 
     def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
@@ -496,6 +501,29 @@ class BrowserWebContractTests(unittest.TestCase):
             validate_web_evidence(
                 {**evidence, "firefox-stderr.log": b"x" * (16 * 1024 * 1024 + 1)}
             )
+
+        for log_name, log in (
+            ("firefox-stderr.log", b"Exiting due to channel error.\n"),
+            (
+                "firefox-mozilla.log",
+                b"EPERM SCM_RIGHTS contains a file container\n",
+            ),
+        ):
+            with self.subTest(log_name=log_name), self.assertRaises(GateFailure):
+                validate_web_evidence({**evidence, log_name: log})
+
+        for changed in (
+            b"BROWSER_WEB_SECURITY service_pid=999 nrestarts=0 stable=1 active=1",
+            b"BROWSER_WEB_SECURITY service_pid=100 nrestarts=1 stable=1 active=1",
+        ):
+            original = b"BROWSER_WEB_SECURITY service_pid=100 nrestarts=0 stable=1 active=1"
+            with self.subTest(changed=changed), self.assertRaises(GateFailure):
+                validate_web_evidence(
+                    {
+                        **evidence,
+                        "security.log": evidence["security.log"].replace(original, changed),
+                    }
+                )
 
     def test_online_root_checker_rejects_non_slirp_resolver(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
