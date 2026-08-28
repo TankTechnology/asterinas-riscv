@@ -178,7 +178,7 @@ version; silently combining properties is forbidden.
 | ring count/status/interrupts | TRM Part 4 | count-minus-one and W1C masks | aligned |
 | DMA address | pinned DT/vendor DMA API | retains original device address | supported for pinned DT |
 | descriptor CPU mapping | TRM System Port + vendor Linux | checked uncached alias | aligned; post-fix hardware result pending |
-| packet-buffer synchronization | TRM cache flush + vendor Linux | streaming DMA sync to/from device | aligned |
+| packet-buffer synchronization | TRM cache flush + vendor Linux | streaming DMA uses Zicbom, PBMT_NC, or checked System Port alias | statically aligned; post-fix hardware result pending |
 | PLIC lifecycle | TRM high-level IRQ | mask, complete, drain, rearm | aligned |
 
 ## Remaining unknowns and next evidence
@@ -190,9 +190,9 @@ constant. Before another physical run, static and simulated checks should:
    path and that an enabled IOMMU/translation is rejected;
 2. preserve the exact 5.20 descriptor/status/tail model in host tests;
 3. prove allocations outside the supported 16-GiB alias subset fail before
-   any descriptor is exposed to hardware;
-4. require the next board image to log physical address, DMA address, CPU alias
-   and MAC version before transmitting.
+   any descriptor or packet buffer is exposed to hardware;
+4. compile the packet-buffer bounce path so that the no-Zicbom/no-Svpbmt case
+   must consume the checked System Port alias.
 
 A device-specific public RTL8211F datasheet was not located on Realtek's
 official site during this audit. PHY identity and board straps are therefore
@@ -201,7 +201,6 @@ unversioned third-party PDF. This limits claims about undocumented PHY quirks;
 it does not weaken the schematic fact that each RGMII path has its own PHY and
 MDIO bus.
 
-Only the fourth item needs a board. It should be one recovery-armed,
-high-information discriminator after the first three pass. A pass or failure
-would then test a specific remaining hypothesis rather than initiate an open
-ended experiment.
+None of these items needs a board. After they pass, one recovery-armed physical
+run should validate the already selected packet-buffer fix rather than start a
+new open-ended diagnosis.
