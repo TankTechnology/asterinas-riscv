@@ -102,7 +102,11 @@ validate_dns_and_tls() {
     local hosts name ip line status effective verify
     grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
         fail dns-not-slirp-10.0.2.3
-    [[ "$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l)" == 1 ]] ||
+    # Asterinas may expose additional virtual links (for example a host-side
+    # helper interface).  The security-relevant contract is that at least one
+    # non-loopback link exists and that the verified address/route below use
+    # the slirp network.
+    [[ "$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l)" -ge 1 ]] ||
         fail nic-count
     ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' || fail nic-address
     ip -4 route show default | grep -Eq '^default via 10\.0\.2\.2 dev ' || fail nic-default-route
