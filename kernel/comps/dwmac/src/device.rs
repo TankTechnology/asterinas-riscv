@@ -307,10 +307,10 @@ impl DwmacDevice {
             .map_err(DeviceError::Platform)
     }
 
-    fn service_status(&mut self) {
+    fn service_status(&mut self) -> u32 {
         let Ok(status) = self.read(DMA_CHANNEL0_STATUS.offset()) else {
             self.fatal = true;
-            return;
+            return u32::MAX;
         };
         let needs_rx_resume = dma_status_needs_rx_resume(status);
         if status & DMA_STATUS_FATAL_BUS != 0 {
@@ -321,7 +321,7 @@ impl DwmacDevice {
             .is_err()
         {
             self.fatal = true;
-            return;
+            return status;
         }
         if needs_rx_resume
             && self
@@ -333,6 +333,7 @@ impl DwmacDevice {
         {
             self.fatal = true;
         }
+        status
     }
 }
 
@@ -395,7 +396,7 @@ impl AnyNetworkDevice for DwmacDevice {
     }
 
     fn notify_poll_end(&mut self) {
-        self.service_status();
+        let dma_status = self.service_status();
         let more_rx = !self.fatal && self.queue.can_receive();
         match self.rx_poll.finish(self.fatal, more_rx) {
             PollEndAction::Rearm => {
@@ -416,6 +417,22 @@ impl AnyNetworkDevice for DwmacDevice {
                 aster_network::raise_receive_softirq();
             }
             PollEndAction::Stop => {}
+        }
+        if let Some(rx) = self.rx_poll.take_progress_report() {
+            let tx = self.queue.progress();
+            ostd::info!(
+                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
+                rx.received,
+                rx.budget_exhaustions,
+                rx.reschedules,
+                rx.plic_rearms,
+                tx.tx_submitted,
+                tx.tx_reclaimed,
+                tx.tx_outstanding,
+                tx.rx_head,
+                tx.rx_tail,
+                dma_status,
+            );
         }
     }
 }

@@ -10,6 +10,8 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_rx_liveness_model.rs"
 POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
+QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
+DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 
 
 class DwmacRxLivenessModelTests(unittest.TestCase):
@@ -159,16 +161,49 @@ class DwmacRxPollContractTests(unittest.TestCase):
                 timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("6 passed", result.stdout)
+            self.assertIn("9 passed", result.stdout)
 
     def test_device_uses_poll_budget_at_all_three_boundaries(self) -> None:
-        source = (REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs").read_text()
+        source = DEVICE_SOURCE.read_text()
         self.assertIn("rx_poll: RxPollBudget", source)
         self.assertIn("self.rx_poll.can_receive()", source)
         self.assertIn("self.rx_poll.record_received()", source)
         self.assertIn("self.rx_poll.finish(self.fatal, more_rx)", source)
         self.assertIn("self.rx_poll.record_rearmed()", source)
         self.assertIn("ASTERINAS_GMAC_RX_POLL", source)
+
+    def test_queue_progress_snapshot_preserves_tx_accounting(self) -> None:
+        source = QUEUE_SOURCE.read_text()
+        for field in (
+            "tx_submitted: u64",
+            "tx_reclaimed: u64",
+            "tx_outstanding: usize",
+            "rx_head: usize",
+            "rx_tail: usize",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+        self.assertIn("pub(super) fn progress(&self) -> QueueProgress", source)
+        self.assertIn("tx_progress_matches_outstanding_across_wrap", source)
+
+    def test_device_emits_complete_datapath_marker(self) -> None:
+        source = DEVICE_SOURCE.read_text()
+        self.assertIn("ASTERINAS_GMAC_DATAPATH", source)
+        for field in (
+            "rx={}",
+            "rx_budget={}",
+            "rx_reschedules={}",
+            "plic_rearms={}",
+            "tx_submitted={}",
+            "tx_reclaimed={}",
+            "tx_outstanding={}",
+            "rx_head={}",
+            "rx_tail={:#018x}",
+            "dma_status={:#010x}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+        self.assertIn("take_progress_report", source)
 
 
 if __name__ == "__main__":
