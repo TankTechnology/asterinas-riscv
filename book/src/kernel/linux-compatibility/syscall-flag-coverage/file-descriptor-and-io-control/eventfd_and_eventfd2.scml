@@ -2,4 +2,4 @@
 eventfd(initval);
 
 // Create event notification descriptor with enhanced behavior control
-eventfd2(initval, flags = EFD_CLOEXEC);
+eventfd2(initval, flags = EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE);

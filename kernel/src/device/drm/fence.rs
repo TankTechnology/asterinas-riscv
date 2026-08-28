@@ -2,11 +2,12 @@
 
 //! Pollable virtio-gpu 3D fences (`sync_file`-like).
 //!
-//! `VIRTGPU_EXECBUFFER` returns a [`FenceFile`] as the out-fence (`fence_fd`).
-//! Mesa's virgl winsys polls this fd for `POLLIN` to learn that the submitted
-//! render has completed.
-//! A fenced `SUBMIT_3D` is queued asynchronously; its
-//! control-queue completion signals the fence from interrupt context.
+//! `VIRTGPU_EXECBUFFER` returns a [`FenceFile`] as the out-fence (`fence_fd`)
+//! when the caller requests `VIRTGPU_EXECBUF_FENCE_FD_OUT`.
+//! Mesa's virgl winsys polls this fd for `POLLIN`
+//! to learn that the submitted render has completed.
+//! A fenced `SUBMIT_3D` is queued asynchronously;
+//! its control-queue completion signals the fence from interrupt context.
 
 use core::{
     fmt::Display,
@@ -14,7 +15,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 
-use aster_virtio::device::gpu::{GpuCommandCompletion, device::GpuCommandTicket};
+use aster_virtio::device::gpu::{
+    GpuCommandCompletion,
+    device::{GpuCommandPollHandle, GpuCommandTicket},
+};
 use ostd::sync::{LocalIrqDisabled, WaitQueue};
 
 use crate::{
@@ -40,64 +44,102 @@ enum FenceState {
 pub(super) struct Fence {
     state: AtomicU8,
     ticket: Mutex<Option<GpuCommandTicket>>,
+    command_quota: Mutex<Option<ExecbufferMemoryQuota>>,
     dependencies: SpinLock<Vec<Arc<Fence>>, LocalIrqDisabled>,
-    callbacks: SpinLock<FenceCallbackList, LocalIrqDisabled>,
+    callbacks: SpinLock<Option<Arc<FenceCallback>>, LocalIrqDisabled>,
     dependency_callbacks: SpinLock<Vec<FenceCallbackRegistration>, LocalIrqDisabled>,
+    poll_handle: SpinLock<Option<GpuCommandPollHandle>, LocalIrqDisabled>,
     pollee: Pollee,
     waiters: WaitQueue,
     has_chain_queue_slot: AtomicBool,
-}
-
-#[derive(Default)]
-struct FenceCallbackList {
-    next_id: u64,
-    entries: Vec<FenceCallback>,
+    ticket_attached: AtomicBool,
+    completion_received: AtomicBool,
 }
 
 struct FenceCallback {
-    id: u64,
-    active: Arc<AtomicBool>,
-    callback: Box<dyn FnOnce() + Send>,
+    active: AtomicBool,
+    callback_fn: SpinLock<Option<Box<dyn FnOnce() + Send>>, LocalIrqDisabled>,
+    next: SpinLock<Option<Arc<FenceCallback>>, LocalIrqDisabled>,
+    _quota: FenceCallbackQuota,
+}
+
+/// A fully allocated callback that can later be linked to any fence.
+pub(super) struct PreparedFenceCallback {
+    node: Arc<FenceCallback>,
+}
+
+impl PreparedFenceCallback {
+    fn run_if_active(self) {
+        if self.node.active.swap(false, Ordering::AcqRel) {
+            let callback_fn = self.node.callback_fn.lock().take();
+            if let Some(callback_fn) = callback_fn {
+                callback_fn();
+            }
+        }
+    }
 }
 
 pub(super) struct FenceCallbackRegistration {
     fence: Weak<Fence>,
-    id: u64,
-    active: Arc<AtomicBool>,
+    node: Arc<FenceCallback>,
 }
 
 impl FenceCallbackRegistration {
     pub(super) fn is_active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
+        self.node.active.load(Ordering::Acquire)
     }
 }
 
 impl Drop for FenceCallbackRegistration {
     fn drop(&mut self) {
-        if !self.active.swap(false, Ordering::AcqRel) {
+        if !self.node.active.swap(false, Ordering::AcqRel) {
             return;
         }
         let Some(fence) = self.fence.upgrade() else {
             return;
         };
-        let mut callbacks = fence.callbacks.lock();
-        if let Some(index) = callbacks
-            .entries
-            .iter()
-            .position(|callback| callback.id == self.id)
-        {
-            callbacks.entries.swap_remove(index);
+        let mut head = fence.callbacks.lock();
+        let Some(first) = head.as_ref() else {
+            return;
+        };
+        if Arc::ptr_eq(first, &self.node) {
+            *head = self.node.next.lock().take();
+            return;
+        }
+
+        let mut current = first.clone();
+        loop {
+            let Some(next) = current.next.lock().clone() else {
+                return;
+            };
+            if Arc::ptr_eq(&next, &self.node) {
+                let replacement = self.node.next.lock().take();
+                *current.next.lock() = replacement;
+                return;
+            }
+            current = next;
         }
     }
 }
 
 struct ChainCompletionQueue {
     is_draining: bool,
-    pending: Vec<Arc<Fence>>,
+    pending: Vec<ChainWork>,
     reserved_slots: usize,
 }
 
+enum ChainWork {
+    Signal(Arc<Fence>),
+    DropDependencies(Vec<Arc<Fence>>),
+}
+
+const MAX_CHAIN_DEPENDENCIES: usize = 2;
 const MAX_PENDING_CHAIN_FENCES: usize = 16384;
+const MAX_SYSTEM_FENCE_CALLBACKS: usize = 16384;
+const MAX_SYSTEM_EXECBUFFER_BYTES: usize = 64 * 1024 * 1024;
+
+static SYSTEM_FENCE_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SYSTEM_EXECBUFFER_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 static CHAIN_COMPLETION_QUEUE: SpinLock<ChainCompletionQueue, LocalIrqDisabled> =
     SpinLock::new(ChainCompletionQueue {
@@ -118,22 +160,107 @@ impl Drop for FenceChainSlot {
     }
 }
 
+/// All heap storage required to publish one two-edge fence chain.
+pub(super) struct PreparedFenceChain {
+    fence: Arc<Fence>,
+    barrier: Arc<FenceBarrier>,
+    callbacks: [PreparedFenceCallback; MAX_CHAIN_DEPENDENCIES],
+    queue_slot: FenceChainSlot,
+}
+
+struct FenceCallbackQuota;
+
+/// Accounts for a userspace command stream until its ticket-owned DMA copy is
+/// released, rather than merely until device submission returns.
+pub(super) struct ExecbufferMemoryQuota {
+    bytes: usize,
+}
+
+impl ExecbufferMemoryQuota {
+    pub(super) fn reserve(bytes: usize) -> Result<Self> {
+        SYSTEM_EXECBUFFER_BYTES
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|total| *total <= MAX_SYSTEM_EXECBUFFER_BYTES)
+            })
+            .map_err(|_| {
+                Error::with_message(Errno::ENOSPC, "system execbuffer memory limit reached")
+            })?;
+        Ok(Self { bytes })
+    }
+}
+
+impl Drop for ExecbufferMemoryQuota {
+    fn drop(&mut self) {
+        let old_bytes = SYSTEM_EXECBUFFER_BYTES.fetch_sub(self.bytes, Ordering::AcqRel);
+        debug_assert!(old_bytes >= self.bytes);
+    }
+}
+
+impl FenceCallbackQuota {
+    fn reserve() -> Result<Self> {
+        SYSTEM_FENCE_CALLBACK_COUNT
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_SYSTEM_FENCE_CALLBACKS).then_some(count + 1)
+            })
+            .map_err(|_| {
+                Error::with_message(Errno::ENOSPC, "system DRM fence callback limit reached")
+            })?;
+        Ok(Self)
+    }
+}
+
+impl Drop for FenceCallbackQuota {
+    fn drop(&mut self) {
+        let old_count = SYSTEM_FENCE_CALLBACK_COUNT.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(old_count > 0);
+    }
+}
+
 impl Fence {
     pub(super) fn new() -> Self {
         Self::with_dependencies(Vec::new())
     }
 
     fn with_dependencies(dependencies: Vec<Arc<Fence>>) -> Self {
+        Self::from_storage(dependencies, Vec::new())
+    }
+
+    fn from_storage(
+        dependencies: Vec<Arc<Fence>>,
+        dependency_callbacks: Vec<FenceCallbackRegistration>,
+    ) -> Self {
         Self {
             state: AtomicU8::new(FenceState::Pending as u8),
             ticket: Mutex::new(None),
+            command_quota: Mutex::new(None),
             dependencies: SpinLock::new(dependencies),
-            callbacks: SpinLock::new(FenceCallbackList::default()),
-            dependency_callbacks: SpinLock::new(Vec::with_capacity(2)),
+            callbacks: SpinLock::new(None),
+            dependency_callbacks: SpinLock::new(dependency_callbacks),
+            poll_handle: SpinLock::new(None),
             pollee: Pollee::new(),
             waiters: WaitQueue::new(),
             has_chain_queue_slot: AtomicBool::new(false),
+            ticket_attached: AtomicBool::new(false),
+            completion_received: AtomicBool::new(false),
         }
+    }
+
+    fn try_new_chain_fence() -> Result<Arc<Self>> {
+        let mut dependencies = Vec::new();
+        dependencies
+            .try_reserve_exact(MAX_CHAIN_DEPENDENCIES)
+            .map_err(|_| {
+                Error::with_message(Errno::ENOMEM, "cannot allocate fence dependencies")
+            })?;
+        let mut dependency_callbacks = Vec::new();
+        dependency_callbacks
+            .try_reserve_exact(MAX_CHAIN_DEPENDENCIES)
+            .map_err(|_| {
+                Error::with_message(Errno::ENOMEM, "cannot allocate fence registrations")
+            })?;
+        Arc::try_new(Self::from_storage(dependencies, dependency_callbacks))
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate chained fence"))
     }
 
     pub(super) fn reserve_chain_slot() -> Result<FenceChainSlot> {
@@ -156,23 +283,44 @@ impl Fence {
     }
 
     /// Returns an already-signaled software fence.
+    #[cfg(ktest)]
     pub(super) fn new_signaled() -> Arc<Self> {
         let fence = Arc::new(Self::new());
         fence.signal_success();
         fence
     }
 
-    /// Builds a fence that signals after every dependency has completed.
+    /// Preallocates a fence chain and both possible dependency callbacks.
+    pub(super) fn prepare_chain(queue_slot: FenceChainSlot) -> Result<PreparedFenceChain> {
+        let fence = Self::try_new_chain_fence()?;
+        let barrier = Arc::try_new(FenceBarrier {
+            remaining: AtomicUsize::new(0),
+            output: Arc::downgrade(&fence),
+        })
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate fence barrier"))?;
+        let callbacks = core::array::try_from_fn(|_| {
+            let barrier = barrier.clone();
+            Self::prepare_callback(move || barrier.complete_one())
+        })?;
+        Ok(PreparedFenceChain {
+            fence,
+            barrier,
+            callbacks,
+            queue_slot,
+        })
+    }
+
+    /// Builds a fence from preallocated storage after choosing dependencies.
     ///
     /// Error status is deliberately not propagated:
     /// DRM synchronization treats a failed producer as a completed dependency,
     /// just like a `sync_file` wait.
-    pub(super) fn chain(
+    pub(super) fn finish_chain(
+        mut prepared: PreparedFenceChain,
         previous: Option<Arc<Self>>,
         current: Arc<Self>,
-        mut queue_slot: FenceChainSlot,
     ) -> Arc<Self> {
-        let mut dependencies = Vec::with_capacity(2);
+        let mut dependencies = prepared.fence.dependencies.lock();
         if let Some(previous) = previous
             && !Arc::ptr_eq(&previous, &current)
             && !previous.is_signaled()
@@ -183,31 +331,61 @@ impl Fence {
             dependencies.push(current);
         }
         if dependencies.is_empty() {
-            return Self::new_signaled();
+            drop(dependencies);
+            prepared.fence.signal_success();
+            return prepared.fence;
         }
 
         // Each append adds at most two edges. Chained completions are drained
         // iteratively below, so a long timeline neither re-registers callbacks
         // on every old leaf nor recursively consumes the interrupt stack.
-        let chained = Arc::new(Self::with_dependencies(dependencies.clone()));
-        chained.has_chain_queue_slot.store(true, Ordering::Release);
-        queue_slot.active = false;
-        let barrier = Arc::new(FenceBarrier {
-            remaining: AtomicUsize::new(dependencies.len()),
-            output: Arc::downgrade(&chained),
-        });
-        for dependency in dependencies {
-            let barrier = barrier.clone();
-            if let Some(registration) = dependency.on_signal(move || barrier.complete_one()) {
-                chained.dependency_callbacks.lock().push(registration);
+        prepared
+            .fence
+            .has_chain_queue_slot
+            .store(true, Ordering::Release);
+        prepared.queue_slot.active = false;
+        prepared
+            .barrier
+            .remaining
+            .store(dependencies.len(), Ordering::Release);
+        let dependency_snapshot = [dependencies.first().cloned(), dependencies.get(1).cloned()];
+        *prepared.fence.poll_handle.lock() = dependencies
+            .iter()
+            .find_map(|dependency| dependency.device_poll_handle());
+        drop(dependencies);
+        for (dependency, callback) in dependency_snapshot
+            .into_iter()
+            .flatten()
+            .zip(prepared.callbacks)
+        {
+            if let Some(registration) = dependency.register_callback(callback) {
+                let mut registrations = prepared.fence.dependency_callbacks.lock();
+                registrations.push(registration);
+                // The callback may have signaled the output after registration
+                // but before its cancellation handle reached this list.
+                if prepared.fence.is_signaled_raw() {
+                    registrations.clear();
+                }
             }
         }
-        chained
+        prepared.fence
     }
 
-    pub(super) fn attach(&self, ticket: GpuCommandTicket) {
-        let old_ticket = self.ticket.lock().replace(ticket);
+    pub(super) fn attach(&self, ticket: GpuCommandTicket, command_quota: ExecbufferMemoryQuota) {
+        let poll_handle = ticket.poll_handle();
+        let old_quota = self.command_quota.lock().replace(command_quota);
+        debug_assert!(old_quota.is_none());
+        *self.poll_handle.lock() = Some(poll_handle);
+        let mut ticket_slot = self.ticket.lock();
+        let old_ticket = ticket_slot.replace(ticket);
         debug_assert!(old_ticket.is_none());
+        drop(ticket_slot);
+        // Sequential consistency prevents the attachment and completion sides
+        // from both observing the other's flag as false.
+        self.ticket_attached.store(true, Ordering::SeqCst);
+        if self.completion_received.load(Ordering::SeqCst) {
+            self.publish_device_completion();
+        }
     }
 
     pub(super) fn is_signaled(&self) -> bool {
@@ -220,17 +398,34 @@ impl Fence {
         self.is_signaled_raw()
     }
 
-    /// Runs `callback` exactly once after this fence becomes signaled.
+    /// Allocates callback storage before entering a commit-critical path.
+    pub(super) fn prepare_callback(
+        callback_fn: impl FnOnce() + Send + 'static,
+    ) -> Result<PreparedFenceCallback> {
+        let quota = FenceCallbackQuota::reserve()?;
+        let callback_fn: Box<dyn FnOnce() + Send> = Box::try_new(callback_fn)
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate fence callback"))?;
+        let node = Arc::try_new(FenceCallback {
+            active: AtomicBool::new(true),
+            callback_fn: SpinLock::new(Some(callback_fn)),
+            next: SpinLock::new(None),
+            _quota: quota,
+        })
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate fence callback node"))?;
+        Ok(PreparedFenceCallback { node })
+    }
+
+    /// Links a fully allocated callback without allocating.
     ///
     /// Registration is safe against a concurrent virtio completion: the state
     /// is checked again while holding the callback lock, after the completion
     /// side has published its state.
-    pub(super) fn on_signal(
+    pub(super) fn register_callback(
         self: &Arc<Self>,
-        callback_fn: impl FnOnce() + Send + 'static,
+        prepared: PreparedFenceCallback,
     ) -> Option<FenceCallbackRegistration> {
         if self.is_signaled() {
-            callback_fn();
+            prepared.run_if_active();
             return None;
         }
 
@@ -239,21 +434,14 @@ impl Fence {
         // invokes `run_callbacks` and would deadlock on this same lock.
         if self.is_signaled_raw() {
             drop(callbacks);
-            callback_fn();
+            prepared.run_if_active();
             None
         } else {
-            let id = callbacks.next_id;
-            callbacks.next_id = callbacks.next_id.wrapping_add(1);
-            let active = Arc::new(AtomicBool::new(true));
-            callbacks.entries.push(FenceCallback {
-                id,
-                active: active.clone(),
-                callback: Box::new(callback_fn),
-            });
+            *prepared.node.next.lock() = callbacks.take();
+            *callbacks = Some(prepared.node.clone());
             Some(FenceCallbackRegistration {
                 fence: Arc::downgrade(self),
-                id,
-                active,
+                node: prepared.node,
             })
         }
     }
@@ -278,23 +466,54 @@ impl Fence {
 
     fn run_callbacks(&self) {
         // A signaled chain no longer needs to retain its dependency graph.
-        self.dependencies.lock().clear();
+        let dependencies = mem::take(&mut *self.dependencies.lock());
+        self.poll_handle.lock().take();
+        drop(dependencies);
         self.dependency_callbacks.lock().clear();
-        let callbacks = mem::take(&mut self.callbacks.lock().entries);
-        for callback in callbacks {
-            callback.active.store(false, Ordering::Release);
-            (callback.callback)();
+        let mut callback = self.callbacks.lock().take();
+        while let Some(current) = callback {
+            callback = current.next.lock().take();
+            if current.active.swap(false, Ordering::AcqRel) {
+                let callback_fn = current.callback_fn.lock().take();
+                if let Some(callback_fn) = callback_fn {
+                    callback_fn();
+                }
+            }
         }
     }
 
+    fn publish_device_completion(&self) {
+        if self
+            .state
+            .compare_exchange(
+                FenceState::Pending as u8,
+                FenceState::Completed as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        self.run_callbacks();
+        self.waiters.wake_all();
+        // `ERR` is always reported by poll, even when userspace did not ask
+        // for it. `check_io_events` filters successful completions to `IN`.
+        self.pollee.notify(IoEvents::IN | IoEvents::ERR);
+    }
+
     fn enqueue_chain_completion(fence: Arc<Self>) {
+        debug_assert!(fence.has_chain_queue_slot.swap(false, Ordering::AcqRel));
+        Self::enqueue_chain_work(ChainWork::Signal(fence));
+    }
+
+    fn enqueue_chain_work(work: ChainWork) {
         let should_drain = {
             let mut queue = CHAIN_COMPLETION_QUEUE.lock();
-            debug_assert!(fence.has_chain_queue_slot.swap(false, Ordering::AcqRel));
             debug_assert!(queue.reserved_slots > 0);
             queue.reserved_slots -= 1;
             debug_assert!(queue.pending.len() < queue.pending.capacity());
-            queue.pending.push(fence);
+            queue.pending.push(work);
             if queue.is_draining {
                 false
             } else {
@@ -315,7 +534,17 @@ impl Fence {
                 };
                 next
             };
-            next.signal_success();
+            match next {
+                ChainWork::Signal(fence) => fence.signal_success(),
+                ChainWork::DropDependencies(dependencies) => {
+                    for dependency in dependencies {
+                        match Arc::try_unwrap(dependency) {
+                            Ok(fence) => drop(fence),
+                            Err(shared) => drop(shared),
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -353,27 +582,18 @@ impl Fence {
         if self.is_signaled_raw() {
             return;
         }
-
-        // Walk chains iteratively so a long userspace timeline cannot consume
-        // the small kernel stack. Clone each edge before polling because a
-        // completion may signal its chain and clear that dependency list.
-        let mut pending = self.dependencies.lock().clone();
-        let mut visited = BTreeSet::new();
-        while let Some(dependency) = pending.pop() {
-            if !visited.insert(Arc::as_ptr(&dependency) as usize) {
-                continue;
-            }
-            if dependency.is_signaled_raw() {
-                continue;
-            }
-            pending.extend(dependency.dependencies.lock().iter().cloned());
-            dependency.poll_own_ticket();
+        let poll_handle = self.poll_handle.lock().clone();
+        if let Some(poll_handle) = poll_handle {
+            // The queue handle remains valid after any one ticket is consumed,
+            // so a cached handle cannot become a stale chain leaf.
+            poll_handle.poll_completion();
+        } else {
+            self.poll_own_ticket();
         }
-        if self.is_signaled_raw() {
-            return;
-        }
+    }
 
-        self.poll_own_ticket();
+    fn device_poll_handle(&self) -> Option<GpuCommandPollHandle> {
+        self.poll_handle.lock().clone()
     }
 
     fn poll_own_ticket(&self) {
@@ -399,6 +619,7 @@ impl Fence {
             .take()
             .expect("completed virtio-gpu fence has no control ticket")
             .wait();
+        self.command_quota.lock().take();
         let final_state = if result.is_ok() {
             FenceState::Succeeded
         } else {
@@ -436,26 +657,25 @@ impl Fence {
 
 impl Drop for Fence {
     fn drop(&mut self) {
+        let dependencies = mem::take(&mut *self.dependencies.lock());
+        self.poll_handle.lock().take();
         if self.has_chain_queue_slot.swap(false, Ordering::AcqRel) {
-            let mut queue = CHAIN_COMPLETION_QUEUE.lock();
-            debug_assert!(queue.reserved_slots > 0);
-            queue.reserved_slots -= 1;
+            Self::enqueue_chain_work(ChainWork::DropDependencies(dependencies));
+        } else {
+            debug_assert!(dependencies.is_empty());
         }
     }
 }
 
 impl GpuCommandCompletion for Fence {
     fn complete(&self) {
-        let old_state = self
-            .state
-            .swap(FenceState::Completed as u8, Ordering::AcqRel);
-        debug_assert_eq!(old_state, FenceState::Pending as u8);
-        self.run_callbacks();
-        self.waiters.wake_all();
-        // `ERR` is always reported by poll, even when userspace did not ask
-        // for it. Wake those pollers now; `check_io_events` filters successful
-        // completions back to `IN` only.
-        self.pollee.notify(IoEvents::IN | IoEvents::ERR);
+        let old_completion = self.completion_received.swap(true, Ordering::SeqCst);
+        debug_assert!(!old_completion);
+        // Do not lock `ticket`: completion can run synchronously while
+        // `poll_own_ticket` already holds that mutex.
+        if self.ticket_attached.load(Ordering::SeqCst) {
+            self.publish_device_completion();
+        }
     }
 }
 
@@ -534,9 +754,10 @@ mod tests {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, Ordering};
 
+    use aster_virtio::device::gpu::GpuCommandCompletion;
     use ostd::prelude::ktest;
 
-    use super::Fence;
+    use super::{Fence, FenceState};
     use crate::thread::kernel_thread::ThreadOptions;
 
     #[ktest]
@@ -544,6 +765,14 @@ mod tests {
         let fence = Fence::new();
         assert!(!fence.is_signaled());
         assert!(matches!(fence.try_finish(), Ok(false)));
+    }
+
+    #[ktest]
+    fn completion_is_hidden_until_ticket_attachment() {
+        let fence = Fence::new();
+        fence.complete();
+        assert_eq!(fence.state(), FenceState::Pending);
+        assert!(fence.completion_received.load(Ordering::Acquire));
     }
 
     #[ktest]
@@ -594,7 +823,9 @@ mod tests {
         let fence = Arc::new(Fence::new());
         let registration = {
             let before = before.clone();
-            fence.on_signal(move || before.store(true, Ordering::Release))
+            fence.register_callback(
+                Fence::prepare_callback(move || before.store(true, Ordering::Release)).unwrap(),
+            )
         };
         assert!(registration.is_some());
         assert!(!before.load(Ordering::Acquire));
@@ -606,7 +837,10 @@ mod tests {
             let after = after.clone();
             assert!(
                 fence
-                    .on_signal(move || after.store(true, Ordering::Release))
+                    .register_callback(
+                        Fence::prepare_callback(move || after.store(true, Ordering::Release))
+                            .unwrap(),
+                    )
                     .is_none()
             );
         }
@@ -620,7 +854,9 @@ mod tests {
         let registration = {
             let called = called.clone();
             fence
-                .on_signal(move || called.store(true, Ordering::Release))
+                .register_callback(
+                    Fence::prepare_callback(move || called.store(true, Ordering::Release)).unwrap(),
+                )
                 .unwrap()
         };
         drop(registration);
@@ -632,11 +868,8 @@ mod tests {
     fn chained_fence_waits_for_every_dependency() {
         let first = Arc::new(Fence::new());
         let second = Arc::new(Fence::new());
-        let chained = Fence::chain(
-            Some(first.clone()),
-            second.clone(),
-            Fence::reserve_chain_slot().unwrap(),
-        );
+        let prepared = Fence::prepare_chain(Fence::reserve_chain_slot().unwrap()).unwrap();
+        let chained = Fence::finish_chain(prepared, Some(first.clone()), second.clone());
         second.signal_success();
         assert!(!chained.is_signaled());
         first.signal_failure();
@@ -646,15 +879,25 @@ mod tests {
     #[ktest]
     fn chained_fence_completes_long_timeline_iteratively() {
         let leaf = Arc::new(Fence::new());
-        let mut chained = Fence::chain(None, leaf.clone(), Fence::reserve_chain_slot().unwrap());
+        let prepared = Fence::prepare_chain(Fence::reserve_chain_slot().unwrap()).unwrap();
+        let mut chained = Fence::finish_chain(prepared, None, leaf.clone());
         for _ in 0..4096 {
-            chained = Fence::chain(
-                Some(chained),
-                Fence::new_signaled(),
-                Fence::reserve_chain_slot().unwrap(),
-            );
+            let prepared = Fence::prepare_chain(Fence::reserve_chain_slot().unwrap()).unwrap();
+            chained = Fence::finish_chain(prepared, Some(chained), Fence::new_signaled());
         }
         leaf.signal_success();
         assert!(chained.is_signaled());
+    }
+
+    #[ktest]
+    fn dropping_long_pending_chain_is_iterative() {
+        let leaf = Arc::new(Fence::new());
+        let prepared = Fence::prepare_chain(Fence::reserve_chain_slot().unwrap()).unwrap();
+        let mut chained = Fence::finish_chain(prepared, None, leaf);
+        for _ in 0..4096 {
+            let prepared = Fence::prepare_chain(Fence::reserve_chain_slot().unwrap()).unwrap();
+            chained = Fence::finish_chain(prepared, Some(chained), Fence::new_signaled());
+        }
+        drop(chained);
     }
 }

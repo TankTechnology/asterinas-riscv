@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! DRM virtio-gpu specific ioctls: execbuffer, resource create, context
-//! init, get caps, and getparam.
+//! DRM virtio-gpu-specific ioctls:
+//! execbuffer, resource create, context init, get caps, and getparam.
 //!
-//! These are the kernel-side entry points for Mesa's virgl driver. They
-//! translate DRM ioctl structs into virtio-gpu control queue commands.
+//! These are the kernel-side entry points for Mesa's virgl driver.
+//! They translate DRM ioctl structs into virtio-gpu control queue commands.
 
-use aster_virtio::device::gpu::Resource3dCreateParams;
+use aster_virtio::device::gpu::{
+    Resource3dCreateParams, VIRTIO_GPU_CAPSET_VIRGL, VIRTIO_GPU_CAPSET_VIRGL2,
+};
+use ostd::mm::VmIo;
 
 use super::{
     DumbBuffer, GemResourceState,
-    dumb::{PendingDumbBuffer, allocate_pool_span},
+    dumb::{self, PendingDumbBuffer},
+    fence::ExecbufferMemoryQuota,
     gem::{GemObjectRef, PendingGemHandle},
-    syncobj::{MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject, SyncobjPublication},
+    syncobj::{self, MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject},
     virgl_resource::{LiveGemResource, Transfer3d},
 };
 use crate::{
+    context::current_userspace,
     fs::file::file_table::{FdFlags, FileDesc, WithFileTable},
     prelude::*,
     process::posix_thread::FileTableRefMut,
@@ -135,7 +140,7 @@ pub(super) struct DrmVirtgpu3dBox {
 }
 
 impl DrmVirtgpu3dBox {
-    fn transfer(self, level: u32, offset: u32) -> Transfer3d {
+    fn into_transfer_3d(self, level: u32, offset: u32) -> Transfer3d {
         Transfer3d {
             x: self.x,
             y: self.y,
@@ -196,16 +201,7 @@ const VIRTGPU_PARAM_BLOB_ALIGNMENT: u64 = 9;
 const MAX_EXECBUFFER_SIZE: usize = 16 * 1024 * 1024;
 const MAX_EXECBUFFER_HANDLES: usize = 4096;
 
-// ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
-
-use aster_virtio::device::gpu::{VIRTIO_GPU_CAPSET_VIRGL, VIRTIO_GPU_CAPSET_VIRGL2};
-use ostd::mm::VmIo;
-
-use crate::context::current_userspace;
-
-/// GETPARAM: return device parameters queried by Mesa.
+/// Returns a device parameter queried by Mesa.
 pub(super) fn virtgpu_getparam(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -240,7 +236,7 @@ pub(super) fn virtgpu_getparam(
     Ok(0)
 }
 
-/// RESOURCE_CREATE: create a 3D resource on the virtio-gpu device.
+/// Creates a 3D resource on the virtio-gpu device.
 ///
 /// Maps a GEM buffer (via bo_handle) to a virtio-gpu 3D resource.
 /// If `bo_handle` is zero, allocates a new dumb buffer and returns its GEM
@@ -323,7 +319,7 @@ pub(super) fn virtgpu_resource_create(
         let backing_size = u32::try_from(size)
             .map_err(|_| Error::with_message(Errno::EINVAL, "GEM backing is too large"))?;
         let base = handle.gpu_manager.pool_paddr()?;
-        let allocation = allocate_pool_span(&handle.gpu_manager, size)?;
+        let allocation = dumb::allocate_pool_span(&handle.gpu_manager, size)?;
         let offset = allocation.offset();
         let backing_owner = allocation.clone();
 
@@ -451,7 +447,7 @@ pub(super) fn virtgpu_resource_create(
     Ok(0)
 }
 
-/// RESOURCE_INFO: return information about a virtio-gpu resource.
+/// Returns information about a virtio-gpu resource.
 pub(super) fn virtgpu_resource_info(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -489,7 +485,7 @@ pub(super) fn virtgpu_resource_info(
     Ok(0)
 }
 
-/// GET_CAPS: return the virgl capset data blob to userspace.
+/// Returns the virgl capset data blob to userspace.
 ///
 /// Mesa's virgl driver uses this to discover the capset version and
 /// feature bits supported by the host (virglrenderer).
@@ -503,6 +499,12 @@ pub(super) fn virtgpu_get_caps(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
+    if req.size == 0 {
+        return_errno_with_message!(Errno::EINVAL, "zero-sized capset request");
+    }
+    if req.addr == 0 {
+        return_errno_with_message!(Errno::EFAULT, "null capset output pointer");
+    }
 
     // Only virgl and virgl2 capsets are supported
     if req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL && req.cap_set_id != VIRTIO_GPU_CAPSET_VIRGL2 {
@@ -510,7 +512,6 @@ pub(super) fn virtgpu_get_caps(
     }
     let cap_set_id = req.cap_set_id;
 
-    // Query the capset info from the device
     let capset_info = handle
         .gpu_manager
         .gpu
@@ -528,13 +529,9 @@ pub(super) fn virtgpu_get_caps(
         .get_capset(cap_set_id, req.cap_set_ver)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 
-    // Copy the capset data to userspace
-    if req.addr != 0 && req.size > 0 {
-        let copy_len = capset_data.len().min(req.size as usize);
-        current_userspace!().write_bytes(req.addr as usize, &capset_data[..copy_len])?;
-    }
+    let copy_len = capset_data.len().min(req.size as usize);
+    current_userspace!().write_bytes(req.addr as usize, &capset_data[..copy_len])?;
 
-    // Write back the response with the actual size
     let mut resp = req;
     resp.size = capset_data.len() as u32;
     cmd.write(&resp)?;
@@ -595,7 +592,6 @@ pub(super) fn virtgpu_execbuffer(
             SyncobjDirection::Output,
         )?;
 
-        // Read the command buffer from userspace
         if req.size == 0 || req.command == 0 {
             return_errno_with_message!(Errno::EINVAL, "empty command buffer");
         }
@@ -604,6 +600,10 @@ pub(super) fn virtgpu_execbuffer(
         if command_size > MAX_EXECBUFFER_SIZE {
             return_errno_with_message!(Errno::EINVAL, "command buffer is too large");
         }
+        // Bound aggregate retention before copying the untrusted stream.
+        // Mesa's atomic path relies on this copy occurring before an input
+        // fence wait, so the quota—not reordering—contains blocked memory.
+        let command_quota = ExecbufferMemoryQuota::reserve(command_size)?;
         let mut cmd_buf = Vec::new();
         cmd_buf
             .try_reserve_exact(command_size)
@@ -636,13 +636,14 @@ pub(super) fn virtgpu_execbuffer(
 
         // Reserve recoverable syncobj capacity before the command can reach
         // the GPU, so publication cannot return a partial capacity failure.
-        let mut output_publications: Vec<SyncobjPublication> = Vec::new();
-        output_publications
+        let mut output_specs = Vec::new();
+        output_specs
             .try_reserve_exact(output_syncobjs.len())
             .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot reserve output syncobjs"))?;
         for descriptor in &output_syncobjs {
-            output_publications.push(descriptor.syncobj.reserve_publication(descriptor.point)?);
+            output_specs.push((descriptor.syncobj.clone(), descriptor.point));
         }
+        let output_publications = syncobj::reserve_publication_batch(&output_specs)?;
 
         // Copy the untrusted handle list before taking device-wide resource
         // locks because the userspace access may fault and sleep.
@@ -679,35 +680,59 @@ pub(super) fn virtgpu_execbuffer(
 
         // Validate and collect the GEM object ids in the resource list so the
         // resulting fence can become each object's current reservation fence.
-        let mut object_ids = BTreeSet::new();
+        let mut object_ids = Vec::new();
         if !object_handles.is_empty() {
-            let inner = handle.inner.lock();
-            let guard = handle.gpu_manager.gem_objects.lock();
-            for bo_h in object_handles {
-                let Some(object_id) = inner.handles.get(&bo_h).copied() else {
-                    return_errno_with_message!(Errno::EINVAL, "unknown GEM handle in execbuffer");
-                };
-                if !guard.contains_key(&object_id) {
-                    return_errno_with_message!(Errno::EINVAL, "stale GEM handle in execbuffer");
+            object_ids
+                .try_reserve_exact(object_handles.len())
+                .map_err(|_| {
+                    Error::with_message(Errno::ENOMEM, "cannot reserve execbuffer object ids")
+                })?;
+            {
+                let inner = handle.inner.lock();
+                let guard = handle.gpu_manager.gem_objects.lock();
+                for bo_h in object_handles {
+                    let Some(object_id) = inner.handles.get(&bo_h).copied() else {
+                        return_errno_with_message!(
+                            Errno::EINVAL,
+                            "unknown GEM handle in execbuffer"
+                        );
+                    };
+                    if !guard.contains_key(&object_id) {
+                        return_errno_with_message!(Errno::EINVAL, "stale GEM handle in execbuffer");
+                    }
+                    object_ids.push(object_id);
                 }
-                object_ids.insert(object_id);
             }
+            object_ids.sort_unstable();
+            object_ids.dedup();
         }
 
-        let resource_ids = object_ids
-            .iter()
-            .filter_map(|object_id| handle.gpu_manager.live_gem_resource(*object_id))
-            .collect();
+        let mut resource_ids = Vec::new();
+        resource_ids
+            .try_reserve_exact(object_ids.len())
+            .map_err(|_| {
+                Error::with_message(Errno::ENOMEM, "cannot reserve execbuffer resource ids")
+            })?;
+        for object_id in &object_ids {
+            if let Some(resource_id) = handle.gpu_manager.live_gem_resource(*object_id) {
+                resource_ids.push(resource_id);
+            }
+        }
+        handle
+            .gpu_manager
+            .reserve_resource_fence_associations(&object_ids)?;
         let ctx_id = handle.attach_resources_to_context(&resource_ids)?;
         let mut resp = req;
         let fence_id = handle.gpu_manager.allocate_fence_id()?;
-        let fence = Arc::new(super::fence::Fence::new());
+        let fence = Arc::try_new(super::fence::Fence::new())
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate execbuffer fence"))?;
         let ticket = handle
             .gpu_manager
             .gpu
             .submit_3d_fenced_async(ctx_id, req.size, &cmd_buf, fence_id, fence.clone())
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-        fence.attach(ticket);
+        fence.attach(ticket, command_quota);
+        drop(cmd_buf);
         handle
             .gpu_manager
             .associate_resource_fence(&object_ids, &fence);
@@ -717,8 +742,8 @@ pub(super) fn virtgpu_execbuffer(
             publication.publish(fence.clone());
         }
         for descriptor in &input_syncobjs {
-            if descriptor.reset {
-                descriptor.syncobj.replace_fence(None);
+            if descriptor.should_reset {
+                descriptor.syncobj.clear_fence();
             }
         }
         // Publish syncobj payloads in the same total order as control-queue
@@ -751,7 +776,7 @@ pub(super) fn virtgpu_execbuffer(
 struct ExecbufferSyncobj {
     syncobj: Arc<SyncObject>,
     point: u64,
-    reset: bool,
+    should_reset: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -804,28 +829,36 @@ fn parse_execbuffer_syncobjs(
         });
     }
 
-    let handles: Vec<_> = wire.iter().map(|descriptor| descriptor.handle).collect();
-    let syncobjs = super::syncobj::lookup_syncobjs(handle, &handles)?;
-    wire.into_iter()
-        .zip(syncobjs)
-        .map(|(descriptor, syncobj)| {
-            if (direction == SyncobjDirection::Input
-                && descriptor.flags & !VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0)
-                || (direction == SyncobjDirection::Output && descriptor.flags != 0)
-            {
-                return_errno_with_message!(Errno::EINVAL, "unknown execbuffer syncobj flags");
-            }
-            Ok(ExecbufferSyncobj {
-                syncobj,
-                point: descriptor.point,
-                reset: direction == SyncobjDirection::Input
-                    && descriptor.flags & VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0,
-            })
-        })
-        .collect()
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(wire.len())
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate syncobj handles"))?;
+    for descriptor in &wire {
+        handles.push(descriptor.handle);
+    }
+    let syncobjs = syncobj::lookup_syncobjs(handle, &handles)?;
+    let mut descriptors = Vec::new();
+    descriptors
+        .try_reserve_exact(wire.len())
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot decode syncobj descriptors"))?;
+    for (descriptor, syncobj) in wire.into_iter().zip(syncobjs) {
+        if (direction == SyncobjDirection::Input
+            && descriptor.flags & !VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0)
+            || (direction == SyncobjDirection::Output && descriptor.flags != 0)
+        {
+            return_errno_with_message!(Errno::EINVAL, "unknown execbuffer syncobj flags");
+        }
+        descriptors.push(ExecbufferSyncobj {
+            syncobj,
+            point: descriptor.point,
+            should_reset: direction == SyncobjDirection::Input
+                && descriptor.flags & VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0,
+        });
+    }
+    Ok(descriptors)
 }
 
-/// CONTEXT_INIT: reject explicit context initialization when the corresponding
+/// Rejects explicit context initialization when the corresponding
 /// virtio-gpu feature was not negotiated.
 pub(super) fn virtgpu_context_init(
     _handle: &super::DriHandle,
@@ -843,7 +876,7 @@ pub(super) fn virtgpu_context_init(
     );
 }
 
-/// TRANSFER_TO_HOST: transfer data from guest to host for a 3D resource.
+/// Transfers data from guest to host for a 3D resource.
 pub(super) fn virtgpu_transfer_to_host(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -869,7 +902,7 @@ pub(super) fn virtgpu_transfer_to_host(
         .gpu_manager
         .live_gem_resource_metadata(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
-    resource.validate_transfer(req.box_.transfer(req.level, req.offset))?;
+    resource.validate_transfer(req.box_.into_transfer_3d(req.level, req.offset))?;
     let resource_id = resource.create.resource_id;
     let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
@@ -896,7 +929,7 @@ pub(super) fn virtgpu_transfer_to_host(
     Ok(0)
 }
 
-/// TRANSFER_FROM_HOST: transfer data from host to guest for a 3D resource.
+/// Transfers data from host to guest for a 3D resource.
 pub(super) fn virtgpu_transfer_from_host(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<
@@ -922,7 +955,7 @@ pub(super) fn virtgpu_transfer_from_host(
         .gpu_manager
         .live_gem_resource_metadata(object_id)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no 3D resource"))?;
-    resource.validate_transfer(req.box_.transfer(req.level, req.offset))?;
+    resource.validate_transfer(req.box_.into_transfer_3d(req.level, req.offset))?;
     let resource_id = resource.create.resource_id;
     let ctx_id = handle.attach_resource_to_context(resource_id)?;
 
@@ -949,7 +982,7 @@ pub(super) fn virtgpu_transfer_from_host(
     Ok(0)
 }
 
-/// MAP: return the mmap offset for a GEM buffer.
+/// Returns the mmap offset for a GEM buffer.
 pub(super) fn virtgpu_map(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<b'd', 0x41, true, crate::util::ioctl::InOutData<DrmVirtgpuMap>>,
@@ -979,7 +1012,7 @@ pub(super) fn virtgpu_map(
 /// `VIRTGPU_WAIT_NOWAIT` — reports busy instead of waiting.
 const VIRTGPU_WAIT_NOWAIT: u32 = 0x01;
 
-/// WAIT: waits for every tracked command that references this GEM object.
+/// Waits for every tracked command that references this GEM object.
 pub(super) fn virtgpu_wait(
     handle: &super::DriHandle,
     cmd: crate::util::ioctl::Ioctl<

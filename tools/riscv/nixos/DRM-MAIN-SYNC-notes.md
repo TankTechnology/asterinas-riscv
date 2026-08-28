@@ -915,3 +915,49 @@ The final Sv39 gate reported `M19_SYNCOBJ_PASS binary timeline transfer share
 sync_file eventfd concurrency execbuffer lifetime stress bounds`,
 `MINI_SYNCOBJ_RC=0`, a real Mesa virgl renderer, four distinct frames, and
 `MINI_VIRGL_PASS`.
+
+## 2026-08-28 allocation-safe publication and fence teardown
+
+The syncobj commit path now preallocates every callback, two-edge chain node,
+completion-queue slot, watcher notification, and multi-output publication
+before a virtio command is submitted. Timeline signal batches similarly
+reserve all target updates and one shared signaled fence before publishing any
+point, so allocation failure cannot leave a partially signaled array. Null
+timeline-point pointers now return `EFAULT`, and eventfd watchers retain a
+typed `EventFile` rather than an erased file object that must be downcast at
+notification time.
+
+The device-completion handshake is safe when completion races ticket
+attachment, including the synchronous callback path. Fence callbacks run
+outside their IRQ-disabled list lock. Long pending chains are torn down through
+the same pre-reserved iterative work queue used for completion, avoiding a
+recursive 4,096-node destructor. Active chain polling is O(1): it caches a
+cloneable virtio control-queue poll handle whose lifetime is independent of an
+individual consumed command ticket, so a completed leaf cannot strand another
+dependency.
+
+Resource use is bounded at the system level as well as per ioctl. Fence
+callbacks are capped at 16,384; in-flight execbuffer command streams at 64 MiB;
+and retained GEM-object/fence associations at 262,144. The execbuffer quota is
+owned by the fence until its ticket-owned DMA stream is released. Resource
+association vectors, syncobj waiter lists, handle decoding, and output
+publication storage use fallible pre-submit reservations, so a userspace-sized
+request returns `ENOMEM` or `ENOSPC` rather than reaching the kernel allocation
+failure handler after submission.
+
+The ioctl regression client submits one real command to two timeline outputs
+and waits for points 13 and 17, exercises binary/timeline transfer and sharing,
+eventfd and concurrency, null-pointer rejection, lifetime, stress, and quota
+boundaries. The final Sv39 run in
+`/tmp/drm-syncobj-post-review-gate.log` reported
+`M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency
+execbuffer multi_output lifetime stress bounds`, `MINI_SYNCOBJ_RC=0`, successful
+legacy and atomic `modetest`/`kmscube`, PRIME, raw virgl, and EGL, ending in
+`MINI_VIRGL_PASS`. These remain functional correctness gates; TCG frame timing
+is not used as a GPU-performance benchmark.
+
+The final persona review found and drove fixes for stale leaf polling, early
+execbuffer-quota release, and three user-controlled infallible allocation
+sites. Remaining review items are architectural cleanup rather than confirmed
+runtime defects: split the large DRM root/syncobj modules and decompose the
+resource-create and execbuffer ioctl transactions into narrower typed stages.

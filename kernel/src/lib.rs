@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Aster-nix is the Asterinas kernel, a safe, efficient unix-like
-//! operating system kernel built on top of OSTD and OSDK.
+//! Asterinas is a safe and efficient Unix-like operating system kernel
+//! built on top of OSTD and OSDK.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
 #![feature(array_try_from_fn)]
+#![feature(allocator_api)]
 #![feature(associated_type_defaults)]
 #![feature(btree_cursors)]
 #![feature(debug_closure_helpers)]

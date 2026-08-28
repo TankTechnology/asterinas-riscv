@@ -34,6 +34,8 @@ impl<'a> GemObjectRef<'a> {
             if objects.contains_key(&object_id) {
                 return_errno_with_message!(Errno::ENOSPC, "GEM object id is already allocated");
             }
+            let previous_fences = manager.resource_fences.lock().insert(object_id, Vec::new());
+            debug_assert!(previous_fences.is_none());
             objects.insert(
                 object_id,
                 Arc::new(super::GemObject {

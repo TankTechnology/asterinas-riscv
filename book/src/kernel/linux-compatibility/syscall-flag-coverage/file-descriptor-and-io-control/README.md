@@ -51,10 +51,6 @@ Supported functionality in SCML:
 {{#include eventfd_and_eventfd2.scml}}
 ```
 
-Silently-ignored flags:
-* `EFD_NONBLOCK`
-* `EFD_SEMAPHORE`
-
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/eventfd.2.html).
 
@@ -159,7 +155,17 @@ the output is a close-on-exec, pollable asynchronous fence fd.
 Input and output syncobj arrays support binary payloads and timeline points;
 input descriptors may request reset after a successful submission.
 Alternate rings are not supported.
+One command stream is limited to 16 MiB, and at most 64 MiB of command streams
+may be retained by concurrent submissions system-wide; exceeding those limits
+returns `EINVAL` and `ENOSPC`, respectively.
+At most 262,144 GEM-object/fence associations may be retained system-wide;
+new submissions return `ENOSPC` after that boundary.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.
+The supported virtio-gpu query and resource operations are `GETPARAM`,
+`RESOURCE_CREATE`, `RESOURCE_INFO`, `TRANSFER_TO_HOST`, `TRANSFER_FROM_HOST`,
+`GET_CAPS`, and `MAP`.
+Explicit `CONTEXT_INIT` is rejected with `EINVAL` because the corresponding
+virtio-gpu feature is not negotiated.
 
 DRM synchronization objects support binary and timeline signaling and waits,
 reset, query, transfer, whole-object fd sharing, `sync_file` import and export,
@@ -167,6 +173,12 @@ and one-shot eventfd notification.
 Wait-for-submit, wait-all, and wait-available behavior is implemented.
 The deadline flag is accepted as a compatibility scheduling hint;
 it does not currently alter GPU scheduling priority.
+Syncobj arrays are limited to 4096 entries.
+A timeline retains at most 4096 pending points, and one syncobj accepts at most
+4096 eventfd watchers, with 16384 eventfd watchers and 16384 fence callbacks
+system-wide.
+Array-limit violations return `EINVAL`; capacity and system-limit violations
+return `ENOSPC`.
 
 The primary node exposes one CRTC, connector, encoder, and primary plane with
 globally unique object IDs.

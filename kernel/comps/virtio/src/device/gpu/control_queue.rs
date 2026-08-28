@@ -95,7 +95,7 @@ impl ControlQueue {
     /// Virtio permits interrupt suppression and coalescing. Synchronous
     /// callers also invoke this path so progress does not depend on receiving
     /// one interrupt for every used-ring update.
-    fn poll_completions(&self) {
+    pub(super) fn poll_completions(&self) {
         // A device may coalesce several used-ring updates into one interrupt.
         // Bound the work by the queue size so a malformed device cannot keep
         // the IRQ handler spinning forever.
@@ -224,6 +224,10 @@ impl ControlRequest {
 }
 
 impl ControlTicket {
+    pub(super) fn queue(&self) -> Arc<ControlQueue> {
+        self.queue.clone()
+    }
+
     pub(super) fn wait_for_used(self) -> Result<(u16, u32), PopUsedError> {
         let irq_wait_enabled = self.queue.inner.lock().irq_wait_enabled;
         let result = loop {

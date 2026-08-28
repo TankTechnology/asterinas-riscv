@@ -100,6 +100,11 @@ static void fail(const char *stage) {
     exit(1);
 }
 
+static void stage(const char *name) {
+    printf("M19_SYNCOBJ_STAGE %s\n", name);
+    fflush(stdout);
+}
+
 static uint64_t cap(int fd, uint64_t id) {
     struct drm_get_cap request = { .capability = id };
     if (ioctl(fd, DRM_IOCTL_GET_CAP, &request) < 0) fail("get_cap");
@@ -194,6 +199,7 @@ int main(void) {
     if (fd < 0) fail("open");
     if (cap(fd, DRM_CAP_SYNCOBJ) != 1 || cap(fd, DRM_CAP_SYNCOBJ_TIMELINE) != 1)
         fail("caps");
+    stage("caps");
 
     uint32_t first = create(fd, 0);
     struct drm_syncobj_wait binary = {
@@ -213,6 +219,7 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &binary) < 0 || binary.first_signaled != 0)
         fail("binary_signal_wait");
     array_ioctl(fd, DRM_IOCTL_SYNCOBJ_RESET, first);
+    stage("binary");
 
     timeline_signal(fd, first, 5);
     if (query(fd, first, 0) != 5 || query(fd, first, QUERY_LAST_SUBMITTED) != 5)
@@ -229,6 +236,7 @@ int main(void) {
     errno = 0;
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &available) != -1 || errno != ETIME)
         fail("timeline_available_poll");
+    stage("timeline");
 
     uint32_t second = create(fd, 0);
     struct drm_syncobj_transfer transfer = {
@@ -270,6 +278,7 @@ int main(void) {
         fail("import_sync_file");
     timeline_wait(fd, third, 11, 0);
     close(sync_file.fd);
+    stage("transfer_share_sync_file");
 
     uint32_t fourth = create(fd, 0);
     int event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -306,6 +315,7 @@ int main(void) {
         event_value != UINT64_MAX)
         fail("eventfd_overflow_read");
     close(overflow_event);
+    stage("eventfd");
 
     struct wait_thread thread = { .fd = fd, .handle = fourth, .point = 9 };
     pthread_t waiter;
@@ -317,6 +327,7 @@ int main(void) {
         errno = thread.error;
         fail("wait_for_submit_thread");
     }
+    stage("concurrency");
 
     // A blocking ioctl must retain the syncobj after its original handle is
     // destroyed, and a whole-syncobj fd must be importable on another DRM fd.
@@ -338,6 +349,7 @@ int main(void) {
     close(lifetime_share.fd);
     destroy(other_fd, lifetime_import.handle);
     close(other_fd);
+    stage("lifetime");
 
     uint32_t fifth = create(fd, 0);
     struct drm_virtgpu_execbuffer_syncobj input = {
@@ -345,9 +357,10 @@ int main(void) {
         .flags = EXECBUF_SYNCOBJ_RESET,
         .point = 5,
     };
-    struct drm_virtgpu_execbuffer_syncobj output = {
-        .handle = fifth,
-        .point = 13,
+    uint32_t sixth = create(fd, 0);
+    struct drm_virtgpu_execbuffer_syncobj outputs[] = {
+        { .handle = fifth, .point = 13 },
+        { .handle = sixth, .point = 17 },
     };
     uint32_t nop = 0;
     struct drm_virtgpu_execbuffer execution = {
@@ -356,25 +369,33 @@ int main(void) {
         .fence_fd = -1,
         .syncobj_stride = sizeof(input),
         .num_in_syncobjs = 1,
-        .num_out_syncobjs = 1,
+        .num_out_syncobjs = 2,
         .in_syncobjs = (uint64_t)(uintptr_t)&input,
-        .out_syncobjs = (uint64_t)(uintptr_t)&output,
+        .out_syncobjs = (uint64_t)(uintptr_t)outputs,
     };
-    output.flags = 1;
+    outputs[0].flags = 1;
     errno = 0;
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) != -1 || errno != EINVAL)
         fail("execbuffer_output_flags");
-    output.flags = 0;
+    outputs[0].flags = 0;
     execution.syncobj_stride = 4;
     errno = 0;
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) != -1 || errno != EINVAL)
         fail("execbuffer_short_stride");
     execution.syncobj_stride = sizeof(input);
+    stage("execbuffer_submit_begin");
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
         fail("execbuffer_syncobj_submit");
+    stage("execbuffer_submit_done");
     timeline_wait(fd, fifth, 13, 0);
+    stage("execbuffer_first_wait");
+    timeline_wait(fd, sixth, 17, 0);
+    stage("execbuffer_second_wait");
     if (query(fd, fifth, 0) != 13 || query(fd, fifth, QUERY_LAST_SUBMITTED) != 13)
         fail("execbuffer_syncobj_query");
+    if (query(fd, sixth, 0) != 17 || query(fd, sixth, QUERY_LAST_SUBMITTED) != 17)
+        fail("execbuffer_second_syncobj_query");
+    stage("execbuffer_multi_output");
     available.points = (uint64_t)(uintptr_t)&input.point;
     available.handles = (uint64_t)(uintptr_t)&first;
     available.flags = 0;
@@ -385,9 +406,10 @@ int main(void) {
     // Repeated same-object transfers exercise dependency flattening rather
     // than constructing a recursively expanding fence graph.
     uint32_t stress = create(fd, 0);
-    output.handle = stress;
-    output.point = 1;
+    outputs[0].handle = stress;
+    outputs[0].point = 1;
     execution.num_in_syncobjs = 0;
+    execution.num_out_syncobjs = 1;
     execution.in_syncobjs = 0;
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
         fail("transfer_stress_submit");
@@ -405,8 +427,17 @@ int main(void) {
     if (query(fd, stress, 0) != 257 || query(fd, stress, QUERY_LAST_SUBMITTED) != 257)
         fail("self_transfer_stress_query");
 
-    // Retained eventfd references are deliberately bounded. Registering the
-    // The first unavailable point above the limit must fail without
+    struct drm_syncobj_timeline_array null_points = {
+        .handles = (uint64_t)(uintptr_t)&stress,
+        .count_handles = 1,
+    };
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &null_points) != -1 || errno != EFAULT)
+        fail("timeline_signal_null_points");
+    stage("stress_boundary");
+
+    // Retained eventfd references are deliberately bounded. The first
+    // unavailable point above the limit must fail without
     // disturbing earlier watches.
     uint32_t bounded = create(fd, 0);
     int bounded_event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -427,12 +458,15 @@ int main(void) {
         fail("eventfd_watcher_limit");
     destroy(fd, bounded);
     close(bounded_event);
+    stage("watcher_bounds");
 
-    uint32_t handles[] = { first, second, imported.handle, third, fourth, fifth, stress };
+    uint32_t handles[] = {
+        first, second, imported.handle, third, fourth, fifth, sixth, stress
+    };
     for (size_t i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
         destroy(fd, handles[i]);
     }
     close(fd);
-    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer lifetime stress bounds\n");
+    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer multi_output lifetime stress bounds\n");
     return 0;
 }

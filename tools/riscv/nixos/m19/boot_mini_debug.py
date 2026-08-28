@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Boot the mini virgl rootfs (debug-instrumented Mesa) and capture the
-MESA-DBG driver-selection prints.
+"""Boot the mini virgl rootfs and capture Mesa driver-selection diagnostics.
 
 This is the fast iteration harness for the "why does virgl not activate"
 investigation. It repacks a dedicated boot disk with /tmp/mini-virgl2.cpio.gz
-and boots it under virtio-gpu-gl-pci, then waits for the eglrender2 renderer
-line (M19_GL_RENDERER) + the MESA-DBG / MINI_EGL_RC markers.
+and boots it under virtio-gpu-gl-pci. The default gate waits for the full Mesa
+renderer run; ``--raw-only`` and ``--public-only`` stop at their corresponding
+``MINI_RAW_DONE`` and ``MINI_PUBLIC_KMS_DONE`` markers.
 
 Log lands at /tmp/m20-mesavirgl3-stdout.log.
 """
@@ -72,7 +72,7 @@ def build_bootdisk():
         BOOTDISK.unlink()
     subprocess.run(["truncate", "-s", "256M", str(BOOTDISK)], check=True)
     subprocess.run(["mkfs.ext4", "-q", "-F", "-d", str(stage), str(BOOTDISK)], check=True)
-    subprocess.run(["rm", "-rf", str(stage)])
+    shutil.rmtree(stage)
     print(f"[boot] boot disk repacked: {BOOTDISK} (initramfs = {MINI_CPIO.name})")
 
 
@@ -132,53 +132,55 @@ def run() -> bytes:
             os.close(master_fd)
         except OSError:
             pass
-        try:
+        if proc.poll() is None:
             proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-            proc.wait()
-
-    if not read_until(b"=>", 60):
-        print("[boot] U-Boot timeout")
-        cleanup()
-        return output
-
-    for cmd, expected, to in CMDS:
-        send(cmd)
-        time.sleep(0.3)
-        if not read_until(expected, to):
-            print(f"[boot] WARNING: '{cmd.decode()}' missed expected")
-
-    print("[boot] Waiting for renderer marker (TCG, may take minutes)...")
-    deadline = time.time() + 900
-    while time.time() < deadline:
-        r, _, _ = select.select([master_fd], [], [], 0.5)
-        if r:
             try:
-                data = os.read(master_fd, 65536)
-            except OSError:
-                break
-            if not data:
-                break
-            output += data
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
-            if PUBLIC_ONLY:
-                completion_marker = b"MINI_PUBLIC_KMS_DONE"
-            elif RAW_ONLY:
-                completion_marker = b"MINI_RAW_DONE"
-            else:
-                completion_marker = b"MINI_EGL_DONE"
-            if completion_marker in output:
-                break
-            if b"panic" in output or b"Panic" in output:
-                print("[boot] PANIC detected")
-                break
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
-    time.sleep(1)
-    cleanup()
-    return output
+    try:
+        if not read_until(b"=>", 60):
+            print("[boot] U-Boot timeout")
+            return output
+
+        for cmd, expected, timeout_seconds in CMDS:
+            send(cmd)
+            time.sleep(0.3)
+            if not read_until(expected, timeout_seconds):
+                print(f"[boot] WARNING: '{cmd.decode()}' missed expected")
+
+        print("[boot] Waiting for renderer marker (TCG, may take minutes)...")
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            r, _, _ = select.select([master_fd], [], [], 0.5)
+            if r:
+                try:
+                    data = os.read(master_fd, 65536)
+                except OSError:
+                    break
+                if not data:
+                    break
+                output += data
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+                if PUBLIC_ONLY:
+                    completion_marker = b"MINI_PUBLIC_KMS_DONE"
+                elif RAW_ONLY:
+                    completion_marker = b"MINI_RAW_DONE"
+                else:
+                    completion_marker = b"MINI_EGL_DONE"
+                if completion_marker in output:
+                    break
+                if b"panic" in output or b"Panic" in output:
+                    print("[boot] PANIC detected")
+                    break
+
+        time.sleep(1)
+        return output
+    finally:
+        cleanup()
 
 
 def main() -> int:
@@ -219,7 +221,7 @@ def main() -> int:
         required_markers.extend((
             "M20_PRIME_PASS",
             "MINI_PRIME_RC=0",
-            "M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer lifetime stress bounds",
+            "M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer multi_output lifetime stress bounds",
             "MINI_SYNCOBJ_RC=0",
             "M16_VIRGL_RAW_PASS",
             "MINI_RAW_RC=0",

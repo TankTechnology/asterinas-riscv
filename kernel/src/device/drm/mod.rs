@@ -238,6 +238,7 @@ impl AtomicKmsObject {
 /// Page-granular spans are reused only after GEM, mmap, and host-resource
 /// owners all release them.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
+const MAX_RESOURCE_FENCE_ASSOCIATIONS: u64 = 262_144;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
@@ -640,23 +641,64 @@ impl GpuManager {
             .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu fence ids exhausted"))
     }
 
-    fn associate_resource_fence(&self, object_ids: &BTreeSet<u32>, fence: &Arc<fence::Fence>) {
+    /// Reserves all vector storage required to associate one submitted fence.
+    ///
+    /// The caller holds `exec_resource_transaction`, so final GEM release and
+    /// another execbuffer cannot invalidate these reservations before commit.
+    fn reserve_resource_fence_associations(&self, object_ids: &[u32]) -> Result<()> {
         let mut tracked = self.tracked_fences.lock();
         tracked.retain(|previous| !previous.is_signaled());
-        tracked.push(fence.clone());
+        tracked
+            .try_reserve(1)
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot reserve tracked GPU fence"))?;
         drop(tracked);
 
         let mut resource_fences = self.resource_fences.lock();
         let mut removed_count = 0usize;
         for object_id in object_ids {
-            let fences = resource_fences.entry(*object_id).or_default();
+            let fences = resource_fences
+                .get_mut(object_id)
+                .expect("live GEM object has no fence tracking entry");
             let previous_len = fences.len();
             fences.retain(|previous| !previous.is_signaled());
             removed_count += previous_len - fences.len();
-            fences.push(fence.clone());
         }
         self.fence_associations
             .fetch_sub(removed_count as u64, Ordering::Relaxed);
+        let retained = self
+            .fence_associations
+            .load(Ordering::Relaxed)
+            .checked_add(object_ids.len() as u64)
+            .ok_or_else(|| Error::with_message(Errno::ENOSPC, "GPU fence limit overflows"))?;
+        if retained > MAX_RESOURCE_FENCE_ASSOCIATIONS {
+            return_errno_with_message!(Errno::ENOSPC, "too many retained resource GPU fences");
+        }
+        for object_id in object_ids {
+            let fences = resource_fences
+                .get_mut(object_id)
+                .expect("live GEM object has no fence tracking entry");
+            fences.try_reserve(1).map_err(|_| {
+                Error::with_message(Errno::ENOMEM, "cannot reserve resource GPU fence")
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Publishes a fence using storage reserved before device submission.
+    fn associate_resource_fence(&self, object_ids: &[u32], fence: &Arc<fence::Fence>) {
+        let mut tracked = self.tracked_fences.lock();
+        debug_assert!(tracked.len() < tracked.capacity());
+        tracked.push(fence.clone());
+        drop(tracked);
+
+        let mut resource_fences = self.resource_fences.lock();
+        for object_id in object_ids {
+            let fences = resource_fences
+                .get_mut(object_id)
+                .expect("live GEM object has no fence tracking entry");
+            debug_assert!(fences.len() < fences.capacity());
+            fences.push(fence.clone());
+        }
         self.fence_associations
             .fetch_add(object_ids.len() as u64, Ordering::Relaxed);
     }
@@ -681,9 +723,6 @@ impl GpuManager {
                 .any(|completed| Arc::ptr_eq(fence, completed))
         });
         let removed_count = previous_len - current.len();
-        if current.is_empty() {
-            resource_fences.remove(&object_id);
-        }
         self.fence_associations
             .fetch_sub(removed_count as u64, Ordering::Relaxed);
     }
@@ -1315,7 +1354,7 @@ impl DriHandle {
     /// Makes all resources referenced by a submission visible to its context.
     ///
     /// The caller must hold [`GpuManager::resource_creation`].
-    fn attach_resources_to_context(&self, resource_ids: &BTreeSet<u32>) -> Result<u32> {
+    fn attach_resources_to_context(&self, resource_ids: &[u32]) -> Result<u32> {
         let mut context = self.context.lock();
         let mut context_id = self.ensure_virgl_context_locked(&mut context)?;
         for resource_id in resource_ids {

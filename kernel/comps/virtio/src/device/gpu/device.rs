@@ -60,10 +60,34 @@ pub struct GpuCommandTicket {
     response_len: usize,
 }
 
+/// A cloneable handle that advances completions on one virtio-gpu queue.
+///
+/// Unlike [`GpuCommandTicket`], this handle remains useful after an individual
+/// command response has been consumed. Fence chains use it to make progress
+/// without retaining or searching their dependency graph.
+#[derive(Clone)]
+pub struct GpuCommandPollHandle {
+    queue: Arc<ControlQueue>,
+}
+
+impl GpuCommandPollHandle {
+    /// Reclaims every completion currently visible in the control used ring.
+    pub fn poll_completion(&self) {
+        self.queue.poll_completions();
+    }
+}
+
 impl GpuCommandTicket {
     /// Polls the control queue once without consuming this command's result.
     pub fn poll_completion(&self) {
         self.control.poll_completion();
+    }
+
+    /// Returns a persistent handle for polling this command's queue.
+    pub fn poll_handle(&self) -> GpuCommandPollHandle {
+        GpuCommandPollHandle {
+            queue: self.control.queue(),
+        }
     }
 
     /// Waits for device completion and validates the command response.
