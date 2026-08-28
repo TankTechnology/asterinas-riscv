@@ -1368,6 +1368,11 @@ EOF
         ln -s -- ../asterinas-browser-m5-network-observer.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
     elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        # Asterinas supplies its fixed /dev nodes from the initramfs.  Debian's
+        # static-node tmpfiles unit attempts unsupported device-node updates on
+        # this kernel and can block sysinit indefinitely; mask only that unit.
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-tmpfiles-setup-dev.service"
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
             "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
