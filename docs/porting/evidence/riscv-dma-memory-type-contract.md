@@ -111,8 +111,44 @@ The focused contracts now require:
   preserves size, physical address, device address, split behavior, and safe
   reader/writer access.
 
-The existing host DWMAC model gate also remained green: 12 tests passed in
-0.685 seconds.
+The existing host DWMAC model gate also remained green.
+
+## Document-driven preboard address contract
+
+The 2026-08-28 hardware-source audit narrowed the address relationship that a
+physical run is allowed to assume. The shipped Megrez DT marks both GMACs
+`dma-noncoherent` and activates neither `iommus` nor `dma-ranges`. Identity
+`paddr == daddr` is therefore valid for this frozen configuration, but is not a
+universal EIC7700 guarantee.
+
+Commit `921a84458` makes both the offline DT inspector and the in-kernel exact
+Megrez parser reject either translation property before MMIO programming or
+DMA allocation. A future translated DT now fails closed until the DWMAC driver
+implements its address domain deliberately.
+
+Commit `81608c626` adds a read-only `DmaCoherent::uncached_alias_paddr`
+diagnostic. The queue initialization snapshot now distinguishes:
+
+- the descriptor backing physical address (`ring_paddr`);
+- the address programmed into DWMAC (`ring_daddr`);
+- the optional EIC7700 CPU uncached alias (`ring_cpu_alias`).
+
+The one-shot `ASTERINAS_GMAC_DMA_CONTRACT` marker also includes DWMAC revision,
+TX/RX descriptor bases, and initial tails. It does not change address
+selection, cache policy, or queue state.
+
+Fresh preboard verification at implementation HEAD `81608c626` produced:
+
+```text
+Megrez host contracts: 34 passed
+DWMAC host/model contracts: 14 passed
+RISC-V cargo osdk check --ktests: exit 0 in 18.72s
+```
+
+The RISC-V compile included `ostd`, `aster-dwmac`, `aster-network`, and
+`aster-kernel`. Existing kernel warnings remained non-fatal. No QEMU or physical
+board run was performed, so this section records a software contract rather
+than hardware success.
 
 ## Physical motivation and correction
 
