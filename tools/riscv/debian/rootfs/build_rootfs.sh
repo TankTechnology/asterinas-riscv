@@ -1401,6 +1401,13 @@ EOF
         # basic.target instead; its wait-x preflight still enforces the actual
         # display readiness before Firefox is exec'd.
         mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
+        # The online profile must also start the Xorg provider before
+        # graphical.target; that target may never complete while the provider
+        # remains a long-lived simple service.  Browser wait-x below supplies
+        # the ordering barrier once the socket actually exists.
+        rm -f -- "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+        ln -s -- ../$service_name.service \
+            "$stage/etc/systemd/system/basic.target.wants/$service_name.service"
         ln -s -- ../asterinas-browser-web.service \
             "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web.service"
         ln -s -- ../asterinas-browser-web-evidence.service \
