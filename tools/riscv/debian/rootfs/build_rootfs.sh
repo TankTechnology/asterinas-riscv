@@ -36,6 +36,10 @@ readonly -a REQUIRED_TOOLS=(
     sha256sum
     curl
 )
+readonly -a STARTUP_CACHE_REQUIRED_TOOLS=(
+    systemd-sysusers
+    journalctl
+)
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
     rootfs-manifest.json
@@ -142,6 +146,9 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
+            if profile_uses_startup_caches "$PROFILE"; then
+                printf '%s\n' "${STARTUP_CACHE_REQUIRED_TOOLS[@]}"
+            fi
             if [[ "$PROFILE" == browser-m5 ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
@@ -325,6 +332,11 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
+    if profile_uses_startup_caches "$PROFILE"; then
+        for tool in "${STARTUP_CACHE_REQUIRED_TOOLS[@]}"; do
+            command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
+        done
+    fi
     if [[ "$PROFILE" == browser-m5 ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
