@@ -81,7 +81,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             result.stdout,
             (
                 "ASTERINAS_GMAC_TCP_PROBE_FAIL "
-                "reason=connect-poll errno=110 attempts=3 completed_bytes=0\n"
+                "reason=receive-poll errno=110 attempts=1 "
+                "current_bytes=14600 completed_bytes=0\n"
                 "MEGREZ_TCP_PROBE_SELF_TEST PASS\n"
                 "MEGREZ_TCP_STRESS_SELF_TEST PASS "
                 "sizes=16384,65536,1048576,16777216 pattern=mod251\n"
