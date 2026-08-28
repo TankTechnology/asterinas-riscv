@@ -30,12 +30,17 @@ marker() {
     guest_ns="$(guest_monotonic_ns)"
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$$"
     printf '%s\n' "$line" >>"$TIMELINE"
-    printf '%s\n' "$line" >>"$CONSOLE"
+    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
 }
 
 exec >>"$STDERR_LOG" 2>&1
 printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
 marker BOOT_FIREFOX_WRAPPER_START
+if [[ ! -S /tmp/.X11-unix/X0 ]]; then
+    /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
+        -extension MIT-SHM -logfile "$FIREFOX_HOME/Xorg.0.log" \
+        >>"$FIREFOX_HOME/desktop-m5-session.log" 2>&1 &
+fi
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while [[ ! -S /tmp/.X11-unix/X0 ]]; do
     ((SECONDS < deadline)) || exit 1
