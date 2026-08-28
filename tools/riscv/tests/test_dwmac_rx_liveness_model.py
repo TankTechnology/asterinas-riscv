@@ -175,18 +175,21 @@ fn main() {{
     diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0, 0));
     diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0, 0));
     diagnostics.record_frame(&[0u8; 13]);
+    let mut truncated_payload = ethernet_frame(0x0800, 6, 0x18, 40);
+    truncated_payload[16..18].copy_from_slice(&1500u16.to_be_bytes());
+    diagnostics.record_frame(&truncated_payload);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Fragmented);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::ReceiveError);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::FrameTooLong);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Other);
 
     let report = diagnostics.report();
-    assert_eq!(report.observed, 7);
+    assert_eq!(report.observed, 8);
     assert_eq!(report.arp, 1);
     assert_eq!(report.ipv4_other, 1);
     assert_eq!(report.tcp_syn, 1);
     assert_eq!(report.tcp_syn_ack, 1);
-    assert_eq!(report.tcp_other, 1);
+    assert_eq!(report.tcp_other, 2);
     assert_eq!(report.other, 1);
     assert_eq!(report.malformed, 1);
     assert_eq!(report.descriptor_fragmented, 1);
@@ -450,16 +453,18 @@ fn main() {{
                 timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("9 passed", result.stdout)
+            self.assertIn("11 passed", result.stdout)
 
     def test_device_uses_poll_budget_at_all_three_boundaries(self) -> None:
         source = DEVICE_SOURCE.read_text()
         self.assertIn("rx_poll: RxPollBudget", source)
         self.assertIn("self.rx_poll.can_receive()", source)
         self.assertIn("self.rx_poll.record_received()", source)
+        self.assertIn("self.rx_poll.record_rx_buffer_unavailable()", source)
         self.assertIn("self.rx_poll.finish(self.fatal, more_rx)", source)
         self.assertIn("self.rx_poll.record_rearmed()", source)
         self.assertIn("ASTERINAS_GMAC_RX_POLL", source)
+        self.assertIn("rx_buffer_unavailable={}", source)
 
     def test_queue_progress_snapshot_preserves_tx_accounting(self) -> None:
         source = QUEUE_SOURCE.read_text()
