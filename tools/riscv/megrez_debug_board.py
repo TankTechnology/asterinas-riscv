@@ -58,6 +58,12 @@ FATAL_MARKERS = (
     "Oops:",
 )
 PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
+PROBE_FAILURE_PATTERN = re.compile(
+    r"ASTERINAS_GMAC_TCP_PROBE_FAIL "
+    r"reason=(?P<reason>[a-z0-9-]+) "
+    r"errno=[0-9]+ attempts=[0-9]+ "
+    r"current_bytes=[0-9]+ completed_bytes=[0-9]+(?:\r?\n|$)"
+)
 KERNEL_COMPRESSED_ADDRESS = 0x90000000
 
 
@@ -492,12 +498,13 @@ class _MarkerTracker:
     def __init__(self, markers: tuple[str, ...]) -> None:
         self._markers = markers
         self._index = 0
+        self._terminal: GuestTerminal | None = None
         self._tail = ""
         self._tail_limit = (
             max(
                 *(len(marker) for marker in markers),
                 *(len(marker) for marker in FATAL_MARKERS),
-                4,
+                512,
             )
             - 1
         )
@@ -510,6 +517,10 @@ class _MarkerTracker:
     def observed(self) -> int:
         return self._index
 
+    @property
+    def terminal(self) -> GuestTerminal | None:
+        return self._terminal
+
     def feed(self, chunk: str) -> bool:
         window = self._tail + chunk
         if any(marker in window for marker in FATAL_MARKERS):
@@ -517,23 +528,50 @@ class _MarkerTracker:
 
         cursor = 0
         while True:
-            occurrences = [
-                (position, index)
+            occurrences: list[tuple[int, str, int, int]] = [
+                (position, "marker", index, position + len(marker))
                 for index, marker in enumerate(self._markers)
                 if (position := window.find(marker, cursor)) >= 0
             ]
+            failure = PROBE_FAILURE_PATTERN.search(window, cursor)
+            if failure is not None:
+                occurrences.append((failure.start(), "failure", -1, failure.end()))
             if not occurrences:
                 break
-            position, marker_index = min(occurrences)
+            _position, event, marker_index, event_end = min(occurrences)
+            if self._terminal is not None:
+                raise BoardRunFailure("guest-terminal-duplicate")
+            if event == "failure":
+                if self._index == 0:
+                    raise BoardRunFailure("guest-marker-order")
+                assert failure is not None
+                self._terminal = GuestTerminal(
+                    passed=False,
+                    reason=failure.group("reason"),
+                )
+                cursor = event_end
+                continue
             if marker_index != self._index:
                 raise BoardRunFailure("guest-marker-order")
-            marker = self._markers[marker_index]
             self._index += 1
-            cursor = position + len(marker)
+            cursor = event_end
+            if self.complete:
+                self._terminal = GuestTerminal(passed=True, reason="pass")
 
-        recovered = self.complete and PROMPT_PATTERN.search(window, cursor) is not None
+        recovered = (
+            self._terminal is not None
+            and PROMPT_PATTERN.search(window, cursor) is not None
+        )
         self._tail = window[cursor:][-self._tail_limit :]
         return recovered
+
+
+@dataclass(frozen=True)
+class GuestTerminal:
+    """One current-attempt guest outcome observed before firmware recovery."""
+
+    passed: bool
+    reason: str
 
 
 def _remaining(deadline: float, clock: Callable[[], float], *, phase: str) -> float:
@@ -557,8 +595,8 @@ def _stage_result(plan: DebugPlan, *, passed: bool, reason: str) -> StageResult:
 
 
 def _serial_timeout_reason(tracker: _MarkerTracker) -> str:
-    if tracker.complete:
-        return "uboot-recovery-timeout"
+    if tracker.terminal is not None:
+        return "recovery-not-observed"
     if tracker.observed == 0:
         return "kernel-timeout"
     return "guest-timeout"
@@ -608,7 +646,16 @@ def run_board(
                 raise BoardRunFailure("guest-transcript-limit")
             transcript.append(chunk)
             if tracker.feed(chunk):
-                result = _stage_result(plan, passed=True, reason="board-pass")
+                terminal = tracker.terminal
+                assert terminal is not None
+                if terminal.passed:
+                    result = _stage_result(plan, passed=True, reason="board-pass")
+                else:
+                    result = _stage_result(
+                        plan,
+                        passed=False,
+                        reason=f"guest-failure-recovered:{terminal.reason}",
+                    )
                 break
     except BoardTermination as error:
         pending_termination = error
