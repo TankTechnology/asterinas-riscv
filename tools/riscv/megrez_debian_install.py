@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import functools
 import http.server
+import lzma
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -37,8 +37,8 @@ SERVER_ADDRESS = "10.100.19.216"
 SERVER_PORT = 8080
 NETMASK = "255.255.248.0"
 INSTALLER_FILENAME = "debian-current-network-installer.cpio"
-KERNEL_FILENAME = "asterinas-debian-current.booti"
-DTB_FILENAME = "eic7700-milkv-megrez.dtb"
+KERNEL_FILENAME = "asterinas-debian-current.booti.lzma"
+DTB_FILENAME = "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb"
 ArtifactValidator = Callable[[DebugPlan], dict[str, ArtifactIdentity]]
 GitIdentity = Callable[[Path], str]
 BuildInstaller = Callable[[Path, Path, Path, str, str], None]
@@ -99,11 +99,14 @@ def _safe_directory(path: Path, *, repository: Path) -> Path:
     return candidate
 
 
-def _copy_public(source: Path, destination: Path) -> None:
+def _publish_lzma(source: Path, destination: Path) -> None:
     temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
     try:
-        with source.open("rb") as input_stream, temporary.open("xb") as output_stream:
-            shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+        compressed = lzma.compress(
+            source.read_bytes(), format=lzma.FORMAT_ALONE, preset=9
+        )
+        with temporary.open("xb") as output_stream:
+            output_stream.write(compressed)
             output_stream.flush()
             os.fsync(output_stream.fileno())
         temporary.chmod(0o644)
@@ -164,8 +167,11 @@ def _board_command(
     repository: Path,
     device: str,
     output: Path,
+    serial_directory: Path,
     permit: PreboardPermit,
     installer_crc32: str,
+    compressed_kernel_crc32: str,
+    kernel_size: int,
     bootargs: str,
     timeout: float,
 ) -> list[str]:
@@ -186,13 +192,13 @@ def _board_command(
             f"initrd={installer_crc32}"
         ),
         "--load-transport",
-        "tftp",
-        "--tftp-board-address",
-        BOARD_ADDRESS,
-        "--tftp-server-address",
-        SERVER_ADDRESS,
-        "--tftp-netmask",
-        NETMASK,
+        "ymodem",
+        "--ymodem-directory",
+        str(serial_directory),
+        "--booti-compressed-crc32",
+        compressed_kernel_crc32,
+        "--booti-uncompressed-size",
+        str(kernel_size),
         "--bootargs",
         bootargs,
         "--final-profile",
@@ -263,11 +269,10 @@ def run_network_install(
 
         tftp = _safe_directory(tftp_directory, repository=repository)
         kernel = Path(identities["kernel"].path)
-        dtb = Path(identities["megrez_dtb"].path)
         root = Path(identities["root_image"].path)
         installer = tftp / INSTALLER_FILENAME
-        _copy_public(kernel, tftp / KERNEL_FILENAME)
-        _copy_public(dtb, tftp / DTB_FILENAME)
+        compressed_kernel = tftp / KERNEL_FILENAME
+        _publish_lzma(kernel, compressed_kernel)
         build_installer(
             base_cpio,
             root,
@@ -280,8 +285,11 @@ def run_network_install(
             repository,
             device,
             output,
+            tftp,
             permit,
             _crc32(installer),
+            _crc32(compressed_kernel),
+            kernel.stat().st_size,
             bootargs,
             float(timeout),
         )

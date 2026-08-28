@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import lzma
 import subprocess
 import tempfile
 import unittest
@@ -137,6 +138,20 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.assertEqual(events[1][0], "server-enter")
         command = events[2][1]
         self.assertIn("--require-recovery", command)
+        self.assertEqual(command[command.index("--load-transport") + 1], "ymodem")
+        self.assertIn("--ymodem-directory", command)
+        self.assertIn("--booti-compressed-crc32", command)
+        self.assertIn("--booti-uncompressed-size", command)
+        self.assertNotIn("--tftp-board-address", command)
+        compressed_kernel = self.tftp / "asterinas-debian-current.booti.lzma"
+        self.assertEqual(
+            lzma.decompress(compressed_kernel.read_bytes(), format=lzma.FORMAT_ALONE),
+            b"kernel",
+        )
+        compressed_crc = command[command.index("--booti-compressed-crc32") + 1]
+        self.assertEqual(
+            compressed_crc, f"{zlib.crc32(compressed_kernel.read_bytes()):08x}"
+        )
         self.assertIn("--final-profile", command)
         self.assertEqual(command[command.index("--final-profile") + 1], "installer")
         bootargs = command[command.index("--bootargs") + 1]
