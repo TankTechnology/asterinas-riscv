@@ -6,56 +6,25 @@
 //! These are the kernel-side entry points for Mesa's virgl driver.
 //! They translate DRM ioctl structs into virtio-gpu control queue commands.
 
+mod execbuffer;
+
 use aster_virtio::device::gpu::{
     Resource3dCreateParams, VIRTIO_GPU_CAPSET_VIRGL, VIRTIO_GPU_CAPSET_VIRGL2,
 };
+pub(super) use execbuffer::{DrmVirtgpuExecbuffer, virtgpu_execbuffer};
 use ostd::mm::VmIo;
 
 use super::{
     DumbBuffer, GemResourceState,
     dumb::{self, PendingDumbBuffer},
-    fence::ExecbufferMemoryQuota,
     gem::{GemObjectRef, PendingGemHandle},
-    syncobj::{self, MAX_SYNCOBJ_ARRAY_ITEMS, SyncObject},
     virgl_resource::{LiveGemResource, Transfer3d},
 };
-use crate::{
-    context::current_userspace,
-    fs::file::file_table::{FdFlags, FileDesc, WithFileTable},
-    prelude::*,
-    process::posix_thread::FileTableRefMut,
-};
+use crate::{context::current_userspace, prelude::*};
 
 // ---------------------------------------------------------------------------
 // Wire types (matching Linux include/uapi/drm/virtgpu_drm.h)
 // ---------------------------------------------------------------------------
-
-/// `struct drm_virtgpu_execbuffer`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-pub(super) struct DrmVirtgpuExecbuffer {
-    pub flags: u32,
-    pub size: u32,
-    pub command: u64,    // void* — userspace pointer to command buffer
-    pub bo_handles: u64, // __u32* — array of GEM handle indices
-    pub num_bo_handles: u32,
-    pub fence_fd: i32, // in/out fence fd
-    pub ring_idx: u32,
-    pub syncobj_stride: u32,
-    pub num_in_syncobjs: u32,
-    pub num_out_syncobjs: u32,
-    pub in_syncobjs: u64,
-    pub out_syncobjs: u64,
-}
-
-/// One input or output syncobj descriptor in `drm_virtgpu_execbuffer`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod)]
-struct DrmVirtgpuExecbufferSyncobj {
-    handle: u32,
-    flags: u32,
-    point: u64,
-}
 
 /// `struct drm_virtgpu_getparam`.
 ///
@@ -196,10 +165,6 @@ const VIRTGPU_PARAM_CONTEXT_INIT: u64 = 6;
 const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
 const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
 const VIRTGPU_PARAM_BLOB_ALIGNMENT: u64 = 9;
-
-/// Upper bounds for one userspace-provided virgl submission.
-const MAX_EXECBUFFER_SIZE: usize = 16 * 1024 * 1024;
-const MAX_EXECBUFFER_HANDLES: usize = 4096;
 
 /// Returns a device parameter queried by Mesa.
 pub(super) fn virtgpu_getparam(
@@ -536,326 +501,6 @@ pub(super) fn virtgpu_get_caps(
     resp.size = capset_data.len() as u32;
     cmd.write(&resp)?;
     Ok(0)
-}
-
-/// `VIRTGPU_EXECBUF_FENCE_FD_IN` — `fence_fd` names a sync fence that must
-/// complete before the command is submitted.
-const VIRTGPU_EXECBUF_FENCE_FD_IN: u32 = 0x01;
-
-/// `VIRTGPU_EXECBUF_FENCE_FD_OUT` — the caller requests an out-fence (a pollable
-/// fd signaling when the submitted command completes).
-const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
-
-/// Reset an input syncobj after it has been consumed by the submission.
-const VIRTGPU_EXECBUF_SYNCOBJ_RESET: u32 = 0x01;
-
-/// Submits a virgl command stream to the host.
-///
-/// Mesa encodes GL commands in a virgl command buffer and submits them through
-/// this ioctl.
-/// Every submission receives a persistent fence and is queued without waiting
-/// for rendering to finish.
-/// Setting `VIRTGPU_EXECBUF_FENCE_FD_OUT` controls whether that fence is also
-/// returned as a [`super::fence::FenceFile`].
-/// The file becomes readable when the control-queue IRQ observes the fenced
-/// response; a fast device may signal it before the ioctl copies out the fd.
-pub(super) fn virtgpu_execbuffer(
-    handle: &super::DriHandle,
-    cmd: crate::util::ioctl::Ioctl<
-        b'd',
-        0x42,
-        true,
-        crate::util::ioctl::InOutData<DrmVirtgpuExecbuffer>,
-    >,
-    file_table: &mut FileTableRefMut,
-) -> Option<Result<i32>> {
-    Some((|| -> Result<i32> {
-        let req = cmd.read()?;
-        if req.flags & !(VIRTGPU_EXECBUF_FENCE_FD_IN | VIRTGPU_EXECBUF_FENCE_FD_OUT) != 0
-            || req.ring_idx != 0
-        {
-            return_errno_with_message!(Errno::EINVAL, "unsupported execbuffer synchronization");
-        }
-
-        let input_syncobjs = parse_execbuffer_syncobjs(
-            handle,
-            req.in_syncobjs,
-            req.num_in_syncobjs,
-            req.syncobj_stride,
-            SyncobjDirection::Input,
-        )?;
-        let output_syncobjs = parse_execbuffer_syncobjs(
-            handle,
-            req.out_syncobjs,
-            req.num_out_syncobjs,
-            req.syncobj_stride,
-            SyncobjDirection::Output,
-        )?;
-
-        if req.size == 0 || req.command == 0 {
-            return_errno_with_message!(Errno::EINVAL, "empty command buffer");
-        }
-
-        let command_size = req.size as usize;
-        if command_size > MAX_EXECBUFFER_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "command buffer is too large");
-        }
-        // Bound aggregate retention before copying the untrusted stream.
-        // Mesa's atomic path relies on this copy occurring before an input
-        // fence wait, so the quota—not reordering—contains blocked memory.
-        let command_quota = ExecbufferMemoryQuota::reserve(command_size)?;
-        let mut cmd_buf = Vec::new();
-        cmd_buf
-            .try_reserve_exact(command_size)
-            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate command buffer"))?;
-        cmd_buf.resize(command_size, 0);
-        current_userspace!().read_bytes(req.command as usize, &mut cmd_buf)?;
-
-        // `fence_fd` is an input before it is overwritten with a newly
-        // installed out-fence. Clone the fence first so IN|OUT can safely use
-        // the same field. Waiting before taking resource transaction locks
-        // prevents an unrelated renderer from being blocked behind it.
-        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_IN != 0 {
-            let fd = FileDesc::try_from(req.fence_fd)?;
-            let file = file_table
-                .read_with(|table| table.get_file(fd).cloned())
-                .map_err(|_| Error::new(Errno::EBADF))?;
-            let fence_file = file
-                .downcast_ref::<super::fence::FenceFile>()
-                .ok_or_else(|| {
-                    Error::with_message(Errno::EINVAL, "execbuffer input fd is not a sync fence")
-                })?;
-            fence_file.fence().wait_for_dependency();
-        }
-        for descriptor in &input_syncobjs {
-            descriptor
-                .syncobj
-                .wait_for_fence(descriptor.point, false)?
-                .wait_for_dependency();
-        }
-
-        // Reserve recoverable syncobj capacity before the command can reach
-        // the GPU, so publication cannot return a partial capacity failure.
-        let mut output_specs = Vec::new();
-        output_specs
-            .try_reserve_exact(output_syncobjs.len())
-            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot reserve output syncobjs"))?;
-        for descriptor in &output_syncobjs {
-            output_specs.push((descriptor.syncobj.clone(), descriptor.point));
-        }
-        let output_publications = syncobj::reserve_publication_batch(&output_specs)?;
-
-        // Copy the untrusted handle list before taking device-wide resource
-        // locks because the userspace access may fault and sleep.
-        let object_handles = if req.num_bo_handles == 0 {
-            Vec::new()
-        } else {
-            if req.bo_handles == 0 {
-                return_errno_with_message!(Errno::EINVAL, "missing execbuffer handle list");
-            }
-            let handle_count = req.num_bo_handles as usize;
-            if handle_count > MAX_EXECBUFFER_HANDLES {
-                return_errno_with_message!(Errno::EINVAL, "too many execbuffer handles");
-            }
-            let byte_count = handle_count
-                .checked_mul(size_of::<u32>())
-                .ok_or_else(|| Error::with_message(Errno::EINVAL, "handle list overflows"))?;
-            let mut raw = Vec::new();
-            raw.try_reserve_exact(byte_count)
-                .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate handle list"))?;
-            raw.resize(byte_count, 0);
-            current_userspace!().read_bytes(req.bo_handles as usize, &mut raw)?;
-            let mut handles = Vec::new();
-            handles
-                .try_reserve_exact(handle_count)
-                .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot decode handle list"))?;
-            for bytes in raw.as_chunks::<4>().0 {
-                handles.push(u32::from_le_bytes(*bytes));
-            }
-            handles
-        };
-
-        let resource_creation = handle.gpu_manager.resource_creation.lock();
-        let resource_transaction = handle.gpu_manager.exec_resource_transaction.lock();
-
-        // Validate and collect the GEM object ids in the resource list so the
-        // resulting fence can become each object's current reservation fence.
-        let mut object_ids = Vec::new();
-        if !object_handles.is_empty() {
-            object_ids
-                .try_reserve_exact(object_handles.len())
-                .map_err(|_| {
-                    Error::with_message(Errno::ENOMEM, "cannot reserve execbuffer object ids")
-                })?;
-            {
-                let inner = handle.inner.lock();
-                let guard = handle.gpu_manager.gem_objects.lock();
-                for bo_h in object_handles {
-                    let Some(object_id) = inner.handles.get(&bo_h).copied() else {
-                        return_errno_with_message!(
-                            Errno::EINVAL,
-                            "unknown GEM handle in execbuffer"
-                        );
-                    };
-                    if !guard.contains_key(&object_id) {
-                        return_errno_with_message!(Errno::EINVAL, "stale GEM handle in execbuffer");
-                    }
-                    object_ids.push(object_id);
-                }
-            }
-            object_ids.sort_unstable();
-            object_ids.dedup();
-        }
-
-        let mut resource_ids = Vec::new();
-        resource_ids
-            .try_reserve_exact(object_ids.len())
-            .map_err(|_| {
-                Error::with_message(Errno::ENOMEM, "cannot reserve execbuffer resource ids")
-            })?;
-        for object_id in &object_ids {
-            if let Some(resource_id) = handle.gpu_manager.live_gem_resource(*object_id) {
-                resource_ids.push(resource_id);
-            }
-        }
-        handle
-            .gpu_manager
-            .reserve_resource_fence_associations(&object_ids)?;
-        let ctx_id = handle.attach_resources_to_context(&resource_ids)?;
-        let mut resp = req;
-        let fence_id = handle.gpu_manager.allocate_fence_id()?;
-        let fence = Arc::try_new(super::fence::Fence::new())
-            .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate execbuffer fence"))?;
-        let ticket = handle
-            .gpu_manager
-            .gpu
-            .submit_3d_fenced_async(ctx_id, req.size, &cmd_buf, fence_id, fence.clone())
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
-        fence.attach(ticket, command_quota);
-        drop(cmd_buf);
-        handle
-            .gpu_manager
-            .associate_resource_fence(&object_ids, &fence);
-        drop(resource_creation);
-
-        for publication in output_publications {
-            publication.publish(fence.clone());
-        }
-        for descriptor in &input_syncobjs {
-            if descriptor.should_reset {
-                descriptor.syncobj.clear_fence();
-            }
-        }
-        // Publish syncobj payloads in the same total order as control-queue
-        // submission, including across DRM files that share a syncobj fd.
-        drop(resource_transaction);
-
-        let mut installed_fence_fd = None;
-        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
-            let fence_file = Arc::new(super::fence::FenceFile::new(fence));
-            let file: Arc<dyn crate::fs::file::FileLike> = fence_file;
-            let fd = file_table
-                .unwrap()
-                .write()
-                .insert(file.clone(), FdFlags::CLOEXEC);
-            resp.fence_fd = u32::from(fd) as i32;
-            installed_fence_fd = Some((fd, file));
-        }
-
-        if let Err(error) = cmd.write(&resp) {
-            if let Some((fd, file)) = installed_fence_fd {
-                let closed = file_table.unwrap().write().close_file_if_same(fd, &file);
-                drop(closed);
-            }
-            return Err(error);
-        }
-        Ok(0)
-    })())
-}
-
-struct ExecbufferSyncobj {
-    syncobj: Arc<SyncObject>,
-    point: u64,
-    should_reset: bool,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum SyncobjDirection {
-    Input,
-    Output,
-}
-
-fn parse_execbuffer_syncobjs(
-    handle: &super::DriHandle,
-    pointer: u64,
-    count: u32,
-    stride: u32,
-    direction: SyncobjDirection,
-) -> Result<Vec<ExecbufferSyncobj>> {
-    let count = count as usize;
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    if count > MAX_SYNCOBJ_ARRAY_ITEMS {
-        return_errno_with_message!(Errno::EINVAL, "too many execbuffer syncobjs");
-    }
-    // `handle` and `flags` must always be present. Older userspace may use a
-    // shorter descriptor without the optional timeline point.
-    if pointer == 0 || stride < 8 {
-        return_errno_with_message!(Errno::EINVAL, "invalid execbuffer syncobj array");
-    }
-
-    let stride = stride as usize;
-    let copy_len = stride.min(size_of::<DrmVirtgpuExecbufferSyncobj>());
-    let mut wire = Vec::new();
-    wire.try_reserve_exact(count)
-        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate syncobj descriptors"))?;
-    for index in 0..count {
-        let offset = index
-            .checked_mul(stride)
-            .and_then(|offset| pointer.checked_add(offset as u64))
-            .ok_or_else(|| {
-                Error::with_message(Errno::EFAULT, "syncobj descriptor address overflows")
-            })?;
-        let address = usize::try_from(offset).map_err(|_| {
-            Error::with_message(Errno::EFAULT, "syncobj descriptor address overflows")
-        })?;
-        let mut bytes = [0u8; size_of::<DrmVirtgpuExecbufferSyncobj>()];
-        current_userspace!().read_bytes(address, &mut bytes[..copy_len])?;
-        wire.push(DrmVirtgpuExecbufferSyncobj {
-            handle: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            flags: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            point: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-        });
-    }
-
-    let mut handles = Vec::new();
-    handles
-        .try_reserve_exact(wire.len())
-        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate syncobj handles"))?;
-    for descriptor in &wire {
-        handles.push(descriptor.handle);
-    }
-    let syncobjs = syncobj::lookup_syncobjs(handle, &handles)?;
-    let mut descriptors = Vec::new();
-    descriptors
-        .try_reserve_exact(wire.len())
-        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot decode syncobj descriptors"))?;
-    for (descriptor, syncobj) in wire.into_iter().zip(syncobjs) {
-        if (direction == SyncobjDirection::Input
-            && descriptor.flags & !VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0)
-            || (direction == SyncobjDirection::Output && descriptor.flags != 0)
-        {
-            return_errno_with_message!(Errno::EINVAL, "unknown execbuffer syncobj flags");
-        }
-        descriptors.push(ExecbufferSyncobj {
-            syncobj,
-            point: descriptor.point,
-            should_reset: direction == SyncobjDirection::Input
-                && descriptor.flags & VIRTGPU_EXECBUF_SYNCOBJ_RESET != 0,
-        });
-    }
-    Ok(descriptors)
 }
 
 /// Rejects explicit context initialization when the corresponding

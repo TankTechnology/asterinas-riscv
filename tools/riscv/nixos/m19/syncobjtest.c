@@ -93,6 +93,7 @@ struct drm_virtgpu_execbuffer_syncobj {
 #define FD_SYNC_FILE (1u << 0)
 #define FD_TIMELINE (1u << 1)
 #define EXECBUF_SYNCOBJ_RESET (1u << 0)
+#define EXECBUF_FENCE_FD_OUT (1u << 1)
 #define MAX_EVENT_WATCHERS 4096u
 
 static void fail(const char *stage) {
@@ -383,6 +384,29 @@ int main(void) {
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) != -1 || errno != EINVAL)
         fail("execbuffer_short_stride");
     execution.syncobj_stride = sizeof(input);
+
+    // The out-fence fd is installed before the irreversible submit. A later
+    // resource-validation failure must close it and roll back both timeline
+    // output reservations.
+    int expected_reused_fd = dup(fd);
+    if (expected_reused_fd < 0) fail("execbuffer_rollback_probe_before");
+    close(expected_reused_fd);
+    uint32_t unknown_bo_handle = UINT32_MAX;
+    struct drm_virtgpu_execbuffer rejected = execution;
+    rejected.flags = EXECBUF_FENCE_FD_OUT;
+    rejected.bo_handles = (uint64_t)(uintptr_t)&unknown_bo_handle;
+    rejected.num_bo_handles = 1;
+    rejected.fence_fd = -1;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &rejected) != -1 || errno != EINVAL)
+        fail("execbuffer_out_fence_rollback");
+    int reused_fd = dup(fd);
+    if (reused_fd < 0 || reused_fd != expected_reused_fd)
+        fail("execbuffer_out_fence_leak");
+    close(reused_fd);
+
+    execution.flags = EXECBUF_FENCE_FD_OUT;
+    execution.fence_fd = -1;
     stage("execbuffer_submit_begin");
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
         fail("execbuffer_syncobj_submit");
@@ -395,6 +419,12 @@ int main(void) {
         fail("execbuffer_syncobj_query");
     if (query(fd, sixth, 0) != 17 || query(fd, sixth, QUERY_LAST_SUBMITTED) != 17)
         fail("execbuffer_second_syncobj_query");
+    struct pollfd output_fence = { .fd = execution.fence_fd, .events = POLLIN };
+    if (execution.fence_fd < 0 || poll(&output_fence, 1, 2000) != 1 ||
+        !(output_fence.revents & POLLIN))
+        fail("execbuffer_output_fence_poll");
+    close(execution.fence_fd);
+    stage("execbuffer_out_fence");
     stage("execbuffer_multi_output");
     available.points = (uint64_t)(uintptr_t)&input.point;
     available.handles = (uint64_t)(uintptr_t)&first;
@@ -402,6 +432,26 @@ int main(void) {
     errno = 0;
     if (ioctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &available) != -1 || errno != EINVAL)
         fail("execbuffer_input_reset");
+
+    // The same syncobj may be both a RESET input and a timeline output. RESET
+    // consumes the old input fence; it must not erase the new output fence.
+    uint32_t alias = create(fd, SYNCOBJ_CREATE_SIGNALED);
+    struct drm_virtgpu_execbuffer_syncobj alias_syncobjs[] = {
+        { .handle = alias, .flags = EXECBUF_SYNCOBJ_RESET },
+        { .handle = alias, .point = 23 },
+    };
+    execution.flags = 0;
+    execution.fence_fd = -1;
+    execution.num_in_syncobjs = 1;
+    execution.num_out_syncobjs = 1;
+    execution.in_syncobjs = (uint64_t)(uintptr_t)&alias_syncobjs[0];
+    execution.out_syncobjs = (uint64_t)(uintptr_t)&alias_syncobjs[1];
+    if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
+        fail("execbuffer_alias_reset_submit");
+    timeline_wait(fd, alias, 23, 0);
+    if (query(fd, alias, 0) != 23 || query(fd, alias, QUERY_LAST_SUBMITTED) != 23)
+        fail("execbuffer_alias_reset_query");
+    stage("execbuffer_alias_reset");
 
     // Repeated same-object transfers exercise dependency flattening rather
     // than constructing a recursively expanding fence graph.
@@ -411,6 +461,7 @@ int main(void) {
     execution.num_in_syncobjs = 0;
     execution.num_out_syncobjs = 1;
     execution.in_syncobjs = 0;
+    execution.out_syncobjs = (uint64_t)(uintptr_t)outputs;
     if (ioctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution) < 0)
         fail("transfer_stress_submit");
     struct drm_syncobj_transfer self_transfer = {
@@ -461,12 +512,12 @@ int main(void) {
     stage("watcher_bounds");
 
     uint32_t handles[] = {
-        first, second, imported.handle, third, fourth, fifth, sixth, stress
+        first, second, imported.handle, third, fourth, fifth, sixth, alias, stress
     };
     for (size_t i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
         destroy(fd, handles[i]);
     }
     close(fd);
-    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer multi_output lifetime stress bounds\n");
+    printf("M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency execbuffer out_fence rollback multi_output alias_reset lifetime stress bounds\n");
     return 0;
 }

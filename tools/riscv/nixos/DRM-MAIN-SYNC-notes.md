@@ -961,3 +961,37 @@ execbuffer-quota release, and three user-controlled infallible allocation
 sites. Remaining review items are architectural cleanup rather than confirmed
 runtime defects: split the large DRM root/syncobj modules and decompose the
 resource-create and execbuffer ioctl transactions into narrower typed stages.
+
+## 2026-08-28 typed execbuffer transaction and DRM module boundaries
+
+The first architectural cleanup split Linux core/KMS wire definitions from
+the DRM composition root into `device/drm/uapi.rs`, and moved virtio-gpu
+execbuffer decoding and submission into `device/drm/virtio_gpu/execbuffer.rs`.
+The execbuffer path now has explicit decoded, prepared, submitted, and
+published states. Userspace arrays, command memory, output syncobj capacity,
+the completion fence, and the optional out-fence fd are all prepared before
+the irreversible virtio submission. Dropping a prepared response signals its
+unpublished fence as failed and rolls back an installed fd; after submission,
+publication performs no fallible allocation.
+
+The follow-up persona review closed four concurrency and transaction defects.
+Syncobj waits propagate allocation failure, retain each fence generation once
+observed, and keep a direct completion callback even if the container is
+reset. Eventfd notification now snapshots readiness and its watcher-generation
+cutoff atomically with each state transition, so a rapid signal/reset pair
+cannot lose the signal. Execbuffer consumes RESET inputs before publishing
+outputs, preserving a new fence when one syncobj appears in both arrays.
+
+The public RISC-V ioctl client now verifies out-fence fd rollback and fd reuse,
+pollable execbuffer out-fences, multiple output syncobjs, and the same-syncobj
+RESET-input/timeline-output case. A targeted QEMU ktest reported
+`syncobj_regression ... ok` and `1 passed; 0 failed`. The final ordinary Sv39
+gate in `/tmp/drm-typed-transaction-final-gate.log` reported the exact marker
+`M19_SYNCOBJ_PASS binary timeline transfer share sync_file eventfd concurrency
+execbuffer out_fence rollback multi_output alias_reset lifetime stress bounds`,
+all legacy and atomic modetest/kmscube, PRIME, raw virgl, and EGL return codes
+as zero, four distinct Mesa virgl frames, and `MINI_VIRGL_PASS`.
+
+The next architecture slice should decompose `GpuManager`, the root ioctl
+dispatcher, and `virtgpu_resource_create`; these are maintainability debts
+recorded by the review, not confirmed runtime failures in this transaction.

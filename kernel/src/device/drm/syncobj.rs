@@ -182,6 +182,18 @@ pub(super) struct SyncObject {
     event_watchers: SpinLock<EventWatcherList, LocalIrqDisabled>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SubmissionWait {
+    Immediate,
+    Wait,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineQuery {
+    Signaled,
+    LastSubmitted,
+}
+
 impl Debug for SyncObject {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SyncObject").finish_non_exhaustive()
@@ -234,19 +246,22 @@ impl SyncObject {
         fence: Option<Arc<Fence>>,
         notification: Option<SyncobjNotification>,
     ) {
-        // Keep this lock order in sync with `SyncobjNotification::publish` so
-        // replacing the payload cannot leave an obsolete callback registered.
+        // Keep the callback -> event watcher -> state lock order in sync with
+        // `SyncobjNotification::publish` and event watcher registration.
         let mut callbacks = self.fence_callbacks.lock();
         callbacks.entries.clear();
+        let event_watchers = self.event_watchers.lock();
         let mut state = self.state.lock();
         state.payload = fence.clone().map(SyncPayload::Binary);
         state.points.clear();
+        let event_notification = EventNotification::new(&event_watchers, &mut state);
         drop(state);
+        drop(event_watchers);
         drop(callbacks);
         if let (Some(fence), Some(notification)) = (fence, notification) {
             notification.publish(&fence);
         }
-        self.notify_watchers();
+        self.notify_watchers_with(event_notification);
     }
 
     pub(super) fn signal_binary(self: &Arc<Self>) {
@@ -262,15 +277,18 @@ impl SyncObject {
         let prepared_chain = Fence::prepare_chain(Fence::reserve_chain_slot()?)?;
         let notification = self.reserve_notification()?;
         self.poll_timeline_completion();
+        let event_watchers = self.event_watchers.lock();
         let mut state = self.state.lock();
         refresh_timeline(&mut state);
         reserve_point_storage(&mut state, 1)?;
         let previous = current_fence(&state);
         let chained = Fence::finish_chain(prepared_chain, previous, fence);
         append_timeline_point(&mut state, point, chained.clone());
+        let event_notification = EventNotification::new(&event_watchers, &mut state);
         drop(state);
+        drop(event_watchers);
         notification.publish(&chained);
-        self.notify_watchers();
+        self.notify_watchers_with(event_notification);
         Ok(())
     }
 
@@ -310,6 +328,7 @@ impl SyncObject {
         prepared_chain: PreparedFenceChain,
         notification: SyncobjNotification,
     ) {
+        let event_watchers = self.event_watchers.lock();
         let mut state = self.state.lock();
         refresh_timeline(&mut state);
         debug_assert!(state.reserved_point_count > 0);
@@ -317,9 +336,11 @@ impl SyncObject {
         let previous = current_fence(&state);
         let chained = Fence::finish_chain(prepared_chain, previous, fence);
         append_timeline_point(&mut state, point, chained.clone());
+        let event_notification = EventNotification::new(&event_watchers, &mut state);
         drop(state);
+        drop(event_watchers);
         notification.publish(&chained);
-        self.notify_watchers();
+        self.notify_watchers_with(event_notification);
     }
 
     #[cfg(ktest)]
@@ -353,7 +374,7 @@ impl SyncObject {
         }
     }
 
-    pub(super) fn query_point(&self, last_submitted: bool) -> u64 {
+    fn query_point(&self, query: TimelineQuery) -> u64 {
         self.poll_timeline_completion();
         let mut state = self.state.lock();
         refresh_timeline(&mut state);
@@ -363,7 +384,7 @@ impl SyncObject {
                 last_submitted: submitted,
                 ..
             }) => {
-                if last_submitted {
+                if query == TimelineQuery::LastSubmitted {
                     *submitted
                 } else {
                     *signaled_point
@@ -376,12 +397,12 @@ impl SyncObject {
     pub(super) fn wait_for_fence(
         self: &Arc<Self>,
         point: u64,
-        wait_for_submit: bool,
+        submission_wait: SubmissionWait,
     ) -> Result<Arc<Fence>> {
         if let Some(fence) = self.find_fence(point) {
             return Ok(fence);
         }
-        if !wait_for_submit {
+        if submission_wait == SubmissionWait::Immediate {
             return_errno_with_message!(Errno::EINVAL, "syncobj fence has not been submitted");
         }
 
@@ -446,6 +467,15 @@ impl SyncObject {
     }
 
     fn notify_watchers(&self) {
+        let event_notification = {
+            let event_watchers = self.event_watchers.lock();
+            let mut state = self.state.lock();
+            EventNotification::new(&event_watchers, &mut state)
+        };
+        self.notify_watchers_with(event_notification);
+    }
+
+    fn notify_watchers_with(&self, event_notification: EventNotification) {
         self.fence_callbacks
             .lock()
             .entries
@@ -459,7 +489,7 @@ impl SyncObject {
             true
         });
         drop(watchers);
-        self.notify_event_watchers(false);
+        self.notify_event_watchers(event_notification);
     }
 
     fn register_event_watcher(
@@ -469,6 +499,9 @@ impl SyncObject {
         event_file: Arc<crate::syscall::EventFile>,
     ) -> Result<()> {
         let quota = EventWatcherQuota::reserve()?;
+        // Poll before taking the event watcher lock because completion may run
+        // callbacks. The lock then serializes registration with state changes.
+        self.poll_timeline_completion();
         let mut watchers = self.event_watchers.lock();
         if watchers.entries.len() >= MAX_EVENT_WATCHERS {
             return_errno_with_message!(Errno::ENOSPC, "syncobj has too many eventfd watchers");
@@ -489,22 +522,23 @@ impl SyncObject {
         })
         .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate eventfd watcher"))?;
         watchers.entries.push(watcher.clone());
+        let readiness = {
+            let mut state = self.state.lock();
+            EventReadiness::from_state(&mut state)
+        };
         drop(watchers);
         // Only the newly registered watcher needs a readiness check. Scanning
         // every older watcher here would make N registrations O(N^2).
-        let readiness = self.event_readiness(true);
         self.notify_event_watcher(&watcher, readiness);
         Ok(())
     }
 
-    fn notify_event_watchers(&self, poll_device: bool) {
-        // Watchers registered after this cutoff perform their own readiness
-        // check and must not consume this potentially stale snapshot.
-        let generation_cutoff = self.event_watchers.lock().next_generation;
-        let readiness = self.event_readiness(poll_device);
+    fn notify_event_watchers(&self, notification: EventNotification) {
         self.event_watchers.lock().entries.retain(|watcher| {
-            if watcher.generation < generation_cutoff
-                && readiness.is_ready(watcher.point, watcher.available_only)
+            if watcher.generation < notification.generation_cutoff
+                && notification
+                    .readiness
+                    .is_ready(watcher.point, watcher.available_only)
             {
                 watcher.event_file.signal();
                 false
@@ -529,20 +563,27 @@ impl SyncObject {
             }
         }
     }
+}
 
-    fn event_readiness(&self, poll_device: bool) -> EventReadiness {
-        let current = {
-            let state = self.state.lock();
-            current_fence(&state)
-        };
-        if poll_device {
-            if let Some(fence) = current.as_ref() {
-                fence.poll_and_is_signaled();
-            }
+#[derive(Clone, Copy)]
+struct EventNotification {
+    generation_cutoff: u64,
+    readiness: EventReadiness,
+}
+
+impl EventNotification {
+    /// Captures a state transition while registration is excluded.
+    fn new(watchers: &EventWatcherList, state: &mut SyncObjectState) -> Self {
+        Self {
+            generation_cutoff: watchers.next_generation,
+            readiness: EventReadiness::from_state(state),
         }
+    }
+}
 
-        let mut state = self.state.lock();
-        refresh_timeline(&mut state);
+impl EventReadiness {
+    fn from_state(state: &mut SyncObjectState) -> Self {
+        refresh_timeline(state);
         match state.payload.as_ref() {
             None => EventReadiness::Empty,
             Some(SyncPayload::Binary(fence)) => EventReadiness::Binary {
@@ -1138,13 +1179,17 @@ pub(super) fn query(
     }
     let ids = read_handles(req.handles, req.count_handles)?;
     let syncobjs = lookup_syncobjs(handle, &ids)?;
-    let last_submitted = req.flags & DRM_SYNCOBJ_QUERY_LAST_SUBMITTED != 0;
+    let query = if req.flags & DRM_SYNCOBJ_QUERY_LAST_SUBMITTED != 0 {
+        TimelineQuery::LastSubmitted
+    } else {
+        TimelineQuery::Signaled
+    };
     let mut output = Vec::new();
     output
         .try_reserve_exact(syncobjs.len() * size_of::<u64>())
         .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot allocate syncobj query output"))?;
     for syncobj in syncobjs {
-        output.extend_from_slice(&syncobj.query_point(last_submitted).to_le_bytes());
+        output.extend_from_slice(&syncobj.query_point(query).to_le_bytes());
     }
     current_userspace!().write_bytes(req.points as usize, &output)?;
     Ok(0)
@@ -1159,8 +1204,12 @@ pub(super) fn transfer(
         return_errno_with_message!(Errno::EINVAL, "invalid syncobj transfer request");
     }
     let objects = lookup_syncobjs(handle, &[req.src_handle, req.dst_handle])?;
-    let source =
-        objects[0].wait_for_fence(req.src_point, req.flags & DRM_SYNCOBJ_WAIT_FOR_SUBMIT != 0)?;
+    let submission_wait = if req.flags & DRM_SYNCOBJ_WAIT_FOR_SUBMIT != 0 {
+        SubmissionWait::Wait
+    } else {
+        SubmissionWait::Immediate
+    };
+    let source = objects[0].wait_for_fence(req.src_point, submission_wait)?;
     if req.dst_point == 0 {
         objects[1].replace_fence(Some(source))?;
     } else {
@@ -1188,7 +1237,7 @@ pub(super) fn handle_to_fd(
                 0
             };
             Arc::new(super::fence::FenceFile::new(
-                syncobj.wait_for_fence(point, false)?,
+                syncobj.wait_for_fence(point, SubmissionWait::Immediate)?,
             ))
         } else {
             if req.point != 0 {
@@ -1304,12 +1353,14 @@ pub(super) fn wait_many(
 
     let may_wait_for_submit =
         flags & (DRM_SYNCOBJ_WAIT_FOR_SUBMIT | DRM_SYNCOBJ_WAIT_AVAILABLE) != 0;
-    if !may_wait_for_submit
-        && syncobjs
-            .iter()
-            .zip(points)
-            .any(|(syncobj, point)| syncobj.find_fence(*point).is_none())
-    {
+    let mut fences = Vec::new();
+    fences
+        .try_reserve_exact(syncobjs.len())
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot retain syncobj wait fences"))?;
+    for (syncobj, point) in syncobjs.iter().zip(points) {
+        fences.push(syncobj.find_fence(*point));
+    }
+    if !may_wait_for_submit && fences.iter().any(Option::is_none) {
         return_errno_with_message!(Errno::EINVAL, "syncobj fence has not been submitted");
     }
 
@@ -1317,16 +1368,44 @@ pub(super) fn wait_many(
     let available_only = flags & DRM_SYNCOBJ_WAIT_AVAILABLE != 0;
     let (waiter, _) = Waiter::new_pair();
     let waker = waiter.waker();
+    let mut prepared_wakeups = Vec::new();
+    prepared_wakeups
+        .try_reserve_exact(syncobjs.len())
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot reserve fence wakeups"))?;
+    let mut fence_registrations = Vec::new();
+    fence_registrations
+        .try_reserve_exact(syncobjs.len())
+        .map_err(|_| Error::with_message(Errno::ENOMEM, "cannot retain fence wakeups"))?;
+    for _ in syncobjs {
+        let callback = if available_only {
+            None
+        } else {
+            let waker = waker.clone();
+            Some(Fence::prepare_callback(move || {
+                waker.wake_up();
+            })?)
+        };
+        prepared_wakeups.push(callback);
+        fence_registrations.push(None);
+    }
     for syncobj in syncobjs {
-        syncobj.register_waker(&waker).unwrap();
+        syncobj.register_waker(&waker)?;
     }
 
     let condition_fn = || {
         let mut first = None;
         let mut ready_count = 0;
         for (index, (syncobj, point)) in syncobjs.iter().zip(points).enumerate() {
-            let ready = syncobj
-                .find_fence(*point)
+            if fences[index].is_none() {
+                fences[index] = syncobj.find_fence(*point);
+            }
+            if let (Some(fence), Some(callback)) =
+                (fences[index].as_ref(), prepared_wakeups[index].take())
+            {
+                fence_registrations[index] = fence.register_callback(callback);
+            }
+            let ready = fences[index]
+                .as_ref()
                 .is_some_and(|fence| available_only || fence.poll_and_is_signaled());
             if ready {
                 first.get_or_insert(index as u32);
@@ -1390,12 +1469,12 @@ mod tests {
         let syncobj = SyncObject::new().unwrap();
         syncobj.add_point(4, first.clone()).unwrap();
         syncobj.add_signaled_point(9).unwrap();
-        assert_eq!(syncobj.query_point(false), 0);
+        assert_eq!(syncobj.query_point(TimelineQuery::Signaled), 0);
         assert!(!syncobj.find_fence(9).unwrap().is_signaled());
         first.signal_success();
         assert!(syncobj.find_fence(9).unwrap().is_signaled());
-        assert_eq!(syncobj.query_point(false), 9);
-        assert_eq!(syncobj.query_point(true), 9);
+        assert_eq!(syncobj.query_point(TimelineQuery::Signaled), 9);
+        assert_eq!(syncobj.query_point(TimelineQuery::LastSubmitted), 9);
     }
 
     #[ktest]
@@ -1479,7 +1558,7 @@ mod tests {
             let syncobj = syncobj.clone();
             let finished = finished.clone();
             ThreadOptions::new(move || {
-                syncobj.wait_for_fence(0, true).unwrap();
+                syncobj.wait_for_fence(0, SubmissionWait::Wait).unwrap();
                 finished.store(true, Ordering::Release);
             })
             .spawn()
@@ -1493,6 +1572,42 @@ mod tests {
     }
 
     #[ktest]
+    fn syncobj_regression() {
+        let fence = Arc::new(Fence::new());
+        let syncobj = SyncObject::new().unwrap();
+        syncobj.replace_fence(Some(fence.clone())).unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let syncobj = syncobj.clone();
+            let finished = finished.clone();
+            ThreadOptions::new(move || {
+                wait_many(&[syncobj], &[0], 0, i64::MAX).unwrap();
+                finished.store(true, Ordering::Release);
+            })
+            .spawn()
+        };
+        while syncobj.watchers.lock().is_empty() {
+            ostd::task::Task::yield_now();
+        }
+
+        syncobj.clear_fence();
+        fence.signal_success();
+        waiter.join();
+        assert!(finished.load(Ordering::Acquire));
+
+        let syncobj = SyncObject::new_signaled().unwrap();
+        let notification = {
+            let watchers = syncobj.event_watchers.lock();
+            let mut state = syncobj.state.lock();
+            EventNotification::new(&watchers, &mut state)
+        };
+        syncobj.clear_fence();
+
+        assert!(notification.readiness.is_ready(0, false));
+        assert!(!EventReadiness::Empty.is_ready(0, false));
+    }
+
+    #[ktest]
     fn in_flight_wait_retains_syncobj_after_original_owner_drops() {
         let original = SyncObject::new().unwrap();
         let shared = original.clone();
@@ -1502,7 +1617,7 @@ mod tests {
             let syncobj = original.clone();
             let finished = finished.clone();
             ThreadOptions::new(move || {
-                syncobj.wait_for_fence(0, true).unwrap();
+                syncobj.wait_for_fence(0, SubmissionWait::Wait).unwrap();
                 finished.store(true, Ordering::Release);
             })
             .spawn()
