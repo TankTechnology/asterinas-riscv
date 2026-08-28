@@ -16,6 +16,7 @@ QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
 DWMAC_DIAGNOSTICS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/diagnostics.rs"
+DWMAC_REGS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/regs.rs"
 RISCV_PLATFORM_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/arch/riscv.rs"
 BIGTCP_DIAGNOSTICS_SOURCE = (
     REPOSITORY_ROOT / "kernel/libs/aster-bigtcp/src/iface/tcp_diagnostics.rs"
@@ -150,10 +151,14 @@ class DwmacRxPollContractTests(unittest.TestCase):
             harness = Path(directory) / "packet-diagnostics.rs"
             binary = Path(directory) / "packet-diagnostics"
             harness.write_text(
-                f'''#[path = r"{DWMAC_DIAGNOSTICS_SOURCE}"]
+                f'''#[allow(dead_code)]
+#[path = r"{DWMAC_REGS_SOURCE}"]
+mod regs;
+#[path = r"{DWMAC_DIAGNOSTICS_SOURCE}"]
 mod diagnostics;
 
-use diagnostics::{{RxDescriptorDrop, RxDiagnostics, TxDiagnostics}};
+use diagnostics::{{MtlRxLossDiagnostics, RxDescriptorDrop, RxDiagnostics, TxDiagnostics}};
+use regs::{{decode_mtl_rx_loss, MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER}};
 
 fn ethernet_frame(ethertype: u16, protocol: u8, tcp_flags: u8, payload_len: usize) -> Vec<u8> {{
     let mut frame = vec![0u8; 54 + payload_len];
@@ -213,6 +218,24 @@ fn main() {{
     assert_eq!(tx_report.tcp_ack_only, 1);
     assert_eq!(tx_report.tcp_data, 2);
     assert_eq!(tx_report.malformed, 1);
+
+    assert_eq!(MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER.offset(), 0x0d34);
+    let first = decode_mtl_rx_loss((1 << 27) | (23 << 16) | (1 << 11) | 19);
+    assert_eq!(first.missed_packets, 23);
+    assert!(first.missed_counter_overflow);
+    assert_eq!(first.fifo_overflow_packets, 19);
+    assert!(first.fifo_counter_overflow);
+
+    let mut mtl = MtlRxLossDiagnostics::default();
+    mtl.record(first);
+    mtl.record(decode_mtl_rx_loss((7 << 16) | 5));
+    mtl.record_read_failure();
+    let mtl_report = mtl.report();
+    assert_eq!(mtl_report.missed_packets, 30);
+    assert_eq!(mtl_report.missed_counter_overflows, 1);
+    assert_eq!(mtl_report.fifo_overflow_packets, 24);
+    assert_eq!(mtl_report.fifo_counter_overflows, 1);
+    assert_eq!(mtl_report.read_failures, 1);
 }}
 '''
             )
@@ -498,6 +521,21 @@ fn main() {{
             with self.subTest(field=field):
                 self.assertIn(field, source)
         self.assertIn("take_progress_report", source)
+
+    def test_device_reports_documented_mtl_receive_loss_counters(self) -> None:
+        source = DEVICE_SOURCE.read_text()
+        self.assertIn("MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER", source)
+        self.assertIn("decode_mtl_rx_loss", source)
+        self.assertIn("ASTERINAS_GMAC_MTL_RX_LOSS", source)
+        for field in (
+            "missed_packets={}",
+            "missed_counter_overflows={}",
+            "fifo_overflow_packets={}",
+            "fifo_counter_overflows={}",
+            "read_failures={}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
 
     def test_device_emits_dma_address_contract(self) -> None:
         queue = QUEUE_SOURCE.read_text()
