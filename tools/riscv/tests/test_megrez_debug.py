@@ -186,6 +186,33 @@ class MegrezDebugProbeServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plan SHA-256"):
             server.trace_snapshot(plan_sha256="not-a-hash")
 
+    def test_server_samples_after_a_small_response_enters_the_send_buffer(self) -> None:
+        payload_bytes = 16 * 1024
+        with ProbeServer(
+            host="127.0.0.1", port=0, payload_sizes=(payload_bytes,)
+        ) as server:
+            with socket.create_connection(server.address, timeout=1.0) as connection:
+                connection.sendall(
+                    f"GET /asterinas-probe/{payload_bytes} HTTP/1.0\r\n\r\n".encode()
+                )
+                deadline = time.monotonic() + 1.0
+                trace = server.trace_snapshot(plan_sha256="1" * 64)
+                while (
+                    not trace["connections"]
+                    or trace["connections"][0]["outcome"] != "complete"
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    trace = server.trace_snapshot(plan_sha256="1" * 64)
+
+        self.assertEqual(trace["post_send_observation_ms"], 250)
+        connection_trace = trace["connections"][0]
+        self.assertEqual(connection_trace["outcome"], "complete")
+        self.assertGreater(connection_trace["last_application_send_us"], 0)
+        self.assertGreaterEqual(
+            connection_trace["samples"][-1]["monotonic_us"],
+            connection_trace["last_application_send_us"] + 3 * 20_000,
+        )
+
 
 class MegrezDebugArtifactTests(unittest.TestCase):
     def setUp(self) -> None:
