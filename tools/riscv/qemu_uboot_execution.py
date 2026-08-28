@@ -461,6 +461,10 @@ def execute_prepared(
                     termination_grace=termination_grace,
                     command_observer=memory_layout_observer(artifacts),
                     completion_line=completion_line,
+                    allow_completion_token=(
+                        profile.validation.audit_policy
+                        is AuditPolicy.REGISTERED_MILESTONES
+                    ),
                     post_terminal_timeout=profile.validation.post_terminal_timeout,
                     milestone_expectations=(
                         profile.validation.milestones
