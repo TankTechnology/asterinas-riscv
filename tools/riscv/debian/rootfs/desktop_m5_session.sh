@@ -12,7 +12,7 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # The online browser image does not need xinit's nested session, xterm, or
     # matchbox helper. Start Xorg directly and keep one lightweight WM so
     # Firefox gets a stable root window without the extra process chain.
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-start' >>/dev/console
+    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-start' >>/dev/console 2>/dev/null || true
     /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
         -extension MIT-SHM -logfile "$HOME/Xorg.0.log" vt1 \
         >>"$SESSION_LOG" 2>&1 &
@@ -23,7 +23,7 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
         /usr/bin/sleep 1
     done
     [[ -S /tmp/.X11-unix/X0 ]] || exit 1
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=x-socket-ready' >>/dev/console
+    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=x-socket-ready' >>/dev/console 2>/dev/null || true
     /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
     wait "$xorg_pid"
     exit $?
