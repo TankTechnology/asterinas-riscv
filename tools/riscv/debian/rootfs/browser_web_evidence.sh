@@ -14,10 +14,18 @@ readonly SECURITY_LOG=/home/asterinas/browser-web-security-evidence.log
 readonly FIREFOX_STDERR=/home/asterinas/firefox-web-stderr.log
 readonly SYSTEM_CA=/etc/ssl/certs/ca-certificates.crt
 readonly TRUST_STATIC_LOG=/usr/share/asterinas/browser-web-trust-static.log
+readonly TIMELINE_LOG=/home/asterinas/browser-web-timeline.log
+readonly GATE_STDERR=/run/asterinas-browser-web-gate.stderr
 readonly USER_ID=1000
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_WEB_FAIL reason=$1"; exit 1; }
+marker() {
+    local name="$1" line
+    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$browser_pid"
+    printf '%s\n' "$line" >>"$TIMELINE_LOG"
+    emit "$line"
+}
 
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-timeout
 [[ "$FORMAL_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-formal-timeout
@@ -144,16 +152,22 @@ while ((SECONDS < deadline)); do
     sleep 1
 done
 [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] || fail firefox-timeout
+marker BOOT_MARIONETTE_PORT_READY
 [[ "$(systemctl show --property NRestarts --value asterinas-browser-web.service 2>/dev/null)" == 0 ]] ||
     fail firefox-restarted-before-gate
 validate_parent_security "$browser_pid"
 remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail firefox-timeout
 ((remaining <= FORMAL_TIMEOUT_SECONDS)) || remaining="$FORMAL_TIMEOUT_SECONDS"
+: >"$GATE_STDERR"
 if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
-    --evidence-dir /home/asterinas/browser-web-evidence 2>>"$CONSOLE")"; then
+    --evidence-dir /home/asterinas/browser-web-evidence 2>"$GATE_STDERR")"; then
+    cat "$GATE_STDERR" >>"$TIMELINE_LOG"
+    cat "$GATE_STDERR" >>"$CONSOLE"
     fail browser-content
 fi
+cat "$GATE_STDERR" >>"$TIMELINE_LOG"
+cat "$GATE_STDERR" >>"$CONSOLE"
 [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT baidu_home=pass baidu_search=pass bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified" ]] ||
     fail browser-content-output
 systemctl is-active --quiet asterinas-browser-web.service || fail firefox-not-active-after-gate

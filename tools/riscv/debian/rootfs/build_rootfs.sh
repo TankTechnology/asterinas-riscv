@@ -858,6 +858,7 @@ configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
 
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
@@ -1041,10 +1042,16 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
+            install -D -m 0755 -- "$script_directory/browser_web_timeline.sh" \
+                "$stage/usr/lib/asterinas/browser-web-timeline"
             install -D -m 0644 -- "$script_directory/browser_web.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
+            install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
+                "$stage/etc/systemd/system/asterinas-browser-web-timeline-begin.service"
+            install -D -m 0644 -- "$script_directory/browser_web_timeline_basic.service" \
+                "$stage/etc/systemd/system/asterinas-browser-web-timeline-basic.service"
             install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
             cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
@@ -1253,6 +1260,12 @@ EOF
         ln -s -- ../asterinas-browser-m5-network-observer.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
     elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
+        ln -s -- ../asterinas-browser-web-timeline-begin.service \
+            "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
+        mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
+        ln -s -- ../asterinas-browser-web-timeline-basic.service \
+            "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-timeline-basic.service"
         ln -s -- ../asterinas-browser-web.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web.service"
         ln -s -- ../asterinas-browser-web-evidence.service \
