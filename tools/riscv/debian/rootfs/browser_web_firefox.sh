@@ -15,9 +15,20 @@ readonly TIMELINE="$FIREFOX_HOME/browser-web-timeline.log"
 readonly TIMEOUT_SECONDS=30
 export DISPLAY XAUTHORITY
 
+guest_monotonic_ns() {
+    local raw="${EPOCHREALTIME-}"
+    if [[ "$raw" =~ ^[0-9]+\.[0-9]{6}$ ]]; then
+        raw="${raw/./}"
+        printf '%s000' "$raw"
+    else
+        printf '%s000000000' "${EPOCHSECONDS:-0}"
+    fi
+}
+
 marker() {
-    local name="$1" line
-    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$$"
+    local name="$1" line guest_ns
+    guest_ns="$(guest_monotonic_ns)"
+    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$$"
     printf '%s\n' "$line" >>"$TIMELINE"
     printf '%s\n' "$line" >>"$CONSOLE"
 }

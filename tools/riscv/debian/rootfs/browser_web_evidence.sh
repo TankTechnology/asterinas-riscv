@@ -20,9 +20,19 @@ readonly USER_ID=1000
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_WEB_FAIL reason=$1"; exit 1; }
+guest_monotonic_ns() {
+    local raw="${EPOCHREALTIME-}"
+    if [[ "$raw" =~ ^[0-9]+\.[0-9]{6}$ ]]; then
+        raw="${raw/./}"
+        printf '%s000' "$raw"
+    else
+        printf '%s000000000' "${EPOCHSECONDS:-0}"
+    fi
+}
 marker() {
-    local name="$1" line
-    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$browser_pid"
+    local name="$1" line guest_ns
+    guest_ns="$(guest_monotonic_ns)"
+    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$browser_pid"
     printf '%s\n' "$line" >>"$TIMELINE_LOG"
     emit "$line"
 }
