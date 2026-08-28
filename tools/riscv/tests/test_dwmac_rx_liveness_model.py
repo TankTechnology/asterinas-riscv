@@ -161,6 +161,13 @@ class DwmacRxPollContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("4 passed", result.stdout)
 
+    def test_device_uses_poll_budget_at_all_three_boundaries(self) -> None:
+        source = (REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs").read_text()
+        self.assertIn("rx_poll: RxPollBudget", source)
+        self.assertIn("self.rx_poll.can_receive()", source)
+        self.assertIn("self.rx_poll.record_received()", source)
+        self.assertIn("self.rx_poll.finish(self.fatal, more_rx)", source)
+
 
 if __name__ == "__main__":
     unittest.main()
