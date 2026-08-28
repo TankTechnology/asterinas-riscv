@@ -173,7 +173,11 @@ workspace file before the container exits:
 
 ```bash
 timeout 600 docker run --name codex-dwmac-tx-reclaim-initramfs --rm \
-  --network=none \
+  --network=host \
+  -e http_proxy=http://127.0.0.1:17892 \
+  -e https_proxy=http://127.0.0.1:17892 \
+  -e HTTP_PROXY=http://127.0.0.1:17892 \
+  -e HTTPS_PROXY=http://127.0.0.1:17892 \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
   bash -lc 'set -euo pipefail
@@ -188,7 +192,10 @@ gzip -t test/initramfs/build/initramfs.cpio.gz
 ```
 
 Expected: a non-empty regular gzip file. A dangling `/nix/store` symlink is not
-accepted as a successful prerequisite.
+accepted as a successful prerequisite. This is the only networked build step;
+run it only after bounded proxy probes to `cache.nixos.org` and
+`tarballs.nixos.org` succeed, so Nix downloads signed/cached inputs instead of
+silently attempting a large local bootstrap build.
 
 - [ ] **Step 3: Build exactly Sv39/SMP4 in the pinned container**
 
