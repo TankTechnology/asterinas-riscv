@@ -22,7 +22,7 @@ use spin::Once;
 use crate::prelude::*;
 
 static NEXT_NODE_ID: AtomicU64 = AtomicU64::new(1);
-static SCM_GRAPH: Once<Mutex<ScmGraph>> = Once::new();
+static SCM_GRAPH: Once<SpinLock<ScmGraph>> = Once::new();
 
 /// A socket object that can be carried by `SCM_RIGHTS`.
 #[derive(Clone)]
@@ -483,8 +483,14 @@ impl ScmGraph {
     }
 }
 
-fn scm_graph() -> &'static Mutex<ScmGraph> {
-    SCM_GRAPH.call_once(|| Mutex::new(ScmGraph::default()))
+fn scm_graph() -> &'static SpinLock<ScmGraph> {
+    // Edge guards can be the last strong owner of a socket or queue and may
+    // therefore drop while another kernel spin lock has preemption disabled.
+    // A sleeping Mutex cannot be entered from that context. ScmGraph contains
+    // only IDs, weak registrations, and counters; removing graph entries cannot
+    // recursively drop another edge guard. Its small BTreeMap/Vec allocations
+    // use the IRQ-safe kernel allocator, like other SpinLock<BTreeMap> users.
+    SCM_GRAPH.call_once(|| SpinLock::new(ScmGraph::default()))
 }
 
 fn next_node_id() -> NodeId {
