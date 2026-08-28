@@ -436,6 +436,29 @@ these SHA-256 identities:
 - `probe-tcp-info.json`: `fcf3ca88e92426bb5e3007dc57187c9b4224b67f1d22af05315dcf1003bd47b3`;
 - `result.json`: `acad4aa8f0cded228f774aafcf40bde4f2dff2d00f076dddaa894ba82a3b0de8`.
 
+### Next-run receive boundary discriminator
+
+Before another physical boot, the next kernel must add two bounded, read-only
+diagnostics. `ASTERINAS_GMAC_RX_CLASS` samples at most the first 512 receive
+headers and reports ARP, IPv4, TCP SYN, TCP SYN-ACK, malformed-frame, and
+descriptor-error counters. It copies no payload beyond the Ethernet, maximum
+IPv4, and minimum TCP headers, does not change descriptor ownership, and stops
+sampling after the fixed bound. `ASTERINAS_TCP_SYN_ACK` advances monotonically
+through `parsed`, `connection-found`, and `socket-accepted`, so retransmissions
+cannot flood the log or move the observation backwards.
+
+The next single run is interpreted without guesswork:
+
+- descriptor errors with no DWMAC SYN-ACK identify the hardware/descriptor
+  receive boundary;
+- a DWMAC SYN-ACK without `parsed` identifies Ethernet/IP/TCP validation or
+  checksum rejection;
+- `parsed` without `connection-found` identifies tuple lookup;
+- `connection-found` without `socket-accepted` identifies socket-state
+  rejection;
+- `socket-accepted` with a userspace timeout moves the fault to connect wakeup
+  or a later userspace boundary.
+
 ## Ordering-instrumented run and memory-type discriminator
 
 A later single-boot run used the frozen kernel SHA-256
