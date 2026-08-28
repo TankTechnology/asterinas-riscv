@@ -20,7 +20,7 @@ use ostd::{
 use crate::{
     arch::{MegrezPlatform, PlatformError, SelectedPortInfo, dma_write_barrier},
     descriptor::DescriptorError,
-    diagnostics::{RxDescriptorDrop, RxDiagnostics},
+    diagnostics::{RxDescriptorDrop, RxDiagnostics, TxDiagnostics},
     poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
@@ -101,6 +101,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         irq,
         rx_poll: RxPollBudget::default(),
         rx_diagnostics: RxDiagnostics::default(),
+        tx_diagnostics: TxDiagnostics::default(),
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -308,6 +309,7 @@ struct DwmacDevice {
     irq: DeferredMappedIrqLine,
     rx_poll: RxPollBudget,
     rx_diagnostics: RxDiagnostics,
+    tx_diagnostics: TxDiagnostics,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -433,6 +435,9 @@ impl AnyNetworkDevice for DwmacDevice {
             Err(QueueError::Full) => return Err(NetError::Busy),
             Err(_) => return Err(NetError::NotReady),
         };
+        if self.tx_diagnostics.record_frame(packet) {
+            ostd::info!("ASTERINAS_GMAC_TX stage=tcp-data-submitted");
+        }
         dma_write_barrier();
         self.write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
             .map_err(|_| NetError::NotReady)
@@ -470,6 +475,7 @@ impl AnyNetworkDevice for DwmacDevice {
         if let Some(rx) = self.rx_poll.take_progress_report() {
             let tx = self.queue.progress();
             let diagnostics = self.rx_diagnostics.report();
+            let tx_diagnostics = self.tx_diagnostics.report();
             ostd::info!(
                 "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
                 rx.received,
@@ -497,6 +503,18 @@ impl AnyNetworkDevice for DwmacDevice {
                 diagnostics.descriptor_receive_error,
                 diagnostics.descriptor_frame_too_long,
                 diagnostics.descriptor_other,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_TX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_ack_only={} tcp_data={} tcp_other={} other={} malformed={}",
+                tx_diagnostics.observed,
+                tx_diagnostics.arp,
+                tx_diagnostics.ipv4_other,
+                tx_diagnostics.tcp_syn,
+                tx_diagnostics.tcp_ack_only,
+                tx_diagnostics.tcp_data,
+                tx_diagnostics.tcp_other,
+                tx_diagnostics.other,
+                tx_diagnostics.malformed,
             );
         }
     }
