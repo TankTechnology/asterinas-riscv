@@ -35,17 +35,13 @@ marker() {
 
 exec >>"$STDERR_LOG" 2>&1
 printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
-marker BOOT_FIREFOX_WRAPPER_START
 if [[ ! -S /tmp/.X11-unix/X0 ]]; then
     /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
         -extension MIT-SHM -logfile "$FIREFOX_HOME/Xorg.0.log" \
         >>"$FIREFOX_HOME/desktop-m5-session.log" 2>&1 &
 fi
-deadline=$((SECONDS + TIMEOUT_SECONDS))
-while [[ ! -S /tmp/.X11-unix/X0 ]]; do
-    ((SECONDS < deadline)) || exit 1
-    /usr/bin/sleep 1
-done
+/usr/lib/asterinas/browser-web-timeline wait-x
+marker BOOT_FIREFOX_WRAPPER_START
 /usr/bin/mkdir -p -- "$PROFILE"
 export MOZ_LOG='timestamp,Widget:2,Marionette:2,nsHttp:3,nsHostResolver:3'
 export MOZ_LOG_FILE="$MOZILLA_LOG"

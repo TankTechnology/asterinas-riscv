@@ -19,7 +19,6 @@ NoNewPrivileges=yes
 Environment=HOME=/home/asterinas
 SupplementaryGroups=video input
 ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access
-ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x
 ExecStart=/usr/lib/asterinas/browser-web-firefox
 Restart=on-failure
 RestartSec=2s
