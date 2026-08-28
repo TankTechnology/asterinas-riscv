@@ -11,6 +11,7 @@ readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
+readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
@@ -158,7 +159,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -184,6 +185,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
+    elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     fi
 }
 
@@ -199,8 +202,8 @@ validate_configuration() {
     [[ "$MIRROR" =~ ^https://[^/?#[:space:]]+(/[^?#[:space:]]*)?/?$ ]] ||
         die "mirror must be an HTTPS URL without query or fragment"
     MIRROR="${MIRROR%/}"
-    if [[ "$PROFILE" == browser-m5 && "$MIRROR" != "$DEFAULT_MIRROR" ]]; then
-        die "browser-m5 base mirror must be exactly: $DEFAULT_MIRROR"
+    if is_firefox_profile && [[ "$MIRROR" != "$DEFAULT_MIRROR" ]]; then
+        die "Firefox profile base mirror must be exactly: $DEFAULT_MIRROR"
     fi
     [[ "$SOURCE_DATE_EPOCH" =~ ^(0|[1-9][0-9]*)$ ]] ||
         die "SOURCE_DATE_EPOCH must be a canonical nonnegative decimal integer"
@@ -294,7 +297,7 @@ validate_existing_publication_targets() {
         [[ ! -e "$target" || -f "$target" ]] ||
             die "unsafe published artifact type: $target"
     done
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         target="$OUTPUT_DIR/source-metadata/Security-InRelease"
         [[ ! -L "$target" ]] || die "unsafe published artifact symlink: $target"
         [[ ! -e "$target" || -f "$target" ]] ||
@@ -373,7 +376,7 @@ fetch_and_verify_release() {
         --output "$inrelease" \
         "$release_url"
     require_safe_keyring_path "$DEBIAN_KEYRING"
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         curl \
             --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
             --output "$security_inrelease" \
@@ -481,7 +484,7 @@ install_rootfs_packages() {
 
     log "phase 4/8: updating signed package indexes"
     printf 'deb %s %s main\n' "$MIRROR" "$SUITE" >"$stage/etc/apt/sources.list"
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         printf 'deb %s trixie-security main\n' "$SECURITY_MIRROR" \
             >>"$stage/etc/apt/sources.list"
     fi
@@ -526,7 +529,7 @@ audit_packages() {
     local repository_root
 
     log "phase 6/8: auditing package lock and signed-index checksums"
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         verify_m5_releases_are_unchanged
         : >"$WORK_DIR/package-index-checksums"
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -544,7 +547,7 @@ audit_packages() {
     for package_list in "$stage"/var/lib/apt/lists/*_Packages*; do
         [[ -f "$package_list" ]] || continue
         package_list_name="${package_list##*/}"
-        if [[ "$PROFILE" == browser-m5 ]]; then
+        if is_firefox_profile; then
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
                 tools.riscv.debian.rootfs.signed_sources owner \
                 --filename "$package_list_name")"
@@ -584,7 +587,7 @@ audit_packages() {
             "$source_inrelease"
         cat "$package_index" >>"$WORK_DIR/package-index"
         printf '\n' >>"$WORK_DIR/package-index"
-        if [[ "$PROFILE" == browser-m5 ]]; then
+        if is_firefox_profile; then
             index_checksums="$WORK_DIR/package-index-checksums-$authenticated_index_count"
             extract_package_index_checksums "$package_index" "$index_checksums"
             awk -F '\t' -v role="$source_role" \
@@ -594,7 +597,7 @@ audit_packages() {
         ((authenticated_index_count += 1))
     done
     ((authenticated_index_count > 0)) || die "no authenticated package index is available"
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         LC_ALL=C sort -u "$WORK_DIR/package-index-checksums" \
             -o "$WORK_DIR/package-index-checksums"
     else
@@ -893,6 +896,9 @@ EOF
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
+    elif [[ "$PROFILE" == browser-web ]]; then
+        configure_desktop "$stage" "m5" online
+        configure_desktop_m5_network "$stage" m5 false
     fi
     : >"$stage/etc/machine-id"
     printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
@@ -975,6 +981,7 @@ EOF
 configure_desktop() {
     local stage="$1"
     local generation="$2"
+    local browser_mode="${3:-offline}"
     local script_directory
     local repository_root
     local session_source
@@ -985,6 +992,9 @@ configure_desktop() {
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     session_source="$script_directory/desktop_${generation}_session.sh"
     evidence_source="$script_directory/desktop_${generation}_evidence.sh"
+    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        evidence_source="$script_directory/browser_web_evidence.sh"
+    fi
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
             'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \
@@ -1003,6 +1013,36 @@ configure_desktop() {
             "$script_directory/desktop_m4_welcome.html" \
             "$stage/usr/share/asterinas/desktop-m4-welcome.html"
     elif [[ "$generation" == m5 ]]; then
+        if [[ "$browser_mode" == online ]]; then
+            install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
+                "$stage/usr/lib/asterinas/browser-web-marionette-gate"
+            install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
+                "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
+            install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
+                "$stage/usr/lib/asterinas/browser-web-firefox"
+            install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
+                "$stage/usr/lib/asterinas/browser-web-evidence"
+            install -D -m 0644 -- "$script_directory/browser_web.service" \
+                "$stage/etc/systemd/system/asterinas-browser-web.service"
+            install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
+                "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
+            install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
+            cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
+{
+  "policies": {
+    "DisableDefaultBrowserAgent": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "DisableTelemetry": true,
+    "DontCheckDefaultBrowser": true,
+    "NoDefaultBookmarks": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": ""
+  }
+}
+EOF
+            chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
+        else
         local browser_directory="$stage/usr/share/asterinas/browser-m5"
         local decoded_video="$WORK_DIR/browser-m5.webm"
         install -d -m 0755 -- "$browser_directory"
@@ -1086,6 +1126,7 @@ TimeoutStartSec=300s
 EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"
+        fi
     fi
 
     install -D -m 0755 -- \
@@ -1139,7 +1180,7 @@ EOF
     local evidence_service_namespace=""
     local evidence_service_environment=""
     local evidence_service_timeout=""
-    if [[ "$generation" == m5 ]]; then
+    if [[ "$generation" == m5 && "$browser_mode" == offline ]]; then
         evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
         evidence_service_namespace='PrivateNetwork=yes'
         evidence_service_environment='Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=4500'
@@ -1169,14 +1210,21 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
-    ln -s -- \
-        ../$service_name-evidence.service \
-        "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
-    if [[ "$generation" == m5 ]]; then
+    if [[ "$browser_mode" == offline ]]; then
+        ln -s -- \
+            ../$service_name-evidence.service \
+            "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
+    fi
+    if [[ "$generation" == m5 && "$browser_mode" == offline ]]; then
         ln -s -- ../asterinas-browser-m5.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5.service"
         ln -s -- ../asterinas-browser-m5-network-observer.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
+    elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        ln -s -- ../asterinas-browser-web.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web.service"
+        ln -s -- ../asterinas-browser-web-evidence.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web-evidence.service"
     fi
     rm -f -- "$stage/etc/systemd/system/default.target"
     ln -s -- /lib/systemd/system/graphical.target \
@@ -1296,7 +1344,7 @@ write_rootfs_manifest() {
     qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
 
     local -a signed_source_arguments=()
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         signed_source_arguments=(
             --signed-source "base=$WORK_DIR/source-metadata/InRelease"
             --signed-source "security=$WORK_DIR/source-metadata/Security-InRelease"
@@ -1327,7 +1375,7 @@ publish_artifacts() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if is_firefox_profile; then
         security_publication=(--include-security-inrelease)
     fi
 
@@ -1348,6 +1396,10 @@ log() {
 die() {
     printf 'build_rootfs.sh: %s\n' "$*" >&2
     exit 2
+}
+
+is_firefox_profile() {
+    [[ "$PROFILE" == browser-m5 || "$PROFILE" == browser-web ]]
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
