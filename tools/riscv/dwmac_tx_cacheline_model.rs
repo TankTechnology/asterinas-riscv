@@ -3,6 +3,79 @@
 //! Reduced model of CPU/DMA ownership sharing one non-coherent cache line.
 
 const DESCRIPTORS_PER_LINE: usize = 4;
+const DESCRIPTOR_BYTES: u64 = 16;
+const DESCRIPTOR_OWN: u32 = 1 << 31;
+const RX_INTERRUPT_ON_COMPLETION: u32 = 1 << 30;
+const RX_BUFFER1_VALID: u32 = 1 << 24;
+const TX_FIRST_DESCRIPTOR: u32 = 1 << 29;
+const TX_LAST_DESCRIPTOR: u32 = 1 << 28;
+const DMA_RX_BUFFER_UNAVAILABLE: u32 = 1 << 7;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NormalDescriptor([u32; 4]);
+
+fn normal_rx_descriptor(address: u64, capacity: usize) -> NormalDescriptor {
+    assert_eq!(capacity, 2048);
+    NormalDescriptor([
+        address as u32,
+        (address >> 32) as u32,
+        0,
+        DESCRIPTOR_OWN | RX_INTERRUPT_ON_COMPLETION | RX_BUFFER1_VALID,
+    ])
+}
+
+fn normal_tx_descriptor(address: u64, length: usize) -> NormalDescriptor {
+    assert!(length <= 0x3fff);
+    NormalDescriptor([
+        address as u32,
+        (address >> 32) as u32,
+        length as u32,
+        DESCRIPTOR_OWN | TX_FIRST_DESCRIPTOR | TX_LAST_DESCRIPTOR | length as u32,
+    ])
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RingContract {
+    length_register: u32,
+    initial_tx_tail: u64,
+    initial_rx_tail: u64,
+    base: u64,
+    entries: u64,
+}
+
+impl RingContract {
+    fn new(base: u64, entries: usize) -> Self {
+        let entries = u64::try_from(entries).unwrap();
+        assert!(entries > 0);
+        Self {
+            length_register: u32::try_from(entries - 1).unwrap(),
+            initial_tx_tail: base,
+            initial_rx_tail: base + entries * DESCRIPTOR_BYTES,
+            base,
+            entries,
+        }
+    }
+
+    fn next_tail(self, slot: usize) -> u64 {
+        let next = (u64::try_from(slot).unwrap() + 1) % self.entries;
+        self.base + next * DESCRIPTOR_BYTES
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StatusAcknowledgement {
+    write_one_to_clear: u32,
+    remaining: u32,
+    resume_rx: bool,
+}
+
+fn acknowledge_channel_status(observed: u32, known: u32) -> StatusAcknowledgement {
+    StatusAcknowledgement {
+        write_one_to_clear: observed & known,
+        remaining: observed & !known,
+        resume_rx: observed & DMA_RX_BUFFER_UNAVAILABLE != 0,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CachedLine {
@@ -115,4 +188,52 @@ fn completion_read_barrier_excludes_stale_body_after_own_clear() {
 
     let observations_with_read_barrier = [(false, false), (true, true)];
     assert!(!observations_with_read_barrier.contains(&unbarriered_observation));
+}
+
+#[test]
+fn dwmac_5_20_receive_descriptor_preserves_address_and_control_bits() {
+    let descriptor = normal_rx_descriptor(0x1_2345_6789, 2048);
+
+    assert_eq!(descriptor.0[0], 0x2345_6789);
+    assert_eq!(descriptor.0[1], 1);
+    assert_eq!(descriptor.0[2], 0);
+    assert_eq!(
+        descriptor.0[3],
+        DESCRIPTOR_OWN | RX_INTERRUPT_ON_COMPLETION | RX_BUFFER1_VALID
+    );
+}
+
+#[test]
+fn dwmac_5_20_transmit_descriptor_is_one_complete_buffer() {
+    let descriptor = normal_tx_descriptor(0x1_2345_6789, 1514);
+
+    assert_eq!(descriptor.0[0], 0x2345_6789);
+    assert_eq!(descriptor.0[1], 1);
+    assert_eq!(descriptor.0[2], 1514);
+    assert_eq!(
+        descriptor.0[3],
+        DESCRIPTOR_OWN | TX_FIRST_DESCRIPTOR | TX_LAST_DESCRIPTOR | 1514
+    );
+}
+
+#[test]
+fn dwmac_5_20_ring_length_and_tail_boundaries_are_exact() {
+    let contract = RingContract::new(0x1_0000_0000, 64);
+
+    assert_eq!(contract.length_register, 63);
+    assert_eq!(contract.initial_tx_tail, 0x1_0000_0000);
+    assert_eq!(contract.initial_rx_tail, 0x1_0000_0400);
+    assert_eq!(contract.next_tail(0), 0x1_0000_0010);
+    assert_eq!(contract.next_tail(63), 0x1_0000_0000);
+}
+
+#[test]
+fn dwmac_5_20_status_acknowledges_only_known_w1c_bits() {
+    let known = (1 << 12) | DMA_RX_BUFFER_UNAVAILABLE | (1 << 6);
+    let unknown = 1 << 30;
+    let acknowledgement = acknowledge_channel_status(known | unknown, known);
+
+    assert_eq!(acknowledgement.write_one_to_clear, known);
+    assert_eq!(acknowledgement.remaining, unknown);
+    assert!(acknowledgement.resume_rx);
 }
