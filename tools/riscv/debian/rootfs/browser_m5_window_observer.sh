@@ -15,6 +15,7 @@ readonly NAVIGATOR_READY_FILE="${ASTERINAS_BROWSER_M5_NAVIGATOR_READY_FILE:-/hom
 readonly PARENT_PID="${ASTERINAS_BROWSER_M5_PARENT_PID:-0}"
 readonly SAMPLE_SECONDS="${ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_SECONDS:-30}"
 readonly SAMPLE_LIMIT="${ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_LIMIT:-240}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M5_WINDOW_TIMEOUT_SECONDS:-4500}"
 readonly SLEEP_COMMAND="${ASTERINAS_BROWSER_M5_SLEEP_COMMAND:-/usr/bin/sleep}"
 readonly SYNC_COMMAND="${ASTERINAS_BROWSER_M5_SYNC_COMMAND:-/usr/bin/sync}"
 readonly XWININFO_COMMAND="${ASTERINAS_BROWSER_M5_XWININFO_COMMAND:-/usr/bin/xwininfo}"
@@ -24,11 +25,13 @@ readonly MINIMUM_HEIGHT=480
 [[ "$PARENT_PID" =~ ^(0|[1-9][0-9]*)$ ]] || exit 2
 [[ "$SAMPLE_SECONDS" =~ ^[1-9][0-9]*$ ]] || exit 2
 [[ "$SAMPLE_LIMIT" =~ ^[1-9][0-9]*$ ]] || exit 2
+[[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || exit 2
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 
 /usr/bin/rm -f -- "$NAVIGATOR_READY_FILE"
 navigator_emitted=false
+deadline=$((SECONDS + TIMEOUT_SECONDS))
 exec >>"$WINDOW_LOG" 2>&1
 
 for ((sequence = 1; sequence <= SAMPLE_LIMIT; sequence++)); do
@@ -69,6 +72,10 @@ for ((sequence = 1; sequence <= SAMPLE_LIMIT; sequence++)); do
         exit 0
     fi
     "$SYNC_COMMAND"
+    if ((SECONDS >= deadline)); then
+        emit "ASTERINAS_FIREFOX_X11_WINDOW_TIMEOUT reason=deadline samples=$sequence seconds=$SECONDS timeout=$TIMEOUT_SECONDS"
+        exit 0
+    fi
 done
 
-emit "ASTERINAS_FIREFOX_X11_WINDOW_TIMEOUT samples=$SAMPLE_LIMIT seconds=$SECONDS"
+emit "ASTERINAS_FIREFOX_X11_WINDOW_TIMEOUT reason=sample-limit samples=$SAMPLE_LIMIT seconds=$SECONDS timeout=$TIMEOUT_SECONDS"

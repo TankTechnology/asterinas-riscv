@@ -307,6 +307,21 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             '{"message":"Browser startup is incomplete","ready":false}\n',
         )
 
+    def test_formal_cli_accepts_measured_600_second_budget_only(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(gate, "validate_network_namespace"),
+            mock.patch.object(gate, "run_gate") as run_gate,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                gate.main(["--firefox-pid", "42", "--timeout", "600"]), 0
+            )
+        run_gate.assert_called_once_with("127.0.0.1", 2828, 600.0)
+        self.assertEqual(output.getvalue(), gate.PASS_LINE + "\n")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gate.main(["--firefox-pid", "42", "--timeout", "601"])
+
     @mock.patch.object(gate.time, "sleep", return_value=None)
     def test_runner_retries_only_loopback_connection_refused(self, _sleep: mock.Mock) -> None:
         snapshot = self._snapshot()
@@ -436,6 +451,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("ASTERINAS_FIREFOX_X11_NAVIGATOR_VISIBLE", observer)
         self.assertIn("ASTERINAS_FIREFOX_X11_WINDOW_READY", observer)
         self.assertIn("SAMPLE_LIMIT:-240", observer)
+        self.assertIn("WINDOW_TIMEOUT_SECONDS:-4500", observer)
         self.assertNotIn("--remote-debugging-port", firefox)
         self.assertIn('"WebDriver:ExecuteScript"', client)
         self.assertIn("video.currentSrc", client)
@@ -447,6 +463,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("--diagnose-once", evidence)
         self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
         self.assertIn("((diagnostic_timeout <= 30)) || diagnostic_timeout=30", evidence)
+        self.assertIn("FORMAL_GATE_TIMEOUT_SECONDS:-600", evidence)
+        self.assertIn("gate_timeout <= FORMAL_GATE_TIMEOUT_SECONDS", evidence)
         self.assertNotIn("diagnostic_emitted", evidence)
         self.assertIn("while ! ready || ! navigator_ready", evidence)
         self.assertIn("NavigatorWindowReady", evidence)
@@ -513,7 +531,11 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.returncode,
+                0,
+                result.stderr + "\nconsole:\n" + console.read_text(),
+            )
             markers = console.read_text().splitlines()
             self.assertEqual(len(markers), 2)
             self.assertIn("X11_NAVIGATOR_VISIBLE", markers[0])
@@ -551,7 +573,10 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             )
             self.assertEqual(retry.returncode, 0, retry.stderr)
             self.assertFalse(navigator.exists())
-            self.assertIn("X11_WINDOW_TIMEOUT samples=61", console.read_text())
+            self.assertIn(
+                "X11_WINDOW_TIMEOUT reason=sample-limit samples=61",
+                console.read_text(),
+            )
 
     def test_evidence_retries_failure_and_ready_false_before_one_formal_gate(self) -> None:
         repository = Path(__file__).resolve().parents[3]
@@ -565,8 +590,10 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             console = root / "console"
             xorg = root / "Xorg.0.log"
             calls = root / "gate-calls"
+            gate_args = root / "gate-args"
             process_samples = root / "process-samples"
             kernel_samples = root / "kernel-samples"
+            security_log = root / "security"
             navigator_ready = profile / "NavigatorWindowReady"
             fake_bin.mkdir()
             (proc / "42").mkdir(parents=True)
@@ -576,9 +603,31 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             (inputs / "event0").touch()
             (inputs / "event1").touch()
             (proc / "42/comm").write_text("firefox-esr\n")
+            (proc / "42/status").write_text(
+                "Name:\tfirefox-esr\n"
+                "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
+                "CapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"
+                "CapAmb:\t0000000000000000\nNoNewPrivs:\t1\n"
+            )
+            (proc / "42/environ").write_bytes(b"HOME=/home/asterinas\0MOZ_SANDBOX_LOGGING=1\0")
             (proc / "42/cmdline").write_bytes(
                 b"/usr/bin/firefox-esr\0--offline\0--marionette\0"
                 b"file:///usr/share/asterinas/browser-m5/index.html\0"
+            )
+            # Shape copied from the real m5f19b PID 1265 tab-content command line.
+            (proc / "43").mkdir()
+            (proc / "43/comm").write_text("MainThread\n")
+            (proc / "43/cmdline").write_bytes(
+                b"/usr/lib/firefox-esr/firefox-esr\0-contentproc\0-isForBrowser\0"
+                b"-prefsHandle\0" b"0:34195\0-parentBuildID\0" b"20260811190631\0"
+                b"-ipcHandle\0" b"3\0-parentPid\0" b"42\0-appDir\0/usr/lib/firefox-esr/browser\0"
+                b"2\0tab\0"
+            )
+            (proc / "43/status").write_text(
+                "Name:\tMainThread\n"
+                "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
+                "CapEff:\t0000000000000000\nCapBnd:\t0000000000000000\n"
+                "CapAmb:\t0000000000000000\nSeccomp:\t2\n"
             )
             (profile / "MarionetteActivePort").write_text("2828\n")
             xorg.write_text(
@@ -611,6 +660,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "  esac\n"
                 "else\n"
                 "  printf 'formal\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"\n"
+                "  printf '%s\\n' \"$*\" >\"$ASTERINAS_M5_TEST_GATE_ARGS\"\n"
                 f"  printf '%s\\n' '{gate.PASS_LINE}'\n"
                 "fi\n"
             )
@@ -626,13 +676,15 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                     "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
                     "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
                     "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
-                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "15",
+                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
                     "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
                     "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
                     "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
                     "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
                     "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
+                    "ASTERINAS_DESKTOP_M5_SECURITY_LOG": str(security_log),
                     "ASTERINAS_M5_TEST_CALLS": str(calls),
+                    "ASTERINAS_M5_TEST_GATE_ARGS": str(gate_args),
                     "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
                 },
                 check=False,
@@ -640,7 +692,11 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 text=True,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.returncode,
+                0,
+                result.stderr + "\nconsole:\n" + console.read_text(),
+            )
             self.assertEqual(
                 calls.read_text().splitlines(),
                 ["diagnose-timeout", "diagnose-false", "diagnose-false-window", "formal"],
@@ -655,9 +711,53 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 emitted,
             )
             self.assertEqual(emitted.count(gate.PASS_LINE), 1)
+            self.assertIn("--timeout 600", gate_args.read_text())
+            self.assertIn("DEBIAN_BROWSER_M5_SECURITY parent_caps=zero", emitted)
+            self.assertIn(
+                "DEBIAN_BROWSER_M5_SECURITY child_caps=zero content=present seccomp=enabled",
+                emitted,
+            )
+            self.assertIn("role=content pid=43 capabilities=zero", security_log.read_text())
             samples = process_samples.read_text()
             self.assertEqual(samples.count("stage=formal-gate-start"), 1)
             self.assertEqual(samples.count("stage=formal-gate-done"), 1)
+
+            status_without_seccomp = (proc / "43/status").read_text().replace(
+                "Seccomp:\t2\n", ""
+            )
+            (proc / "43/status").write_text(status_without_seccomp)
+            calls.write_text("")
+            console.write_text("")
+            navigator_ready.unlink()
+            rejected = subprocess.run(
+                ["/bin/bash", str(evidence)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+                    "ASTERINAS_DESKTOP_M5_INPUT_DIRECTORY": str(inputs),
+                    "ASTERINAS_DESKTOP_M5_XORG_LOG": str(xorg),
+                    "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "700",
+                    "ASTERINAS_DESKTOP_M5_PROC_ROOT": str(proc),
+                    "ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY": str(profile),
+                    "ASTERINAS_DESKTOP_M5_CONTENT_GATE": str(fake_gate),
+                    "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
+                    "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
+                    "ASTERINAS_DESKTOP_M5_SECURITY_LOG": str(security_log),
+                    "ASTERINAS_M5_TEST_CALLS": str(calls),
+                    "ASTERINAS_M5_TEST_GATE_ARGS": str(gate_args),
+                    "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn(
+                "DEBIAN_BROWSER_M5_FAIL reason=security-content-seccomp-unavailable",
+                console.read_text(),
+            )
 
     def test_evidence_samples_formal_gate_failure_before_exit(self) -> None:
         evidence = (
@@ -671,6 +771,18 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         failure_exit = evidence.index("fail browser-content", failure_sample)
         self.assertLess(gate_call, failure_sample)
         self.assertLess(failure_sample, failure_exit)
+
+    def test_security_rechecks_restarted_firefox_and_requires_content_seccomp(self) -> None:
+        evidence = (
+            Path(__file__).resolve().parents[3]
+            / "tools/riscv/debian/rootfs/desktop_m5_evidence.sh"
+        ).read_text()
+        self.assertIn('security_checked_pid=""', evidence)
+        self.assertIn('[[ "$security_checked_pid" != "$browser_pid" ]]', evidence)
+        self.assertIn('security_checked_pid="$browser_pid"', evidence)
+        self.assertNotIn("security_checked=false", evidence)
+        self.assertIn("fail security-content-seccomp-unavailable", evidence)
+        self.assertIn("fail security-content-seccomp", evidence)
 
     def test_network_namespace_contract_accepts_only_same_loopback_namespace(self) -> None:
         with mock.patch.object(gate.os, "readlink", side_effect=["net:[7]", "net:[7]"]), \
