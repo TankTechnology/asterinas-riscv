@@ -22,12 +22,16 @@ are optional, and --mock-timeout sets the finite milestone deadline.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import ipaddress
 import json
 import math
 import os
+from pathlib import Path
 import re
 import select
+import stat
+import subprocess
 import sys
 import termios
 import time
@@ -35,6 +39,9 @@ from dataclasses import dataclass
 from typing import TextIO
 
 BAUD = 115200
+YMODEM_BAUD = 1_500_000
+YMODEM_STAGING_ADDRESS = 0x9000_0000
+MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
 TX_DELAY = 0.02
 PROMPT = "=> "
 MILESTONES = {
@@ -52,6 +59,9 @@ GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
 TFTP_LOAD_RESULT_PATTERN = re.compile(
     r"(?im)^\s*Bytes transferred\s*=\s*(\d+)\s+\([0-9a-f]+ hex\)\s*$"
+)
+YMODEM_LOAD_RESULT_PATTERN = re.compile(
+    r"(?im)^\s*## Total Size\s*=\s*0x[0-9a-f]+\s*=\s*(\d+)\s+Bytes\s*$"
 )
 CRC_RESULT_PATTERN = re.compile(
     r"(?im)^\s*CRC32 for\s+(0x)?([0-9a-f]+)\b[^\r\n]*==>\s*([0-9a-f]{8})\s*$"
@@ -148,8 +158,6 @@ MEGREZ_FRAMEBUFFER = FramebufferHandoff(
 
 
 def open_serial(device: str):
-    import fcntl
-
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
     attrs = termios.tcgetattr(fd)
@@ -163,6 +171,41 @@ def open_serial(device: str):
     attrs[6][termios.VTIME] = 0
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
     return fd
+
+
+def _set_serial_baud(fd: int, baud: int) -> None:
+    speeds = {BAUD: termios.B115200, YMODEM_BAUD: termios.B1500000}
+    try:
+        speed = speeds[baud]
+    except KeyError as error:
+        raise ValueError(f"unsupported serial baud: {baud}") from error
+    attrs = termios.tcgetattr(fd)
+    attrs[4] = speed
+    attrs[5] = speed
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+
+def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> None:
+    """Send one held regular file to U-Boot's YMODEM receiver."""
+    original_flags = fcntl.fcntl(serial_fd, fcntl.F_GETFL)
+    try:
+        fcntl.fcntl(serial_fd, fcntl.F_SETFL, original_flags & ~os.O_NONBLOCK)
+        result = subprocess.run(
+            ["sb", "--ymodem", "--binary", f"/proc/self/fd/{source_fd}"],
+            stdin=serial_fd,
+            stdout=serial_fd,
+            stderr=subprocess.PIPE,
+            pass_fds=(source_fd,),
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"YMODEM sender failed: {error}") from error
+    finally:
+        fcntl.fcntl(serial_fd, fcntl.F_SETFL, original_flags)
+    if result.returncode != 0:
+        diagnostic = result.stderr.decode(errors="replace")[-200:]
+        raise RuntimeError(f"YMODEM sender exited {result.returncode}: {diagnostic!r}")
 
 
 def read_available(fd: int, timeout: float) -> str:
@@ -390,6 +433,95 @@ class BoardSession:
             name, address, expected_crc32, load_output, TFTP_LOAD_RESULT_PATTERN
         )
 
+    def load_ymodem_artifact(
+        self,
+        name: str,
+        source_directory: Path,
+        filename: str,
+        address: int,
+        expected_crc32: str,
+    ) -> int:
+        """Load one pinned host file through U-Boot YMODEM at 1.5 Mbps."""
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        source_flags = os.O_RDONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+            source_flags |= os.O_NOFOLLOW
+        directory_fd = os.open(source_directory, directory_flags)
+        try:
+            source_fd = os.open(filename, source_flags, dir_fd=directory_fd)
+        finally:
+            os.close(directory_fd)
+        try:
+            metadata = os.fstat(source_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or not 0 < metadata.st_size <= MAX_YMODEM_SOURCE_BYTES
+            ):
+                raise RuntimeError(f"{name}: invalid YMODEM source")
+            command = f"loady {address:x} {YMODEM_BAUD}"
+            self.send(command)
+            opening = self.wait_for("press ENTER", timeout=15)
+            normalized = opening.replace("\r", "").splitlines()
+            if command not in (line.strip() for line in normalized):
+                raise RuntimeError(f"echo mismatch for {command!r}")
+            _set_serial_baud(self.fd, YMODEM_BAUD)
+            try:
+                os.write(self.fd, b"\r")
+                _transfer_ymodem_file(self.fd, source_fd, 120.0)
+                completion = self.wait_for("press ESC", timeout=15)
+            finally:
+                _set_serial_baud(self.fd, BAUD)
+            os.write(self.fd, b"\x1b")
+            self.wait_for(PROMPT, timeout=15)
+        finally:
+            os.close(source_fd)
+
+        result = YMODEM_LOAD_RESULT_PATTERN.search(completion)
+        if result is None or int(result.group(1)) != metadata.st_size:
+            raise RuntimeError(f"{name}: YMODEM transfer size mismatch")
+        self._verify_memory_crc(name, address, metadata.st_size, expected_crc32)
+        return metadata.st_size
+
+    def load_ymodem_lzma_artifact(
+        self,
+        name: str,
+        source_directory: Path,
+        filename: str,
+        compressed_address: int,
+        output_address: int,
+        compressed_crc32: str,
+        output_size: int,
+        output_crc32: str,
+    ) -> None:
+        """Load an LZMA-alone image and verify the decompressed bytes."""
+        self.load_ymodem_artifact(
+            f"{name}-compressed",
+            source_directory,
+            filename,
+            compressed_address,
+            compressed_crc32,
+        )
+        self.command(
+            f"lzmadec 0x{compressed_address:x} 0x{output_address:x}", timeout=60
+        )
+        self._verify_memory_crc(name, output_address, output_size, output_crc32)
+
+    def _verify_memory_crc(
+        self, name: str, address: int, size: int, expected_crc32: str
+    ) -> None:
+        crc_output = self.command(f"crc32 0x{address:x} 0x{size:x}")
+        crc_result = CRC_RESULT_PATTERN.search(crc_output)
+        if crc_result is None:
+            raise RuntimeError(f"{name}: no parseable CRC32 result")
+        actual_address = int(crc_result.group(2), 16)
+        actual_crc32 = crc_result.group(3).lower()
+        if actual_address != address or actual_crc32 != expected_crc32:
+            raise RuntimeError(
+                f"{name}: CRC32 mismatch at 0x{actual_address:x}: "
+                f"expected {expected_crc32}, got {actual_crc32}"
+            )
+
     def _verify_loaded_artifact(
         self,
         name: str,
@@ -503,6 +635,22 @@ def safe_ipv4_netmask(value: str) -> str:
     return value
 
 
+def positive_size(value: str) -> int:
+    try:
+        size = int(value, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("size must be a decimal integer") from error
+    if size <= 0 or size > MAX_YMODEM_SOURCE_BYTES:
+        raise argparse.ArgumentTypeError("size must be in (0, 64 MiB]")
+    return size
+
+
+def crc32_value(value: str) -> str:
+    if re.fullmatch(r"[0-9a-fA-F]{8}", value) is None:
+        raise argparse.ArgumentTypeError("CRC32 must be eight hexadecimal digits")
+    return value.lower()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -520,13 +668,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bootargs", type=safe_bootargs, default=DEFAULT_BOOTARGS)
     p.add_argument(
         "--load-transport",
-        choices=("mmc", "tftp"),
+        choices=("mmc", "tftp", "ymodem"),
         default="mmc",
         help="artifact source (default: mmc)",
     )
     p.add_argument("--tftp-board-address", type=safe_ipv4, default="10.100.19.200")
     p.add_argument("--tftp-server-address", type=safe_ipv4, default="10.100.19.216")
     p.add_argument("--tftp-netmask", type=safe_ipv4_netmask, default="255.255.248.0")
+    p.add_argument("--ymodem-directory", type=Path)
+    p.add_argument("--booti-compressed-crc32", type=crc32_value)
+    p.add_argument("--booti-uncompressed-size", type=positive_size)
     p.add_argument(
         "--final-profile",
         choices=tuple(FINAL_MILESTONE_MARKERS),
@@ -574,6 +725,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.error("--expected-crc32 is required outside --mock-qemu mode")
     if args.mock_qemu and args.firmware_framebuffer:
         p.error("--firmware-framebuffer is only supported in physical mode")
+    ymodem_contract = (
+        args.ymodem_directory,
+        args.booti_compressed_crc32,
+        args.booti_uncompressed_size,
+    )
+    if args.load_transport == "ymodem" and any(
+        value is None for value in ymodem_contract
+    ):
+        p.error(
+            "--load-transport ymodem requires --ymodem-directory, "
+            "--booti-compressed-crc32, and --booti-uncompressed-size"
+        )
+    if args.load_transport != "ymodem" and any(
+        value is not None for value in ymodem_contract
+    ):
+        p.error("YMODEM options require --load-transport ymodem")
     consoles = [
         token.removeprefix("console=")
         for token in args.bootargs.split()
@@ -640,15 +807,42 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
         session.command(f"setenv serverip {args.tftp_server_address}")
         session.command(f"setenv netmask {args.tftp_netmask}")
         loader = session.load_tftp_artifact
-    loader("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
-    loader("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
+    initrd_size: int | None = None
+    if transport == "ymodem":
+        session.load_ymodem_lzma_artifact(
+            "booti",
+            args.ymodem_directory,
+            args.booti,
+            YMODEM_STAGING_ADDRESS,
+            0x80200000,
+            args.booti_compressed_crc32,
+            args.booti_uncompressed_size,
+            args.expected_crc32["booti"],
+        )
+        session.load_artifact("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
+    else:
+        loader("booti", args.booti, 0x80200000, args.expected_crc32["booti"])
+        loader("dtb", args.dtb, 0xF0000000, args.expected_crc32["dtb"])
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
     if args.firmware_framebuffer:
         for command in MEGREZ_FRAMEBUFFER.commands():
             session.command(command)
-    loader("initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"])
-    session.command("setenv initrd_size ${filesize}")
+    if transport == "ymodem":
+        initrd_size = session.load_ymodem_artifact(
+            "initrd",
+            args.ymodem_directory,
+            args.initrd,
+            0x83000000,
+            args.expected_crc32["initrd"],
+        )
+    else:
+        loader("initrd", args.initrd, 0x83000000, args.expected_crc32["initrd"])
+    session.command(
+        "setenv initrd_size ${filesize}"
+        if initrd_size is None
+        else f"setenv initrd_size 0x{initrd_size:x}"
+    )
     session.command(f'setenv bootargs "{args.bootargs}"')
     session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
     session.command(MEGREZ_USB_HOST_COMMAND)

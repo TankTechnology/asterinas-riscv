@@ -241,6 +241,44 @@ class ArgumentContractTests(unittest.TestCase):
                     + ["--load-transport", "tftp", flag, value]
                 )
 
+    def test_ymodem_transport_requires_pinned_kernel_decompression_contract(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--load-transport",
+                "ymodem",
+                "--ymodem-directory",
+                "/tmp/serial artifacts",
+                "--booti-compressed-crc32",
+                "deadbeef",
+                "--booti-uncompressed-size",
+                "14482552",
+            ]
+        )
+        self.assertEqual(args.load_transport, "ymodem")
+        self.assertEqual(args.ymodem_directory, Path("/tmp/serial artifacts"))
+        self.assertEqual(args.booti_compressed_crc32, "deadbeef")
+        self.assertEqual(args.booti_uncompressed_size, 14482552)
+
+        required = _required_args() + crc_args + ["--load-transport", "ymodem"]
+        for missing_contract in (
+            (),
+            ("--ymodem-directory", "/tmp/serial"),
+            (
+                "--ymodem-directory",
+                "/tmp/serial",
+                "--booti-compressed-crc32",
+                "deadbeef",
+            ),
+        ):
+            with self.subTest(arguments=missing_contract):
+                _parse_fails(required + list(missing_contract))
+
     def test_final_profile_is_closed(self):
         crc_args = [
             "--expected-crc32",
@@ -643,6 +681,95 @@ class SerialContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "positive transfer"):
             session.load_tftp_artifact("booti", "kernel", 0x80200000, "e5a5fac5")
 
+    def test_ymodem_load_switches_baud_and_verifies_pinned_source(self):
+        session = self._session()
+        session.fd = 41
+        session.send = mock.Mock()
+        session.wait_for = mock.Mock(
+            side_effect=[
+                "loady 83000000 1500000\r\n"
+                "## Switch baudrate to 1500000 bps and press ENTER ...",
+                "## Total Size = 0x00000004 = 4 Bytes\r\n"
+                "## Switch baudrate to 115200 bps and press ESC ...",
+                "=> ",
+            ]
+        )
+        session.command = mock.Mock(
+            return_value=(
+                "crc32 0x83000000 0x4\r\n"
+                "CRC32 for 83000000 ... 83000003 ==> 0123abcd\r\n=> "
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "installer.cpio"
+            source.write_bytes(b"data")
+            observed: list[tuple[int, int]] = []
+
+            def transfer(serial_fd: int, source_fd: int, timeout: float) -> None:
+                observed.append((serial_fd, os.fstat(source_fd).st_size))
+                self.assertEqual(timeout, 120.0)
+
+            with (
+                mock.patch.object(board, "_set_serial_baud") as set_baud,
+                mock.patch.object(board, "_transfer_ymodem_file", side_effect=transfer),
+                mock.patch.object(board.os, "write", return_value=1) as write,
+            ):
+                size = session.load_ymodem_artifact(
+                    "initrd",
+                    Path(directory),
+                    "installer.cpio",
+                    0x83000000,
+                    "0123abcd",
+                )
+
+        self.assertEqual(size, 4)
+        self.assertEqual(observed, [(41, 4)])
+        self.assertEqual(
+            set_baud.call_args_list,
+            [mock.call(41, 1_500_000), mock.call(41, board.BAUD)],
+        )
+        self.assertEqual(
+            write.call_args_list, [mock.call(41, b"\r"), mock.call(41, b"\x1b")]
+        )
+        session.command.assert_called_once_with("crc32 0x83000000 0x4")
+
+    def test_ymodem_lzma_load_verifies_decompressed_kernel_identity(self):
+        session = self._session()
+        session.load_ymodem_artifact = mock.Mock(return_value=1234)
+        session.command = mock.Mock(
+            side_effect=[
+                "lzmadec 0x90000000 0x80200000\r\n=> ",
+                "crc32 0x80200000 0xdcfc78\r\n"
+                "CRC32 for 80200000 ... 80def677 ==> 4c2d6451\r\n=> ",
+            ]
+        )
+
+        session.load_ymodem_lzma_artifact(
+            "booti",
+            Path("/tmp/artifacts"),
+            "kernel.lzma",
+            0x90000000,
+            0x80200000,
+            "c77daf81",
+            14_482_552,
+            "4c2d6451",
+        )
+
+        session.load_ymodem_artifact.assert_called_once_with(
+            "booti-compressed",
+            Path("/tmp/artifacts"),
+            "kernel.lzma",
+            0x90000000,
+            "c77daf81",
+        )
+        self.assertEqual(
+            session.command.call_args_list,
+            [
+                mock.call("lzmadec 0x90000000 0x80200000", timeout=60),
+                mock.call("crc32 0x80200000 0xdcfc78"),
+            ],
+        )
+
 
 class BootTransactionTests(unittest.TestCase):
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
@@ -823,6 +950,66 @@ class BootTransactionTests(unittest.TestCase):
                 ("tftp", "initrd", "initrd", 0x83000000, "00000001"),
             ],
         )
+        self.assertFalse(any("saveenv" in str(event) for event in events))
+
+    def test_ymodem_transport_uses_mmc_dtb_and_explicit_initrd_size(self):
+        events: list[tuple] = []
+        session = mock.Mock()
+        session.load_ymodem_lzma_artifact.side_effect = lambda *args: events.append(
+            ("lzma", *args)
+        )
+        session.load_artifact.side_effect = lambda *args: events.append(("mmc", *args))
+        session.load_ymodem_artifact.side_effect = lambda *args: (
+            events.append(("ymodem", *args)) or 886829
+        )
+        session.command.side_effect = lambda command, **kwargs: (
+            events.append(("command", command, kwargs)) or "boot output"
+        )
+        args = SimpleNamespace(
+            booti="kernel.lzma",
+            dtb="dtbs/current/board.dtb",
+            initrd="installer.cpio.gz",
+            bootargs="init=/init asterinas.reboot_after=600",
+            expected_crc32={
+                "booti": "4c2d6451",
+                "dtb": "4afcb20e",
+                "initrd": "d1b80054",
+            },
+            firmware_framebuffer=False,
+            load_transport="ymodem",
+            ymodem_directory=Path("/tmp/artifacts"),
+            booti_compressed_crc32="c77daf81",
+            booti_uncompressed_size=14_482_552,
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        self.assertEqual(
+            [event for event in events if event[0] in ("lzma", "mmc", "ymodem")],
+            [
+                (
+                    "lzma",
+                    "booti",
+                    Path("/tmp/artifacts"),
+                    "kernel.lzma",
+                    0x90000000,
+                    0x80200000,
+                    "c77daf81",
+                    14_482_552,
+                    "4c2d6451",
+                ),
+                ("mmc", "dtb", "dtbs/current/board.dtb", 0xF0000000, "4afcb20e"),
+                (
+                    "ymodem",
+                    "initrd",
+                    Path("/tmp/artifacts"),
+                    "installer.cpio.gz",
+                    0x83000000,
+                    "d1b80054",
+                ),
+            ],
+        )
+        self.assertIn(("command", "setenv initrd_size 0xd882d", {}), events)
         self.assertFalse(any("saveenv" in str(event) for event in events))
 
 
