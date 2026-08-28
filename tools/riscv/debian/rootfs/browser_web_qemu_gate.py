@@ -264,14 +264,14 @@ def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
 
 
 def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
-    logs = stderr + b"\n" + mozilla
-    if b"Exiting due to channel error." in logs.splitlines():
-        raise GateFailure("Firefox log records a channel-error exit")
-    if b"SCM_RIGHTS" in logs and (
-        re.search(rb"(^|[^A-Z])EPERM([^A-Z]|$)", logs)
-        or b"Operation not permitted" in logs
-    ):
-        raise GateFailure("Firefox log records SCM_RIGHTS permission failure")
+    for line in (stderr + b"\n" + mozilla).splitlines():
+        if b"Exiting due to channel error." in line:
+            raise GateFailure("Firefox log records a channel-error exit")
+        if b"SCM_RIGHTS" in line and (
+            re.search(rb"(^|[^A-Z])EPERM([^A-Z]|$)", line)
+            or b"Operation not permitted" in line
+        ):
+            raise GateFailure("Firefox log records SCM_RIGHTS permission failure")
 
 
 def validate_web_evidence(
