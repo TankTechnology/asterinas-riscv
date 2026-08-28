@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import functools
+import gzip
 import http.server
 import lzma
 import os
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import zlib
 from collections.abc import Callable
@@ -38,10 +40,12 @@ SERVER_PORT = 8080
 NETMASK = "255.255.248.0"
 INSTALLER_FILENAME = "debian-current-network-installer.cpio"
 KERNEL_FILENAME = "asterinas-debian-current.booti.lzma"
+ROOT_ARCHIVE_FILENAME = "debian-root.ext2.gz"
 DTB_FILENAME = "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb"
 ArtifactValidator = Callable[[DebugPlan], dict[str, ArtifactIdentity]]
 GitIdentity = Callable[[Path], str]
 BuildInstaller = Callable[[Path, Path, Path, str, str], None]
+CompressRoot = Callable[[Path, Path], None]
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 ServerFactory = Callable[[str, int, Path], AbstractContextManager[None]]
 
@@ -118,6 +122,41 @@ def _publish_lzma(source: Path, destination: Path) -> None:
             os.close(descriptor)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _publish_gzip(source: Path, destination: Path) -> None:
+    """Atomically publish one deterministic streaming gzip transport."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            with source.open("rb") as input_stream:
+                with gzip.GzipFile(
+                    filename="",
+                    mode="wb",
+                    compresslevel=1,
+                    fileobj=output,
+                    mtime=0,
+                ) as compressor:
+                    while chunk := input_stream.read(1024 * 1024):
+                        compressor.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+        temporary = None
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _crc32(path: Path) -> str:
@@ -224,6 +263,7 @@ def run_network_install(
     artifact_validator: ArtifactValidator = _validate_current_artifacts,
     git_identity: GitIdentity = _git_identity,
     build_installer: BuildInstaller = build_network_archive,
+    compress_root: CompressRoot = _publish_gzip,
     server_factory: ServerFactory = _root_server,
     run_command: RunCommand = subprocess.run,
     repository_root: Path | None = None,
@@ -249,7 +289,7 @@ def run_network_install(
                 raise InstallError("install timeout must be in (0, 3600]")
             canonical_url = _canonical_root_url(root_url)
             if canonical_url != (
-                f"http://{SERVER_ADDRESS}:{SERVER_PORT}/debian-root.ext2"
+                f"http://{SERVER_ADDRESS}:{SERVER_PORT}/{ROOT_ARCHIVE_FILENAME}"
             ):
                 raise InstallError(
                     "install root URL differs from the private-LAN contract"
@@ -270,8 +310,13 @@ def run_network_install(
         tftp = _safe_directory(tftp_directory, repository=repository)
         kernel = Path(identities["kernel"].path)
         root = Path(identities["root_image"].path)
+        compressed_root = tftp / ROOT_ARCHIVE_FILENAME
         installer = tftp / INSTALLER_FILENAME
         compressed_kernel = tftp / KERNEL_FILENAME
+        try:
+            compress_root(root, compressed_root)
+        except OSError as error:
+            raise InstallError(f"cannot compress Debian root: {error}") from error
         _publish_lzma(kernel, compressed_kernel)
         build_installer(
             base_cpio,
@@ -294,7 +339,7 @@ def run_network_install(
             float(timeout),
         )
         try:
-            with server_factory(SERVER_ADDRESS, SERVER_PORT, root):
+            with server_factory(SERVER_ADDRESS, SERVER_PORT, compressed_root):
                 completed = run_command(
                     command,
                     cwd=repository,
