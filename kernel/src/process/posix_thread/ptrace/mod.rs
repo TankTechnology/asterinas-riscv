@@ -19,6 +19,7 @@ use crate::{
             DequeuedSignal, PauseReason,
             c_types::siginfo_t,
             constants::{CLD_TRAPPED, SIGCHLD, SIGKILL, SIGTRAP},
+            provenance::trace_kernel_thread_enqueue,
             signals::{kernel::KernelSignal, raw::RawSignal, user::UserSignal},
         },
     },
@@ -331,6 +332,7 @@ impl PosixThread {
 
         for tracee in tracees_to_kill {
             let tracee = tracee.as_posix_thread().unwrap();
+            trace_kernel_thread_enqueue("ptrace-exitkill", self, tracee);
             tracee.enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
         }
     }

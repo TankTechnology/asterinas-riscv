@@ -203,6 +203,35 @@ _PROFILES = {
     ),
 }
 
+_PROFILES["browser-m5"] = RootfsProfile(
+    name="browser-m5",
+    schema_version=6,
+    root_label="ASTER_BROWSERM5",
+    root_uuid="41be8ca6-8168-5ef0-84b1-25824d8f87f5",
+    requested_packages=tuple(
+        package
+        for package in _PROFILES["desktop-m5-network"].requested_packages
+        if package not in {"netsurf-gtk", "xdotool"}
+    )
+    + ("firefox-esr", "python3-minimal"),
+    identity_packages=tuple(
+        package
+        for package in _PROFILES["desktop-m5-network"].identity_packages
+        if package not in {"netsurf-gtk", "xdotool"}
+    )
+    + ("firefox-esr", "python3-minimal"),
+)
+
+_PROFILES["browser-web"] = RootfsProfile(
+    name="browser-web",
+    schema_version=7,
+    root_label="ASTER_BROWSERWEB",
+    root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
+    requested_packages=_PROFILES["browser-m5"].requested_packages,
+    identity_packages=_PROFILES["browser-m5"].identity_packages
+    + ("ca-certificates",),
+)
+
 
 def get_profile(name: str) -> RootfsProfile:
     """Returns a frozen profile or rejects an unknown identity."""
