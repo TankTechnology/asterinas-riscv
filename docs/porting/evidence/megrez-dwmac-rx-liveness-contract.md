@@ -459,6 +459,53 @@ The next single run is interpreted without guesswork:
 - `socket-accepted` with a userspace timeout moves the fault to connect wakeup
   or a later userspace boundary.
 
+### Physical SYN-ACK and HTTP-request boundary
+
+The diagnostic kernel from commit `e655d3465` was rebuilt as Sv39/SMP4 and
+bound to plan SHA-256
+`fff0dd2c0dcdf686163995cf15582d54f1598daba1b6a558e76d655c29947e5b`.
+Its kernel SHA-256 is
+`1d7ea315f4b16217680a6d9541c8bc04cffc666803a60b0c365d79bb86f978f6`.
+The exact image passed both the generic TCP QEMU gate and the independent
+software-reboot gate before one physical `booti`.
+
+The physical run closed the entire receive-side SYN-ACK boundary. The DWMAC
+sample observed four TCP SYN-ACK frames and no fragmented, receive-error,
+too-long, or other descriptor drops. Bigtcp then emitted, in order:
+
+```text
+ASTERINAS_TCP_SYN_ACK stage=parsed
+ASTERINAS_TCP_SYN_ACK stage=connection-found
+ASTERINAS_TCP_SYN_ACK stage=socket-accepted
+```
+
+The host accepted one connection from `10.100.19.200`; its Linux TCP state was
+`ESTABLISHED`. The guest no longer failed at `connect-poll`. Instead, after its
+request `send()` loop completed, it reported:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=http-response errno=0 attempts=4 current_bytes=0 completed_bytes=0
+```
+
+The host trace recorded `requested_bytes=null`, zero accepted application and
+payload bytes, and zero outgoing data segments throughout its bounded two-second
+receive window. Thus the first unresolved boundary is now after the guest TCP
+send queue accepts the HTTP request and before any request byte becomes visible
+to the host. A later change must inspect TCP egress scheduling and classify
+DWMAC TX frames offline; it must not reopen the already-closed DMA, TX-reclaim,
+RX-descriptor, SYN-ACK parsing, tuple lookup, or socket-acceptance questions.
+
+After the failure, the board returned through fresh OpenSBI and U-Boot to a new
+prompt without a physical reset. The transport again contains exactly one
+`booti` and no `saveenv` or `reset` command. Evidence is retained under
+`target/megrez-debug/dwmac-ingress-e655d3465/board-run-20260828-194059/`
+with these SHA-256 identities:
+
+- `serial.log`: `6dc493d9cbf76f5376bf609a0e5ba110a024053893f36c06a451f4c06fbb7dca`;
+- `transport.json`: `df0f9fdea8e7d93b1473dc34b50359bf38e45efbf0301dc8c990a4f4a9f9935b`;
+- `probe-tcp-info.json`: `ef033475cf9374de7df7672c92ae11022d802e14e7dc486e512ed50685c4c410`;
+- `result.json`: `c9b4347be58a98d69720f1ebe54120d2cd0098d1b88ec0076b14b556bcbab772`.
+
 ## Ordering-instrumented run and memory-type discriminator
 
 A later single-boot run used the frozen kernel SHA-256
