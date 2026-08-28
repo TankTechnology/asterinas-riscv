@@ -28,7 +28,10 @@ marker() {
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$pid"
     [[ -z "$page" ]] || line="$line page=$page"
     printf '%s\n' "$line" >>"$TIMELINE"
-    printf '%s\n' "$line" >>"$CONSOLE"
+    # The browser phases run as the unprivileged asterinas user.  Asterinas
+    # may intentionally reject writes to /dev/console from that uid; console
+    # output is diagnostic only and must never restart the browser service.
+    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
 }
 
 case "${1-}" in
