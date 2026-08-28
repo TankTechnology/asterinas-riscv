@@ -16,7 +16,10 @@ marker() {
 
 case "${1-}" in
     begin)
-        install -o 1000 -g 1000 -m 0600 /dev/null "$TIMELINE"
+        # The file is provisioned with its final owner in the immutable image.
+        # Avoid invoking install/chown during early boot: Asterinas may block
+        # that metadata path while sysinit is still bringing up the desktop.
+        : >"$TIMELINE"
         marker BOOT_SYSTEMD_BEGIN
         ;;
     basic)
