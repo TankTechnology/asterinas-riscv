@@ -295,6 +295,7 @@ sha256sum "$VALIDATION_ROOT/plan.json" | tee "$VALIDATION_ROOT/PLAN.SHA256"
 - [ ] **Step 2: Run the fast generic-network simulation**
 
 ```bash
+install -d -m 0755 target/qemu-uboot/dwmac-tx-reclaim-uboot-build
 timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-fast --rm \
   --network=host --user "$(id -u):$(id -g)" \
   -v "$PWD:$PWD" -w "$PWD" \
@@ -303,13 +304,15 @@ timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-fast --rm \
     "$VALIDATION_ROOT/plan.json" \
     --tier fast \
     --output-directory target/qemu-uboot/dwmac-tx-reclaim-validation-fast \
-    --uboot-build-directory target/qemu-uboot/cache/u-boot-build
+    --uboot-build-directory target/qemu-uboot/dwmac-tx-reclaim-uboot-build
 ```
 
 Expected: exact READY marker, `passed: true`, profile
 `generic-sv39-smp4-tcp-probe`, device set `virtio-net-slirp`, CPU argument
 `sv48=false`, SMP4, and no panic/oops/fatal marker. QEMU cannot validate the
 Megrez DWMAC hardware path; this gate validates the kernel/probe/boot protocol.
+The dedicated build directory avoids root-owned objects in the shared cache and
+is reused unchanged by the recovery gate.
 
 - [ ] **Step 3: Run a separate 60-second software-reboot gate**
 
@@ -323,14 +326,14 @@ timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-recovery --rm \
   -e ASTERINAS_INITRAMFS="$ARTIFACT_ROOT/megrez-tcp-probe.cpio.gz" \
   -e QEMU_UBOOT_PROFILE=generic-sv39-smp4-software-reboot \
   -e QEMU_UBOOT_OUT_DIR="$RECOVERY_ROOT" \
-  -e QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+  -e QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/dwmac-tx-reclaim-uboot-build" \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
   bash -c 'set -euo pipefail
     tools/riscv/prepare_qemu_uboot_booti.sh prepare
     python3 tools/riscv/qemu_uboot_booti.py run \
       --profile generic-sv39-smp4-software-reboot \
       --device-set virtio-net-slirp \
-      --uboot target/qemu-uboot/cache/u-boot-build/u-boot \
+      --uboot target/qemu-uboot/dwmac-tx-reclaim-uboot-build/u-boot \
       --boot-disk "$QEMU_UBOOT_OUT_DIR/boot.ext4" \
       --manifest "$QEMU_UBOOT_OUT_DIR/artifacts.json" \
       --dtb-audit "$QEMU_UBOOT_OUT_DIR/qemu-dtb-audit.json" \
