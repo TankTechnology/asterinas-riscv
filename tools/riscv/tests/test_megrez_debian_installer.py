@@ -234,13 +234,16 @@ class MegrezDebianInstallerTests(unittest.TestCase):
 
     def test_network_installer_streams_the_frozen_root_and_verifies_readback(self):
         root_hash = hashlib.sha256(b"a" * 4096).hexdigest()
-        root_url = "http://10.100.19.216:8080/debian-root.ext2"
+        root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
 
         script = render_network_init(root_hash, 4096, root_url).decode()
 
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
         self.assertIn(f"wget -T 30 -O - '{root_url}'", script)
+        self.assertIn("| gzip -dc", script)
+        self.assertLess(script.index("wget -T 30"), script.index("gzip -dc"))
+        self.assertLess(script.index("gzip -dc"), script.index('dd of="$target"'))
         self.assertIn('dd of="$target" bs=4096 iflag=fullblock conv=notrunc', script)
         self.assertIn('dd if="$target" bs=4096 count="1"', script)
         self.assertIn("DEBIAN_INSTALL_FETCH_OK", script)
@@ -266,7 +269,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             base.write_bytes(_archive(*_busybox_base_entries()))
             image.write_bytes(b"a" * 4096)
             image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
-            root_url = "http://10.100.19.216:8080/debian-root.ext2"
+            root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
 
             build_network_archive(base, image, first, image_hash, root_url)
             build_network_archive(base, image, second, image_hash, root_url)
@@ -320,7 +323,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             image = root / "root.ext2"
             with image.open("wb") as image_file:
                 image_file.truncate(1024 * 1024 * 1024)
-            root_url = "http://10.100.19.216:8080/debian-root.ext2"
+            root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
             arguments = [
                 "--base-cpio",
                 str(root / "base.cpio"),

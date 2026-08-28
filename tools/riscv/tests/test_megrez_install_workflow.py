@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import lzma
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +22,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv import megrez_debian_install as install_module
 from tools.riscv.megrez_debian_install import InstallError, run_network_install
 from tools.riscv.megrez_board_session import validate_recovery_epoch
 from tools.riscv.megrez_preboard import PreboardPermit
@@ -95,6 +98,10 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
     def test_success_builds_exact_installer_and_requires_recovery(self) -> None:
         events: list[object] = []
 
+        def compress(root: Path, output: Path) -> None:
+            events.append(("compress", root, output))
+            output.write_bytes(b"compressed-root")
+
         def build(
             base: Path,
             root: Path,
@@ -122,10 +129,11 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             self.output,
             self.base,
             self.tftp,
-            "http://10.100.19.216:8080/debian-root.ext2",
+            "http://10.100.19.216:8080/debian-root.ext2.gz",
             artifact_validator=self._artifacts,
             git_identity=lambda _repository: "c" * 40,
             build_installer=build,
+            compress_root=compress,
             server_factory=server,
             run_command=run,
             repository_root=self.repository,
@@ -134,9 +142,13 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.assertEqual(result.stage, "install")
         self.assertTrue(result.passed)
         self.assertEqual(result.plan_sha256, self.plan.plan_sha256)
-        self.assertEqual(events[0][0], "build")
-        self.assertEqual(events[1][0], "server-enter")
-        command = events[2][1]
+        self.assertEqual(events[0][0], "compress")
+        self.assertEqual(events[0][2].name, "debian-root.ext2.gz")
+        self.assertEqual(events[1][0], "build")
+        self.assertEqual(events[1][-1], "http://10.100.19.216:8080/debian-root.ext2.gz")
+        self.assertEqual(events[2][0], "server-enter")
+        self.assertEqual(events[2][-1], self.tftp / "debian-root.ext2.gz")
+        command = events[3][1]
         self.assertIn("--require-recovery", command)
         self.assertEqual(command[command.index("--load-transport") + 1], "ymodem")
         self.assertIn("--ymodem-directory", command)
@@ -178,7 +190,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
 
         variants = (
             (self.permit_path, "http://example.com/root", "c" * 40),
-            (self.permit_path, "http://10.100.19.216:8080/root", "d" * 40),
+            (self.permit_path, "http://10.100.19.216:8080/root.gz", "d" * 40),
         )
         mismatched = self.repository / "mismatched.json"
         mismatched.write_bytes(
@@ -198,7 +210,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
                 )
             ).canonical_bytes()
         )
-        variants += ((mismatched, "http://10.100.19.216:8080/root", "c" * 40),)
+        variants += ((mismatched, "http://10.100.19.216:8080/root.gz", "c" * 40),)
         for permit, url, commit in variants:
             with self.subTest(url=url, commit=commit), self.assertRaises(InstallError):
                 run_network_install(
@@ -243,10 +255,11 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
                 self.output,
                 self.base,
                 self.tftp,
-                "http://10.100.19.216:8080/debian-root.ext2",
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
                 artifact_validator=self._artifacts,
                 git_identity=lambda _repository: "c" * 40,
                 build_installer=build,
+                compress_root=lambda _root, output: output.write_bytes(b"gzip"),
                 server_factory=server,
                 run_command=lambda command, **_options: subprocess.CompletedProcess(
                     command, 7, "", ""
@@ -295,7 +308,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
                     "--tftp-directory",
                     str(self.tftp),
                     "--root-url",
-                    "http://10.100.19.216:8080/debian-root.ext2",
+                    "http://10.100.19.216:8080/debian-root.ext2.gz",
                     "--timeout",
                     "900",
                 )
@@ -308,9 +321,70 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             self.output,
             self.base,
             self.tftp,
-            "http://10.100.19.216:8080/debian-root.ext2",
+            "http://10.100.19.216:8080/debian-root.ext2.gz",
             timeout=900.0,
         )
+
+    def test_gzip_transport_is_deterministic_atomic_and_round_trips(self) -> None:
+        source = self.repository / "root.ext2"
+        first = self.repository / "first.ext2.gz"
+        second = self.repository / "second.ext2.gz"
+        payload = (b"asterinas-debian-root\0" * 4096) + bytes(range(256))
+        source.write_bytes(payload)
+
+        install_module._publish_gzip(source, first)
+        install_module._publish_gzip(source, second)
+
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        self.assertEqual(gzip.decompress(first.read_bytes()), payload)
+        self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o644)
+        published = first.read_bytes()
+        with (
+            mock.patch.object(
+                gzip.GzipFile, "write", side_effect=OSError("compression failed")
+            ),
+            self.assertRaisesRegex(OSError, "compression failed"),
+        ):
+            install_module._publish_gzip(source, first)
+        self.assertEqual(first.read_bytes(), published)
+        self.assertEqual(
+            [
+                path.name
+                for path in self.repository.iterdir()
+                if path.name.startswith(".first.ext2.gz.")
+            ],
+            [],
+        )
+
+    def test_compression_failure_stops_before_build_server_or_serial(self) -> None:
+        calls: list[str] = []
+
+        def fail_compression(_root: Path, _output: Path) -> None:
+            calls.append("compress")
+            raise OSError("compression failed")
+
+        def forbidden(*_args: object, **_kwargs: object):
+            calls.append("forbidden")
+            raise AssertionError("physical effect reached")
+
+        with self.assertRaisesRegex(InstallError, "compress.*failed"):
+            run_network_install(
+                self.plan,
+                self.permit_path,
+                "/dev/ttyUSB0",
+                self.output,
+                self.base,
+                self.tftp,
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
+                artifact_validator=self._artifacts,
+                git_identity=lambda _repository: "c" * 40,
+                build_installer=forbidden,
+                compress_root=fail_compression,
+                server_factory=forbidden,
+                run_command=forbidden,
+                repository_root=self.repository,
+            )
+        self.assertEqual(calls, ["compress"])
 
 
 if __name__ == "__main__":
