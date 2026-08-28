@@ -41,6 +41,7 @@ from tools.riscv.megrez_debug_desktop import (
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import ProbeServer, ProbeServerError
+from tools.riscv.megrez_debian_install import InstallError, run_network_install
 from tools.riscv.megrez_preboard import (
     PreboardError,
     create_recovery_evidence,
@@ -64,6 +65,16 @@ def _board_timeout(value: str) -> float:
         raise argparse.ArgumentTypeError("timeout must be a number") from error
     if not 0 < timeout <= 300 or not math.isfinite(timeout):
         raise argparse.ArgumentTypeError("timeout must be finite and in (0, 300]")
+    return timeout
+
+
+def _install_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("timeout must be a number") from error
+    if not 0 < timeout <= 3600 or not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 3600]")
     return timeout
 
 
@@ -310,6 +321,18 @@ def _parser() -> argparse.ArgumentParser:
     preboard.add_argument("--recovery-result", required=True, type=Path)
     preboard.add_argument("--output", required=True, type=Path)
 
+    install = subparsers.add_parser(
+        "install", help="install the permitted Debian root through Asterinas"
+    )
+    install.add_argument("plan", type=Path)
+    install.add_argument("device")
+    install.add_argument("--permit", required=True, type=Path)
+    install.add_argument("--output-directory", required=True, type=Path)
+    install.add_argument("--base-cpio", required=True, type=Path)
+    install.add_argument("--tftp-directory", required=True, type=Path)
+    install.add_argument("--root-url", required=True)
+    install.add_argument("--timeout", type=_install_timeout, default=900.0)
+
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)
     board.add_argument("device")
@@ -378,6 +401,19 @@ def main(
                 values.output,
             )
             return 0
+        if values.command == "install":
+            plan = _load_plan(values.plan)
+            run_network_install(
+                plan,
+                values.permit,
+                values.device,
+                values.output_directory,
+                values.base_cpio,
+                values.tftp_directory,
+                values.root_url,
+                timeout=values.timeout,
+            )
+            return 0
 
         plan = _load_plan(values.plan)
         if values.dry_run:
@@ -401,6 +437,7 @@ def main(
         BoardRunFailure,
         DebugContractError,
         DesktopSimulationError,
+        InstallError,
         OSError,
         PreboardError,
         ProbeServerError,
