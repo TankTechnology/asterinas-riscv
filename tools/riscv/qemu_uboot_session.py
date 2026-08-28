@@ -340,6 +340,7 @@ class _SerialProtocol:
     reboot_expectation: RebootExpectation | None
     serial_interaction: SerialInteraction | None
     completion_line: bytes
+    allow_completion_token: bool
     termination_checkpoint: Callable[[], None]
     post_terminal_timeout: float = 0.0
     milestone_expectations: Sequence[MilestoneExpectation] = ()
@@ -502,8 +503,16 @@ class _SerialProtocol:
                             self.serial_interaction.completion_line,
                             interaction_deadline - time.monotonic(),
                         )
-                    elif self.reboot_expectation is None:
+                    elif (
+                        self.reboot_expectation is None
+                        and not self.allow_completion_token
+                    ):
                         self._read_until_complete_line(
+                            self.completion_line,
+                            self.boot_timeout,
+                        )
+                    elif self.reboot_expectation is None:
+                        self._read_until(
                             self.completion_line,
                             self.boot_timeout,
                         )
@@ -748,6 +757,7 @@ def run_serial_session(
     reboot_expectation: RebootExpectation | None = None,
     serial_interaction: SerialInteraction | None = None,
     completion_line: bytes = USERSPACE_MARKER,
+    allow_completion_token: bool = False,
     post_terminal_timeout: float = 0.0,
     milestone_expectations: Sequence[MilestoneExpectation] = (),
     raw_log_file: BinaryIO | None = None,
@@ -801,6 +811,7 @@ def run_serial_session(
                 reboot_expectation=reboot_expectation,
                 serial_interaction=serial_interaction,
                 completion_line=completion_line,
+                allow_completion_token=allow_completion_token,
                 post_terminal_timeout=post_terminal_timeout,
                 milestone_expectations=milestone_expectations,
                 raw_log_file=log_file,
@@ -841,6 +852,7 @@ def _run_serial_session(
     reboot_expectation: RebootExpectation | None = None,
     serial_interaction: SerialInteraction | None = None,
     completion_line: bytes = USERSPACE_MARKER,
+    allow_completion_token: bool = False,
     post_terminal_timeout: float = 0.0,
     milestone_expectations: Sequence[MilestoneExpectation] = (),
     raw_log_file: BinaryIO | None = None,
@@ -891,6 +903,7 @@ def _run_serial_session(
             reboot_expectation=reboot_expectation,
             serial_interaction=serial_interaction,
             completion_line=completion_line,
+            allow_completion_token=allow_completion_token,
             termination_checkpoint=deferred_termination.raise_if_pending,
             post_terminal_timeout=post_terminal_timeout,
             milestone_expectations=milestone_expectations,

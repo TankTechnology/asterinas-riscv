@@ -5294,6 +5294,29 @@ class AuditSerialLogTests(unittest.TestCase):
 
         self.assertTrue(audit.passed, audit.failures)
 
+    def test_registered_tcp_probe_accepts_an_interleaved_exact_terminal_token(
+        self,
+    ) -> None:
+        profile = qemu_uboot_booti.profile_by_name(
+            "generic-sv39-smp4-tcp-probe"
+        )
+        terminal = profile.validation.completion_line.decode()
+        serial_log = MEGREZ_POSITIVE_SERIAL_LOG.replace(
+            MEGREZ_BOOTARGS, profile.bootargs
+        ).replace(
+            qemu_uboot_audit.USERSPACE_MARKER_TEXT,
+            f"virtio interrupt prefix {terminal} kernel suffix",
+        )
+
+        audit = qemu_uboot_booti.audit_serial_log(
+            serial_log,
+            marker_event=self.successful_marker_event(),
+            profile=profile,
+            userspace_marker=terminal,
+        )
+
+        self.assertTrue(audit.passed, audit.failures)
+
     def test_registered_milestones_reject_a_reboot_after_the_terminal(self) -> None:
         self.assert_registered_failure(
             self.registered_serial_log() + "OpenSBI v1.7\n",
@@ -6321,6 +6344,7 @@ for line in sys.stdin.buffer:
         output: bytes | tuple[bytes, ...],
         *,
         completion_line: bytes | None = None,
+        allow_completion_token: bool = False,
         boot_timeout: float = 0.05,
         pre_boot_output: bytes = b"",
     ) -> SESSION_MODULE.SessionResult:
@@ -6363,8 +6387,26 @@ for line in sys.stdin.buffer:
                 command_timeout=1.0,
                 boot_timeout=boot_timeout,
                 termination_grace=0.5,
+                allow_completion_token=allow_completion_token,
                 **kwargs,
             )
+
+    def test_completion_token_survives_console_prefix_and_chunk_split(self) -> None:
+        marker = b"ASTERINAS_GMAC_TCP_PROBE_READY exact-contract"
+
+        result = self._run_completion_output(
+            (
+                b"virtio interrupt prefix " + marker[:19],
+                marker[19:] + b" kernel suffix\n",
+            ),
+            completion_line=marker,
+            allow_completion_token=True,
+            boot_timeout=1.0,
+        )
+
+        self.assertTrue(result.marker_seen)
+        self.assertFalse(result.timed_out)
+        self.assertIsNone(result.failure)
 
     def test_completion_requires_an_exact_terminated_line(self) -> None:
         marker = SESSION_MODULE.USERSPACE_MARKER
