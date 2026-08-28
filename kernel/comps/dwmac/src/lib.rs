@@ -22,6 +22,7 @@ use component::{ComponentInitError, init_component};
 mod arch;
 #[cfg(target_arch = "riscv64")]
 mod device;
+mod poll;
 
 pub mod descriptor;
 pub mod phy;

@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_rx_liveness_model.rs"
+POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 
 
 class DwmacRxLivenessModelTests(unittest.TestCase):
@@ -127,6 +128,38 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
         self.assertEqual(second.returncode, 1)
         self.assertEqual(first.stdout, second.stdout)
         self.assertEqual(first.stderr, second.stderr)
+
+
+class DwmacRxPollContractTests(unittest.TestCase):
+    def test_production_poll_budget_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "dwmac-rx-poll-tests"
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    "--test",
+                    str(POLL_SOURCE),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary), "--nocapture"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("4 passed", result.stdout)
 
 
 if __name__ == "__main__":
