@@ -15,6 +15,7 @@ pub(crate) struct RxPollStats {
     pub(crate) budget_exhaustions: u64,
     pub(crate) reschedules: u64,
     pub(crate) plic_rearms: u64,
+    pub(crate) rx_buffer_unavailable: u64,
 }
 
 #[derive(Debug, Default)]
@@ -36,6 +37,10 @@ impl RxPollBudget {
         self.stats.received = self.stats.received.saturating_add(1);
     }
 
+    pub(crate) fn record_rx_buffer_unavailable(&mut self) {
+        self.stats.rx_buffer_unavailable = self.stats.rx_buffer_unavailable.saturating_add(1);
+    }
+
     pub(crate) fn finish(&mut self, fatal: bool, more_rx: bool) -> PollEndAction {
         if self.processed == RX_POLL_BUDGET {
             self.stats.budget_exhaustions = self.stats.budget_exhaustions.saturating_add(1);
@@ -53,7 +58,7 @@ impl RxPollBudget {
 
     pub(crate) fn record_rearmed(&mut self) -> Option<RxPollStats> {
         self.stats.plic_rearms = self.stats.plic_rearms.saturating_add(1);
-        if self.reported_reschedules == self.stats.reschedules {
+        if !should_report_progress(self.reported_reschedules, self.stats.reschedules) {
             return None;
         }
         self.reported_reschedules = self.stats.reschedules;
@@ -137,6 +142,7 @@ mod tests {
                 budget_exhaustions: 1,
                 reschedules: 1,
                 plic_rearms: 1,
+                rx_buffer_unavailable: 0,
             }
         );
     }
@@ -148,6 +154,26 @@ mod tests {
         assert_eq!(budget.finish(false, false), PollEndAction::Rearm);
         assert_eq!(budget.record_rearmed(), None);
         assert_eq!(budget.stats().plic_rearms, 1);
+    }
+
+    #[test]
+    fn rearm_reports_use_power_of_two_reschedule_cadence() {
+        let mut budget = RxPollBudget::default();
+        for expected_report in [true, true, false, true, false, false, false, true] {
+            budget.record_received();
+            assert_eq!(budget.finish(false, true), PollEndAction::Reschedule);
+            assert_eq!(budget.record_rearmed().is_some(), expected_report);
+        }
+        assert_eq!(budget.stats().reschedules, 8);
+        assert_eq!(budget.stats().plic_rearms, 8);
+    }
+
+    #[test]
+    fn rx_buffer_unavailable_events_are_counted() {
+        let mut budget = RxPollBudget::default();
+        budget.record_rx_buffer_unavailable();
+        budget.record_rx_buffer_unavailable();
+        assert_eq!(budget.stats().rx_buffer_unavailable, 2);
     }
 
     #[test]
