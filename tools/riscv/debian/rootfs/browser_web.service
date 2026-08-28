@@ -18,7 +18,6 @@ CapabilityBoundingSet=
 NoNewPrivileges=yes
 Environment=HOME=/home/asterinas
 SupplementaryGroups=video input
-ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access
 ExecStart=/usr/lib/asterinas/browser-web-firefox
 Restart=on-failure
 RestartSec=2s
