@@ -241,7 +241,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
         self.assertIn(f"wget -T 30 -O - '{root_url}'", script)
-        self.assertIn('dd of="$target" bs=4096 conv=notrunc', script)
+        self.assertIn('dd of="$target" bs=4096 iflag=fullblock conv=notrunc', script)
         self.assertIn('dd if="$target" bs=4096 count="1"', script)
         self.assertIn("DEBIAN_INSTALL_FETCH_OK", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
