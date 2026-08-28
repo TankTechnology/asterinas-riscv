@@ -19,10 +19,11 @@
 - [ ] **Step 1: Write failing tests**
 
 Add tests that require the rendered init script to contain
-`wget -T 30 -O - '<url>.gz' | gzip -dc | tee "$target" | sha256sum`, require
-two independently published gzip files to be byte-identical and decompress to
-the source, and require `run_network_install` to compress before
-build/server/serial while passing the `.gz` path to the server.
+`sha256sum < "$hash_fifo"` plus
+`wget -T 30 -O - '<url>.gz' | gzip -dc | tee "$hash_fifo" | dd`, require two
+independently published gzip files to be byte-identical and decompress to the
+source, and require `run_network_install` to compress before build/server/serial
+while passing the `.gz` path to the server.
 
 - [ ] **Step 2: Run tests and record RED**
 
@@ -72,17 +73,20 @@ Run the Task 1 command. Expected: all tests pass.
 Render the network command as:
 
 ```sh
+sha256sum < "$hash_fifo" > "$hash_result" &
 wget -T 30 -O - 'http://10.100.19.216:8080/debian-root.ext2.gz' \
   | gzip -dc \
-  | tee "$target" \
-  | sha256sum
+  | tee "$hash_fifo" \
+  | dd of="$target" bs=1048576 iflag=fullblock conv=notrunc count=1024
+wait "$hash_pid"
 ```
 
 Retain `set -o pipefail`, retry bounds, sync, and the manifest SHA-256
-comparison. Parse the pipeline result strictly and require the exact root hash
-and `-` stdin name. Do not perform a second full-device read: the hash covers
-the exact decompressed byte stream that `tee` writes, not an independent media
-readback.
+comparison. Parse the FIFO hasher result strictly, require the exact root hash
+and `-` stdin name, and require both the foreground pipeline and background
+hasher to succeed. Do not perform a second full-device read: the hash covers
+the exact decompressed byte stream that `tee` sends to both consumers, not an
+independent media readback.
 
 - [ ] **Step 2: Run focused GREEN**
 

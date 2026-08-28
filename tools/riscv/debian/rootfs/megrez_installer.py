@@ -22,6 +22,7 @@ CHUNK_SIZE = 32 * 1024 * 1024
 ROOT_IMAGE_SIZE = 1024 * 1024 * 1024
 PARTITION_SIZE = 4 * 1024 * 1024 * 1024
 BLOCK_SIZE = 4096
+INSTALL_WRITE_BLOCK_SIZE = 1024 * 1024
 _NEWC_HEADER_SIZE = 110
 _NEWC_MAGIC = b"070701"
 _INSTALLER_COMMANDS = (
@@ -36,7 +37,7 @@ _INSTALLER_COMMANDS = (
     "sleep",
     "sync",
 )
-_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "tee", "wget")
+_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "mkfifo", "rm", "tee", "wget")
 _INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
@@ -386,13 +387,16 @@ def render_network_init(root_sha256: str, root_size: int, root_url: str) -> byte
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
     quoted_url = f"'{_canonical_root_url(root_url)}'"
+    write_blocks = (
+        root_size + INSTALL_WRITE_BLOCK_SIZE - 1
+    ) // INSTALL_WRITE_BLOCK_SIZE
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 hold() {{ while :; do sleep 3600; done; }}
 fail() {{ echo "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
-mkdir -p /proc /sys /dev
+mkdir -p /proc /sys /dev /run
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
@@ -402,12 +406,25 @@ case "$cmdline" in *" asterinas.debian_install_sha256={root_sha256} "*) ;; *) fa
 target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
 [ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+hash_fifo=/run/debian-install.sha256.fifo
+hash_result=/run/debian-install.sha256
+rm -f "$hash_fifo" "$hash_result" || fail hash-state-cleanup
+mkfifo "$hash_fifo" || fail hash-fifo
 attempt=1
 fetched_hash=
 while [ "$attempt" -le 3 ]; do
-    stream_hash=
-    if stream_hash="$(wget -T 30 -O - {quoted_url} | gzip -dc | tee "$target" | sha256sum)"; then
-        set -- $stream_hash
+    sha256sum < "$hash_fifo" > "$hash_result" &
+    hash_pid=$!
+    pipeline_status=1
+    if wget -T 30 -O - {quoted_url} | gzip -dc | tee "$hash_fifo" | dd of="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock conv=notrunc count={write_blocks}; then
+        pipeline_status=0
+    fi
+    hash_status=1
+    if wait "$hash_pid"; then
+        hash_status=0
+    fi
+    if [ "$pipeline_status" = 0 ] && [ "$hash_status" = 0 ]; then
+        set -- $(cat "$hash_result")
         if [ "$#" = 2 ] && [ "$1" = "{root_sha256}" ] && [ "$2" = "-" ]; then
             fetched_hash=$1
             break
@@ -417,6 +434,7 @@ while [ "$attempt" -le 3 ]; do
     attempt=$((attempt + 1))
     sleep 2
 done
+rm -f "$hash_fifo" "$hash_result" || fail hash-state-cleanup
 [ "$fetched_hash" = "{root_sha256}" ] || fail network-fetch
 sync || fail network-sync
 echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$fetched_hash"
