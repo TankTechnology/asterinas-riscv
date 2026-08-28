@@ -9,6 +9,7 @@ readonly XORG_LOG="${ASTERINAS_DESKTOP_M5_XORG_LOG:-/home/asterinas/Xorg.0.log}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-300}"
 readonly PROC_ROOT="${ASTERINAS_DESKTOP_M5_PROC_ROOT:-/proc}"
 readonly PROFILE_DIRECTORY="${ASTERINAS_DESKTOP_M5_PROFILE_DIRECTORY:-/home/asterinas/.mozilla/asterinas-browser-m5}"
+readonly NAVIGATOR_READY_FILE="${ASTERINAS_DESKTOP_M5_NAVIGATOR_READY_FILE:-$PROFILE_DIRECTORY/NavigatorWindowReady}"
 readonly CONTENT_GATE="${ASTERINAS_DESKTOP_M5_CONTENT_GATE:-/usr/lib/asterinas/browser-m5-marionette-gate}"
 readonly PROCESS_SAMPLE_LOG="${ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG:-/home/asterinas/firefox-m5-process-samples.log}"
 readonly KERNEL_SAMPLE_LOG="${ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG:-/home/asterinas/firefox-m5-kernel-samples.log}"
@@ -52,6 +53,12 @@ diagnostic_ready() {
     [[ "$(cat "$PROFILE_DIRECTORY/MarionetteActivePort" 2>/dev/null)" == 2828 ]] || return 1
 }
 
+navigator_ready() {
+    local evidence
+    evidence="$(cat "$NAVIGATOR_READY_FILE" 2>/dev/null)" || return 1
+    [[ "$evidence" == "browser_pid=$browser_pid "* ]]
+}
+
 sample_firefox_processes() {
     local stage="$1" process pid comm command_line
     {
@@ -79,9 +86,8 @@ sample_firefox_processes() {
     } >>"$KERNEL_SAMPLE_LOG" 2>&1 || true
 }
 
-while ! ready || [[ "$marionette_ready" == false ]]; do
+while ! ready || ! navigator_ready; do
     if [[ "$marionette_ready" == false ]] && diagnostic_ready; then
-        sample_firefox_processes pre-diagnostic
         remaining=$((deadline - SECONDS))
         ((remaining > 0)) || fail browser-timeout
         diagnostic_timeout="$remaining"
@@ -92,13 +98,9 @@ while ! ready || [[ "$marionette_ready" == false ]]; do
             emit "$diagnostic_evidence"
             if [[ "$diagnostic_evidence" == "DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status="* ]]; then
                 marionette_ready=true
-                sample_firefox_processes status-ready
-            else
-                sample_firefox_processes status-not-ready
             fi
         else
             emit "DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable"
-            sample_firefox_processes diagnostic-unavailable
         fi
     fi
     ((SECONDS < deadline)) || fail browser-timeout
@@ -109,6 +111,7 @@ remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail browser-timeout
 gate_timeout="$remaining"
 ((gate_timeout <= 30)) || gate_timeout=30
+emit "DEBIAN_BROWSER_M5_NAVIGATOR state=visible browser_pid=$browser_pid marionette_status_ready=$marionette_ready"
 sample_firefox_processes formal-gate-start
 if ! content_evidence="$("$CONTENT_GATE" \
     --firefox-pid "$browser_pid" --timeout "$gate_timeout" 2>>"$CONSOLE")"; then
