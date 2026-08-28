@@ -208,7 +208,7 @@ timeout 1200 docker run --name codex-dwmac-tx-reclaim-build --rm \
   -e HTTPS_PROXY=http://127.0.0.1:17892 \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -v /home/ubuntu/.rustup:/root/.rustup:ro \
-  -v /home/ubuntu/.cargo/registry:/root/.cargo/registry:ro \
+  -v /home/ubuntu/.cargo/registry:/root/.cargo/registry \
   -v /home/ubuntu/.cargo/git:/root/.cargo/git:ro \
   -v /home/ubuntu/.cargo/bin/cargo-osdk:/root/.cargo/bin/cargo-osdk:ro \
   asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
@@ -224,6 +224,9 @@ this prevents a failed build from leaving a stale file that could be frozen as
 new evidence. Probe the proxy first and retain the official locked Cargo
 registry: the current cache lacks `owo-colors` 4.4.0, so this build requires a
 small authenticated registry fetch and must not pretend to be offline.
+Only the Cargo registry cache is writable so the exact locked crate can be
+stored; the source worktree, lockfile, Git cache, Rust toolchain, and
+`cargo-osdk` binary remain unchanged by dependency resolution.
 
 - [ ] **Step 4: Freeze all four payloads under new names**
 
