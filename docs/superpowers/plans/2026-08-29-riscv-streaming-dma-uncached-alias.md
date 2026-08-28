@@ -90,8 +90,7 @@ post-fix board validation.
 
 ```bash
 make test_riscv_dwmac_rx_model
-python3 -m unittest tools.riscv.tests.test_megrez_gmac_contract \
-  tools.riscv.tests.test_megrez_gmac_gate -v
+python3 -m unittest tools.riscv.tests.test_megrez_dwmac -v
 cargo fmt --check -- ostd/src/mm/dma/dma_stream.rs \
   ostd/src/arch/riscv/mm/mod.rs ostd/src/mm/dma/test.rs
 ```
@@ -118,3 +117,4 @@ git add ostd/src/mm/dma/dma_stream.rs ostd/src/arch/riscv/mm/mod.rs \
   docs/porting/evidence/megrez-network-hardware-source-ledger.md
 git commit -m "fix(riscv): use uncached streaming DMA bounce buffers"
 ```
+
