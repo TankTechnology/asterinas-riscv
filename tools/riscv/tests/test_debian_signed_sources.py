@@ -537,6 +537,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             )
             self.assertIn("PrivateNetwork=yes", firefox_unit_text)
             self.assertIn("User=asterinas", firefox_unit_text)
+            self.assertIn("AmbientCapabilities=\n", firefox_unit_text)
+            self.assertIn("CapabilityBoundingSet=\n", firefox_unit_text)
+            self.assertIn("NoNewPrivileges=yes", firefox_unit_text)
+            self.assertNotIn("CAP_SYS_ADMIN", firefox_unit_text)
             self.assertNotIn("PrivateNetwork", observer_unit_text)
             self.assertNotIn(
                 "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", observer_unit_text
@@ -545,9 +549,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertLess(evidence_unit_text.index("JoinsNamespaceOf="), evidence_unit_text.index("[Service]"))
             self.assertIn("PrivateNetwork=yes", evidence_unit_text)
             self.assertIn(
-                "Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=3600",
+                "Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=4500",
                 evidence_unit_text,
             )
+            self.assertIn("TimeoutStartSec=4800s", evidence_unit_text)
             self.assertIn("Requires=asterinas-browser-m5.service", evidence_unit_text)
             self.assertFalse(netsurf_evidence_unit.exists())
             self.assertFalse(
