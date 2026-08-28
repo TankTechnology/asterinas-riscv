@@ -219,7 +219,12 @@ fn validate_neighbors(
             .iter()
             .find(|profile| profile.device_key() == neighbor.device_key())
             .ok_or(BootProfileError::InvalidValue)?;
-        if profile.gateway() != Some(neighbor.address()) {
+        let address = profile.address();
+        if !address.contains_addr(&neighbor.address())
+            || neighbor.address() == address.address()
+            || neighbor.address() == address.network().address()
+            || address.broadcast() == Some(neighbor.address())
+        {
             return Err(BootProfileError::InvalidValue);
         }
     }
@@ -424,20 +429,22 @@ mod tests {
     }
 
     #[ktest]
-    fn static_neighbor_must_match_the_configured_gateway() {
+    fn static_neighbors_must_be_gateway_or_on_link() {
         let profile =
             BootNetworkProfile::from_str("eic7700-rj45,10.100.19.200/21,10.100.16.1").unwrap();
-        let neighbor =
+        let gateway =
             BootNeighborProfile::from_str("eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43").unwrap();
+        let on_link =
+            BootNeighborProfile::from_str("eic7700-rj45,10.100.16.28,d8:43:ae:b1:f8:12").unwrap();
 
-        assert_eq!(neighbor.device_key(), "eic7700-rj45");
-        assert_eq!(neighbor.address().to_string(), "10.100.16.1");
+        assert_eq!(gateway.device_key(), "eic7700-rj45");
+        assert_eq!(gateway.address().to_string(), "10.100.16.1");
         assert_eq!(
-            neighbor.hardware_address(),
+            gateway.hardware_address(),
             [0x4c, 0xd6, 0x29, 0x18, 0x93, 0x43]
         );
         assert_eq!(
-            validate_neighbors(&[neighbor], &[profile], &["eic7700-rj45"]),
+            validate_neighbors(&[gateway, on_link], &[profile], &["eic7700-rj45"]),
             Ok(())
         );
     }
@@ -456,12 +463,17 @@ mod tests {
 
         let profile =
             BootNetworkProfile::from_str("eic7700-rj45,10.100.19.200/21,10.100.16.1").unwrap();
-        let wrong_gateway =
-            BootNeighborProfile::from_str("eic7700-rj45,10.100.16.2,4c:d6:29:18:93:43").unwrap();
-        assert_eq!(
-            validate_neighbors(&[wrong_gateway], &[profile.clone()], &["eic7700-rj45"]),
-            Err(BootProfileError::InvalidValue)
-        );
+        for invalid_address in ["10.100.19.200", "10.100.23.255", "10.100.24.1"] {
+            let invalid = BootNeighborProfile::from_str(&format!(
+                "eic7700-rj45,{invalid_address},4c:d6:29:18:93:43"
+            ))
+            .unwrap();
+            assert_eq!(
+                validate_neighbors(&[invalid], &[profile.clone()], &["eic7700-rj45"]),
+                Err(BootProfileError::InvalidValue),
+                "{invalid_address}"
+            );
+        }
         let duplicate =
             BootNeighborProfile::from_str("eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43").unwrap();
         assert_eq!(
