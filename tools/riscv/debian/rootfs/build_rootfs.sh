@@ -901,7 +901,17 @@ EOF
         configure_desktop_m5_network "$stage" m5 false
     fi
     : >"$stage/etc/machine-id"
-    printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
+    if [[ "$PROFILE" == browser-web ]]; then
+        printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
+        python3 "$script_directory/browser_web_online_rootfs_check.py" "$stage" \
+            --trust-checker "$stage/usr/share/asterinas/browser-web-trust-check.py" \
+            >"$stage/usr/share/asterinas/browser-web-online-rootfs-static.log"
+        grep -qx 'FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns curl=riscv64 getent=riscv64 firefox=riscv64 trust_static=pass runtime_proven=0' \
+            "$stage/usr/share/asterinas/browser-web-online-rootfs-static.log" ||
+            die "online Firefox rootfs checker did not emit its exact PASS"
+    else
+        printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
+    fi
     rm -f -- "$stage/var/lib/dbus/machine-id"
     rm -f -- "$stage/var/lib/dpkg/lock" "$stage/var/lib/dpkg/lock-frontend"
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
@@ -1051,6 +1061,19 @@ configure_desktop() {
 }
 EOF
             chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
+            install -D -m 0755 -- "$script_directory/browser_web_trust_check.py" \
+                "$stage/usr/share/asterinas/browser-web-trust-check.py"
+            install -D -m 0755 -- "$script_directory/browser_web_online_rootfs_check.py" \
+                "$stage/usr/share/asterinas/browser-web-online-rootfs-check.py"
+            python3 "$script_directory/browser_web_trust_check.py" "$stage" \
+                >"$stage/usr/share/asterinas/browser-web-trust-static.log"
+            [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
+                die "Firefox trust checker emitted an ambiguous result"
+            grep -Eq '^FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' \
+                "$stage/usr/share/asterinas/browser-web-trust-static.log" ||
+                die "Firefox trust checker did not prove embedded XUL roots"
+            chmod 0644 -- \
+                "$stage/usr/share/asterinas/browser-web-trust-static.log"
         else
         local browser_directory="$stage/usr/share/asterinas/browser-m5"
         local decoded_video="$WORK_DIR/browser-m5.webm"
