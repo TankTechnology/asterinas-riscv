@@ -461,14 +461,16 @@ class ContractCompositionTests(unittest.TestCase):
             profile.validation.completion_line,
             (
                 b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
-                b"status=200 bytes=16777216 pattern=mod251"
+                b"status=200 sizes=16384,65536,1048576,16777216 "
+                b"completed_bytes=17907712 pattern=mod251"
             ),
         )
         self.assertEqual(
             profile.validation.milestones[-1].line,
             (
                 b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
-                b"status=200 bytes=16777216 pattern=mod251"
+                b"status=200 sizes=16384,65536,1048576,16777216 "
+                b"completed_bytes=17907712 pattern=mod251"
             ),
         )
         self.assertEqual(profile.machine.hart_count, 4)

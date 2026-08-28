@@ -40,7 +40,11 @@ from tools.riscv.megrez_debug_desktop import (
     simulate_desktop,
 )
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
-from tools.riscv.megrez_debug_probe import ProbeServer, ProbeServerError
+from tools.riscv.megrez_debug_probe import (
+    PROBE_STRESS_SIZES,
+    ProbeServer,
+    ProbeServerError,
+)
 from tools.riscv.megrez_debian_install import InstallError, run_network_install
 from tools.riscv.megrez_preboard import (
     PreboardError,
@@ -343,10 +347,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ordered_probe_server() -> ProbeServer:
+    return ProbeServer(payload_sizes=PROBE_STRESS_SIZES)
+
+
 def main(
     arguments: Sequence[str] | None = None,
     *,
-    probe_server_factory: Callable[[], AbstractContextManager[object]] = ProbeServer,
+    probe_server_factory: Callable[
+        [], AbstractContextManager[object]
+    ] = _ordered_probe_server,
 ) -> int:
     try:
         values = _parser().parse_args(arguments)
