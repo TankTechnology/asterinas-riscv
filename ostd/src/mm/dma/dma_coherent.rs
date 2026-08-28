@@ -122,6 +122,15 @@ impl DmaCoherent {
         }
     }
 
+
+    /// Returns the physical start of the platform uncached alias, if one is active.
+    ///
+    /// A `None` result means CPU access uses the allocation's page-based mapping,
+    /// which may still be uncached through an architecture memory-type attribute.
+    pub fn uncached_alias_paddr(&self) -> Option<Paddr> {
+        self.uncached_alias.as_ref().map(HasPaddr::paddr)
+    }
+
     // Currently only the RISC-V USB kernel op uses the raw DMA pointer.
     #[cfg(target_arch = "riscv64")]
     pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {

@@ -229,6 +229,17 @@ fn configure_selected(
         queue_zero.mtl_tx_operation_mode,
         queue_zero.mtl_rx_operation_mode,
     );
+    ostd::info!(
+        "ASTERINAS_GMAC_DMA_CONTRACT version={:#04x} ring_paddr={:#018x} ring_daddr={:#018x} ring_cpu_alias={:#018x?} tx_ring={:#018x} rx_ring={:#018x} tx_tail={:#018x} rx_tail={:#018x}",
+        selected.version,
+        addresses.ring_paddr,
+        addresses.ring_daddr,
+        addresses.ring_cpu_alias,
+        addresses.tx_ring,
+        addresses.rx_ring,
+        addresses.initial_tx_tail,
+        addresses.initial_rx_tail,
+    );
     let mac_low = u32::from_le_bytes([
         selected.mac_address[0],
         selected.mac_address[1],

@@ -8,7 +8,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
 use ostd::mm::{
-    HasDaddr, PAGE_SIZE, VmIo, VmIoOnce,
+    HasDaddr, HasPaddr, PAGE_SIZE, VmIo, VmIoOnce,
     dma::{DmaCoherent, FromDevice, ToDevice},
 };
 use spin::Once;
@@ -134,6 +134,9 @@ impl RingState {
 /// DMA addresses used to program DWMAC queue zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QueueAddresses {
+    pub ring_paddr: usize,
+    pub ring_daddr: usize,
+    pub ring_cpu_alias: Option<usize>,
     pub tx_ring: usize,
     pub rx_ring: usize,
     pub initial_tx_tail: usize,
@@ -199,9 +202,13 @@ impl DmaQueue {
     }
 
     pub fn addresses(&self) -> QueueAddresses {
-        let tx_ring = self.ring.daddr() + TX_RING_OFFSET;
-        let rx_ring = self.ring.daddr() + RX_RING_OFFSET;
+        let ring_daddr = self.ring.daddr();
+        let tx_ring = ring_daddr + TX_RING_OFFSET;
+        let rx_ring = ring_daddr + RX_RING_OFFSET;
         QueueAddresses {
+            ring_paddr: self.ring.paddr(),
+            ring_daddr,
+            ring_cpu_alias: self.ring.uncached_alias_paddr(),
             tx_ring,
             rx_ring,
             initial_tx_tail: tx_ring,
