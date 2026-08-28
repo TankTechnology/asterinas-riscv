@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+[Desktop Entry]
+Type=Application
+Name=Web Browser
+Comment=Browse the web with NetSurf
+Exec=netsurf-gtk
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;

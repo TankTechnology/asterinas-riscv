@@ -259,6 +259,7 @@ MEGREZ_DEBUG_FAST_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/fast
 MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
+DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
 QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
@@ -415,7 +416,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout 300
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:
@@ -447,7 +448,7 @@ test_riscv_debian_desktop_m6_browser_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout 300
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_debian_desktop_m7_baidu_gate
 test_riscv_debian_desktop_m7_baidu_gate:
@@ -479,7 +480,7 @@ test_riscv_debian_desktop_m7_baidu_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout 300
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit

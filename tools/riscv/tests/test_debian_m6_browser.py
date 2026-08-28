@@ -150,6 +150,7 @@ class DebianDesktopM6GuestEvidenceTests(unittest.TestCase):
         fake_bin.mkdir()
         state = self.directory / f"state-{suffix}"
         typed = self.directory / f"typed-{suffix}"
+        actions = self.directory / f"actions-{suffix}"
         console = self.directory / f"console-{suffix}"
         console.write_text("", encoding="utf-8")
         proc_root = self.directory / f"proc-{suffix}"
@@ -164,6 +165,7 @@ class DebianDesktopM6GuestEvidenceTests(unittest.TestCase):
         xdotool.write_text(
             """#!/bin/sh
 set -eu
+printf '%s\n' "$*" >>"$ASTERINAS_M6_ACTIONS"
 case "$1" in
   search)
     if [ "$ASTERINAS_M6_XDOTOOL_MODE" = duplicate ]; then
@@ -187,7 +189,7 @@ case "$1" in
       printf 'result.png - NetSurf\n'
     fi
     ;;
-  windowactivate) ;;
+  set_desktop|windowmap|windowactivate) ;;
   type) printf '%s\n' "$*" >"$ASTERINAS_M6_TYPED" ;;
   key)
     [ "${2-}" != Return ] || : >"$ASTERINAS_M6_STATE"
@@ -214,6 +216,7 @@ esac
             ASTERINAS_M6_XDOTOOL_MODE=xdotool_mode,
             ASTERINAS_M6_STATE=str(state),
             ASTERINAS_M6_TYPED=str(typed),
+            ASTERINAS_M6_ACTIONS=str(actions),
         )
         return environment, console, typed
 
@@ -243,6 +246,10 @@ esac
             "file:///usr/share/asterinas/desktop-m6-javascript.html",
             typed.read_text(encoding="utf-8"),
         )
+        actions = Path(environment["ASTERINAS_M6_ACTIONS"]).read_text(encoding="utf-8")
+        self.assertIn("set_desktop 1\n", actions)
+        self.assertIn("search --onlyvisible --class Netsurf-gtk\n", actions)
+        self.assertNotIn("windowmap --sync 42\n", actions)
 
     def test_guest_evidence_distinguishes_failed_and_disabled_javascript(
         self,
@@ -489,7 +496,7 @@ class DebianDesktopM6AdapterTests(unittest.TestCase):
 
         self.assertIn("DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT", target)
         self.assertIn("desktop_m6_browser_gate", target)
-        self.assertIn("--boot-timeout 300", target)
+        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
 
 
 if __name__ == "__main__":
