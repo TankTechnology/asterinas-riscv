@@ -506,6 +506,7 @@ with these SHA-256 identities:
 - `probe-tcp-info.json`: `ef033475cf9374de7df7672c92ae11022d802e14e7dc486e512ed50685c4c410`;
 - `result.json`: `c9b4347be58a98d69720f1ebe54120d2cd0098d1b88ec0076b14b556bcbab772`.
 
+||||||| parent of cfe2400b2 (docs(riscv): record current Megrez TX reclaim result)
 ## Ordering-instrumented run and memory-type discriminator
 
 A later single-boot run used the frozen kernel SHA-256
