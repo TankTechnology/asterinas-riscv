@@ -99,21 +99,18 @@ transition is observed.
 
 Asterinas has the same ring-state shape. `TxBuffer::build` synchronizes the
 payload to the device before `DmaQueue::send` publishes its descriptor;
-`DmaQueue::write_descriptor` writes and synchronizes the complete descriptor
-before `DwmacDevice::send` writes the tail. Reclaim synchronizes the descriptor
-from the device, observes cleared ownership with an acquire fence, then drops
-the buffer and advances the consumer. The current Megrez noncoherent path also
-orders every EIC7700 L3-flush command with `fence iorw, iorw` before returning
-from descriptor synchronization.
+the descriptor ring uses an uncached `DmaCoherent` mapping on noncoherent
+targets, so `DmaQueue::write_descriptor` publishes the complete descriptor
+without cache-line writeback before `DwmacDevice::send` writes the tail.
+Reclaim reads the uncached descriptor, observes cleared ownership with an
+acquire fence, then drops the buffer and advances the consumer.
 
 There is nevertheless a documented boundary difference: Linux has an
 explicit `wmb()` at the final ownership-to-tail handoff, while Asterinas relies
-on the selected DMA synchronization implementation before a later volatile
-MMIO write. No existing unit test proves that ordering for every RISC-V cache
-maintenance branch. The staged board experiment therefore records both TX
-publication/reclaim progress and the DMA channel status. This audit does not
-silently add a barrier or classify its absence as the root cause; a stopped TX
-counter with queued host data would make that the next narrow hypothesis.
+on the descriptor release fence before a later volatile MMIO write. The staged
+board experiment therefore records both TX publication/reclaim progress and
+the DMA channel status. The physical result below selects descriptor cache-line
+ownership rather than silently adding another MMIO barrier.
 
 ## Verified DMA status clear and RBU restart rules
 
@@ -219,18 +216,62 @@ three, and four. The exact production poll module reports six host tests, and
 the RISC-V OSDK compile of `aster-dwmac`, `aster-network`, and `aster-kernel`
 passes in the pinned container.
 
-The physical discriminator is prepared but has not been run. In one Asterinas
-boot it will stop at the first failed stage and retain serial evidence for:
+The physical discriminator records these markers in one Asterinas boot:
 
 - `ASTERINAS_GMAC_TCP_PROBE_PROGRESS`, with the exact stage and cumulative
   completed bytes;
 - `ASTERINAS_GMAC_RX_POLL`, with cumulative receives, budget exhaustions,
   reschedules, and successful PLIC rearms;
 - the existing panic/oops fatal markers and the automatic U-Boot recovery
-  prompt driven by `asterinas.reboot_after=180`.
+  prompt driven by the frozen `asterinas.reboot_after=60` policy.
 
-This reduces the remaining board work to one hardware-assumption check. A pass
-closes the unbounded-poll hypothesis. A failure with advancing bounded-poll
-counters redirects the investigation to DMA cache coherence, MMIO ordering,
-PLIC level behavior, or EIC7700-specific recovery rather than to another
-speculative scheduler change.
+## One-boot physical result and TX root cause
+
+The frozen `reboot_after=60`, Sv39, SMP=4 plan was executed exactly once on
+Megrez. All four harts, MMC, framebuffer, PHY selection, and GMAC1 at
+1000-Mbit/s full duplex initialized. The 16-KiB stage stopped after 14,600
+payload bytes. The decisive datapath progression was:
+
+```text
+tx_submitted=10 tx_reclaimed=0 tx_outstanding=10
+tx_submitted=60 tx_reclaimed=0 tx_outstanding=60 dma_status=0x00008444
+tx_submitted=64 tx_reclaimed=0 tx_outstanding=64 dma_status=0x00008040
+```
+
+RX continued from 4 through 128 descriptors while TX filled the exact
+64-entry ring and reclaimed none. Linux `ss` simultaneously observed the host
+connection in `FIN-WAIT-1` with 16,446 queued bytes. Channel status
+`0x00008444` contains DWMAC `TBU` (Transmit Buffer Unavailable), `ETI`, `RI`,
+and the normal summary. This closes the bounded-RX-poll hypothesis for the
+observed failure and selects TX descriptor completion visibility.
+
+The reduced cache-line model in `tools/riscv/dwmac_tx_cacheline_model.rs`
+provides the matching counterexample. Four packed 16-byte descriptors share
+one EIC7700 64-byte cache line. Preparing one descriptor through a streaming
+cached mapping can clean the whole line after DMA cleared an adjacent
+descriptor's `OWN` bit, writing the stale `OWN=1` value back to memory. Linux
+avoids this ownership conflict by keeping the descriptor ring in coherent DMA
+memory. Asterinas now uses `DmaCoherent::alloc(1, false)` for the ring, which
+maps it uncached on a noncoherent target; payload buffers remain streaming DMA.
+
+The board's 60-second kernel recovery completed without a physical reset: the
+serial transcript reached fresh board firmware, OpenSBI, and U-Boot. The first
+runner result said `recovery-not-observed` only because U-Boot waited in its
+30-second autoboot countdown. The runner now sends one empty line only after a
+post-terminal `Hit any key to stop autoboot` marker and continues to require a
+fresh prompt. It never issues a second `booti` or persistent U-Boot command.
+
+Evidence from the frozen run is retained under
+`target/megrez-debug/dwmac-high-info/board-run-20260828-1344/` with these
+SHA-256 identities:
+
+- `serial.log`: `3e93883c9e38e90d17d310ee4aaf0cd806137ebd9f3e48a41e1bdd2b396a4a08`;
+- `transport.json`: `b791b727055771e4f2abe3d7404f7f14a797349ad6f8edd49ff35b2fecd935f0`;
+- `probe-tcp-info.json`: `485eb427cd07eaf77dc1e1c35275d589939014300c79dc70cec6228f3da243dd`;
+- `result.json`: `60422313642cddec0ff5e11bc581d4235e43995a54e16453873fe843ff13e213`.
+
+The uncached-ring fix has passed its deterministic interleaving model, all
+Megrez host tests, and the pinned RISC-V OSDK compile. It is not yet described
+as hardware-verified: a later frozen-plan run must demonstrate positive
+`tx_reclaimed` progress and complete the four TCP stages before that claim is
+made.
