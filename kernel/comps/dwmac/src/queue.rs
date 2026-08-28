@@ -285,8 +285,8 @@ impl DmaQueue {
     }
 
     fn advance_rx(&mut self) {
-        self.rx_head = (self.rx_head + 1) % QUEUE_SIZE;
-        self.rx_resume_tail = self.addresses().rx_ring + self.rx_head * size_of::<Descriptor>();
+        (self.rx_head, self.rx_resume_tail) =
+            next_rx_position(self.addresses().rx_ring, self.rx_head);
         self.rx_tail_to_write = Some(self.rx_resume_tail);
     }
 
@@ -325,6 +325,12 @@ impl DmaQueue {
     }
 }
 
+fn next_rx_position(rx_ring: usize, current_head: usize) -> (usize, usize) {
+    let next_head = (current_head + 1) % QUEUE_SIZE;
+    let tail = rx_ring + next_head * size_of::<Descriptor>();
+    (next_head, tail)
+}
+
 #[cfg(ktest)]
 mod tests {
     use ostd::prelude::ktest;
@@ -357,5 +363,19 @@ mod tests {
         assert_eq!(result.processed, 32);
         assert!(result.more_pending);
         assert_eq!(ring.used(), 8);
+    }
+
+    #[ktest]
+    fn receive_tail_wraps_across_three_complete_rings() {
+        let rx_ring = 0x8000_0000;
+        let mut head = 0;
+
+        for completed in 1..=QUEUE_SIZE * 3 {
+            let (next_head, tail) = next_rx_position(rx_ring, head);
+            head = next_head;
+
+            assert_eq!(head, completed % QUEUE_SIZE);
+            assert_eq!(tail, rx_ring + head * size_of::<Descriptor>());
+        }
     }
 }

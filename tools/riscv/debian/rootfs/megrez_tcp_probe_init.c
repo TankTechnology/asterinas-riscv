@@ -8,7 +8,12 @@
 #include <string.h>
 
 #define PROBE_BODY "ASTERINAS_TCP_PROBE_OK\n"
-#define RESPONSE_LIMIT (64U * 1024U)
+#define RESPONSE_HEADER_LIMIT (64U * 1024U)
+#define RESPONSE_READ_BYTES (8U * 1024U)
+
+#ifndef MEGREZ_TCP_STRESS_BYTES
+#define MEGREZ_TCP_STRESS_BYTES (16U * 1024U * 1024U)
+#endif
 
 struct probe_failure {
     const char *reason;
@@ -38,6 +43,7 @@ static const char *find_sequence(const char *data, size_t length,
     return NULL;
 }
 
+#ifdef MEGREZ_TCP_PROBE_SELF_TEST
 static bool response_is_valid(const char *response, size_t length)
 {
     static const char status_10[] = "HTTP/1.0 200 ";
@@ -46,7 +52,7 @@ static bool response_is_valid(const char *response, size_t length)
     const char *body;
     const char *end = response + length;
 
-    if (length == 0 || length > RESPONSE_LIMIT) {
+    if (length == 0 || length > RESPONSE_HEADER_LIMIT) {
         return false;
     }
     if ((length < sizeof(status_10) - 1 ||
@@ -62,6 +68,97 @@ static bool response_is_valid(const char *response, size_t length)
     body += sizeof(separator) - 1;
     return (size_t)(end - body) == sizeof(PROBE_BODY) - 1 &&
            memcmp(body, PROBE_BODY, sizeof(PROBE_BODY) - 1) == 0;
+}
+#endif
+
+struct response_stream {
+    char header[RESPONSE_HEADER_LIMIT];
+    size_t header_length;
+    size_t body_length;
+    bool header_complete;
+};
+
+static bool response_header_is_valid(const char *header, size_t length)
+{
+    static const char status_10[] = "HTTP/1.0 200 ";
+    static const char status_11[] = "HTTP/1.1 200 ";
+    static const char content_length[] = "\r\nContent-Length: ";
+    const char *field;
+    const char *cursor;
+    const char *end = header + length;
+    size_t value = 0;
+
+    if ((length < sizeof(status_10) - 1 ||
+         memcmp(header, status_10, sizeof(status_10) - 1) != 0) &&
+        (length < sizeof(status_11) - 1 ||
+         memcmp(header, status_11, sizeof(status_11) - 1) != 0)) {
+        return false;
+    }
+    field = find_sequence(header, length, content_length,
+                          sizeof(content_length) - 1);
+    if (field == NULL) {
+        return false;
+    }
+    cursor = field + sizeof(content_length) - 1;
+    if (cursor == end || *cursor < '0' || *cursor > '9') {
+        return false;
+    }
+    while (cursor < end && *cursor >= '0' && *cursor <= '9') {
+        size_t digit = (size_t)(*cursor - '0');
+
+        if (value > (MEGREZ_TCP_STRESS_BYTES - digit) / 10U) {
+            return false;
+        }
+        value = value * 10U + digit;
+        ++cursor;
+    }
+    return value == MEGREZ_TCP_STRESS_BYTES && end - cursor >= 2 &&
+           cursor[0] == '\r' && cursor[1] == '\n';
+}
+
+static bool response_stream_consume(struct response_stream *stream,
+                                    const char *data, size_t length)
+{
+    static const char separator[] = "\r\n\r\n";
+    size_t cursor = 0;
+
+    while (!stream->header_complete && cursor < length) {
+        if (stream->header_length == sizeof(stream->header)) {
+            return false;
+        }
+        stream->header[stream->header_length++] = data[cursor++];
+        if (stream->header_length >= sizeof(separator) - 1 &&
+            memcmp(stream->header + stream->header_length -
+                       (sizeof(separator) - 1),
+                   separator, sizeof(separator) - 1) == 0) {
+            if (!response_header_is_valid(stream->header,
+                                          stream->header_length)) {
+                return false;
+            }
+            stream->header_complete = true;
+        }
+    }
+
+    while (cursor < length) {
+        unsigned char expected;
+
+        if (stream->body_length == MEGREZ_TCP_STRESS_BYTES) {
+            return false;
+        }
+        expected = (unsigned char)(stream->body_length % 251U);
+        if ((unsigned char)data[cursor] != expected) {
+            return false;
+        }
+        ++stream->body_length;
+        ++cursor;
+    }
+    return true;
+}
+
+static bool response_stream_is_complete(const struct response_stream *stream)
+{
+    return stream->header_complete &&
+           stream->body_length == MEGREZ_TCP_STRESS_BYTES;
 }
 
 #ifdef MEGREZ_TCP_PROBE_SELF_TEST
@@ -82,6 +179,12 @@ int main(void)
         "HTTP/1.0 200 OK\r\n\r\nASTERINAS_TCP_PROBE_BAD\n";
     static const char trailing_data[] =
         "HTTP/1.0 200 OK\r\n\r\n" PROBE_BODY "unexpected";
+    char stress_header[128];
+    char stress_body[257];
+    struct response_stream stress = {0};
+    struct response_stream invalid = {0};
+    size_t offset = 0;
+    int header_length;
 
     if (!response_is_valid(valid, sizeof(valid) - 1) ||
         response_is_valid(bad_status, sizeof(bad_status) - 1) ||
@@ -89,8 +192,41 @@ int main(void)
         response_is_valid(trailing_data, sizeof(trailing_data) - 1)) {
         return 1;
     }
+    header_length = snprintf(stress_header, sizeof(stress_header),
+                             "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n"
+                             "Connection: close\r\n\r\n",
+                             (size_t)MEGREZ_TCP_STRESS_BYTES);
+    if (header_length <= 0 || (size_t)header_length >= sizeof(stress_header) ||
+        !response_stream_consume(&stress, stress_header, 7) ||
+        !response_stream_consume(&stress, stress_header + 7,
+                                 (size_t)header_length - 7)) {
+        return 1;
+    }
+    while (offset < MEGREZ_TCP_STRESS_BYTES) {
+        size_t amount = MEGREZ_TCP_STRESS_BYTES - offset;
+        size_t index;
+
+        if (amount > sizeof(stress_body)) {
+            amount = sizeof(stress_body);
+        }
+        for (index = 0; index < amount; ++index) {
+            stress_body[index] = (char)((offset + index) % 251U);
+        }
+        if (!response_stream_consume(&stress, stress_body, amount)) {
+            return 1;
+        }
+        offset += amount;
+    }
+    if (!response_stream_is_complete(&stress) ||
+        !response_stream_consume(&invalid, stress_header,
+                                 (size_t)header_length) ||
+        response_stream_consume(&invalid, "\x01", 1)) {
+        return 1;
+    }
     emit_failure(&failure);
     puts("MEGREZ_TCP_PROBE_SELF_TEST PASS");
+    printf("MEGREZ_TCP_STRESS_SELF_TEST PASS bytes=%zu pattern=mod251\n",
+           (size_t)MEGREZ_TCP_STRESS_BYTES);
     return 0;
 }
 
@@ -270,27 +406,26 @@ static bool send_request(int fd, int64_t deadline)
 
 static bool receive_response(int fd, int64_t deadline)
 {
-    char response[RESPONSE_LIMIT];
-    size_t length = 0;
+    char response[RESPONSE_READ_BYTES];
+    struct response_stream stream = {0};
 
     for (;;) {
         ssize_t amount;
 
-        if (length == sizeof(response)) {
-            record_failure("response-limit", EMSGSIZE);
-            return false;
-        }
         if (wait_for_fd(fd, POLLIN, deadline) != 0) {
             record_failure("receive-poll", errno);
             return false;
         }
-        amount = recv(fd, response + length, sizeof(response) - length, 0);
+        amount = recv(fd, response, sizeof(response), 0);
         if (amount > 0) {
-            length += (size_t)amount;
+            if (!response_stream_consume(&stream, response, (size_t)amount)) {
+                record_failure("http-response", 0);
+                return false;
+            }
             continue;
         }
         if (amount == 0) {
-            bool valid = response_is_valid(response, length);
+            bool valid = response_stream_is_complete(&stream);
 
             if (!valid) {
                 record_failure("http-response", 0);
@@ -308,8 +443,9 @@ static bool receive_response(int fd, int64_t deadline)
 static _Noreturn void terminal(bool passed)
 {
     if (passed) {
-        puts("ASTERINAS_GMAC_TCP_PROBE_READY peer=" PROBE_ADDRESS
-             ":18080 status=200 body=ASTERINAS_TCP_PROBE_OK");
+        printf("ASTERINAS_GMAC_TCP_PROBE_READY peer=" PROBE_ADDRESS
+               ":18080 status=200 bytes=%zu pattern=mod251\n",
+               (size_t)MEGREZ_TCP_STRESS_BYTES);
     } else {
         emit_failure(&last_failure);
     }
