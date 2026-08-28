@@ -11,7 +11,8 @@ returns automatically to a fresh U-Boot prompt without a physical reset.
 **Architecture:** Keep the experiment simulation-first and artifact-bound. A
 fresh Sv39/SMP4 Asterinas image containing commit `131381300` is frozen with the
 existing TCP probe and USB-disabled Megrez DTB. Host tests, a generic QEMU TCP
-gate, and a QEMU software-reboot gate must all pass before a permit is issued.
+gate, and a QEMU software-reboot gate must all pass before the physical gate is
+sealed.
 The physical phase owns `/dev/ttyUSB0` once, starts the host responder before
 mutating the board, transfers only stale RAM artifacts, sends exactly one
 `booti`, then observes the guest terminal marker and automatic U-Boot recovery.
@@ -48,7 +49,8 @@ existing `tools.riscv.megrez_debug` safety workflow.
 
 The run is a full PASS only if all of the following are true:
 
-1. The plan, permit, current Git commit, kernel, initramfs, QEMU DTB, and Megrez
+1. The plan, current source identity, fast result, recovery result, kernel,
+   initramfs, QEMU DTB, and Megrez
    DTB identities match immediately before the serial device is opened.
 2. The transport log contains one and only one `booti` command and contains no
    `saveenv` or `reset` command.
@@ -100,7 +102,7 @@ git diff --check
 
 Expected: empty status, a stable HEAD, ancestor check exit 0, and diff check
 exit 0. Record the HEAD as `VALIDATION_COMMIT`. Any source edit after this point
-invalidates all later QEMU and physical permits.
+invalidates all later QEMU and physical gate evidence.
 
 - [ ] **Step 2: Prove the cache-line failure and fixed invariant offline**
 
@@ -270,7 +272,7 @@ the already-reviewed probe layout and no QEMU static binary.
   `target/qemu-uboot/dwmac-tx-reclaim-validation-fast/`
 - Create ignored recovery evidence below
   `target/qemu-uboot/dwmac-tx-reclaim-validation-recovery/`
-- Create ignored `plan.json`, `recovery.json`, and `permit.json`
+- Create ignored `plan.json`, `recovery.json`, and `GATE.SHA256SUMS`
 
 - [ ] **Step 1: Freeze the exact plan**
 
@@ -374,22 +376,51 @@ python3 -m tools.riscv.megrez_debug recovery \
 Expected: exact profile, fresh recovery boundary, no `-no-reboot`, and a
 recovery record bound to the current kernel SHA-256.
 
-- [ ] **Step 4: Issue and revalidate the physical permit**
+- [ ] **Step 4: Seal and revalidate the TCP-probe physical gate**
 
 ```bash
-python3 -m tools.riscv.megrez_debug preboard \
-  "$VALIDATION_ROOT/plan.json" \
-  --desktop-result target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
-  --recovery-result "$VALIDATION_ROOT/recovery.json" \
-  --output "$VALIDATION_ROOT/permit.json"
 python3 -m tools.riscv.megrez_debug check "$VALIDATION_ROOT/plan.json"
+python3 - "$VALIDATION_ROOT/plan.json" \
+  target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
+  "$VALIDATION_ROOT/recovery.json" <<'PY'
+from pathlib import Path
+import sys
+
+from tools.riscv.megrez_debug_contract import DebugPlan, StageResult
+from tools.riscv.megrez_preboard import RecoveryEvidence
+
+plan = DebugPlan.from_bytes(Path(sys.argv[1]).read_bytes())
+fast = StageResult.from_bytes(Path(sys.argv[2]).read_bytes())
+recovery = RecoveryEvidence.from_bytes(Path(sys.argv[3]).read_bytes())
+assert fast.stage == "fast" and fast.passed and fast.reason == "fast-pass"
+assert fast.plan_sha256 == plan.plan_sha256
+assert recovery.passed and recovery.reason == "recovery-pass"
+assert recovery.plan_sha256 == plan.plan_sha256
+assert recovery.kernel_sha256 == next(
+    artifact.sha256 for artifact in plan.artifacts if artifact.name == "kernel"
+)
+PY
 git diff --check
 test -z "$(git status --short)"
+sha256sum \
+  "$VALIDATION_ROOT/plan.json" \
+  "$VALIDATION_ROOT/recovery.json" \
+  target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
+  target/qemu-uboot/dwmac-tx-reclaim-validation-fast/qemu-result.json \
+  target/qemu-uboot/dwmac-tx-reclaim-validation-recovery/qemu-result.json \
+  "$ARTIFACT_ROOT"/asterinas.booti \
+  "$ARTIFACT_ROOT"/megrez-tcp-probe.cpio.gz \
+  "$ARTIFACT_ROOT"/qemu-virt.dtb \
+  "$ARTIFACT_ROOT"/megrez-no-usb.dtb \
+  > "$VALIDATION_ROOT/GATE.SHA256SUMS"
 ```
 
-Expected: permit is bound to the exact plan, current Git commit, passing fast
-simulation, and passing recovery evidence. If any tracked file changes after
-this command, delete the permit and return to Task 1.
+Expected: both results are bound to the exact plan and kernel, every gate input
+has a sealed hash, and the tracked worktree is clean. The Debian-only
+`preboard` command is intentionally not used for this schema-one TCP probe; the
+`board` command repeats artifact, simulation, and recovery validation before it
+opens serial. If any kernel/tool source changes after the kernel build, discard
+the gate evidence and return to Task 1.
 
 ### Task 4: Perform the no-mutation host and serial preflight
 
@@ -433,7 +464,7 @@ second `booti`. Dry-run must not open or mutate the board.
 GO requires all of the following at the same time:
 
 - board is visibly or serially at a U-Boot prompt;
-- permit and plan checks are still green;
+- plan, fast-result, and recovery-result checks are still green;
 - exact serial/network resources are free;
 - no source file changed after QEMU evidence;
 - host responder can bind `10.100.19.216:18080`;
@@ -585,7 +616,7 @@ must report current phase, elapsed time, and whether output is still advancing.
   before opening the board serial device.
 - The physical run answers one question with one boot: whether uncached DWMAC
   descriptors restore TX reclaim and permit full TCP completion.
-- Artifact and permit identities prevent a rebuild or branch change from being
+- Artifact and gate-result identities prevent a rebuild or branch change from being
   mistaken for tested code.
 - A 60-second software reboot is already observed on this board and removes the
   normal need for physical reset; the plan does not claim recovery from a dead
