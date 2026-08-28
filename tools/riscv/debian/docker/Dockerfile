@@ -20,6 +20,7 @@ RUN apt-get update \
         bison \
         python3-dev \
         python3-setuptools \
+        libssl-dev \
         systemd='255.4-1ubuntu8.17' \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
