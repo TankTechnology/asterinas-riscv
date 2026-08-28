@@ -171,26 +171,58 @@ fn ethernet_frame(ethertype: u16, protocol: u8, tcp_flags: u8, payload_len: usiz
     frame
 }}
 
+fn arp_frame(operation: u16, ethernet_dst: [u8; 6], target_hardware: [u8; 6]) -> Vec<u8> {{
+    let mut frame = vec![0u8; 60];
+    frame[..6].copy_from_slice(&ethernet_dst);
+    frame[6..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    frame[12..14].copy_from_slice(&0x0806u16.to_be_bytes());
+    frame[14..16].copy_from_slice(&1u16.to_be_bytes());
+    frame[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
+    frame[18] = 6;
+    frame[19] = 4;
+    frame[20..22].copy_from_slice(&operation.to_be_bytes());
+    frame[22..28].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    frame[28..32].copy_from_slice(&[10, 100, 16, 136]);
+    frame[32..38].copy_from_slice(&target_hardware);
+    frame[38..42].copy_from_slice(&[10, 100, 19, 200]);
+    frame
+}}
+
 fn main() {{
+    let local_hardware = [0x00, 0x48, 0x54, 0x71, 0x00, 0x48];
     let mut diagnostics = RxDiagnostics::default();
-    diagnostics.record_frame(&ethernet_frame(0x0806, 0, 0, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x02, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x12, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x10, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0, 0));
-    diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0, 0));
-    diagnostics.record_frame(&[0u8; 13]);
+    diagnostics.record_frame(
+        &arp_frame(1, [0xff; 6], [0xff; 6]),
+        local_hardware,
+    );
+    diagnostics.record_frame(
+        &arp_frame(2, local_hardware, local_hardware),
+        local_hardware,
+    );
+    diagnostics.record_frame(
+        &arp_frame(2, [0x02, 0, 0, 0, 0, 2], [0x02, 0, 0, 0, 0, 2]),
+        local_hardware,
+    );
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x02, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x12, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x10, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0, 0), local_hardware);
+    diagnostics.record_frame(&[0u8; 13], local_hardware);
     let mut truncated_payload = ethernet_frame(0x0800, 6, 0x18, 40);
     truncated_payload[16..18].copy_from_slice(&1500u16.to_be_bytes());
-    diagnostics.record_frame(&truncated_payload);
+    diagnostics.record_frame(&truncated_payload, local_hardware);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Fragmented);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::ReceiveError);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::FrameTooLong);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Other);
 
     let report = diagnostics.report();
-    assert_eq!(report.observed, 8);
-    assert_eq!(report.arp, 1);
+    assert_eq!(report.observed, 10);
+    assert_eq!(report.arp, 3);
+    assert_eq!(report.arp_requests, 1);
+    assert_eq!(report.arp_replies, 2);
+    assert_eq!(report.arp_replies_to_us, 1);
     assert_eq!(report.ipv4_other, 1);
     assert_eq!(report.tcp_syn, 1);
     assert_eq!(report.tcp_syn_ack, 1);
@@ -327,13 +359,18 @@ fn main() {{
 
         self.assertIn("rx_diagnostics: RxDiagnostics", device)
         self.assertIn("tx_diagnostics: TxDiagnostics", device)
-        self.assertIn("self.rx_diagnostics.record_frame", device)
+        self.assertIn(
+            ".record_frame(&prefix[..copied], self.selected.mac_address)", device
+        )
         self.assertIn("self.tx_diagnostics.record_frame", device)
         self.assertIn("self.rx_diagnostics.record_descriptor_drop", device)
         self.assertIn("ASTERINAS_GMAC_RX_CLASS", device)
         self.assertIn("ASTERINAS_GMAC_TX_CLASS", device)
         self.assertIn("ASTERINAS_GMAC_TX stage=tcp-data-submitted", device)
         for field in (
+            "arp_requests={}",
+            "arp_replies={}",
+            "arp_replies_to_us={}",
             "tcp_syn_ack={}",
             "descriptor_fragmented={}",
             "descriptor_receive_error={}",

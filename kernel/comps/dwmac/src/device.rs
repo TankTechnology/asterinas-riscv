@@ -373,7 +373,8 @@ impl DwmacDevice {
         payload.limit(prefix_len);
         let copied = payload.read(&mut VmWriter::from(&mut prefix[..prefix_len]));
         debug_assert_eq!(copied, prefix_len);
-        self.rx_diagnostics.record_frame(&prefix[..copied]);
+        self.rx_diagnostics
+            .record_frame(&prefix[..copied], self.selected.mac_address);
     }
 
     fn record_receive_error(&mut self, error: QueueError) {
@@ -511,9 +512,12 @@ impl AnyNetworkDevice for DwmacDevice {
                 mtl_rx_loss.read_failures,
             );
             ostd::info!(
-                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
+                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} arp_requests={} arp_replies={} arp_replies_to_us={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
                 diagnostics.observed,
                 diagnostics.arp,
+                diagnostics.arp_requests,
+                diagnostics.arp_replies,
+                diagnostics.arp_replies_to_us,
                 diagnostics.ipv4_other,
                 diagnostics.tcp_syn,
                 diagnostics.tcp_syn_ack,
