@@ -565,7 +565,7 @@ def _audit_registered_milestones(
     lines = _normalized_lines(serial_log)
     failures: list[str] = []
     terminal_indices = [
-        index for index, line in enumerate(lines) if line == terminal_marker
+        index for index, line in enumerate(lines) if terminal_marker in line
     ]
     terminal_count = len(terminal_indices)
     recovery = profile.validation.recovery
