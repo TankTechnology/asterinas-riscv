@@ -1387,6 +1387,8 @@ EOF
             "$stage/etc/systemd/system/systemd-tmpfiles-setup-dev.service"
         ln -s -- /dev/null \
             "$stage/etc/systemd/system/systemd-udevd.service"
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-logind.service"
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
             "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
