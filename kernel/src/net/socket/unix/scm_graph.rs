@@ -100,6 +100,11 @@ impl StreamBacklogNode {
     pub(super) fn new() -> Self {
         Self(NodeHandle::new(NodeKind::StreamBacklog))
     }
+
+    #[cfg(ktest)]
+    pub(super) fn downgrade(&self) -> WeakNode {
+        WeakNode(Arc::downgrade(&self.0.0))
+    }
 }
 
 impl DatagramQueueNode {
