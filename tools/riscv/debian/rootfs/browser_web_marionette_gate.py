@@ -87,6 +87,22 @@ _SNAPSHOT_SCRIPT = r"""return JSON.stringify({
   }))
 });"""
 
+_BAIDU_SUBMIT_SCRIPT = r"""const keyword = document.querySelector('#kw');
+const submit = document.querySelector('#su');
+if (keyword === null || submit === null || keyword.form === null ||
+    submit.form !== keyword.form) {
+  return 'missing-controls';
+}
+keyword.focus();
+keyword.value = 'Asterinas';
+keyword.dispatchEvent(new Event('input', {bubbles: true}));
+keyword.dispatchEvent(new Event('change', {bubbles: true}));
+if (keyword.value !== 'Asterinas') {
+  return 'keyword-rejected';
+}
+setTimeout(() => submit.click(), 0);
+return 'search-click-scheduled';"""
+
 
 def _mapping(snapshot: object) -> dict[str, object]:
     expected = {
@@ -247,6 +263,20 @@ def _navigate(client: Marionette, url: str) -> None:
         raise GateError("Marionette returned an invalid Navigate result")
 
 
+def _submit_baidu_search(client: Marionette) -> None:
+    response = client.command("WebDriver:ExecuteScript", {
+        "script": _BAIDU_SUBMIT_SCRIPT,
+        "args": [],
+        "newSandbox": True,
+        "sandbox": "default",
+        "line": 1,
+        "filename": "asterinas-baidu-search-submit",
+    })
+    value = response.get("value") if isinstance(response, dict) else None
+    if value != "search-click-scheduled":
+        raise GateError("Baidu homepage search form could not be submitted")
+
+
 def _wait(
     client: Marionette,
     validator: Callable[[object], object],
@@ -306,7 +336,7 @@ def run_gate(host: str, port: int, timeout: float, evidence_dir: Path) -> str:
         baidu_home, _ = _wait(client, validate_baidu_home, deadline)
         _write_evidence(client, evidence_dir, "baidu-home", baidu_home)
 
-        _navigate(client, BAIDU_SEARCH)
+        _submit_baidu_search(client)
         baidu_search, _ = _wait(client, validate_baidu_search, deadline)
         _write_evidence(client, evidence_dir, "baidu-search", baidu_search)
 
