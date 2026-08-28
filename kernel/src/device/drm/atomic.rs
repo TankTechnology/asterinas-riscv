@@ -118,14 +118,14 @@ pub(super) fn mode_atomic(
         return Ok(0);
     }
 
+    let event_slot = if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
+        Some(handle.event_queue.reserve()?)
+    } else {
+        None
+    };
     let hardware_update = prepare_hardware_update(handle, hardware_update)?;
     if req.flags & DRM_MODE_ATOMIC_NONBLOCK != 0 {
         let queue_slot = handle.atomic_commit_queue.reserve()?;
-        let event_slot = if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-            Some(handle.event_queue.reserve()?)
-        } else {
-            None
-        };
         let output_fence = install_output_fence(sync.output_pointer, file_table)?;
         return submit_nonblocking_commit(
             handle,
@@ -158,8 +158,8 @@ pub(super) fn mode_atomic(
             } else {
                 handle.gpu_manager.vblank_clock.snapshot()
             };
-            if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-                handle.queue_flip_event(vblank, req.user_data)?;
+            if let Some(event_slot) = event_slot {
+                event_slot.queue_flip(vblank, req.user_data);
             }
             if let Some(output) = output_fence {
                 output.fence.signal_success();
@@ -710,9 +710,6 @@ fn validate_atomic_state(
         if !current_state.active && !proposed_state.active {
             return_errno_with_message!(Errno::EINVAL, "atomic event targets an inactive CRTC");
         }
-        if flags & DRM_MODE_ATOMIC_TEST_ONLY == 0 {
-            handle.check_flip_event_capacity()?;
-        }
     }
 
     if updates.is_empty() {
@@ -797,7 +794,7 @@ fn submit_nonblocking_commit(
                     output_fence.signal_success();
                 }
                 if let Some(event_slot) = event_slot {
-                    event_slot.queue(vblank, user_data);
+                    event_slot.queue_flip(vblank, user_data);
                 }
             }
             Err(error) => {

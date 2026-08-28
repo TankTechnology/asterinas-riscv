@@ -38,6 +38,7 @@ use core::{
         Range,
     },
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    time::Duration,
 };
 
 use aster_virtio::device::{
@@ -116,10 +117,13 @@ const DRM_MODE_TYPE_PREFERRED: u32 = 8;
 
 /// `DRM_CAP_DUMB_BUFFER` etc. (include/uapi/drm/drm.h).
 const DRM_CAP_DUMB_BUFFER: u64 = 1;
+const DRM_CAP_VBLANK_HIGH_CRTC: u64 = 2;
 const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 3;
 const DRM_CAP_DUMB_PREFER_SHADOW: u64 = 4;
+const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 6;
 const DRM_CAP_CURSOR_WIDTH: u64 = 8;
 const DRM_CAP_CURSOR_HEIGHT: u64 = 9;
+const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
 /// `DRM_CAP_PRIME`.
 const DRM_CAP_PRIME: u64 = 0x5;
 /// `DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT`.
@@ -145,7 +149,9 @@ const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
 const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
 
 /// `DRM_EVENT_FLIP_COMPLETE` event type for `drm_event_vblank`.
+const DRM_EVENT_VBLANK: u32 = 0x01;
 const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
+const DRM_EVENT_CRTC_SEQUENCE: u32 = 0x03;
 /// Bounds page-flip events retained by one open DRM file.
 const MAX_DRM_EVENTS: usize = 1024;
 /// Bounds queued nonblocking atomic hardware updates per open DRM file.
@@ -156,6 +162,29 @@ const DRM_PLANE_TYPE_PRIMARY: u32 = 1;
 
 /// Our single primary plane id.
 const PRIMARY_PLANE_ID: u32 = 4;
+
+/// Legacy `DRM_IOCTL_WAIT_VBLANK` request bits.
+const DRM_VBLANK_RELATIVE: u32 = 0x00000001;
+const DRM_VBLANK_HIGH_CRTC_MASK: u32 = 0x0000003e;
+const DRM_VBLANK_EVENT: u32 = 0x04000000;
+const DRM_VBLANK_NEXT_ON_MISS: u32 = 0x10000000;
+const DRM_VBLANK_SECONDARY: u32 = 0x20000000;
+const DRM_VBLANK_SIGNAL: u32 = 0x40000000;
+const DRM_VBLANK_SUPPORTED_MASK: u32 = DRM_VBLANK_RELATIVE
+    | DRM_VBLANK_HIGH_CRTC_MASK
+    | DRM_VBLANK_EVENT
+    | DRM_VBLANK_NEXT_ON_MISS
+    | DRM_VBLANK_SECONDARY
+    | DRM_VBLANK_SIGNAL;
+
+/// `DRM_IOCTL_CRTC_QUEUE_SEQUENCE` flags.
+const DRM_CRTC_SEQUENCE_RELATIVE: u32 = 0x00000001;
+const DRM_CRTC_SEQUENCE_NEXT_ON_MISS: u32 = 0x00000002;
+const DRM_CRTC_SEQUENCE_SUPPORTED_MASK: u32 =
+    DRM_CRTC_SEQUENCE_RELATIVE | DRM_CRTC_SEQUENCE_NEXT_ON_MISS;
+
+/// Linux bounds a blocking legacy vblank wait to three seconds.
+const VBLANK_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// An atomic-capable KMS object exposed by this device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -831,6 +860,16 @@ mod tests {
         tracker.retry_pending(|context_id| context_id == 7);
         assert_eq!(tracker.counts(), VirglContextCounts::default());
     }
+
+    #[ktest]
+    fn legacy_page_flip_reservation_rejects_overlap_and_releases_on_drop() {
+        let is_pending = Arc::new(AtomicBool::new(false));
+        let reservation = LegacyPageFlipReservation::reserve(is_pending.clone()).unwrap();
+
+        assert!(LegacyPageFlipReservation::reserve(is_pending.clone()).is_err());
+        drop(reservation);
+        assert!(LegacyPageFlipReservation::reserve(is_pending).is_ok());
+    }
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
@@ -959,12 +998,36 @@ struct DriHandle {
     event_read_operation: Mutex<()>,
     /// Serializes page-flip event capacity checks with hardware commits.
     page_flip_operation: Mutex<()>,
+    /// Prevents more than one legacy page flip from targeting one refresh.
+    is_legacy_page_flip_pending: Arc<AtomicBool>,
     /// Keeps nonblocking atomic commits ordered with other KMS operations.
     atomic_commit_queue: Arc<AtomicCommitQueue>,
-    /// Delivers legacy flip events at refresh boundaries with one worker.
+    /// Delivers this file's KMS and sequence events with one vblank worker.
     vblank_completion_queue: Arc<VblankCompletionQueue>,
     inner: SpinLock<DriInner>,
     event_queue: Arc<DrmEventQueue>,
+}
+
+/// Keeps one legacy page flip pending until its target refresh completes.
+struct LegacyPageFlipReservation {
+    is_pending: Arc<AtomicBool>,
+}
+
+impl LegacyPageFlipReservation {
+    fn reserve(is_pending: Arc<AtomicBool>) -> Result<Self> {
+        is_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                Error::with_message(Errno::EBUSY, "a legacy page flip is still pending")
+            })?;
+        Ok(Self { is_pending })
+    }
+}
+
+impl Drop for LegacyPageFlipReservation {
+    fn drop(&mut self) {
+        self.is_pending.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -1005,6 +1068,7 @@ impl DriHandle {
         } else {
             true
         };
+        let vblank_completion_queue = Arc::new(VblankCompletionQueue::new(gpu_manager.clone()));
         Ok(Self {
             gpu_manager,
             node_type,
@@ -1022,8 +1086,9 @@ impl DriHandle {
             cursor_operation: Mutex::new(()),
             event_read_operation: Mutex::new(()),
             page_flip_operation: Mutex::new(()),
+            is_legacy_page_flip_pending: Arc::new(AtomicBool::new(false)),
             atomic_commit_queue: Arc::new(AtomicCommitQueue::new()),
-            vblank_completion_queue: Arc::new(VblankCompletionQueue::new()),
+            vblank_completion_queue,
             inner: SpinLock::new(DriInner {
                 auth_magic: None,
                 handles: BTreeMap::new(),
@@ -1356,25 +1421,26 @@ impl DriHandle {
         Ok(())
     }
 
-    /// Queues a page-flip completion event for this file.
-    fn queue_flip_event(&self, vblank: vblank::VblankSnapshot, user_data: u64) -> Result<()> {
-        self.event_queue.queue_flip_event(vblank, user_data)
+    fn reserve_legacy_page_flip(&self) -> Result<LegacyPageFlipReservation> {
+        LegacyPageFlipReservation::reserve(self.is_legacy_page_flip_pending.clone())
     }
 
-    /// Checks that one more page-flip event can be queued.
-    fn check_flip_event_capacity(&self) -> Result<()> {
-        self.event_queue.ensure_capacity()
+    fn ensure_no_pending_legacy_page_flip(&self) -> Result<()> {
+        if self.is_legacy_page_flip_pending.load(Ordering::Acquire) {
+            return_errno_with_message!(Errno::EBUSY, "a legacy page flip is still pending");
+        }
+        Ok(())
     }
 
     /// Serializes a KMS operation against an in-flight nonblocking commit.
     fn lock_page_flip_operation(&self) -> Result<MutexGuard<'_, ()>> {
         let operation = self.page_flip_operation.lock();
         self.atomic_commit_queue.ensure_idle()?;
-        self.vblank_completion_queue.wait_until_idle();
+        self.ensure_no_pending_legacy_page_flip()?;
         Ok(operation)
     }
 
-    /// Pops pending page-flip events into `writer`.
+    /// Pops complete DRM events into `writer`.
     fn read_events(&self, writer: &mut VmWriter) -> Result<usize> {
         if writer.avail() == 0 {
             return Ok(0);
@@ -1390,7 +1456,11 @@ impl DriHandle {
             let Some(event) = self.event_queue.pop() else {
                 break;
             };
-            if let Err(error) = writer.write_val(&event) {
+            let write_result = match &event {
+                queue::DrmEvent::Vblank(event) => writer.write_val(event),
+                queue::DrmEvent::CrtcSequence(event) => writer.write_val(event),
+            };
+            if let Err(error) = write_result {
                 self.event_queue.requeue_front(event);
                 if bytes != 0 {
                     return Ok(bytes);
@@ -1438,10 +1508,10 @@ impl DriHandle {
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
-        // The worker owns references to per-file event state and framebuffer
+        // Workers own references to per-file event state and framebuffer
         // backing. Wait before tearing down the remaining per-file namespace.
         self.atomic_commit_queue.wait_until_idle();
-        self.vblank_completion_queue.wait_until_idle();
+        self.vblank_completion_queue.cancel_pending_and_wait();
         let mut kms_state = self.gpu_manager.kms_state.lock();
         let _cursor_operation = self.cursor_operation.lock();
         let (resource_id, position) = {
@@ -1606,10 +1676,13 @@ impl PerOpenFileOps for DriHandle {
                 let mut cap = cmd.read()?;
                 cap.value = match cap.capability {
                     DRM_CAP_DUMB_BUFFER => 1,
+                    DRM_CAP_VBLANK_HIGH_CRTC => 1,
                     DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
                     DRM_CAP_DUMB_PREFER_SHADOW => 0,
+                    DRM_CAP_TIMESTAMP_MONOTONIC => 1,
                     DRM_CAP_CURSOR_WIDTH => u64::from(CURSOR_SIZE),
                     DRM_CAP_CURSOR_HEIGHT => u64::from(CURSOR_SIZE),
+                    DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
                     DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT_EXPORT,
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
@@ -1643,6 +1716,15 @@ impl PerOpenFileOps for DriHandle {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM client cap")
                     }
                 }
+            }
+            cmd @ WaitVblank => {
+                vblank::wait_vblank(self, cmd)
+            }
+            cmd @ CrtcGetSequence => {
+                vblank::get_crtc_sequence(self, cmd)
+            }
+            cmd @ CrtcQueueSequence => {
+                vblank::queue_crtc_sequence(self, cmd)
             }
             cmd @ AuthMagic => {
                 let auth = cmd.read()?;
@@ -1901,18 +1983,24 @@ impl PerOpenFileOps for DriHandle {
                         "page flip framebuffer does not match the active mode"
                     );
                 }
+                let flip_reservation = self.reserve_legacy_page_flip()?;
                 kms::present_fb(self, &mut kms_state, req.fb_id)?;
                 self.gpu_manager
                     .property_manager
                     .set_legacy_page_flip_state(req.fb_id, framebuffer.width, framebuffer.height);
-                if let Some(event_slot) = event_slot {
-                    let gpu_manager = self.gpu_manager.clone();
-                    let user_data = req.user_data;
-                    self.vblank_completion_queue.submit(Box::new(move || {
-                        let vblank = gpu_manager.vblank_clock.wait_for_next();
-                        event_slot.queue(vblank, user_data);
-                    }));
-                }
+                let gpu_manager = self.gpu_manager.clone();
+                let user_data = req.user_data;
+                let snapshot = gpu_manager.vblank_clock.snapshot();
+                let target_sequence = snapshot.sequence.saturating_add(1);
+                self.vblank_completion_queue.submit_at(
+                    target_sequence,
+                    Box::new(move |vblank| {
+                        if let Some(event_slot) = event_slot {
+                            event_slot.queue_flip(vblank, user_data);
+                        }
+                        drop(flip_reservation);
+                    }),
+                );
                 Ok(0)
             }
             cmd @ ModeDirtyFb => {
@@ -1986,6 +2074,7 @@ impl PerOpenFileOps for DriHandle {
                     // commits. Software state is exchanged before each ioctl
                     // returns, while the hardware queue preserves submission order.
                     let _page_flip_operation = self.page_flip_operation.lock();
+                    self.ensure_no_pending_legacy_page_flip()?;
                     let mut kms_state = self.lock_kms_as_master()?;
                     atomic::mode_atomic(self, &mut kms_state, cmd, file_table)
                 })())
@@ -2381,8 +2470,55 @@ struct DrmModeGetBlob {
     data: u64,
 }
 
-/// `struct drm_event_vblank` — the payload delivered by `read()` on the DRM
-/// file for `DRM_EVENT_FLIP_COMPLETE` events.
+/// 64-bit layout of `union drm_wait_vblank`.
+///
+/// The request's `signal` and the reply's `tval_sec` share the third field.
+/// All Asterinas DRM architectures use the Linux 64-bit `long` layout.
+///
+/// Reference: <https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmWaitVblank {
+    type_: u32,
+    sequence: u32,
+    signal_or_tval_sec: u64,
+    tval_usec: i64,
+}
+
+impl DrmWaitVblank {
+    fn signal(self) -> u64 {
+        self.signal_or_tval_sec
+    }
+
+    fn set_reply(&mut self, snapshot: vblank::VblankSnapshot) {
+        self.sequence = snapshot.sequence as u32;
+        self.signal_or_tval_sec = snapshot.timestamp.as_secs();
+        self.tval_usec = i64::from(snapshot.timestamp.subsec_micros());
+    }
+}
+
+/// `struct drm_crtc_get_sequence`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmCrtcGetSequence {
+    crtc_id: u32,
+    active: u32,
+    sequence: u64,
+    sequence_ns: i64,
+}
+
+/// `struct drm_crtc_queue_sequence`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmCrtcQueueSequence {
+    crtc_id: u32,
+    flags: u32,
+    sequence: u64,
+    user_data: u64,
+}
+
+/// `struct drm_event_vblank` — the payload delivered by `read()` for vblank
+/// waits and page-flip completion events.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h#L937>.
 #[repr(C)]
@@ -2395,6 +2531,17 @@ struct DrmEventVblank {
     tv_usec: u32,
     sequence: u32,
     crtc_id: u32,
+}
+
+/// `struct drm_event_crtc_sequence`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmEventCrtcSequence {
+    type_: u32,
+    length: u32,
+    user_data: u64,
+    time_ns: i64,
+    sequence: u64,
 }
 
 /// `struct drm_mode_crtc_page_flip`.

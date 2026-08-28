@@ -7,12 +7,13 @@
 //! state or driver-specific implementation that consumes them.
 
 use super::{
-    DrmAuth, DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeAtomic, DrmModeCardRes,
-    DrmModeCreateDumb, DrmModeCreatePropertyBlob, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor,
-    DrmModeCursor2, DrmModeDestroyDumb, DrmModeDestroyPropertyBlob, DrmModeFbCmd, DrmModeFbCmd2,
-    DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
-    DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeObjGetProperties,
-    DrmPrimeHandle, DrmSetClientCap, DrmVersion,
+    DrmAuth, DrmCrtcGetSequence, DrmCrtcQueueSequence, DrmGemClose, DrmGemFlink, DrmGemOpen,
+    DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateDumb, DrmModeCreatePropertyBlob,
+    DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb,
+    DrmModeDestroyPropertyBlob, DrmModeFbCmd, DrmModeFbCmd2, DrmModeFbDirtyCmd, DrmModeGetBlob,
+    DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes,
+    DrmModeGetProperty, DrmModeMapDumb, DrmModeObjGetProperties, DrmPrimeHandle, DrmSetClientCap,
+    DrmVersion, DrmWaitVblank,
     virtio_gpu::{
         DrmVirtgpu3dTransferFromHost, DrmVirtgpu3dTransferToHost, DrmVirtgpu3dWait,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
@@ -29,6 +30,9 @@ pub(super) type SetClientCap = ioc!(DRM_IOCTL_SET_CLIENT_CAP, b'd', 0x0d, InData
 pub(super) type AuthMagic = ioc!(DRM_IOCTL_AUTH_MAGIC, b'd', 0x11, InData<DrmAuth>);
 pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
 pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
+pub(super) type WaitVblank = ioc!(DRM_IOCTL_WAIT_VBLANK, b'd', 0x3a, InOutData<DrmWaitVblank>);
+pub(super) type CrtcGetSequence = ioc!(DRM_IOCTL_CRTC_GET_SEQUENCE, b'd', 0x3b, InOutData<DrmCrtcGetSequence>);
+pub(super) type CrtcQueueSequence = ioc!(DRM_IOCTL_CRTC_QUEUE_SEQUENCE, b'd', 0x3c, InOutData<DrmCrtcQueueSequence>);
 
 // GEM ioctls.
 pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);

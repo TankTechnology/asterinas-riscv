@@ -36,11 +36,13 @@ drm_buffer_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_GEM_CLOSE |
                  DRM_IOCTL_PRIME_FD_TO_HANDLE | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE;
 drm_fence_ops = DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
 drm_auth_ops = DRM_IOCTL_GET_MAGIC | DRM_IOCTL_AUTH_MAGIC;
-drm_kms_query_ops = DRM_IOCTL_MODE_GETRESOURCES | DRM_IOCTL_MODE_GETCRTC |
-                    DRM_IOCTL_MODE_GETCONNECTOR | DRM_IOCTL_MODE_GETENCODER |
+drm_kms_query_ops = DRM_IOCTL_GET_CAP | DRM_IOCTL_MODE_GETRESOURCES |
+                    DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETCONNECTOR |
+                    DRM_IOCTL_MODE_GETENCODER |
                     DRM_IOCTL_MODE_GETPLANERESOURCES | DRM_IOCTL_MODE_GETPLANE |
                     DRM_IOCTL_MODE_OBJ_GETPROPERTIES | DRM_IOCTL_MODE_GETPROPERTY |
-                    DRM_IOCTL_MODE_GETPROPBLOB;
+                    DRM_IOCTL_MODE_GETPROPBLOB | DRM_IOCTL_CRTC_GET_SEQUENCE;
+drm_vblank_ops = DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_CRTC_QUEUE_SEQUENCE;
 drm_kms_update_ops = DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_PAGE_FLIP |
                      DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 |
                      DRM_IOCTL_MODE_ADDFB | DRM_IOCTL_MODE_ADDFB2 |
@@ -59,6 +61,9 @@ ioctl(fd, op = <drm_fence_ops>, ..);
 
 // Discover DRM KMS objects, planes, properties and blobs
 ioctl(fd, op = <drm_kms_query_ops>, ..);
+
+// Wait for a display refresh or queue a sequence-completion event
+ioctl(fd, op = <drm_vblank_ops>, ..);
 
 // Update the DRM KMS state from the current DRM master
 ioctl(fd, op = <drm_kms_update_ops>, ..);

@@ -225,6 +225,8 @@ def main() -> int:
     if not RAW_ONLY and not PUBLIC_ONLY:
         required_markers.extend((
             "M19_GL_RENDERER virgl",
+            "M19_VBLANK_UAPI_PASS",
+            "M19_VBLANK_INACTIVE_PASS",
             "M19_FRAMES_DISTINCT 4",
             "M19_EGL_DONE",
             "MINI_EGL_RC=0",

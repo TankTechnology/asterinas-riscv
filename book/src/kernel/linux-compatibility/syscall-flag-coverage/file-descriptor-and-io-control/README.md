@@ -187,6 +187,14 @@ and atomic output fences converge on the next refresh boundary after presentatio
 The clock is isolated behind the KMS completion interface,
 so a hardware-backed display driver can replace it
 with a real vblank interrupt source.
+`DRM_IOCTL_WAIT_VBLANK` supports blocking and event requests,
+relative and absolute targets, and `NEXTONMISS` semantics.
+`DRM_IOCTL_CRTC_GET_SEQUENCE` reports the current 64-bit sequence,
+monotonic nanosecond timestamp, and active state;
+`DRM_IOCTL_CRTC_QUEUE_SEQUENCE` schedules 64-bit sequence events.
+The corresponding monotonic-timestamp,
+high-CRTC-index,
+and CRTC-in-vblank-event capabilities are advertised.
 Legacy `DRM_MODE_PAGE_FLIP_ASYNC` is likewise rejected with `EOPNOTSUPP`.
 Property blobs are bounded to 64 KiB, owned by the creating DRM file, and kept
 alive while committed KMS state references them.

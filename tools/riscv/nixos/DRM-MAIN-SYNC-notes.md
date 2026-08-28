@@ -809,3 +809,39 @@ client, ending in `MINI_VIRGL_PASS`.
 TCG render throughput remains a functional measurement only;
 the important result is that public clients continued to make progress
 while events and fences were paced by a display clock.
+
+## 2026-08-28 vblank and CRTC sequence UAPI
+
+The DRM primary node now implements Linux's refresh-sequence interfaces:
+blocking and event forms of `DRM_IOCTL_WAIT_VBLANK`,
+`DRM_IOCTL_CRTC_GET_SEQUENCE`, and `DRM_IOCTL_CRTC_QUEUE_SEQUENCE`.
+Relative, absolute, and next-on-miss targets use the shared monotonic
+`VblankClock`; queued events carry the Linux 64-bit sequence/timestamp layout.
+Render nodes reject these KMS-only ioctls, unknown CRTC ids and unsupported
+flags return errors, and wait/queue requests reject an inactive CRTC.
+The matching timestamp, high-CRTC-index, and CRTC-in-event capabilities are
+reported through `DRM_IOCTL_GET_CAP`.
+
+The completion scheduler is ordered by target sequence and submission order.
+It sleeps directly until its earliest absolute target instead of waking on
+every refresh; a queue generation wakes and retargets the worker when an
+earlier event is submitted or a file closes. Legacy page flips have a separate
+RAII reservation, so a second flip cannot replace the first before its target
+refresh. Blocking atomic commits now reserve event capacity before waiting on
+an input fence or changing hardware state, matching the nonblocking path and
+preventing a post-commit `EBUSY` result.
+
+The dedicated RISC-V Mesa client verified the 64-bit ABI sizes, all three
+capabilities, inactive behavior, a blocking relative wait, an asynchronous
+legacy vblank event, monotonic sequence queries, out-of-submission-order CRTC
+sequence events, invalid ids and flags, and render-node rejection. The active
+run reported `initial=503`, blocking wait `504`, vblank event `505`, earlier
+queued event `510`, and later event `517`. The complete Sv39 gate also passed
+public legacy and atomic `modetest`/`kmscube`, PRIME, raw virgl, explicit sync,
+and four distinct Mesa frames with a real virgl renderer, ending in
+`MINI_VIRGL_PASS`.
+
+For this gate, `build_mini_disk.sh` is the authoritative rebuild step: it
+regenerates both the ext2 Mesa root disk and the small bootstrap cpio consumed
+by `boot_mini_debug.py`. Running only `build_mini_rootfs.py` updates a staging
+tree but leaves the QEMU disk unchanged.

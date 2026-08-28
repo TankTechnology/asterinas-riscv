@@ -36,6 +36,10 @@
 #define DRM_IOWR(nr, type) _IOWR(DRM_IOCTL_BASE, nr, type)
 
 #define DRM_IOCTL_SET_MASTER _IO('d', 0x1e)
+#define DRM_IOCTL_GET_CAP DRM_IOWR(0x0c, struct drm_get_cap)
+#define DRM_IOCTL_WAIT_VBLANK DRM_IOWR(0x3a, union drm_wait_vblank)
+#define DRM_IOCTL_CRTC_GET_SEQUENCE DRM_IOWR(0x3b, struct drm_crtc_get_sequence)
+#define DRM_IOCTL_CRTC_QUEUE_SEQUENCE DRM_IOWR(0x3c, struct drm_crtc_queue_sequence)
 #define DRM_IOCTL_SET_CLIENT_CAP DRM_IOW(0x0d, struct drm_set_client_cap)
 #define DRM_IOCTL_MODE_GETRESOURCES DRM_IOWR(0xa0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_GETCONNECTOR DRM_IOWR(0xa7, struct drm_mode_get_connector)
@@ -54,10 +58,43 @@
 #define DRM_MODE_ATOMIC_NONBLOCK 0x0200
 #define DRM_MODE_PAGE_FLIP_EVENT 0x01
 #define DRM_EVENT_FLIP_COMPLETE 0x02
+#define DRM_EVENT_VBLANK 0x01
+#define DRM_EVENT_CRTC_SEQUENCE 0x03
+#define DRM_VBLANK_RELATIVE 0x00000001
+#define DRM_VBLANK_HIGH_CRTC_MASK 0x0000003e
+#define DRM_VBLANK_EVENT 0x04000000
+#define DRM_VBLANK_SIGNAL 0x40000000
+#define DRM_CRTC_SEQUENCE_RELATIVE 0x00000001
+#define DRM_CAP_VBLANK_HIGH_CRTC 0x2
+#define DRM_CAP_TIMESTAMP_MONOTONIC 0x6
+#define DRM_CAP_CRTC_IN_VBLANK_EVENT 0x12
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
 #define DRM_CLIENT_CAP_ATOMIC 3
 
 struct drm_set_client_cap { uint64_t capability, value; };
+struct drm_get_cap { uint64_t capability, value; };
+
+union drm_wait_vblank {
+    struct {
+        uint32_t type, sequence;
+        uint64_t signal;
+    } request;
+    struct {
+        uint32_t type, sequence;
+        int64_t tval_sec, tval_usec;
+    } reply;
+};
+
+struct drm_crtc_get_sequence {
+    uint32_t crtc_id, active;
+    uint64_t sequence;
+    int64_t sequence_ns;
+};
+
+struct drm_crtc_queue_sequence {
+    uint32_t crtc_id, flags;
+    uint64_t sequence, user_data;
+};
 
 struct drm_mode_modeinfo {
     uint32_t clock;
@@ -120,10 +157,172 @@ struct drm_event_vblank {
     uint32_t tv_sec, tv_usec, sequence, crtc_id;
 };
 
+struct drm_event_crtc_sequence {
+    uint32_t type, length;
+    uint64_t user_data;
+    int64_t time_ns;
+    uint64_t sequence;
+};
+
 static void fail(const char *stage) {
     printf("M19_EGL_FAIL %s (errno=%d)\n", stage, errno);
     fflush(stdout);
     exit(1);
+}
+
+static uint64_t get_cap(int fd, uint64_t capability) {
+    struct drm_get_cap cap = { .capability = capability };
+    if (ioctl(fd, DRM_IOCTL_GET_CAP, &cap) < 0) fail("get_cap");
+    return cap.value;
+}
+
+static void wait_for_event(int fd) {
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    int rc = poll(&pfd, 1, FENCE_POLL_TIMEOUT_MS);
+    if (rc != 1 || !(pfd.revents & POLLIN) ||
+        (pfd.revents & (POLLERR | POLLNVAL)))
+        fail("vblank_event_poll");
+}
+
+static void test_inactive_vblank_uapi(int fd, uint32_t crtc_id) {
+    struct drm_crtc_get_sequence get = { .crtc_id = crtc_id };
+    if (ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &get) < 0 || get.active != 0)
+        fail("inactive_crtc_get_sequence");
+
+    union drm_wait_vblank wait = {0};
+    wait.request.type = DRM_VBLANK_RELATIVE;
+    wait.request.sequence = 1;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wait) >= 0 || errno != EINVAL)
+        fail("inactive_wait_vblank");
+
+    struct drm_crtc_queue_sequence queue = {
+        .crtc_id = crtc_id,
+        .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .sequence = 1,
+    };
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &queue) >= 0 || errno != EINVAL)
+        fail("inactive_crtc_queue_sequence");
+
+    printf("M19_VBLANK_INACTIVE_PASS sequence=%llu time_ns=%lld\n",
+           (unsigned long long)get.sequence, (long long)get.sequence_ns);
+}
+
+static void test_vblank_uapi(int fd, uint32_t crtc_id) {
+    if (sizeof(union drm_wait_vblank) != 24 ||
+        sizeof(struct drm_crtc_get_sequence) != 24 ||
+        sizeof(struct drm_crtc_queue_sequence) != 24 ||
+        sizeof(struct drm_event_crtc_sequence) != 32)
+        fail("vblank_uapi_layout");
+    if (get_cap(fd, DRM_CAP_VBLANK_HIGH_CRTC) != 1 ||
+        get_cap(fd, DRM_CAP_TIMESTAMP_MONOTONIC) != 1 ||
+        get_cap(fd, DRM_CAP_CRTC_IN_VBLANK_EVENT) != 1)
+        fail("vblank_caps");
+
+    struct drm_crtc_get_sequence get = { .crtc_id = crtc_id };
+    if (ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &get) < 0 ||
+        get.active != 1 || get.sequence_ns <= 0)
+        fail("crtc_get_sequence");
+    uint64_t initial_sequence = get.sequence;
+    int64_t initial_time_ns = get.sequence_ns;
+
+    union drm_wait_vblank wait = {0};
+    wait.request.type = DRM_VBLANK_RELATIVE;
+    wait.request.sequence = 1;
+    if (ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wait) < 0 ||
+        wait.reply.sequence <= (uint32_t)initial_sequence ||
+        wait.reply.tval_sec < 0 || wait.reply.tval_usec < 0 ||
+        wait.reply.tval_usec >= 1000000)
+        fail("wait_vblank_relative");
+    uint32_t blocking_wait_sequence = wait.reply.sequence;
+
+    memset(&wait, 0, sizeof(wait));
+    wait.request.type = DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT;
+    wait.request.sequence = 1;
+    wait.request.signal = 0x56424c414e4bULL;
+    if (ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wait) < 0)
+        fail("wait_vblank_event_submit");
+    wait_for_event(fd);
+    struct drm_event_vblank vblank_event = {0};
+    if (read(fd, &vblank_event, sizeof(vblank_event)) != sizeof(vblank_event) ||
+        vblank_event.type != DRM_EVENT_VBLANK ||
+        vblank_event.length != sizeof(vblank_event) ||
+        vblank_event.user_data != 0x56424c414e4bULL ||
+        vblank_event.crtc_id != crtc_id ||
+        vblank_event.sequence < wait.reply.sequence)
+        fail("wait_vblank_event_read");
+
+    get = (struct drm_crtc_get_sequence){ .crtc_id = crtc_id };
+    if (ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &get) < 0 ||
+        get.sequence < vblank_event.sequence || get.sequence_ns < initial_time_ns)
+        fail("crtc_get_sequence_monotonic");
+
+    struct drm_crtc_queue_sequence later = {
+        .crtc_id = crtc_id,
+        .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .sequence = 12,
+        .user_data = 0x4c41544552ULL,
+    };
+    struct drm_crtc_queue_sequence earlier = {
+        .crtc_id = crtc_id,
+        .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .sequence = 4,
+        .user_data = 0x4541524c59ULL,
+    };
+    if (ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &later) < 0 ||
+        ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &earlier) < 0 ||
+        earlier.sequence >= later.sequence)
+        fail("crtc_queue_sequence_submit");
+
+    wait_for_event(fd);
+    struct drm_event_crtc_sequence sequence_event = {0};
+    if (read(fd, &sequence_event, sizeof(sequence_event)) != sizeof(sequence_event) ||
+        sequence_event.type != DRM_EVENT_CRTC_SEQUENCE ||
+        sequence_event.length != sizeof(sequence_event) ||
+        sequence_event.user_data != earlier.user_data ||
+        sequence_event.sequence < earlier.sequence || sequence_event.time_ns <= 0)
+        fail("crtc_queue_sequence_earlier");
+    wait_for_event(fd);
+    memset(&sequence_event, 0, sizeof(sequence_event));
+    if (read(fd, &sequence_event, sizeof(sequence_event)) != sizeof(sequence_event) ||
+        sequence_event.type != DRM_EVENT_CRTC_SEQUENCE ||
+        sequence_event.user_data != later.user_data ||
+        sequence_event.sequence < later.sequence)
+        fail("crtc_queue_sequence_later");
+
+    get = (struct drm_crtc_get_sequence){ .crtc_id = UINT32_MAX };
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &get) >= 0 || errno != ENOENT)
+        fail("crtc_get_sequence_bad_id");
+    memset(&wait, 0, sizeof(wait));
+    wait.request.type = DRM_VBLANK_SIGNAL;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wait) >= 0 || errno != EINVAL)
+        fail("wait_vblank_signal");
+    memset(&wait, 0, sizeof(wait));
+    wait.request.type = 2 & DRM_VBLANK_HIGH_CRTC_MASK;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wait) >= 0 || errno != EINVAL)
+        fail("wait_vblank_bad_crtc");
+    earlier.flags = UINT32_MAX;
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &earlier) >= 0 || errno != EINVAL)
+        fail("crtc_queue_sequence_bad_flags");
+
+    int render_fd = open("/dev/dri/renderD128", O_RDWR);
+    if (render_fd < 0) fail("vblank_render_open");
+    get = (struct drm_crtc_get_sequence){ .crtc_id = crtc_id };
+    errno = 0;
+    if (ioctl(render_fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &get) >= 0 ||
+        errno != EOPNOTSUPP)
+        fail("vblank_render_reject");
+    close(render_fd);
+
+    printf("M19_VBLANK_UAPI_PASS initial=%llu wait=%u event=%u earlier=%llu later=%llu\n",
+           (unsigned long long)initial_sequence, blocking_wait_sequence,
+           vblank_event.sequence, (unsigned long long)earlier.sequence,
+           (unsigned long long)later.sequence);
 }
 
 /* Find a KMS property id by name on an object. */
@@ -230,6 +429,7 @@ int main(void) {
     const uint32_t plane_id = plane_ids[0];
     printf("M19_KMS_IDS crtc=%u connector=%u plane=%u\n",
            crtc_id, connector_id, plane_id);
+    test_inactive_vblank_uapi(fd, crtc_id);
 
     /* Connector mode. */
     struct drm_mode_get_connector conn = { .connector_id = connector_id };
@@ -515,6 +715,8 @@ int main(void) {
 
         printf("M19_FRAME %d csum=%08x fb=%u seq=%u\n", frame, csums[frame], fb2.fb_id,
                ev.sequence);
+        if (frame == 0)
+            test_vblank_uapi(fd, crtc_id);
 
         /* Release the previous front buffer now that its flip completed. */
         if (pending_bo) {
