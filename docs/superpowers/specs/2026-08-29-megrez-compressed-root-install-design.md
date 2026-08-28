@@ -4,24 +4,29 @@
 
 The protected Megrez installer currently transfers the full 1 GiB ext2 image
 over HTTP. The physical Asterinas receive path sustained about 1.1 MiB/s, so
-the transfer cannot finish before the already-armed 600-second software reboot.
-The write gate, target-partition check, and whole-image readback hash are
-correct; only the LAN representation is too large.
+the raw transfer cannot finish before the originally armed 600-second software
+reboot.
+The write gate and target-partition check are correct. The compressed transfer
+fits the LAN better, but a second full 1 GiB device readback kept the protected
+installation from completing even after the receive had finished.
 
 ## Decision
 
 The host will create a deterministic gzip representation of the frozen ext2
 image before it opens the serial device. The installer initramfs will fetch
 `http://10.100.19.216:8080/debian-root.ext2.gz`, stream it through
-`gzip -dc`, and write the resulting bytes to `/dev/mmcblk0p2`. It will retain
-the existing `pipefail`, exact 4 GiB partition check, write-arming kernel
-parameters, sync, full 1 GiB readback, and original ext2 SHA-256 check.
+`gzip -dc`, copy the exact resulting byte stream to `/dev/mmcblk0p2` with
+`tee`, and hash the same stream before declaring success. It will retain the
+existing `pipefail`, exact 4 GiB partition check, write-arming kernel
+parameters, sync, and original ext2 SHA-256 check without performing a second
+full-device read.
 
 The compressed file is transport data only. The immutable identity remains
 the uncompressed root image recorded in the signed rootfs manifest and the
 Megrez plan. A bad, truncated, or replaced compressed stream cannot publish
-success because either the pipeline fails or the final uncompressed readback
-hash differs.
+success because either the pipeline fails or the SHA-256 of the exact bytes
+accepted by `tee` differs. This validates the transport and write stream; it
+does not claim an independent post-write media readback.
 
 ## Host-side publication
 
@@ -43,8 +48,8 @@ the recovery path; Linux is not used as the installer or runtime kernel.
 ## Verification
 
 Focused tests will prove deterministic gzip bytes and round-trip identity,
-atomic preservation on failure, the exact `wget | gzip -dc | dd` pipeline,
-the `.gz` private-LAN URL, compression-before-serial ordering, and unchanged
-readback/hash guards. The real artifact will then be compressed once and its
-size, gzip integrity, and decompressed SHA-256 will be checked before a new
-plan-bound board attempt.
+atomic preservation on failure, the exact
+`wget | gzip -dc | tee(target) | sha256sum` pipeline, the `.gz` private-LAN
+URL, compression-before-serial ordering, and stream-hash guard. The real
+artifact will then be compressed once and its size, gzip integrity, and
+decompressed SHA-256 will be checked before a new plan-bound board attempt.
