@@ -318,6 +318,39 @@ board to a U-Boot prompt without a physical reset. Its final result is
 `passed: false` with reason `guest-failure-recovered:receive-poll`.
 
 The selected classification is **`tx-reclaim-still-stalled`**.
+
+## Document-driven DWMAC 5.20 preboard gate
+
+The EIC7700 TRM identifies both integrated controllers as Synopsys DWMAC 5.20.
+Commit `34341f8b8` therefore replaces the previous broad acceptance of any
+`0x40..=0x5f` revision with exact `MAC_VERSION.SNPSVER == 0x52` on both ports.
+The driver fails closed before PHY selection if either port reports another
+revision.
+
+Commit `5359f2d92` extends the dependency-free Rust reference model from five to
+nine tests. In addition to the packed-cache-line and publication-ordering
+counterexamples, it now freezes the documented 5.20 normal-descriptor contract:
+
+- full 64-bit buffer addresses occupy words zero and one;
+- RX publication sets OWN, IOC, and BUF1V;
+- one-buffer TX publication sets OWN, FD, LD, and the exact length;
+- 64 entries encode a ring length of 63;
+- the initial TX tail is the TX base and initial RX tail is one-past-ring;
+- later tails advance modulo the ring;
+- status acknowledgement writes only known W1C bits and RBU requests RX resume.
+
+The model remains an independently readable oracle rather than a second
+driver. Existing source-contract tests bind its ordering and address/tail
+expectations to the production descriptor, queue, register, and device files.
+
+The combined fresh host gate reported 34 Megrez contract tests and 14 DWMAC
+model/source tests passed. The pinned RISC-V
+`cargo osdk check --ktests -p ostd -p aster-dwmac -p aster-network -p aster-kernel`
+completed successfully in 18.72 seconds. This gate did not boot QEMU or Megrez.
+The next board transaction must first capture
+`ASTERINAS_GMAC_DMA_CONTRACT`; only then may the existing TX-reclaim/RX-progress
+evidence be interpreted against the verified physical, device, and CPU-alias
+addresses.
 Switching the descriptor ring to `DmaCoherent` did not make TX ownership
 transitions visible to the CPU on this board. The cache-line stale-writeback
 interleaving remains a valid model defect, but it is not a sufficient
