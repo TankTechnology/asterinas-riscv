@@ -1160,6 +1160,8 @@ configure_desktop() {
                 "$stage/etc/systemd/system/asterinas-browser-web-timeline-begin.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_basic.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-timeline-basic.service"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/browser-web-timeline.log"
             install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
             cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
