@@ -189,6 +189,22 @@ def web_evidence() -> dict[str, bytes]:
         "MarionetteActivePort": b"2828\n",
         "trust-static.log": trust,
         "ca-certificates.crt": system_ca,
+        "timeline.log": (
+            "A_WEB_TIMELINE marker=BOOT_SYSTEMD_BEGIN guest_monotonic_ns=100 firefox_pid=0\n"
+            "A_WEB_TIMELINE marker=BOOT_BASIC_TARGET guest_monotonic_ns=200 firefox_pid=0\n"
+            "A_WEB_TIMELINE marker=BOOT_NETWORK_READY guest_monotonic_ns=300 firefox_pid=0\n"
+            "A_WEB_TIMELINE marker=BOOT_X_SOCKET_READY guest_monotonic_ns=400 firefox_pid=0\n"
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_WRAPPER_START guest_monotonic_ns=500 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns=600 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_MARIONETTE_PORT_READY guest_monotonic_ns=700 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=800 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_NEW_SESSION_DONE guest_monotonic_ns=900 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY guest_monotonic_ns=1000 firefox_pid=100\n"
+            "A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=1100 firefox_pid=100 page=baidu-home\n"
+            "A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=1200 firefox_pid=100 page=baidu-search\n"
+            "A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=1300 firefox_pid=100 page=bilibili-home\n"
+            "A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=1400 firefox_pid=100 page=bilibili-detail\n"
+        ).encode(),
     }
     for name in ("baidu-home", "baidu-search", "bilibili-home", "bilibili-detail"):
         values[f"{name}.png"] = png()
@@ -378,6 +394,45 @@ class BrowserWebContractTests(unittest.TestCase):
             'readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"',
             online_evidence,
         )
+
+    def test_startup_timeline_requires_ordered_guest_monotonic_phases(self) -> None:
+        evidence = web_evidence()
+        validate_web_evidence(evidence)
+        self.assertEqual(evidence["timeline.log"].count(b"A_WEB_TIMELINE marker="), 14)
+        unit = (ROOTFS / "browser_web.service").read_text()
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        self.assertIn("ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit)
+        self.assertIn("browser_web_timeline_begin.service", builder)
+        self.assertIn("browser_web_timeline_basic.service", builder)
+        self.assertIn("basic.target.wants/asterinas-browser-web-timeline-basic.service", builder)
+        self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
+        begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()
+        basic_unit = (ROOTFS / "browser_web_timeline_basic.service").read_text()
+        self.assertIn("After=systemd-remount-fs.service", begin_unit)
+        for boundary in (
+            "systemd-sysusers.service", "ldconfig.service",
+            "systemd-journal-catalog-update.service", "sysinit.target",
+        ):
+            self.assertIn(boundary, begin_unit)
+        self.assertIn("DefaultDependencies=no", basic_unit)
+        self.assertIn("After=sysinit.target", basic_unit)
+        self.assertIn("Before=basic.target", basic_unit)
+        self.assertIn("WantedBy=basic.target", basic_unit)
+        for timeline in (
+            evidence["timeline.log"].replace(
+                b"page=bilibili-detail", b"page=missing-detail"
+            ),
+            evidence["timeline.log"].replace(
+                b"guest_monotonic_ns=1400", b"guest_monotonic_ns=1"
+            ),
+            evidence["timeline.log"].replace(b"firefox_pid=100", b"firefox_pid=101", 1),
+            evidence["timeline.log"].replace(b"firefox_pid=100", b"firefox_pid=999"),
+            evidence["timeline.log"].replace(
+                b"guest_monotonic_ns=1400", b"guest_monotonic_ns=720000000000000"
+            ),
+        ):
+            with self.assertRaises(GateFailure):
+                validate_web_evidence({**evidence, "timeline.log": timeline})
 
     def test_qemu_runner_has_one_slirp_virtio_nic_and_fail_closed_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

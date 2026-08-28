@@ -45,6 +45,20 @@ CHALLENGE_TOKENS = (
 BV_RE = re.compile(r"^https://www\.bilibili\.com/video/(BV[0-9A-Za-z]+)/?(?:[?#].*)?$")
 MAX_RESOURCES = 256
 
+
+def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
+    try:
+        guest_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        guest_ns = time.monotonic_ns()
+    line = (
+        f"A_WEB_TIMELINE marker={marker} guest_monotonic_ns={guest_ns} "
+        f"firefox_pid={firefox_pid}"
+    )
+    if page is not None:
+        line += f" page={page}"
+    print(line, file=sys.stderr, flush=True)
+
 _SNAPSHOT_SCRIPT = r"""return JSON.stringify({
   url: location.href,
   title: document.title,
@@ -318,37 +332,51 @@ def _write_evidence(
     (directory / f"{name}.png").write_bytes(screenshot)
 
 
-def run_gate(host: str, port: int, timeout: float, evidence_dir: Path) -> str:
+def run_gate(
+    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+) -> str:
     deadline = time.monotonic() + timeout
     client = _connect(host, port, deadline)
+    _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
     try:
         session = client.command("WebDriver:NewSession", {
             "acceptInsecureCerts": False,
             "strictFileInteractability": True,
         })
+        _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
         if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
             raise GateError("Marionette did not create a web session")
         capabilities = session.get("capabilities", {})
         if not isinstance(capabilities, dict) or capabilities.get("acceptInsecureCerts") is not False:
             raise GateError("Firefox did not preserve certificate verification")
+        handles = client.command("WebDriver:GetWindowHandles")
+        if not isinstance(handles, list) or not handles or not all(
+            isinstance(handle, str) for handle in handles
+        ):
+            raise GateError("Firefox created no first browser window")
+        _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
 
         _navigate(client, BAIDU_HOME)
         baidu_home, _ = _wait(client, validate_baidu_home, deadline)
+        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
         _write_evidence(client, evidence_dir, "baidu-home", baidu_home)
 
         _submit_baidu_search(client)
         baidu_search, _ = _wait(client, validate_baidu_search, deadline)
+        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-search")
         _write_evidence(client, evidence_dir, "baidu-search", baidu_search)
 
         _navigate(client, BILIBILI_HOME)
         bilibili_home, selected = _wait(client, select_bilibili_video, deadline)
         assert isinstance(selected, str)
+        _timeline("BOOT_DOM_READY", firefox_pid, "bilibili-home")
         _write_evidence(client, evidence_dir, "bilibili-home", bilibili_home)
 
         _navigate(client, selected)
         bilibili_detail, _ = _wait(
             client, lambda snapshot: validate_bilibili_detail(snapshot, selected), deadline
         )
+        _timeline("BOOT_DOM_READY", firefox_pid, "bilibili-detail")
         _write_evidence(client, evidence_dir, "bilibili-detail", bilibili_detail)
         client.command("WebDriver:DeleteSession")
         return BV_RE.fullmatch(selected).group(1)  # type: ignore[union-attr]
@@ -373,7 +401,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error("timeout or evidence directory is outside the bounded contract")
     try:
         validate_network_namespace(values.firefox_pid)
-        bv = run_gate(values.host, values.port, values.timeout, values.evidence_dir)
+        bv = run_gate(
+            values.host,
+            values.port,
+            values.timeout,
+            values.evidence_dir,
+            values.firefox_pid,
+        )
     except (GateError, OSError, TimeoutError) as error:
         parser.error(str(error))
     print(

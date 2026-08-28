@@ -1,0 +1,13 @@
+[Unit]
+Description=Asterinas online browser boot timeline origin
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=systemd-sysusers.service ldconfig.service systemd-journal-catalog-update.service sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/browser-web-timeline begin
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
