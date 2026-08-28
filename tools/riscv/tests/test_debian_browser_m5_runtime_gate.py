@@ -425,10 +425,17 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         rootfs = repository / "tools/riscv/debian/rootfs"
         session = (rootfs / "desktop_m5_session.sh").read_text()
         firefox = (rootfs / "browser_m5_firefox.sh").read_text()
+        observer = (rootfs / "browser_m5_window_observer.sh").read_text()
+        rootfs_builder = (rootfs / "build_rootfs.sh").read_text()
         evidence = (rootfs / "desktop_m5_evidence.sh").read_text()
         client = (rootfs / "browser_m5_marionette_gate.py").read_text()
         self.assertNotIn("firefox-esr", session)
         self.assertIn("--marionette", firefox)
+        self.assertIn("browser-m5-window-observer", firefox)
+        self.assertIn("browser_m5_window_observer.sh", rootfs_builder)
+        self.assertIn("ASTERINAS_FIREFOX_X11_NAVIGATOR_VISIBLE", observer)
+        self.assertIn("ASTERINAS_FIREFOX_X11_WINDOW_READY", observer)
+        self.assertIn("SAMPLE_LIMIT:-240", observer)
         self.assertNotIn("--remote-debugging-port", firefox)
         self.assertIn('"WebDriver:ExecuteScript"', client)
         self.assertIn("video.currentSrc", client)
@@ -441,7 +448,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertLess(evidence.index("--diagnose-once"), evidence.index('content_evidence="$('))
         self.assertIn("((diagnostic_timeout <= 30)) || diagnostic_timeout=30", evidence)
         self.assertNotIn("diagnostic_emitted", evidence)
-        self.assertIn('while ! ready || [[ "$marionette_ready" == false ]]', evidence)
+        self.assertIn("while ! ready || ! navigator_ready", evidence)
+        self.assertIn("NavigatorWindowReady", evidence)
         self.assertIn('DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status=', evidence)
         self.assertEqual(evidence.count("marionette_ready=true"), 1)
         ready_assignment = evidence.index("marionette_ready=true")
@@ -459,6 +467,92 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertNotIn("network=offline", gate.PASS_LINE)
         self.assertLess(evidence.index("DEBIAN_BROWSER_M5_WORKLOAD"), evidence.index('emit "$content_evidence"'))
 
+    def test_window_observer_ignores_tiny_probe_and_survives_past_old_limit(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        observer = repository / "tools/riscv/debian/rootfs/browser_m5_window_observer.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_sleep = root / "sleep"
+            fake_sync = root / "sync"
+            fake_xwininfo = root / "xwininfo"
+            counter = root / "counter"
+            console = root / "console"
+            window_log = root / "window.log"
+            navigator = root / "NavigatorWindowReady"
+            fake_sleep.write_text("#!/bin/sh\nexit 0\n")
+            fake_sync.write_text("#!/bin/sh\nexit 0\n")
+            fake_xwininfo.write_text(
+                "#!/bin/sh\n"
+                "count=$(($(cat \"$ASTERINAS_M5_TEST_COUNTER\" 2>/dev/null || printf 0) + 1))\n"
+                "printf '%s\\n' \"$count\" >\"$ASTERINAS_M5_TEST_COUNTER\"\n"
+                "case $count in\n"
+                "  1) printf '%s\\n' '0x800001 \"Firefox\": (\"firefox-esr\" \"Firefox-esr\")  10x10+10+10' ;;\n"
+                "  2) printf '%s\\n' '0x800001 \"New Tab - Mozilla Firefox\": (\"firefox-esr\" \"Navigator\")  1280x1024+0+0' ;;\n"
+                "  *) printf '%s\\n' '0x800001 \"Asterinas Offline Browser M5 Probe - Mozilla Firefox\": (\"firefox-esr\" \"Navigator\")  1280x1024+0+0' ;;\n"
+                "esac\n"
+            )
+            for executable in (fake_sleep, fake_sync, fake_xwininfo):
+                executable.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/bash", str(observer)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "ASTERINAS_BROWSER_M5_PARENT_PID": "0",
+                    "ASTERINAS_BROWSER_M5_WINDOW_CONSOLE": str(console),
+                    "ASTERINAS_BROWSER_M5_WINDOW_LOG": str(window_log),
+                    "ASTERINAS_BROWSER_M5_NAVIGATOR_READY_FILE": str(navigator),
+                    "ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_SECONDS": "1",
+                    "ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_LIMIT": "61",
+                    "ASTERINAS_BROWSER_M5_SLEEP_COMMAND": str(fake_sleep),
+                    "ASTERINAS_BROWSER_M5_SYNC_COMMAND": str(fake_sync),
+                    "ASTERINAS_BROWSER_M5_XWININFO_COMMAND": str(fake_xwininfo),
+                    "ASTERINAS_M5_TEST_COUNTER": str(counter),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            markers = console.read_text().splitlines()
+            self.assertEqual(len(markers), 2)
+            self.assertIn("X11_NAVIGATOR_VISIBLE", markers[0])
+            self.assertIn("sequence=2", markers[0])
+            self.assertIn("geometry=1280x1024", markers[0])
+            self.assertIn("X11_WINDOW_READY", markers[1])
+            self.assertIn("sequence=3", markers[1])
+            self.assertNotIn("WINDOW_TIMEOUT", console.read_text())
+            self.assertEqual(counter.read_text(), "3\n")
+            self.assertIn("browser_pid=0 sequence=2", navigator.read_text())
+
+            counter.unlink()
+            console.unlink()
+            navigator.write_text("browser_pid=999 stale=true\n")
+            fake_xwininfo.write_text("#!/bin/sh\nprintf '%s\\n' 'root has no clients'\n")
+            fake_xwininfo.chmod(0o755)
+            retry = subprocess.run(
+                ["/bin/bash", str(observer)],
+                cwd=repository,
+                env={
+                    **os.environ,
+                    "ASTERINAS_BROWSER_M5_PARENT_PID": "0",
+                    "ASTERINAS_BROWSER_M5_WINDOW_CONSOLE": str(console),
+                    "ASTERINAS_BROWSER_M5_WINDOW_LOG": str(window_log),
+                    "ASTERINAS_BROWSER_M5_NAVIGATOR_READY_FILE": str(navigator),
+                    "ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_SECONDS": "1",
+                    "ASTERINAS_BROWSER_M5_WINDOW_SAMPLE_LIMIT": "61",
+                    "ASTERINAS_BROWSER_M5_SLEEP_COMMAND": str(fake_sleep),
+                    "ASTERINAS_BROWSER_M5_SYNC_COMMAND": str(fake_sync),
+                    "ASTERINAS_BROWSER_M5_XWININFO_COMMAND": str(fake_xwininfo),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            self.assertFalse(navigator.exists())
+            self.assertIn("X11_WINDOW_TIMEOUT samples=61", console.read_text())
+
     def test_evidence_retries_failure_and_ready_false_before_one_formal_gate(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         evidence = repository / "tools/riscv/debian/rootfs/desktop_m5_evidence.sh"
@@ -473,6 +567,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             calls = root / "gate-calls"
             process_samples = root / "process-samples"
             kernel_samples = root / "kernel-samples"
+            navigator_ready = profile / "NavigatorWindowReady"
             fake_bin.mkdir()
             (proc / "42").mkdir(parents=True)
             profile.mkdir()
@@ -510,8 +605,9 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "    0) printf 'diagnose-timeout\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; exit 2 ;;\n"
                 "    1) printf 'diagnose-false\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; "
                 "printf '%s\\n' 'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false status={\"message\":\"starting\",\"ready\":false}' ;;\n"
-                "    *) printf 'diagnose-true\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; "
-                "printf '%s\\n' 'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true status={\"message\":\"ready\",\"ready\":true}' ;;\n"
+                "    *) printf 'diagnose-false-window\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"; "
+                "printf 'browser_pid=42 sequence=61 seconds=1830\\n' >\"$ASTERINAS_M5_TEST_NAVIGATOR\"; "
+                "printf '%s\\n' 'DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false status={\"message\":\"window visible\",\"ready\":false}' ;;\n"
                 "  esac\n"
                 "else\n"
                 "  printf 'formal\\n' >>\"$ASTERINAS_M5_TEST_CALLS\"\n"
@@ -537,6 +633,7 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                     "ASTERINAS_DESKTOP_M5_PROCESS_SAMPLE_LOG": str(process_samples),
                     "ASTERINAS_DESKTOP_M5_KERNEL_SAMPLE_LOG": str(kernel_samples),
                     "ASTERINAS_M5_TEST_CALLS": str(calls),
+                    "ASTERINAS_M5_TEST_NAVIGATOR": str(navigator_ready),
                 },
                 check=False,
                 capture_output=True,
@@ -546,17 +643,19 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 calls.read_text().splitlines(),
-                ["diagnose-timeout", "diagnose-false", "diagnose-true", "formal"],
+                ["diagnose-timeout", "diagnose-false", "diagnose-false-window", "formal"],
             )
             emitted = console.read_text()
             self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC status=unavailable", emitted)
             self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=false", emitted)
-            self.assertIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true", emitted)
+            self.assertNotIn("DEBIAN_BROWSER_M5_DIAGNOSTIC ready=true", emitted)
+            self.assertIn(
+                "DEBIAN_BROWSER_M5_NAVIGATOR state=visible browser_pid=42 "
+                "marionette_status_ready=false",
+                emitted,
+            )
             self.assertEqual(emitted.count(gate.PASS_LINE), 1)
             samples = process_samples.read_text()
-            self.assertIn("stage=diagnostic-unavailable", samples)
-            self.assertIn("stage=status-not-ready", samples)
-            self.assertIn("stage=status-ready", samples)
             self.assertEqual(samples.count("stage=formal-gate-start"), 1)
             self.assertEqual(samples.count("stage=formal-gate-done"), 1)
 
