@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_rx_liveness_model.rs"
+TX_CACHELINE_MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_tx_cacheline_model.rs"
 POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
@@ -133,6 +134,43 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
 
 
 class DwmacRxPollContractTests(unittest.TestCase):
+    def test_tx_cacheline_model_exposes_packed_descriptor_race(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "dwmac-tx-cacheline-model"
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    "--test",
+                    str(TX_CACHELINE_MODEL_SOURCE),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary), "--nocapture"],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("2 passed", result.stdout)
+
+    def test_descriptor_ring_uses_uncached_coherent_memory(self) -> None:
+        source = QUEUE_SOURCE.read_text()
+        self.assertIn("ring: DmaCoherent", source)
+        self.assertIn("DmaCoherent::alloc(1, false)", source)
+        self.assertNotIn("ring.sync_from_device", source)
+        self.assertNotIn("ring.sync_to_device", source)
+
     def test_production_poll_budget_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "dwmac-rx-poll-tests"
