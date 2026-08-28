@@ -44,6 +44,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     QemuMachine,
     QemuUbootProfile,
     ResultScope,
+    RecoveryContract,
     StorageTransport,
     ValidationScenario,
     profile_by_name,
@@ -478,6 +479,27 @@ class ContractCompositionTests(unittest.TestCase):
         self.assertEqual(
             profile.cpu,
             "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        )
+        self.assertIsNone(profile.validation.recovery)
+
+    def test_generic_sv39_smp4_recovery_is_a_frozen_registered_contract(
+        self,
+    ) -> None:
+        profile = profile_by_name("generic-sv39-smp4-software-reboot")
+
+        self.assertEqual(profile.machine.name, "qemu-virt-smp4-frozen-dtb")
+        self.assertEqual(
+            profile.bootargs,
+            profile_by_name("generic-sv39-smp4-tcp-probe").bootargs,
+        )
+        self.assertEqual(profile.validation.name, "megrez-tcp-probe-recovery")
+        self.assertEqual(
+            profile.validation.recovery,
+            RecoveryContract(
+                armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60",
+                trigger_marker=profile.validation.completion_line,
+                recovery_timeout=90.0,
+            ),
         )
         self.assertFalse(profile.requires_resource_gate)
         validate_registered_profile(profile)

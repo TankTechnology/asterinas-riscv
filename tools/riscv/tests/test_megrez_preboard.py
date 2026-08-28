@@ -109,13 +109,17 @@ class MegrezPreboardTests(unittest.TestCase):
                 "kernel_size": kernel.size,
             },
             "audit": {
-                "armed_marker_count": 1,
-                "boot_disk_unchanged": True,
                 "booti_command_count": 1,
                 "failures": [],
                 "passed": True,
-                "trigger_marker_count": 1,
             },
+            "boot_disk_sha256_after": "d" * 64,
+            "boot_disk_sha256_before": "d" * 64,
+            "effective_bootargs": (
+                "console=ttyS0 loglevel=info init=/init "
+                "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+                "asterinas.reboot_after=60"
+            ),
             "passed": True,
             "profile": "generic-sv39-smp4-software-reboot",
             "qemu_argv": [
@@ -131,7 +135,8 @@ class MegrezPreboardTests(unittest.TestCase):
                 "-monitor",
                 "none",
             ],
-            "scenario": "timer",
+            "scenario": "positive",
+            "validation_scenario": "megrez-tcp-probe-recovery",
             "session": {
                 "booti_sent_count": 1,
                 "cleanup_complete": True,
@@ -145,8 +150,10 @@ class MegrezPreboardTests(unittest.TestCase):
     def _recovery_transcript() -> bytes:
         return (
             b"OpenSBI v1.7\nU-Boot 2026.07\n=> \n"
-            b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=10\n"
-            b"ASTERINAS_REBOOT_TIMER_READY\n"
+            b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=60\n"
+            b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 "
+            b"status=200 sizes=16384,65536,1048576,16777216 "
+            b"completed_bytes=17907712 pattern=mod251\n"
             b"OpenSBI v1.7\nU-Boot 2026.07\n=> \n"
         )
 
@@ -185,7 +192,7 @@ class MegrezPreboardTests(unittest.TestCase):
             ),
             (
                 self._native_recovery(),
-                b"ASTERINAS_REBOOT_TIMER_READY\n",
+                b"ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080\n",
                 self.identities["kernel"].sha256,
             ),
         )

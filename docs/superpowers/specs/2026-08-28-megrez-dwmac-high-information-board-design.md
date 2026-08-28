@@ -51,6 +51,8 @@ The board transaction has these hard rules:
   partition writes, or a persistent boot-command change;
 - boot an initramfs-only probe with USB disabled and no Debian root or desktop;
 - arm `asterinas.reboot_after=60` before starting userspace;
+- stop the network probe at 45 seconds, leaving a deterministic 15-second
+  window to flush its terminal evidence before the recovery timer fires;
 - test ordered payload sizes in one boot and stop on the first failure;
 - after PASS or FAIL, keep the init process alive so the kernel timer owns
   recovery;
