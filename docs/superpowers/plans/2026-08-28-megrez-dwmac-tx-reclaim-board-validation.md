@@ -267,9 +267,9 @@ the already-reviewed probe layout and no QEMU static binary.
 
 **Files:**
 - Create ignored fast evidence below
-  `target/megrez-debug/dwmac-tx-reclaim-validation/qemu-fast/`
+  `target/qemu-uboot/dwmac-tx-reclaim-validation-fast/`
 - Create ignored recovery evidence below
-  `target/megrez-debug/dwmac-tx-reclaim-validation/qemu-recovery/`
+  `target/qemu-uboot/dwmac-tx-reclaim-validation-recovery/`
 - Create ignored `plan.json`, `recovery.json`, and `permit.json`
 
 - [ ] **Step 1: Freeze the exact plan**
@@ -298,7 +298,7 @@ sha256sum "$VALIDATION_ROOT/plan.json" | tee "$VALIDATION_ROOT/PLAN.SHA256"
 python3 -m tools.riscv.megrez_debug simulate \
   "$VALIDATION_ROOT/plan.json" \
   --tier fast \
-  --output-directory "$VALIDATION_ROOT/qemu-fast" \
+  --output-directory target/qemu-uboot/dwmac-tx-reclaim-validation-fast \
   --uboot-build-directory target/qemu-uboot/cache/u-boot-build
 ```
 
@@ -310,7 +310,7 @@ Megrez DWMAC hardware path; this gate validates the kernel/probe/boot protocol.
 - [ ] **Step 3: Run a separate 60-second software-reboot gate**
 
 ```bash
-RECOVERY_ROOT="$VALIDATION_ROOT/qemu-recovery"
+RECOVERY_ROOT="$PWD/target/qemu-uboot/dwmac-tx-reclaim-validation-recovery"
 install -d -m 0755 "$RECOVERY_ROOT"
 env \
   ASTERINAS_RISCV_BOOTI="$ARTIFACT_ROOT/asterinas.booti" \
@@ -346,7 +346,7 @@ recovery record bound to the current kernel SHA-256.
 ```bash
 python3 -m tools.riscv.megrez_debug preboard \
   "$VALIDATION_ROOT/plan.json" \
-  --desktop-result "$VALIDATION_ROOT/qemu-fast/result.json" \
+  --desktop-result target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
   --recovery-result "$VALIDATION_ROOT/recovery.json" \
   --output "$VALIDATION_ROOT/permit.json"
 python3 -m tools.riscv.megrez_debug check "$VALIDATION_ROOT/plan.json"
@@ -384,7 +384,7 @@ session blindly.
 BOARD_ROOT="$VALIDATION_ROOT/board-run-$(date +%Y%m%d-%H%M%S)"
 python3 -m tools.riscv.megrez_debug board \
   "$VALIDATION_ROOT/plan.json" /dev/ttyUSB0 \
-  --simulation-result "$VALIDATION_ROOT/qemu-fast/result.json" \
+  --simulation-result target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
   --recovery-result "$VALIDATION_ROOT/recovery.json" \
   --output-directory "$BOARD_ROOT" \
   --timeout 300 \
@@ -421,7 +421,7 @@ Run the exact Task 4 command without `--dry-run`:
 ```bash
 python3 -m tools.riscv.megrez_debug board \
   "$VALIDATION_ROOT/plan.json" /dev/ttyUSB0 \
-  --simulation-result "$VALIDATION_ROOT/qemu-fast/result.json" \
+  --simulation-result target/qemu-uboot/dwmac-tx-reclaim-validation-fast/result.json \
   --recovery-result "$VALIDATION_ROOT/recovery.json" \
   --output-directory "$BOARD_ROOT" \
   --timeout 300
