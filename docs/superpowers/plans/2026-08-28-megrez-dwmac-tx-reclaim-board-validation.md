@@ -106,7 +106,8 @@ invalidates all later QEMU and physical permits.
 
 ```bash
 make test_riscv_dwmac_rx_model
-python3 -W error::ResourceWarning -m unittest \
+PYTHONPATH="$PWD/tools/riscv:$PWD" \
+  python3 -W error::ResourceWarning -m unittest \
   tools.riscv.tests.test_megrez_debug \
   tools.riscv.tests.test_megrez_board_session -v
 ```
