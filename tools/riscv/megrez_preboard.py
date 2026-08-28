@@ -426,7 +426,7 @@ def _git_identity(repository: Path) -> str:
             timeout=10,
         ).stdout.strip()
         status = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=repository,
             check=True,
             capture_output=True,
