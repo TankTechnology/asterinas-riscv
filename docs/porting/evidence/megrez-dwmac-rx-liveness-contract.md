@@ -550,3 +550,57 @@ Evidence from the ordering run is retained under
 
 No physical rerun is included in the alias implementation milestone. Its next
 board use must be separately frozen and recovery-armed.
+
+## Sustained-transfer boundary after TCP egress instrumentation
+
+Commit `638a65edd` added three monotonic, one-shot egress markers without
+changing the datapath: the userspace request was buffered, bigtcp dispatched a
+TCP segment, and DWMAC submitted a TCP-data descriptor. The corresponding
+Sv39/SMP4 kernel SHA-256 is
+`ae6e836dfc79cb9b2275269902360d23429165ed63799d7f9e7e6156073c54ec`;
+the frozen plan SHA-256 is
+`52d55495b81b21a618adfdf19f94f4a980499eb1f6296e856cbc3f8cd576bafa`.
+That exact image first passed the generic QEMU TCP gate and the independent
+software-reboot gate. The latter completed the full second firmware epoch with
+no physical interaction; its retained recovery record SHA-256 is
+`f1ebe8a4a0f7e9d9ca63ebad7a9dca5455a1a94e03e4487d16524c6b26876c6d`.
+
+The single physical run then observed all three egress markers in order:
+
+```text
+ASTERINAS_TCP_EGRESS stage=buffered
+ASTERINAS_TCP_EGRESS stage=segment-dispatched
+ASTERINAS_GMAC_TX stage=tcp-data-submitted
+```
+
+The ordered 16-KiB, 64-KiB, and 1-MiB transfers completed. TX publication and
+reclaim remained healthy during the 16-MiB stage, including
+`tx_submitted=958 tx_reclaimed=957 tx_outstanding=1`. The guest later timed out
+after receiving 4,125,960 bytes of that stage. The host accepted 4,587,520
+payload bytes before its socket timeout. Its final TCP sample remained
+established but recorded `total_retrans=134`, `snd_cwnd=1`, two lost segments,
+and an RTO of 1.696 seconds. This closes the request-scheduling and basic TX
+boundaries. The remaining failure is a sustained-transfer loss or receive
+throughput boundary; the evidence does not justify another TX-ring change.
+
+The run ended with `guest-failure-recovered:receive-poll`, followed by fresh
+OpenSBI and U-Boot output and a stopped U-Boot prompt. It issued exactly one
+`booti`, used no persistent U-Boot command, and required no physical reset.
+Evidence is retained under
+`target/megrez-debug/dwmac-egress-638a65edd/board-run-20260828-200416/`:
+
+- `serial.log`: `749af41d8fcca0f11712be12d1bba69817924e40c13f7dec15be0eb58c37241b`;
+- `transport.json`: `c33b5521eb75b65f2150dd02bc3b0e537f34202e85fc20d33e4257e550b013b1`;
+- `probe-tcp-info.json`: `314bd5cf6b025d8486fb678a1e31e35e64df3a60dcd8aeb7bb69b910a93a455b`;
+- `result.json`: `9fb2067a2beaa4bf067201e8013cb7643475302c2f1f30ff18b1f8573a3aaf87`.
+
+Post-run audit found that the bounded RX classifier required the copied header
+prefix to contain the full IPv4 payload and consequently mislabeled valid
+large frames as malformed. It also logged every RX reschedule transition.
+Commit `0e209915d` fixes classification using only the copied headers, reduces
+reschedule reports to power-of-two milestones, and adds a cumulative DWMAC
+receive-buffer-unavailable counter. These are diagnostic corrections, not a
+claim of a physical fix. They pass the 17-test host model and the pinned
+RISC-V OSDK and Clippy gates. A later high-information board run should use the
+new RBU count to decide whether ring pressure exists before changing ring size
+or interrupt policy.
