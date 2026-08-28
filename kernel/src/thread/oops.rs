@@ -91,6 +91,11 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         }
     }
 
+    #[cfg(target_arch = "riscv64")]
+    if crate::boot_reboot::is_armed() {
+        panic::abort();
+    }
+
     let preempt_guard = disable_preempt();
     let thread = Thread::current();
     let cpu = preempt_guard.current_cpu();

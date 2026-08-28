@@ -159,6 +159,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-dwmac"
+version = "0.1.0"
+dependencies = [
+ "aster-bigtcp",
+ "aster-logger",
+ "aster-network",
+ "aster-softirq",
+ "aster-time",
+ "component",
+ "fdt",
+ "ostd",
+ "ostd-pod",
+ "spin 0.9.9",
+ "zerocopy",
+]
+
+[[package]]
 name = "aster-framebuffer"
 version = "0.1.0"
 dependencies = [
@@ -217,12 +234,14 @@ dependencies = [
  "aster-block",
  "aster-cmdline",
  "aster-console",
+ "aster-dwmac",
  "aster-framebuffer",
  "aster-fuse",
  "aster-i8042",
  "aster-input",
  "aster-logger",
  "aster-mlsdisk",
+ "aster-mmc",
  "aster-network",
  "aster-nvme",
  "aster-rights",
@@ -309,6 +328,20 @@ dependencies = [
  "postcard",
  "serde",
  "zerocopy",
+]
+
+[[package]]
+name = "aster-mmc"
+version = "0.1.0"
+dependencies = [
+ "aster-block",
+ "aster-cmdline",
+ "aster-logger",
+ "component",
+ "device-id",
+ "fdt",
+ "ostd",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -428,6 +461,7 @@ version = "0.1.0"
 dependencies = [
  "aster-input",
  "aster-logger",
+ "aster-pci",
  "component",
  "fdt",
  "ostd",

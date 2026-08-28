@@ -2,6 +2,7 @@
 
 #define _GNU_SOURCE
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -67,6 +68,35 @@ static unsigned long long read_tainted(void)
 	read_file_checked("/proc/sys/kernel/tainted", value, sizeof(value));
 	return strtoull(value, NULL, 10);
 }
+
+FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
+{
+	char first[64];
+	char second[64];
+	size_t i;
+
+	read_file_checked("/proc/sys/kernel/random/boot_id", first,
+			  sizeof(first));
+	read_file_checked("/proc/sys/kernel/random/boot_id", second,
+			  sizeof(second));
+
+	TEST_RES(strlen(first), _ret == 37);
+	TEST_RES(strcmp(first, second), _ret == 0);
+	TEST_RES(first[8] == '-' && first[13] == '-' && first[18] == '-' &&
+			 first[23] == '-' && first[36] == '\n',
+		 _ret);
+	TEST_RES(first[14], _ret == '4');
+	TEST_RES(first[19],
+		 _ret == '8' || _ret == '9' || _ret == 'a' || _ret == 'b');
+
+	for (i = 0; i < 36; ++i) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			continue;
+		}
+		TEST_RES(first[i], isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
+	}
+}
+END_TEST()
 
 FN_TEST(proc_sys_kernel_uts_files_match_uname)
 {

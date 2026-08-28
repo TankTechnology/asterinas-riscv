@@ -30,7 +30,9 @@ extern crate getset;
 #[macro_use]
 extern crate ostd_pod;
 
-// Keep the USB component's inventory registration linked until it exposes a kernel API.
+// Keep inventory-only driver components linked until they expose a kernel API.
+use aster_dwmac as _;
+use aster_mmc as _;
 use aster_usb as _;
 
 // Set this crate's log prefix for `ostd::log`.
@@ -45,6 +47,8 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
 mod arch;
 
+#[cfg(target_arch = "riscv64")]
+mod boot_reboot;
 mod context;
 mod cpu;
 mod device;

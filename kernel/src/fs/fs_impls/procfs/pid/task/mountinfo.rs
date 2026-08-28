@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::AtomicU64;
+
 use aster_util::printer::VmPrinter;
 
 use super::TidDirOps;
 use crate::{
+    events::IoEvents,
     fs::{
-        file::mkmod,
-        procfs::template::{ProcFile, ProcFileOps},
+        file::{AccessMode, PerOpenFileOps, StatusFlags, mkmod},
+        procfs::template::{ProcFile, ProcFileOpsByHandle},
         vfs::{
             file_system::FsFlags,
-            inode::Inode,
-            path::{Mount, Path, PathResolver, PerMountFlags},
+            inode::{FileOps, Inode},
+            path::{Mount, MountNamespace, Path, PathResolver, PerMountFlags},
         },
     },
     prelude::*,
-    process::posix_thread::AsPosixThread,
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{PollHandle, Pollable},
+    },
     thread::Thread,
 };
 
@@ -100,7 +106,6 @@ impl MountInfoFileOps {
     /// Provides detailed mount information including mount IDs, parent relationships,
     /// and device numbers.
     fn read_mount_info(
-        &self,
         path_resolver: &PathResolver,
         offset: usize,
         writer: &mut VmWriter,
@@ -151,19 +156,82 @@ impl MountInfoFileOps {
     }
 }
 
-impl ProcFileOps for MountInfoFileOps {
+impl ProcFileOpsByHandle for MountInfoFileOps {
     fn owner_thread(&self) -> Option<Arc<Thread>> {
         self.0.thread()
     }
 
-    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    fn open(
+        &self,
+        _access_mode: AccessMode,
+        _status_flags: StatusFlags,
+    ) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(thread) = self.0.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
         };
         let posix_thread = thread.as_posix_thread().unwrap();
 
-        let fs = posix_thread.read_fs();
-        let path_resolver = fs.resolver().read();
-        self.read_mount_info(&path_resolver, offset, writer)
+        let path_resolver = {
+            let fs = posix_thread.read_fs();
+            fs.resolver().read().clone()
+        };
+        let mount_namespace = {
+            let ns_proxy = posix_thread.ns_proxy().lock();
+            let Some(ns_proxy) = ns_proxy.as_ref() else {
+                return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
+            };
+            ns_proxy.mnt_ns().clone()
+        };
+        let observed_event = AtomicU64::new(mount_namespace.mount_event());
+
+        Ok(Box::new(MountInfoFileHandle {
+            mount_namespace,
+            observed_event,
+            path_resolver,
+        }))
+    }
+}
+
+/// An open `/proc/*/mountinfo` file pinned to one mount namespace.
+struct MountInfoFileHandle {
+    mount_namespace: Arc<MountNamespace>,
+    observed_event: AtomicU64,
+    path_resolver: PathResolver,
+}
+
+impl Pollable for MountInfoFileHandle {
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        self.mount_namespace
+            .poll_mount_changes(&self.observed_event, mask, poller)
+    }
+}
+
+impl FileOps for MountInfoFileHandle {
+    fn read_at(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        MountInfoFileOps::read_mount_info(&self.path_resolver, offset, writer)
+    }
+
+    fn write_at(
+        &self,
+        _offset: usize,
+        _reader: &mut VmReader,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        return_errno_with_message!(Errno::EPERM, "`/proc/*/mountinfo` is not writable");
+    }
+}
+
+impl PerOpenFileOps for MountInfoFileHandle {
+    fn check_seekable(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_offset_aware(&self) -> bool {
+        true
     }
 }

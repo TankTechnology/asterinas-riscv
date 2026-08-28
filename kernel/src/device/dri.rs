@@ -12,18 +12,25 @@
 //! - mode setting (`MODE_SETCRTC`);
 //! - dumb buffers for software rendering (`MODE_CREATE_DUMB`, `MODE_MAP_DUMB`,
 //!   `MODE_DESTROY_DUMB`) plus `mmap`, and framebuffer registration
-//!   (`MODE_ADDFB`, `MODE_RMFB`).
+//!   (`MODE_ADDFB`, `MODE_RMFB`);
+//! - legacy hardware-cursor set, move, and hide operations.
 //!
 //! Dumb buffers are carved out of a single physically-contiguous [`Vmo`] pool
 //! so that (a) `mmap` can map any buffer via the standard `Mappable::Vmo` path
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+mod cursor;
+
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
 
+use self::cursor::{
+    CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
+    validate_cursor,
+};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -93,6 +100,7 @@ struct Dri;
 /// pool (allocated lazily on the first `CREATE_DUMB`).
 struct DriHandle {
     gpu: Arc<GpuDevice>,
+    cursor_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
 }
 
@@ -109,6 +117,7 @@ struct DriInner {
     current_fb_id: Option<u32>,
     current_width: u32,
     current_height: u32,
+    cursor: CursorState,
 }
 
 /// A dumb buffer: a page-aligned sub-range of the shared pool.
@@ -340,8 +349,9 @@ struct DrmModeFbDirtyCmd {
 mod ioctl_defs {
     use super::{
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
-        DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
-        DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
+        DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
+        DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties,
+        DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
@@ -356,6 +366,7 @@ mod ioctl_defs {
     pub(super) type ModeGetResources = ioc!(DRM_IOCTL_MODE_GETRESOURCES, b'd', 0xa0, InOutData<DrmModeCardRes>);
     pub(super) type ModeGetCrtc = ioc!(DRM_IOCTL_MODE_GETCRTC, b'd', 0xa1, InOutData<DrmModeCrtc>);
     pub(super) type ModeSetCrtc = ioc!(DRM_IOCTL_MODE_SETCRTC, b'd', 0xa2, InOutData<DrmModeCrtc>);
+    pub(super) type ModeCursor = ioc!(DRM_IOCTL_MODE_CURSOR, b'd', 0xa3, InOutData<DrmModeCursor>);
     pub(super) type ModeGetEncoder = ioc!(DRM_IOCTL_MODE_GETENCODER, b'd', 0xa6, InOutData<DrmModeGetEncoder>);
     pub(super) type ModeGetConnector = ioc!(DRM_IOCTL_MODE_GETCONNECTOR, b'd', 0xa7, InOutData<DrmModeGetConnector>);
     pub(super) type ModeAddFb = ioc!(DRM_IOCTL_MODE_ADDFB, b'd', 0xae, InOutData<DrmModeFbCmd>);
@@ -365,6 +376,7 @@ mod ioctl_defs {
     pub(super) type ModeMapDumb = ioc!(DRM_IOCTL_MODE_MAP_DUMB, b'd', 0xb3, InOutData<DrmModeMapDumb>);
     pub(super) type ModeDestroyDumb = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB, b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
     pub(super) type ModeObjGetProperties = ioc!(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, b'd', 0xb9, InOutData<DrmModeObjGetProperties>);
+    pub(super) type ModeCursor2 = ioc!(DRM_IOCTL_MODE_CURSOR2, b'd', 0xbb, InOutData<DrmModeCursor2>);
 }
 
 /// `DRM_IOCTL_MODE_RMFB` (`_IOWR('d', 0xaf, unsigned int)`).
@@ -395,6 +407,7 @@ impl Device for Dri {
 
         Ok(Box::new(DriHandle {
             gpu,
+            cursor_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 pool: None,
                 next_offset: 0,
@@ -405,6 +418,7 @@ impl Device for Dri {
                 current_fb_id: None,
                 current_width,
                 current_height,
+                cursor: CursorState::default(),
             }),
         }))
     }
@@ -497,7 +511,11 @@ impl DriHandle {
     }
 
     fn destroy_dumb(&self, req: &DrmModeDestroyDumb) -> Result<()> {
+        let _cursor_operation = self.cursor_operation.lock();
         let mut inner = self.inner.lock();
+        if inner.cursor.uses_handle(req.handle) {
+            return_errno_with_message!(Errno::EBUSY, "dumb buffer is active as the cursor");
+        }
         if inner.dumb_buffers.remove(&req.handle).is_none() {
             return_errno_with_message!(Errno::EINVAL, "unknown dumb buffer handle");
         }
@@ -590,6 +608,84 @@ impl DriHandle {
         Ok(())
     }
 
+    fn update_cursor(&self, request: DrmModeCursor2) -> Result<()> {
+        let _cursor_operation = self.cursor_operation.lock();
+        let (update, position, backing) = {
+            let inner = self.inner.lock();
+            let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
+                inner
+                    .dumb_buffers
+                    .get(&request.handle)
+                    .map(|dumb| CursorBuffer {
+                        width: dumb.width,
+                        height: dumb.height,
+                        pitch: dumb.pitch,
+                        bpp: dumb.bpp,
+                        size: dumb.size,
+                    })
+            } else {
+                None
+            };
+            let update = validate_cursor(request, buffer, CRTC_ID)
+                .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
+            let position = inner.cursor.position_for(update);
+            let backing = match update.image {
+                Some(CursorImage::Buffer { handle, .. }) => {
+                    let dumb = inner.dumb_buffers.get(&handle).ok_or_else(|| {
+                        Error::with_message(Errno::EINVAL, "unknown cursor buffer handle")
+                    })?;
+                    let base = self.pool_paddr(&inner)?;
+                    Some((
+                        (base + dumb.offset) as u64,
+                        u32::try_from(dumb.size).map_err(|_| {
+                            Error::with_message(Errno::EINVAL, "cursor buffer is too large")
+                        })?,
+                    ))
+                }
+                _ => None,
+            };
+            (update, position, backing)
+        };
+
+        let resource_id = match update.image {
+            Some(CursorImage::Buffer {
+                width,
+                height,
+                hot_x,
+                hot_y,
+                ..
+            }) => {
+                let (addr, size) = backing.ok_or_else(|| {
+                    Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
+                })?;
+                Some(
+                    self.gpu
+                        .update_cursor(
+                            addr, size, width, height, hot_x, hot_y, position.x, position.y,
+                        )
+                        .map_err(|_| {
+                            Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")
+                        })?,
+                )
+            }
+            Some(CursorImage::Hide) => {
+                self.gpu.hide_cursor(position.x, position.y).map_err(|_| {
+                    Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed")
+                })?;
+                None
+            }
+            None => {
+                self.gpu.move_cursor(position.x, position.y).map_err(|_| {
+                    Error::with_message(Errno::EIO, "virtio-gpu cursor move failed")
+                })?;
+                None
+            }
+        };
+
+        self.inner.lock().cursor.commit(update, resource_id);
+        Ok(())
+    }
+
     fn get_crtc(&self, req: &DrmModeCrtc) -> Result<DrmModeCrtc> {
         if req.crtc_id != CRTC_ID {
             return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
@@ -602,6 +698,19 @@ impl DriHandle {
             mode: build_mode(inner.current_width, inner.current_height),
             ..Default::default()
         })
+    }
+}
+
+impl Drop for DriHandle {
+    fn drop(&mut self) {
+        let _cursor_operation = self.cursor_operation.lock();
+        let (resource_id, position) = {
+            let inner = self.inner.lock();
+            (inner.cursor.resource_id, inner.cursor.position)
+        };
+        if let Some(resource_id) = resource_id {
+            let _ = self.gpu.clear_cursor(resource_id, position.x, position.y);
+        }
     }
 }
 
@@ -768,6 +877,16 @@ impl PerOpenFileOps for DriHandle {
             cmd @ ModeSetCrtc => {
                 let req = cmd.read()?;
                 self.set_crtc(&req)?;
+                Ok(0)
+            }
+            cmd @ ModeCursor => {
+                let req = cmd.read()?;
+                self.update_cursor(req.into())?;
+                Ok(0)
+            }
+            cmd @ ModeCursor2 => {
+                let req = cmd.read()?;
+                self.update_cursor(req)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {

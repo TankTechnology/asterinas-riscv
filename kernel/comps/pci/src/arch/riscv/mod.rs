@@ -7,9 +7,9 @@ use core::{alloc::Layout, ops::RangeInclusive};
 use fdt::node::{CellSizes, FdtNode};
 use ostd::{
     Error,
-    arch::boot::DEVICE_TREE,
+    arch::{boot::DEVICE_TREE, irq::InterruptSourceInFdt},
     io::IoMem,
-    mm::{Paddr, VmIoOnce},
+    mm::{Paddr, VmIoOnce, dma::DmaWindow},
     sync::SpinLock,
     warn,
 };
@@ -20,7 +20,23 @@ use crate::{
     cfg_space::{PciBridgeCfgOffset, PciCommonCfgOffset, PciGeneralDeviceCfgOffset},
 };
 
+mod intx;
+
+pub use intx::RiscvPciResourceError;
+
+use self::intx::{
+    HostDmaFields, ParentInterruptSpec, PciIntxEndpoint, require_exclusive_route,
+    resolve_intx_cells, validate_dma_contract,
+};
+
 static PCI_ECAM_CFG_SPACE: Once<IoMem> = Once::new();
+static PCI_BUS_RANGE: Once<RangeInclusive<u8>> = Once::new();
+
+#[derive(Clone, Copy, Debug)]
+pub struct RiscvPciHostResources {
+    pub dma_window: DmaWindow,
+    pub interrupt_source: InterruptSourceInFdt,
+}
 
 pub(crate) fn write32(location: &PciDeviceLocation, offset: u32, value: u32) -> Result<(), Error> {
     if offset > PCI_ECAM_MAX_OFFSET {
@@ -131,7 +147,95 @@ pub(crate) fn init() -> Option<RangeInclusive<u8>> {
         init_mmio_allocator_from_fdt(&pci, parent_address_cells);
     }
 
+    PCI_BUS_RANGE.call_once(|| bus_range.clone());
     Some(bus_range)
+}
+
+fn pci_host_node() -> Result<FdtNode<'static, 'static>, RiscvPciResourceError> {
+    let device_tree = DEVICE_TREE.get().unwrap();
+    let mut hosts = device_tree.all_nodes().filter(|node| {
+        node.compatible()
+            .is_some_and(|compatible| compatible.all().any(|name| name == "pci-host-ecam-generic"))
+    });
+    let host = hosts.next().ok_or(RiscvPciResourceError::MissingHost)?;
+    if hosts.next().is_some() {
+        return Err(RiscvPciResourceError::MissingHost);
+    }
+    Ok(host)
+}
+
+fn resolve_host_intx(
+    node: FdtNode<'_, '_>,
+    location: PciDeviceLocation,
+    pin: u8,
+) -> Result<intx::PciIntxRoute, RiscvPciResourceError> {
+    let mask = node
+        .property("interrupt-map-mask")
+        .ok_or(RiscvPciResourceError::InvalidIntxMap)?;
+    let map = node
+        .property("interrupt-map")
+        .ok_or(RiscvPciResourceError::InvalidIntxMap)?;
+    let device_tree = DEVICE_TREE.get().unwrap();
+    resolve_intx_cells(location, pin, mask.value, map.value, |phandle| {
+        let parent = device_tree.find_phandle(phandle)?;
+        Some(ParentInterruptSpec {
+            address_cells: parent.cell_sizes().address_cells,
+            interrupt_cells: parent.interrupt_cells()?,
+        })
+    })
+}
+
+fn present_intx_endpoints() -> Result<alloc::vec::Vec<PciIntxEndpoint>, RiscvPciResourceError> {
+    let buses = PCI_BUS_RANGE
+        .get()
+        .ok_or(RiscvPciResourceError::MissingHost)?;
+    let mut endpoints = alloc::vec::Vec::new();
+    for bus in buses.clone() {
+        for device in PciDeviceLocation::MIN_DEVICE..=PciDeviceLocation::MAX_DEVICE {
+            for function in PciDeviceLocation::MIN_FUNCTION..=PciDeviceLocation::MAX_FUNCTION {
+                let location = PciDeviceLocation {
+                    bus,
+                    device,
+                    function,
+                };
+                if location.read16(PciCommonCfgOffset::VendorId as u16) == u16::MAX {
+                    continue;
+                }
+                let pin = location.read8(PciCommonCfgOffset::InterruptPin as u16);
+                if pin == 0 {
+                    continue;
+                }
+                if pin > 4 {
+                    return Err(RiscvPciResourceError::InvalidIntxMap);
+                }
+                endpoints.push(PciIntxEndpoint { location, pin });
+            }
+        }
+    }
+    Ok(endpoints)
+}
+
+pub fn riscv_host_resources(
+    location: PciDeviceLocation,
+) -> Result<RiscvPciHostResources, RiscvPciResourceError> {
+    let host = pci_host_node()?;
+    let dma_window = validate_dma_contract(HostDmaFields {
+        dma_coherent: host.property("dma-coherent").is_some(),
+        dma_ranges: host.property("dma-ranges").map(|property| property.value),
+        has_iommu: host.property("iommus").is_some() || host.property("iommu-map").is_some(),
+    })?;
+    let pin = location.read8(PciCommonCfgOffset::InterruptPin as u16);
+    let target = PciIntxEndpoint { location, pin };
+    let route = require_exclusive_route(target, present_intx_endpoints()?, |location, pin| {
+        resolve_host_intx(host, location, pin)
+    })?;
+    Ok(RiscvPciHostResources {
+        dma_window,
+        interrupt_source: InterruptSourceInFdt {
+            interrupt_parent: route.interrupt_parent,
+            interrupt: route.interrupt,
+        },
+    })
 }
 
 fn find_pci_host<'b, 'a: 'b>(parent: FdtNode<'b, 'a>) -> Option<(FdtNode<'b, 'a>, usize)> {

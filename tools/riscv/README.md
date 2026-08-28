@@ -45,6 +45,135 @@ See [the LTP gate operator guide](ltp/README.md)
 for the exact containers, strict mode, SMP=4 runs, result schema,
 and evidence-provenance rules.
 
+## PCI xHCI USB keyboard gate
+
+The PCI xHCI gate boots QEMU `virt` in Sv39 mode with `smp=4`, one PCI
+`qemu-xhci` controller, and one USB HID boot keyboard. It proves the
+DT-routed INTx, xHCI, USB enumeration, input-core, and evdev path with an exact
+press/release sequence and no VirtIO or i8042 keyboard fallback.
+
+Run its host tests with:
+
+```bash
+make test_riscv_xhci_input_unit
+```
+
+See [the PCI xHCI keyboard operator guide](xhci/README.md) for the Sv39 build,
+private U-Boot disk, bounded QEMU command, evidence schema, verified M1 hashes,
+and the physical-board limitations.
+
+## Debian persistent root
+
+The Debian M1 gate validates a signed Trixie `riscv64` ext2 root, hands off
+from a minimal stage-1 initramfs into Debian `/bin/bash`, and boots the same
+writable root twice to prove persistence. It is an infrastructure gate: four
+harts, Sv39, two VirtIO block devices, no network, display, USB, or input.
+
+Run its local contract tests with:
+
+```bash
+make test_riscv_debian_rootfs_unit
+```
+
+See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
+the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
+explicit two-boot target, and evidence inspection commands.
+
+## VirtIO-GPU hardware cursor gate
+
+The DRM R1 gate boots current-main Asterinas with the generic Sv39, SMP=4
+profile and one `virtio-gpu-device`. Its guest performs a 64x64 Cursor2 set,
+legacy cursor move, and cursor hide. A pass requires the guest markers and the
+QEMU VirtIO cursor traces in the exact order; networking, USB, and input-device
+fallbacks are absent.
+
+Run the host contract tests with:
+
+```bash
+make test_riscv_drm_cursor_unit
+```
+
+Build the dedicated initramfs and a matching Sv39 kernel, then prepare a
+private U-Boot disk:
+
+```bash
+tools/riscv/drm/build_cursor_gate.sh \
+  target/qemu-uboot/drm-cursor/initramfs.cpio.gz
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-cursor/initramfs.cpio.gz" \
+QEMU_UBOOT_PROFILE=generic-sv39-drm-cursor-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-cursor/prepared" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+```
+
+Run the bounded evidence gate:
+
+```bash
+make test_riscv_drm_cursor \
+  DRM_CURSOR_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_CURSOR_BOOT_DISK="$PWD/target/qemu-uboot/drm-cursor/prepared/boot.ext4" \
+  DRM_CURSOR_MANIFEST="$PWD/target/qemu-uboot/drm-cursor/prepared/artifacts.json" \
+  DRM_CURSOR_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-cursor/evidence"
+```
+
+This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
+it is not evidence for the Megrez display controller or physical scanout.
+
+## Megrez SDHCI read-only evidence
+
+The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
+requires the EIC7700 removable-card controller, a nonzero SDHC capacity,
+read-only `mmcblk0` registration, and a partition-table SHA-256 marker in that
+order. Panic, fatal, probe-failure, writable, duplicate, and out-of-order
+evidence is rejected. Linux boot output is not an accepted substitute.
+
+Run the host tests with:
+
+```bash
+python3 -m unittest tools.riscv.tests.test_megrez_sdhci_gate -v
+```
+
+After a real Asterinas board run has produced the partition hash marker,
+publish the complete log and atomic JSON result with:
+
+```bash
+python3 tools/riscv/megrez_sdhci_gate.py \
+  --transcript /absolute/path/to/megrez.serial.log \
+  --output-dir /absolute/path/to/evidence
+```
+
+## Megrez firmware framebuffer handoff
+
+`megrez_board_session.py` can add the physically established 1920x1080
+scanout at `0xfd800000` to the live DTB before `booti`. The change is RAM-only:
+the tool never runs `saveenv`, and the default serial-only path remains
+unchanged unless `--firmware-framebuffer` is present.
+
+Asterinas currently selects only the first `console=` value for `/dev/console`.
+The framebuffer gate therefore requires `console=tty0` to be first. The closed
+`firmware-framebuffer` final profile returns success when the serial log has
+observed the kernel register the handoff; Debian/systemd output after that is
+expected on HDMI rather than on the serial console.
+
+```bash
+PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 loglevel=info init=/init asterinas.reboot_after=600 -- --root-init=systemd" \
+  --firmware-framebuffer \
+  --final-profile firmware-framebuffer \
+  --yes \
+  --log /absolute/path/to/megrez-framebuffer.serial.log
+```
+
+This proves the current-main firmware framebuffer registration boundary. It
+does not by itself prove Xorg, a desktop session, or native EIC7700 DRM.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.

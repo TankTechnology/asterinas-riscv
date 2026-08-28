@@ -273,6 +273,177 @@ test_riscv_ltp_unit:
 		tools.riscv.tests.test_ltp_gate \
 		tools.riscv.tests.test_ltp_guest_runner -v
 
+.PHONY: test_riscv_debian_rootfs_unit
+test_riscv_debian_rootfs_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_m5_network \
+		tools.riscv.tests.test_debian_m6_browser -v
+
+.PHONY: test_riscv_megrez_gmac_unit
+test_riscv_megrez_gmac_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_gmac_contract \
+		tools.riscv.tests.test_megrez_gmac_gate -v
+
+.PHONY: test_riscv_debian_rootfs_gate
+test_riscv_debian_rootfs_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.rootfs_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_GATE_OUTPUT)" --smp 4
+
+.PHONY: test_riscv_debian_systemd_m2_gate
+test_riscv_debian_systemd_m2_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_SYSTEMD_M2_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.systemd_m2_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
+
+.PHONY: test_riscv_debian_desktop_m5_qemu_gate
+test_riscv_debian_desktop_m5_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout 300
+
+.PHONY: test_riscv_debian_browser_m5_qemu_gate
+test_riscv_debian_browser_m5_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.browser_m5_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout 7200
+
+.PHONY: test_riscv_debian_desktop_m6_browser_gate
+test_riscv_debian_desktop_m6_browser_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_m6_browser_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout 300
+
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit
 	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
@@ -280,6 +451,32 @@ test_riscv_ltp: test_riscv_ltp_unit
 	@python3 tools/riscv/ltp_gate.py run \
 		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(RISCV_LTP_SMP)" \
 		--suite "$(RISCV_LTP_SUITE)"
+
+.PHONY: test_riscv_xhci_input_unit
+test_riscv_xhci_input_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_xhci_input_gate -v
+
+.PHONY: test_riscv_drm_cursor_unit
+test_riscv_drm_cursor_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_cursor_gate -v
+
+.PHONY: test_riscv_drm_cursor
+test_riscv_drm_cursor: test_riscv_drm_cursor_unit
+	@test -n "$(DRM_CURSOR_UBOOT)" || \
+		{ echo "DRM_CURSOR_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_BOOT_DISK)" || \
+		{ echo "DRM_CURSOR_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_MANIFEST)" || \
+		{ echo "DRM_CURSOR_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_CURSOR_GATE_OUTPUT)" || \
+		{ echo "DRM_CURSOR_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.cursor_gate \
+		--uboot "$(DRM_CURSOR_UBOOT)" \
+		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
+		--manifest "$(DRM_CURSOR_MANIFEST)" \
+		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
 
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:

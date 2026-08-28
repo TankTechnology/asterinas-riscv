@@ -255,6 +255,20 @@ impl Bar {
         }
     }
 
+    /// Acquires exclusive ownership of the BAR access.
+    ///
+    /// Unlike [`Self::acquire`], this operation creates the MMIO handle without retaining a copy
+    /// in the BAR manager. It fails after shared access has been acquired. Device drivers that
+    /// hand the mapping to an unsafe register accessor should use this operation so that no second
+    /// in-kernel handle can access the same registers concurrently.
+    pub fn acquire_exclusive(&mut self) -> Result<BarAccess> {
+        match self {
+            Self::Memory(mem_bar) => mem_bar.acquire_exclusive().map(BarAccess::Memory),
+            // TODO: Implement the `acquire` operation based on `IoPortAllocator`.
+            Self::Io(_) => Ok(BarAccess::Io),
+        }
+    }
+
     /// Returns access to the BAR.
     ///
     /// This method will return `None` if the access is not [`acquire`]d before.
@@ -375,6 +389,14 @@ impl MemoryBar {
         }
 
         Ok(self.io_memory.as_ref().unwrap())
+    }
+
+    /// Acquires exclusive ownership of this memory BAR's MMIO mapping.
+    pub fn acquire_exclusive(&mut self) -> Result<IoMem> {
+        if self.io_memory.is_some() {
+            return Err(Error::AccessDenied);
+        }
+        IoMem::acquire((self.base as usize)..((self.base + self.size) as usize))
     }
 
     /// Returns access to the memory BAR.

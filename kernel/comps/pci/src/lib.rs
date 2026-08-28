@@ -75,6 +75,8 @@ mod device_info;
 
 extern crate alloc;
 
+#[cfg(target_arch = "riscv64")]
+pub use arch::{RiscvPciHostResources, RiscvPciResourceError, riscv_host_resources};
 use component::{ComponentInitError, init_component};
 pub use device_info::{PciDeviceId, PciDeviceLocation};
 use ostd::sync::Mutex;

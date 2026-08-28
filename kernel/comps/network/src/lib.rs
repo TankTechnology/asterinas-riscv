@@ -69,19 +69,20 @@ pub trait NetDeviceCallback = Fn() + Send + Sync + 'static;
 
 pub fn register_device(
     name: String,
+    is_link_up: bool,
     device: Arc<SpinLock<dyn AnyNetworkDevice, BottomHalfDisabled>>,
-) {
+) -> Result<(), RegisterDeviceError> {
     COMPONENT
         .get()
         .unwrap()
         .network_device_table
         .lock()
-        .insert(name, NetworkDeviceIrqCallbackSet::new(device));
+        .register(name, is_link_up, device)
 }
 
 pub fn get_device(str: &str) -> Option<Arc<SpinLock<dyn AnyNetworkDevice, BottomHalfDisabled>>> {
     let table = COMPONENT.get().unwrap().network_device_table.lock();
-    let callbacks = table.get(str)?;
+    let callbacks = table.entries.get(str)?;
     Some(callbacks.device.clone())
 }
 
@@ -91,7 +92,7 @@ pub fn get_device(str: &str) -> Option<Arc<SpinLock<dyn AnyNetworkDevice, Bottom
 /// the callback function should _not_ sleep.
 pub fn register_recv_callback(name: &str, callback: impl NetDeviceCallback) {
     let device_table = COMPONENT.get().unwrap().network_device_table.lock();
-    let Some(callbacks) = device_table.get(name) else {
+    let Some(callbacks) = device_table.entries.get(name) else {
         return;
     };
     callbacks.recv_callbacks.lock().push(Arc::new(callback));
@@ -107,7 +108,7 @@ pub fn register_recv_callback(name: &str, callback: impl NetDeviceCallback) {
 /// The driver may skip certain callbacks for performance optimization.
 pub fn register_send_callback(name: &str, callback: impl NetDeviceCallback) {
     let device_table = COMPONENT.get().unwrap().network_device_table.lock();
-    let Some(callbacks) = device_table.get(name) else {
+    let Some(callbacks) = device_table.entries.get(name) else {
         return;
     };
     callbacks.send_callbacks.lock().push(Arc::new(callback));
@@ -118,7 +119,7 @@ fn handle_rx_softirq() {
     // TODO: We should handle network events for just one device per softirq,
     // rather than processing events for all devices.
     // This issue should be addressed once new network devices are added.
-    for callback_set in device_table.values() {
+    for callback_set in device_table.entries.values() {
         let recv_callbacks = callback_set.recv_callbacks.lock();
         for callback in recv_callbacks.iter() {
             callback();
@@ -131,7 +132,7 @@ fn handle_tx_softirq() {
     // TODO: We should handle network events for just one device per softirq,
     // rather than processing events for all devices.
     // This issue should be addressed once new network devices are added.
-    for callback_set in device_table.values() {
+    for callback_set in device_table.entries.values() {
         let can_send = {
             let mut device = callback_set.device.lock();
             device.free_processed_tx_buffers();
@@ -159,12 +160,38 @@ pub fn raise_receive_softirq() {
     SoftIrqLine::get(NETWORK_RX_SOFTIRQ_ID).raise();
 }
 
-pub fn all_devices() -> Vec<(String, NetworkDeviceRef)> {
+pub fn all_devices() -> Vec<RegisteredNetworkDevice> {
     let network_devs = COMPONENT.get().unwrap().network_device_table.lock();
-    network_devs
-        .iter()
-        .map(|(name, callbacks)| (name.clone(), callbacks.device.clone()))
-        .collect()
+    network_devs.snapshot()
+}
+
+/// One immutable snapshot of a registered Ethernet device.
+#[derive(Clone)]
+pub struct RegisteredNetworkDevice {
+    key: String,
+    is_link_up: bool,
+    device: NetworkDeviceRef,
+}
+
+impl RegisteredNetworkDevice {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub const fn is_link_up(&self) -> bool {
+        self.is_link_up
+    }
+
+    pub fn device(&self) -> NetworkDeviceRef {
+        self.device.clone()
+    }
+}
+
+/// A rejected stable network-device registration key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterDeviceError {
+    DuplicateKey,
+    InvalidKey,
 }
 
 static COMPONENT: Once<Component> = Once::new();
@@ -184,22 +211,70 @@ type NetDeviceCallbackListRef = Arc<SpinLock<Vec<Arc<dyn NetDeviceCallback>>, Bo
 type NetworkDeviceRef = Arc<SpinLock<dyn AnyNetworkDevice, BottomHalfDisabled>>;
 
 struct Component {
-    /// Device list, the key is device name, value is (callbacks, device);
-    network_device_table:
-        SpinLock<BTreeMap<String, NetworkDeviceIrqCallbackSet>, BottomHalfDisabled>,
+    network_device_table: SpinLock<DeviceRegistry, BottomHalfDisabled>,
+}
+
+struct DeviceRegistry {
+    entries: BTreeMap<String, NetworkDeviceIrqCallbackSet>,
+}
+
+impl DeviceRegistry {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    fn register(
+        &mut self,
+        key: String,
+        is_link_up: bool,
+        device: NetworkDeviceRef,
+    ) -> Result<(), RegisterDeviceError> {
+        if !is_valid_device_key(&key) {
+            return Err(RegisterDeviceError::InvalidKey);
+        }
+        if self.entries.contains_key(&key) {
+            return Err(RegisterDeviceError::DuplicateKey);
+        }
+        self.entries
+            .insert(key, NetworkDeviceIrqCallbackSet::new(device, is_link_up));
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Vec<RegisteredNetworkDevice> {
+        self.entries
+            .iter()
+            .map(|(key, callbacks)| RegisteredNetworkDevice {
+                key: key.clone(),
+                is_link_up: callbacks.is_link_up,
+                device: callbacks.device.clone(),
+            })
+            .collect()
+    }
+}
+
+fn is_valid_device_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 64
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 /// The send callbacks and recv callbacks for a network device
 struct NetworkDeviceIrqCallbackSet {
     device: NetworkDeviceRef,
+    is_link_up: bool,
     recv_callbacks: NetDeviceCallbackListRef,
     send_callbacks: NetDeviceCallbackListRef,
 }
 
 impl NetworkDeviceIrqCallbackSet {
-    fn new(device: NetworkDeviceRef) -> Self {
+    fn new(device: NetworkDeviceRef, is_link_up: bool) -> Self {
         Self {
             device,
+            is_link_up,
             recv_callbacks: Arc::new(SpinLock::new(Vec::new())),
             send_callbacks: Arc::new(SpinLock::new(Vec::new())),
         }
@@ -209,7 +284,88 @@ impl NetworkDeviceIrqCallbackSet {
 impl Component {
     pub fn init() -> Result<Self, ComponentInitError> {
         Ok(Self {
-            network_device_table: SpinLock::new(BTreeMap::new()),
+            network_device_table: SpinLock::new(DeviceRegistry::new()),
         })
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct FakeNetworkDevice;
+
+    impl AnyNetworkDevice for FakeNetworkDevice {
+        fn mac_addr(&self) -> EthernetAddr {
+            EthernetAddr([0x02, 0, 0, 0, 0, 1])
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities::default()
+        }
+
+        fn can_receive(&self) -> bool {
+            false
+        }
+
+        fn can_send(&self) -> bool {
+            false
+        }
+
+        fn receive(&mut self) -> Result<RxBuffer, NetError> {
+            Err(NetError::NotReady)
+        }
+
+        fn send(&mut self, _packet: &[u8]) -> Result<(), NetError> {
+            Err(NetError::NotReady)
+        }
+
+        fn free_processed_tx_buffers(&mut self) {}
+
+        fn notify_poll_end(&mut self) {}
+    }
+
+    fn fake_device() -> NetworkDeviceRef {
+        Arc::new(SpinLock::new(FakeNetworkDevice))
+    }
+
+    #[ktest]
+    fn registry_snapshot_is_sorted_and_preserves_link_metadata() {
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register("z-device".into(), false, fake_device())
+            .unwrap();
+        registry
+            .register("a-device".into(), true, fake_device())
+            .unwrap();
+
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot[0].key(), "a-device");
+        assert!(snapshot[0].is_link_up());
+        assert_eq!(snapshot[1].key(), "z-device");
+        assert!(!snapshot[1].is_link_up());
+    }
+
+    #[ktest]
+    fn registry_rejects_duplicate_and_unsafe_keys_without_replacement() {
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register("eic7700-rj45".into(), true, fake_device())
+            .unwrap();
+
+        assert_eq!(
+            registry.register("eic7700-rj45".into(), false, fake_device()),
+            Err(RegisterDeviceError::DuplicateKey)
+        );
+        assert_eq!(
+            registry.register("bad,key".into(), true, fake_device()),
+            Err(RegisterDeviceError::InvalidKey)
+        );
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].is_link_up());
     }
 }
