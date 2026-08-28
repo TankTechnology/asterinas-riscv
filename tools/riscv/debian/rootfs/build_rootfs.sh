@@ -857,6 +857,7 @@ copy_into_content_cache() {
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
+    local startup_cache_marker
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
@@ -922,22 +923,35 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
-    if [[ "$PROFILE" == browser-web ]]; then
+    if profile_uses_startup_caches "$PROFILE"; then
         finalize_browser_startup_caches "$stage"
     fi
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
     [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
         die "qemu-riscv64-static remains in staged rootfs"
-    if [[ "$PROFILE" == browser-web ]]; then
+    if profile_uses_startup_caches "$PROFILE"; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
+        if [[ "$PROFILE" == browser-web ]]; then
+            startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+        else
+            startup_cache_marker='DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+        fi
         python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+            --profile "$PROFILE" \
             >"$WORK_DIR/browser-startup-cache-check.log"
-        grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
+        grep -Fqx "$startup_cache_marker" \
             "$WORK_DIR/browser-startup-cache-check.log" ||
-            die "browser startup cache checker did not emit its exact PASS"
+            die "startup cache checker did not emit its exact PASS"
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+profile_uses_startup_caches() {
+    case "$1" in
+        desktop-m5-network | browser-web) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 finalize_browser_startup_caches() {

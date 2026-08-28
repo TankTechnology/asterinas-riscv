@@ -273,6 +273,13 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 PROFILE=desktop-m5-network
 configure_profile 1
 WORK_DIR="$2"
+finalize_browser_startup_caches() {
+    mkdir -p "$1/usr/share/asterinas"
+    printf 'called\n' >"$1/usr/share/asterinas/startup-cache-fixture"
+}
+python3() {
+    printf '%s\n' 'DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+}
 configure_and_normalize_rootfs
 """,
                 "builder-configure-m5-test",
@@ -286,6 +293,12 @@ configure_and_normalize_rootfs
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (stage / "usr/share/asterinas/startup-cache-fixture").read_text(),
+            "called\n",
+        )
+        self.assertTrue((stage / "etc/.updated").is_file())
+        self.assertTrue((stage / "var/.updated").is_file())
         self.assertTrue((stage / "usr/lib/asterinas/desktop-m4-session").is_file())
         installed = stage / "usr/lib/asterinas/desktop-m5-network-evidence"
         self.assertEqual(installed.read_bytes(), EVIDENCE_SCRIPT.read_bytes())
