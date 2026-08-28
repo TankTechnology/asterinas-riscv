@@ -163,7 +163,34 @@ install -d -m 0755 "$ARTIFACT_ROOT"
 Never reuse `target/megrez-debug/dwmac-high-info/plan.json` or either old board
 run directory.
 
-- [ ] **Step 2: Build exactly Sv39/SMP4 in the pinned container**
+- [ ] **Step 2: Materialize the ignored OSDK initramfs prerequisite**
+
+The root `OSDK.toml` always resolves
+`test/initramfs/build/initramfs.cpio.gz`, even though this board run supplies a
+separate probe initramfs to `booti`. Build the standard prerequisite inside the
+pinned image, then dereference the container-private Nix out-link into a regular
+workspace file before the container exits:
+
+```bash
+timeout 600 docker run --name codex-dwmac-tx-reclaim-initramfs --rm \
+  --network=none \
+  -v "$PWD:/root/asterinas" -w /root/asterinas \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  bash -lc 'set -euo pipefail
+    make initramfs TARGET_ARCH=riscv64 SMP=4
+    cp -L test/initramfs/build/initramfs.cpio.gz /tmp/initramfs.cpio.gz
+    unlink test/initramfs/build/initramfs.cpio.gz
+    install -m 0644 /tmp/initramfs.cpio.gz \
+      test/initramfs/build/initramfs.cpio.gz'
+test -f test/initramfs/build/initramfs.cpio.gz
+test ! -L test/initramfs/build/initramfs.cpio.gz
+gzip -t test/initramfs/build/initramfs.cpio.gz
+```
+
+Expected: a non-empty regular gzip file. A dangling `/nix/store` symlink is not
+accepted as a successful prerequisite.
+
+- [ ] **Step 3: Build exactly Sv39/SMP4 in the pinned container**
 
 ```bash
 timeout 1200 docker run --name codex-dwmac-tx-reclaim-build --rm \
@@ -182,7 +209,7 @@ Expected: exit 0 and a non-empty
 `target/osdk/aster-kernel/aster-kernel-osdk-bin.Image`. Inspect the build log for
 `riscv_sv39_mode`; a default/Sv48 build is not acceptable.
 
-- [ ] **Step 3: Freeze all four payloads under new names**
+- [ ] **Step 4: Freeze all four payloads under new names**
 
 ```bash
 install -m 0755 target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
@@ -203,7 +230,7 @@ Verify the new kernel SHA-256 differs from the failed physical-run kernel
 `001adf78ef91c469ee3926461ea47a905f6df230a03d6fedb1c78a8375074fca`.
 The other three files may retain their old identities.
 
-- [ ] **Step 4: Verify DTB and archive structure**
+- [ ] **Step 5: Verify DTB and archive structure**
 
 ```bash
 fdtget -l "$ARTIFACT_ROOT/qemu-virt.dtb" /cpus | \
