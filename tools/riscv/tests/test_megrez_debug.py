@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zlib
 from contextlib import nullcontext
@@ -120,6 +121,69 @@ class MegrezDebugProbeServerTests(unittest.TestCase):
             PROBE_STRESS_SIZES,
             (16 * 1024, 64 * 1024, 1024 * 1024, 16 * 1024 * 1024),
         )
+
+    def test_server_records_bounded_tcp_info_for_a_stalled_reader(self) -> None:
+        payload_bytes = 16 * 1024 * 1024
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        try:
+            with ProbeServer(
+                host="127.0.0.1",
+                port=0,
+                payload_sizes=(payload_bytes,),
+            ) as server:
+                client.settimeout(1.0)
+                client.connect(server.address)
+                client.sendall(
+                    f"GET /asterinas-probe/{payload_bytes} HTTP/1.0\r\n\r\n".encode()
+                )
+                deadline = time.monotonic() + 1.0
+                trace = server.trace_snapshot(plan_sha256="0" * 64)
+                while (
+                    not trace["connections"]
+                    or len(trace["connections"][0]["samples"]) < 3
+                    or trace["connections"][0]["payload_bytes_accepted"] < 4096
+                    or not any(
+                        sample["snd_wnd"] == 0
+                        for sample in trace["connections"][0]["samples"]
+                    )
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    trace = server.trace_snapshot(plan_sha256="0" * 64)
+        finally:
+            client.close()
+
+        trace = server.trace_snapshot(plan_sha256="0" * 64)
+        encoded = server.canonical_trace(plan_sha256="0" * 64)
+
+        self.assertEqual(json.loads(encoded), trace)
+        self.assertEqual(trace["schema_version"], 1)
+        self.assertEqual(trace["plan_sha256"], "0" * 64)
+        self.assertEqual(len(trace["connections"]), 1)
+        connection = trace["connections"][0]
+        self.assertEqual(connection["requested_bytes"], payload_bytes)
+        self.assertLessEqual(len(connection["samples"]), 4096)
+        self.assertGreater(len(connection["samples"]), 0)
+        timestamps = [sample["monotonic_us"] for sample in connection["samples"]]
+        bytes_acked = [sample["bytes_acked"] for sample in connection["samples"]]
+        bytes_sent = [sample["bytes_sent"] for sample in connection["samples"]]
+        self.assertEqual(timestamps, sorted(timestamps))
+        self.assertEqual(bytes_acked, sorted(bytes_acked))
+        self.assertEqual(bytes_sent, sorted(bytes_sent))
+        self.assertIn("unacked", connection["samples"][-1])
+        self.assertIn("snd_cwnd", connection["samples"][-1])
+        self.assertIn("snd_wnd", connection["samples"][-1])
+        self.assertTrue(
+            any(
+                sample["unacked"] > 0
+                or sample["bytes_sent"] > sample["bytes_acked"]
+                or sample["snd_wnd"] == 0
+                for sample in connection["samples"]
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "plan SHA-256"):
+            server.trace_snapshot(plan_sha256="not-a-hash")
 
 
 class MegrezDebugArtifactTests(unittest.TestCase):
@@ -1070,6 +1134,9 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         def close(self) -> None:
             self.calls.append(("close", None))
 
+        def evidence_names(self) -> tuple[str, ...]:
+            return ("serial.log", "transport.json")
+
         def publish(
             self,
             result: StageResult,
@@ -1409,8 +1476,20 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             def __exit__(self, *_args: object) -> None:
                 events.append("probe-exit")
 
-        def board(*_args: object, **_kwargs: object) -> StageResult:
+            def canonical_trace(self, *, plan_sha256: str) -> bytes:
+                return json.dumps(
+                    {"schema_version": 1, "plan_sha256": plan_sha256}
+                ).encode()
+
+        def board(
+            *_args: object,
+            probe_trace_provider=None,
+            **_kwargs: object,
+        ) -> StageResult:
             events.append("board")
+            self.assertIsNotNone(probe_trace_provider)
+            trace = json.loads(probe_trace_provider(self.plan.plan_sha256))
+            self.assertEqual(trace["plan_sha256"], self.plan.plan_sha256)
             return expected
 
         with mock.patch.object(
@@ -1433,6 +1512,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             "/dev/ttyUSB-test",
             self.output,
             timeout=240.0,
+            probe_trace_provider=mock.ANY,
         )
 
     def test_board_cli_rejects_missing_output_and_artifact_drift_pre_serial(
@@ -1550,6 +1630,17 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 lock_device=lambda _fd: None,
                 close_device=closed.append,
                 session_factory=session_factory,
+                probe_trace_provider=lambda plan_sha256: (
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "plan_sha256": plan_sha256,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode(),
             )
             operations.invalidate()
             operations.open(10.0)
@@ -1563,7 +1654,11 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 passed=True,
                 reason="board-pass",
                 plan_sha256=plan.plan_sha256,
-                evidence=("serial.log", "transport.json"),
+                evidence=(
+                    "serial.log",
+                    "transport.json",
+                    "probe-tcp-info.json",
+                ),
             )
             operations.publish(result, "post-boot\n", outcomes)
             operations.finish()
@@ -1593,6 +1688,8 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             )
             self.assertTrue((output / "serial.log").is_file())
             self.assertTrue((output / "transport.json").is_file())
+            trace = json.loads((output / "probe-tcp-info.json").read_bytes())
+            self.assertEqual(trace["plan_sha256"], plan.plan_sha256)
             self.assertEqual(
                 StageResult.from_bytes((output / "result.json").read_bytes()),
                 result,

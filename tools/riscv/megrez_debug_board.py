@@ -50,6 +50,7 @@ OpenDevice = Callable[[str], int]
 LockDevice = Callable[[int], None]
 CloseDevice = Callable[[int], None]
 SessionFactory = Callable[..., BoardSession]
+ProbeTraceProvider = Callable[[str], bytes]
 MAX_BOARD_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 FATAL_MARKERS = (
     "Uncaught panic",
@@ -223,6 +224,8 @@ class BoardOperations(Protocol):
 
     def close(self) -> None: ...
 
+    def evidence_names(self) -> tuple[str, ...]: ...
+
     def publish(
         self,
         result: StageResult,
@@ -278,6 +281,7 @@ class RealBoardOperations:
         lock_device: LockDevice = _lock_serial,
         close_device: CloseDevice = os.close,
         session_factory: SessionFactory = BoardSession.from_fd,
+        probe_trace_provider: ProbeTraceProvider | None = None,
     ) -> None:
         self._plan = plan
         self._device = device
@@ -291,6 +295,7 @@ class RealBoardOperations:
         self._lock_device = lock_device
         self._close_device = close_device
         self._session_factory = session_factory
+        self._probe_trace_provider = probe_trace_provider
         self._output: PinnedOutputDirectory | None = None
         self._fd: int | None = None
         self._session: BoardSession | None = None
@@ -305,7 +310,13 @@ class RealBoardOperations:
     def invalidate(self) -> None:
         output = _safe_board_output(self._output_path, self._repository)
         self._output = PinnedOutputDirectory(output)
-        self._output.invalidate("result.json", "serial.log", "transport.json")
+        self._output.invalidate("result.json", *self.evidence_names())
+
+    def evidence_names(self) -> tuple[str, ...]:
+        names = ("serial.log", "transport.json")
+        if self._probe_trace_provider is not None:
+            names += ("probe-tcp-info.json",)
+        return names
 
     def open(self, timeout: float) -> None:
         fd = self._open_device(self._device)
@@ -421,6 +432,21 @@ class RealBoardOperations:
             + b"\n",
             mode=0o644,
         )
+        if self._probe_trace_provider is not None:
+            trace = self._probe_trace_provider(self._plan.plan_sha256)
+            try:
+                decoded = json.loads(trace.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise BoardRunFailure("probe-trace-invalid") from error
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("schema_version") != 1
+                or decoded.get("plan_sha256") != self._plan.plan_sha256
+            ):
+                raise BoardRunFailure("probe-trace-plan-mismatch")
+            self._output.atomic_write("probe-tcp-info.json", trace, mode=0o644)
+        if result.evidence != self.evidence_names():
+            raise BoardRunFailure("board-evidence-mismatch")
         self._output.atomic_write("result.json", result.canonical_bytes(), mode=0o644)
 
     def finish(self) -> None:
@@ -470,10 +496,16 @@ def run_physical_board(
     output_directory: Path,
     *,
     timeout: float = 300.0,
+    probe_trace_provider: ProbeTraceProvider | None = None,
 ) -> StageResult:
     """Run one board attempt without reset or persistent U-Boot writes."""
 
-    operations = RealBoardOperations(plan, device, output_directory)
+    operations = RealBoardOperations(
+        plan,
+        device,
+        output_directory,
+        probe_trace_provider=probe_trace_provider,
+    )
     try:
         try:
             with _BoardSignalState():
@@ -485,6 +517,7 @@ def run_physical_board(
                         plan,
                         passed=False,
                         reason=f"board-terminated-{error.signum}",
+                        evidence=operations.evidence_names(),
                     ),
                     operations.last_transcript,
                     operations.last_outcomes,
@@ -581,14 +614,20 @@ def _remaining(deadline: float, clock: Callable[[], float], *, phase: str) -> fl
     return remaining
 
 
-def _stage_result(plan: DebugPlan, *, passed: bool, reason: str) -> StageResult:
+def _stage_result(
+    plan: DebugPlan,
+    *,
+    passed: bool,
+    reason: str,
+    evidence: tuple[str, ...],
+) -> StageResult:
     result = StageResult(
         schema_version=1,
         stage="board",
         passed=passed,
         reason=reason,
         plan_sha256=plan.plan_sha256,
-        evidence=("serial.log", "transport.json"),
+        evidence=evidence,
     )
     result.validate()
     return result
@@ -613,6 +652,7 @@ def run_board(
 
     plan.validate()
     operations.invalidate()
+    evidence = operations.evidence_names()
     deadline = clock() + config.timeout
     tracker = _MarkerTracker(plan.markers)
     transcript: list[str] = []
@@ -649,28 +689,48 @@ def run_board(
                 terminal = tracker.terminal
                 assert terminal is not None
                 if terminal.passed:
-                    result = _stage_result(plan, passed=True, reason="board-pass")
+                    result = _stage_result(
+                        plan,
+                        passed=True,
+                        reason="board-pass",
+                        evidence=evidence,
+                    )
                 else:
                     result = _stage_result(
                         plan,
                         passed=False,
                         reason=f"guest-failure-recovered:{terminal.reason}",
+                        evidence=evidence,
                     )
                 break
     except BoardTermination as error:
         pending_termination = error
         result = _stage_result(
-            plan, passed=False, reason=f"board-terminated-{error.signum}"
+            plan,
+            passed=False,
+            reason=f"board-terminated-{error.signum}",
+            evidence=evidence,
         )
     except BoardTransportError as error:
-        result = _stage_result(plan, passed=False, reason=str(error))
+        result = _stage_result(
+            plan,
+            passed=False,
+            reason=str(error),
+            evidence=evidence,
+        )
     except BoardRunFailure as error:
-        result = _stage_result(plan, passed=False, reason=str(error))
+        result = _stage_result(
+            plan,
+            passed=False,
+            reason=str(error),
+            evidence=evidence,
+        )
     except (OSError, RuntimeError) as error:
         result = _stage_result(
             plan,
             passed=False,
             reason=f"uboot-runtime-{type(error).__name__}",
+            evidence=evidence,
         )
     finally:
         if opened:
@@ -682,15 +742,24 @@ def run_board(
                     plan,
                     passed=False,
                     reason=f"board-terminated-{error.signum}",
+                    evidence=evidence,
                 )
             except (OSError, RuntimeError):
                 if pending_termination is None:
                     result = _stage_result(
-                        plan, passed=False, reason="transport-close-failed"
+                        plan,
+                        passed=False,
+                        reason="transport-close-failed",
+                        evidence=evidence,
                     )
 
     if result is None:
-        result = _stage_result(plan, passed=False, reason="board-internal-error")
+        result = _stage_result(
+            plan,
+            passed=False,
+            reason="board-internal-error",
+            evidence=evidence,
+        )
     try:
         operations.publish(result, "".join(transcript), outcomes)
     except BoardTermination as error:
@@ -699,6 +768,7 @@ def run_board(
             plan,
             passed=False,
             reason=f"board-terminated-{error.signum}",
+            evidence=evidence,
         )
         try:
             operations.publish(result, "".join(transcript), outcomes)
