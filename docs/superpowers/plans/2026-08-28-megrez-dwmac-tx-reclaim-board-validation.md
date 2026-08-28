@@ -319,27 +319,49 @@ is reused unchanged by the recovery gate.
 ```bash
 RECOVERY_ROOT="$PWD/target/qemu-uboot/dwmac-tx-reclaim-validation-recovery"
 install -d -m 0755 "$RECOVERY_ROOT"
-timeout 300 docker run --name codex-dwmac-tx-reclaim-qemu-recovery --rm \
-  --network=host --user "$(id -u):$(id -g)" \
-  -v "$PWD:$PWD" -w "$PWD" \
-  -e ASTERINAS_RISCV_BOOTI="$ARTIFACT_ROOT/asterinas.booti" \
-  -e ASTERINAS_INITRAMFS="$ARTIFACT_ROOT/megrez-tcp-probe.cpio.gz" \
-  -e QEMU_UBOOT_PROFILE=generic-sv39-smp4-software-reboot \
-  -e QEMU_UBOOT_OUT_DIR="$RECOVERY_ROOT" \
-  -e QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/dwmac-tx-reclaim-uboot-build" \
-  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
-  bash -c 'set -euo pipefail
-    tools/riscv/prepare_qemu_uboot_booti.sh prepare
-    python3 tools/riscv/qemu_uboot_booti.py run \
-      --profile generic-sv39-smp4-software-reboot \
-      --device-set virtio-net-slirp \
-      --uboot target/qemu-uboot/dwmac-tx-reclaim-uboot-build/u-boot \
-      --boot-disk "$QEMU_UBOOT_OUT_DIR/boot.ext4" \
-      --manifest "$QEMU_UBOOT_OUT_DIR/artifacts.json" \
-      --dtb-audit "$QEMU_UBOOT_OUT_DIR/qemu-dtb-audit.json" \
-      --serial-log "$QEMU_UBOOT_OUT_DIR/serial.log" \
-      --marker-event "$QEMU_UBOOT_OUT_DIR/marker-event.txt" \
-      --result "$QEMU_UBOOT_OUT_DIR/qemu-result.json"'
+PYTHONPATH="$PWD" python3 - "$PWD" "$ARTIFACT_ROOT" "$RECOVERY_ROOT" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from tools.riscv.megrez_debug_probe import PROBE_STRESS_SIZES, ProbeServer
+
+repository = Path(sys.argv[1])
+artifacts = Path(sys.argv[2])
+output = Path(sys.argv[3])
+uid = str(os.getuid())
+gid = str(os.getgid())
+guest = """set -euo pipefail
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+python3 tools/riscv/qemu_uboot_booti.py run \
+  --profile generic-sv39-smp4-software-reboot \
+  --device-set virtio-net-slirp \
+  --uboot target/qemu-uboot/dwmac-tx-reclaim-uboot-build/u-boot \
+  --boot-disk "$QEMU_UBOOT_OUT_DIR/boot.ext4" \
+  --manifest "$QEMU_UBOOT_OUT_DIR/artifacts.json" \
+  --dtb-audit "$QEMU_UBOOT_OUT_DIR/qemu-dtb-audit.json" \
+  --serial-log "$QEMU_UBOOT_OUT_DIR/serial.log" \
+  --marker-event "$QEMU_UBOOT_OUT_DIR/marker-event.txt" \
+  --result "$QEMU_UBOOT_OUT_DIR/qemu-result.json"
+"""
+command = [
+    "timeout", "300", "docker", "run", "--name",
+    "codex-dwmac-tx-reclaim-qemu-recovery", "--rm", "--network=host",
+    "--user", f"{uid}:{gid}", "-v", f"{repository}:{repository}",
+    "-w", str(repository), "-e",
+    f"ASTERINAS_RISCV_BOOTI={artifacts / 'asterinas.booti'}", "-e",
+    f"ASTERINAS_INITRAMFS={artifacts / 'megrez-tcp-probe.cpio.gz'}", "-e",
+    "QEMU_UBOOT_PROFILE=generic-sv39-smp4-software-reboot", "-e",
+    f"QEMU_UBOOT_OUT_DIR={output}", "-e",
+    f"QEMU_UBOOT_BUILD_DIR={repository / 'target/qemu-uboot/dwmac-tx-reclaim-uboot-build'}",
+    "asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached",
+    "bash", "-c", guest,
+]
+with ProbeServer(payload_sizes=PROBE_STRESS_SIZES):
+    completed = subprocess.run(command, cwd=repository, check=False)
+raise SystemExit(completed.returncode)
+PY
 sha256sum "$ARTIFACT_ROOT/asterinas.booti" > "$RECOVERY_ROOT/SHA256SUMS"
 python3 -m tools.riscv.megrez_debug recovery \
   "$VALIDATION_ROOT/plan.json" \
