@@ -899,7 +899,7 @@ EOF
         configure_desktop_m5_network "$stage" m5 false
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
-        configure_desktop_m5_network "$stage" m5 false
+        configure_desktop_m5_network "$stage" m5 false lightweight
     fi
     : >"$stage/etc/machine-id"
     if [[ "$PROFILE" == browser-web ]]; then
@@ -975,6 +975,7 @@ configure_desktop_m5_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
     local install_netsurf_evidence="${3:-true}"
+    local network_mode="${4:-full}"
     local script_directory
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
@@ -992,6 +993,7 @@ Before=asterinas-desktop-$desktop_generation.service
 
 [Service]
 Type=oneshot
+$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
 RemainAfterExit=yes
 
