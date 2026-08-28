@@ -1220,7 +1220,7 @@ EOF
     "OverridePostUpdatePage": ""
   }
 }
- EOF
+EOF
         chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
         cat >"$stage/etc/systemd/system/asterinas-browser-m5.service" <<'EOF'
 [Unit]
