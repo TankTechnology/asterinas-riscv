@@ -33,8 +33,10 @@ mod dma_coherent {
         let paddr = dma_coherent.paddr();
         let daddr = dma_coherent.daddr();
         let size = dma_coherent.size();
+        assert_eq!(dma_coherent.uncached_alias_paddr(), None);
 
         let dma_coherent = dma_coherent.into_uncached().unwrap();
+        let alias = dma_coherent.uncached_alias_paddr();
         assert_eq!(dma_coherent.paddr(), paddr);
         assert_eq!(dma_coherent.daddr(), daddr);
         assert_eq!(dma_coherent.size(), size);
@@ -48,6 +50,11 @@ mod dma_coherent {
         assert_eq!(second.paddr(), paddr + PAGE_SIZE);
         assert_eq!(first.daddr(), daddr);
         assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
     }
 
     #[ktest]
