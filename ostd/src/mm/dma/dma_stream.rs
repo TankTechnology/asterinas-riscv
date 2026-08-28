@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range};
+use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range, ptr::NonNull};
 
 use super::util::{
     alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
@@ -8,6 +8,7 @@ use super::util::{
 use crate::{
     arch::{irq, mm::can_sync_dma},
     error::Error,
+    io::IoMem,
     mm::{
         Daddr, FrameAllocOptions, HasDaddr, HasPaddr, HasPaddrRange, HasSize, Infallible,
         PAGE_SIZE, Paddr, Split, USegment, VmReader, VmWriter,
@@ -82,6 +83,7 @@ pub struct DmaStream<D: DmaDirection = FromAndToDevice> {
     inner: Inner,
     map_daddr: Option<Daddr>,
     is_cache_coherent: bool,
+    uncached_alias: Option<IoMem>,
     _phantom: PhantomData<D>,
 }
 
@@ -90,6 +92,29 @@ enum Inner {
     Segment(USegment),
     Kva(KVirtArea, Paddr),
     Both(KVirtArea, Paddr, USegment),
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(super) const fn needs_guaranteed_uncached_view(
+    is_cache_coherent: bool,
+    can_sync_dma: bool,
+) -> bool {
+    !is_cache_coherent && !can_sync_dma
+}
+
+fn create_uncached_alias(
+    paddr_range: Range<Paddr>,
+    is_cache_coherent: bool,
+) -> Result<Option<IoMem>, Error> {
+    #[cfg(target_arch = "riscv64")]
+    if needs_guaranteed_uncached_view(is_cache_coherent, can_sync_dma()) {
+        return crate::arch::mm::create_uncached_dma_alias(paddr_range);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    let _ = (paddr_range, is_cache_coherent);
+
+    Ok(None)
 }
 
 impl<D: DmaDirection> DmaStream<D> {
@@ -150,6 +175,8 @@ impl<D: DmaDirection> DmaStream<D> {
             (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
         };
 
+        let uncached_alias = create_uncached_alias(paddr_range.clone(), is_cache_coherent)?;
+
         // SAFETY: The physical address range is untyped DMA memory before `drop`.
         let map_daddr = unsafe { prepare_dma(&paddr_range) };
 
@@ -157,6 +184,7 @@ impl<D: DmaDirection> DmaStream<D> {
             inner,
             map_daddr,
             is_cache_coherent,
+            uncached_alias,
             _phantom: PhantomData,
         })
     }
@@ -187,6 +215,8 @@ impl<D: DmaDirection> DmaStream<D> {
 
         let paddr_range = paddr..paddr + size;
 
+        let uncached_alias = create_uncached_alias(paddr_range.clone(), is_cache_coherent)?;
+
         // SAFETY: The physical address range is untyped DMA memory before `drop`.
         let map_daddr = unsafe { prepare_dma(&paddr_range) };
 
@@ -194,6 +224,7 @@ impl<D: DmaDirection> DmaStream<D> {
             inner,
             map_daddr,
             is_cache_coherent,
+            uncached_alias,
             _phantom: PhantomData,
         })
     }
@@ -242,7 +273,8 @@ impl<D: DmaDirection> DmaStream<D> {
             }
             Inner::Kva(kva, _) => {
                 if !can_sync_dma() {
-                    // The KVA is mapped as uncachable.
+                    // CPU access uses either a page-based uncached mapping or
+                    // the retained platform alias.
                     return Ok(());
                 }
                 kva.range()
@@ -277,20 +309,20 @@ impl<D: DmaDirection> DmaStream<D> {
 
         let (mut reader, mut writer) = if is_from_device {
             // SAFETY:
-            //  - The memory range points to untyped memory.
-            //  - The KVA is alive in this scope.
-            //  - Using `VmReader` and `VmWriter` is the only way to access the KVA.
+            //  - The selected bounce view maps untyped memory owned by `self`.
+            //  - The KVA and optional alias are alive in this scope.
+            //  - Safe bounce access is routed through this selected view.
             let kva_reader =
-                unsafe { VmReader::from_kernel_space(kva.start() as *const u8, kva.size()) };
+                unsafe { VmReader::from_kernel_space(self.bounce_ptr(kva).as_ptr(), kva.size()) };
 
             (kva_reader, seg.writer())
         } else {
             // SAFETY:
-            //  - The memory range points to untyped memory.
-            //  - The KVA is alive in this scope.
-            //  - Using `VmReader` and `VmWriter` is the only way to access the KVA.
+            //  - The selected bounce view maps untyped memory owned by `self`.
+            //  - The KVA and optional alias are alive in this scope.
+            //  - Safe bounce access is routed through this selected view.
             let kva_writer =
-                unsafe { VmWriter::from_kernel_space(kva.start() as *mut u8, kva.size()) };
+                unsafe { VmWriter::from_kernel_space(self.bounce_ptr(kva).as_ptr(), kva.size()) };
 
             (seg.reader(), kva_writer)
         };
@@ -300,6 +332,21 @@ impl<D: DmaDirection> DmaStream<D> {
             .limit(limit)
             .write(reader.skip(skip).limit(limit));
     }
+
+    fn bounce_ptr(&self, kva: &KVirtArea) -> NonNull<u8> {
+        self.uncached_alias.as_ref().map_or_else(
+            || NonNull::new(kva.start() as *mut u8).unwrap(),
+            |alias| {
+                debug_assert_eq!(alias.size(), kva.size());
+                alias.as_non_null_ptr()
+            },
+        )
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn uncached_alias_paddr(&self) -> Option<Paddr> {
+        self.uncached_alias.as_ref().map(HasPaddr::paddr)
+    }
 }
 
 impl<D: DmaDirection> Split for DmaStream<D> {
@@ -307,13 +354,17 @@ impl<D: DmaDirection> Split for DmaStream<D> {
         assert!(offset.is_multiple_of(PAGE_SIZE));
         assert!(0 < offset && offset < self.size());
 
-        let (inner, map_daddr, is_cache_coherent) = {
+        let (inner, map_daddr, is_cache_coherent, uncached_alias, size) = {
             let this = ManuallyDrop::new(self);
+            let size = this.size();
             (
                 // SAFETY: `this.inner` will never be used or dropped later.
                 unsafe { core::ptr::read(&this.inner as *const Inner) },
                 this.map_daddr,
                 this.is_cache_coherent,
+                // SAFETY: `this.uncached_alias` will never be used or dropped later.
+                unsafe { core::ptr::read(&this.uncached_alias) },
+                size,
             )
         };
 
@@ -336,18 +387,27 @@ impl<D: DmaDirection> Split for DmaStream<D> {
         };
 
         let (daddr1, daddr2) = split_daddr(map_daddr, offset);
+        let (uncached_alias1, uncached_alias2) = match uncached_alias {
+            Some(alias) => (
+                Some(alias.slice(0..offset)),
+                Some(alias.slice(offset..size)),
+            ),
+            None => (None, None),
+        };
 
         (
             Self {
                 inner: inner1,
                 map_daddr: daddr1,
                 is_cache_coherent,
+                uncached_alias: uncached_alias1,
                 _phantom: PhantomData,
             },
             Self {
                 inner: inner2,
                 map_daddr: daddr2,
                 is_cache_coherent,
+                uncached_alias: uncached_alias2,
                 _phantom: PhantomData,
             },
         )
@@ -400,13 +460,12 @@ impl<D: DmaDirection> HasVmReaderWriter for DmaStream<D> {
             Inner::Segment(seg) | Inner::Both(_, _, seg) => Ok(seg.reader()),
             Inner::Kva(kva, _) => {
                 // SAFETY:
-                //  - Although the memory range points to typed memory, the range is for DMA
-                //    and the access is not by linear mapping.
-                //  - The KVA is alive during the lifetime `'_`.
-                //  - Using `VmReader` and `VmWriter` is the only way to access the KVA.
+                //  - The selected bounce view maps DMA memory owned by `self`.
+                //  - The KVA and optional alias are alive during the lifetime `'_`.
+                //  - Safe bounce access is routed through this reader or `writer`.
                 unsafe {
                     Ok(VmReader::from_kernel_space(
-                        kva.start() as *const u8,
+                        self.bounce_ptr(kva).as_ptr(),
                         kva.size(),
                     ))
                 }
@@ -422,13 +481,12 @@ impl<D: DmaDirection> HasVmReaderWriter for DmaStream<D> {
             Inner::Segment(seg) | Inner::Both(_, _, seg) => Ok(seg.writer()),
             Inner::Kva(kva, _) => {
                 // SAFETY:
-                //  - Although the memory range points to typed memory, the range is for DMA
-                //    and the access is not by linear mapping.
-                //  - The KVA is alive during the lifetime `'_`.
-                //  - Using `VmReader` and `VmWriter` is the only way to access the KVA.
+                //  - The selected bounce view maps DMA memory owned by `self`.
+                //  - The KVA and optional alias are alive during the lifetime `'_`.
+                //  - Safe bounce access is routed through `reader` or this writer.
                 unsafe {
                     Ok(VmWriter::from_kernel_space(
-                        kva.start() as *mut u8,
+                        self.bounce_ptr(kva).as_ptr(),
                         kva.size(),
                     ))
                 }

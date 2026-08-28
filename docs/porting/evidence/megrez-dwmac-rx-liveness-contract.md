@@ -672,3 +672,30 @@ overflow counters at DWMAC offset `0xd34`, with clear-on-read semantics. That
 counter can be accumulated at the existing bounded progress cadence and tested
 offline before another board transaction. No further ring-size or interrupt
 policy change is justified by this run.
+
+## Static closure of the packet-buffer cache contract
+
+The read-only MTL counter remains useful secondary evidence, but a further
+physical diagnostic run is no longer required to select the next fix. Static
+tracing from `DmaPool` through `DmaStream` found a violated memory contract:
+
+- the board has neither Zicbom nor Svpbmt;
+- the receive pool therefore uses a device-facing bounce KVA;
+- without Svpbmt, that KVA's requested `WriteCombining` policy is represented
+  by an ordinary cacheable RISC-V PTE;
+- `sync_from_device` copied from the KVA without invalidating it because it
+  assumed the view was uncached.
+
+Once the 64-entry RX pool reused a bounce page, a device write could therefore
+be followed by a CPU copy from a stale cache line. Software TCP/IP checksum
+validation can discard the resulting payload while all MAC, MTL, descriptor,
+RBU, and TX counters remain clean. This is consistent with the first small
+transfers passing, retransmissions appearing after ring wrap, and the long
+transfer collapsing.
+
+OSTD now gives such streaming bounce storage the same checked uncached view as
+the descriptor ring: PBMT_NC when Svpbmt exists, the EIC7700 System Port alias
+otherwise, and allocation failure when no valid path exists. All CPU bounce
+copies and direct accesses use that view. This proves the software memory-type
+contract; a single later recovery-armed run is still required to determine
+whether it is the sole physical cause of the observed TCP loss.
