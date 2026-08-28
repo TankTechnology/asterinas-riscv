@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use ostd::prelude::ktest;
+use ostd::{prelude::ktest, task::disable_preempt};
 
 use super::*;
 use crate::thread::{Thread, kernel_thread::ThreadOptions};
@@ -151,6 +151,81 @@ fn weak_registration_does_not_keep_a_node_alive() {
     assert!(!is_registered(id, NodeKind::Socket));
 }
 
+#[ktest]
+fn drops_all_edge_guards_with_preemption_already_disabled() {
+    let permanent_socket = SocketNode::new();
+    let permanent_storage = StreamStorageNode::new();
+    let permanent_socket_weak = permanent_socket.downgrade();
+    let permanent_storage_weak = permanent_storage.downgrade();
+    let permanent = PermanentEdge::new(&permanent_socket, &permanent_storage).unwrap();
+    assert_eq!(
+        edge_count(&permanent_socket, &permanent_storage, EdgeClass::Permanent),
+        1
+    );
+    drop(permanent_socket);
+    drop(permanent_storage);
+    {
+        let _preempt_guard = disable_preempt();
+        drop(permanent);
+    }
+    assert!(!permanent_socket_weak.is_alive());
+    assert!(!permanent_storage_weak.is_alive());
+
+    let reserved_storage = StreamStorageNode::new();
+    let reserved_socket = SocketNode::new();
+    let reserved_storage_id = reserved_storage.node_handle().id();
+    let reserved_socket_id = reserved_socket.node_handle().id();
+    let reserved_storage_weak = reserved_storage.downgrade();
+    let reserved_socket_weak = reserved_socket.downgrade();
+    let reserved = ReservedEdges::try_new(&reserved_storage, &[reserved_socket.clone()]).unwrap();
+    assert_eq!(
+        edge_count(&reserved_storage, &reserved_socket, EdgeClass::Reserved),
+        1
+    );
+    drop(reserved_storage);
+    drop(reserved_socket);
+    {
+        let _preempt_guard = disable_preempt();
+        drop(reserved);
+    }
+    assert!(!reserved_storage_weak.is_alive());
+    assert!(!reserved_socket_weak.is_alive());
+    assert_eq!(
+        edge_count_by_id(reserved_storage_id, reserved_socket_id, EdgeClass::Reserved),
+        0
+    );
+
+    let committed_storage = DatagramQueueNode::new();
+    let committed_socket = SocketNode::new();
+    let committed_storage_id = committed_storage.node_handle().id();
+    let committed_socket_id = committed_socket.node_handle().id();
+    let committed_storage_weak = committed_storage.downgrade();
+    let committed_socket_weak = committed_socket.downgrade();
+    let committed = ReservedEdges::try_new(&committed_storage, &[committed_socket.clone()])
+        .unwrap()
+        .commit();
+    assert_eq!(
+        edge_count(&committed_storage, &committed_socket, EdgeClass::Committed),
+        1
+    );
+    drop(committed_storage);
+    drop(committed_socket);
+    {
+        let _preempt_guard = disable_preempt();
+        drop(committed);
+    }
+    assert!(!committed_storage_weak.is_alive());
+    assert!(!committed_socket_weak.is_alive());
+    assert_eq!(
+        edge_count_by_id(
+            committed_storage_id,
+            committed_socket_id,
+            EdgeClass::Committed,
+        ),
+        0
+    );
+}
+
 fn reserve_until_both_attempted(
     storage: StreamStorageNode,
     socket: SocketNode,
@@ -176,11 +251,15 @@ fn reserve_until_both_attempted(
 }
 
 fn edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode, class: EdgeClass) -> usize {
+    edge_count_by_id(from.node_handle().id(), to.node_handle().id(), class)
+}
+
+fn edge_count_by_id(from: NodeId, to: NodeId, class: EdgeClass) -> usize {
     scm_graph()
         .lock()
         .edges
-        .get(&from.node_handle().id())
-        .and_then(|targets| targets.get(&to.node_handle().id()))
+        .get(&from)
+        .and_then(|targets| targets.get(&to))
         .map(|counts| counts.get(class))
         .unwrap_or(0)
 }
