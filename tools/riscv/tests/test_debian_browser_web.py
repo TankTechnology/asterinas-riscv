@@ -475,9 +475,9 @@ class BrowserWebContractTests(unittest.TestCase):
     def test_build_time_cache_checker_is_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         for command in (
-            'systemd-sysusers --root="$stage"',
+            'chroot "$stage" /usr/bin/systemd-sysusers',
             'chroot "$stage" /sbin/ldconfig',
-            'journalctl --root="$stage" --update-catalog',
+            'chroot "$stage" /usr/bin/journalctl --update-catalog',
             'chroot "$stage" /usr/bin/fc-cache -f',
             ': >"$stage/etc/.updated"',
             ': >"$stage/var/.updated"',
@@ -740,8 +740,8 @@ class BrowserWebContractTests(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.splitlines()
-        self.assertEqual(tools.count("systemd-sysusers"), 1)
-        self.assertEqual(tools.count("journalctl"), 1)
+        self.assertNotIn("systemd-sysusers", tools)
+        self.assertNotIn("journalctl", tools)
         for profile, expected in (
             ("desktop-m5-network", 0),
             ("browser-web", 0),
