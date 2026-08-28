@@ -392,7 +392,7 @@ def write_manifest(
         raise ContractError(str(error)) from error
 
     lock_rows = parse_packages_lock(packages_lock)
-    downloaded_packages = _load_package_checksums(package_checksums)
+    downloaded_packages = load_package_checksums(package_checksums)
     parsed_tool_versions = _parse_tool_versions(tool_versions)
     gate_versions = _gate_versions(lock_rows, profile)
 
@@ -662,7 +662,8 @@ def _require_build_timestamp(value: str) -> None:
         raise ContractError("build_timestamp must be canonical UTC RFC 3339") from error
 
 
-def _load_package_checksums(path: Path) -> tuple[DownloadedPackageIdentity, ...]:
+def load_package_checksums(path: Path) -> tuple[DownloadedPackageIdentity, ...]:
+    """Load the exact package provenance rows recorded beside a root image."""
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
