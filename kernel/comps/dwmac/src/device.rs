@@ -18,6 +18,7 @@ use ostd::{
 
 use crate::{
     arch::{MegrezPlatform, PlatformError, SelectedPortInfo},
+    poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
         DMA_CHANNEL0_CONTROL, DMA_CHANNEL0_INTERRUPT_ENABLE, DMA_CHANNEL0_RX_CONTROL,
@@ -94,6 +95,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         selected,
         queue,
         irq,
+        rx_poll: RxPollBudget::default(),
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -287,6 +289,7 @@ struct DwmacDevice {
     selected: SelectedPortInfo,
     queue: DmaQueue,
     irq: DeferredMappedIrqLine,
+    rx_poll: RxPollBudget,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -343,7 +346,7 @@ impl AnyNetworkDevice for DwmacDevice {
     }
 
     fn can_receive(&self) -> bool {
-        !self.fatal && self.queue.can_receive()
+        !self.fatal && self.rx_poll.can_receive() && self.queue.can_receive()
     }
 
     fn can_send(&self) -> bool {
@@ -361,7 +364,10 @@ impl AnyNetworkDevice for DwmacDevice {
             return Err(NetError::NotReady);
         }
         match packet {
-            Ok(buffer) => Ok(buffer),
+            Ok(buffer) => {
+                self.rx_poll.record_received();
+                Ok(buffer)
+            }
             Err(QueueError::Allocation) => Err(NetError::NoMemory),
             Err(QueueError::NotReady) => Err(NetError::NotReady),
             Err(_) => {
@@ -390,8 +396,18 @@ impl AnyNetworkDevice for DwmacDevice {
 
     fn notify_poll_end(&mut self) {
         self.service_status();
-        if !self.fatal && self.irq.rearm().is_err() {
-            self.fatal = true;
+        let more_rx = !self.fatal && self.queue.can_receive();
+        match self.rx_poll.finish(self.fatal, more_rx) {
+            PollEndAction::Rearm => {
+                if self.irq.rearm().is_err() {
+                    self.fatal = true;
+                }
+            }
+            PollEndAction::Reschedule => {
+                aster_network::raise_send_softirq();
+                aster_network::raise_receive_softirq();
+            }
+            PollEndAction::Stop => {}
         }
     }
 }
