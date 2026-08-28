@@ -17,7 +17,7 @@
 - Modify: `kernel/comps/dwmac/src/lib.rs`
 - Modify: `tools/riscv/tests/test_dwmac_rx_liveness_model.py`
 
-- [ ] **Step 1: Write the missing-production-module RED**
+- [x] **Step 1: Write the missing-production-module RED**
 
 Add a second unittest class that compiles the exact production module:
 
@@ -59,7 +59,7 @@ class DwmacRxPollContractTests(unittest.TestCase):
 
 Run only this class. Expected RED: `rustc` cannot read `poll.rs`.
 
-- [ ] **Step 2: Implement the minimal dependency-free state machine**
+- [x] **Step 2: Implement the minimal dependency-free state machine**
 
 Create `poll.rs` with:
 
@@ -112,7 +112,7 @@ Add four `#[cfg(test)]` host tests in the same file:
 
 Add `mod poll;` to `kernel/comps/dwmac/src/lib.rs`.
 
-- [ ] **Step 3: Run focused GREEN and commit**
+- [x] **Step 3: Run focused GREEN and commit**
 
 ```bash
 python3 -W error::ResourceWarning -m unittest \
@@ -130,7 +130,7 @@ git commit -m "test(net): define bounded DWMAC RX poll"
 - Modify: `kernel/comps/dwmac/src/device.rs`
 - Modify: `tools/riscv/tests/test_dwmac_rx_liveness_model.py`
 
-- [ ] **Step 1: Add a source-integration RED**
+- [x] **Step 1: Add a source-integration RED**
 
 Add a host test that reads `device.rs` and freezes the three integration
 points without mocking behavior:
@@ -146,7 +146,7 @@ def test_device_uses_poll_budget_at_all_three_boundaries(self) -> None:
 
 Run the test and expect all four assertions to fail before editing production.
 
-- [ ] **Step 2: Wire the poll budget into `DwmacDevice`**
+- [x] **Step 2: Wire the poll budget into `DwmacDevice`**
 
 Import `PollEndAction` and `RxPollBudget`. Add `rx_poll` to `DwmacDevice` and
 initialize it with `RxPollBudget::default()`.
@@ -203,7 +203,7 @@ The `Reschedule` arm deliberately does not rearm the PLIC source. RX and TX are
 both raised because DWMAC uses one shared masked source and completions may
 arrive while RX is polling.
 
-- [ ] **Step 3: Run host GREEN and commit**
+- [x] **Step 3: Run host GREEN and commit**
 
 ```bash
 make test_riscv_dwmac_rx_model
@@ -221,7 +221,7 @@ git commit -m "fix(net): bound Megrez DWMAC RX polling"
 **Files:**
 - No production changes expected
 
-- [ ] **Step 1: Run the complete host model gate**
+- [x] **Step 1: Run the complete host model gate**
 
 ```bash
 make test_riscv_dwmac_rx_model
@@ -229,9 +229,10 @@ make test_riscv_dwmac_rx_model
 
 Expected: current abstract protocol still emits its deterministic lasso;
 bounded abstract rings 2/3/4 verify; the exact production `poll.rs` reports
-four passed tests; device integration assertions pass.
+six passed tests, including cumulative diagnostic counters; device integration
+assertions pass.
 
-- [ ] **Step 2: Run the pinned RISC-V OSDK compile gate**
+- [x] **Step 2: Run the pinned RISC-V OSDK compile gate**
 
 In the existing pinned Asterinas container environment, run:
 
@@ -243,7 +244,7 @@ cargo osdk check --ktests -p aster-dwmac -p aster-network \
 Expected: exit 0. This compiles both host-tested poll logic and the real
 RISC-V device integration; it does not access QEMU or the board.
 
-- [ ] **Step 3: Run existing QEMU network regression only if its artifacts are ready**
+- [x] **Step 3: Run existing QEMU network regression only if its artifacts are ready**
 
 Use the existing fast Megrez/QEMU network plan without rebuilding desktop or
 rootfs. If its immutable kernel/initramfs inputs are absent, record the gate as
@@ -251,7 +252,7 @@ not run rather than downloading or rebuilding unrelated artifacts. QEMU is
 regression evidence for generic networking only and must not be reported as a
 DWMAC hardware pass.
 
-- [ ] **Step 4: Final static verification**
+- [x] **Step 4: Final static verification**
 
 ```bash
 python3 -m py_compile tools/riscv/tests/test_dwmac_rx_liveness_model.py
@@ -271,7 +272,7 @@ pre-existing MMC board-session files.
 - Modify only the existing Megrez network-stress plan/evidence tooling if it
   cannot already run the four ordered sizes.
 
-- [ ] **Step 1: Freeze one-run acceptance**
+- [x] **Step 1: Freeze one-run acceptance**
 
 The physical run must test 16 KiB, 64 KiB, 1 MiB, and 16 MiB in one boot. It
 must stop at the first failure and record exact completed bytes, RX budget
@@ -289,3 +290,20 @@ large artifacts and do not ask for repeated manual resets.
 One passing boot closes the unbounded-poll hypothesis. A failure with bounded
 poll counters still advancing moves investigation to DMA/cache/PLIC hardware
 assumptions; it does not authorize stacking another speculative driver fix.
+
+## Execution status
+
+Tasks 1-3 are complete. The host model, exact production poll tests, and the
+pinned RISC-V OSDK compile gate passed. The available QEMU result was inspected
+but not rerun because it is bound to an older kernel and QEMU does not emulate
+the Megrez DWMAC; it remains generic-network regression evidence only.
+
+Task 4 step 1 is complete in `c72469ad9` and `d4fe72bc0`. The driver records
+cumulative receives, budget exhaustions, reschedules, and successful PLIC
+rearms, emitting a bounded snapshot only when a rescheduled burst finally
+drains. The guest and host now require the ordered sizes 16 KiB, 64 KiB,
+1 MiB, and 16 MiB in one boot, publish exact cumulative-byte progress, stop on
+the first post-connect failure, and bind the final marker to all four sizes.
+The existing board runner already scans panic/oops markers and waits for the
+configured software-recovery prompt. No physical run has been launched; steps
+2-3 intentionally remain pending until the staged artifacts are frozen.
