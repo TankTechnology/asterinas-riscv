@@ -32,15 +32,16 @@ struct probe_failure {
     const char *reason;
     int error;
     unsigned int attempts;
+    size_t current_bytes;
     size_t completed_bytes;
 };
 
 static void emit_failure(const struct probe_failure *failure)
 {
     printf("ASTERINAS_GMAC_TCP_PROBE_FAIL reason=%s errno=%d attempts=%u "
-           "completed_bytes=%zu\n",
+           "current_bytes=%zu completed_bytes=%zu\n",
            failure->reason, failure->error, failure->attempts,
-           failure->completed_bytes);
+           failure->current_bytes, failure->completed_bytes);
 }
 
 static const char *find_sequence(const char *data, size_t length,
@@ -184,10 +185,11 @@ static bool response_stream_is_complete(const struct response_stream *stream)
 
 int main(void)
 {
-    const struct probe_failure failure = {
-        .reason = "connect-poll",
+    struct probe_failure failure = {
+        .reason = "receive-poll",
         .error = 110,
-        .attempts = 3,
+        .attempts = 1,
+        .current_bytes = 0,
         .completed_bytes = 0,
     };
     static const char valid[] =
@@ -249,6 +251,44 @@ int main(void)
             return 1;
         }
     }
+    {
+        const size_t partial_bytes = 14600;
+        struct response_stream partial = {
+            .expected_body_length = PROBE_STRESS_SIZES[0],
+        };
+        size_t offset = 0;
+        int header_length = snprintf(
+            stress_header, sizeof(stress_header),
+            "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n"
+            "Connection: close\r\n\r\n",
+            partial.expected_body_length);
+
+        if (header_length <= 0 ||
+            (size_t)header_length >= sizeof(stress_header) ||
+            !response_stream_consume(&partial, stress_header,
+                                     (size_t)header_length)) {
+            return 1;
+        }
+        while (offset < partial_bytes) {
+            size_t amount = partial_bytes - offset;
+            size_t index;
+
+            if (amount > sizeof(stress_body)) {
+                amount = sizeof(stress_body);
+            }
+            for (index = 0; index < amount; ++index) {
+                stress_body[index] = (char)((offset + index) % 251U);
+            }
+            if (!response_stream_consume(&partial, stress_body, amount)) {
+                return 1;
+            }
+            offset += amount;
+        }
+        failure.current_bytes = partial.body_length;
+        if (failure.current_bytes != partial_bytes) {
+            return 1;
+        }
+    }
     emit_failure(&failure);
     puts("MEGREZ_TCP_PROBE_SELF_TEST PASS");
     printf("MEGREZ_TCP_STRESS_SELF_TEST PASS "
@@ -280,6 +320,7 @@ static struct probe_failure last_failure = {
     .reason = "not-started",
     .error = 0,
     .attempts = 0,
+    .current_bytes = 0,
     .completed_bytes = 0,
 };
 
@@ -457,9 +498,11 @@ static bool receive_response(int fd, int64_t deadline, size_t payload_bytes)
         amount = recv(fd, response, sizeof(response), 0);
         if (amount > 0) {
             if (!response_stream_consume(&stream, response, (size_t)amount)) {
+                last_failure.current_bytes = stream.body_length;
                 record_failure("http-response", 0);
                 return false;
             }
+            last_failure.current_bytes = stream.body_length;
             continue;
         }
         if (amount == 0) {
@@ -512,6 +555,7 @@ int main(void)
         size_t payload_bytes = PROBE_STRESS_SIZES[size_index];
         bool completed = false;
 
+        last_failure.current_bytes = 0;
         while (monotonic_milliseconds() < deadline) {
             int fd;
             bool passed;
