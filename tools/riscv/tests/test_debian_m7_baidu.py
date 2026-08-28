@@ -198,6 +198,7 @@ esac
             ],
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
+        self.assertIn("search --onlyvisible --class Netsurf-gtk", action_lines)
         self.assertIn("key ctrl+q", action_lines)
         runuser_action = next(
             action for action in action_lines if action.startswith("runuser ")
@@ -422,7 +423,7 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
         ].split(".PHONY:", 1)[0]
         self.assertIn("desktop_m7_baidu_gate", target)
         self.assertIn("DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT", target)
-        self.assertIn("--boot-timeout 300", target)
+        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
 
 
 if __name__ == "__main__":

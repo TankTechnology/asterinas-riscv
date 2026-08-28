@@ -782,6 +782,11 @@ Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1
 EOF
     chmod 0644 -- \
         "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf"
+    install -d -m 0755 -- \
+        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d"
+    install -m 0644 -- \
+        "$script_directory/desktop_m5_overview.conf" \
+        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d/m5-overview.conf"
     ln -s -- \
         "../$baidu_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
@@ -811,10 +816,37 @@ configure_desktop() {
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
     if [[ "$generation" == m4 ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
-            "$stage/home/asterinas/Asterinas Files"
+            "$stage/home/asterinas/Asterinas Files" \
+            "$stage/home/asterinas/Desktop"
+        install -d -m 0700 -o 1000 -g 1000 -- \
+            "$stage/home/asterinas/.config"
+        install -d -m 0755 -o 1000 -g 1000 -- \
+            "$stage/home/asterinas/.config/pcmanfm" \
+            "$stage/home/asterinas/.config/pcmanfm/Asterinas" \
+            "$stage/home/asterinas/.config/lxpanel" \
+            "$stage/home/asterinas/.config/lxpanel/Asterinas" \
+            "$stage/home/asterinas/.config/lxpanel/Asterinas/panels"
         install -D -m 0644 -- \
             "$script_directory/desktop_m4_welcome.html" \
             "$stage/usr/share/asterinas/desktop-m4-welcome.html"
+        install -D -m 0644 -- \
+            "$script_directory/desktop_wallpaper.svg" \
+            "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+        install -m 0644 -o 1000 -g 1000 -- \
+            "$script_directory/desktop_pcmanfm.conf" \
+            "$stage/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
+        install -m 0644 -o 1000 -g 1000 -- \
+            "$script_directory/desktop_lxpanel.conf" \
+            "$stage/home/asterinas/.config/lxpanel/Asterinas/panels/panel"
+        local launcher
+        for launcher in browser files terminal; do
+            install -D -m 0644 -- \
+                "$script_directory/asterinas-$launcher.desktop" \
+                "$stage/usr/share/applications/asterinas-$launcher.desktop"
+            install -m 0755 -o 1000 -g 1000 -- \
+                "$script_directory/asterinas-$launcher.desktop" \
+                "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
+        done
     fi
 
     install -D -m 0755 -- \

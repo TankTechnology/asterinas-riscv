@@ -28,16 +28,16 @@ fail() {
 [[ "$CAPTURE_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-capture-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
 
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool set_desktop 1 || fail workspace-select
 window_output="$(
     timeout "$COMMAND_TIMEOUT_SECONDS" \
-        xdotool search --onlyvisible --class netsurf
+        xdotool search --onlyvisible --class Netsurf-gtk
 )" || fail window-search
 ((${#window_output} <= 4096)) || fail window-search-output-too-long
 mapfile -t windows <<<"$window_output"
 ((${#windows[@]} == 1)) || fail ambiguous-window
 readonly window_id="${windows[0]}"
 [[ "$window_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
-
 window_title() {
     local title
     title="$(

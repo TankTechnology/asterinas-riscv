@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071426"/>
+      <stop offset="0.52" stop-color="#12375a"/>
+      <stop offset="1" stop-color="#167a82"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="58%">
+      <stop offset="0" stop-color="#91f2e5" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#91f2e5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#background)"/>
+  <rect width="1920" height="1080" fill="url(#glow)"/>
+  <g transform="translate(960 472)" fill="none" stroke-linecap="round">
+    <ellipse rx="210" ry="82" transform="rotate(-18)" stroke="#65e0d2" stroke-width="8" opacity="0.88"/>
+    <ellipse rx="210" ry="82" transform="rotate(42)" stroke="#b6f7ee" stroke-width="4" opacity="0.62"/>
+    <circle r="56" fill="#ecfffb" stroke="#65e0d2" stroke-width="8"/>
+    <circle cx="194" cy="-78" r="14" fill="#ffffff" stroke="none"/>
+  </g>
+  <text x="960" y="700" text-anchor="middle" fill="#f3fffd"
+        font-family="DejaVu Sans, sans-serif" font-size="82" font-weight="600"
+        letter-spacing="8">ASTERINAS</text>
+  <text x="960" y="764" text-anchor="middle" fill="#bde9e4"
+        font-family="DejaVu Sans, sans-serif" font-size="30" letter-spacing="5">
+    DEBIAN · RISC-V
+  </text>
+  <path d="M480 842 H1440" stroke="#78d8cf" stroke-width="2" opacity="0.45"/>
+  <text x="960" y="900" text-anchor="middle" fill="#c7dfdf"
+        font-family="DejaVu Sans, sans-serif" font-size="24">
+    A Linux-compatible desktop powered by the Asterinas kernel
+  </text>
+</svg>

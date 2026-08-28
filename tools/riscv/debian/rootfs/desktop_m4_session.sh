@@ -20,10 +20,11 @@ if [[ "${1-}" == --xsession ]]; then
             browser_arguments+=(--enable_javascript=1)
         fi
     fi
-    /usr/bin/matchbox-window-manager -use_titlebar yes &
+    /usr/bin/openbox &
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
-    /usr/bin/pcmanfm --no-desktop "/home/asterinas/Asterinas Files" &
+    /usr/bin/pcmanfm --desktop --profile Asterinas &
+    /usr/bin/lxpanel --profile Asterinas &
     if [[ "${ASTERINAS_DESKTOP_BROWSER_VERBOSE:-0}" == 1 ]]; then
         : >"$HOME/netsurf-m7.log"
         chmod 0600 "$HOME/netsurf-m7.log"
