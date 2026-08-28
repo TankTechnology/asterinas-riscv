@@ -18,7 +18,7 @@ use smoltcp::{
 use super::{
     common::IpPacket,
     poll_iface::PollableIfaceMut,
-    tcp_diagnostics::{SynAckStage, SynAckTrace},
+    tcp_diagnostics::{SynAckStage, SynAckTrace, TCP_EGRESS_TRACE, TcpEgressStage},
 };
 use crate::{
     ext::Ext,
@@ -460,6 +460,14 @@ impl<E: Ext> PollContext<'_, E> {
                     let mut this = PollContext::new(iface, self.sockets, self.actions);
 
                     if !this.is_unicast_local(ip_repr.dst_addr()) {
+                        if !tcp_repr.payload.is_empty()
+                            && TCP_EGRESS_TRACE.record(TcpEgressStage::SegmentDispatched)
+                        {
+                            ostd::info!(
+                                "ASTERINAS_TCP_EGRESS stage={}",
+                                TcpEgressStage::SegmentDispatched.as_str()
+                            );
+                        }
                         dispatch_phy(
                             &Packet::new(ip_repr.clone(), IpPayload::Tcp(*tcp_repr)),
                             this.iface.context_mut(),
