@@ -48,6 +48,7 @@ from tools.riscv.megrez_debug_board import (
     ensure_board_artifacts,
     run_board,
 )
+from tools.riscv.megrez_preboard import RecoveryEvidence
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 
@@ -1444,6 +1445,20 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
                 evidence=("serial.log",),
             ).canonical_bytes()
         )
+        self.recovery = self.directory / "recovery.json"
+        self.recovery.write_bytes(
+            RecoveryEvidence(
+                schema_version=1,
+                passed=True,
+                reason="recovery-pass",
+                plan_sha256=self.plan.plan_sha256,
+                kernel_sha256=self.plan.artifacts[0].sha256,
+                native_result_sha256="a" * 64,
+                serial_sha256="b" * 64,
+                second_firmware_epoch=True,
+                fresh_uboot_prompt=True,
+            ).canonical_bytes()
+        )
         self.output = self.directory / "board-output"
 
     def _arguments(self, *extra: str) -> tuple[str, ...]:
@@ -1453,6 +1468,8 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             "/dev/ttyUSB-test",
             "--simulation-result",
             str(self.simulation),
+            "--recovery-result",
+            str(self.recovery),
             *extra,
         )
 
@@ -1530,6 +1547,32 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
         self.assertEqual(missing_output, 2)
         self.assertEqual(drift, 2)
+        run.assert_not_called()
+
+    def test_board_cli_rejects_missing_or_mismatched_recovery_pre_serial(
+        self,
+    ) -> None:
+        from tools.riscv import megrez_debug
+
+        missing = self.recovery.with_name("missing-recovery.json")
+        wrong = RecoveryEvidence.from_bytes(self.recovery.read_bytes())
+        self.recovery.write_bytes(
+            replace(wrong, plan_sha256="0" * 64).canonical_bytes()
+        )
+        base = self._arguments(
+            "--output-directory",
+            str(self.output),
+        )
+        recovery_index = base.index("--recovery-result") + 1
+        missing_arguments = list(base)
+        missing_arguments[recovery_index] = str(missing)
+
+        with mock.patch.object(megrez_debug, "run_physical_board") as run:
+            missing_status = megrez_debug.main(missing_arguments)
+            mismatch_status = megrez_debug.main(base)
+
+        self.assertEqual(missing_status, 2)
+        self.assertEqual(mismatch_status, 2)
         run.assert_not_called()
 
     def test_board_cli_maps_termination_to_signal_exit_status(self) -> None:
