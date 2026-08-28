@@ -71,6 +71,7 @@ WEB_EVIDENCE_PATHS = {
     ),
     "trust-static.log": "/usr/share/asterinas/browser-web-trust-static.log",
     "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
+    "timeline.log": "/home/asterinas/browser-web-timeline.log",
 }
 MAX_WEB_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_WEB_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
@@ -78,6 +79,7 @@ MAX_WEB_OPAQUE_LOG_BYTES = 16 * 1024 * 1024
 MAX_WEB_SCREENSHOT_PIXELS_BYTES = 64 * 1024 * 1024
 WEB_EVIDENCE_EXTRACT_TIMEOUT = 120.0
 WEB_EVIDENCE_FILE_TIMEOUT = 15.0
+MAX_TIMELINE_PHASE_DELTA_NS = 7200 * 1_000_000_000
 _TRUST_LINE = re.compile(
     r"FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) "
     r"firefox=installed ca_package=installed riscv_elf=1 nss_loader=1"
@@ -101,6 +103,10 @@ _CHILD_SECURITY_LINE = re.compile(
 )
 _HASH_SECURITY_LINE = re.compile(
     r"(SYSTEM_CA|TRUST_STATIC)_SHA256 sha256=([0-9a-f]{64}) path=(/\S+)"
+)
+_TIMELINE_LINE = re.compile(
+    rb"A_WEB_TIMELINE marker=(BOOT_[A-Z_]+) guest_monotonic_ns=([0-9]+) "
+    rb"firefox_pid=([0-9]+)(?: page=([a-z-]+))?"
 )
 
 
@@ -215,7 +221,9 @@ def _validate_curl_log(contents: bytes) -> None:
         raise GateFailure("curl evidence is missing a required endpoint")
 
 
-def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
+def _validate_security_log(
+    contents: bytes,
+) -> tuple[dict[str, tuple[str, str]], int]:
     lines = _text_lines(contents, "security.log")
     parent_pid: str | None = None
     service_pid: str | None = None
@@ -260,7 +268,8 @@ def _validate_security_log(contents: bytes) -> dict[str, tuple[str, str]]:
         or not content_seen
     ):
         raise GateFailure("browser security evidence is incomplete")
-    return hashes
+    assert parent_pid is not None
+    return hashes, int(parent_pid)
 
 
 def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
@@ -272,6 +281,57 @@ def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
             or b"Operation not permitted" in line
         ):
             raise GateFailure("Firefox log records SCM_RIGHTS permission failure")
+
+
+def _validate_timeline(contents: bytes) -> int:
+    required = (
+        (b"BOOT_SYSTEMD_BEGIN", None),
+        (b"BOOT_BASIC_TARGET", None),
+        (b"BOOT_NETWORK_READY", None),
+        (b"BOOT_X_SOCKET_READY", None),
+        (b"BOOT_FIREFOX_WRAPPER_START", None),
+        (b"BOOT_FIREFOX_EXEC", None),
+        (b"BOOT_MARIONETTE_PORT_READY", None),
+        (b"BOOT_MARIONETTE_CONNECTED", None),
+        (b"BOOT_NEW_SESSION_DONE", None),
+        (b"BOOT_FIRST_WINDOW_READY", None),
+        (b"BOOT_DOM_READY", b"baidu-home"),
+        (b"BOOT_DOM_READY", b"baidu-search"),
+        (b"BOOT_DOM_READY", b"bilibili-home"),
+        (b"BOOT_DOM_READY", b"bilibili-detail"),
+    )
+    observed: list[tuple[bytes, bytes | None]] = []
+    previous_ns = -1
+    browser_pid: int | None = None
+    lines = contents.splitlines()
+    if len(lines) != len(required):
+        raise GateFailure("browser startup timeline is not exact-one per phase")
+    for index, line in enumerate(lines):
+        match = _TIMELINE_LINE.fullmatch(line)
+        if match is None:
+            raise GateFailure("browser startup timeline contains an invalid record")
+        marker, monotonic, pid_text, page = match.groups()
+        current_ns = int(monotonic)
+        if current_ns < previous_ns:
+            raise GateFailure("browser startup timeline is not monotonic")
+        if previous_ns >= 0 and current_ns - previous_ns > MAX_TIMELINE_PHASE_DELTA_NS:
+            raise GateFailure("browser startup timeline phase delta is unbounded")
+        previous_ns = current_ns
+        pid = int(pid_text)
+        if index < 4:
+            if pid != 0:
+                raise GateFailure("system startup timeline unexpectedly has a Firefox PID")
+        elif browser_pid is None:
+            if pid <= 1:
+                raise GateFailure("browser startup timeline has an invalid Firefox PID")
+            browser_pid = pid
+        elif pid != browser_pid:
+            raise GateFailure("browser startup timeline changed Firefox PID")
+        observed.append((marker, page))
+    if tuple(observed) != required:
+        raise GateFailure("browser startup timeline is incomplete or out of order")
+    assert browser_pid is not None
+    return browser_pid
 
 
 def validate_web_evidence(
@@ -292,6 +352,7 @@ def validate_web_evidence(
     _validate_firefox_logs(
         evidence["firefox-stderr.log"], evidence["firefox-mozilla.log"]
     )
+    timeline_pid = _validate_timeline(evidence["timeline.log"])
 
     snapshots = {
         name: _decode_json(evidence[f"{name}.json"], f"{name}.json")
@@ -306,7 +367,9 @@ def validate_web_evidence(
         _validate_png(evidence[f"{name}.png"], name)
 
     _validate_curl_log(evidence["curl.log"])
-    security_hashes = _validate_security_log(evidence["security.log"])
+    security_hashes, security_pid = _validate_security_log(evidence["security.log"])
+    if timeline_pid != security_pid:
+        raise GateFailure("browser startup timeline PID does not match security evidence")
     if evidence["MarionetteActivePort"].strip() != b"2828":
         raise GateFailure("MarionetteActivePort is not the fixed endpoint")
     trust_lines = _text_lines(evidence["trust-static.log"], "trust-static.log")
