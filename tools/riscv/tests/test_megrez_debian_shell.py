@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import replace
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -33,7 +35,7 @@ from tools.riscv.megrez_debian_shell_evidence import (
     issue_shell_permit,
     validate_qemu_result,
 )
-from tools.riscv.megrez_debian_shell import qemu_gate_argv, run_qemu_gate
+from tools.riscv.megrez_debian_shell import _parser, main, qemu_gate_argv, run_qemu_gate
 from tools.riscv.debian.rootfs.gate_protocol import shell_commands
 from tools.riscv.megrez_debian_shell_board import (
     InventoryError,
@@ -48,6 +50,7 @@ from tools.riscv.megrez_board_session import PartitionGeometry
 from tools.riscv.megrez_debug_contract import StageResult
 from tools.riscv.megrez_preboard import PreboardError
 from tools.riscv import megrez_debian_shell_physical_io as physical_io
+from tools.riscv import megrez_debian_shell_cli_io as shell_cli_io
 from tools.riscv.megrez_debian_shell_physical import (
     PhysicalBoot,
     PhysicalShellResult,
@@ -1437,6 +1440,216 @@ class PersistentShellPhysicalIoTests(unittest.TestCase):
             PhysicalShellResult.from_bytes((output / "result.json").read_bytes()),
             result,
         )
+
+
+class PersistentShellCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.plan = _valid_plan(_artifact_fixture(self.directory))
+        self.plan_path = self.directory / "plan.json"
+        self.plan_path.write_bytes(self.plan.canonical_bytes())
+        self.permit_path = self.directory / "permit.json"
+        self.permit_path.write_bytes(_valid_permit(self.plan).canonical_bytes())
+        target = Path(__file__).resolve().parents[3] / "target"
+        target.mkdir(exist_ok=True)
+        self.target_directory = tempfile.TemporaryDirectory(
+            prefix="megrez-shell-cli-test-", dir=target
+        )
+        self.addCleanup(self.target_directory.cleanup)
+
+    def test_parser_exposes_only_the_frozen_workflow_commands(self) -> None:
+        parser = _parser()
+        subparsers = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+
+        self.assertEqual(
+            tuple(subparsers.choices),
+            (
+                "plan",
+                "check",
+                "qemu",
+                "permit",
+                "inventory",
+                "install-if-needed",
+                "gate",
+                "handoff",
+            ),
+        )
+
+    def test_check_loads_one_canonical_plan_without_side_effects(self) -> None:
+        with mock.patch(
+            "tools.riscv.megrez_debian_shell.validate_rootfs_identity"
+        ) as validate_rootfs:
+            self.assertEqual(main(["check", str(self.plan_path)]), 0)
+        validate_rootfs.assert_called_once_with(self.plan)
+
+        noncanonical = self.directory / "noncanonical.json"
+        noncanonical.write_text(json.dumps(json.loads(self.plan_path.read_text())))
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(main(["check", str(noncanonical)]), 2)
+        self.assertIn("canonical", stderr.getvalue())
+
+    def test_physical_commands_require_yes_and_safe_device_interface(self) -> None:
+        parser = _parser()
+        common = [
+            str(self.plan_path),
+            "/dev/ttyUSB0",
+            "--permit",
+            str(self.permit_path),
+            "--output",
+            str(Path.cwd() / "target/cli-test-output"),
+        ]
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["inventory", *common])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                ["inventory", *common, "--yes", "--host-interface", "bad;if"]
+            )
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "inventory",
+                    str(self.plan_path),
+                    "/dev/ttyUSB0\nreset",
+                    *common[2:],
+                    "--yes",
+                ]
+            )
+
+    def test_handoff_rejects_failed_result_before_opening_serial(self) -> None:
+        result = PhysicalShellResult(
+            schema_version=1,
+            passed=False,
+            reason="boot2-failed",
+            plan_sha256=self.plan.plan_sha256,
+            permit_sha256="2" * 64,
+            inventory_sha256="3" * 64,
+            nonce_sha256="4" * 64,
+            boot1_serial_sha256="5" * 64,
+            boot2_serial_sha256="6" * 64,
+            boot1_recovered=True,
+            boot2_recovered=False,
+        )
+        result_path = self.directory / "physical-result.json"
+        result_path.write_bytes(result.canonical_bytes())
+        with (
+            mock.patch(
+                "tools.riscv.megrez_debian_shell.handoff_physical_shell"
+            ) as handoff,
+            mock.patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            status = main(
+                [
+                    "handoff",
+                    str(self.plan_path),
+                    "/dev/ttyUSB0",
+                    "--result",
+                    str(result_path),
+                    "--host-interface",
+                    "enp12s0",
+                    "--yes",
+                ]
+            )
+        self.assertEqual(status, 2)
+        handoff.assert_not_called()
+
+    def test_matching_install_cli_never_launches_the_board(self) -> None:
+        permit = _valid_permit(self.plan)
+        geometry = (
+            PartitionGeometry(1, 0x8000, 0xF2022),
+            PartitionGeometry(2, P2_START_LBA, P2_NR_SECTORS),
+            PartitionGeometry(3, 0x8FA022, 0x100000),
+        )
+        inventory = InventoryResult(
+            schema_version=1,
+            status="matching",
+            reason="verified-root",
+            plan_sha256=self.plan.plan_sha256,
+            permit_sha256=hashlib.sha256(permit.canonical_bytes()).hexdigest(),
+            partitions=geometry,
+            expected_root_sha256=self.plan.artifact_map()["root_image"].sha256,
+            install_result_sha256=None,
+            serial_sha256="7" * 64,
+        )
+        inventory_path = self.directory / "inventory.json"
+        inventory_path.write_bytes(inventory.canonical_bytes())
+        output = Path(self.target_directory.name) / "install"
+
+        with mock.patch.object(
+            shell_cli_io,
+            "_run_network_install_request",
+            side_effect=AssertionError("board launch is forbidden"),
+        ) as launch:
+            result = shell_cli_io.run_install_command(
+                SimpleNamespace(
+                    plan=self.plan_path,
+                    permit=self.permit_path,
+                    inventory=inventory_path,
+                    device="/dev/ttyUSB0",
+                    output=output,
+                    deadline=660.0,
+                )
+            )
+
+        self.assertEqual(result.reason, "already-matching")
+        launch.assert_not_called()
+        self.assertFalse((output / "transport").exists())
+
+    def test_inventory_rehashes_artifacts_before_opening_serial(self) -> None:
+        output = Path(self.target_directory.name) / "inventory"
+        output.mkdir(mode=0o700)
+        with mock.patch.object(
+            shell_cli_io,
+            "open_serial",
+            side_effect=AssertionError("serial opened before artifact validation"),
+        ) as open_serial:
+            operations = shell_cli_io.InventoryBoardOperations(
+                self.plan,
+                _valid_permit(self.plan),
+                device="/dev/ttyUSB0",
+                interface="enp12s0",
+                output=output,
+                deadline=660.0,
+                prior_inventory=None,
+                install_result=None,
+            )
+            try:
+                with self.assertRaisesRegex(InventoryError, "artifact changed"):
+                    operations.invalidate()
+            finally:
+                operations.close()
+        open_serial.assert_not_called()
+
+
+class PersistentShellDocumentationTests(unittest.TestCase):
+    def test_operator_docs_freeze_safe_order_and_scope(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        for relative in (
+            "tools/riscv/README.md",
+            "tools/riscv/debian/rootfs/README.md",
+        ):
+            text = (repository / relative).read_text()
+            with self.subTest(path=relative):
+                self.assertIn("## Megrez persistent Debian shell", text)
+                self.assertIn("FEATURES=riscv_sv39_mode", text)
+                self.assertIn("default Sv48", text)
+                self.assertLess(
+                    text.index(" inventory "), text.index(" install-if-needed ")
+                )
+                self.assertIn("/dev/mmcblk0p2", text)
+                self.assertIn("Asterinas-only", text)
+                self.assertIn("must not boot Linux", text)
+                self.assertIn("short EIC7700X watchdog", text)
+                self.assertIn("systemd, network, and desktop", text)
+                self.assertIn(
+                    "picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0",
+                    text,
+                )
 
 
 if __name__ == "__main__":
