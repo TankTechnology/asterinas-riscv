@@ -7,6 +7,8 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -22,9 +24,95 @@ from tools.riscv.megrez_debian_shell_contract import (
     ShellContractError,
     validate_rootfs_identity,
 )
+from tools.riscv.megrez_debian_shell_evidence import (
+    QemuShellEvidence,
+    ShellPermit,
+    ShellPermitError,
+    issue_shell_permit,
+    validate_qemu_result,
+)
+from tools.riscv.megrez_debian_shell import qemu_gate_argv, run_qemu_gate
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
+
+
+def _artifact_fixture(directory: Path) -> tuple[FrozenArtifact, ...]:
+    artifacts = []
+    for index, name in enumerate(SHELL_ARTIFACT_ORDER):
+        path = directory / name
+        if name == "root_image":
+            with path.open("wb") as output_file:
+                output_file.truncate(ROOT_IMAGE_SIZE_BYTES)
+            size = ROOT_IMAGE_SIZE_BYTES
+        else:
+            payload = f"{name}-{index}\n".encode()
+            path.write_bytes(payload)
+            size = len(payload)
+        artifacts.append(
+            FrozenArtifact(
+                name=name,
+                path=str(path),
+                size=size,
+                sha256=f"{index + 1:064x}",
+                crc32=f"{index + 1:08x}",
+            )
+        )
+    return tuple(artifacts)
+
+
+def _valid_plan(artifacts: tuple[FrozenArtifact, ...]) -> PersistentShellPlan:
+    return PersistentShellPlan(
+        schema_version=1,
+        git_commit="1" * 40,
+        artifacts=artifacts,
+        smp=4,
+        qemu_paging="sv39",
+        megrez_paging="sv48",
+        gate_bootargs=(
+            "console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init "
+            "asterinas.reboot_after=180"
+        ),
+        final_bootargs=("console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init"),
+        gate_reboot_after=180,
+        long_operation_reboot_after=600,
+        partition_start_lba=P2_START_LBA,
+        partition_nr_sectors=P2_NR_SECTORS,
+    )
+
+
+def _native_qemu_argv(directory: Path, boot_number: int) -> list[str]:
+    runtime = directory / f"runtime-{boot_number}"
+    return [
+        "qemu-system-riscv64",
+        "-machine",
+        "virt",
+        "-cpu",
+        "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+        "-m",
+        "2G",
+        "-smp",
+        "4",
+        "-display",
+        "none",
+        "-nic",
+        "none",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-kernel",
+        str(runtime / "u-boot"),
+        "-drive",
+        f"if=none,format=raw,file={directory}/boot.ext4,id=bootdisk,readonly=on",
+        "-device",
+        "virtio-blk-device,drive=bootdisk",
+        "-drive",
+        f"if=none,format=raw,file={directory}/root.ext2,id=rootdisk,cache=directsync",
+        "-device",
+        "virtio-blk-device,drive=rootdisk",
+        "-monitor",
+        f"unix:{runtime}/monitor.sock,server=on,wait=off",
+    ]
 
 
 class PersistentShellContractTests(unittest.TestCase):
@@ -32,51 +120,10 @@ class PersistentShellContractTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
-        self.artifacts = self._artifact_fixture()
-
-    def _artifact_fixture(self) -> tuple[FrozenArtifact, ...]:
-        artifacts = []
-        for index, name in enumerate(SHELL_ARTIFACT_ORDER):
-            path = self.directory / name
-            if name == "root_image":
-                with path.open("wb") as output_file:
-                    output_file.truncate(ROOT_IMAGE_SIZE_BYTES)
-                size = ROOT_IMAGE_SIZE_BYTES
-            else:
-                payload = f"{name}-{index}\n".encode()
-                path.write_bytes(payload)
-                size = len(payload)
-            artifacts.append(
-                FrozenArtifact(
-                    name=name,
-                    path=str(path),
-                    size=size,
-                    sha256=f"{index + 1:064x}",
-                    crc32=f"{index + 1:08x}",
-                )
-            )
-        return tuple(artifacts)
+        self.artifacts = _artifact_fixture(self.directory)
 
     def valid_plan(self) -> PersistentShellPlan:
-        return PersistentShellPlan(
-            schema_version=1,
-            git_commit="1" * 40,
-            artifacts=self.artifacts,
-            smp=4,
-            qemu_paging="sv39",
-            megrez_paging="sv48",
-            gate_bootargs=(
-                "console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init "
-                "asterinas.reboot_after=180"
-            ),
-            final_bootargs=(
-                "console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init"
-            ),
-            gate_reboot_after=180,
-            long_operation_reboot_after=600,
-            partition_start_lba=P2_START_LBA,
-            partition_nr_sectors=P2_NR_SECTORS,
-        )
+        return _valid_plan(self.artifacts)
 
     def test_plan_separates_sv39_qemu_from_sv48_megrez(self) -> None:
         plan = self.valid_plan()
@@ -316,6 +363,296 @@ class PersistentShellContractTests(unittest.TestCase):
         ):
             with self.assertRaises(ShellContractError):
                 validate_rootfs_identity(plan)
+
+
+class PersistentShellQemuPermitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.plan = _valid_plan(_artifact_fixture(self.directory))
+        self.native_output = self.directory / "native"
+        self.native_output.mkdir()
+        self.native_result_path = self.native_output / "result.json"
+        self.qemu_evidence_path = self.directory / "qemu-evidence.json"
+        self.permit_path = self.directory / "permit.json"
+        self._write_native_result(self._native_result())
+
+    def _native_result(self) -> dict[str, object]:
+        artifacts = self.plan.artifact_map()
+        return {
+            "passed": True,
+            "reason": "pass",
+            "nonce_sha256": "d" * 64,
+            "qemu_argv": [
+                _native_qemu_argv(self.native_output, 1),
+                _native_qemu_argv(self.native_output, 2),
+            ],
+            "input_sha256": {
+                "kernel": artifacts["qemu_kernel"].sha256,
+                "u_boot": artifacts["qemu_uboot"].sha256,
+                "dtb": artifacts["qemu_dtb"].sha256,
+                "stage1_initramfs": artifacts["stage1"].sha256,
+                "root_image": artifacts["root_image"].sha256,
+                "manifest": artifacts["root_manifest"].sha256,
+                "packages_lock": artifacts["packages_lock"].sha256,
+                "package_checksums": artifacts["package_checksums"].sha256,
+            },
+            "final_root_sha256": "e" * 64,
+            "manifest_identity": {
+                "suite": "trixie",
+                "architecture": "riscv64",
+                "debian_release": "13.6",
+                "root_image_sha256": artifacts["root_image"].sha256,
+                "packages_lock_sha256": artifacts["packages_lock"].sha256,
+            },
+            "package_identity": [["bash", "5.2"]],
+            "phase_durations_seconds": {
+                "snapshot": 0.1,
+                "validate": 0.1,
+                "prepare": 0.1,
+                "boot1": 1.0,
+                "boot2": 1.0,
+                "hash-final-root": 0.1,
+            },
+        }
+
+    def _write_native_result(self, result: dict[str, object]) -> None:
+        self.native_result_path.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (self.native_output / "boot1.serial.log").write_bytes(b"boot one complete\n")
+        (self.native_output / "boot2.serial.log").write_bytes(b"boot two complete\n")
+
+    def _valid_evidence(self) -> QemuShellEvidence:
+        return validate_qemu_result(self.plan, self.native_result_path)
+
+    def test_qemu_result_requires_two_sv39_smp4_boots_and_exact_inputs(self) -> None:
+        evidence = self._valid_evidence()
+
+        self.assertTrue(evidence.passed)
+        self.assertEqual(evidence.reason, "pass")
+        self.assertEqual(evidence.plan_sha256, self.plan.plan_sha256)
+        self.assertEqual(evidence.boot_count, 2)
+        self.assertEqual(
+            evidence.qemu_kernel_sha256,
+            self.plan.artifact_map()["qemu_kernel"].sha256,
+        )
+        self.assertEqual(
+            evidence.root_image_sha256,
+            self.plan.artifact_map()["root_image"].sha256,
+        )
+
+    def test_qemu_result_rejects_failure_stale_inputs_or_unsafe_argv(self) -> None:
+        base = self._native_result()
+        mutations = []
+        failed = json.loads(json.dumps(base))
+        failed["passed"] = False
+        failed["reason"] = "commands2"
+        mutations.append(failed)
+        wrong_input = json.loads(json.dumps(base))
+        wrong_input["input_sha256"]["root_image"] = "f" * 64
+        mutations.append(wrong_input)
+        bad_nonce = json.loads(json.dumps(base))
+        bad_nonce["nonce_sha256"] = "not-a-hash"
+        mutations.append(bad_nonce)
+        one_boot = json.loads(json.dumps(base))
+        one_boot["qemu_argv"] = one_boot["qemu_argv"][:1]
+        mutations.append(one_boot)
+        wrong_cpu = json.loads(json.dumps(base))
+        cpu_index = wrong_cpu["qemu_argv"][0].index("-cpu") + 1
+        wrong_cpu["qemu_argv"][0][cpu_index] = "rv64"
+        mutations.append(wrong_cpu)
+        networked = json.loads(json.dumps(base))
+        networked["qemu_argv"][1].extend(["-device", "e1000"])
+        mutations.append(networked)
+        graphical = json.loads(json.dumps(base))
+        display_index = graphical["qemu_argv"][0].index("-display") + 1
+        graphical["qemu_argv"][0][display_index] = "gtk"
+        mutations.append(graphical)
+        accelerated = json.loads(json.dumps(base))
+        accelerated["qemu_argv"][0].append("-enable-kvm")
+        mutations.append(accelerated)
+
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self._write_native_result(mutation)
+                with self.assertRaises(ShellPermitError):
+                    validate_qemu_result(self.plan, self.native_result_path)
+
+    def test_qemu_evidence_and_permit_use_exact_canonical_json(self) -> None:
+        evidence = self._valid_evidence()
+        evidence_payload = evidence.canonical_bytes()
+        self.assertEqual(QemuShellEvidence.from_bytes(evidence_payload), evidence)
+        with self.assertRaisesRegex(ShellPermitError, "duplicate JSON key"):
+            QemuShellEvidence.from_bytes(
+                evidence_payload.replace(
+                    b'"boot_count":2', b'"boot_count":2,"boot_count":2'
+                )
+            )
+
+        permit = ShellPermit(
+            schema_version=1,
+            passed=True,
+            reason="pass",
+            plan_sha256=self.plan.plan_sha256,
+            qemu_evidence_sha256=hashlib.sha256(evidence_payload).hexdigest(),
+            git_commit=self.plan.git_commit,
+            megrez_kernel_sha256=self.plan.artifact_map()["megrez_kernel"].sha256,
+            stage1_crc32=self.plan.artifact_map()["stage1"].crc32,
+            megrez_dtb_crc32=self.plan.artifact_map()["megrez_dtb"].crc32,
+            root_image_sha256=self.plan.artifact_map()["root_image"].sha256,
+            gate_bootargs=self.plan.gate_bootargs,
+            gate_reboot_after=180,
+            long_operation_reboot_after=600,
+        )
+        payload = permit.canonical_bytes()
+        self.assertEqual(ShellPermit.from_bytes(payload), permit)
+        with self.assertRaises(ShellPermitError):
+            replace(permit, gate_bootargs=permit.gate_bootargs + "; saveenv").validate()
+
+    def test_qemu_result_rejects_symlinked_result_or_serial_log(self) -> None:
+        result_target = self.native_output / "result-target.json"
+        result_target.write_bytes(self.native_result_path.read_bytes())
+        self.native_result_path.unlink()
+        self.native_result_path.symlink_to(result_target)
+        with self.assertRaises(ShellPermitError):
+            validate_qemu_result(self.plan, self.native_result_path)
+
+        self.native_result_path.unlink()
+        self._write_native_result(self._native_result())
+        log = self.native_output / "boot2.serial.log"
+        log_target = self.native_output / "boot2-target.log"
+        log_target.write_bytes(log.read_bytes())
+        log.unlink()
+        log.symlink_to(log_target)
+        with self.assertRaises(ShellPermitError):
+            validate_qemu_result(self.plan, self.native_result_path)
+
+    def test_permit_reopens_artifacts_and_rejects_dirty_or_stale_results(self) -> None:
+        evidence = self._valid_evidence()
+        self.qemu_evidence_path.write_bytes(evidence.canonical_bytes())
+        self.permit_path.write_text("stale\n", encoding="utf-8")
+        artifact_reads = []
+
+        def artifact_reader(name: str, path: Path) -> FrozenArtifact:
+            artifact_reads.append((name, path))
+            return self.plan.artifact_map()[name]
+
+        permit = issue_shell_permit(
+            self.plan,
+            self.qemu_evidence_path,
+            self.permit_path,
+            repository=self.directory,
+            artifact_reader=artifact_reader,
+            rootfs_validator=lambda plan: plan,
+            dtb_validator=lambda _path: 4,
+            git_identity=lambda _repository: self.plan.git_commit,
+        )
+
+        self.assertEqual(len(artifact_reads), len(SHELL_ARTIFACT_ORDER))
+        self.assertEqual(ShellPermit.from_bytes(self.permit_path.read_bytes()), permit)
+        self.assertTrue(permit.passed)
+
+        self.permit_path.write_text("stale-again\n", encoding="utf-8")
+        dirty_plan = replace(self.plan, git_commit="0" * 40)
+        with self.assertRaises(ShellPermitError):
+            issue_shell_permit(
+                dirty_plan,
+                self.qemu_evidence_path,
+                self.permit_path,
+                repository=self.directory,
+                artifact_reader=artifact_reader,
+                rootfs_validator=lambda plan: plan,
+                dtb_validator=lambda _path: 4,
+                git_identity=lambda _repository: self.plan.git_commit,
+            )
+        self.assertFalse(self.permit_path.exists())
+
+        self.permit_path.write_text("stale-git-error\n", encoding="utf-8")
+        with self.assertRaises(ShellPermitError):
+            issue_shell_permit(
+                self.plan,
+                self.qemu_evidence_path,
+                self.permit_path,
+                repository=self.directory,
+                artifact_reader=artifact_reader,
+                rootfs_validator=lambda plan: plan,
+                dtb_validator=lambda _path: 4,
+                git_identity=lambda _repository: (_ for _ in ()).throw(
+                    subprocess.CalledProcessError(128, ["git", "status"])
+                ),
+            )
+        self.assertFalse(self.permit_path.exists())
+
+    def test_permit_rejects_output_symlink_without_modifying_target(self) -> None:
+        evidence = self._valid_evidence()
+        self.qemu_evidence_path.write_bytes(evidence.canonical_bytes())
+        target = self.directory / "target"
+        target.write_text("keep\n", encoding="utf-8")
+        self.permit_path.symlink_to(target)
+
+        with self.assertRaises(ShellPermitError):
+            issue_shell_permit(
+                self.plan,
+                self.qemu_evidence_path,
+                self.permit_path,
+                repository=self.directory,
+                artifact_reader=lambda name, _path: self.plan.artifact_map()[name],
+                rootfs_validator=lambda plan: plan,
+                dtb_validator=lambda _path: 4,
+                git_identity=lambda _repository: self.plan.git_commit,
+            )
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
+
+    def test_qemu_adapter_passes_only_the_frozen_gate_inputs(self) -> None:
+        argv = qemu_gate_argv(self.plan, self.native_output)
+        artifacts = self.plan.artifact_map()
+
+        self.assertEqual(
+            argv[:3], (sys.executable, "-m", "tools.riscv.debian.rootfs.rootfs_gate")
+        )
+        for option, value in (
+            ("--kernel", artifacts["qemu_kernel"].path),
+            ("--uboot", artifacts["qemu_uboot"].path),
+            ("--dtb", artifacts["qemu_dtb"].path),
+            ("--stage1-initramfs", artifacts["stage1"].path),
+            ("--root-image", artifacts["root_image"].path),
+            ("--root-manifest", artifacts["root_manifest"].path),
+            ("--packages-lock", artifacts["packages_lock"].path),
+            ("--package-checksums", artifacts["package_checksums"].path),
+            ("--output-directory", str(self.native_output)),
+            ("--smp", "4"),
+        ):
+            index = argv.index(option)
+            self.assertEqual(argv[index + 1], value)
+
+    def test_run_qemu_gate_invalidates_stale_evidence_and_runs_once(self) -> None:
+        self.qemu_evidence_path.write_text("stale\n", encoding="utf-8")
+        calls = []
+
+        def run_command(argv: tuple[str, ...], **kwargs: object):
+            self.assertFalse(self.qemu_evidence_path.exists())
+            calls.append((argv, kwargs))
+            self._write_native_result(self._native_result())
+            return subprocess.CompletedProcess(argv, 0)
+
+        evidence = run_qemu_gate(
+            self.plan,
+            self.native_output,
+            evidence_path=self.qemu_evidence_path,
+            run_command=run_command,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], qemu_gate_argv(self.plan, self.native_output))
+        self.assertTrue(calls[0][1]["check"])
+        self.assertEqual(
+            QemuShellEvidence.from_bytes(self.qemu_evidence_path.read_bytes()),
+            evidence,
+        )
 
 
 if __name__ == "__main__":
