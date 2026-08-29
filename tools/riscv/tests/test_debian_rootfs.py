@@ -1394,15 +1394,16 @@ WantedBy=multi-user.target
         )
         fake_bin = self._make_desktop_m4_evidence_tools()
 
-        for missing in (
-            "",
-            "desktop-pcmanfm",
-            "lxpanel",
-            "openbox",
-            "netsurf",
-            "xterm",
-            "mapped-netsurf",
-        ):
+        cases = {
+            "": None,
+            "desktop-pcmanfm": "pcmanfm",
+            "lxpanel": "lxpanel",
+            "openbox": "openbox",
+            "netsurf": "netsurf",
+            "xterm": "xterm",
+            "mapped-netsurf": "netsurf-window",
+        }
+        for missing, expected_diagnostic in cases.items():
             with self.subTest(missing=missing or "none"):
                 console = self.directory / f"desktop-m4-console-{missing or 'complete'}"
                 console.write_text("", encoding="utf-8")
@@ -1430,6 +1431,10 @@ WantedBy=multi-user.target
                     self.assertEqual(evidence, "\n".join(DESKTOP_M4_MILESTONES) + "\n")
                 else:
                     self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        f"DEBIAN_DESKTOP_M4_DIAGNOSTIC missing={expected_diagnostic}\n",
+                        evidence,
+                    )
                     self.assertTrue(
                         evidence.endswith(
                             "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
@@ -4511,14 +4516,18 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                 gate_packages=(),
             )
             with (
-                mock.patch.object(gate_backend_module, "load_manifest", return_value=manifest),
+                mock.patch.object(
+                    gate_backend_module, "load_manifest", return_value=manifest
+                ),
                 mock.patch.object(gate_backend_module, "validate_frozen_root"),
                 mock.patch.object(
                     gate_backend_module,
                     "load_package_checksums",
                     return_value=downloaded_packages,
                 ) as load_checksums,
-                mock.patch.object(gate_backend_module, "verify_four_hart_dtb", return_value=4),
+                mock.patch.object(
+                    gate_backend_module, "verify_four_hart_dtb", return_value=4
+                ),
                 gate_backend_module.ConcreteOperations(config) as operations,
             ):
                 operations.validate_inputs(config, operations.snapshot_inputs(config))

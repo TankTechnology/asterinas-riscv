@@ -11,6 +11,7 @@ readonly NETSURF_LOG="${ASTERINAS_DESKTOP_M4_NETSURF_LOG:-/home/asterinas/netsur
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS:-240}"
 readonly USER_NAME="asterinas"
 readonly USER_ID="1000"
+not_ready_reason="not-evaluated"
 
 emit() {
     printf '%s\n' "$1" >>"$CONSOLE"
@@ -69,42 +70,106 @@ ready() {
     local window_tree
     local window_tree_lower
 
-    systemctl is-active --quiet systemd-udevd.service || return 1
-    systemctl is-active --quiet systemd-logind.service || return 1
-    sessions="$(loginctl list-sessions --no-legend 2>/dev/null)" || return 1
-    [[ "$sessions" =~ (^|[[:space:]])$USER_NAME([[:space:]]|$) ]] || return 1
-    [[ -e "$INPUT_DIRECTORY/event0" ]] || return 1
-    [[ -e "$INPUT_DIRECTORY/event1" ]] || return 1
-    [[ -f "$XORG_LOG" ]] || return 1
-    grep -q 'FBDEV(0)' "$XORG_LOG" || return 1
-    grep -q 'Adding extended input device.*Asterinas keyboard' "$XORG_LOG" || return 1
-    grep -q 'Adding extended input device.*Asterinas pointer' "$XORG_LOG" || return 1
+    not_ready_reason="not-evaluated"
+    systemctl is-active --quiet systemd-udevd.service || {
+        not_ready_reason="udev"
+        return 1
+    }
+    systemctl is-active --quiet systemd-logind.service || {
+        not_ready_reason="logind"
+        return 1
+    }
+    sessions="$(loginctl list-sessions --no-legend 2>/dev/null)" || {
+        not_ready_reason="login-sessions"
+        return 1
+    }
+    [[ "$sessions" =~ (^|[[:space:]])$USER_NAME([[:space:]]|$) ]] || {
+        not_ready_reason="asterinas-session"
+        return 1
+    }
+    [[ -e "$INPUT_DIRECTORY/event0" ]] || {
+        not_ready_reason="keyboard-device"
+        return 1
+    }
+    [[ -e "$INPUT_DIRECTORY/event1" ]] || {
+        not_ready_reason="pointer-device"
+        return 1
+    }
+    [[ -f "$XORG_LOG" ]] || {
+        not_ready_reason="xorg-log"
+        return 1
+    }
+    grep -q 'FBDEV(0)' "$XORG_LOG" || {
+        not_ready_reason="framebuffer"
+        return 1
+    }
+    grep -q 'Adding extended input device.*Asterinas keyboard' "$XORG_LOG" || {
+        not_ready_reason="keyboard-xinput"
+        return 1
+    }
+    grep -q 'Adding extended input device.*Asterinas pointer' "$XORG_LOG" || {
+        not_ready_reason="pointer-xinput"
+        return 1
+    }
     pgrep -u "$USER_ID" -x openbox \
-        >/dev/null || return 1
+        >/dev/null || {
+        not_ready_reason="openbox"
+        return 1
+    }
     pgrep -u "$USER_ID" -f \
         '(^|/)pcmanfm([[:space:]].*)?--desktop([[:space:]]|$)' \
-        >/dev/null || return 1
+        >/dev/null || {
+        not_ready_reason="pcmanfm"
+        return 1
+    }
     pgrep -u "$USER_ID" -f '(^|/)lxpanel([[:space:]]|$)' \
-        >/dev/null || return 1
-    pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null || return 1
-    pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
+        >/dev/null || {
+        not_ready_reason="lxpanel"
+        return 1
+    }
+    pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null || {
+        not_ready_reason="netsurf"
+        return 1
+    }
+    pgrep -u "$USER_ID" -x xterm >/dev/null || {
+        not_ready_reason="xterm"
+        return 1
+    }
     DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
         xdotool search --onlyvisible --class Netsurf-gtk \
-        >/dev/null || return 1
+        >/dev/null || {
+        not_ready_reason="netsurf-window"
+        return 1
+    }
     DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
         xdotool search --onlyvisible --class XTerm \
-        >/dev/null || return 1
+        >/dev/null || {
+        not_ready_reason="xterm-window"
+        return 1
+    }
     window_tree="$(
         DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
             xwininfo -root -tree 2>/dev/null
-    )" || return 1
+    )" || {
+        not_ready_reason="window-tree"
+        return 1
+    }
     window_tree_lower="${window_tree,,}"
-    [[ "$window_tree_lower" == *netsurf* ]] || return 1
-    [[ "$window_tree_lower" == *"asterinas terminal"* ]] || return 1
+    [[ "$window_tree_lower" == *netsurf* ]] || {
+        not_ready_reason="netsurf-tree"
+        return 1
+    }
+    [[ "$window_tree_lower" == *"asterinas terminal"* ]] || {
+        not_ready_reason="terminal-tree"
+        return 1
+    }
 }
 
 while ! ready; do
-    ((SECONDS < deadline)) || fail desktop-timeout
+    if ((SECONDS >= deadline)); then
+        emit "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=$not_ready_reason"
+        fail desktop-timeout
+    fi
     sleep 1
 done
 
