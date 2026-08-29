@@ -81,8 +81,7 @@ focused tests.
   opt-in pre-`booti` EIC7700X DesignWare watchdog. It validates component type
   and control-register readback, uses interrupt-then-reset mode, and recognizes
   a returned U-Boot banner as a failed current attempt. Host tests cover the
-  exact command order and fail-closed behavior; physical watchdog recovery is
-  not claimed until the next bounded board run.
+  exact command order and fail-closed behavior.
 - The first watchdog-enabled attempt remained fail-closed at U-Boot: the
   watchdog component register read as zero and no kernel was started. Read-only
   follow-up showed `lsp_clk_en0=0xfe3fff83` (WDT0 clock enabled) but
@@ -91,6 +90,16 @@ focused tests.
   component ID. The workflow now preserves both registers' unrelated bits,
   deasserts only WDT0 reset, verifies the prerequisites, and uses EIC7700X's
   real `TOP=0xf` maximum; the upper TORR nibble is reserved on this SoC.
+- The final bounded run at `cec8ca25b` proved both fixes on hardware. U-Boot
+  read back `lsp_clk_en0=0xfe3fff83`, changed only `wdt_rst_ctrl` bit 0 from 0
+  to 1, exposed component type `0x44570120`, and read back
+  `CR=0x1f/TORR=0x0f` before `booti`. Asterinas then registered the identity
+  SDMA buffer and read-only SDHC device, read exactly 32 MiB in `5.195899`
+  seconds, and produced CRC32 `5f85f90e`. The hardware watchdog subsequently
+  restarted the board through OpenSBI and the runner stopped U-Boot autoboot;
+  both the board result and the independent SDHCI evidence gate report pass.
+  The retained serial log SHA-256 is
+  `5d4b462ea6c8b934e6f10a7333d675369e0e77c11596f31a04b524c85f4431c3`.
 
 ---
 
