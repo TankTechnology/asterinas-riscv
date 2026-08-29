@@ -72,15 +72,12 @@ NEIGHBOR_BOOTARGS = " ".join(
         (HOST_ADDRESS, HOST_HARDWARE_ADDRESS),
     )
 )
-SERIAL_EVIDENCE_BOOTARGS = " ".join(
-    f"systemd.setenv={name}=/dev/ttyS0"
-    for name in (
-        "ASTERINAS_DESKTOP_M4_CONSOLE",
-        "ASTERINAS_DESKTOP_M5_CONSOLE",
-        "ASTERINAS_BROWSER_M6_CONSOLE",
-        "ASTERINAS_BROWSER_M7_CONSOLE",
-    )
+SERIAL_EVIDENCE_VARIABLES = (
+    "ASTERINAS_DESKTOP_M4_CONSOLE",
+    "ASTERINAS_DESKTOP_M5_CONSOLE",
+    "ASTERINAS_BROWSER_M6_CONSOLE",
 )
+MAX_UBOOT_COMMAND_BYTES = 1024
 DESKTOP_PROXY_BOOTARGS = " ".join(
     f"systemd.setenv={name}={value}"
     for name, value in (
@@ -218,25 +215,38 @@ class GateOperations(Protocol):
     def publish(self, transcript: bytes, result: dict[str, object]) -> None: ...
 
 
-def physical_bootargs(reboot_after: int | None = None) -> str:
-    """Return the volatile Asterinas/Desktop M5 command line."""
+def physical_bootargs(
+    reboot_after: int | None = None,
+    *,
+    target: GateTarget = GateTarget.BROWSER,
+) -> str:
+    """Return one target-specific, volatile Asterinas command line."""
+
+    if not isinstance(target, GateTarget):
+        raise ValueError("target must be a GateTarget")
 
     restart = ""
     if reboot_after is not None:
-        userspace_deadline = max(1, reboot_after - 30)
-        restart = (
-            f" asterinas.reboot_after={reboot_after} "
-            f"systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER={userspace_deadline} "
-            "systemd.setenv=ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0"
-        )
-    return (
+        restart = f" asterinas.reboot_after={reboot_after}"
+    evidence_variables = (
+        ("ASTERINAS_DESKTOP_M5_CONSOLE",)
+        if target is GateTarget.NETWORK
+        else SERIAL_EVIDENCE_VARIABLES
+    )
+    evidence = " ".join(
+        f"systemd.setenv={name}=/dev/ttyS0" for name in evidence_variables
+    )
+    bootargs = (
         "console=ttyS0 console=tty0 loglevel=info "
         f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
-        f"{NEIGHBOR_BOOTARGS}{restart} "
-        f"{SERIAL_EVIDENCE_BOOTARGS} {DESKTOP_PROXY_BOOTARGS} "
+        f"{NEIGHBOR_BOOTARGS}{restart} {evidence} {DESKTOP_PROXY_BOOTARGS} "
         f"{DESKTOP_FIXTURE_BOOTARGS} "
         "-- --root-init=systemd"
     )
+    command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
+    if command_bytes >= MAX_UBOOT_COMMAND_BYTES:
+        raise GateFailure("U-Boot bootargs command exceeds 1023 bytes")
+    return bootargs
 
 
 def bounded_reboot_seconds(value: str) -> int:
@@ -525,7 +535,10 @@ class PhysicalGateOperations:
             initrd=self.arguments.initrd,
             expected_crc32=self.arguments.expected_crc32,
             firmware_framebuffer=True,
-            bootargs=physical_bootargs(self.arguments.reboot_after),
+            bootargs=physical_bootargs(
+                self.arguments.reboot_after,
+                target=self.arguments.target,
+            ),
             load_transport=self.arguments.load_transport,
             tftp_board_address=self.arguments.tftp_board_address,
             tftp_server_address=self.arguments.tftp_server_address,
