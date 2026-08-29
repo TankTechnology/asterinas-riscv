@@ -16,8 +16,15 @@ from pathlib import Path
 
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 READ_PROBE_BYTES = 32 * 1024 * 1024
+SDMA_BUFFER_BYTES = 512 * 1024
+SDMA_CPU_START = 0xC0000000
+SDMA_CPU_END = 0x100000000
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_BUFFER = re.compile(
+    r"\[mmc\] SDMA buffer cpu=(?P<cpu>0x[0-9a-f]+) "
+    r"device=(?P=cpu) bytes=524288"
+)
 _CONTROLLER = re.compile(r"\[mmc\] controller 0x50460000 irq=81 sdma boundary=524288")
 _CARD = re.compile(
     r"\[mmc\] SDHC rca=(?P<rca>[1-9][0-9]*) sectors=(?P<sectors>[1-9][0-9]*)"
@@ -67,6 +74,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         return _failure("write-enabled-marker")
 
     matches = [
+        list(_BUFFER.finditer(text)),
         list(_CONTROLLER.finditer(text)),
         list(_CARD.finditer(text)),
         list(_BLOCK.finditer(text)),
@@ -78,7 +86,15 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
     if ordered != sorted(ordered):
         return _failure("out-of-order-marker")
 
-    card = matches[1][0]
+    buffer_address = int(matches[0][0].group("cpu"), 16)
+    if (
+        buffer_address < SDMA_CPU_START
+        or buffer_address + SDMA_BUFFER_BYTES > SDMA_CPU_END
+        or buffer_address % SDMA_BUFFER_BYTES != 0
+    ):
+        return _failure("invalid-sdma-buffer")
+
+    card = matches[2][0]
     sectors = int(card.group("sectors"))
     if sectors <= 0:
         return _failure("invalid-capacity")
@@ -86,7 +102,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         True,
         "passed",
         sectors=sectors,
-        partition_sha256=matches[3][0].group("sha256"),
+        partition_sha256=matches[4][0].group("sha256"),
     )
     if expected_crc32 is None:
         return result
@@ -100,7 +116,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
     start_match = start_matches[0]
     pass_match = pass_matches[0]
     if (
-        matches[3][0].start() > start_match.start()
+        matches[4][0].start() > start_match.start()
         or start_match.start() > pass_match.start()
     ):
         return _failure("out-of-order-read-marker")
@@ -124,7 +140,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         True,
         "passed",
         sectors=sectors,
-        partition_sha256=matches[3][0].group("sha256"),
+        partition_sha256=matches[4][0].group("sha256"),
         read_bytes=read_bytes,
         read_crc32=pass_match.group("crc32"),
         elapsed_seconds=float(end - start),

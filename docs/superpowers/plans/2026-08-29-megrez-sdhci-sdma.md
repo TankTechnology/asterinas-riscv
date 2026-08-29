@@ -4,7 +4,7 @@
 
 **Goal:** Replace the Megrez SD-card controller's installation-blocking word-at-a-time PIO data path with a bounded, firmware-aligned SDMA path while retaining a tested PIO fallback and fail-closed recovery.
 
-**Architecture:** Follow the Megrez RockOS U-Boot choice of SDHCI SDMA, not an unproven board-specific ADMA/IOMMU setup. Parse the exact DT `dma-ranges`, allocate one 512 KiB uncached bounce buffer inside the CPU-visible DMA window, translate it to the controller bus address, and let the real SDHCI adapter own DMA setup, boundary continuation, interrupt decoding, copy-in/out, and data-line recovery. Keep protocol decisions dependency-free and unit-testable; keep every `unsafe` memory operation inside OSTD.
+**Architecture:** Follow the Megrez RockOS U-Boot choice of SDHCI SDMA, not an unimplemented board-specific SMMU setup. Validate the Linux DT's exact `dma-ranges`, SMMUv3 provider, and SD0 stream ID, but preserve U-Boot's identity-DMA handoff while Asterinas reports no RISC-V IOMMU. Allocate one 512 KiB uncached bounce buffer inside the validated CPU window and give the controller that buffer's physical address. The real SDHCI adapter owns DMA setup, boundary continuation, interrupt decoding, copy-in/out, and data-line recovery. Keep protocol decisions dependency-free and unit-testable; keep every `unsafe` memory operation inside OSTD.
 
 **Tech Stack:** Rust 2024, OSTD safe DMA/frame APIs, Asterinas MMC component ktests, Python `unittest`, pinned project Docker toolchain, Megrez DTB, RockOS U-Boot SDHCI SDMA contract, Linux SDHCI register definitions.
 
@@ -25,8 +25,18 @@
   [`sdhci.c`](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.c)
   and
   [`sdhci.h`](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.h).
+- RockOS U-Boot's `sd@50460000` node has neither `dma-ranges` nor `iommus`, so
+  U-Boot's generic DMA conversion is an identity mapping. RockOS Linux adds
+  both `dma-ranges = <0 0x20000000 0 0xc0000000 0 0x40000000>` and
+  `iommus = <&smmu0 16>` to the same controller, then attaches it to the ARM
+  SMMUv3 driver. The Linux IOVA offset is therefore not a standalone bus
+  translation and must not be applied without programming that SMMU stream.
+- Asterinas RISC-V currently returns `NoIommu` and
+  `has_dma_remapping() == false`. Until that changes, the supported Megrez
+  contract is U-Boot identity DMA with owned, uncached memory below 4 GiB.
 
-Any future Megrez MMC change must preserve these four facts in focused tests.
+Any future Megrez MMC change must preserve these address and register facts in
+focused tests.
 
 ## Frozen pre-board evidence (2026-08-29)
 
@@ -53,6 +63,12 @@ Any future Megrez MMC change must preserve these four facts in focused tests.
 - Frozen physical plan:
   `c6c86a881af56ea29f409c6dc094ac821f0b121fa7becb8e7ed2823faecd7309`,
   with a 60-second software-recovery timer and no write-authority token.
+- The first physical SDMA run at commit `8127014e997` reached the card through
+  PIO, then failed the first 32 MiB transfer with status `0x02008000` after
+  programming `0x5ff00000`. Bit 25 is the SDHCI ADMA/system-bus error. The
+  allocated CPU buffer was `0xfff00000`; subtracting the Linux IOVA offset
+  without an SMMU mapping made the controller access the wrong address. This
+  failure is the RED evidence for the identity-DMA correction.
 
 ---
 
@@ -122,8 +138,9 @@ RISC-V OSDK compile. No MMC code is changed in this task.
 
 - [ ] **Step 1: Write failing protocol/DT tests**
 
-Require exact Megrez `dma-ranges` (`device 0x20000000`, CPU
-`0xc0000000`, size `0x40000000`), `dma-noncoherent`, SDMA capability, a 512 KiB
+Require exact Megrez `dma-ranges` (`IOVA 0x20000000`, CPU
+`0xc0000000`, size `0x40000000`), SMMUv3 provider and SD0 stream ID 16,
+`dma-noncoherent`, SDMA capability, a 512 KiB
 maximum request, 512-byte block alignment, checked bus-address translation,
 the U-Boot-preserved SDHCI v4 mode, address registers `0x58/0x5c`, the
 block-count alias at `0x00`, DMA select/transfer-mode values, 512 KiB boundary
@@ -159,8 +176,8 @@ cannot be created.
 - [ ] **Step 2: Implement safe allocation and transfer ownership**
 
 Expose `DmaCoherent::alloc_in`, convert the non-coherent allocation to an
-uncached CPU view, translate its held physical range through the exact DT DMA
-window, and retain it in `MmioHost`. For writes, copy into the bounce buffer
+uncached CPU view, validate the Linux IOVA/SMMU description, then preserve the
+U-Boot identity mapping and retain it in `MmioHost`. For writes, copy into the bounce buffer
 before command issue; for reads, copy out only after successful completion.
 Program one request at a time and never expose DMA memory directly to the block
 BIO layer.
@@ -182,8 +199,9 @@ bounded transfer-progress counters rather than per-sector noise.
 - [ ] **Step 1: Add deterministic host gates**
 
 Model reads/writes at 512 B, 4 KiB, 512 KiB, boundary crossing, timeout,
-DMA error, unavailable buffer, and repeated mixed traffic. Require no transfer
-outside the DT window and no write to partition two without the existing
+DMA error, unavailable buffer, and repeated mixed traffic. Require CPU and
+device addresses to be identical, aligned, and inside the validated physical
+window, and no write to partition two without the existing
 authorization gate.
 
 - [ ] **Step 2: Run local heavy gates once**
