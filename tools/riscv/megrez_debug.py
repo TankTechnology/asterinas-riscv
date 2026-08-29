@@ -239,7 +239,9 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
     return plan
 
 
-def _physical_actions(plan: DebugPlan) -> list[dict[str, object]]:
+def _physical_actions(
+    plan: DebugPlan, *, hardware_watchdog: bool = False
+) -> list[dict[str, object]]:
     identities = {identity.name: identity for identity in plan.artifacts}
     actions: list[dict[str, object]] = [
         {"action": "require-simulation", "tier": "fast"},
@@ -253,6 +255,10 @@ def _physical_actions(plan: DebugPlan) -> list[dict[str, object]]:
                 "artifact": name,
                 "address": identity.load_address,
             }
+        )
+    if hardware_watchdog:
+        actions.append(
+            {"action": "arm-hardware-watchdog", "mode": "interrupt-then-reset"}
         )
     actions.extend(
         (
@@ -367,6 +373,7 @@ def _parser() -> argparse.ArgumentParser:
     board.add_argument("--recovery-result", type=Path)
     board.add_argument("--output-directory", type=Path)
     board.add_argument("--timeout", type=_board_timeout, default=300.0)
+    board.add_argument("--hardware-watchdog", action="store_true")
     board.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -451,7 +458,12 @@ def main(
 
         plan = _load_plan(values.plan)
         if values.dry_run:
-            print(json.dumps(_physical_actions(plan), separators=(",", ":")))
+            print(
+                json.dumps(
+                    _physical_actions(plan, hardware_watchdog=values.hardware_watchdog),
+                    separators=(",", ":"),
+                )
+            )
             return 0
         _check_artifacts(plan)
         _validate_simulation(values.simulation_result, plan)
@@ -467,6 +479,7 @@ def main(
                 values.device,
                 values.output_directory,
                 timeout=values.timeout,
+                hardware_watchdog=values.hardware_watchdog,
                 **(
                     {
                         "probe_trace_provider": lambda plan_sha256: trace_provider(

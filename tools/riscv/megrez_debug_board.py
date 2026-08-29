@@ -63,6 +63,7 @@ PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
 UBOOT_AUTOBOOT_PATTERN = re.compile(
     r"(?:^|[\r\n])Hit any key to stop autoboot:\s*[0-9]+"
 )
+UBOOT_BANNER_PATTERN = re.compile(r"(?:^|[\r\n])U-Boot [0-9]{4}\.[0-9]{2}")
 PROBE_FAILURE_PATTERN = re.compile(
     r"ASTERINAS_GMAC_TCP_PROBE_FAIL "
     r"reason=(?P<reason>[a-z0-9-]+) "
@@ -70,10 +71,28 @@ PROBE_FAILURE_PATTERN = re.compile(
     r"current_bytes=[0-9]+ completed_bytes=[0-9]+(?:\r?\n|$)"
 )
 KERNEL_COMPRESSED_ADDRESS = 0x90000000
+EIC7700_WATCHDOG_BASE = 0x50800000
+DW_WATCHDOG_COMPONENT_TYPE = 0x44570120
+DW_WATCHDOG_MAX_TIMEOUT = 0xFF
+DW_WATCHDOG_RECOVERY_CONTROL = 0x1F
+_UBOOT_MEMORY_LINE = re.compile(
+    r"(?m)^(?P<address>[0-9a-fA-F]{8,16}):"
+    r"(?P<values>(?: [0-9a-fA-F]{8})+)\r?$"
+)
 
 
 class BoardTransportError(RuntimeError):
     """One cache validation or XMODEM transport failure."""
+
+
+def _uboot_words(output: str, address: int, count: int) -> tuple[int, ...]:
+    for match in _UBOOT_MEMORY_LINE.finditer(output):
+        if int(match.group("address"), 16) != address:
+            continue
+        values = tuple(int(value, 16) for value in match.group("values").split())
+        if len(values) == count:
+            return values
+    raise BoardRunFailure("hardware-watchdog-readback-invalid")
 
 
 @dataclass(frozen=True)
@@ -288,6 +307,7 @@ class RealBoardOperations:
         close_device: CloseDevice = os.close,
         session_factory: SessionFactory = BoardSession.from_fd,
         probe_trace_provider: ProbeTraceProvider | None = None,
+        hardware_watchdog: bool = False,
     ) -> None:
         self._plan = plan
         self._device = device
@@ -302,6 +322,7 @@ class RealBoardOperations:
         self._close_device = close_device
         self._session_factory = session_factory
         self._probe_trace_provider = probe_trace_provider
+        self._hardware_watchdog = hardware_watchdog
         self._output: PinnedOutputDirectory | None = None
         self._fd: int | None = None
         self._session: BoardSession | None = None
@@ -385,6 +406,37 @@ class RealBoardOperations:
                 command,
                 timeout=_remaining(deadline, time.monotonic, phase="uboot-prepare"),
             )
+        if self._hardware_watchdog:
+            self._arm_hardware_watchdog(session, deadline)
+
+    @staticmethod
+    def _arm_hardware_watchdog(session: BoardSession, deadline: float) -> None:
+        def command(text: str) -> str:
+            return session.command(
+                text,
+                timeout=_remaining(deadline, time.monotonic, phase="hardware-watchdog"),
+            )
+
+        component = command(f"md.l 0x{EIC7700_WATCHDOG_BASE + 0xFC:x} 1")
+        if _uboot_words(component, EIC7700_WATCHDOG_BASE + 0xFC, 1) != (
+            DW_WATCHDOG_COMPONENT_TYPE,
+        ):
+            raise BoardRunFailure("hardware-watchdog-type-mismatch")
+        command(
+            f"mw.l 0x{EIC7700_WATCHDOG_BASE + 0x04:x} 0x{DW_WATCHDOG_MAX_TIMEOUT:x}"
+        )
+        command(f"mw.l 0x{EIC7700_WATCHDOG_BASE + 0x0C:x} 0x76")
+        command(f"mw.l 0x{EIC7700_WATCHDOG_BASE:x} 0x{DW_WATCHDOG_RECOVERY_CONTROL:x}")
+        control, timeout = _uboot_words(
+            command(f"md.l 0x{EIC7700_WATCHDOG_BASE:x} 2"),
+            EIC7700_WATCHDOG_BASE,
+            2,
+        )
+        if (
+            control & DW_WATCHDOG_RECOVERY_CONTROL != DW_WATCHDOG_RECOVERY_CONTROL
+            or timeout & 0xFF != DW_WATCHDOG_MAX_TIMEOUT
+        ):
+            raise BoardRunFailure("hardware-watchdog-not-armed")
 
     def booti(self, plan: DebugPlan, timeout: float) -> None:
         del timeout
@@ -507,6 +559,7 @@ def run_physical_board(
     *,
     timeout: float = 300.0,
     probe_trace_provider: ProbeTraceProvider | None = None,
+    hardware_watchdog: bool = False,
 ) -> StageResult:
     """Run one board attempt without reset or persistent U-Boot writes."""
 
@@ -515,6 +568,7 @@ def run_physical_board(
         device,
         output_directory,
         probe_trace_provider=probe_trace_provider,
+        hardware_watchdog=hardware_watchdog,
     )
     try:
         try:
@@ -588,9 +642,26 @@ class _MarkerTracker:
             failure = PROBE_FAILURE_PATTERN.search(window, cursor)
             if failure is not None:
                 occurrences.append((failure.start(), "failure", -1, failure.end()))
+            banner = UBOOT_BANNER_PATTERN.search(window, cursor)
+            if banner is not None:
+                occurrences.append((banner.start(), "banner", -1, banner.end()))
+            autoboot = UBOOT_AUTOBOOT_PATTERN.search(window, cursor)
+            if autoboot is not None:
+                occurrences.append((autoboot.start(), "autoboot", -1, autoboot.end()))
             if not occurrences:
                 break
             _position, event, marker_index, event_end = min(occurrences)
+            if event in ("banner", "autoboot"):
+                if self._terminal is None and self._index > 0:
+                    raise BoardRunFailure("guest-reboot-before-terminal")
+                if (
+                    self._terminal is not None
+                    and event == "autoboot"
+                    and not self._autoboot_stop_sent
+                ):
+                    self._autoboot_stop_pending = True
+                cursor = event_end
+                continue
             if self._terminal is not None:
                 raise BoardRunFailure("guest-terminal-duplicate")
             if event == "failure":
@@ -614,12 +685,6 @@ class _MarkerTracker:
             self._terminal is not None
             and PROMPT_PATTERN.search(window, cursor) is not None
         )
-        if (
-            self._terminal is not None
-            and not self._autoboot_stop_sent
-            and UBOOT_AUTOBOOT_PATTERN.search(window, cursor) is not None
-        ):
-            self._autoboot_stop_pending = True
         self._tail = window[cursor:][-self._tail_limit :]
         return recovered
 

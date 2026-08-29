@@ -148,6 +148,30 @@ The command has one declining timeout, capped at 300 seconds. Reusing RAM is
 safe only when U-Boot reports the exact planned size/address CRC; otherwise
 the artifact is retransmitted and verified again before `booti`.
 
+For a diagnostic boot that may hang before Asterinas can arm
+`asterinas.reboot_after`, add `--hardware-watchdog`. This is an explicit
+pre-boot recovery option, not the desktop default:
+
+```bash
+PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
+  /absolute/path/to/plan.json /dev/ttyUSB0 \
+  --simulation-result /absolute/path/to/fast/result.json \
+  --output-directory /absolute/path/to/physical-evidence \
+  --timeout 120 \
+  --hardware-watchdog
+```
+
+The option follows the EIC7700X TRM's Synopsys DesignWare watchdog contract at
+`0x50800000`. Before `booti`, it verifies component type `0x44570120`, selects
+the maximum TOP/TOP_INIT values, kicks with `0x76`, enables interrupt-then-reset
+mode, and reads the control registers back. Any type or readback mismatch
+aborts before the kernel starts. It writes neither storage nor U-Boot
+environment. A watchdog recovery that occurs after the first current-guest
+marker but before the terminal marker is reported immediately as
+`guest-reboot-before-terminal`; a bare pre-boot prompt is not mistaken for
+current-attempt evidence. The exact wall-clock timeout depends on the board's
+watchdog clock, so the host still retains its independent 300-second cap.
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
