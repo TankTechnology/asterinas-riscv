@@ -26,19 +26,20 @@ snapshot() {
     local input_nodes
     local vt_nodes
 
-    state="$(systemctl show systemd-logind.service \
+    state="$(timeout 3 systemctl show systemd-logind.service \
         -p ActiveState -p SubState -p Result -p MainPID \
         -p ExecMainStartTimestampMonotonic -p ActiveEnterTimestampMonotonic \
         2>/dev/null | tr '\n' ' ')"
-    udev_state="$(systemctl is-active systemd-udevd.service 2>/dev/null || true)"
-    dbus_state="$(systemctl is-active dbus.service 2>/dev/null || true)"
-    logind_show="$(systemctl status --no-pager --full systemd-logind.service 2>&1 || true)"
-    seats="$(loginctl list-seats --no-legend 2>&1 || true)"
+    udev_state="$(timeout 3 systemctl is-active systemd-udevd.service 2>/dev/null || true)"
+    dbus_state="$(timeout 3 systemctl is-active dbus.service 2>/dev/null || true)"
+    logind_show="$(timeout 3 systemctl status --no-pager --full systemd-logind.service 2>&1 || true)"
+    seats="$(timeout 3 loginctl list-seats --no-legend 2>&1 || true)"
     input_nodes="$(find /dev/input -maxdepth 1 -type c -printf '%f ' 2>/dev/null || true)"
     vt_nodes="$(find /dev -maxdepth 1 \( -name 'tty[0-9]*' -o -name 'vcs*' \) \
         -printf '%f ' 2>/dev/null || true)"
 
     log "sample elapsed=${elapsed}s logind=[$state] udev=${udev_state} dbus=${dbus_state} seats=[$seats] input=[$input_nodes] vt=[$vt_nodes]"
+    emit "DEBIAN_LOGIND_DIAGNOSTIC_SAMPLE elapsed=${elapsed}s logind=${state:-unknown} udev=${udev_state:-unknown} dbus=${dbus_state:-unknown} seats=${seats:-none} input=${input_nodes:-none} vt=${vt_nodes:-none}"
     log "--- systemctl status at elapsed=${elapsed}s ---"
     log "$logind_show"
 }
@@ -69,7 +70,7 @@ while ((SECONDS < deadline)); do
     elapsed=$((TIMEOUT_SECONDS - (deadline - SECONDS)))
     snapshot "$elapsed"
     if systemctl is-active --quiet systemd-logind.service 2>/dev/null; then
-        seats="$(loginctl list-seats --no-legend 2>/dev/null || true)"
+        seats="$(timeout 3 loginctl list-seats --no-legend 2>/dev/null || true)"
         emit "DEBIAN_LOGIND_DIAGNOSTIC_ACTIVE elapsed=${elapsed}s seats=${seats:-none}"
         log "DEBIAN_LOGIND_DIAGNOSTIC_ACTIVE elapsed=${elapsed}s seats=${seats:-none}"
         exit 0
