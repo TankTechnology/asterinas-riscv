@@ -13,6 +13,17 @@
 #include <time.h>
 #include <unistd.h>
 
+#if !defined(DEBIAN_STAGE1_SELF_TEST) && \
+    !defined(DEBIAN_STAGE1_LIFECYCLE_TEST)
+static void report_progress(const char *step, const char *key,
+                            const char *value)
+{
+    (void)printf("DEBIAN_STAGE1_PROGRESS step=%s %s=%s\n", step, key,
+                 value);
+    (void)fflush(stdout);
+}
+#endif
+
 #if !defined(DEBIAN_STAGE1_SELF_TEST)
 static void fail_and_hold(const char *reason)
 {
@@ -795,16 +806,22 @@ static enum ProbeResult production_probe_device(
         (void)close(fd);
         return PROBE_NO_MATCH;
     }
+    report_progress("probe-block", "device", candidate_path);
 
     unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
     ssize_t bytes_read =
         pread_complete(fd, superblock, sizeof(superblock), EXT2_SUPERBLOCK_OFFSET);
     (void)close(fd);
-    if (bytes_read != (ssize_t)sizeof(superblock) ||
-        !ext2_superblock_matches_mode(superblock,
-                                      production_context->root_init_mode)) {
+    if (bytes_read != (ssize_t)sizeof(superblock)) {
+        report_progress("probe-complete", "result", "read-failed");
         return PROBE_NO_MATCH;
     }
+    if (!ext2_superblock_matches_mode(superblock,
+                                      production_context->root_init_mode)) {
+        report_progress("probe-complete", "result", "no-match");
+        return PROBE_NO_MATCH;
+    }
+    report_progress("probe-complete", "result", "match");
 
     (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "%s", candidate_path);
     return PROBE_MATCH;
@@ -859,52 +876,79 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
                                       const char *root_device)
 {
     const struct ProductionContext *production_context = context;
+    static const char *const step_names[] = {
+        [HANDOFF_MOUNT_ROOT] = "root-mount",
+        [HANDOFF_BIND_DEV] = "dev-bind",
+        [HANDOFF_MOUNT_PROC] = "proc-mount",
+        [HANDOFF_MOUNT_SYSFS] = "sysfs-mount",
+        [HANDOFF_MOUNT_RUN] = "run-mount",
+        [HANDOFF_MOUNT_TMP] = "tmp-mount",
+        [HANDOFF_CHROOT] = "chroot",
+        [HANDOFF_CHDIR] = "chdir",
+        [HANDOFF_EXEC] = "exec",
+        [HANDOFF_PREPARE_API_DIRS] = "api-directories",
+    };
+    const char *action = step_names[step];
+    report_progress("handoff-enter", "action", action);
+
+    int result = -1;
     switch (step) {
     case HANDOFF_MOUNT_ROOT:
-        return mount(root_device, "/newroot", "ext2", 0, NULL);
+        result = mount(root_device, "/newroot", "ext2", 0, NULL);
+        break;
     case HANDOFF_BIND_DEV:
         if (ensure_directory("/newroot/dev") != 0) {
             return -1;
         }
-        return mount("/dev", "/newroot/dev", NULL, MS_BIND, NULL);
+        result = mount("/dev", "/newroot/dev", NULL, MS_BIND, NULL);
+        break;
     case HANDOFF_MOUNT_PROC:
         if (ensure_directory("/newroot/proc") != 0) {
             return -1;
         }
-        return mount("proc", "/newroot/proc", "proc", 0, NULL);
+        result = mount("proc", "/newroot/proc", "proc", 0, NULL);
+        break;
     case HANDOFF_MOUNT_SYSFS:
         if (ensure_directory("/newroot/sys") != 0) {
             return -1;
         }
-        return mount("sysfs", "/newroot/sys", "sysfs", 0, NULL);
+        result = mount("sysfs", "/newroot/sys", "sysfs", 0, NULL);
+        break;
     case HANDOFF_MOUNT_RUN:
         if (ensure_directory("/newroot/run") != 0) {
             return -1;
         }
-        return mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        break;
     case HANDOFF_MOUNT_TMP:
         if (ensure_directory("/newroot/tmp") != 0) {
             return -1;
         }
-        return mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
+        result = mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
+        break;
     case HANDOFF_PREPARE_API_DIRS:
         if (ensure_directory("/newroot/proc") != 0 ||
             ensure_directory("/newroot/sys") != 0 ||
             ensure_directory("/newroot/sys/fs") != 0) {
             return -1;
         }
-        return ensure_directory("/newroot/sys/fs/cgroup");
+        result = ensure_directory("/newroot/sys/fs/cgroup");
+        break;
     case HANDOFF_CHROOT:
-        return chroot("/newroot");
+        result = chroot("/newroot");
+        break;
     case HANDOFF_CHDIR:
-        return chdir("/");
+        result = chdir("/");
+        break;
     case HANDOFF_EXEC: {
         char *const *arguments =
             root_init_arguments(production_context->root_init_mode);
         return execv(arguments[0], arguments);
     }
     }
-    return -1;
+    report_progress(
+        result == 0 ? "handoff-done" : "handoff-failed", "action", action);
+    return result;
 }
 
 static int duplicate_console_fd(int console_fd, int destination_fd)
@@ -967,6 +1011,9 @@ int main(int argc, char **argv)
     if (root_init_result != 0) {
         fail_and_hold("root-init-argument");
     }
+    report_progress("start", "mode",
+                    context.root_init_mode == ROOT_INIT_SYSTEMD ? "systemd"
+                                                                : "interactive");
 
     struct Stage1Ops ops = {
         .context = &context,
@@ -980,6 +1027,7 @@ int main(int argc, char **argv)
     if (reason != NULL) {
         fail_and_hold(reason);
     }
+    report_progress("root-found", "device", root_device);
     if (ensure_directory("/newroot") != 0) {
         fail_and_hold("newroot-directory");
     }
