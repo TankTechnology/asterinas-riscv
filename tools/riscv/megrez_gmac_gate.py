@@ -52,6 +52,7 @@ GATEWAY_HARDWARE_ADDRESS = "4c:d6:29:18:93:43"
 PROXY_PORT = 17893
 PROXY_URL = f"http://{HOST_ADDRESS}:{PROXY_PORT}"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
+ROOTFS_WRITE_BOOTARG = "asterinas.mmc_write_partition2"
 NEIGHBOR_BOOTARGS = " ".join(
     f"asterinas.neighbor=eic7700-rj45,{address},{hardware_address}"
     for address, hardware_address in (
@@ -184,7 +185,8 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
     restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
     return (
         "console=ttyS0 console=tty0 loglevel=info "
-        f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARGS}{restart} "
+        f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
+        f"{NEIGHBOR_BOOTARGS}{restart} "
         f"{SERIAL_EVIDENCE_BOOTARGS} {DESKTOP_PROXY_BOOTARGS} "
         "-- --root-init=systemd"
     )

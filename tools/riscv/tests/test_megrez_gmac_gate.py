@@ -125,6 +125,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
         self.assertNotIn("cpu_no_boost_1_6ghz", bootargs.split())
+        self.assertIn("asterinas.mmc_write_partition2", bootargs.split())
         for variable in (
             "ASTERINAS_DESKTOP_M4_CONSOLE",
             "ASTERINAS_DESKTOP_M5_CONSOLE",
