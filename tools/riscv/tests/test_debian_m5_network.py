@@ -1104,6 +1104,7 @@ printf '200\t10.0.2.15'
             ("ASTERINAS_DESKTOP_FIXTURE_SIZE", str(PAYLOAD_SIZE)),
             ("ASTERINAS_DESKTOP_FIXTURE_SHA256", PAYLOAD_SHA256),
             ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", "20"),
+            ("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", "120"),
         ):
             self.assertIn(
                 f"systemd.setenv={variable}={value}",
