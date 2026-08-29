@@ -39,6 +39,7 @@ MEGREZ_TCP_PROBE_SOURCE = (
 EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
     "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
@@ -405,6 +406,7 @@ exit 0
         )
         getent_log = directory / "getent.log"
         curl_log = directory / "curl.log"
+        date_log = directory / "date.log"
         getent = fake_bin / "getent"
         getent.write_text(
             """#!/bin/sh
@@ -418,6 +420,14 @@ exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
             """#!/bin/sh
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
+    *http://www.baidu.com/*)
+        [ "${ASTERINAS_M5_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_CLOCK_STATUS"
+        printf 'HTTP/1.1 200 OK\r\n'
+        if [ "${ASTERINAS_M5_CLOCK_DATE:-set}" != missing ]; then
+            printf 'Date: %s\r\n' "${ASTERINAS_M5_CLOCK_DATE:-Sat, 29 Aug 2026 02:02:25 GMT}"
+        fi
+        printf '\r\n'
+        ;;
     *result.png*)
         output=
         previous=
@@ -440,8 +450,17 @@ esac
 """,
             encoding="utf-8",
         )
+        date = fake_bin / "date"
+        date.write_text(
+            """#!/bin/sh
+printf '%s\n' "$*" >>"$ASTERINAS_M5_DATE_LOG"
+exit "${ASTERINAS_M5_DATE_STATUS:-0}"
+""",
+            encoding="utf-8",
+        )
         getent.chmod(0o755)
         curl.chmod(0o755)
+        date.chmod(0o755)
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
@@ -453,6 +472,7 @@ esac
             ASTERINAS_M5_PING_LOG=str(ping_log),
             ASTERINAS_M5_GETENT_LOG=str(getent_log),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
+            ASTERINAS_M5_DATE_LOG=str(date_log),
             ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
             ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
             ASTERINAS_DESKTOP_PROXY_PORT="17893",
@@ -491,13 +511,19 @@ esac
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
         curl_calls = curl_log.read_text().splitlines()
-        self.assertEqual(len(curl_calls), 2)
-        self.assertIn("https://www.baidu.com/", curl_calls[0])
-        self.assertIn("result.png", curl_calls[1])
+        self.assertEqual(len(curl_calls), 3)
+        self.assertIn("--head", curl_calls[0])
+        self.assertIn("http://www.baidu.com/", curl_calls[0])
+        self.assertIn("https://www.baidu.com/", curl_calls[1])
+        self.assertIn("result.png", curl_calls[2])
         self.assertTrue(
             all("--proxy http://10.100.19.216:17893" in call for call in curl_calls)
         )
         self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
+        self.assertEqual(
+            (self.directory / "physical-success/date.log").read_text(),
+            "--utc --set Sat, 29 Aug 2026 02:02:25 GMT\n",
+        )
 
     def test_guest_evidence_rejects_wrong_megrez_bootarg_before_network(self) -> None:
         environment, console, resolv_conf, url_file, ping_log, curl_log = (
@@ -534,6 +560,16 @@ esac
                 "proxy",
                 {"ASTERINAS_DESKTOP_PROXY_PORT": "17894"},
                 "megrez-proxy-config",
+            ),
+            (
+                "clock-date",
+                {"ASTERINAS_M5_CLOCK_DATE": "missing"},
+                "megrez-clock-date",
+            ),
+            (
+                "clock-set",
+                {"ASTERINAS_M5_DATE_STATUS": "1"},
+                "megrez-clock-set",
             ),
             (
                 "https",
