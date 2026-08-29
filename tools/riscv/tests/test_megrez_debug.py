@@ -522,6 +522,29 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         self.assertEqual(plan.markers, DEBIAN_BROWSER_MARKERS)
         self.assertEqual(plan.plan_sha256, hashlib.sha256(encoded).hexdigest())
 
+    def test_schema_two_physical_gate_requires_desktop_simulation(self) -> None:
+        plan = self._plan()
+        result_path = self.directory / "simulation-result.json"
+        desktop = StageResult(
+            schema_version=1,
+            stage="desktop",
+            passed=True,
+            reason="desktop-pass",
+            plan_sha256=plan.plan_sha256,
+            evidence=("native/result.json",),
+        )
+        result_path.write_bytes(desktop.canonical_bytes())
+
+        debug_module._validate_simulation(result_path, plan)
+
+        result_path.write_bytes(
+            replace(desktop, stage="fast", reason="fast-pass").canonical_bytes()
+        )
+        with self.assertRaisesRegex(
+            debug_module.WorkflowError, "plan-simulation-mismatch"
+        ):
+            debug_module._validate_simulation(result_path, plan)
+
     def test_schema_two_rejects_a_narrower_or_reinterpreted_contract(self) -> None:
         plan = self._plan()
         root_index = DEBIAN_BROWSER_ARTIFACT_ORDER.index("root_image")
