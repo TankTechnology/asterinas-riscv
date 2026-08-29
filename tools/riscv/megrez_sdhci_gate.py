@@ -15,7 +15,7 @@ from pathlib import Path
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_CONTROLLER = re.compile(r"\[mmc\] controller 0x50460000 irq=81 bounded-pio")
+_CONTROLLER = re.compile(r"\[mmc\] controller 0x50460000 irq=81 sdma boundary=524288")
 _CARD = re.compile(
     r"\[mmc\] SDHC rca=(?P<rca>[1-9][0-9]*) sectors=(?P<sectors>[1-9][0-9]*)"
     r"(?: sector0=[0-9a-fA-F]{4})?"
@@ -23,7 +23,8 @@ _CARD = re.compile(
 _BLOCK = re.compile(r"\[mmc\] mmcblk0 registered read-only")
 _PARTITION = re.compile(r"\[mmc\] partition-table sha256=(?P<sha256>[0-9a-f]{64})")
 _FATAL = re.compile(
-    r"(?i)(uncaught panic|\bpanic\b|\bfatal\b|\[mmc\] probe failed|IoError)"
+    r"(?i)(uncaught panic|\bpanic\b|\bfatal\b|\[mmc\] probe failed|"
+    r"\[mmc\].*bounded-pio-fallback|IoError)"
 )
 _WRITABLE = re.compile(r"(?i)(write[- ]enabled|\bwritable\b|read-write)")
 

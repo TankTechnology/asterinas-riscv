@@ -203,7 +203,7 @@ mod test {
     }
 
     #[ktest]
-    fn buddy_set_allocates_only_inside_the_requested_range() {
+    fn megrez_sdma_buddy_set_allocates_only_inside_the_requested_range() {
         let region_order = 4;
         let region_size = size_of_order(region_order);
         let region = MockMemoryRegion::alloc(region_size);
@@ -226,7 +226,7 @@ mod test {
     }
 
     #[ktest]
-    fn buddy_set_rejects_an_out_of_range_request_without_mutation() {
+    fn megrez_sdma_buddy_set_rejects_an_out_of_range_request_without_mutation() {
         let region_order = 3;
         let region_size = size_of_order(region_order);
         let region = MockMemoryRegion::alloc(region_size);
