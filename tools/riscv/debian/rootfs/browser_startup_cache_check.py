@@ -163,7 +163,9 @@ def _validate_maintenance_units(root: Path) -> None:
             raise CacheCheckError(f"maintenance unit has unchecked vendor drop-ins: {unit}")
 
 
-def check_cache_profile(root: Path) -> str:
+def check_cache_profile(
+    root: Path, *, service_name: str = "asterinas-browser-web.service"
+) -> str:
     root = root.resolve()
     passwd = _account_rows(root / "etc/passwd", 7)
     groups = _account_rows(root / "etc/group", 4)
@@ -235,7 +237,7 @@ def check_cache_profile(root: Path) -> str:
             raise CacheCheckError(f"ConditionNeedsUpdate stamp is older than /usr: {relative}")
 
     unit = _regular(
-        root / "etc/systemd/system/asterinas-browser-web.service", nonempty=True
+        root / "etc/systemd/system" / service_name, nonempty=True
     ).read_text(encoding="utf-8")
     for line in (
         "User=asterinas", "AmbientCapabilities=", "CapabilityBoundingSet=",
@@ -253,9 +255,14 @@ def check_cache_profile(root: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
+    parser.add_argument(
+        "--service-name",
+        default="asterinas-browser-web.service",
+        help="browser systemd unit to validate (default: %(default)s)",
+    )
     values = parser.parse_args()
     try:
-        print(check_cache_profile(values.root))
+        print(check_cache_profile(values.root, service_name=values.service_name))
     except (CacheCheckError, OSError, ValueError) as error:
         parser.error(str(error))
     return 0
