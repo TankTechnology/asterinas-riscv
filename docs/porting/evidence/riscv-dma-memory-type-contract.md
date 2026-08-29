@@ -19,9 +19,11 @@ SoC's non-cacheable System Port alias. A RISC-V platform with none of Svpbmt,
 Zicbom, or a supported platform alias fails closed. MMIO mappings continue to
 request `PBMT_IO` through `CachePolicy::Uncacheable`.
 
-This establishes the descriptor and packet-buffer memory-type contracts. It is
-not yet physical evidence that the latest Megrez sustained-transfer failure is
-fixed.
+This establishes the descriptor and packet-buffer memory-type contracts. A
+separately frozen 2026-08-29 Megrez run then completed the full sustained TCP
+transfer and returned to U-Boot through the armed software reboot. The exact
+result is recorded below; it validates this board and kernel combination, not
+every non-coherent RISC-V platform.
 
 ## Specification authority
 
@@ -150,12 +152,20 @@ gates also exited zero:
 - `-Dwarnings` RISC-V Clippy for `aster-network` and `aster-dwmac`;
 - 18 DWMAC model/source tests and 22 Megrez GMAC contract/gate tests.
 
-A filtered QEMU runtime attempt built the test kernel but did not enter it:
+A filtered QEMU runtime initially built the test kernel but did not enter it:
 OSDK resolved the root manifest's relative test-disk paths from its generated
-base-crate directory. Three bounded fixture attempts were stopped without
-changing code or disk images. Runtime QEMU success is therefore not claimed by
-this milestone; the compile, model, and static contracts above are the
-available preboard evidence.
+base-crate directory. A later test-only QEMU wrapper selected the repository
+working directory and removed the three unrelated block devices. Under the
+generic Sv39 CPU contract and SMP=4, the two new tests each ran once and
+passed:
+
+```text
+requires_real_uncached_view_without_coherence_or_cache_maintenance ... ok
+split_preserves_stream_identity_and_uncached_alias ... ok
+```
+
+Each run reported `1 passed; 0 failed; 290 filtered out`; the earlier
+zero-test result is not counted as evidence.
 
 ## Document-driven preboard address contract
 
@@ -212,6 +222,53 @@ diagnosis rather than a missing PBMT_NC encoding on this hardware. It does not
 prove that diagnosis until a post-alias board run observes ownership progress
 or a more specific fault.
 
+## Recovery-armed physical validation
+
+The exact source commit `ed3a6508e` produced an Sv39/SMP4 kernel with SHA-256
+`bab13e28443e984f893e2799be0d4b440ae846b32a8f908c481a584a5e0aee74`.
+The immutable physical plan has SHA-256
+`06392e06d1a5a9e4327acab630f43e65ef39d856322fe16e4cfcccff485058a0`.
+Before the serial port was opened, that candidate passed the generic
+Sv39/SMP4 TCP-probe QEMU profile and a separate 60-second software-reboot
+profile.
+
+The single physical boot selected GMAC1 at 1000 Mbit/s full duplex and
+reported an EIC7700 uncached descriptor alias. It then completed these four
+ordered payloads:
+
+```text
+16384
+65536
+1048576
+16777216
+```
+
+The final marker recorded 17,907,712 completed bytes. The 16-MiB connection
+accepted its entire payload in 16,634,910 microseconds and its TCP trace
+reported zero retransmissions and zero lost packets. Earlier connections also
+completed; the 64-KiB and 1-MiB traces each observed one retransmission, so the
+evidence does not claim a lossless physical link in general.
+
+The RX descriptor index wrapped repeatedly and reached at least 8,194 received
+frames. Every sampled datapath record kept `rx_buffer_unavailable=0`, and every
+sampled MTL record kept missed-packet, FIFO-overflow, counter-overflow, and
+read-failure totals at zero. No descriptor error, panic, oops, or fatal marker
+was observed. After the PASS marker, the armed reboot produced fresh firmware,
+OpenSBI, and U-Boot output and stopped at the `=>` prompt without a physical
+reset.
+
+The sealed physical evidence is under
+`target/megrez-debug/dwmac-stream-ed3a6508e/board-run-20260829-stream/`:
+
+- `serial.log`: `9bc4c8ca2396f4e4d3c5e41a39c1821e16f779ab85fd4f03803556565b675074`;
+- `transport.json`: `ae0e8134f84dbca28c0cc3e7edd44e08fcb3613f591ac771ca654ad2cb8a49e2`;
+- `probe-tcp-info.json`: `c840db3743cba0e48ed0d8f8956dc0ceb1625b2237e5da84620c42489315e07e`;
+- `result.json`: `39e6ffa797c06036b10a8bf8a29b1ecee6b90a00b784c27f4a52911eb4d0d74c`.
+
+This closes the specific packet-buffer stale-view diagnosis for the tested
+Megrez configuration. The prior sustained-transfer collapse is no longer
+reproducible with the uncached streaming-DMA alias.
+
 ## Remaining assumptions and non-goals
 
 - The DWMAC device and CPU agree on the descriptor ring's physical address.
@@ -220,8 +277,8 @@ or a more specific fault.
 - This change retains the existing descriptor publication, reclaim, and MMIO
   ordering barriers; it does not redesign them.
 - This change does not model the EIC7700 cache hierarchy or DWMAC in QEMU.
-- This change does not claim byte-level cache coherence on hardware.
-- No QEMU or board run is part of this milestone.
+- This result does not prove byte-level cache behavior beyond the observed
+  descriptor and TCP workloads.
 
 Later recovery-armed evidence proved the descriptor alias and TX reclaim were
 healthy, but the 16-MiB receive stage still accumulated retransmissions after
@@ -230,7 +287,6 @@ RX-buffer reuse. The board advertises neither Zicbom nor Svpbmt, while the old
 from it without invalidation. The static contract therefore admitted stale
 payload bytes even though MAC, MTL, descriptor, and TX counters remained clean.
 
-The next milestone is one separately frozen, recovery-armed physical run after
-the streaming-DMA correction passes simulation and compile gates. It should
-repeat the existing ordered 16-KiB through 16-MiB transfer without adding more
-diagnostic branches. No run is part of this implementation milestone.
+The next network milestone should reuse this known-good DMA path for the
+Debian/browser workload. It should not reopen ring-size, interrupt, or cache
+policy work unless new evidence contradicts this completed transfer.
