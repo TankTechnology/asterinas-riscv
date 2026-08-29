@@ -10,7 +10,6 @@ import io
 import os
 from pathlib import Path
 import stat
-from types import SimpleNamespace
 import subprocess
 import tempfile
 import time
@@ -52,18 +51,15 @@ from tools.riscv.megrez_debian_shell_contract import (
 from tools.riscv.megrez_debian_shell_evidence import ShellPermit
 from tools.riscv.megrez_debian_shell_physical import PhysicalShellResult
 from tools.riscv.megrez_debian_shell_physical_io import (
-    TftpOnlyServer,
     _copy_verified,
+    prepare_ymodem_kernel,
+    ymodem_boot_arguments,
 )
 from tools.riscv.megrez_debug_contract import StageResult
 
 
 _REPOSITORY = Path(__file__).resolve().parents[2]
-_FILES = {
-    "megrez_kernel": "kernel",
-    "megrez_dtb": "megrez.dtb",
-    "stage1": "stage1.cpio",
-}
+_STAGE1 = "stage1.cpio"
 _READY = b"__DEBIAN_ROOTFS_SHELL_READY__"
 
 
@@ -94,7 +90,6 @@ class InventoryBoardOperations:
         self._stream = io.StringIO()
         self._session: BoardSession | None = None
         self._temporary: tempfile.TemporaryDirectory[str] | None = None
-        self._server: TftpOnlyServer | None = None
 
     def __enter__(self) -> InventoryBoardOperations:
         return self
@@ -158,7 +153,7 @@ class InventoryBoardOperations:
         )
         root = Path(self._temporary.name)
         os.chmod(root, 0o755)
-        verifier = root / _FILES["stage1"]
+        verifier = root / _STAGE1
         build_verify_archive(
             Path(artifacts["installer_base"].path),
             Path(artifacts["root_image"].path),
@@ -166,58 +161,39 @@ class InventoryBoardOperations:
             artifacts["root_image"].sha256,
         )
         os.chmod(verifier, 0o644)
-        for name in ("megrez_kernel", "megrez_dtb"):
-            _copy_verified(artifacts[name], root / _FILES[name])
         verifier_identity = FrozenArtifact.from_path("stage1", verifier)
-        server = TftpOnlyServer(self.interface, root)
-        server.start(min(self.deadline, time.monotonic() + 10.0))
-        self._server = server
-        arguments = SimpleNamespace(
-            booti=_FILES["megrez_kernel"],
-            initrd=_FILES["stage1"],
-            dtb=_FILES["megrez_dtb"],
+        compressed_kernel_crc32 = prepare_ymodem_kernel(
+            artifacts["megrez_kernel"], root
+        )
+        arguments = ymodem_boot_arguments(
+            self.plan,
+            artifacts,
+            root,
+            initrd_name=_STAGE1,
+            initrd_crc32=verifier_identity.crc32,
+            compressed_kernel_crc32=compressed_kernel_crc32,
             bootargs=bootargs,
-            load_transport="tftp",
-            tftp_board_address="10.100.19.200",
-            tftp_server_address="10.100.19.216",
-            tftp_netmask="255.255.248.0",
-            firmware_framebuffer=False,
-            expected_crc32={
-                "booti": artifacts["megrez_kernel"].crc32,
-                "initrd": verifier_identity.crc32,
-                "dtb": artifacts["megrez_dtb"].crc32,
-            },
         )
         boot_loaded_artifacts(self._session, arguments)
         recovery = self._session.wait_for_uboot_prompt(timeout=self._remaining())
         validate_recovery_epoch(recovery)
-        self._stop_server()
         return self._stream.getvalue().encode()
 
     def publish(self, result: InventoryResult) -> None:
-        self._stop_server()
         self.output.atomic_write(
             "inventory.serial.log", self._stream.getvalue().encode()
         )
         self.output.atomic_write("result.json", result.canonical_bytes())
 
     def close(self) -> None:
-        try:
-            self._stop_server()
-        finally:
-            if self._descriptor >= 0:
-                os.close(self._descriptor)
-                self._descriptor = -1
-            self._stream.close()
-            self.output.close()
-            if self._temporary is not None:
-                self._temporary.cleanup()
-                self._temporary = None
-
-    def _stop_server(self) -> None:
-        server, self._server = self._server, None
-        if server is not None:
-            server.stop()
+        if self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
+        self._stream.close()
+        self.output.close()
+        if self._temporary is not None:
+            self._temporary.cleanup()
+            self._temporary = None
 
     def _remaining(self) -> float:
         remaining = self.deadline - time.monotonic()
@@ -321,48 +297,41 @@ def run_handoff_command(values: object) -> None:
     ):
         root = Path(directory)
         os.chmod(root, 0o755)
-        for name, filename in _FILES.items():
-            _copy_verified(artifacts[name], root / filename)
+        _copy_verified(artifacts["stage1"], root / _STAGE1)
+        compressed_kernel_crc32 = prepare_ymodem_kernel(
+            artifacts["megrez_kernel"], root
+        )
         deadline = time.monotonic() + values.deadline
-        with TftpOnlyServer(values.host_interface, root) as server:
-            server.start(min(deadline, time.monotonic() + 10.0))
-            descriptor = open_serial(values.device)
-            stream = io.StringIO()
-            try:
-                session = BoardSession.from_fd(
-                    descriptor,
-                    None,
-                    confirm=False,
-                    final_marker=FINAL_MILESTONE_MARKERS["debian-shell-handoff"],
-                    log_stream=stream,
-                )
-                session.send("")
-                session.wait_for_uboot_prompt(timeout=_remaining(deadline))
-                boot_loaded_artifacts(
-                    session,
-                    SimpleNamespace(
-                        booti=_FILES["megrez_kernel"],
-                        initrd=_FILES["stage1"],
-                        dtb=_FILES["megrez_dtb"],
-                        bootargs=plan.final_bootargs,
-                        load_transport="tftp",
-                        tftp_board_address="10.100.19.200",
-                        tftp_server_address="10.100.19.216",
-                        tftp_netmask="255.255.248.0",
-                        firmware_framebuffer=False,
-                        expected_crc32={
-                            "booti": artifacts["megrez_kernel"].crc32,
-                            "initrd": artifacts["stage1"].crc32,
-                            "dtb": artifacts["megrez_dtb"].crc32,
-                        },
-                    ),
-                )
-                SerialConsole(descriptor, max_bytes=8 * 1024 * 1024).wait_for(
-                    _READY, deadline
-                )
-            finally:
-                os.close(descriptor)
-                stream.close()
+        descriptor = open_serial(values.device)
+        stream = io.StringIO()
+        try:
+            session = BoardSession.from_fd(
+                descriptor,
+                None,
+                confirm=False,
+                final_marker=FINAL_MILESTONE_MARKERS["debian-shell-handoff"],
+                log_stream=stream,
+            )
+            session.send("")
+            session.wait_for_uboot_prompt(timeout=_remaining(deadline))
+            boot_loaded_artifacts(
+                session,
+                ymodem_boot_arguments(
+                    plan,
+                    artifacts,
+                    root,
+                    initrd_name=_STAGE1,
+                    initrd_crc32=artifacts["stage1"].crc32,
+                    compressed_kernel_crc32=compressed_kernel_crc32,
+                    bootargs=plan.final_bootargs,
+                ),
+            )
+            SerialConsole(descriptor, max_bytes=8 * 1024 * 1024).wait_for(
+                _READY, deadline
+            )
+        finally:
+            os.close(descriptor)
+            stream.close()
     print("picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0")
 
 
