@@ -17,6 +17,7 @@ DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
 DWMAC_DIAGNOSTICS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/diagnostics.rs"
 DWMAC_REGS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/regs.rs"
+DWMAC_PHY_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/phy.rs"
 RISCV_PLATFORM_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/arch/riscv.rs"
 BIGTCP_DIAGNOSTICS_SOURCE = (
     REPOSITORY_ROOT / "kernel/libs/aster-bigtcp/src/iface/tcp_diagnostics.rs"
@@ -146,6 +147,127 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
 
 
 class DwmacRxPollContractTests(unittest.TestCase):
+    def test_pause_flow_control_follows_negotiation_and_fifo_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = Path(directory) / "pause-flow-control.rs"
+            binary = Path(directory) / "pause-flow-control"
+            harness.write_text(
+                f'''#[allow(dead_code)]
+#[path = r"{DWMAC_PHY_SOURCE}"]
+mod phy;
+#[allow(dead_code)]
+#[path = r"{DWMAC_REGS_SOURCE}"]
+mod regs;
+
+use std::collections::VecDeque;
+
+use phy::{{
+    ADVERTISE_100_FULL, ADVERTISE_PAUSE_ASYM, ADVERTISE_PAUSE_CAP,
+    BMCR_AUTONEG_ENABLE, BMSR_AUTONEG_COMPLETE, BMSR_LINK_STATUS, Deadline, MdioBus,
+    MdioError, read_link_state,
+}};
+use regs::configure_flow_control;
+
+struct FakeMdio {{
+    reads: VecDeque<u16>,
+}}
+
+impl MdioBus for FakeMdio {{
+    fn read(&mut self, _: u8, _: u8, _: Deadline) -> Result<u16, MdioError> {{
+        Ok(self.reads.pop_front().unwrap())
+    }}
+
+    fn write(&mut self, _: u8, _: u8, _: u16, _: Deadline) -> Result<(), MdioError> {{
+        Ok(())
+    }}
+}}
+
+fn negotiated(local: u16, partner: u16, full_duplex: bool) -> phy::LinkState {{
+    let mode = if full_duplex {{ ADVERTISE_100_FULL }} else {{ 1 << 7 }};
+    let mut mdio = FakeMdio {{
+        reads: [
+            BMSR_LINK_STATUS,
+            BMSR_LINK_STATUS | BMSR_AUTONEG_COMPLETE,
+            BMCR_AUTONEG_ENABLE,
+            0,
+            0,
+            mode | local,
+            mode | partner,
+        ]
+        .into(),
+    }};
+    read_link_state(&mut mdio, 0, Deadline::from_nanoseconds(1))
+        .unwrap()
+        .unwrap()
+}}
+
+fn main() {{
+    let symmetric = negotiated(ADVERTISE_PAUSE_CAP, ADVERTISE_PAUSE_CAP, true);
+    assert!(symmetric.tx_pause());
+    assert!(symmetric.rx_pause());
+
+    let tx_only = negotiated(
+        ADVERTISE_PAUSE_ASYM,
+        ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM,
+        true,
+    );
+    assert!(tx_only.tx_pause());
+    assert!(!tx_only.rx_pause());
+
+    let rx_only = negotiated(
+        ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM,
+        ADVERTISE_PAUSE_ASYM,
+        true,
+    );
+    assert!(!rx_only.tx_pause());
+    assert!(rx_only.rx_pause());
+
+    let half_duplex = negotiated(ADVERTISE_PAUSE_CAP, ADVERTISE_PAUSE_CAP, false);
+    assert!(!half_duplex.tx_pause());
+    assert!(!half_duplex.rx_pause());
+
+    let configured = configure_flow_control(5, 0x4000_0020, true, true).unwrap();
+    assert_eq!(configured.mtl_rx_operation_mode, 0x4000_c1a0);
+    assert_eq!(configured.mac_tx_flow_control_queue0, 0xffff_0002);
+    assert_eq!(configured.mac_rx_flow_control, 1);
+
+    let receive_only = configure_flow_control(5, 0x20, false, true).unwrap();
+    assert_eq!(receive_only.mtl_rx_operation_mode, 0x20);
+    assert_eq!(receive_only.mac_tx_flow_control_queue0, 0);
+    assert_eq!(receive_only.mac_rx_flow_control, 1);
+
+    let small_fifo = configure_flow_control(4, 0x20, true, false).unwrap();
+    assert_eq!(small_fifo.mtl_rx_operation_mode, 0x20);
+    assert_eq!(small_fifo.mac_tx_flow_control_queue0, 0xffff_0002);
+    assert_eq!(small_fifo.mac_rx_flow_control, 0);
+}}
+'''
+            )
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    str(harness),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_packet_diagnostics_distinguish_rx_and_tx_tcp_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = Path(directory) / "packet-diagnostics.rs"

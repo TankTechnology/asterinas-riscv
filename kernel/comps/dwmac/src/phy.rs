@@ -21,6 +21,8 @@ pub const ADVERTISE_100_HALF: u16 = 1 << 7;
 pub const ADVERTISE_100_FULL: u16 = 1 << 8;
 pub const ADVERTISE_1000_HALF: u16 = 1 << 8;
 pub const ADVERTISE_1000_FULL: u16 = 1 << 9;
+pub const ADVERTISE_PAUSE_CAP: u16 = 1 << 10;
+pub const ADVERTISE_PAUSE_ASYM: u16 = 1 << 11;
 pub const PARTNER_1000_HALF: u16 = 1 << 10;
 pub const PARTNER_1000_FULL: u16 = 1 << 11;
 
@@ -68,6 +70,8 @@ pub trait MdioBus {
 pub struct LinkState {
     speed_mbps: u16,
     is_full_duplex: bool,
+    tx_pause: bool,
+    rx_pause: bool,
 }
 
 impl LinkState {
@@ -76,6 +80,23 @@ impl LinkState {
         Self {
             speed_mbps,
             is_full_duplex,
+            tx_pause: false,
+            rx_pause: false,
+        }
+    }
+
+    const fn negotiated(
+        speed_mbps: u16,
+        is_full_duplex: bool,
+        advertisement: u16,
+        partner: u16,
+    ) -> Self {
+        let (tx_pause, rx_pause) = resolve_pause(advertisement, partner, is_full_duplex);
+        Self {
+            speed_mbps,
+            is_full_duplex,
+            tx_pause,
+            rx_pause,
         }
     }
 
@@ -87,6 +108,16 @@ impl LinkState {
     /// Returns whether the link uses full-duplex transmission.
     pub const fn is_full_duplex(self) -> bool {
         self.is_full_duplex
+    }
+
+    /// Returns whether the MAC may send IEEE 802.3 pause frames.
+    pub const fn tx_pause(self) -> bool {
+        self.tx_pause
+    }
+
+    /// Returns whether the MAC honors received IEEE 802.3 pause frames.
+    pub const fn rx_pause(self) -> bool {
+        self.rx_pause
     }
 }
 
@@ -154,7 +185,7 @@ fn decode_negotiated_mode(
 ) -> Result<LinkState, MdioError> {
     let common_gigabit = gigabit_advertisement & (gigabit_partner >> 2);
     if common_gigabit & ADVERTISE_1000_FULL != 0 {
-        return Ok(LinkState::new(1000, true));
+        return Ok(LinkState::negotiated(1000, true, advertisement, partner));
     }
     if common_gigabit & ADVERTISE_1000_HALF != 0 {
         return Ok(LinkState::new(1000, false));
@@ -168,10 +199,36 @@ fn decode_negotiated_mode(
         (ADVERTISE_10_HALF, 10, false),
     ] {
         if common & capability != 0 {
-            return Ok(LinkState::new(speed_mbps, is_full_duplex));
+            return Ok(LinkState::negotiated(
+                speed_mbps,
+                is_full_duplex,
+                advertisement,
+                partner,
+            ));
         }
     }
     Err(MdioError::NoCommonMode)
+}
+
+// This is the IEEE 802.3 pause resolution table used by Linux phylib.
+// See `linkmode_resolve_pause()` in
+// <https://github.com/torvalds/linux/blob/master/drivers/net/phy/linkmode.c>.
+const fn resolve_pause(advertisement: u16, partner: u16, is_full_duplex: bool) -> (bool, bool) {
+    if !is_full_duplex {
+        return (false, false);
+    }
+
+    let common = advertisement & partner;
+    if common & ADVERTISE_PAUSE_CAP != 0 {
+        return (true, true);
+    }
+    if common & ADVERTISE_PAUSE_ASYM == 0 {
+        return (false, false);
+    }
+
+    let tx_pause = partner & ADVERTISE_PAUSE_CAP != 0;
+    let rx_pause = advertisement & ADVERTISE_PAUSE_CAP != 0;
+    (tx_pause, rx_pause)
 }
 
 #[cfg(ktest)]
