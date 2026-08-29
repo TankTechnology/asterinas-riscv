@@ -124,6 +124,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             bootargs.split(),
         )
         self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
+        self.assertNotIn("cpu_no_boost_1_6ghz", bootargs.split())
         for variable in (
             "ASTERINAS_DESKTOP_M4_CONSOLE",
             "ASTERINAS_DESKTOP_M5_CONSOLE",
@@ -250,6 +251,22 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertLess(
             operations.events.index("close"), operations.events.index("publish")
         )
+
+    def test_stage1_failure_stops_the_boot_wait_immediately(self) -> None:
+        operations = FakeOperations(
+            chunks=(
+                b"DEBIAN_ROOTFS_FAIL reason=root-init-argument\n",
+                b"this second boot read must not happen\n",
+            )
+        )
+
+        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["reason"], "fatal transcript marker: Stage1 rootfs failure"
+        )
+        self.assertEqual(operations.events.count("read"), 1)
 
     def test_termination_unwinds_serial_without_publishing_result(self) -> None:
         class TerminatedOperations(FakeOperations):

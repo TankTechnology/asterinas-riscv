@@ -96,6 +96,7 @@ PHYSICAL_READY_MARKERS = tuple(
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
+    (b"debian_rootfs_fail reason=", "Stage1 rootfs failure"),
     (b"debian_network_m5_fail reason=", "guest network failure"),
     (b"debian_browser_m6_fail reason=", "browser guest failure"),
     (b"fatal bus error", "GMAC fatal bus error"),
@@ -182,7 +183,7 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
 
     restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
     return (
-        "console=ttyS0 console=tty0 cpu_no_boost_1_6ghz loglevel=info "
+        "console=ttyS0 console=tty0 loglevel=info "
         f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARGS}{restart} "
         f"{SERIAL_EVIDENCE_BOOTARGS} {DESKTOP_PROXY_BOOTARGS} "
         "-- --root-init=systemd"
@@ -206,10 +207,9 @@ def classify_physical_transcript(transcript: bytes) -> GateResult:
         return GateResult(False, "physical transcript must be bytes", None)
     if len(transcript) > MAX_TRANSCRIPT_BYTES:
         return GateResult(False, "physical transcript exceeds 8 MiB", None)
-    lowered = transcript.lower()
-    for marker, reason in _FATAL_MARKERS:
-        if marker in lowered:
-            return GateResult(False, f"fatal transcript marker: {reason}", None)
+    fatal_reason = _fatal_transcript_reason(transcript)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
 
     positions: list[int] = []
     for marker in PHYSICAL_MILESTONES:
@@ -234,6 +234,14 @@ def classify_physical_transcript(transcript: bytes) -> GateResult:
     if positions != sorted(positions):
         return GateResult(False, "physical milestones out of order", None)
     return GateResult(True, "pass", None)
+
+
+def _fatal_transcript_reason(transcript: bytes) -> str | None:
+    lowered = transcript.lower()
+    for marker, reason in _FATAL_MARKERS:
+        if marker in lowered:
+            return f"fatal transcript marker: {reason}"
+    return None
 
 
 def _browser_javascript_status(transcript: bytes) -> str:
@@ -301,6 +309,8 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         operations.open_board()
         opened = True
         _append_transcript(transcript, operations.boot())
+        if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
+            raise GateFailure(fatal_reason)
         deadline = time.monotonic() + config.boot_timeout
         while not any(marker in transcript for marker in PHYSICAL_READY_MARKERS):
             if time.monotonic() >= deadline:
@@ -309,6 +319,8 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             if not chunk:
                 continue
             _append_transcript(transcript, chunk)
+            if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
+                raise GateFailure(fatal_reason)
         classification = classify_physical_transcript(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
