@@ -46,16 +46,17 @@ from tools.riscv.megrez_board_session import (
 
 BOARD_ADDRESS = "10.100.19.200"
 HOST_ADDRESS = "10.100.19.216"
+HOST_HARDWARE_ADDRESS = "04:7c:16:47:50:4e"
 GATEWAY_ADDRESS = "10.100.16.1"
 GATEWAY_HARDWARE_ADDRESS = "4c:d6:29:18:93:43"
-BAIDU_ADDRESS = "10.100.16.28"
-BAIDU_HARDWARE_ADDRESS = "d8:43:ae:b1:f8:12"
+PROXY_PORT = 17893
+PROXY_URL = f"http://{HOST_ADDRESS}:{PROXY_PORT}"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
 NEIGHBOR_BOOTARGS = " ".join(
     f"asterinas.neighbor=eic7700-rj45,{address},{hardware_address}"
     for address, hardware_address in (
         (GATEWAY_ADDRESS, GATEWAY_HARDWARE_ADDRESS),
-        (BAIDU_ADDRESS, BAIDU_HARDWARE_ADDRESS),
+        (HOST_ADDRESS, HOST_HARDWARE_ADDRESS),
     )
 )
 SERIAL_EVIDENCE_BOOTARGS = " ".join(
@@ -65,6 +66,14 @@ SERIAL_EVIDENCE_BOOTARGS = " ".join(
         "ASTERINAS_DESKTOP_M5_CONSOLE",
         "ASTERINAS_BROWSER_M6_CONSOLE",
         "ASTERINAS_BROWSER_M7_CONSOLE",
+    )
+)
+DESKTOP_PROXY_BOOTARGS = " ".join(
+    f"systemd.setenv={name}={value}"
+    for name, value in (
+        ("ASTERINAS_DESKTOP_PROXY_URL", PROXY_URL),
+        ("ASTERINAS_DESKTOP_PROXY_HOST", HOST_ADDRESS),
+        ("ASTERINAS_DESKTOP_PROXY_PORT", str(PROXY_PORT)),
     )
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
@@ -175,7 +184,7 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
     return (
         "console=ttyS0 console=tty0 cpu_no_boost_1_6ghz loglevel=info "
         f"init=/init {NETWORK_BOOTARG} {NEIGHBOR_BOOTARGS}{restart} "
-        f"{SERIAL_EVIDENCE_BOOTARGS} "
+        f"{SERIAL_EVIDENCE_BOOTARGS} {DESKTOP_PROXY_BOOTARGS} "
         "-- --root-init=systemd"
     )
 

@@ -12,8 +12,12 @@ readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
 readonly ADDRESS="10.100.19.200/21"
 readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1'
-readonly MEGREZ_PRIMARY_DNS='10.2.0.5'
-readonly MEGREZ_FALLBACK_DNS='10.2.0.6'
+readonly MEGREZ_PROXY_URL='http://10.100.19.216:17893'
+readonly MEGREZ_PROXY_HOST='10.100.19.216'
+readonly MEGREZ_PROXY_PORT='17893'
+readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
+readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 readonly BAIDU_URL='https://www.baidu.com/'
 readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
 
@@ -46,26 +50,6 @@ link_and_address_ready() {
     addresses="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
         return 1
     [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
-}
-
-publish_megrez_resolver() {
-    local temporary_resolver
-
-    temporary_resolver="$(mktemp "${RESOLV_CONF}.tmp.XXXXXX")" ||
-        fail resolver-temporary
-    if ! chmod 0644 -- "$temporary_resolver"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-mode
-    fi
-    if ! printf 'nameserver %s\nnameserver %s\n' \
-        "$MEGREZ_PRIMARY_DNS" "$MEGREZ_FALLBACK_DNS" >"$temporary_resolver"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-write
-    fi
-    if ! mv -T -- "$temporary_resolver" "$RESOLV_CONF"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-publish
-    fi
 }
 
 publish_remote_url() {
@@ -171,6 +155,9 @@ megrez_network_evidence() {
 
     tr '[:space:]' '\n' <"$CMDLINE_PATH" | grep -Fxq "$MEGREZ_BOOTARG" ||
         fail megrez-bootarg
+    [[ "$PROXY_URL" == "$MEGREZ_PROXY_URL" ]] || fail megrez-proxy-config
+    [[ "$PROXY_HOST" == "$MEGREZ_PROXY_HOST" ]] || fail megrez-proxy-config
+    [[ "$PROXY_PORT" == "$MEGREZ_PROXY_PORT" ]] || fail megrez-proxy-config
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
@@ -179,11 +166,7 @@ megrez_network_evidence() {
     done
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
-
-    publish_megrez_resolver
-    timeout "$COMMAND_TIMEOUT_SECONDS" getent ahostsv4 www.baidu.com \
-        >/dev/null 2>>"$CONSOLE" || fail megrez-dns
-    emit "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=$MEGREZ_PRIMARY_DNS fallback=$MEGREZ_FALLBACK_DNS host=www.baidu.com"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
 
     curl_result="$(
         timeout "$COMMAND_TIMEOUT_SECONDS" curl \
@@ -193,6 +176,7 @@ megrez_network_evidence() {
             --silent \
             --show-error \
             --max-time "$COMMAND_TIMEOUT_SECONDS" \
+            --proxy "$PROXY_URL" \
             --output /dev/null \
             --write-out $'%{http_code}\t%{local_ip}' \
             "$BAIDU_URL"
@@ -202,7 +186,7 @@ megrez_network_evidence() {
     local_address="${curl_result#*$'\t'}"
     [[ "$http_status" == 200 ]] || fail megrez-http-status
     [[ "$local_address" == "10.100.19.200" ]] || fail megrez-local-address
-    emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
 
     temporary_asset="$(mktemp "${URL_FILE}.asset.XXXXXX")" || fail asset-temporary
     if ! timeout "$COMMAND_TIMEOUT_SECONDS" curl \
@@ -212,6 +196,7 @@ megrez_network_evidence() {
         --silent \
         --show-error \
         --max-time "$COMMAND_TIMEOUT_SECONDS" \
+        --proxy "$PROXY_URL" \
         --output "$temporary_asset" \
         "$BAIDU_ASSET"; then
         rm -f -- "$temporary_asset"
@@ -222,10 +207,10 @@ megrez_network_evidence() {
         fail megrez-asset
     fi
     rm -f -- "$temporary_asset" || fail asset-cleanup
-    emit "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=$PROXY_HOST:$PROXY_PORT"
 
     publish_remote_url
-    emit "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy"
 }
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
