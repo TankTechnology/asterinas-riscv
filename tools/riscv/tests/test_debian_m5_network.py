@@ -17,10 +17,14 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_QEMU_MILESTONES,
     classify_desktop_m5_network,
     classify_desktop_m5_qemu,
+    classify_network_m5_qemu,
 )
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DESKTOP_M5_QEMU_BOOTARGS,
     DesktopM5QemuOperations,
+    NetworkM5QemuOperations,
+    QemuGateTarget,
+    _parse_target,
     desktop_m5_qemu_argv,
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
@@ -1113,6 +1117,38 @@ printf '200\t10.0.2.15'
         self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
         self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
 
+    def test_qemu_network_target_ignores_desktop_readiness(self) -> None:
+        transcript = (
+            "\n".join(DESKTOP_M5_QEMU_MILESTONES)
+            + "\nDEBIAN_DESKTOP_M4_FAIL reason=netsurf-window-probe-timeout\n"
+        ).encode()
+
+        result = classify_network_m5_qemu(
+            transcript,
+            expected_debian_release="13.6",
+        )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(
+            classify_network_m5_qemu(
+                transcript + b"Kernel panic - not syncing\n",
+                expected_debian_release="13.6",
+            ).reason,
+            "kernel panic",
+        )
+        self.assertEqual(_parse_target([]), (QemuGateTarget.BROWSER, []))
+        self.assertEqual(
+            _parse_target(["--target", "network", "--smp", "4"]),
+            (QemuGateTarget.NETWORK, ["--smp", "4"]),
+        )
+        with self.assertRaises(SystemExit):
+            _parse_target(["--target", "invalid"])
+        self.assertFalse(NetworkM5QemuOperations.CAPTURE_SCREENSHOT)
+        self.assertEqual(
+            NetworkM5QemuOperations.MILESTONES,
+            DESKTOP_M5_QEMU_MILESTONES,
+        )
+
     def test_qemu_adapter_adds_only_one_slirp_virtio_net_device(self) -> None:
         for name in ("u-boot", "boot.ext4", "root.ext2"):
             (self.directory / name).write_bytes(name.encode())
@@ -1160,6 +1196,7 @@ printf '200\t10.0.2.15'
         self.assertEqual(summary["request_count"], 0)
         published = json.loads((output / "result.json").read_text(encoding="utf-8"))
         self.assertEqual(published["network_fixture"]["request_count"], 0)
+        self.assertEqual(published["target"], "browser")
 
     def test_qemu_make_gate_allows_the_cold_desktop_to_finish(self) -> None:
         target = (
@@ -1169,7 +1206,12 @@ printf '200\t10.0.2.15'
         )
 
         self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
+        self.assertIn('--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)"', target)
         self.assertIn("DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420", MAKEFILE.read_text())
+        self.assertIn(
+            "DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser",
+            MAKEFILE.read_text(),
+        )
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
         self.assertEqual(DESKTOP_M5_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)
