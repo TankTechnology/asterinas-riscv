@@ -430,7 +430,10 @@ case "$*" in
         exit "${ASTERINAS_M5_ASSET_STATUS:-0}"
         ;;
     *)
-        [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_HTTPS_STATUS"
+        if [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" != 0 ]; then
+            printf '%s\n' "${ASTERINAS_M5_HTTPS_ERROR:-curl failed}" >&2
+            exit "$ASTERINAS_M5_HTTPS_STATUS"
+        fi
         printf '%s\t%s' "${ASTERINAS_M5_HTTP_CODE:-200}" "${ASTERINAS_M5_LOCAL_IP:-10.100.19.200}"
         ;;
 esac
@@ -532,7 +535,14 @@ esac
                 {"ASTERINAS_DESKTOP_PROXY_PORT": "17894"},
                 "megrez-proxy-config",
             ),
-            ("https", {"ASTERINAS_M5_HTTPS_STATUS": "42"}, "megrez-https"),
+            (
+                "https",
+                {
+                    "ASTERINAS_M5_HTTPS_STATUS": "42",
+                    "ASTERINAS_M5_HTTPS_ERROR": "curl: recv failure",
+                },
+                "megrez-https",
+            ),
             (
                 "http-status",
                 {"ASTERINAS_M5_HTTP_CODE": "503"},
@@ -570,6 +580,13 @@ esac
                     console.read_text().splitlines()[-1],
                     f"DEBIAN_NETWORK_M5_FAIL reason={expected_reason}",
                 )
+                if name == "https":
+                    self.assertEqual(
+                        console.read_text().splitlines()[-2],
+                        "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                        "phase=megrez-https attempt=3 status=42 "
+                        "stderr_hex=6375726c3a2072656376206661696c7572650a",
+                    )
                 self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
 
     def test_guest_evidence_preserves_url_when_proxy_config_is_missing(self) -> None:

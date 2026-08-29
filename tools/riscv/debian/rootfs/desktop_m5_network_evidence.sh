@@ -125,6 +125,51 @@ request_qemu_https() {
     return 1
 }
 
+request_megrez_https() {
+    local attempt
+    local curl_error
+    local curl_result
+    local curl_status=1
+    local stderr_hex
+
+    curl_error="$(mktemp "${URL_FILE}.curl-error.XXXXXX")" ||
+        fail megrez-curl-temporary
+    for attempt in 1 2 3; do
+        : >"$curl_error" || fail megrez-curl-error-reset
+        if curl_result="$(
+            timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+                --fail \
+                --ipv4 \
+                --location \
+                --silent \
+                --show-error \
+                --max-time "$COMMAND_TIMEOUT_SECONDS" \
+                --proxy "$PROXY_URL" \
+                --output /dev/null \
+                --write-out $'%{http_code}\t%{local_ip}' \
+                "$BAIDU_URL" 2>"$curl_error"
+        )"; then
+            rm -f -- "$curl_error"
+            printf '%s' "$curl_result"
+            return 0
+        else
+            curl_status=$?
+        fi
+        if ((attempt != 3)); then
+            sleep 1
+        fi
+    done
+
+    stderr_hex="$(
+        head -c 2048 -- "$curl_error" |
+            od -An -v -tx1 |
+            tr -d '[:space:]'
+    )"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=3 status=$curl_status stderr_hex=${stderr_hex:-none}"
+    rm -f -- "$curl_error"
+    return 1
+}
+
 qemu_network_evidence() {
     local curl_result
     local http_status
@@ -168,19 +213,7 @@ megrez_network_evidence() {
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
     emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
 
-    curl_result="$(
-        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
-            --fail \
-            --ipv4 \
-            --location \
-            --silent \
-            --show-error \
-            --max-time "$COMMAND_TIMEOUT_SECONDS" \
-            --proxy "$PROXY_URL" \
-            --output /dev/null \
-            --write-out $'%{http_code}\t%{local_ip}' \
-            "$BAIDU_URL"
-    )" || fail megrez-https
+    curl_result="$(request_megrez_https)" || fail megrez-https
     [[ "$curl_result" == *$'\t'* ]] || fail megrez-curl-output
     http_status="${curl_result%%$'\t'*}"
     local_address="${curl_result#*$'\t'}"
