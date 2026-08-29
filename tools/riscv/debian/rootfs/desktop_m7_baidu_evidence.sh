@@ -172,7 +172,7 @@ find_single_window || fail home-window
 emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --sync --window "$window_id" 500 42 || fail search-focus
+    xdotool mousemove --sync --window "$window_id" 500 17 || fail search-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail search-click
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
