@@ -279,9 +279,7 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
 
 def _validate_recovery(path: Path, plan: DebugPlan) -> None:
     try:
-        result = RecoveryEvidence.from_bytes(
-            _read_regular(path, label="plan-recovery")
-        )
+        result = RecoveryEvidence.from_bytes(_read_regular(path, label="plan-recovery"))
     except PreboardError as error:
         raise WorkflowError(f"plan-recovery-invalid: {error}") from error
     kernel = next(
@@ -359,7 +357,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--base-cpio", required=True, type=Path)
     install.add_argument("--tftp-directory", required=True, type=Path)
     install.add_argument("--root-url", required=True)
-    install.add_argument("--timeout", type=_install_timeout, default=900.0)
+    install.add_argument("--timeout", type=_install_timeout)
 
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)

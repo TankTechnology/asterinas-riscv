@@ -166,6 +166,11 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         )
         self.assertIn("--final-profile", command)
         self.assertEqual(command[command.index("--final-profile") + 1], "installer")
+        self.assertEqual(
+            command[command.index("--milestone-timeout") + 1],
+            "660",
+        )
+        self.assertEqual(events[3][2]["timeout"], 960.0)
         bootargs = command[command.index("--bootargs") + 1]
         self.assertIn("asterinas.mmc_write_partition2", bootargs.split())
         self.assertIn(
@@ -180,6 +185,33 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             StageResult.from_bytes((self.output / "result.json").read_bytes()),
             result,
         )
+
+    def test_install_timeout_reserves_recovery_after_reboot_protection(self) -> None:
+        calls: list[str] = []
+
+        def forbidden(*_args: object, **_kwargs: object):
+            calls.append("called")
+            raise AssertionError("physical effect reached")
+
+        with self.assertRaisesRegex(InstallError, "recovery grace"):
+            run_network_install(
+                self.plan,
+                self.permit_path,
+                "/dev/ttyUSB0",
+                self.output,
+                self.base,
+                self.tftp,
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
+                artifact_validator=self._artifacts,
+                git_identity=lambda _repository: "c" * 40,
+                build_installer=forbidden,
+                compress_root=forbidden,
+                server_factory=forbidden,
+                run_command=forbidden,
+                repository_root=self.repository,
+                timeout=659.0,
+            )
+        self.assertEqual(calls, [])
 
     def test_invalid_permit_url_or_git_stops_before_build_and_serial(self) -> None:
         calls: list[str] = []

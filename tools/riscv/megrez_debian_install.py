@@ -33,7 +33,8 @@ from tools.riscv.megrez_preboard import (
     _read_held,
 )
 
-DEFAULT_TIMEOUT = 900.0
+RECOVERY_GRACE_SECONDS = 60.0
+BOARD_STAGING_BUDGET_SECONDS = 300.0
 BOARD_ADDRESS = "10.100.19.200"
 SERVER_ADDRESS = "10.100.19.216"
 SERVER_PORT = 8080
@@ -267,7 +268,7 @@ def run_network_install(
     server_factory: ServerFactory = _root_server,
     run_command: RunCommand = subprocess.run,
     repository_root: Path | None = None,
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float | None = None,
 ) -> StageResult:
     """Build and run one permit-bound Asterinas-only LAN install."""
 
@@ -283,10 +284,21 @@ def run_network_install(
             plan.validate()
             if plan.schema_version != 2 or plan.profile != "debian-browser":
                 raise InstallError("install requires a Debian browser plan")
-            if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+            if timeout is not None and (
+                not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
+            ):
                 raise InstallError("install timeout must be positive")
-            if not 0 < float(timeout) <= 3600:
+            milestone_timeout = (
+                float(plan.reboot_after) + RECOVERY_GRACE_SECONDS
+                if timeout is None
+                else float(timeout)
+            )
+            if not 0 < milestone_timeout <= 3600:
                 raise InstallError("install timeout must be in (0, 3600]")
+            if milestone_timeout < plan.reboot_after + RECOVERY_GRACE_SECONDS:
+                raise InstallError(
+                    "install timeout must reserve recovery grace after reboot protection"
+                )
             canonical_url = _canonical_root_url(root_url)
             if canonical_url != (
                 f"http://{SERVER_ADDRESS}:{SERVER_PORT}/{ROOT_ARCHIVE_FILENAME}"
@@ -336,7 +348,7 @@ def run_network_install(
             _crc32(compressed_kernel),
             kernel.stat().st_size,
             bootargs,
-            float(timeout),
+            milestone_timeout,
         )
         try:
             with server_factory(SERVER_ADDRESS, SERVER_PORT, compressed_root):
@@ -346,7 +358,7 @@ def run_network_install(
                     check=False,
                     capture_output=False,
                     text=True,
-                    timeout=float(timeout) + 120,
+                    timeout=milestone_timeout + BOARD_STAGING_BUDGET_SECONDS,
                 )
         except subprocess.TimeoutExpired as error:
             raise InstallError("board install timed out") from error
