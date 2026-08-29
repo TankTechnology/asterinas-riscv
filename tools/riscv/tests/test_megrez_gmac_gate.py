@@ -116,6 +116,10 @@ class MegrezGmacGateTests(unittest.TestCase):
             bootargs.split(),
         )
         self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            bootargs.split(),
+        )
+        self.assertNotIn(
             "asterinas.neighbor=eic7700-rj45,10.100.16.28,d8:43:ae:b1:f8:12",
             bootargs.split(),
         )
@@ -130,6 +134,12 @@ class MegrezGmacGateTests(unittest.TestCase):
                 f"systemd.setenv={variable}=/dev/ttyS0",
                 bootargs.split(),
             )
+        for variable, value in (
+            ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
+            ("ASTERINAS_DESKTOP_PROXY_HOST", "10.100.19.216"),
+            ("ASTERINAS_DESKTOP_PROXY_PORT", "17893"),
+        ):
+            self.assertIn(f"systemd.setenv={variable}={value}", bootargs.split())
         self.assertNotIn("saveenv", bootargs)
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)

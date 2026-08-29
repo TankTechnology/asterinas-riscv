@@ -38,10 +38,10 @@ MEGREZ_TCP_PROBE_SOURCE = (
 )
 EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
+    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
 )
 
 
@@ -450,10 +450,13 @@ esac
             ASTERINAS_M5_PING_LOG=str(ping_log),
             ASTERINAS_M5_GETENT_LOG=str(getent_log),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
+            ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
         )
         return environment, console, resolv_conf, url_file, ping_log, curl_log
 
-    def test_guest_evidence_requires_link_dns_https_without_ping(self) -> None:
+    def test_guest_evidence_requires_link_and_proxied_https_without_dns(self) -> None:
         environment, console, resolv_conf, url_file, ping_log, curl_log = (
             self._physical_evidence_environment(
                 self.directory / "physical-success",
@@ -478,9 +481,8 @@ esac
             console.read_text().splitlines(), list(EXPECTED_MEGREZ_MILESTONES)
         )
         self.assertFalse(ping_log.exists())
-        self.assertEqual(
-            resolv_conf.read_text(), "nameserver 10.2.0.5\nnameserver 10.2.0.6\n"
-        )
+        self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
+        self.assertFalse((self.directory / "physical-success/getent.log").exists())
         self.assertEqual(
             url_file.read_text(),
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
@@ -489,6 +491,9 @@ esac
         self.assertEqual(len(curl_calls), 2)
         self.assertIn("https://www.baidu.com/", curl_calls[0])
         self.assertIn("result.png", curl_calls[1])
+        self.assertTrue(
+            all("--proxy http://10.100.19.216:17893" in call for call in curl_calls)
+        )
         self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
 
     def test_guest_evidence_rejects_wrong_megrez_bootarg_before_network(self) -> None:
@@ -520,9 +525,13 @@ esac
         self.assertFalse(ping_log.exists())
         self.assertFalse(curl_log.exists())
 
-    def test_guest_evidence_reports_dns_https_and_asset_failures(self) -> None:
+    def test_guest_evidence_reports_proxy_https_and_asset_failures(self) -> None:
         cases = (
-            ("dns", {"ASTERINAS_M5_GETENT_STATUS": "41"}, "megrez-dns"),
+            (
+                "proxy",
+                {"ASTERINAS_DESKTOP_PROXY_PORT": "17894"},
+                "megrez-proxy-config",
+            ),
             ("https", {"ASTERINAS_M5_HTTPS_STATUS": "42"}, "megrez-https"),
             (
                 "http-status",
@@ -563,16 +572,14 @@ esac
                 )
                 self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
 
-    def test_guest_evidence_preserves_resolver_when_atomic_rename_fails(self) -> None:
+    def test_guest_evidence_preserves_url_when_proxy_config_is_missing(self) -> None:
         environment, console, resolv_conf, url_file, _, _ = (
             self._physical_evidence_environment(
                 self.directory / "resolver-rename",
                 cmdline=("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"),
             )
         )
-        fake_mv = Path(environment["PATH"].split(":", 1)[0]) / "mv"
-        fake_mv.write_text("#!/bin/sh\nexit 89\n", encoding="utf-8")
-        fake_mv.chmod(0o755)
+        environment.pop("ASTERINAS_DESKTOP_PROXY_URL")
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -585,7 +592,7 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(
             console.read_text().splitlines()[-1],
-            "DEBIAN_NETWORK_M5_FAIL reason=resolver-publish",
+            "DEBIAN_NETWORK_M5_FAIL reason=megrez-proxy-config",
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
         self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
@@ -606,6 +613,9 @@ esac
             ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
             ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
             ASTERINAS_M5_PING_LOG=str(ping_log),
+            ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
         )
 
         result = subprocess.run(

@@ -1345,6 +1345,11 @@ WantedBy=multi-user.target
             session_text,
         )
         self.assertIn("ASTERINAS_DESKTOP_URL_FILE", session_text)
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_HOST", session_text)
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_PORT", session_text)
+        self.assertIn("--http_proxy=1", session_text)
+        self.assertIn('--http_proxy_host="$proxy_host"', session_text)
+        self.assertIn('--http_proxy_port="$proxy_port"', session_text)
         self.assertIn("^https?://", session_text)
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
