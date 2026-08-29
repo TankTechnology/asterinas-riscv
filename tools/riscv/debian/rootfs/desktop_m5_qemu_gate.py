@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+from enum import Enum
 from typing import Any
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import (
@@ -17,6 +19,7 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_QEMU_MILESTONES,
     classify_desktop_m5_qemu,
+    classify_network_m5_qemu,
 )
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
@@ -55,6 +58,28 @@ DESKTOP_M5_QEMU_BOOTARGS = (
 )
 
 
+class QemuGateTarget(str, Enum):
+    """Select network-only or complete browser-desktop evidence."""
+
+    NETWORK = "network"
+    BROWSER = "browser"
+
+
+def _parse_target(
+    arguments: list[str] | None,
+) -> tuple[QemuGateTarget, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--target",
+        choices=tuple(target.value for target in QemuGateTarget),
+        default=QemuGateTarget.BROWSER.value,
+    )
+    values, remaining = parser.parse_known_args(
+        sys.argv[1:] if arguments is None else arguments
+    )
+    return QemuGateTarget(values.target), remaining
+
+
 def desktop_m5_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Add exactly one slirp-backed VirtIO NIC to the M4 device contract."""
 
@@ -81,6 +106,7 @@ class DesktopM5QemuOperations(DesktopM4Operations):
     MILESTONES = (*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M4_FAIL reason="
     BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
+    TARGET = QemuGateTarget.BROWSER
 
     def __init__(
         self,
@@ -119,6 +145,7 @@ class DesktopM5QemuOperations(DesktopM4Operations):
         result: dict[str, object],
     ) -> None:
         summary = self.fixture.summary()
+        result["target"] = self.TARGET.value
         result["network_fixture"] = summary
         if result.get("passed") is True and not is_successful_summary(
             summary, expected_requests=QEMU_FIXTURE_REQUESTS
@@ -136,6 +163,17 @@ class DesktopM5QemuOperations(DesktopM4Operations):
         return desktop_m5_qemu_argv(**arguments)
 
 
+class NetworkM5QemuOperations(DesktopM5QemuOperations):
+    """Stop after network evidence without waiting for desktop readiness."""
+
+    ARTIFACT_PREFIX = "desktop-m5-network-qemu"
+    MILESTONES = DESKTOP_M5_QEMU_MILESTONES
+    FAILURE_MARKER = b"DEBIAN_NETWORK_M5_FAIL reason="
+    ADDITIONAL_FAILURE_MARKERS = ()
+    CAPTURE_SCREENSHOT = False
+    TARGET = QemuGateTarget.NETWORK
+
+
 def orchestrate_desktop_m5_qemu_gate(
     config: GateConfig, operations: DesktopM5QemuOperations
 ) -> dict[str, object]:
@@ -146,12 +184,31 @@ def orchestrate_desktop_m5_qemu_gate(
     )
 
 
+def orchestrate_network_m5_qemu_gate(
+    config: GateConfig, operations: NetworkM5QemuOperations
+) -> dict[str, object]:
+    return orchestrate_systemd_m2_gate(
+        config,
+        operations,
+        classifier=classify_network_m5_qemu,
+    )
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
-        config = parse_gate_args(arguments)
+        target, gate_arguments = _parse_target(arguments)
+        config = parse_gate_args(gate_arguments)
         _safe_output(config.output_directory)
-        with TerminationSignalState(), DesktopM5QemuOperations(config) as operations:
-            result = orchestrate_desktop_m5_qemu_gate(config, operations)
+        operations_type = (
+            NetworkM5QemuOperations
+            if target is QemuGateTarget.NETWORK
+            else DesktopM5QemuOperations
+        )
+        with TerminationSignalState(), operations_type(config) as operations:
+            if target is QemuGateTarget.NETWORK:
+                result = orchestrate_network_m5_qemu_gate(config, operations)
+            else:
+                result = orchestrate_desktop_m5_qemu_gate(config, operations)
         return 0 if result["passed"] else 1
     except SystemExit as error:
         return int(error.code or 0)
