@@ -187,9 +187,7 @@ wait_for_home_title
 emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 sleep "$CAPTURE_DELAY_SECONDS"
 
-timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --sync 500 42 || fail search-focus
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail search-click
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+l || fail search-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
