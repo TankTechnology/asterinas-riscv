@@ -17,6 +17,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -84,6 +85,10 @@ PHYSICAL_MILESTONES = (
     DESKTOP_M4_MILESTONES[-1].encode(),
     DESKTOP_M6_REMOTE_MARKER.encode(),
 )
+PHYSICAL_NETWORK_MILESTONES = (
+    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+)
 _BROWSER_JAVASCRIPT_RE = re.compile(
     rb"DEBIAN_BROWSER_M6_JAVASCRIPT status=(limited-pass|disabled|failed)"
 )
@@ -94,6 +99,7 @@ PHYSICAL_READY_MARKERS = tuple(
     f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode()
     for status in DESKTOP_M6_JAVASCRIPT_STATUSES
 )
+PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
@@ -110,6 +116,16 @@ class GateFailure(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+class GateTarget(str, Enum):
+    """The last guest milestone required by one physical gate run."""
+
+    NETWORK = "network"
+    BROWSER = "browser"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class GateTermination(BaseException):
@@ -154,6 +170,7 @@ class GateConfig:
 
     boot_timeout: float = 300.0
     drain_timeout: float = 2.0
+    target: GateTarget = GateTarget.BROWSER
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -164,6 +181,8 @@ class GateConfig:
                 raise ValueError(f"{name} must be a finite positive number")
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a finite positive number")
+        if not isinstance(self.target, GateTarget):
+            raise ValueError("target must be a GateTarget")
 
 
 class GateOperations(Protocol):
@@ -245,6 +264,30 @@ def classify_physical_transcript(transcript: bytes) -> GateResult:
     return GateResult(True, "pass", None)
 
 
+def classify_physical_network_transcript(transcript: bytes) -> GateResult:
+    """Classify selected-GMAC and Megrez M5 evidence without desktop coupling."""
+
+    if not isinstance(transcript, bytes):
+        return GateResult(False, "physical transcript must be bytes", None)
+    if len(transcript) > MAX_TRANSCRIPT_BYTES:
+        return GateResult(False, "physical transcript exceeds 8 MiB", None)
+    fatal_reason = _fatal_transcript_reason(transcript)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
+
+    positions: list[int] = []
+    for marker in PHYSICAL_NETWORK_MILESTONES:
+        count = transcript.count(marker)
+        if count == 0:
+            return GateResult(False, "missing physical network milestone", None)
+        if count != 1:
+            return GateResult(False, "duplicate physical network milestone", None)
+        positions.append(transcript.find(marker))
+    if positions != sorted(positions):
+        return GateResult(False, "physical network milestones out of order", None)
+    return GateResult(True, "pass", None)
+
+
 def _fatal_transcript_reason(transcript: bytes) -> str | None:
     lowered = transcript.lower()
     for marker, reason in _FATAL_MARKERS:
@@ -312,6 +355,13 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
     drained = False
     cleanup_termination: GateTermination | None = None
     result: dict[str, object]
+    target = config.target.value
+    if config.target is GateTarget.NETWORK:
+        ready_markers = PHYSICAL_NETWORK_READY_MARKERS
+        classifier = classify_physical_network_transcript
+    else:
+        ready_markers = PHYSICAL_READY_MARKERS
+        classifier = classify_physical_transcript
     operations.invalidate()
     try:
         operations.ensure_address_unused()
@@ -321,7 +371,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
             raise GateFailure(fatal_reason)
         deadline = time.monotonic() + config.boot_timeout
-        while not any(marker in transcript for marker in PHYSICAL_READY_MARKERS):
+        while not any(marker in transcript for marker in ready_markers):
             if time.monotonic() >= deadline:
                 raise TimeoutError
             chunk = operations.read(deadline)
@@ -330,7 +380,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             _append_transcript(transcript, chunk)
             if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
                 raise GateFailure(fatal_reason)
-        classification = classify_physical_transcript(bytes(transcript))
+        classification = classifier(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
         _append_transcript(
@@ -338,18 +388,24 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             operations.drain(time.monotonic() + config.drain_timeout),
         )
         drained = True
-        classification = classify_physical_transcript(bytes(transcript))
+        classification = classifier(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
         result = {
             "passed": True,
             "reason": "pass",
+            "target": target,
             "board_address": BOARD_ADDRESS,
             "host_address": HOST_ADDRESS,
-            "javascript_status": _browser_javascript_status(bytes(transcript)),
         }
+        if config.target is GateTarget.BROWSER:
+            result["javascript_status"] = _browser_javascript_status(bytes(transcript))
     except Exception as error:
-        result = {"passed": False, "reason": _failure_reason(error)}
+        result = {
+            "passed": False,
+            "reason": _failure_reason(error),
+            "target": target,
+        }
     finally:
         if opened:
             if not drained:
@@ -367,7 +423,11 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             except GateTermination as error:
                 cleanup_termination = error
             except Exception as error:
-                result = {"passed": False, "reason": _failure_reason(error)}
+                result = {
+                    "passed": False,
+                    "reason": _failure_reason(error),
+                    "target": target,
+                }
         if cleanup_termination is not None:
             raise cleanup_termination
     operations.publish(bytes(transcript), result)
@@ -475,6 +535,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--booti-uncompressed-size", type=positive_size)
     parser.add_argument("--uboot-timeout", type=positive_finite_seconds, default=60.0)
     parser.add_argument("--reboot-after", type=bounded_reboot_seconds)
+    parser.add_argument(
+        "--target",
+        choices=tuple(GateTarget),
+        default=GateTarget.BROWSER,
+        type=GateTarget,
+    )
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--boot-timeout", type=positive_finite_seconds, default=300.0)
     parser.add_argument("--drain-timeout", type=positive_finite_seconds, default=2.0)
@@ -505,7 +571,11 @@ def _parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(arguments: Sequence[str] | None = None) -> int:
     values = _parse_args(arguments)
-    config = GateConfig(values.boot_timeout, values.drain_timeout)
+    config = GateConfig(
+        boot_timeout=values.boot_timeout,
+        drain_timeout=values.drain_timeout,
+        target=values.target,
+    )
     try:
         with TerminationSignals():
             with PhysicalGateOperations(values) as operations:
