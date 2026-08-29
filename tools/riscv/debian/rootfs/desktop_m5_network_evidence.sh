@@ -15,9 +15,17 @@ readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1
 readonly MEGREZ_PROXY_URL='http://10.100.19.216:17893'
 readonly MEGREZ_PROXY_HOST='10.100.19.216'
 readonly MEGREZ_PROXY_PORT='17893'
+readonly MEGREZ_FIXTURE_URL='http://10.100.19.216:17894/asterinas-network-probe.bin'
+readonly MEGREZ_FIXTURE_SIZE='65536'
+readonly MEGREZ_FIXTURE_SHA256='7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2'
+readonly MEGREZ_FIXTURE_REQUESTS='20'
 readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+readonly FIXTURE_URL="${ASTERINAS_DESKTOP_FIXTURE_URL:-}"
+readonly FIXTURE_SIZE="${ASTERINAS_DESKTOP_FIXTURE_SIZE:-}"
+readonly FIXTURE_SHA256="${ASTERINAS_DESKTOP_FIXTURE_SHA256:-}"
+readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
 readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL='https://www.baidu.com/'
 readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
@@ -203,6 +211,60 @@ synchronize_megrez_clock() {
     emit "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
 }
 
+stress_megrez_fixture() {
+    local actual_sha256
+    local actual_size
+    local attempt
+    local deadline="$1"
+    local remaining
+    local request_timeout
+    local temporary_fixture
+
+    temporary_fixture="$(mktemp "${URL_FILE}.fixture.XXXXXX")" ||
+        fail megrez-fixture-temporary
+    for ((attempt = 1; attempt <= FIXTURE_REQUESTS; attempt++)); do
+        remaining=$((deadline - SECONDS))
+        if ((remaining <= 0)); then
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-timeout
+        fi
+        request_timeout="$remaining"
+        if ((request_timeout > COMMAND_TIMEOUT_SECONDS)); then
+            request_timeout="$COMMAND_TIMEOUT_SECONDS"
+        fi
+        if ! timeout "$request_timeout" curl \
+            --fail \
+            --ipv4 \
+            --silent \
+            --show-error \
+            --max-time "$request_timeout" \
+            --noproxy '*' \
+            --output "$temporary_fixture" \
+            "$FIXTURE_URL"; then
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-download
+        fi
+        actual_size="$(wc -c <"$temporary_fixture" | tr -d '[:space:]')" || {
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-size
+        }
+        if [[ "$actual_size" != "$FIXTURE_SIZE" ]]; then
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-size
+        fi
+        actual_sha256="$(sha256sum "$temporary_fixture" | awk '{print $1}')" || {
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-sha256
+        }
+        if [[ "$actual_sha256" != "$FIXTURE_SHA256" ]]; then
+            rm -f -- "$temporary_fixture"
+            fail megrez-fixture-sha256
+        fi
+    done
+    rm -f -- "$temporary_fixture" || fail megrez-fixture-cleanup
+    emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=10.100.19.216:17894"
+}
+
 qemu_network_evidence() {
     local curl_result
     local http_status
@@ -236,6 +298,12 @@ megrez_network_evidence() {
     [[ "$PROXY_URL" == "$MEGREZ_PROXY_URL" ]] || fail megrez-proxy-config
     [[ "$PROXY_HOST" == "$MEGREZ_PROXY_HOST" ]] || fail megrez-proxy-config
     [[ "$PROXY_PORT" == "$MEGREZ_PROXY_PORT" ]] || fail megrez-proxy-config
+    [[ "$FIXTURE_URL" == "$MEGREZ_FIXTURE_URL" ]] || fail megrez-fixture-config
+    [[ "$FIXTURE_SIZE" == "$MEGREZ_FIXTURE_SIZE" ]] || fail megrez-fixture-config
+    [[ "$FIXTURE_SHA256" == "$MEGREZ_FIXTURE_SHA256" ]] ||
+        fail megrez-fixture-config
+    [[ "$FIXTURE_REQUESTS" == "$MEGREZ_FIXTURE_REQUESTS" ]] ||
+        fail megrez-fixture-config
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
@@ -245,6 +313,7 @@ megrez_network_evidence() {
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
     emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
+    stress_megrez_fixture "$deadline"
     synchronize_megrez_clock
 
     curl_result="$(request_megrez_https)" || fail megrez-https
