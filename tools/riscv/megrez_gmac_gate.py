@@ -182,7 +182,14 @@ class GateOperations(Protocol):
 def physical_bootargs(reboot_after: int | None = None) -> str:
     """Return the volatile Asterinas/Desktop M5 command line."""
 
-    restart = "" if reboot_after is None else f" asterinas.reboot_after={reboot_after}"
+    restart = ""
+    if reboot_after is not None:
+        userspace_deadline = max(1, reboot_after - 30)
+        restart = (
+            f" asterinas.reboot_after={reboot_after} "
+            f"systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER={userspace_deadline} "
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0"
+        )
     return (
         "console=ttyS0 console=tty0 loglevel=info "
         f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
