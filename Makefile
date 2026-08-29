@@ -290,6 +290,11 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu -v
 
+.PHONY: test_riscv_megrez_debian_shell
+test_riscv_megrez_debian_shell:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_debian_shell -v
+
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
 	@python3 -W error::ResourceWarning -m unittest \
