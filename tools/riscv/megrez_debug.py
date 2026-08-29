@@ -275,8 +275,13 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
         result = StageResult.from_bytes(_read_regular(path, label="plan-simulation"))
     except DebugContractError as error:
         raise WorkflowError(f"plan-simulation-invalid: {error}") from error
+    expected_stage = (
+        "desktop"
+        if plan.schema_version == 2 and plan.profile == "debian-browser"
+        else "fast"
+    )
     if (
-        result.stage != "fast"
+        result.stage != expected_stage
         or not result.passed
         or result.plan_sha256 != plan.plan_sha256
     ):
