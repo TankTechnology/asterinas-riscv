@@ -542,6 +542,9 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertEqual(logind_diagnostic_unit.stat().st_mode & 0o777, 0o644)
             self.assertTrue(logind_diagnostic_want.is_symlink())
             self.assertIn("DEBIAN_LOGIND_DIAGNOSTIC_ACTIVE", logind_diagnostic.read_text())
+            self.assertIn("DefaultDependencies=no", logind_diagnostic_unit.read_text())
+            self.assertIn("Before=", logind_diagnostic_unit.read_text())
+            self.assertIn("sysinit.target", logind_diagnostic_unit.read_text())
             self.assertIn(
                 "Environment=ASTERINAS_LOGIND_DIAGNOSTIC_TIMEOUT_SECONDS=300",
                 logind_diagnostic_unit.read_text(),
