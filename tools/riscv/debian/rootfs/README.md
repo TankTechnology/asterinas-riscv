@@ -281,6 +281,11 @@ primary DNS=10.2.0.5
 fallback DNS=10.2.0.6
 ```
 
+Prepare the host with the canonical
+[Megrez debugging tool list](../../README.md#host-side-megrez-debugging).
+Keep QEMU and cross-build dependencies in the pinned container;
+the host tools are only for serial, link, packet, throughput, and screenshot observations.
+
 Install a newly built ext2 image with
 `tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
 back eMMC partition 2. Linux may stage immutable boot files but is not an
