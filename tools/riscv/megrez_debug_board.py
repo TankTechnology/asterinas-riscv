@@ -81,7 +81,8 @@ DW_WATCHDOG_MAX_TIMEOUT = 0x0F
 DW_WATCHDOG_RECOVERY_CONTROL = 0x1F
 _UBOOT_MEMORY_LINE = re.compile(
     r"(?m)^(?P<address>[0-9a-fA-F]{8,16}):"
-    r"(?P<values>(?: [0-9a-fA-F]{8})+)\r?$"
+    r"(?P<values>(?: [0-9a-fA-F]{8})+)"
+    r"(?:[ \t]{2,}[^\r\n]*)?\r*$"
 )
 
 

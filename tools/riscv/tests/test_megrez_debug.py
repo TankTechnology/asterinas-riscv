@@ -1679,7 +1679,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                     "md.l 0x51828444 1": "51828444: 00000001",
                     "md.l 0x508000fc 1": "508000fc: 00000000",
                 }
-                return f"{command}\r\n{values[command]}\r\n=> "
+                return f"{command}\r\r\n{values[command]}\r\r\n=> "
 
         with self.assertRaisesRegex(BoardRunFailure, "watchdog-type-mismatch"):
             RealBoardOperations._arm_hardware_watchdog(
@@ -1750,17 +1750,21 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                     commands.append(command)
                     self.log.write(f"{command}\n")
                     if command == "md.l 0x51828200 1":
-                        return f"{command}\r\n51828200: fe3fff83\r\n=> "
+                        return (
+                            f"{command}\r\r\n"
+                            "51828200: fe3fff83                             ..?."
+                            "\r\r\n=> "
+                        )
                     if command == "md.l 0x51828444 1":
                         reset = 1 if self.reset_deasserted else 0
-                        return f"{command}\r\n51828444: {reset:08x}\r\n=> "
+                        return f"{command}\r\r\n51828444: {reset:08x}\r\r\n=> "
                     if command == "mw.l 0x51828444 0x1":
                         self.reset_deasserted = True
                         return f"{command}\r\n=> "
                     if command == "md.l 0x508000fc 1":
-                        return f"{command}\r\n508000fc: 44570120\r\n=> "
+                        return f"{command}\r\r\n508000fc: 44570120\r\r\n=> "
                     if command == "md.l 0x50800000 2":
-                        return f"{command}\r\n50800000: 0000001f 0000000f\r\n=> "
+                        return f"{command}\r\r\n50800000: 0000001f 0000000f\r\r\n=> "
                     if command.startswith("crc32 "):
                         address = int(command.split()[1], 16)
                         return (
