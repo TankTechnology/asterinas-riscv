@@ -12,6 +12,18 @@ readonly URL_FILE="${ASTERINAS_DESKTOP_URL_FILE:-/run/asterinas-desktop-url}"
 if [[ "${1-}" == --xsession ]]; then
     browser_url="file:///usr/share/asterinas/desktop-m4-welcome.html"
     browser_arguments=()
+    proxy_host="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+    proxy_port="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+    if [[ -n "$proxy_host" || -n "$proxy_port" ]]; then
+        [[ "$proxy_host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || exit 64
+        [[ "$proxy_port" =~ ^[1-9][0-9]{0,4}$ ]] || exit 64
+        ((proxy_port <= 65535)) || exit 64
+        browser_arguments+=(
+            --http_proxy=1
+            --http_proxy_host="$proxy_host"
+            --http_proxy_port="$proxy_port"
+        )
+    fi
     if [[ -f "$URL_FILE" && ! -L "$URL_FILE" ]]; then
         candidate="$(<"$URL_FILE")"
         if ((${#candidate} <= 2048)) && \

@@ -12,10 +12,10 @@ from tools.riscv.debian.rootfs.gate_protocol import GateResult
 
 DESKTOP_M5_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
+    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
 )
 DESKTOP_M5_NETWORK_MILESTONES = DESKTOP_M5_MEGREZ_MILESTONES
 DESKTOP_M5_QEMU_MILESTONES = (
