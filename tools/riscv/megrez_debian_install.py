@@ -37,6 +37,7 @@ BOARD_STAGING_BUDGET_SECONDS = 300.0
 MAX_INSTALL_ATTEMPTS = 3
 BOARD_ADDRESS = "10.100.19.200"
 SERVER_ADDRESS = "10.100.19.216"
+SERVER_HARDWARE_ADDRESS = "04:7c:16:47:50:4e"
 SERVER_PORT = 8080
 NETMASK = "255.255.248.0"
 INSTALLER_FILENAME = "debian-current-network-installer.cpio"
@@ -139,7 +140,8 @@ def _installer_bootargs(plan: DebugPlan, root_hash: str) -> str:
         "cpu_no_boost_1_6ghz",
         "loglevel=info",
         "init=/init",
-        "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
+        "asterinas.net=eic7700-rj45,10.100.19.200/21",
+        (f"asterinas.neighbor=eic7700-rj45,{SERVER_ADDRESS},{SERVER_HARDWARE_ADDRESS}"),
         "asterinas.mmc_write_partition2",
         f"asterinas.debian_install_sha256={root_hash}",
         f"asterinas.reboot_after={plan.reboot_after}",

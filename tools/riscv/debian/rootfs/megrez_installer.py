@@ -449,6 +449,7 @@ def render_network_init(
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY
 hold() {{ while :; do sleep 3600; done; }}
 fail() {{ echo "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
 mkdir -p /proc /sys /dev /run
@@ -461,11 +462,13 @@ case "$cmdline" in *" asterinas.debian_install_sha256={root_sha256} "*) ;; *) fa
 target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
 [ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+echo "DEBIAN_INSTALL_RESUME_START chunks={len(chunks)} block_bytes={INSTALL_WRITE_BLOCK_SIZE}"
 root_url='{canonical_url}'
 download=/run/debian-install.chunk.gz
 tab=$(printf '\t')
 while IFS="$tab" read -r index block blocks compressed uncompressed url; do
     case "$url" in "$root_url".chunk-*.gz) ;; *) fail chunk-url-$index ;; esac
+    echo "DEBIAN_INSTALL_CHUNK_SCAN index=$index"
     set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
     if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
         echo "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
