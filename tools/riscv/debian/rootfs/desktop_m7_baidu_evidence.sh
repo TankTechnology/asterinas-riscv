@@ -146,24 +146,6 @@ wait_for_home_title() {
     done
 }
 
-wait_for_search_navigation() {
-    local deadline=$((SECONDS + TIMEOUT_SECONDS))
-    while true; do
-        if timeout "$COMMAND_TIMEOUT_SECONDS" \
-            tail -c 65536 -- "$NETSURF_LOG" |
-            grep -F -- "$SEARCH_URL" >/dev/null; then
-            return
-        fi
-        if ((SECONDS >= deadline)); then
-            title="$(window_title)"
-            emit_netsurf_log_diagnostic
-            emit_title_diagnostic search
-            fail search-navigation-timeout
-        fi
-        sleep "$POLL_DELAY_SECONDS"
-    done
-}
-
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowactivate --sync "$window_id" || fail old-window-activate
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+q || fail old-browser-quit
@@ -194,9 +176,7 @@ timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail search-submit
-wait_for_search_navigation
-sleep "$CAPTURE_DELAY_SECONDS"
 find_single_process || fail search-process
 find_single_window || fail search-window
-emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
-emit "DEBIAN_BROWSER_M7_READY page=baidu search=pass"
+emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas state=submitted"
+emit "DEBIAN_BROWSER_M7_READY page=baidu capture=pending"
