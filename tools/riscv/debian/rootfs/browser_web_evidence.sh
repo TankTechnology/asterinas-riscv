@@ -16,6 +16,7 @@ readonly SYSTEM_CA=/etc/ssl/certs/ca-certificates.crt
 readonly TRUST_STATIC_LOG=/usr/share/asterinas/browser-web-trust-static.log
 readonly TIMELINE_LOG=/home/asterinas/browser-web-timeline.log
 readonly GATE_STDERR=/run/asterinas-browser-web-gate.stderr
+readonly NETWORK_ERROR_LOG=/run/asterinas-browser-web-network-error
 readonly USER_ID=1000
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
@@ -100,6 +101,7 @@ validate_child_security() {
 
 validate_dns_and_tls() {
     local hosts name ip line status effective verify lookup connect tls first_byte
+    local command_status stderr_hex
     grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
         fail dns-not-slirp-10.0.2.3
     # Asterinas may expose additional virtual links (for example a host-side
@@ -124,17 +126,34 @@ validate_dns_and_tls() {
         emit "DEBIAN_BROWSER_WEB_NETWORK_LOCAL state=unverified reason=ip-link-address-route"
     fi
     for name in www.baidu.com www.bilibili.com; do
-        hosts="$(getent ahostsv4 "$name")" || fail "dns-$name"
+        emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=start"
+        if hosts="$(getent ahostsv4 "$name")"; then
+            :
+        else
+            command_status=$?
+            emit "DEBIAN_BROWSER_WEB_NETWORK_DIAGNOSTIC phase=dns host=$name status=$command_status"
+            fail "dns-$name"
+        fi
         ip="$(awk 'NR == 1 { print $1 }' <<<"$hosts")"
         [[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || fail "dns-address-$name"
         [[ "$ip" != 127.* && "$ip" != 0.* ]] || fail "dns-loopback-$name"
         printf 'DNS host=%s address=%s\n' "$name" "$ip" >>"$CURL_LOG"
+        emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=done address=$ip"
     done
     for name in https://www.baidu.com/ https://www.bilibili.com/; do
-        line="$(curl --proto '=https' --tlsv1.2 --fail --location --silent \
+        : >"$NETWORK_ERROR_LOG" || fail network-error-log-reset
+        emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=https host=${name#https://} state=start"
+        if line="$(curl --proto '=https' --tlsv1.2 --fail --location --silent \
             --show-error --connect-timeout 20 --max-time 120 --output /dev/null \
-            --write-out '%{http_code} %{url_effective} %{ssl_verify_result} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer}' "$name")" ||
+            --write-out '%{http_code} %{url_effective} %{ssl_verify_result} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer}' \
+            "$name" 2>"$NETWORK_ERROR_LOG")"; then
+            :
+        else
+            command_status=$?
+            stderr_hex="$(head -c 2048 -- "$NETWORK_ERROR_LOG" | od -An -v -tx1 | tr -d '[:space:]')"
+            emit "DEBIAN_BROWSER_WEB_NETWORK_DIAGNOSTIC phase=https host=${name#https://} status=$command_status stderr_hex=${stderr_hex:-none}"
             fail "curl-${name#https://}"
+        fi
         read -r status effective verify lookup connect tls first_byte <<<"$line"
         [[ "$status" =~ ^(2|3)[0-9][0-9]$ && "$effective" == https://* && "$verify" == 0 ]] ||
             fail "curl-verification-${name#https://}"
@@ -153,6 +172,7 @@ validate_dns_and_tls() {
             printf 'HTTPS_TIMING requested=%s namelookup=unknown connect=unknown appconnect=unknown starttransfer=unknown\n' \
                 "$name" >>"$CURL_LOG"
         fi
+        emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=https host=${name#https://} state=done status=$status"
     done
 }
 
