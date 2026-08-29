@@ -93,6 +93,20 @@ fn xattr_value_size(size: usize) -> usize {
     (size + XATTR_ROUND) & !XATTR_ROUND
 }
 
+fn hash_entry(name: &[u8], value: &[u8]) -> u32 {
+    let mut hash = 0u32;
+    for byte in name {
+        hash = hash.rotate_left(5) ^ u32::from(*byte);
+    }
+
+    for chunk in value.chunks(4) {
+        let mut word = [0u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        hash = hash.rotate_left(16) ^ u32::from_le_bytes(word);
+    }
+    hash
+}
+
 /// External extended-attribute block state for one inode.
 #[derive(Debug)]
 pub(super) struct Xattr {
@@ -515,7 +529,7 @@ impl XattrCache {
                 },
                 value_block: 0,
                 value_len: entry.value.len() as u32,
-                hash: 0,
+                hash: hash_entry(&entry.name, &entry.value),
             };
             block.write_val(entry_cursor, &raw_entry)?;
 
@@ -716,10 +730,9 @@ impl XattrNameIndex {
 ///   does not permit safe mutable borrows of sub-ranges of a buffer, we
 ///   store the name as an owned `Vec<u8>` during the in-memory phase.  It
 ///   is written back to the correct offset in the block buffer on flush.
-/// - **`hash` is not stored here**: The per-entry hash in `XattrEntry::hash`
-///   is always written as zero.  Block sharing via `mb_cache` (which would
-///   require hash-based deduplication) is not implemented; `ref_count` is
-///   always 1.
+/// - **`hash` is not stored here**: it is derived from the name and value when
+///   serializing. Block sharing via `mb_cache` is not implemented;
+///   `ref_count` is always 1 and the block-header hash remains zero.
 #[derive(Clone, Debug)]
 struct XattrEntryData {
     name_index: XattrNameIndex,
@@ -764,4 +777,57 @@ fn cmp_entry_key(
         .cmp(&(rhs_index as u8))
         .then(lhs_name.len().cmp(&rhs_name.len()))
         .then(lhs_name.cmp(rhs_name))
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::fs::ext2::{
+        inode::test::read_raw_inode_from_disk,
+        test_utils::{create_file, default_fixture},
+    };
+
+    #[ktest]
+    fn external_xattr_matches_linux_metadata() {
+        let (fixture, root) = default_fixture();
+        let file = create_file(&root, "random-seed");
+        let name = "user.random-seed-creditable";
+        let mut value_reader = VmReader::from(&b"1"[..]).to_fallible();
+
+        file.set_xattr(
+            XattrName::try_from_full_name(name).unwrap(),
+            &mut value_reader,
+            XattrSetFlags::CREATE_ONLY,
+        )
+        .unwrap();
+        fixture.ext2.sync_all().unwrap();
+
+        let raw = read_raw_inode_from_disk(&fixture, file.ino());
+
+        let xattr_offset = Bid::new(raw.file_acl as u64).to_offset();
+        let header = fixture
+            .disk
+            .segment()
+            .read_val::<XattrHeader>(xattr_offset)
+            .unwrap();
+        let entry = fixture
+            .disk
+            .segment()
+            .read_val::<XattrEntry>(xattr_offset + XATTR_HEADER_SIZE)
+            .unwrap();
+        assert_ne!(raw.file_acl, 0);
+        assert_eq!(raw.sector_count, (BLOCK_SIZE / SECTOR_SIZE) as u32);
+        assert_eq!(header.hash, 0);
+        assert_eq!(entry.hash, 0x82fe_2a74);
+
+        file.remove_xattr(XattrName::try_from_full_name(name).unwrap())
+            .unwrap();
+        fixture.ext2.sync_all().unwrap();
+
+        let raw = read_raw_inode_from_disk(&fixture, file.ino());
+        assert_eq!(raw.file_acl, 0);
+        assert_eq!(raw.sector_count, 0);
+    }
 }

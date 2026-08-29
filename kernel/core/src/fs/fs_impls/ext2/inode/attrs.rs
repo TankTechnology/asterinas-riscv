@@ -193,7 +193,7 @@ impl Inode {
         let new_bid = xattr.bid();
 
         let mut inner = self.inner.write();
-        inner.set_file_acl(new_bid);
+        inner.set_file_acl(new_bid)?;
         inner.set_ctime(utils::now());
         Ok(())
     }
@@ -207,7 +207,7 @@ impl Inode {
         let new_bid = xattr.bid();
 
         let mut inner = self.inner.write();
-        inner.set_file_acl(new_bid);
+        inner.set_file_acl(new_bid)?;
         inner.set_ctime(utils::now());
         Ok(())
     }
