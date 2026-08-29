@@ -151,10 +151,15 @@ the artifact is retransmitted and verified again before `booti`.
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
-requires the EIC7700 removable-card controller, a nonzero SDHC capacity,
-read-only `mmcblk0` registration, and a partition-table SHA-256 marker in that
-order. Panic, fatal, probe-failure, writable, duplicate, and out-of-order
-evidence is rejected. Linux boot output is not an accepted substitute.
+requires an aligned 512 KiB SDMA buffer whose CPU and device addresses are
+identical inside `0xc0000000..0x100000000`, the EIC7700 removable-card
+controller, a nonzero SDHC capacity, read-only `mmcblk0` registration, and a
+partition-table SHA-256 marker in that order. The identity address is the
+RockOS U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID
+16 and is not usable as a fixed offset while Asterinas RISC-V has no IOMMU.
+Panic, fatal, probe-failure, writable, translated, misaligned, duplicate, and
+out-of-order evidence is rejected. Linux boot output is not an accepted
+substitute.
 
 Run the host tests with:
 

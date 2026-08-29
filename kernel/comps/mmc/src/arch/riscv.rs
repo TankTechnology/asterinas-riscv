@@ -42,6 +42,9 @@ const POLL_BUDGET: usize = 1_000_000;
 const DMA_DEVICE_START: usize = 0x2000_0000;
 const DMA_CPU_START: usize = 0xc000_0000;
 const DMA_WINDOW_SIZE: usize = 0x4000_0000;
+const SMMU_MMIO_START: usize = 0x50c0_0000;
+const SMMU_MMIO_SIZE: usize = 0x10_0000;
+const SD0_STREAM_ID: u32 = 16;
 
 const BLOCK_COUNT: usize = 0x06;
 const RESPONSE1: usize = 0x14;
@@ -88,6 +91,7 @@ struct ConfigFields {
     max_frequency: Option<u32>,
     no_mmc: bool,
     clock_resource_valid: bool,
+    iommu_stream_valid: bool,
     dma_window: Option<DmaWindow>,
     dma_noncoherent: bool,
 }
@@ -129,6 +133,9 @@ impl ConfigFields {
         if !self.clock_resource_valid {
             return Some("eswin,syscrg_csr");
         }
+        if !self.iommu_stream_valid {
+            return Some("iommus");
+        }
         if self.dma_window != DmaWindow::new(DMA_DEVICE_START, DMA_CPU_START, DMA_WINDOW_SIZE) {
             return Some("dma-ranges");
         }
@@ -164,11 +171,16 @@ fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
         return Err(ProbeError::InvalidDeviceTree);
     }
     let max_frequency = fields.max_frequency.unwrap();
+    // The Linux DT describes an IOVA window backed by SMMUv3 stream 16.
+    // Asterinas does not configure a RISC-V IOMMU yet, so preserve U-Boot's
+    // direct-DMA handoff instead of applying the unmapped IOVA offset.
+    let dma_window = DmaWindow::new(DMA_CPU_START, DMA_CPU_START, DMA_WINDOW_SIZE)
+        .ok_or(ProbeError::InvalidDeviceTree)?;
     Ok(PlatformConfig {
         mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
         clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
             ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
-        dma_window: fields.dma_window.unwrap(),
+        dma_window,
         interrupt: INTERRUPT,
         bus_width: BUS_WIDTH,
         clock_frequency: fields.clock_frequency.unwrap(),
@@ -260,6 +272,46 @@ fn dma_window_from_node(node: FdtNode<'_, '_>) -> Option<DmaWindow> {
     dma_window_from_cells(&cells)
 }
 
+fn valid_iommu_stream(
+    cells: &[u32],
+    provider_compatible: bool,
+    provider_mmio: Option<(usize, usize)>,
+    iommu_cells: Option<usize>,
+) -> bool {
+    matches!(cells, [_, SD0_STREAM_ID])
+        && provider_compatible
+        && provider_mmio == Some((SMMU_MMIO_START, SMMU_MMIO_SIZE))
+        && iommu_cells == Some(1)
+}
+
+fn iommu_stream_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
+    let Some(property) = node.property("iommus") else {
+        return false;
+    };
+    let (chunks, remainder) = property.value.as_chunks::<4>();
+    if chunks.len() != 2 || !remainder.is_empty() {
+        return false;
+    }
+    let cells = [u32::from_be_bytes(chunks[0]), u32::from_be_bytes(chunks[1])];
+    let Some(provider) = tree.find_phandle(cells[0]) else {
+        return false;
+    };
+    let provider_compatible = provider
+        .compatible()
+        .is_some_and(|values| values.all().any(|value| value == "arm,smmu-v3"));
+    let provider_mmio = provider.reg().and_then(|mut regions| {
+        let first = regions.next()?;
+        if regions.next().is_some() {
+            return None;
+        }
+        Some((first.starting_address as usize, first.size?))
+    });
+    let iommu_cells = provider
+        .property("#iommu-cells")
+        .and_then(|property| property.as_usize());
+    valid_iommu_stream(&cells, provider_compatible, provider_mmio, iommu_cells)
+}
+
 fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
     let enabled = match node.property("status") {
         None => true,
@@ -297,6 +349,7 @@ fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
             .and_then(|value| value.try_into().ok()),
         no_mmc: node.property("no-mmc").is_some(),
         clock_resource_valid: clock_resource_from_node(tree, node),
+        iommu_stream_valid: iommu_stream_from_node(tree, node),
         dma_window: dma_window_from_node(node),
         dma_noncoherent: node.property("dma-noncoherent").is_some(),
     }
@@ -392,6 +445,12 @@ impl MmioHost {
         {
             return Err(HostError::Unsupported);
         }
+        ostd::info!(
+            "[mmc] SDMA buffer cpu={:#x} device={:#x} bytes={}",
+            memory.paddr(),
+            device_range.start,
+            memory.size()
+        );
         self.sdma = Some(SdmaBuffer {
             memory,
             device_start: device_range.start,
@@ -792,25 +851,33 @@ mod tests {
             max_frequency: Some(208_000_000),
             no_mmc: true,
             clock_resource_valid: true,
+            iommu_stream_valid: true,
             dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000),
             dma_noncoherent: true,
         }
     }
 
     #[ktest]
-    fn accepts_only_frozen_megrez_sd_resources() {
+    fn uses_uboot_identity_dma_after_validating_linux_resources() {
         assert_eq!(
             validate(valid_fields()).unwrap(),
             PlatformConfig {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
-                dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
+                dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
                 max_frequency: 208_000_000,
             }
+        );
+        assert_eq!(
+            validate(valid_fields())
+                .unwrap()
+                .dma_window
+                .translate(0xfff0_0000..0xfff8_0000),
+            Some(0xfff0_0000..0xfff8_0000)
         );
     }
 
@@ -874,7 +941,7 @@ mod tests {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
-                dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
+                dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
@@ -922,5 +989,37 @@ mod tests {
         let mut fields = valid_fields();
         fields.dma_window = DmaWindow::new(0, 0xc000_0000, 0x4000_0000);
         assert_eq!(fields.invalid_field(), Some("dma-ranges"));
+
+        let mut fields = valid_fields();
+        fields.iommu_stream_valid = false;
+        assert_eq!(fields.invalid_field(), Some("iommus"));
+    }
+
+    #[ktest]
+    fn accepts_only_the_linux_smmuv3_sd0_stream_contract() {
+        assert!(valid_iommu_stream(
+            &[0x15, 16],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 15],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 16],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(2)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 16, 0],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
+        ));
     }
 }
