@@ -89,6 +89,13 @@ _HTTPS_LINE = re.compile(
     r"HTTPS requested=(https://www\.(?:baidu|bilibili)\.com/) "
     r"status=([23][0-9]{2}) effective=(https://\S+) verify=0"
 )
+_HTTPS_TIMING_LINE = re.compile(
+    r"HTTPS_TIMING requested=(https://www\.(?:baidu|bilibili)\.com/) "
+    r"namelookup=(unknown|[0-9]+\.[0-9]+) "
+    r"connect=(unknown|[0-9]+\.[0-9]+) "
+    r"appconnect=(unknown|[0-9]+\.[0-9]+) "
+    r"starttransfer=(unknown|[0-9]+\.[0-9]+)"
+)
 _PARENT_SECURITY_LINE = re.compile(
     r"BROWSER_WEB_SECURITY parent_pid=([1-9][0-9]*) uid=1000 caps=zero "
     r"nnp=1 sandbox_disable=absent"
@@ -188,10 +195,9 @@ def _validate_png(contents: bytes, name: str) -> None:
 
 def _validate_curl_log(contents: bytes) -> None:
     lines = _text_lines(contents, "curl.log")
-    if len(lines) != 4:
-        raise GateFailure("curl evidence does not have the exact record set")
     dns: dict[str, str] = {}
     https: dict[str, tuple[str, str]] = {}
+    timings: dict[str, tuple[str, str, str, str]] = {}
     for line in lines:
         if match := _DNS_LINE.fullmatch(line):
             host, address = match.groups()
@@ -212,6 +218,11 @@ def _validate_curl_log(contents: bytes) -> None:
             ):
                 raise GateFailure("curl HTTPS redirect leaves the requested site")
             https[requested] = (status, effective)
+        elif match := _HTTPS_TIMING_LINE.fullmatch(line):
+            requested, lookup, connect, appconnect, starttransfer = match.groups()
+            if requested in timings:
+                raise GateFailure("curl HTTPS timing evidence is duplicated")
+            timings[requested] = (lookup, connect, appconnect, starttransfer)
         else:
             raise GateFailure("curl evidence contains an unstructured record")
     if set(dns) != {"www.baidu.com", "www.bilibili.com"} or set(https) != {
@@ -219,6 +230,8 @@ def _validate_curl_log(contents: bytes) -> None:
         "https://www.bilibili.com/",
     }:
         raise GateFailure("curl evidence is missing a required endpoint")
+    if set(timings) - set(https):
+        raise GateFailure("curl HTTPS timing evidence has no matching HTTPS record")
 
 
 def _validate_security_log(

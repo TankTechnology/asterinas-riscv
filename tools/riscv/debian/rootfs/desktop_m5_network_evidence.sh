@@ -119,7 +119,7 @@ request_qemu_https() {
                 --show-error \
                 --max-time "$COMMAND_TIMEOUT_SECONDS" \
                 --output /dev/null \
-                --write-out $'%{http_code}\t%{local_ip}' \
+                --write-out $'%{http_code}\t%{local_ip}\t%{time_namelookup}\t%{time_connect}\t%{time_appconnect}\t%{time_starttransfer}' \
                 "$BAIDU_URL" 2>"$curl_error"
         )"; then
             rm -f -- "$curl_error"
@@ -145,13 +145,19 @@ qemu_network_evidence() {
     local curl_result
     local http_status
     local local_address
+    local lookup_time
+    local connect_time
+    local tls_time
+    local first_byte_time
 
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
     if [[ "${ASTERINAS_DESKTOP_M5_NETWORK_MODE:-full}" == lightweight ]]; then
         # Browser startup must not wait for a remote TLS probe.  The browser
         # evidence service performs the authoritative DNS/TLS checks after the
-        # desktop and Firefox can start; this oneshot only publishes resolver
-        # configuration and releases the dependency immediately.
+        # desktop and Firefox can start.  Do not make this dependency rely on
+        # `ip` route formatting: that interface is still incomplete in some
+        # Asterinas profiles, while getent/curl below are the authoritative
+        # connectivity checks.
         emit "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp-lightweight"
         return 0
     fi
@@ -162,6 +168,17 @@ qemu_network_evidence() {
     [[ "$curl_result" == *$'\t'* ]] || fail qemu-curl-output
     http_status="${curl_result%%$'\t'*}"
     local_address="${curl_result#*$'\t'}"
+    if [[ "$local_address" == *$'\t'* ]]; then
+        lookup_time="${local_address#*$'\t'}"
+        local_address="${local_address%%$'\t'*}"
+        connect_time="${lookup_time#*$'\t'}"
+        lookup_time="${lookup_time%%$'\t'*}"
+        tls_time="${connect_time#*$'\t'}"
+        connect_time="${connect_time%%$'\t'*}"
+        first_byte_time="${tls_time#*$'\t'}"
+        tls_time="${tls_time%%$'\t'*}"
+        emit "DEBIAN_NETWORK_M5_QEMU_TIMING host=www.baidu.com namelookup=${lookup_time:-unknown} connect=${connect_time:-unknown} appconnect=${tls_time:-unknown} starttransfer=${first_byte_time:-unknown}"
+    fi
     [[ "$http_status" =~ ^(2|3)[0-9][0-9]$ ]] || fail qemu-http-status
     [[ "$local_address" == "10.0.2.15" ]] || fail qemu-local-address
     emit "DEBIAN_NETWORK_M5_QEMU_HTTPS host=www.baidu.com status=$http_status address=$local_address"
