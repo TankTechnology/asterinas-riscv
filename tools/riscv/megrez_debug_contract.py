@@ -266,8 +266,8 @@ class DebugPlan:
             raise DebugContractError("unsafe debug bootargs")
         if type(self.smp) is not int or self.smp != 4:
             raise DebugContractError("debug plan requires SMP=4")
-        if self.sv39 is not True:
-            raise DebugContractError("debug plan requires Sv39")
+        if type(self.sv39) is not bool:
+            raise DebugContractError("debug plan paging mode must be Sv39 or Sv48")
         if (
             not isinstance(self.markers, tuple)
             or not self.markers

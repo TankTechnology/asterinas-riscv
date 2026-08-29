@@ -407,7 +407,7 @@ class MegrezDebugPlanTests(unittest.TestCase):
         invalid = (
             replace(plan, schema_version=True),
             replace(plan, smp=2),
-            replace(plan, sv39=False),
+            replace(plan, sv39="true"),
             replace(plan, reboot_after=True),
             replace(plan, reboot_after=0),
             replace(plan, bootargs="init=/init; saveenv"),
@@ -537,7 +537,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             replace(plan, artifacts=tuple(invalid_artifacts)),
             replace(plan, markers=plan.markers[:-1]),
             replace(plan, smp=1),
-            replace(plan, sv39=False),
+            replace(plan, sv39="false"),
             replace(plan, reboot_after=0),
         ):
             with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
@@ -883,6 +883,20 @@ class MegrezDebugSimulationTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 1)
+
+    def test_fast_simulation_rejects_sv48_before_any_process_launch(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        with self.assertRaisesRegex(SimulationError, "fast-simulation-requires-sv39"):
+            simulate_fast(
+                replace(self.plan, sv39=False),
+                self.output,
+                self.build,
+                run_command=self._runner(calls),
+                repository_root=self.repository,
+            )
+
+        self.assertEqual(calls, [])
 
     def test_fast_simulation_rejects_a_false_guarded_result(self) -> None:
         calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
@@ -1326,6 +1340,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
     def test_marker_and_timeout_failures_never_retry_booti(self) -> None:
         cases = (
             (["ASTERINAS_GMAC_TCP_PROBE_READY\n"], "guest-marker-order"),
+            (["MEGREZ_SDHCI_READ_FAIL reason=target-open\n"], "kernel-fatal"),
             ([], "kernel-timeout"),
             (["Enter riscv_boot\n"], "guest-timeout"),
             (
@@ -1827,7 +1842,7 @@ class MegrezDebugCliTests(unittest.TestCase):
             timeout=5,
         )
 
-    def _create_plan(self) -> DebugPlan:
+    def _create_plan(self, *, paging_mode: str = "sv39") -> DebugPlan:
         result = self._run(
             "plan",
             "--kernel",
@@ -1844,11 +1859,18 @@ class MegrezDebugCliTests(unittest.TestCase):
             "Enter riscv_boot",
             "--marker",
             "ASTERINAS_GMAC_TCP_PROBE_READY",
+            "--paging-mode",
+            paging_mode,
             "--output",
             self.plan_path,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return DebugPlan.from_bytes(self.plan_path.read_bytes())
+
+    def test_plan_records_the_explicit_physical_paging_mode(self) -> None:
+        plan = self._create_plan(paging_mode="sv48")
+
+        self.assertIs(plan.sv39, False)
 
     def test_plan_and_check_work_from_an_arbitrary_directory(self) -> None:
         plan = self._create_plan()
