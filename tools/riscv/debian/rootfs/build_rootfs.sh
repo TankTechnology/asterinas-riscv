@@ -958,20 +958,36 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
-    if [[ "$PROFILE" == browser-web ]]; then
-        finalize_browser_startup_caches "$stage"
+    if [[ "$PROFILE" == browser-web || "$PROFILE" == browser-m5 ]]; then
+        # Both browser profiles must enter the guest with the target-owned
+        # systemd/sysusers, dynamic-linker, journal, and font caches already
+        # converged.  Otherwise systemd repeats these maintenance jobs on
+        # every boot; on the software-emulated RISC-V path ldconfig can hold
+        # sysinit for several minutes before logind is even scheduled.
+        #
+        # The configure helper is also sourced by a lightweight unit test
+        # with a skeletal stage (and consequently no target systemd binary).
+        # Real builds always have the binary after package installation; fail
+        # closed if a real workspace somehow does not.
+        if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
+            finalize_browser_startup_caches "$stage"
+        elif [[ -d "$WORK_DIR/source-metadata" ]]; then
+            die "target systemd-sysusers is missing; cannot finalize browser startup caches"
+        fi
     fi
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
     [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
         die "qemu-riscv64-static remains in staged rootfs"
-    if [[ "$PROFILE" == browser-web ]]; then
+    if [[ "$PROFILE" == browser-web || "$PROFILE" == browser-m5 ]]; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
-        python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-            >"$WORK_DIR/browser-startup-cache-check.log"
-        grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
-            "$WORK_DIR/browser-startup-cache-check.log" ||
-            die "browser startup cache checker did not emit its exact PASS"
+        if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
+            python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                >"$WORK_DIR/browser-startup-cache-check.log"
+            grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
+                "$WORK_DIR/browser-startup-cache-check.log" ||
+                die "browser startup cache checker did not emit its exact PASS"
+        fi
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 }
