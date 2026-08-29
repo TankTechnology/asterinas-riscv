@@ -96,6 +96,13 @@ the bounded Asterinas reboot timer and fresh U-Boot recovery epoch are used
 instead. `gate` performs two boots with one persistence nonce, and `handoff`
 is allowed only after that physical result passes.
 
+The physical boot transport is serial YMODEM for the compressed current
+kernel and Stage1, plus a read-only, CRC-checked load of
+`eic7700-milkv-megrez.dtb` from eMMC partition 1. The board's U-Boot GMAC at
+`0x50400000` is not the RJ45 path used by Asterinas, so TFTP is deliberately
+not used for inventory, the two-boot gate, or handoff. The network installer
+starts only after Asterinas owns its verified RJ45 GMAC.
+
 Use one stable evidence directory:
 
 ```bash

@@ -8,6 +8,7 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import lzma
 import os
 from pathlib import Path
 import subprocess
@@ -1405,6 +1406,55 @@ class PersistentShellPhysicalIoTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertEqual(list(self.directory.glob(".staged.tmp")), [])
 
+    def test_physical_boot_uses_ymodem_and_crc_checked_mmc_dtb(self) -> None:
+        artifacts = _artifact_fixture(self.directory)
+        plan = _valid_plan(artifacts)
+
+        arguments = physical_io.ymodem_boot_arguments(
+            plan,
+            plan.artifact_map(),
+            self.directory,
+            initrd_name="verifier.cpio",
+            initrd_crc32="1234abcd",
+            compressed_kernel_crc32="deadbeef",
+            bootargs=plan.gate_bootargs,
+        )
+
+        self.assertEqual(arguments.load_transport, "ymodem")
+        self.assertEqual(arguments.ymodem_directory, self.directory)
+        self.assertEqual(arguments.booti, "kernel.lzma")
+        self.assertEqual(arguments.initrd, "verifier.cpio")
+        self.assertEqual(arguments.dtb, "eic7700-milkv-megrez.dtb")
+        self.assertEqual(arguments.booti_compressed_crc32, "deadbeef")
+        self.assertEqual(
+            arguments.booti_uncompressed_size,
+            plan.artifact_map()["megrez_kernel"].size,
+        )
+        self.assertEqual(
+            arguments.expected_crc32,
+            {
+                "booti": plan.artifact_map()["megrez_kernel"].crc32,
+                "initrd": "1234abcd",
+                "dtb": plan.artifact_map()["megrez_dtb"].crc32,
+            },
+        )
+        self.assertFalse(hasattr(arguments, "tftp_server_address"))
+
+    def test_ymodem_kernel_is_verified_compressed_payload(self) -> None:
+        artifacts = _artifact_fixture(self.directory)
+        kernel_path = Path(
+            {artifact.name: artifact for artifact in artifacts}["megrez_kernel"].path
+        )
+        kernel = FrozenArtifact.from_path("megrez_kernel", kernel_path)
+
+        crc32 = physical_io.prepare_ymodem_kernel(kernel, self.directory)
+        compressed = self.directory / "kernel.lzma"
+
+        self.assertEqual(
+            lzma.decompress(compressed.read_bytes()), kernel_path.read_bytes()
+        )
+        self.assertEqual(crc32, f"{zlib.crc32(compressed.read_bytes()):08x}")
+
     def test_publication_invalidates_stale_result_and_writes_result_last(self) -> None:
         output = self.directory / "output"
         output.mkdir()
@@ -1625,6 +1675,48 @@ class PersistentShellCliTests(unittest.TestCase):
                 operations.close()
         open_serial.assert_not_called()
 
+    def test_inventory_verifier_uses_serial_and_mmc_without_tftp(self) -> None:
+        output = Path(self.target_directory.name) / "inventory-transport"
+        output.mkdir(mode=0o700)
+        operations = shell_cli_io.InventoryBoardOperations(
+            self.plan,
+            _valid_permit(self.plan),
+            device="/dev/ttyUSB0",
+            interface="enp12s0",
+            output=output,
+            deadline=660.0,
+            prior_inventory=None,
+            install_result=None,
+        )
+        session = mock.Mock()
+        session.wait_for_uboot_prompt.return_value = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        operations._session = session
+
+        def build_verifier(*arguments: object) -> None:
+            Path(arguments[2]).write_bytes(b"verifier")
+
+        try:
+            with (
+                mock.patch.object(
+                    shell_cli_io, "build_verify_archive", side_effect=build_verifier
+                ),
+                mock.patch.object(
+                    shell_cli_io,
+                    "prepare_ymodem_kernel",
+                    return_value="deadbeef",
+                ),
+                mock.patch.object(shell_cli_io, "boot_loaded_artifacts") as boot,
+            ):
+                operations.run_verifier("console=ttyS0 init=/init")
+        finally:
+            operations.close()
+
+        arguments = boot.call_args.args[1]
+        self.assertEqual(arguments.load_transport, "ymodem")
+        self.assertEqual(arguments.booti_compressed_crc32, "deadbeef")
+        self.assertEqual(arguments.dtb, "eic7700-milkv-megrez.dtb")
+        self.assertFalse(hasattr(arguments, "tftp_server_address"))
+
 
 class PersistentShellDocumentationTests(unittest.TestCase):
     def test_operator_docs_freeze_safe_order_and_scope(self) -> None:
@@ -1645,6 +1737,9 @@ class PersistentShellDocumentationTests(unittest.TestCase):
                 self.assertIn("Asterinas-only", text)
                 self.assertIn("must not boot Linux", text)
                 self.assertIn("short EIC7700X watchdog", text)
+                self.assertIn("YMODEM", text)
+                self.assertIn("eic7700-milkv-megrez.dtb", text)
+                self.assertIn("U-Boot GMAC", text)
                 self.assertIn("systemd, network, and desktop", text)
                 self.assertIn(
                     "picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0",
