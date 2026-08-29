@@ -20,7 +20,12 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_debian_install import InstallError, run_network_install
+from tools.riscv import megrez_debian_install
+from tools.riscv.megrez_debian_install import (
+    InstallError,
+    NetworkInstallRequest,
+    run_network_install,
+)
 from tools.riscv.megrez_board_session import validate_recovery_epoch
 from tools.riscv.megrez_preboard import PreboardPermit
 
@@ -214,7 +219,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
-    def test_automatic_recovery_retries_without_rebuilding_chunks(self) -> None:
+    def test_automatic_recovery_never_reuses_the_same_permit(self) -> None:
         builds: list[str] = []
         runs: list[tuple[str, ...]] = []
 
@@ -234,30 +239,110 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
 
         def run(command: list[str], **_options: object):
             runs.append(tuple(command))
-            return subprocess.CompletedProcess(
-                command, 3 if len(runs) == 1 else 0, "", ""
+            return subprocess.CompletedProcess(command, 3, "", "")
+
+        with self.assertRaisesRegex(InstallError, "board.*exit 3"):
+            run_network_install(
+                self.plan,
+                self.permit_path,
+                "/dev/ttyUSB0",
+                self.output,
+                self.base,
+                self.tftp,
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
+                artifact_validator=self._artifacts,
+                git_identity=lambda _repository: "c" * 40,
+                build_installer=build,
+                server_factory=server,
+                run_command=run,
+                repository_root=self.repository,
             )
 
-        result = run_network_install(
-            self.plan,
-            self.permit_path,
-            "/dev/ttyUSB0",
-            self.output,
-            self.base,
-            self.tftp,
-            "http://10.100.19.216:8080/debian-root.ext2.gz",
-            artifact_validator=self._artifacts,
-            git_identity=lambda _repository: "c" * 40,
-            build_installer=build,
-            server_factory=server,
-            run_command=run,
-            repository_root=self.repository,
+        self.assertEqual(builds, ["build"])
+        self.assertEqual(len(runs), 1)
+
+    def test_legacy_browser_install_uses_the_shared_request_core(self) -> None:
+        captured: list[NetworkInstallRequest] = []
+        original = megrez_debian_install._run_network_install_request
+
+        def capture(request: NetworkInstallRequest, *args: object, **kwargs: object):
+            captured.append(request)
+            return original(request, *args, **kwargs)
+
+        def build(
+            _base: Path,
+            _root: Path,
+            output: Path,
+            _root_hash: str,
+            _root_url: str,
+        ) -> None:
+            output.write_bytes(b"installer")
+
+        @contextmanager
+        def server(_address: str, _port: int, _directory: Path):
+            yield
+
+        with mock.patch.object(
+            megrez_debian_install,
+            "_run_network_install_request",
+            side_effect=capture,
+        ):
+            run_network_install(
+                self.plan,
+                self.permit_path,
+                "/dev/ttyUSB0",
+                self.output,
+                self.base,
+                self.tftp,
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
+                artifact_validator=self._artifacts,
+                git_identity=lambda _repository: "c" * 40,
+                build_installer=build,
+                server_factory=server,
+                run_command=lambda command, **_options: subprocess.CompletedProcess(
+                    command, 0, "", ""
+                ),
+                repository_root=self.repository,
+            )
+
+        self.assertEqual(len(captured), 1)
+        request = captured[0]
+        self.assertEqual(request.root_sha256, self.identities["root_image"].sha256)
+        self.assertEqual(request.kernel_crc32, self.identities["kernel"].crc32)
+        self.assertEqual(request.megrez_dtb_crc32, self.identities["megrez_dtb"].crc32)
+        self.assertEqual(request.installer_base, self.base)
+
+    def test_request_rejects_missing_write_identity_and_raw_disk_target(self) -> None:
+        request = NetworkInstallRequest(
+            plan_sha256=self.plan.plan_sha256,
+            git_commit="c" * 40,
+            kernel=Path(self.identities["kernel"].path),
+            kernel_size=Path(self.identities["kernel"].path).stat().st_size,
+            kernel_crc32=self.identities["kernel"].crc32,
+            installer_base=self.base,
+            megrez_dtb_crc32=self.identities["megrez_dtb"].crc32,
+            root_image=Path(self.identities["root_image"].path),
+            root_sha256=self.identities["root_image"].sha256,
+            reboot_after=600,
+            bootargs=(
+                "console=ttyS0 init=/init asterinas.mmc_write_partition2 "
+                f"asterinas.debian_install_sha256={self.identities['root_image'].sha256} "
+                "asterinas.reboot_after=600"
+            ),
         )
 
-        self.assertTrue(result.passed)
-        self.assertEqual(builds, ["build"])
-        self.assertEqual(len(runs), 2)
-        self.assertEqual(runs[0], runs[1])
+        request.validate()
+        for bootargs in (
+            request.bootargs.replace("asterinas.mmc_write_partition2", ""),
+            request.bootargs.replace(
+                "asterinas.mmc_write_partition2", "root=/dev/mmcblk0"
+            ),
+            request.bootargs.replace(request.root_sha256, "f" * 64),
+        ):
+            with self.subTest(bootargs=bootargs), self.assertRaises(InstallError):
+                NetworkInstallRequest(
+                    **{**request.__dict__, "bootargs": bootargs}
+                ).validate()
 
     def test_invalid_permit_url_or_git_stops_before_build_and_serial(self) -> None:
         calls: list[str] = []

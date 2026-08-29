@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Any, Protocol
 
@@ -15,9 +17,16 @@ from tools.riscv.megrez_board_session import PartitionGeometry
 from tools.riscv.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
     P2_START_LBA,
+    FrozenArtifact,
     PersistentShellPlan,
 )
 from tools.riscv.megrez_debian_shell_evidence import ShellPermit
+from tools.riscv.megrez_debug_contract import StageResult
+from tools.riscv.megrez_debian_install import (
+    INSTALLER_FILENAME,
+    NetworkInstallRequest,
+)
+from tools.riscv.megrez_preboard import _PinnedPermitOutput
 
 
 _MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
@@ -42,6 +51,8 @@ _READY_MARKER = (
     "DEBIAN_INVENTORY_READY target=/dev/mmcblk0p2 "
     f"bytes={_PARTITION_SIZE_BYTES} write=disabled"
 )
+InstallRunner = Callable[[NetworkInstallRequest], StageResult]
+ArtifactReader = Callable[[str, Path], FrozenArtifact]
 
 
 class InventoryError(ValueError):
@@ -257,6 +268,99 @@ def verifier_bootargs(plan: PersistentShellPlan) -> str:
     )
 
 
+def installer_bootargs(plan: PersistentShellPlan, root_sha256: str) -> str:
+    """Returns the exact partition-2 write arguments for the long installer."""
+
+    plan.validate()
+    _sha256(root_sha256, "root SHA-256")
+    if root_sha256 != plan.artifact_map()["root_image"].sha256:
+        raise InventoryError("installer root identity differs from the plan")
+    return " ".join(
+        (
+            "console=ttyS0",
+            "cpu_no_boost_1_6ghz",
+            "loglevel=info",
+            "init=/init",
+            "asterinas.net=eic7700-rj45,10.100.19.200/21",
+            ("asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e"),
+            "asterinas.mmc_write_partition2",
+            f"asterinas.debian_install_sha256={root_sha256}",
+            f"asterinas.reboot_after={plan.long_operation_reboot_after}",
+        )
+    )
+
+
+def install_if_needed(
+    plan: PersistentShellPlan,
+    permit: ShellPermit,
+    inventory: InventoryResult,
+    output: Path,
+    *,
+    repository: Path,
+    run: InstallRunner,
+    artifact_reader: ArtifactReader = FrozenArtifact.from_path,
+) -> StageResult:
+    """Skips a matching root or consumes one permit for one install attempt."""
+
+    with _PinnedPermitOutput(output / "result.json", repository) as publication:
+        publication.invalidate()
+        _validate_install_inputs(plan, permit, inventory)
+        if inventory.status == "matching":
+            result = StageResult(
+                1,
+                "install",
+                True,
+                "already-matching",
+                plan.plan_sha256,
+                ("inventory.json",),
+            )
+            result.validate()
+            publication.write(result.canonical_bytes())
+            return result
+        if inventory.status != "needs-install":
+            raise InventoryError("only a measured mismatch may authorize installation")
+
+        artifacts = plan.artifact_map()
+        for name in ("megrez_kernel", "installer_base", "megrez_dtb", "root_image"):
+            if artifact_reader(name, Path(artifacts[name].path)) != artifacts[name]:
+                raise InventoryError(f"install artifact changed: {name}")
+        kernel = artifacts["megrez_kernel"]
+        request = NetworkInstallRequest(
+            plan_sha256=plan.plan_sha256,
+            git_commit=plan.git_commit,
+            kernel=Path(kernel.path),
+            kernel_size=kernel.size,
+            kernel_crc32=kernel.crc32,
+            installer_base=Path(artifacts["installer_base"].path),
+            megrez_dtb_crc32=artifacts["megrez_dtb"].crc32,
+            root_image=Path(artifacts["root_image"].path),
+            root_sha256=artifacts["root_image"].sha256,
+            reboot_after=plan.long_operation_reboot_after,
+            bootargs=installer_bootargs(plan, artifacts["root_image"].sha256),
+        )
+        request.validate()
+        permit_sha256 = hashlib.sha256(permit.canonical_bytes()).hexdigest()
+        inventory_sha256 = hashlib.sha256(inventory.canonical_bytes()).hexdigest()
+        attempt = StageResult(
+            1,
+            "install",
+            False,
+            "attempt-started",
+            plan.plan_sha256,
+            (
+                f"permit-sha256:{permit_sha256}",
+                f"inventory-sha256:{inventory_sha256}",
+                f"root-sha256:{request.root_sha256}",
+            ),
+        )
+        with _PinnedPermitOutput(output / "attempt.json", repository) as attempt_file:
+            attempt_file.write(attempt.canonical_bytes())
+            result = run(request)
+        _validate_install_result(plan, result)
+        publication.write(result.canonical_bytes())
+        return result
+
+
 def run_inventory(
     plan: PersistentShellPlan,
     permit: ShellPermit,
@@ -317,6 +421,38 @@ def run_inventory(
     result.validate()
     operations.publish(result)
     return result
+
+
+def _validate_install_inputs(
+    plan: PersistentShellPlan,
+    permit: ShellPermit,
+    inventory: InventoryResult,
+) -> None:
+    _validate_prerequisites(plan, permit)
+    inventory.validate()
+    permit_sha256 = hashlib.sha256(permit.canonical_bytes()).hexdigest()
+    root_sha256 = plan.artifact_map()["root_image"].sha256
+    if (
+        inventory.plan_sha256 != plan.plan_sha256
+        or inventory.permit_sha256 != permit_sha256
+        or inventory.expected_root_sha256 != root_sha256
+    ):
+        raise InventoryError("inventory differs from the current plan and permit")
+    _validate_geometry(inventory.partitions, allow_empty=False)
+
+
+def _validate_install_result(plan: PersistentShellPlan, result: StageResult) -> None:
+    if not isinstance(result, StageResult):
+        raise InventoryError("installer returned an invalid result type")
+    result.validate()
+    if (
+        result.stage != "install"
+        or result.passed is not True
+        or result.reason != "install-pass"
+        or result.plan_sha256 != plan.plan_sha256
+        or result.evidence != ("installer.serial.log", INSTALLER_FILENAME)
+    ):
+        raise InventoryError("installer result differs from the frozen request")
 
 
 def _validate_prerequisites(plan: PersistentShellPlan, permit: ShellPermit) -> None:
