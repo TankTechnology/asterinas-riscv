@@ -248,7 +248,7 @@ esac
         )
         actions = Path(environment["ASTERINAS_M6_ACTIONS"]).read_text(encoding="utf-8")
         self.assertIn("set_desktop 1\n", actions)
-        self.assertIn("search --onlyvisible --class Netsurf-gtk\n", actions)
+        self.assertIn("search --onlyvisible --class NetSurf-bin\n", actions)
         self.assertNotIn("windowmap --sync 42\n", actions)
 
     def test_guest_evidence_distinguishes_failed_and_disabled_javascript(

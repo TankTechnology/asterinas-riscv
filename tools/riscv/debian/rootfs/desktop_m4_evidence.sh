@@ -142,7 +142,7 @@ ready() {
     probe xterm pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
     probe netsurf-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
-        xdotool search --onlyvisible --class Netsurf-gtk \
+        xdotool search --onlyvisible --class NetSurf-bin \
         >/dev/null || return 1
     probe xterm-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
@@ -177,7 +177,7 @@ while ! ready; do
 done
 
 if [[ "${ASTERINAS_DESKTOP_SHOW_OVERVIEW:-0}" == 1 ]]; then
-    move_single_window_to_overview_workspace Netsurf-gtk overview-browser
+    move_single_window_to_overview_workspace NetSurf-bin overview-browser
     move_single_window_to_overview_workspace XTerm overview-terminal
     sleep 1
 fi
