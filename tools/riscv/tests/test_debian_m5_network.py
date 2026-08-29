@@ -112,6 +112,12 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             ),
         )
 
+    def test_guest_network_deadline_matches_the_qemu_contract(self) -> None:
+        self.assertIn(
+            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"',
+            EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+        )
+
     def test_native_megrez_tcp_probe_validates_streamed_stress_response(self) -> None:
         executable = self.directory / "megrez-tcp-stress-self-test"
         compile_result = subprocess.run(
@@ -525,22 +531,24 @@ exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
-        output=
         previous=
+        output_count=0
         for argument in "$@"; do
-            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            if [ "$previous" = --output ]; then
+                output_count=$((output_count + 1))
+                if [ "${ASTERINAS_M5_FIXTURE_SHORT:-0}" = 1 ]; then
+                    head -c 65535 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >"$argument"
+                elif [ "${ASTERINAS_M5_FIXTURE_CORRUPT:-0}" = 1 ]; then
+                    printf X >"$argument"
+                    tail -c +2 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >>"$argument"
+                else
+                    cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                fi
+            fi
             previous="$argument"
         done
-        [ -n "$output" ] || exit 95
+        [ "$output_count" -gt 0 ] || exit 95
         [ "${ASTERINAS_M5_FIXTURE_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_FIXTURE_STATUS"
-        if [ "${ASTERINAS_M5_FIXTURE_SHORT:-0}" = 1 ]; then
-            head -c 65535 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >"$output"
-        elif [ "${ASTERINAS_M5_FIXTURE_CORRUPT:-0}" = 1 ]; then
-            printf X >"$output"
-            tail -c +2 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >>"$output"
-        else
-            cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$output"
-        fi
         ;;
     *http://www.baidu.com/*)
         [ "${ASTERINAS_M5_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_CLOCK_STATUS"
@@ -649,17 +657,16 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
         curl_calls = curl_log.read_text().splitlines()
-        self.assertEqual(len(curl_calls), 23)
-        self.assertTrue(all(FIXTURE_PATH in call for call in curl_calls[:20]))
-        self.assertTrue(all("--proxy" not in call for call in curl_calls[:20]))
-        self.assertIn("--head", curl_calls[20])
-        self.assertIn("http://www.baidu.com/", curl_calls[20])
-        self.assertIn("https://www.baidu.com/", curl_calls[21])
-        self.assertIn("result.png", curl_calls[22])
+        self.assertEqual(len(curl_calls), 4)
+        self.assertEqual(curl_calls[0].count(FIXTURE_PATH), 20)
+        self.assertEqual(curl_calls[0].count("--output"), 20)
+        self.assertNotIn("--proxy", curl_calls[0])
+        self.assertIn("--head", curl_calls[1])
+        self.assertIn("http://www.baidu.com/", curl_calls[1])
+        self.assertIn("https://www.baidu.com/", curl_calls[2])
+        self.assertIn("result.png", curl_calls[3])
         self.assertTrue(
-            all(
-                "--proxy http://10.100.19.216:17893" in call for call in curl_calls[20:]
-            )
+            all("--proxy http://10.100.19.216:17893" in call for call in curl_calls[1:])
         )
         self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
         self.assertEqual(
@@ -875,13 +882,16 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
-        output=
         previous=
+        output_count=0
         for argument in "$@"; do
-            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                output_count=$((output_count + 1))
+            fi
             previous="$argument"
         done
-        cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$output"
+        [ "$output_count" -gt 0 ] || exit 95
         ;;
     *) printf '200\t10.0.2.15' ;;
 esac
@@ -921,8 +931,9 @@ esac
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
         curl_calls = curl_log.read_text().splitlines()
-        self.assertEqual(len(curl_calls), 21)
-        self.assertTrue(all(FIXTURE_PATH in call for call in curl_calls[:20]))
+        self.assertEqual(len(curl_calls), 2)
+        self.assertEqual(curl_calls[0].count(FIXTURE_PATH), 20)
+        self.assertEqual(curl_calls[0].count("--output"), 20)
         self.assertIn("https://www.baidu.com/", curl_calls[-1])
 
     def test_qemu_evidence_retries_a_transient_dns_failure(self) -> None:
@@ -952,13 +963,13 @@ printf '%s\n' '110.242.68.66 STREAM www.baidu.com'
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
-        output=
         previous=
         for argument in "$@"; do
-            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+            fi
             previous="$argument"
         done
-        cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$output"
         ;;
     *) printf '200\t10.0.2.15' ;;
 esac
@@ -1018,13 +1029,13 @@ esac
                 "curl": """#!/bin/sh
 case "$*" in
     *asterinas-network-probe.bin*)
-        output=
         previous=
         for argument in "$@"; do
-            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+            fi
             previous="$argument"
         done
-        cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$output"
         exit 0
         ;;
 esac
