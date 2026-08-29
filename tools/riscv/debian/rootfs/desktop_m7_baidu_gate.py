@@ -32,7 +32,7 @@ DESKTOP_M7_HOME_MARKER = (
     "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ "
     "variant=mobile title=baidu process=netsurf"
 )
-DESKTOP_M7_SEARCH_MARKER = "DEBIAN_BROWSER_M7_SEARCH query=asterinas state=submitted"
+DESKTOP_M7_SEARCH_MARKER = "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
 DESKTOP_M7_READY_MARKER = "DEBIAN_BROWSER_M7_READY page=baidu capture=pending"
 DESKTOP_M7_FAILURE_MARKER = b"DEBIAN_BROWSER_M7_FAIL reason="
 
