@@ -38,6 +38,10 @@ import time
 from dataclasses import dataclass
 from typing import TextIO
 
+from tools.riscv.megrez_debian_shell_physical import (
+    run_debian_shell_phase as run_debian_shell_phase,
+    shell_commands as shell_commands,
+)
 from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
 
 BAUD = 115200
@@ -58,6 +62,8 @@ FINAL_MILESTONE_MARKERS = {
     "firmware-framebuffer": "Registered firmware framebuffer",
     "installer": "DEBIAN_INSTALL_PASS",
     "verifier": "DEBIAN_VERIFY_PASS",
+    "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
+    "debian-shell-handoff": "__DEBIAN_ROOTFS_SHELL_READY__",
 }
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
