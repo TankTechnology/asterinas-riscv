@@ -140,6 +140,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
         self.assertIn("DEBIAN_INSTALL_FAIL", script)
+        self.assertIn("emit() { printf '%s\\n' \"$1\" >/dev/ttyS0; }", script)
+        self.assertNotIn('echo "DEBIAN_INSTALL_', script)
+        self.assertLess(
+            script.index("mount -t devtmpfs devtmpfs /dev"),
+            script.index('case "$cmdline"'),
+        )
         self.assertNotIn(
             f'count="{len(b"a" * 4096) // 4096}" 2>/dev/null | sha256sum',
             script,
@@ -288,6 +294,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertNotIn("mkfifo", script)
         self.assertNotIn("tee ", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
+        self.assertIn("emit() { printf '%s\\n' \"$1\" >/dev/ttyS0; }", script)
+        self.assertNotIn('echo "DEBIAN_INSTALL_', script)
+        self.assertLess(
+            script.index("mount -t devtmpfs devtmpfs /dev"),
+            script.index('case "$cmdline"'),
+        )
         self.assertLess(script.index("DEBIAN_INSTALL_PASS"), script.index("reboot -f"))
 
         for unsafe in (
