@@ -2,8 +2,6 @@
 
 import gzip
 import hashlib
-import os
-import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -256,32 +254,31 @@ class MegrezDebianInstallerTests(unittest.TestCase):
 
             self.assertEqual(output.read_bytes(), b"published")
 
-    def test_network_installer_hashes_the_exact_stream_written_to_the_root(self):
-        root_hash = hashlib.sha256(b"a" * 4096).hexdigest()
+    def test_network_installer_resumes_independently_verified_chunks(self):
+        payload = b"a" * 4096 + b"b" * 4096
+        root_hash = hashlib.sha256(payload).hexdigest()
         root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "root.ext2"
+            image.write_bytes(payload)
+            chunks = plan_chunks(image, chunk_size=4096)
 
-        script = render_network_init(root_hash, 4096, root_url).decode()
+        script = render_network_init(root_hash, len(payload), root_url, chunks).decode()
 
         self.assertIn("mkdir -p /proc /sys /dev /run", script)
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
-        self.assertIn(f"wget -T 30 -O - '{root_url}'", script)
-        self.assertIn("| gzip -dc", script)
-        self.assertLess(script.index("wget -T 30"), script.index("gzip -dc"))
-        self.assertIn('mkfifo "$hash_fifo"', script)
-        self.assertIn('sha256sum < "$hash_fifo" > "$hash_result" &', script)
-        self.assertLess(script.index("gzip -dc"), script.index('tee "$hash_fifo"'))
-        self.assertLess(
-            script.index('tee "$hash_fifo"'), script.index('dd of="$target"')
-        )
-        self.assertIn(
-            'dd of="$target" bs=1048576 iflag=fullblock conv=notrunc count=1',
-            script,
-        )
-        self.assertIn('wait "$hash_pid"', script)
-        self.assertIn(f'[ "$1" = "{root_hash}" ]', script)
-        self.assertNotIn('dd if="$target"', script)
-        self.assertIn("DEBIAN_INSTALL_FETCH_OK", script)
+        self.assertIn("done < /installer/network-chunks.tsv", script)
+        self.assertIn('dd if="$target" bs=4096 skip="$block"', script)
+        self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
+        self.assertIn('wget -T 30 -O "$download" "$url"', script)
+        self.assertIn('sha256sum "$download"', script)
+        self.assertIn('gzip -t "$download"', script)
+        self.assertIn('gzip -dc "$download" | dd of="$target" bs=4096', script)
+        self.assertIn("sync || fail sync-$index", script)
+        self.assertIn("DEBIAN_INSTALL_CHUNK_OK", script)
+        self.assertNotIn("mkfifo", script)
+        self.assertNotIn("tee ", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
         self.assertLess(script.index("DEBIAN_INSTALL_PASS"), script.index("reboot -f"))
 
@@ -292,69 +289,11 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             "http://10.100.19.216/root.ext2\nreboot",
         ):
             with self.subTest(unsafe=unsafe), self.assertRaises(InstallerError):
-                render_network_init(root_hash, 4096, unsafe)
+                render_network_init(root_hash, len(payload), unsafe, chunks)
 
-    def test_buffered_tee_pipeline_hashes_exact_bytes_and_propagates_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            tool_directory = root / "bin"
-            tool_directory.mkdir()
-            for command in ("dd", "gzip", "mkfifo", "rm", "sha256sum", "tee"):
-                (tool_directory / command).symlink_to("/usr/bin/busybox")
-            source = bytes(range(256)) * 16
-            compressed = root / "root.ext2.gz"
-            with compressed.open("wb") as compressed_file:
-                with gzip.GzipFile(
-                    filename="", mode="wb", fileobj=compressed_file, mtime=0
-                ) as archive:
-                    archive.write(source)
-            target = root / "target"
-            fifo = root / "hash.fifo"
-            result = root / "hash.result"
-            command = """
-rm -f "$FIFO" "$RESULT"
-mkfifo "$FIFO"
-sha256sum < "$FIFO" > "$RESULT" &
-hash_pid=$!
-gzip -dc "$SOURCE" | tee "$FIFO" | dd of="$TARGET" bs=1048576 iflag=fullblock conv=notrunc count=1
-pipeline_status=$?
-wait "$hash_pid"
-hash_status=$?
-[ "$pipeline_status" = 0 ] && [ "$hash_status" = 0 ]
-"""
-            environment = {
-                **os.environ,
-                "FIFO": str(fifo),
-                "RESULT": str(result),
-                "SOURCE": str(compressed),
-                "TARGET": str(target),
-                "PATH": str(tool_directory),
-            }
-
-            completed = subprocess.run(
-                ["/usr/bin/busybox", "ash", "-o", "pipefail", "-c", command],
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(target.read_bytes(), source)
-            self.assertEqual(
-                result.read_text().split(), [hashlib.sha256(source).hexdigest(), "-"]
-            )
-
-            compressed.write_bytes(compressed.read_bytes()[:-8])
-            failed = subprocess.run(
-                ["/usr/bin/busybox", "ash", "-o", "pipefail", "-c", command],
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(failed.returncode, 0)
-
-    def test_network_archive_is_deterministic_and_does_not_embed_root_chunks(self):
+    def test_network_archive_publishes_content_bound_chunks_without_embedding_them(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             base = root / "base.cpio"
@@ -362,33 +301,67 @@ hash_status=$?
             first = root / "first.cpio"
             second = root / "second.cpio"
             base.write_bytes(_archive(*_busybox_base_entries()))
-            image.write_bytes(b"a" * 4096)
+            image.write_bytes(b"a" * 4096 + b"b" * 4096)
             image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
             root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
 
-            build_network_archive(base, image, first, image_hash, root_url)
-            build_network_archive(base, image, second, image_hash, root_url)
+            build_network_archive(
+                base, image, first, image_hash, root_url, chunk_size=4096
+            )
+            build_network_archive(
+                base, image, second, image_hash, root_url, chunk_size=4096
+            )
 
             self.assertEqual(first.read_bytes(), second.read_bytes())
             entries = {entry.name: entry for entry in parse_newc(first.read_bytes())}
             self.assertIn(root_url.encode(), entries["init"].data)
-            self.assertFalse(
-                any(name.startswith("installer/chunks") for name in entries)
+            manifest = entries["installer/network-chunks.tsv"].data.decode()
+            rows = tuple(line.split("\t") for line in manifest.splitlines())
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                [row[:3] for row in rows], [["0000", "0", "1"], ["0001", "1", "1"]]
             )
+            for index, row in enumerate(rows):
+                compressed = root / row[5].rsplit("/", 1)[-1]
+                self.assertTrue(compressed.is_file())
+                self.assertEqual(
+                    hashlib.sha256(compressed.read_bytes()).hexdigest(), row[3]
+                )
+                self.assertEqual(
+                    gzip.decompress(compressed.read_bytes()),
+                    image.read_bytes()[index * 4096 : (index + 1) * 4096],
+                )
+                self.assertEqual(row[5], f"{root_url}.chunk-{index:04d}-{row[3]}.gz")
+            self.assertFalse(
+                any(name.startswith("installer/chunks/") for name in entries)
+            )
+
+            first_chunk = root / rows[0][5].rsplit("/", 1)[-1]
+            first_chunk_payload = first_chunk.read_bytes()
+            published_installer = first.read_bytes()
+            first_chunk.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(InstallerError, "identity mismatch"):
+                build_network_archive(
+                    base, image, first, image_hash, root_url, chunk_size=4096
+                )
+            self.assertEqual(first.read_bytes(), published_installer)
+            first_chunk.write_bytes(first_chunk_payload)
 
             base.write_bytes(
                 _archive(
                     *(
                         entry
                         for entry in _busybox_base_entries()
-                        if entry[0] != "usr/bin/tee"
+                        if entry[0] != "usr/bin/wget"
                     )
                 )
             )
             with self.assertRaisesRegex(
                 InstallerError, "missing executable installer runtime"
             ):
-                build_network_archive(base, image, first, image_hash, root_url)
+                build_network_archive(
+                    base, image, first, image_hash, root_url, chunk_size=4096
+                )
             self.assertLess(first.stat().st_size, base.stat().st_size + 16 * 1024)
 
     def test_verify_init_reads_exact_root_without_write_authority(self):

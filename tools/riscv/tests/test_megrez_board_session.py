@@ -973,6 +973,43 @@ class BootTransactionTests(unittest.TestCase):
         )
         physical_session.note_milestone.assert_called_once_with(current_boot)
 
+    def test_incomplete_install_returns_distinctly_after_automatic_recovery(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.milestones = {}
+        physical_session.log = mock.Mock()
+        physical_session.fd = -1
+
+        def record(text: str) -> None:
+            if "Enter riscv_boot" in text:
+                physical_session.milestones["kernel_enter"] = 1.0
+
+        physical_session.note_milestone.side_effect = record
+        recovery = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value="Enter riscv_boot\n"
+            ),
+            mock.patch.object(board, "read_available", return_value=recovery),
+            mock.patch.object(board.time, "monotonic", side_effect=(0, 0, 0, 151)),
+            mock.patch.object(board.os, "close"),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "installer",
+                    "--milestone-timeout",
+                    "150",
+                    "--require-recovery",
+                ]
+            )
+
+        self.assertEqual(result, board.INCOMPLETE_RECOVERED_EXIT)
+
     def test_framebuffer_handoff_is_complete_before_booti(self):
         events: list[str] = []
         session = mock.Mock()
