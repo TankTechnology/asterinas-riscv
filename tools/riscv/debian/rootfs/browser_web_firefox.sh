@@ -33,7 +33,6 @@ marker() {
     printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
 }
 
-exec >>"$STDERR_LOG" 2>&1
 printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
 if [[ ! -S /tmp/.X11-unix/X0 ]]; then
     /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
@@ -50,4 +49,4 @@ export MOZ_AVOID_OPENGL_ALTOGETHER=1
 printf 'ASTERINAS_FIREFOX_WEB_EXEC pid=%s\n' "$$"
 marker BOOT_FIREFOX_EXEC
 exec /usr/bin/firefox-esr --no-remote --new-instance --marionette \
-    --profile "$PROFILE" "$START_URL"
+    --profile "$PROFILE" "$START_URL" >>"$STDERR_LOG" 2>&1
