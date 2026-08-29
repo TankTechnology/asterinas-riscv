@@ -73,6 +73,16 @@ focused tests.
   allocated CPU buffer was `0xfff00000`; subtracting the Linux IOVA offset
   without an SMMU mapping made the controller access the wrong address. This
   failure is the RED evidence for the identity-DMA correction.
+- A later attempt with the same immutable artifacts reached `Enter riscv_boot`
+  and then stalled while initializing frame metadata, before component init
+  could arm `asterinas.reboot_after`. This exposed a recovery-timing gap rather
+  than an SDHCI regression: the normal Asterinas recovery timer cannot recover
+  code that hangs before it is initialized. The board workflow now has an
+  opt-in pre-`booti` EIC7700X DesignWare watchdog. It validates component type
+  and control-register readback, uses interrupt-then-reset mode, and recognizes
+  a returned U-Boot banner as a failed current attempt. Host tests cover the
+  exact command order and fail-closed behavior; physical watchdog recovery is
+  not claimed until the next bounded board run.
 
 ---
 
