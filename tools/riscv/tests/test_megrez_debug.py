@@ -502,6 +502,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
                 "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz "
                 "loglevel=info init=/init "
                 "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+                "asterinas.mmc_write_partition2 "
                 "asterinas.reboot_after=600 -- --root-init=systemd"
             ),
             smp=4,
@@ -566,6 +567,22 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
                 invalid.validate()
+
+    def test_schema_two_requires_exactly_one_partition_two_write_gate(self) -> None:
+        plan = self._plan()
+
+        for bootargs in (
+            plan.bootargs.replace("asterinas.mmc_write_partition2 ", ""),
+            plan.bootargs.replace(
+                "asterinas.mmc_write_partition2 ",
+                "asterinas.mmc_write_partition2 asterinas.mmc_write_partition2 ",
+            ),
+        ):
+            with (
+                self.subTest(bootargs=bootargs),
+                self.assertRaisesRegex(DebugContractError, "partition-2 write gate"),
+            ):
+                replace(plan, bootargs=bootargs).validate()
 
     def test_schema_one_canonical_contract_remains_unchanged(self) -> None:
         legacy = MegrezDebugPlanTests()
@@ -634,6 +651,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             bootargs=(
                 "console=tty0 console=ttyS0 loglevel=info init=/init "
                 "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+                "asterinas.mmc_write_partition2 "
                 "asterinas.reboot_after=600 -- --root-init=systemd"
             ),
             marker=None,

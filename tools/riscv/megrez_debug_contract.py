@@ -285,6 +285,13 @@ class DebugPlan:
         token = f"asterinas.reboot_after={self.reboot_after}"
         if self.bootargs.split().count(token) != 1:
             raise DebugContractError("bootargs do not match automatic reboot interval")
+        if (
+            self.schema_version == 2
+            and self.bootargs.split().count("asterinas.mmc_write_partition2") != 1
+        ):
+            raise DebugContractError(
+                "Debian browser bootargs require one partition-2 write gate"
+            )
 
     def to_dict(self) -> dict[str, object]:
         self.validate()
