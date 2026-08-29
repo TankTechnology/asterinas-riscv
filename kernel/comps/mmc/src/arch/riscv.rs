@@ -6,14 +6,20 @@ use fdt::{Fdt, node::FdtNode};
 use ostd::{
     arch::boot::DEVICE_TREE,
     io::IoMem,
-    mm::{dma::DmaWindow, io::VmIoOnce},
+    mm::{
+        HasPaddr, HasSize, PAGE_SIZE,
+        dma::{DmaCoherent, DmaWindow},
+        io::{VmIo, VmIoOnce},
+    },
 };
 
 use crate::{
     card::{Card, HostController, Response},
     sdhci::{
-        Command, HostError, Register, ResponseType, decode_command_failure, decode_data_failure,
-        eic7700_core_clock_config,
+        Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
+        SdmaInterrupt, SdmaTransfer, classify_sdma_interrupt, decode_command_failure,
+        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary, sdma_host_control,
+        sdma_v4_control, split_sdma_address, supports_sdma,
     },
 };
 
@@ -50,6 +56,7 @@ const PRESENT_COMMAND_INHIBIT: u32 = 1 << 0;
 const PRESENT_DATA_INHIBIT: u32 = 1 << 1;
 const INTERRUPT_COMMAND_COMPLETE: u32 = 1 << 0;
 const INTERRUPT_TRANSFER_COMPLETE: u32 = 1 << 1;
+const INTERRUPT_DMA: u32 = 1 << 3;
 const INTERRUPT_BUFFER_WRITE_READY: u32 = 1 << 4;
 const INTERRUPT_BUFFER_READ_READY: u32 = 1 << 5;
 const INTERRUPT_ERROR: u32 = 1 << 15;
@@ -308,13 +315,26 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         IoMem::acquire(config.mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
     let clock_mmio =
         IoMem::acquire(config.clock_mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
-    let mut host = MmioHost { mmio, clock_mmio };
+    let mut host = MmioHost {
+        mmio,
+        clock_mmio,
+        sdma: None,
+    };
     host.validate_handoff().map_err(ProbeError::Host)?;
-    ostd::info!(
-        "[mmc] controller {:#x} irq={} bounded-pio",
-        config.mmio_range.start,
-        config.interrupt
-    );
+    match host.enable_sdma(config.dma_window) {
+        Ok(()) => ostd::info!(
+            "[mmc] controller {:#x} irq={} sdma boundary={}",
+            config.mmio_range.start,
+            config.interrupt,
+            SDMA_BOUNDARY_BYTES
+        ),
+        Err(error) => ostd::warn!(
+            "[mmc] controller {:#x} irq={} bounded-pio-fallback reason={:?}",
+            config.mmio_range.start,
+            config.interrupt,
+            error
+        ),
+    }
     let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
     let mut sector0 = [0u8; 512];
     card.read_sector(&mut host, 0, &mut sector0)
@@ -333,9 +353,52 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
 pub(super) struct MmioHost {
     mmio: IoMem,
     clock_mmio: IoMem,
+    sdma: Option<SdmaBuffer>,
+}
+
+struct SdmaBuffer {
+    memory: DmaCoherent,
+    device_start: usize,
 }
 
 impl MmioHost {
+    fn enable_sdma(&mut self, window: DmaWindow) -> Result<(), HostError> {
+        let capabilities = self.read32(Register::Capabilities.offset())?;
+        if !supports_sdma(capabilities) {
+            return Err(HostError::Unsupported);
+        }
+        let host_control2 = sdma_v4_control(self.read16(Register::HostControl2.offset())?)?;
+        self.write16(Register::HostControl2.offset(), host_control2)?;
+        let cpu_end = window
+            .cpu_start()
+            .checked_add(window.size())
+            .ok_or(HostError::Unsupported)?;
+        let memory = DmaCoherent::alloc_in(
+            SDMA_BOUNDARY_BYTES / PAGE_SIZE,
+            false,
+            window.cpu_start()..cpu_end,
+        )
+        .and_then(DmaCoherent::into_uncached)
+        .map_err(|_| HostError::Unsupported)?;
+        let physical_end = memory
+            .paddr()
+            .checked_add(memory.size())
+            .ok_or(HostError::Unsupported)?;
+        let device_range = window
+            .translate(memory.paddr()..physical_end)
+            .ok_or(HostError::Unsupported)?;
+        if device_range.len() != SDMA_BOUNDARY_BYTES
+            || !device_range.start.is_multiple_of(SDMA_BOUNDARY_BYTES)
+        {
+            return Err(HostError::Unsupported);
+        }
+        self.sdma = Some(SdmaBuffer {
+            memory,
+            device_start: device_range.start,
+        });
+        Ok(())
+    }
+
     fn validate_handoff(&self) -> Result<(), HostError> {
         let version = self.read16(HOST_VERSION)?;
         if version == 0 || version == u16::MAX {
@@ -419,6 +482,74 @@ impl MmioHost {
             spin_loop();
         }
         Err(HostError::Timeout)
+    }
+
+    fn submit_sdma(&mut self, command: Command, length: usize) -> Result<(), HostError> {
+        let device_start = self
+            .sdma
+            .as_ref()
+            .ok_or(HostError::Unsupported)?
+            .device_start;
+        let device_end = device_start
+            .checked_add(length)
+            .ok_or(HostError::Unsupported)?;
+        let transfer = SdmaTransfer::new(command, device_start..device_end)?;
+        self.wait_clear(
+            Register::PresentState.offset(),
+            PRESENT_COMMAND_INHIBIT | PRESENT_DATA_INHIBIT,
+        )?;
+        self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
+        self.write8(HOST_CONTROL, sdma_host_control(self.read8(HOST_CONTROL)?))?;
+        self.write_sdma_address(transfer.system_address as u64)?;
+        self.write16(Register::BlockSize.offset(), transfer.block_size)?;
+        self.write16(BLOCK_COUNT, transfer.block_count)?;
+        // RockOS U-Boot leaves this controller in SDHCI v4 mode, where 0x00
+        // is the 32-bit block-count register rather than the legacy SDMA
+        // system-address register. Mirror its compatibility write.
+        self.write16(Register::SystemAddress.offset(), transfer.block_count)?;
+        self.write16(Register::TransferMode.offset(), transfer.transfer_mode)?;
+        self.write32(Register::Argument.offset(), command.argument)?;
+        self.write16(Register::Command.offset(), command.command_bits())?;
+        self.wait_command_complete(command.index)?;
+        self.wait_sdma(transfer.system_address as u64)
+    }
+
+    fn wait_sdma(&self, mut system_address: u64) -> Result<(), HostError> {
+        for _ in 0..POLL_BUDGET {
+            let status = self.read32(Register::InterruptStatus.offset())?;
+            match classify_sdma_interrupt(status) {
+                Ok(SdmaInterrupt::Pending) => spin_loop(),
+                Ok(SdmaInterrupt::Complete) => {
+                    self.write32(
+                        Register::InterruptStatus.offset(),
+                        status & (INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA),
+                    )?;
+                    return Ok(());
+                }
+                Ok(SdmaInterrupt::Boundary) => {
+                    self.write32(Register::InterruptStatus.offset(), INTERRUPT_DMA)?;
+                    system_address = next_sdma_boundary(system_address).ok_or(HostError::Dma)?;
+                    self.write_sdma_address(system_address)?;
+                }
+                Err(error) => {
+                    self.write32(Register::InterruptStatus.offset(), status)?;
+                    ostd::error!(
+                        "[mmc] SDMA failed: status={:#x} address={:#x} error={:?}",
+                        status,
+                        system_address,
+                        error
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        Err(HostError::Timeout)
+    }
+
+    fn write_sdma_address(&self, address: u64) -> Result<(), HostError> {
+        let (low, high) = split_sdma_address(address);
+        self.write32(Register::SdmaAddress.offset(), low)?;
+        self.write32(Register::SdmaAddressHigh.offset(), high)
     }
 
     fn read8(&self, offset: usize) -> Result<u8, HostError> {
@@ -600,6 +731,48 @@ impl HostController for MmioHost {
     fn reset_data_line(&mut self) {
         let _ = self.write8(Register::SoftwareReset.offset(), RESET_DATA);
     }
+
+    fn max_blocks_per_command(&self) -> usize {
+        if self.sdma.is_some() {
+            SDMA_BOUNDARY_BYTES / 512
+        } else {
+            u16::MAX as usize
+        }
+    }
+
+    fn try_read_blocks(&mut self, command: Command, output: &mut [u8]) -> Result<bool, HostError> {
+        if self.sdma.is_none() {
+            return Ok(false);
+        }
+        if command.data != Some(DataDirection::Read) {
+            return Err(HostError::Unsupported);
+        }
+        self.submit_sdma(command, output.len())?;
+        self.sdma
+            .as_ref()
+            .unwrap()
+            .memory
+            .read_bytes(0, output)
+            .map_err(|_| HostError::Dma)?;
+        Ok(true)
+    }
+
+    fn try_write_blocks(&mut self, command: Command, data: &[u8]) -> Result<bool, HostError> {
+        if self.sdma.is_none() {
+            return Ok(false);
+        }
+        if command.data != Some(DataDirection::Write) {
+            return Err(HostError::Unsupported);
+        }
+        self.sdma
+            .as_ref()
+            .unwrap()
+            .memory
+            .write_bytes(0, data)
+            .map_err(|_| HostError::Dma)?;
+        self.submit_sdma(command, data.len())?;
+        Ok(true)
+    }
 }
 
 #[cfg(ktest)]
@@ -731,7 +904,7 @@ mod tests {
     }
 
     #[ktest]
-    fn accepts_only_the_exact_noncoherent_megrez_dma_window() {
+    fn megrez_sdma_accepts_only_the_exact_noncoherent_dma_window() {
         assert_eq!(
             dma_window_from_cells(&[0, 0x2000_0000, 0, 0xc000_0000, 0, 0x4000_0000]),
             DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000)

@@ -199,7 +199,19 @@ pub trait GlobalFrameAllocator: Sync {
     ///
     /// The caller guarantees that both range endpoints and the layout size
     /// are aligned to [`PAGE_SIZE`].
-    fn alloc_in(&self, layout: Layout, paddr_range: Range<Paddr>) -> Option<Paddr>;
+    fn alloc_in(&self, layout: Layout, paddr_range: Range<Paddr>) -> Option<Paddr> {
+        let addr = self.alloc(layout)?;
+        let Some(end) = addr.checked_add(layout.size()) else {
+            self.dealloc(addr, layout.size());
+            return None;
+        };
+        if addr >= paddr_range.start && end <= paddr_range.end {
+            Some(addr)
+        } else {
+            self.dealloc(addr, layout.size());
+            None
+        }
+    }
 
     /// Deallocates a contiguous range of frames.
     ///

@@ -8,7 +8,7 @@ from pathlib import Path
 from tools.riscv.megrez_sdhci_gate import MAX_TRANSCRIPT_BYTES, classify, publish
 
 
-CONTROLLER = "[mmc] controller 0x50460000 irq=81 bounded-pio"
+CONTROLLER = "[mmc] controller 0x50460000 irq=81 sdma boundary=524288"
 CARD = "[mmc] SDHC rca=43690 sectors=249737216 sector0=55aa"
 BLOCK = "[mmc] mmcblk0 registered read-only"
 HASH = "[mmc] partition-table sha256=" + "a" * 64
@@ -41,6 +41,7 @@ class MegrezSdhciGateTests(unittest.TestCase):
             "fatal exception",
             "[mmc] probe failed at host-handoff-or-card",
             "[mmc] mmcblk0 write-enabled",
+            "[mmc] controller 0x50460000 irq=81 bounded-pio-fallback reason=Unsupported",
         ]:
             with self.subTest(line=line):
                 result = classify(self.transcript(CONTROLLER, CARD, BLOCK, HASH, line))

@@ -21,7 +21,10 @@ pub enum Register {
     ClockControl,
     SoftwareReset,
     InterruptStatus,
+    HostControl2,
     Capabilities,
+    SdmaAddress,
+    SdmaAddressHigh,
 }
 
 impl Register {
@@ -39,7 +42,10 @@ impl Register {
             Self::ClockControl => 0x2c,
             Self::SoftwareReset => 0x2f,
             Self::InterruptStatus => 0x30,
+            Self::HostControl2 => 0x3e,
             Self::Capabilities => 0x40,
+            Self::SdmaAddress => 0x58,
+            Self::SdmaAddressHigh => 0x5c,
         }
     }
 }
@@ -240,8 +246,22 @@ pub const fn sdma_host_control(host_control: u8) -> u8 {
     host_control & !(0b11 << 3)
 }
 
-pub const fn next_sdma_boundary(system_address: u32) -> Option<u32> {
-    system_address.checked_add(SDMA_BOUNDARY_BYTES as u32)
+pub const fn sdma_v4_control(host_control2: u16) -> Result<u16, HostError> {
+    const V4_MODE: u16 = 1 << 12;
+    const ADDRESS_64BIT: u16 = 1 << 13;
+
+    if host_control2 & V4_MODE == 0 {
+        return Err(HostError::Unsupported);
+    }
+    Ok(host_control2 | ADDRESS_64BIT)
+}
+
+pub const fn split_sdma_address(address: u64) -> (u32, u32) {
+    (address as u32, (address >> 32) as u32)
+}
+
+pub const fn next_sdma_boundary(system_address: u64) -> Option<u64> {
+    system_address.checked_add(SDMA_BOUNDARY_BYTES as u64)
 }
 
 pub const fn classify_sdma_interrupt(status: u32) -> Result<SdmaInterrupt, HostError> {
@@ -373,6 +393,9 @@ mod tests {
         assert_eq!(Register::SoftwareReset.offset(), 0x2f);
         assert_eq!(Register::InterruptStatus.offset(), 0x30);
         assert_eq!(Register::Capabilities.offset(), 0x40);
+        assert_eq!(Register::HostControl2.offset(), 0x3e);
+        assert_eq!(Register::SdmaAddress.offset(), 0x58);
+        assert_eq!(Register::SdmaAddressHigh.offset(), 0x5c);
     }
 
     #[ktest]
@@ -455,7 +478,7 @@ mod tests {
     }
 
     #[ktest]
-    fn sdma_transfer_contract_matches_megrez_uboot() {
+    fn megrez_sdma_transfer_contract_matches_uboot_v4() {
         let command = Command::read_multiple_blocks(7, 1024);
         let transfer = SdmaTransfer::new(command, 0x2000_0000..0x2008_0000).unwrap();
 
@@ -467,10 +490,16 @@ mod tests {
         assert!(supports_sdma(1 << 22));
         assert!(!supports_sdma(0));
         assert_eq!(next_sdma_boundary(0x2000_0000), Some(0x2008_0000));
+        assert_eq!(sdma_v4_control(0x1000), Ok(0x3000));
+        assert_eq!(sdma_v4_control(0), Err(HostError::Unsupported));
+        assert_eq!(
+            split_sdma_address(0x1234_5678_9abc_def0),
+            (0x9abc_def0, 0x1234_5678)
+        );
     }
 
     #[ktest]
-    fn sdma_transfer_rejects_unaligned_or_unrepresentable_buffers() {
+    fn megrez_sdma_transfer_rejects_unaligned_or_unrepresentable_buffers() {
         let command = Command::read_multiple_blocks(7, 1024);
         assert_eq!(
             SdmaTransfer::new(command, 0x2000_1000..0x2008_1000),
@@ -491,7 +520,7 @@ mod tests {
     }
 
     #[ktest]
-    fn sdma_interrupts_distinguish_progress_completion_and_failure() {
+    fn megrez_sdma_interrupts_distinguish_progress_completion_and_failure() {
         assert_eq!(classify_sdma_interrupt(0), Ok(SdmaInterrupt::Pending));
         assert_eq!(classify_sdma_interrupt(1 << 3), Ok(SdmaInterrupt::Boundary));
         assert_eq!(

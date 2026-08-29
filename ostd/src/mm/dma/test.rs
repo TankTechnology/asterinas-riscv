@@ -21,6 +21,20 @@ mod dma_coherent {
     }
 
     #[ktest]
+    fn megrez_sdma_allocates_inside_a_physical_dma_window() {
+        let segment = FrameAllocOptions::new()
+            .zeroed(false)
+            .alloc_segment(8)
+            .unwrap();
+        let available = segment.paddr()..segment.paddr() + segment.size();
+        drop(segment);
+
+        let dma = DmaCoherent::alloc_in(4, false, available.clone()).unwrap();
+        assert!(dma.paddr() >= available.start);
+        assert!(dma.paddr() + dma.size() <= available.end);
+    }
+
+    #[ktest]
     fn coherent_allocation_cannot_be_converted_to_uncached() {
         let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
 
