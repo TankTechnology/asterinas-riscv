@@ -35,8 +35,9 @@ from tools.riscv.megrez_debug_simulation import (
 )
 
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
-DEFAULT_TIMEOUT = 480.0
-BOOT_TIMEOUT = 420
+BOOT_TIMEOUT = 720
+SIMULATION_SETUP_GRACE_SECONDS = 120.0
+DEFAULT_TIMEOUT = BOOT_TIMEOUT + SIMULATION_SETUP_GRACE_SECONDS
 _DEBIAN_13_RELEASE = re.compile(r"13\.[0-9]+")
 _EXPECTED_INPUT_HASHES = {
     "dtb": "qemu_dtb",
@@ -281,6 +282,8 @@ def simulate_desktop(
         raise DesktopSimulationError("desktop-timeout-invalid")
     if not math.isfinite(timeout) or timeout <= 0:
         raise DesktopSimulationError("desktop-timeout-invalid")
+    if timeout < BOOT_TIMEOUT + SIMULATION_SETUP_GRACE_SECONDS:
+        raise DesktopSimulationError("desktop timeout must reserve image setup grace")
     if plan.schema_version != 2 or plan.profile != "debian-browser":
         raise DesktopSimulationError("desktop-plan-profile-invalid")
     try:
