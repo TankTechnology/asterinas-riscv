@@ -171,6 +171,15 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             bootargs.split(),
         )
         self.assertIn("asterinas.reboot_after=600", bootargs.split())
+        self.assertIn("asterinas.net=eic7700-rj45,10.100.19.200/21", bootargs.split())
+        self.assertNotIn(
+            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
+            bootargs.split(),
+        )
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            bootargs.split(),
+        )
         self.assertNotIn("saveenv", command)
         self.assertNotIn("linux", command)
         self.assertEqual(events[-1], "server-exit")
