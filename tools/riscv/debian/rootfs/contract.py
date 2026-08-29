@@ -166,6 +166,9 @@ def load_manifest(path: Path) -> RootfsManifest:
             schema_version,
             _string(manifest["profile"], "profile"),
         )
+    elif schema_version == 8:
+        _exact_keys(manifest, _MANIFEST_V2_KEYS, "manifest")
+        profile = _profile_for_manifest(schema_version, _string(manifest["profile"], "profile"))
     else:
         raise ContractError(f"unsupported manifest schema version: {schema_version}")
 

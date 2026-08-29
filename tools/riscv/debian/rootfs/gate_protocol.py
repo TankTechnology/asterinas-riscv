@@ -110,6 +110,7 @@ def qemu_argv(
     dtb_enabled_cpu_count: int = 4,
     allow_reboot: bool = False,
     graphical: bool = False,
+    graphics_device: str = "bochs-display",
 ) -> tuple[str, ...]:
     """Construct the frozen no-network SMP=4 two-disk QEMU contract."""
 
@@ -122,6 +123,8 @@ def qemu_argv(
         raise ValueError("QEMU and the DTB must expose exactly 4 enabled CPUs")
     if not isinstance(graphical, bool):
         raise ValueError("QEMU graphical mode must be a boolean")
+    if graphics_device not in {"bochs-display", "virtio-gpu-device"}:
+        raise ValueError("unsupported QEMU graphical device")
     _validate_regular_input(uboot, role="U-Boot")
     _validate_regular_input(boot_disk, role="boot disk")
     _validate_regular_input(root_disk, role="root disk")
@@ -142,7 +145,7 @@ def qemu_argv(
     graphics_devices = (
         (
             "-device",
-            "bochs-display",
+            graphics_device,
             "-device",
             "virtio-keyboard-device",
             "-device",

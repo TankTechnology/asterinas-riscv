@@ -167,6 +167,32 @@ mirror, or `build_rootfs.sh`. Network is permitted only while constructing the
 signed base root. The M1 and M2 gates are always launched with `-nic none`;
 the explicit M5 gate below is the only slirp-enabled exception.
 
+### QEMU DRM desktop gate
+
+The additive `desktop-drm` profile exercises the same Debian desktop session
+on Asterinas' virtio-gpu DRM device. It installs Mesa/libdrm, selects Xorg's
+`modesetting` driver with DRI3/glamor, and replaces the legacy bochs display
+with `virtio-gpu-device`; the existing M3/M4/M5 profiles remain the fbdev
+fallback path.
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-drm
+PYTHONPATH="$PWD" python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+  --kernel "$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  --uboot "$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  --dtb "$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  --stage1-initramfs "$PWD/target/debian-riscv/desktop-drm/stage1/initramfs.cpio" \
+  --root-image "$PWD/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2" \
+  --root-manifest "$PWD/target/debian-riscv/desktop-drm/rootfs/rootfs-manifest.json" \
+  --packages-lock "$PWD/target/debian-riscv/desktop-drm/rootfs/packages.lock" \
+  --package-checksums "$PWD/target/debian-riscv/desktop-drm/rootfs/source-metadata/package-checksums" \
+  --output-directory "$PWD/target/debian-riscv/desktop-drm/qemu-gate"
+```
+
+The gate requires ordered DRM/Xorg/device evidence and a non-blank monitor
+screendump. It is deliberately separate from the network/browser gates so a
+display regression is diagnosable without conflating DNS or Firefox startup.
+
 ### QEMU M5 HTTPS desktop gate
 
 Build the `desktop-m5-network` root when the external-network desktop is the

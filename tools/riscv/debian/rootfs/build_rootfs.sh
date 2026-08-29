@@ -10,6 +10,7 @@ readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
+readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
@@ -159,7 +160,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-drm | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -183,6 +184,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
@@ -913,6 +916,8 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-drm ]]; then
+        configure_desktop "$stage" drm
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1142,7 +1147,7 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
-    if [[ "$generation" == m4 ]]; then
+    if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
             "$stage/home/asterinas/Desktop"
@@ -1316,8 +1321,12 @@ EOF
     install -D -m 0755 -- \
         "$session_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-session"
+    local device_access_source="$script_directory/desktop_m3_device_access.sh"
+    if [[ "$generation" == drm ]]; then
+        device_access_source="$script_directory/desktop_drm_device_access.sh"
+    fi
     install -D -m 0755 -- \
-        "$script_directory/desktop_m3_device_access.sh" \
+        "$device_access_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-device-access"
     install -D -m 0755 -- \
         "$evidence_source" \
@@ -1440,6 +1449,48 @@ EOF
         "$stage/etc/systemd/system/default.target"
 
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
+    if [[ "$generation" == drm ]]; then
+        cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
+Section "Device"
+    Identifier "Asterinas virtio-gpu"
+    Driver "modesetting"
+    Option "AccelMethod" "glamor"
+    Option "DRI" "3"
+EndSection
+
+Section "Screen"
+    Identifier "Asterinas screen"
+    Device "Asterinas virtio-gpu"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas keyboard"
+    Driver "evdev"
+    Option "Device" "/dev/input/event0"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas pointer"
+    Driver "evdev"
+    Option "Device" "/dev/input/event1"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Asterinas layout"
+    Screen 0 "Asterinas screen"
+    InputDevice "Asterinas keyboard" "CoreKeyboard"
+    InputDevice "Asterinas pointer" "CorePointer"
+EndSection
+
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
+    else
     cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
@@ -1479,6 +1530,7 @@ Section "ServerFlags"
     Option "OffTime" "0"
 EndSection
 EOF
+    fi
     chmod 0644 -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
 }
 
