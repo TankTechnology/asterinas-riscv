@@ -294,6 +294,7 @@ test_riscv_megrez_gmac_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_gmac_contract \
 		tools.riscv.tests.test_megrez_gmac_gate \
+		tools.riscv.tests.test_megrez_network_fixture \
 		tools.riscv.tests.test_megrez_xmodem -v
 
 .PHONY: test_riscv_dwmac_rx_model
