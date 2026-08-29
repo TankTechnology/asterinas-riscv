@@ -70,6 +70,17 @@ impl InodeBlockManager {
         self.block_ptr_tree.write().clear_dirty();
     }
 
+    /// Accounts for an external xattr block in the inode's 512-byte sector count.
+    pub(super) fn update_xattr_block_accounting(
+        &self,
+        old_bid: Ext2Bid,
+        new_bid: Ext2Bid,
+    ) -> Result<()> {
+        self.block_ptr_tree
+            .write()
+            .update_xattr_block_accounting(old_bid, new_bid)
+    }
+
     /// Creates an iterator over existing and hole block ranges.
     ///
     /// The returned iterator holds a read lock on the block-pointer tree for
