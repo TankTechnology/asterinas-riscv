@@ -990,11 +990,35 @@ configure_desktop_m5_network() {
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
     local baidu_service_name="asterinas-desktop-m7-baidu"
+    local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     install -D -m 0755 -- \
         "$script_directory/desktop_m5_network_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
+    install -D -m 0755 -- \
+        "$script_directory/megrez_safe_reboot.sh" \
+        "$stage/usr/lib/asterinas/megrez-safe-reboot"
+    cat >"$stage/etc/systemd/system/$safe_reboot_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas synchronized Megrez recovery
+After=local-fs.target
+Before=asterinas-desktop-m5-network.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/megrez-safe-reboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- \
+        "$stage/etc/systemd/system/$safe_reboot_service_name.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -s -- \
+        "../$safe_reboot_service_name.service" \
+        "$stage/etc/systemd/system/basic.target.wants/$safe_reboot_service_name.service"
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
