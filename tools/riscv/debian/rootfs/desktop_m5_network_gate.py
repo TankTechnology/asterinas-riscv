@@ -58,3 +58,16 @@ def classify_desktop_m5_qemu(
         milestones=(*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES),
         failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
     )
+
+
+def classify_network_m5_qemu(
+    transcript: bytes, *, expected_debian_release: str
+) -> GateResult:
+    """Require only ordered QEMU transfer, DNS, and HTTPS evidence."""
+
+    return classify_desktop(
+        transcript,
+        expected_debian_release=expected_debian_release,
+        milestones=DESKTOP_M5_QEMU_MILESTONES,
+        failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
+    )
