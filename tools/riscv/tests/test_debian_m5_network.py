@@ -313,6 +313,8 @@ configure_and_normalize_rootfs
             "ExecStart=/usr/lib/asterinas/megrez-safe-reboot",
             safe_reboot_unit.read_text(encoding="utf-8"),
         )
+        self.assertIn("Type=simple", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertNotIn("Type=oneshot", safe_reboot_unit.read_text(encoding="utf-8"))
         self.assertTrue(
             (
                 stage / "etc/systemd/system/basic.target.wants" / safe_reboot_unit.name
