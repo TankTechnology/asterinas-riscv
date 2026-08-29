@@ -63,7 +63,7 @@ class DebianDesktopM7BaiduContractTests(unittest.TestCase):
         )
         self.assertEqual(
             DESKTOP_M7_SEARCH_MARKER,
-            "DEBIAN_BROWSER_M7_SEARCH query=asterinas state=submitted",
+            "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded",
         )
         self.assertEqual(
             DESKTOP_M7_READY_MARKER,
@@ -241,7 +241,7 @@ esac
                 "mousemove --sync --window 42 500 17",
                 "click 1",
                 "key ctrl+a",
-                "type --delay 0 -- https://m.baidu.com/s?word=asterinas",
+                "type --delay 0 -- https://m.baidu.com/s?word=asterinas&from=1020539d",
                 "key Return",
             ],
         )
@@ -270,6 +270,7 @@ esac
     def test_guest_reports_bounded_home_and_search_process_failures(self) -> None:
         for mode, reason in (
             ("home-timeout", "home-title-timeout"),
+            ("search-timeout", "search-title-timeout"),
             ("search-exit", "search-process"),
         ):
             with self.subTest(mode=mode):
@@ -284,7 +285,7 @@ esac
 
                 self.assertNotEqual(result.returncode, 0)
                 lines = console.read_text(encoding="utf-8").splitlines()
-                if mode == "home-timeout":
+                if mode in ("home-timeout", "search-timeout"):
                     self.assertEqual(
                         lines[-3],
                         "DEBIAN_BROWSER_M7_NETSURF_LOG "
