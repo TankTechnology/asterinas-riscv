@@ -1399,6 +1399,7 @@ WantedBy=multi-user.target
             "desktop-pcmanfm": "pcmanfm",
             "lxpanel": "lxpanel",
             "openbox": "openbox",
+            "hung-openbox": "openbox-probe-timeout",
             "netsurf": "netsurf",
             "xterm": "xterm",
             "mapped-netsurf": "netsurf-window",
@@ -1414,9 +1415,11 @@ WantedBy=multi-user.target
                     ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY=str(input_directory),
                     ASTERINAS_DESKTOP_M4_XORG_LOG=str(xorg_log),
                     ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS="0",
+                    ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS="1",
                     ASTERINAS_DESKTOP_M4_TEST_MISSING=missing,
                 )
 
+                started_at = time.monotonic()
                 result = subprocess.run(
                     ["/bin/bash", str(DESKTOP_M4_EVIDENCE_SCRIPT)],
                     env=environment,
@@ -1424,6 +1427,7 @@ WantedBy=multi-user.target
                     capture_output=True,
                     text=True,
                 )
+                elapsed = time.monotonic() - started_at
 
                 evidence = console.read_text(encoding="utf-8")
                 if not missing:
@@ -1431,6 +1435,8 @@ WantedBy=multi-user.target
                     self.assertEqual(evidence, "\n".join(DESKTOP_M4_MILESTONES) + "\n")
                 else:
                     self.assertNotEqual(result.returncode, 0)
+                    if missing == "hung-openbox":
+                        self.assertLess(elapsed, 1.8)
                     self.assertIn(
                         f"DEBIAN_DESKTOP_M4_DIAGNOSTIC missing={expected_diagnostic}\n",
                         evidence,
@@ -1636,6 +1642,7 @@ printf '1 1000 asterinas seat0 tty1\n'
 """,
             "pgrep": """#!/bin/sh
 case "$ASTERINAS_DESKTOP_M4_TEST_MISSING:$*" in
+  'hung-openbox:'*'openbox'*) sleep 2; exit 0 ;;
   'desktop-pcmanfm:'*'--desktop'*|\
   'lxpanel:'*'lxpanel'*|\
   'openbox:'*'openbox'*|\
