@@ -4868,6 +4868,9 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             "boot2.serial.log",
             "result.json",
             "final_root_sha256",
+            "U-Boot exposes only `ethernet@50400000`",
+            "--host-interface enp12s0 --load-transport mmc",
+            "--reboot-after 420",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, guide)
