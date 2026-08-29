@@ -194,7 +194,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             run_command=self._runner(calls),
             artifact_validator=self._identities,
             repository_root=self.repository,
-            timeout=480,
+            timeout=840,
         )
 
         self.assertEqual(result.stage, "desktop")
@@ -236,9 +236,20 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                 self._identities(self.plan)[name].path,
             )
         self.assertEqual(command[command.index("--smp") + 1], "4")
-        self.assertEqual(command[command.index("--boot-timeout") + 1], "420")
+        self.assertEqual(command[command.index("--boot-timeout") + 1], "720")
         self.assertEqual(options["cwd"], self.repository)
-        self.assertLessEqual(float(options["timeout"]), 480)
+        self.assertLessEqual(float(options["timeout"]), 840)
+
+    def test_adapter_timeout_reserves_image_preparation_budget(self) -> None:
+        with self.assertRaisesRegex(DesktopSimulationError, "setup grace"):
+            simulate_desktop(
+                self.plan,
+                self.output,
+                run_command=self._runner([]),
+                artifact_validator=self._identities,
+                repository_root=self.repository,
+                timeout=839,
+            )
 
     def test_adapter_rejects_native_identity_or_qemu_contract_drift(self) -> None:
         variants: list[dict[str, object]] = []
