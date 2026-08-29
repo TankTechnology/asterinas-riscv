@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+import tempfile
 import subprocess
 import signal
 import unittest
 from collections.abc import Iterable
+from pathlib import Path
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
@@ -26,12 +30,14 @@ from tools.riscv.megrez_gmac_gate import (
     GateFailure,
     GateTarget,
     GateTermination,
+    PhysicalGateOperations,
     check_address_unused,
     classify_physical_network_transcript,
     classify_physical_transcript,
     physical_bootargs,
     run_gate,
 )
+from tools.riscv.megrez_network_fixture import FixtureConfig, FixtureServer
 
 
 EXPECTED_PHYSICAL_MILESTONES = (
@@ -150,6 +156,16 @@ class MegrezGmacGateTests(unittest.TestCase):
             ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
             ("ASTERINAS_DESKTOP_PROXY_HOST", "10.100.19.216"),
             ("ASTERINAS_DESKTOP_PROXY_PORT", "17893"),
+            (
+                "ASTERINAS_DESKTOP_FIXTURE_URL",
+                "http://10.100.19.216:17894/asterinas-network-probe.bin",
+            ),
+            ("ASTERINAS_DESKTOP_FIXTURE_SIZE", "65536"),
+            (
+                "ASTERINAS_DESKTOP_FIXTURE_SHA256",
+                "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+            ),
+            ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", "20"),
         ):
             self.assertIn(f"systemd.setenv={variable}={value}", bootargs.split())
         self.assertNotIn("saveenv", bootargs)
@@ -165,6 +181,36 @@ class MegrezGmacGateTests(unittest.TestCase):
             recovery_bootargs.split(),
         )
         self.assertNotIn("saveenv", recovery_bootargs)
+
+    def test_physical_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "evidence"
+            output.mkdir()
+            fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+            arguments = argparse.Namespace(output_directory=output)
+            operations = PhysicalGateOperations(arguments, fixture=fixture)
+
+            with operations:
+                self.assertTrue(fixture.running)
+                operations.invalidate()
+                result: dict[str, object] = {
+                    "passed": True,
+                    "reason": "pass",
+                    "target": "network",
+                }
+                operations.publish(b"serial\n", result)
+                self.assertIn("network_fixture", result)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["reason"], "network fixture evidence mismatch")
+            self.assertFalse(fixture.running)
+
+            summary = json.loads(
+                (output / "network-fixture.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["request_count"], 0)
+            self.assertEqual(summary["payload_size"], 65536)
+            published = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(published["network_fixture"]["request_count"], 0)
 
     def test_physical_gate_accepts_only_complete_ymodem_contract(self) -> None:
         required = [

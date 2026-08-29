@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
 
@@ -28,11 +29,27 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
+from tools.riscv.megrez_network_fixture import (
+    FIXTURE_PATH,
+    PAYLOAD_SHA256,
+    PAYLOAD_SIZE,
+    FixtureConfig,
+    FixtureServer,
+    is_successful_summary,
+)
 
 
+QEMU_FIXTURE_PORT = 17894
+QEMU_FIXTURE_REQUESTS = 20
+QEMU_FIXTURE_URL = f"http://10.0.2.2:{QEMU_FIXTURE_PORT}{FIXTURE_PATH}"
 DESKTOP_M5_QEMU_BOOTARGS = (
     "console=ttyS0 loglevel=4 init=/init "
-    "asterinas.debian_network=qemu-slirp -- --root-init=systemd"
+    "asterinas.debian_network=qemu-slirp "
+    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL} "
+    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE} "
+    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256} "
+    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS} "
+    "-- --root-init=systemd"
 )
 
 
@@ -62,6 +79,55 @@ class DesktopM5QemuOperations(DesktopM4Operations):
     MILESTONES = (*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M4_FAIL reason="
     BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
+
+    def __init__(
+        self,
+        config: GateConfig,
+        *,
+        fixture: FixtureServer | None = None,
+    ) -> None:
+        self.fixture = fixture or FixtureServer(
+            FixtureConfig("127.0.0.1", QEMU_FIXTURE_PORT)
+        )
+        super().__init__(config)
+
+    def __enter__(self) -> DesktopM5QemuOperations:
+        try:
+            self.fixture.start()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        try:
+            self.fixture.close()
+        finally:
+            super().close()
+
+    def invalidate(self, config: GateConfig) -> None:
+        super().invalidate(config)
+        self._require_output().invalidate("network-fixture.json")
+
+    def publish(
+        self,
+        config: GateConfig,
+        prepared: Any,
+        transcript: bytes,
+        result: dict[str, object],
+    ) -> None:
+        summary = self.fixture.summary()
+        result["network_fixture"] = summary
+        if result.get("passed") is True and not is_successful_summary(
+            summary, expected_requests=QEMU_FIXTURE_REQUESTS
+        ):
+            result["passed"] = False
+            result["reason"] = "network fixture evidence mismatch"
+        fixture_payload = (
+            json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        self._require_output().atomic_write("network-fixture.json", fixture_payload)
+        super().publish(config, prepared, transcript, result)
 
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
