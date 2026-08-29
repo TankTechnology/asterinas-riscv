@@ -398,6 +398,13 @@ installing; use the bounded Asterinas timer and require a fresh U-Boot recovery
 epoch. The `gate` command performs two bounded boots, and `handoff` is refused
 unless their physical result passes.
 
+Inventory, `gate`, and `handoff` transfer the compressed current kernel and
+Stage1 over serial YMODEM. They load `eic7700-milkv-megrez.dtb` read-only from
+eMMC partition 1 and reject a CRC mismatch. The current U-Boot GMAC probes
+`0x50400000`, which is not the RJ45 path selected by Asterinas; consequently
+these boot paths do not depend on TFTP. Only the Asterinas network installer
+uses the verified board RJ45 path after the kernel has started.
+
 ```bash
 make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
 cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/qemu-sv39.booti

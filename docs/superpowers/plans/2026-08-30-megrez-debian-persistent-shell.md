@@ -6,7 +6,7 @@
 
 **Architecture:** Add a shell-specific immutable bundle because the existing browser plan cannot represent separate generic-Sv39 and Megrez-Sv48 kernels. Reuse the existing rootfs contract, QEMU two-boot gate, Stage1, partition-2 write policy, compressed installer, `BoardSession`, and shell command classifier. Keep host/QEMU evidence ahead of all board mutation; the board path first records geometry, skips installation when current evidence is sufficient, performs at most one permitted install otherwise, then runs two bounded Bash boots before a separate unbounded operator handoff.
 
-**Tech Stack:** Python 3 standard library, `unittest`, existing Asterinas Debian rootfs modules, U-Boot serial/TFTP protocol, Bash/C Stage1, Rust MMC ktests, QEMU RISC-V generic Sv39, Megrez Sv48, Docker image `asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached`.
+**Tech Stack:** Python 3 standard library, `unittest`, existing Asterinas Debian rootfs modules, U-Boot serial/YMODEM and read-only eMMC protocol, Bash/C Stage1, Rust MMC ktests, QEMU RISC-V generic Sv39, Megrez Sv48, Docker image `asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached`.
 
 ---
 
@@ -22,8 +22,8 @@
   existing board/session protocol; it does not build a rootfs.
 - Create `tools/riscv/megrez_debian_shell_physical.py`: pure serial phases,
   two-boot orchestration, physical evidence, and final handoff policy.
-- Create `tools/riscv/megrez_debian_shell_physical_io.py`: dnsmasq TFTP lifetime,
-  descriptor-pinned publication, and the concrete physical serial adapter.
+- Create `tools/riscv/megrez_debian_shell_physical_io.py`: descriptor-pinned
+  publication, serial/YMODEM staging, and the concrete physical adapter.
 - Create `tools/riscv/megrez_debian_shell.py`: small CLI that dispatches plan,
   check, QEMU, permit, inventory, install-if-needed, gate, and handoff.
 - Create `tools/riscv/tests/test_megrez_debian_shell.py`: contract, workflow,
@@ -869,7 +869,8 @@ descriptor, and does not send `reboot`, `poweroff`, or any write command.
 1. validate plan, permit, successful/matching inventory, and unchanged
    artifacts before serial open;
 2. invalidate `boot1.serial.log`, `boot2.serial.log`, and `result.json`;
-3. start a no-DHCP TFTP server for the pinned Megrez kernel, Stage1, and DTB;
+3. stage one verified LZMA-alone kernel and Stage1 for serial YMODEM, then load
+   the frozen DTB read-only from eMMC partition 1 and verify its exact CRC32;
 4. invoke the board-session adapter for boot 1 with `gate_bootargs`, boot number
    1, and a new `secrets.token_hex(32)` nonce;
 5. require a fresh recovery epoch;
@@ -877,20 +878,11 @@ descriptor, and does not send `reboot`, `poweroff`, or any write command.
 7. reclassify both complete logs, redact nonce plaintext, and publish the
    result last.
 
-Define the no-DHCP server argv exactly:
-
-```python
-def dnsmasq_tftp_argv(interface: str, root: Path) -> tuple[str, ...]:
-    return (
-        "/usr/sbin/dnsmasq", "--no-daemon", "--port=0", "--no-hosts",
-        "--no-resolv", f"--interface={interface}", "--bind-interfaces",
-        "--enable-tftp", f"--tftp-root={root}", "--log-facility=-",
-    )
-```
-
-The context manager starts dnsmasq in a new session, waits for its ready line
-under a fixed deadline, and always TERM→KILL cleans the complete process group.
-It must not add DHCP arguments or modify host interface addresses/routes.
+The current U-Boot probes GMAC `0x50400000`, but Asterinas reaches the physical
+RJ45 through the other GMAC. Therefore inventory, gate, and handoff must not
+depend on U-Boot TFTP. YMODEM changes no host address or route, and the eMMC
+DTB load is read-only. The separate installer may use the network only after
+Asterinas has selected and verified its RJ45 path.
 
 - [ ] **Step 5: Define and publish the physical result**
 
@@ -1140,7 +1132,7 @@ docker image inspect asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached 
   --format '{{.Id}}'
 curl -I --max-time 10 --proxy http://127.0.0.1:17892 \
   https://static.rust-lang.org/
-command -v qemu-system-riscv64 fdtget dtc dnsmasq picocom sb
+command -v qemu-system-riscv64 fdtget dtc picocom sb
 fuser -v /dev/ttyUSB0 || true
 ```
 

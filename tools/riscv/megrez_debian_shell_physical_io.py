@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Concrete serial and TFTP adapter for the Megrez Debian shell gate."""
+"""Concrete serial adapter for the Megrez Debian shell gate."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from tools.riscv.megrez_board_session import (
     run_debian_shell_phase,
     validate_recovery_epoch,
 )
+from tools.riscv.megrez_debian_install import _crc32, _publish_lzma
 from tools.riscv.megrez_debian_shell_contract import (
     FrozenArtifact,
     PersistentShellPlan,
@@ -50,6 +51,8 @@ _TFTP_FILENAMES = {
     "stage1": "stage1.cpio",
     "megrez_dtb": "megrez.dtb",
 }
+_YMODEM_KERNEL = "kernel.lzma"
+_MMC_DTB = "eic7700-milkv-megrez.dtb"
 
 
 class TftpOnlyServer:
@@ -124,8 +127,8 @@ class PhysicalBoardOperations:
         self.recovery_timeout = recovery_timeout
         self.launcher = launcher
         self._temporary_root: Path | None = None
-        self._server: TftpOnlyServer | None = None
         self._artifacts: dict[str, FrozenArtifact] = {}
+        self._compressed_kernel_crc32 = ""
         self._release = ""
         self._packages: tuple[tuple[str, str], ...] = ()
 
@@ -157,28 +160,23 @@ class PhysicalBoardOperations:
         temporary_root = Path(
             os.path.realpath(
                 os.path.join(
-                    "/tmp", f"asterinas-megrez-tftp-{os.getpid()}-{id(self):x}"
+                    "/tmp", f"asterinas-megrez-ymodem-{os.getpid()}-{id(self):x}"
                 )
             )
         )
         temporary_root.mkdir(mode=0o755)
         self._temporary_root = temporary_root
-        for name, filename in _TFTP_FILENAMES.items():
-            _copy_verified(artifacts[name], temporary_root / filename)
-        server = TftpOnlyServer(
-            self.interface,
-            temporary_root,
-            launcher=self.launcher,
+        _copy_verified(artifacts["stage1"], temporary_root / _TFTP_FILENAMES["stage1"])
+        self._compressed_kernel_crc32 = prepare_ymodem_kernel(
+            artifacts["megrez_kernel"], temporary_root
         )
-        server.start(_deadline_after(10.0))
-        self._server = server
         self._artifacts = artifacts
         return self._release, self._packages
 
     def run_boot(
         self, plan: PersistentShellPlan, boot_number: int, nonce: str
     ) -> PhysicalBoot:
-        if self._server is None or not self._artifacts:
+        if self._temporary_root is None or not self._artifacts:
             raise RuntimeError("physical artifacts were not prepared")
         descriptor = open_serial(self.device)
         stream = io.StringIO()
@@ -215,42 +213,72 @@ class PhysicalBoardOperations:
             stream.close()
 
     def publish(self, logs: tuple[bytes, bytes], result: PhysicalShellResult) -> None:
-        self._stop_server()
         self.output.atomic_write(_OUTPUT_NAMES[0], logs[0])
         self.output.atomic_write(_OUTPUT_NAMES[1], logs[1])
         self.output.atomic_write(_OUTPUT_NAMES[2], result.canonical_bytes())
 
     def close(self) -> None:
-        try:
-            self._stop_server()
-        finally:
-            self.output.close()
-            if self._temporary_root is not None:
-                shutil.rmtree(self._temporary_root)
-                self._temporary_root = None
-
-    def _stop_server(self) -> None:
-        server, self._server = self._server, None
-        if server is not None:
-            server.stop()
+        self.output.close()
+        if self._temporary_root is not None:
+            shutil.rmtree(self._temporary_root)
+            self._temporary_root = None
 
     def _boot_arguments(self, plan: PersistentShellPlan) -> SimpleNamespace:
-        return SimpleNamespace(
-            booti=_TFTP_FILENAMES["megrez_kernel"],
-            initrd=_TFTP_FILENAMES["stage1"],
-            dtb=_TFTP_FILENAMES["megrez_dtb"],
+        if self._temporary_root is None:
+            raise RuntimeError("physical artifacts were not prepared")
+        return ymodem_boot_arguments(
+            plan,
+            self._artifacts,
+            self._temporary_root,
+            initrd_name=_TFTP_FILENAMES["stage1"],
+            initrd_crc32=self._artifacts["stage1"].crc32,
+            compressed_kernel_crc32=self._compressed_kernel_crc32,
             bootargs=plan.gate_bootargs,
-            load_transport="tftp",
-            tftp_board_address=self.board_address,
-            tftp_server_address=self.server_address,
-            tftp_netmask=self.netmask,
-            firmware_framebuffer=False,
-            expected_crc32={
-                "booti": self._artifacts["megrez_kernel"].crc32,
-                "initrd": self._artifacts["stage1"].crc32,
-                "dtb": self._artifacts["megrez_dtb"].crc32,
-            },
         )
+
+
+def ymodem_boot_arguments(
+    plan: PersistentShellPlan,
+    artifacts: dict[str, FrozenArtifact],
+    directory: Path,
+    *,
+    initrd_name: str,
+    initrd_crc32: str,
+    compressed_kernel_crc32: str,
+    bootargs: str,
+) -> SimpleNamespace:
+    """Use serial transfer for mutable artifacts and CRC-checked MMC for DTB."""
+
+    plan.validate()
+    return SimpleNamespace(
+        booti=_YMODEM_KERNEL,
+        initrd=initrd_name,
+        dtb=_MMC_DTB,
+        bootargs=bootargs,
+        load_transport="ymodem",
+        ymodem_directory=directory,
+        booti_compressed_crc32=compressed_kernel_crc32,
+        booti_uncompressed_size=artifacts["megrez_kernel"].size,
+        firmware_framebuffer=False,
+        expected_crc32={
+            "booti": artifacts["megrez_kernel"].crc32,
+            "initrd": initrd_crc32,
+            "dtb": artifacts["megrez_dtb"].crc32,
+        },
+    )
+
+
+def prepare_ymodem_kernel(artifact: FrozenArtifact, directory: Path) -> str:
+    """Create one verified LZMA-alone kernel payload and return its CRC32."""
+
+    raw = directory / ".kernel.raw"
+    compressed = directory / _YMODEM_KERNEL
+    try:
+        _copy_verified(artifact, raw)
+        _publish_lzma(raw, compressed)
+        return _crc32(compressed)
+    finally:
+        raw.unlink(missing_ok=True)
 
 
 def run_physical_board_gate(
@@ -304,7 +332,7 @@ def _copy_verified(artifact: FrozenArtifact, destination: Path) -> None:
             or digest.hexdigest() != artifact.sha256
             or f"{crc:08x}" != artifact.crc32
         ):
-            raise RuntimeError(f"{artifact.name} changed while staging TFTP")
+            raise RuntimeError(f"{artifact.name} changed while staging transfer")
         os.replace(temporary, destination)
     finally:
         if output >= 0:
@@ -326,5 +354,5 @@ def _write_all(descriptor: int, payload: bytes) -> None:
     while written < len(view):
         count = os.write(descriptor, view[written:])
         if count <= 0:
-            raise OSError("TFTP staging write made no progress")
+            raise OSError("artifact staging write made no progress")
         written += count
