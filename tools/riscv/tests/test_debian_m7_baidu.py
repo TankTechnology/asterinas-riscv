@@ -198,7 +198,7 @@ esac
             ],
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
-        self.assertIn("search --onlyvisible --class NetSurf-bin", action_lines)
+        self.assertIn("search --onlyvisible --class NetSurf", action_lines)
         self.assertIn("key ctrl+q", action_lines)
         runuser_action = next(
             action for action in action_lines if action.startswith("runuser ")
