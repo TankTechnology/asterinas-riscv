@@ -13,7 +13,7 @@ readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
 readonly NETSURF_LOG="${ASTERINAS_BROWSER_M7_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
 readonly HOME_URL='https://m.baidu.com/'
 readonly SEARCH_QUERY='asterinas'
-readonly SEARCH_URL="https://m.baidu.com/s?word=$SEARCH_QUERY"
+readonly SEARCH_URL="https://m.baidu.com/s?word=$SEARCH_QUERY&from=1020539d"
 readonly USER_ID=1000
 export DISPLAY=:0
 export XAUTHORITY=/home/asterinas/.Xauthority
@@ -146,6 +146,25 @@ wait_for_home_title() {
     done
 }
 
+wait_for_search_title() {
+    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    local title_lower
+    while true; do
+        title="$(window_title)"
+        title_lower="${title,,}"
+        if [[ "$title_lower" == *asterinas* ]] &&
+            { [[ "$title_lower" == *baidu* ]] || [[ "$title" == *百度* ]]; }; then
+            return
+        fi
+        if ((SECONDS >= deadline)); then
+            emit_netsurf_log_diagnostic
+            emit_title_diagnostic search
+            fail search-title-timeout
+        fi
+        sleep "$POLL_DELAY_SECONDS"
+    done
+}
+
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowactivate --sync "$window_id" || fail old-window-activate
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+q || fail old-browser-quit
@@ -178,7 +197,8 @@ timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail search-submit
+wait_for_search_title
 find_single_process || fail search-process
 find_single_window || fail search-window
-emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas state=submitted"
+emit "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
 emit "DEBIAN_BROWSER_M7_READY page=baidu capture=pending"
