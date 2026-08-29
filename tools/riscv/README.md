@@ -153,11 +153,14 @@ the artifact is retransmitted and verified again before `booti`.
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
 requires an aligned 512 KiB SDMA buffer whose CPU and device addresses are
 identical inside `0xc0000000..0x100000000`, the EIC7700 removable-card
-controller, a nonzero SDHC capacity, read-only `mmcblk0` registration, and a
-partition-table SHA-256 marker in that order. The identity address is the
-RockOS U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID
-16 and is not usable as a fixed offset while Asterinas RISC-V has no IOMMU.
-Panic, fatal, probe-failure, writable, translated, misaligned, duplicate, and
+controller, a nonzero SDHC capacity, and read-only `mmcblk0` registration in
+that order. For the physical data-path gate it then requires one exact 32 MiB
+read whose CRC32 matches the value measured by U-Boot. That read covers the
+partition table and is stronger than the old, never-implemented
+`partition-table sha256` log requirement. The identity address is the RockOS
+U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID 16 and
+is not usable as a fixed offset while Asterinas RISC-V has no IOMMU. Panic,
+fatal, probe-failure, writable, translated, misaligned, duplicate, and
 out-of-order evidence is rejected. Linux boot output is not an accepted
 substitute.
 
@@ -167,13 +170,14 @@ Run the host tests with:
 python3 -m unittest tools.riscv.tests.test_megrez_sdhci_gate -v
 ```
 
-After a real Asterinas board run has produced the partition hash marker,
-publish the complete log and atomic JSON result with:
+After a real Asterinas board run has completed the bounded read, publish the
+complete log and atomic JSON result with the U-Boot CRC32 bound explicitly:
 
 ```bash
 python3 tools/riscv/megrez_sdhci_gate.py \
   --transcript /absolute/path/to/megrez.serial.log \
-  --output-dir /absolute/path/to/evidence
+  --output-dir /absolute/path/to/evidence \
+  --expected-crc32 5f85f90e
 ```
 
 ## Megrez firmware framebuffer handoff
