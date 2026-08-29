@@ -5,7 +5,7 @@ mod balancing;
 use core::{
     alloc::Layout,
     cell::RefCell,
-    ops::DerefMut,
+    ops::{DerefMut, Range},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -89,6 +89,42 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
 
     balancing::balance(local_pool.deref_mut(), &mut global_pool);
 
+    chunk_addr
+}
+
+pub(super) fn alloc_in(
+    guard: &DisabledLocalIrqGuard,
+    layout: Layout,
+    paddr_range: Range<Paddr>,
+) -> Option<Paddr> {
+    let local_pool_cell = LOCAL_POOL.get_with(guard);
+    let mut local_pool = local_pool_cell.borrow_mut();
+    let mut global_pool = OnDemandGlobalLock::new();
+
+    let size_order = greater_order_of(layout.size());
+    let align_order = greater_order_of(layout.align());
+    let order = size_order.max(align_order);
+
+    let mut chunk_addr = None;
+    if order < MAX_LOCAL_BUDDY_ORDER {
+        chunk_addr = local_pool.alloc_chunk_in(order, paddr_range.clone());
+    }
+    if chunk_addr.is_none() {
+        chunk_addr = global_pool.get().alloc_chunk_in(order, paddr_range);
+    }
+
+    let allocated_size = size_of_order(order);
+    if allocated_size > layout.size()
+        && let Some(chunk_addr) = chunk_addr
+    {
+        do_dealloc(
+            &mut local_pool,
+            &mut global_pool,
+            [(chunk_addr + layout.size(), allocated_size - layout.size())].into_iter(),
+        );
+    }
+
+    balancing::balance(local_pool.deref_mut(), &mut global_pool);
     chunk_addr
 }
 

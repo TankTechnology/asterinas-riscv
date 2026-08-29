@@ -27,6 +27,29 @@ fn frame_allocator_alloc_layout_match() {
     assert_allocation_well_formed(Layout::from_size_align(PAGE_SIZE * 16, PAGE_SIZE * 16).unwrap());
 }
 
+#[ktest]
+fn frame_allocator_honors_a_physical_address_range() {
+    let instance = FrameAllocator;
+    let region_size = PAGE_SIZE * 32;
+    let segment = FrameAllocOptions::new()
+        .zeroed(false)
+        .alloc_segment(region_size / PAGE_SIZE)
+        .unwrap();
+    let region_start = segment.paddr();
+    for frame in segment {
+        UniqueFrame::try_from(frame).unwrap().reset_as_unused();
+    }
+    instance.add_free_memory(region_start, region_size);
+
+    let target = region_start + PAGE_SIZE * 16..region_start + PAGE_SIZE * 24;
+    let layout = Layout::from_size_align(PAGE_SIZE * 4, PAGE_SIZE).unwrap();
+    let allocated = instance.alloc_in(layout, target.clone()).unwrap();
+    assert!(allocated >= target.start);
+    assert!(allocated + layout.size() <= target.end);
+
+    instance.dealloc(allocated, layout.size());
+}
+
 #[track_caller]
 fn assert_allocation_well_formed(layout: Layout) {
     let instance = FrameAllocator;
