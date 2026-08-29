@@ -146,12 +146,12 @@ class MegrezGmacGateTests(unittest.TestCase):
             "ASTERINAS_DESKTOP_M4_CONSOLE",
             "ASTERINAS_DESKTOP_M5_CONSOLE",
             "ASTERINAS_BROWSER_M6_CONSOLE",
-            "ASTERINAS_BROWSER_M7_CONSOLE",
         ):
             self.assertIn(
                 f"systemd.setenv={variable}=/dev/ttyS0",
                 bootargs.split(),
             )
+        self.assertNotIn("ASTERINAS_BROWSER_M7_CONSOLE", bootargs)
         for variable, value in (
             ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
             ("ASTERINAS_DESKTOP_PROXY_HOST", "10.100.19.216"),
@@ -172,15 +172,29 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
-        self.assertIn(
-            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=150",
-            recovery_bootargs.split(),
-        )
-        self.assertIn(
-            "systemd.setenv=ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0",
-            recovery_bootargs.split(),
-        )
+        self.assertNotIn("ASTERINAS_SAFE_REBOOT_AFTER", recovery_bootargs)
+        self.assertNotIn("ASTERINAS_SAFE_REBOOT_CONSOLE", recovery_bootargs)
         self.assertNotIn("saveenv", recovery_bootargs)
+        self.assertLess(
+            len(f'setenv bootargs "{recovery_bootargs}"'.encode()),
+            1024,
+        )
+
+        network_bootargs = physical_bootargs(180, target=GateTarget.NETWORK)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            network_bootargs.split(),
+        )
+        for unused_variable in (
+            "ASTERINAS_DESKTOP_M4_CONSOLE",
+            "ASTERINAS_BROWSER_M6_CONSOLE",
+            "ASTERINAS_BROWSER_M7_CONSOLE",
+        ):
+            self.assertNotIn(unused_variable, network_bootargs)
+        self.assertLess(
+            len(f'setenv bootargs "{network_bootargs}"'.encode()),
+            1024,
+        )
 
     def test_physical_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
