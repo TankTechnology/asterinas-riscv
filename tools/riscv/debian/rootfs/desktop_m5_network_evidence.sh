@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-60}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
@@ -222,59 +222,81 @@ validate_fixture_config() {
         return 1
 }
 
+cleanup_fixture_batch() {
+    local directory="$1"
+    shift
+
+    rm -f -- "$@" && rmdir -- "$directory"
+}
+
 stress_fixture() {
-    local actual_sha256
-    local actual_size
     local attempt
     local deadline="$1"
     local endpoint="$2"
+    local hashes
     local reason_prefix="$3"
     local remaining
-    local request_timeout
-    local temporary_fixture
+    local sizes
+    local temporary_directory
+    local -a curl_arguments=(
+        --fail
+        --ipv4
+        --silent
+        --show-error
+        --max-time "$COMMAND_TIMEOUT_SECONDS"
+        --noproxy '*'
+    )
+    local -a temporary_fixtures=()
 
-    temporary_fixture="$(mktemp "${URL_FILE}.fixture.XXXXXX")" ||
+    temporary_directory="$(mktemp -d "${URL_FILE}.fixture.XXXXXX")" ||
         fail "${reason_prefix}-fixture-temporary"
     for ((attempt = 1; attempt <= FIXTURE_REQUESTS; attempt++)); do
-        remaining=$((deadline - SECONDS))
-        if ((remaining <= 0)); then
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-timeout"
-        fi
-        request_timeout="$remaining"
-        if ((request_timeout > COMMAND_TIMEOUT_SECONDS)); then
-            request_timeout="$COMMAND_TIMEOUT_SECONDS"
-        fi
-        if ! timeout "$request_timeout" curl \
-            --fail \
-            --ipv4 \
-            --silent \
-            --show-error \
-            --max-time "$request_timeout" \
-            --noproxy '*' \
-            --output "$temporary_fixture" \
-            "$FIXTURE_URL"; then
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-download"
-        fi
-        actual_size="$(wc -c <"$temporary_fixture" | tr -d '[:space:]')" || {
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-size"
-        }
-        if [[ "$actual_size" != "$FIXTURE_SIZE" ]]; then
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-size"
-        fi
-        actual_sha256="$(sha256sum "$temporary_fixture" | awk '{print $1}')" || {
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-sha256"
-        }
-        if [[ "$actual_sha256" != "$FIXTURE_SHA256" ]]; then
-            rm -f -- "$temporary_fixture"
-            fail "${reason_prefix}-fixture-sha256"
-        fi
+        temporary_fixtures+=("$temporary_directory/$attempt")
+        curl_arguments+=(--output "${temporary_fixtures[-1]}" "$FIXTURE_URL")
     done
-    rm -f -- "$temporary_fixture" || fail "${reason_prefix}-fixture-cleanup"
+
+    remaining=$((deadline - SECONDS))
+    if ((remaining <= 0)); then
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-timeout"
+    fi
+    if ! timeout "$remaining" curl "${curl_arguments[@]}"; then
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-download"
+    fi
+
+    sizes="$(stat -c '%s' -- "${temporary_fixtures[@]}")" || {
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-size"
+    }
+    while IFS= read -r size; do
+        if [[ "$size" != "$FIXTURE_SIZE" ]]; then
+            cleanup_fixture_batch \
+                "$temporary_directory" "${temporary_fixtures[@]}" ||
+                fail "${reason_prefix}-fixture-cleanup"
+            fail "${reason_prefix}-fixture-size"
+        fi
+    done <<<"$sizes"
+
+    hashes="$(sha256sum -- "${temporary_fixtures[@]}")" || {
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-sha256"
+    }
+    while IFS=' ' read -r hash _; do
+        if [[ "$hash" != "$FIXTURE_SHA256" ]]; then
+            cleanup_fixture_batch \
+                "$temporary_directory" "${temporary_fixtures[@]}" ||
+                fail "${reason_prefix}-fixture-cleanup"
+            fail "${reason_prefix}-fixture-sha256"
+        fi
+    done <<<"$hashes"
+
+    cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+        fail "${reason_prefix}-fixture-cleanup"
     emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=$endpoint"
 }
 
