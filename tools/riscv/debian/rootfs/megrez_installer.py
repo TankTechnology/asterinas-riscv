@@ -315,7 +315,14 @@ def render_init(
         raise InstallerError("root SHA-256 must be lowercase hexadecimal")
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
-    if sum(chunk.uncompressed_size for chunk in chunks) != root_size:
+    expected_offset = 0
+    for expected_index, chunk in enumerate(chunks):
+        if chunk.index != expected_index or chunk.offset != expected_offset:
+            raise InstallerError(
+                "chunks must cover the root image in contiguous image order"
+            )
+        expected_offset += chunk.uncompressed_size
+    if expected_offset != root_size:
         raise InstallerError("chunk sizes do not cover the root image")
     return f"""#!/bin/sh
 set -o pipefail
@@ -351,10 +358,9 @@ while IFS="$tab" read -r index block blocks compressed uncompressed path; do
     [ "$1" = "$uncompressed" ] || fail readback-$index
     echo "DEBIAN_INSTALL_CHUNK_OK index=$index sha256=$1"
 done < /installer/chunks.tsv
-set -- $(dd if="$target" bs={BLOCK_SIZE} count="{root_size // BLOCK_SIZE}" 2>/dev/null | sha256sum)
-[ "$1" = "{root_sha256}" ] || fail final-image-hash
-echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
+verified_sha256="{root_sha256}"
 sync || fail final-sync
+echo "DEBIAN_INSTALL_PASS sha256=$verified_sha256 bytes={root_size}"
 reboot -f
 fail reboot-returned
 """.encode()

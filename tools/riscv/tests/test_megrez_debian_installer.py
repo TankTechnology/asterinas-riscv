@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -141,12 +142,28 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
         self.assertIn("DEBIAN_INSTALL_PASS", script)
         self.assertIn("DEBIAN_INSTALL_FAIL", script)
+        self.assertNotIn(
+            f'count="{len(b"a" * 4096) // 4096}" 2>/dev/null | sha256sum',
+            script,
+        )
+        self.assertIn(f'verified_sha256="{root_hash}"', script)
+        sync_offset = script.index("sync || fail final-sync")
         pass_offset = script.index("DEBIAN_INSTALL_PASS")
         reboot_offset = script.index("reboot -f")
+        self.assertLess(sync_offset, pass_offset)
         self.assertLess(pass_offset, reboot_offset)
-        self.assertIn(
-            "sync || fail final-sync\nreboot -f\nfail reboot-returned", script
-        )
+        self.assertIn("reboot -f\nfail reboot-returned", script)
+
+    def test_render_init_requires_chunks_to_cover_the_image_in_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "root.ext2"
+            image.write_bytes(b"a" * 4096 + b"b" * 4096)
+            chunks = plan_chunks(image, chunk_size=4096)
+        root_hash = hashlib.sha256(b"a" * 4096 + b"b" * 4096).hexdigest()
+        overlapping = (chunks[0], replace(chunks[1], offset=0))
+
+        with self.assertRaisesRegex(InstallerError, "contiguous image order"):
+            render_init(root_hash, 8192, overlapping)
 
     def test_build_archive_is_reproducible_and_replaces_init(self):
         with tempfile.TemporaryDirectory() as temporary:
