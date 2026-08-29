@@ -287,5 +287,51 @@ Use the repository development container.
 Preparing U-Boot additionally needs the RISC-V cross compiler, `dtc`, OpenSSL/GnuTLS development packages, and the Python development headers and `setuptools` used to build `pylibfdt`.
 The unit tests use only the Python standard library and repository files.
 
+### Host-side Megrez debugging
+
+Keep builds and QEMU runs in the pinned development container.
+On the host, install only the tools that observe the physical serial and Ethernet paths:
+
+```bash
+sudo apt-get install -y ethtool iperf3 arping
+```
+
+`ethtool` reports the host-side link state, negotiated speed, and error counters.
+`arping` separates layer-2/ARP reachability from DNS, TCP, and the browser.
+`iperf3` provides a controlled throughput test when a matching guest endpoint has explicitly been installed;
+it is not a substitute for the HTTPS browser gate.
+
+Packet decoding and screenshot OCR are optional:
+
+```bash
+sudo apt-get install -y tshark tesseract-ocr tesseract-ocr-chi-sim
+```
+
+The repository workflow already uses `picocom`/Python for serial I/O,
+`tcpdump` for packet capture,
+`dtc`/`fdtget` for device trees,
+`gdb-multiarch` for debugging,
+and e2fsprogs for Debian root images.
+Do not install a second host QEMU merely for this workflow:
+use the pinned container so that the emulator and cross-toolchain versions remain reproducible.
+
+Verify the host once before a physical session:
+
+```bash
+for tool in docker picocom socat tcpdump ethtool iperf3 arping; do
+  command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+done
+id -nG | tr ' ' '\n' | grep -qx dialout
+test -r /dev/ttyUSB0 && test -w /dev/ttyUSB0
+MEGREZ_HOST_IFACE=${MEGREZ_HOST_IFACE:-enp12s0}
+ip -br link show "$MEGREZ_HOST_IFACE"
+ethtool "$MEGREZ_HOST_IFACE"
+```
+
+The `dialout` check avoids running the serial gate as root.
+`ttyUSB0` is the currently validated path;
+resolve the actual USB-serial node again after unplugging or re-enumerating the adapter.
+Broad passwordless `sudo` access is not required.
+
 Profiles are reviewed code objects; command-line CPU, memory, bootarg, and resource-gate overrides are intentionally restricted.
 Add a new machine by defining its contract and tests instead of adding board-specific branches to the runner.
