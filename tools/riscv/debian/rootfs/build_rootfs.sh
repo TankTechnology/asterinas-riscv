@@ -919,6 +919,20 @@ EOF
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
+        # Keep logind diagnosis independent from the Firefox workload.  The
+        # service is bounded and emits evidence while the desktop waits, so a
+        # stalled seat/udev path cannot be mistaken for a Firefox failure.
+        install -D -m 0755 -- \
+            "$script_directory/logind_diagnostic.sh" \
+            "$stage/usr/lib/asterinas/logind-diagnostic"
+        install -D -m 0644 -- \
+            "$script_directory/logind_diagnostic.service" \
+            "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
+        install -d -m 0755 -- \
+            "$stage/etc/systemd/system/multi-user.target.wants"
+        ln -s -- \
+            ../asterinas-logind-diagnostic.service \
+            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-logind-diagnostic.service"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
