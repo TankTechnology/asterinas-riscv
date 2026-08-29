@@ -288,12 +288,10 @@ def observe_milestones(
 
 def validate_recovery_epoch(text: str) -> None:
     """Require a new ordered firmware epoch after the current guest attempt."""
-    positions = (
-        text.find("OpenSBI v"),
-        text.find("U-Boot 2026.07"),
-        text.find(PROMPT),
-    )
-    if min(positions) < 0 or positions != tuple(sorted(positions)):
+    opensbi = text.find("OpenSBI v")
+    uboot = GATE_PATTERN.search(text, opensbi + 1) if opensbi >= 0 else None
+    prompt = text.find(PROMPT, uboot.end()) if uboot is not None else -1
+    if opensbi < 0 or uboot is None or prompt < 0:
         raise RuntimeError("automatic recovery did not reach a fresh U-Boot prompt")
 
 
