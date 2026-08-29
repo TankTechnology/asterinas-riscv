@@ -48,6 +48,7 @@ from tools.riscv.megrez_debug_board import (
     ensure_board_artifacts,
     run_board,
 )
+from tools.riscv.megrez_board_session import MEGREZ_USB_HOST_COMMAND
 from tools.riscv.megrez_preboard import RecoveryEvidence
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -1341,6 +1342,10 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         cases = (
             (["ASTERINAS_GMAC_TCP_PROBE_READY\n"], "guest-marker-order"),
             (["MEGREZ_SDHCI_READ_FAIL reason=target-open\n"], "kernel-fatal"),
+            (
+                ["Enter riscv_boot\nU-Boot 2024.01\n=> "],
+                "guest-reboot-before-terminal",
+            ),
             ([], "kernel-timeout"),
             (["Enter riscv_boot\n"], "guest-timeout"),
             (
@@ -1599,6 +1604,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             "/dev/ttyUSB-test",
             self.output,
             timeout=240.0,
+            hardware_watchdog=False,
             probe_trace_provider=mock.ANY,
         )
 
@@ -1661,6 +1667,22 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    def test_hardware_watchdog_refuses_unknown_component_before_writes(self) -> None:
+        commands: list[str] = []
+
+        class Session:
+            def command(self, command: str, timeout: float) -> str:
+                del timeout
+                commands.append(command)
+                return f"{command}\r\n508000fc: 00000000\r\n=> "
+
+        with self.assertRaisesRegex(BoardRunFailure, "watchdog-type-mismatch"):
+            RealBoardOperations._arm_hardware_watchdog(
+                Session(), time.monotonic() + 1.0
+            )
+
+        self.assertEqual(commands, ["md.l 0x508000fc 1"])
+
     def test_real_adapter_reuses_one_fd_and_publishes_result_last(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -1711,6 +1733,10 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 def command(self, command: str, timeout: float) -> str:
                     commands.append(command)
                     self.log.write(f"{command}\n")
+                    if command == "md.l 0x508000fc 1":
+                        return f"{command}\r\n508000fc: 44570120\r\n=> "
+                    if command == "md.l 0x50800000 2":
+                        return f"{command}\r\n50800000: 0000001f 000000ff\r\n=> "
                     if command.startswith("crc32 "):
                         address = int(command.split()[1], 16)
                         return (
@@ -1743,6 +1769,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 lock_device=lambda _fd: None,
                 close_device=closed.append,
                 session_factory=session_factory,
+                hardware_watchdog=True,
                 probe_trace_provider=lambda plan_sha256: (
                     json.dumps(
                         {
@@ -1799,6 +1826,17 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             )
             self.assertTrue(
                 any("asterinas,usb-host" in command for command in commands)
+            )
+            self.assertEqual(
+                commands[-6:],
+                [
+                    MEGREZ_USB_HOST_COMMAND,
+                    "md.l 0x508000fc 1",
+                    "mw.l 0x50800004 0xff",
+                    "mw.l 0x5080000c 0x76",
+                    "mw.l 0x50800000 0x1f",
+                    "md.l 0x50800000 2",
+                ],
             )
             self.assertTrue((output / "serial.log").is_file())
             self.assertTrue((output / "transport.json").is_file())
@@ -1964,6 +2002,21 @@ class MegrezDebugCliTests(unittest.TestCase):
                 {"action": "capture-markers"},
                 {"action": "await-automatic-recovery"},
             ],
+        )
+
+        watchdog = self._run(
+            "board",
+            self.plan_path,
+            self.directory / "missing-serial-device",
+            "--simulation-result",
+            self.directory / "missing-result.json",
+            "--hardware-watchdog",
+            "--dry-run",
+        )
+        self.assertEqual(watchdog.returncode, 0, watchdog.stderr)
+        self.assertIn(
+            {"action": "arm-hardware-watchdog", "mode": "interrupt-then-reset"},
+            json.loads(watchdog.stdout),
         )
 
     def test_board_refuses_missing_simulation_before_serial_access(self) -> None:
