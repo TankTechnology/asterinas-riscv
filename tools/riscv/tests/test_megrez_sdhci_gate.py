@@ -18,6 +18,7 @@ from tools.riscv.megrez_sdhci_gate import (
 )
 
 
+BUFFER = "[mmc] SDMA buffer cpu=0xfff00000 device=0xfff00000 bytes=524288"
 CONTROLLER = "[mmc] controller 0x50460000 irq=81 sdma boundary=524288"
 CARD = "[mmc] SDHC rca=43690 sectors=249737216 sector0=55aa"
 BLOCK = "[mmc] mmcblk0 registered read-only"
@@ -36,16 +37,37 @@ class MegrezSdhciGateTests(unittest.TestCase):
         return ("\n".join(lines) + "\n").encode()
 
     def test_accepts_one_complete_ordered_read_only_run(self):
-        result = classify(self.transcript(CONTROLLER, CARD, BLOCK, HASH))
+        result = classify(self.transcript(BUFFER, CONTROLLER, CARD, BLOCK, HASH))
         self.assertTrue(result.passed)
         self.assertEqual(result.sectors, 249737216)
         self.assertEqual(result.partition_sha256, "a" * 64)
 
     def test_rejects_missing_duplicate_or_out_of_order_markers(self):
         cases = {
-            "missing": self.transcript(CONTROLLER, CARD, BLOCK),
-            "duplicate": self.transcript(CONTROLLER, CARD, CARD, BLOCK, HASH),
-            "out-of-order": self.transcript(CONTROLLER, BLOCK, CARD, HASH),
+            "missing": self.transcript(BUFFER, CONTROLLER, CARD, BLOCK),
+            "duplicate": self.transcript(BUFFER, CONTROLLER, CARD, CARD, BLOCK, HASH),
+            "out-of-order": self.transcript(BUFFER, CONTROLLER, BLOCK, CARD, HASH),
+            "translated-address": self.transcript(
+                BUFFER.replace("device=0xfff00000", "device=0x5ff00000"),
+                CONTROLLER,
+                CARD,
+                BLOCK,
+                HASH,
+            ),
+            "out-of-window-address": self.transcript(
+                BUFFER.replace("0xfff00000", "0xbff80000"),
+                CONTROLLER,
+                CARD,
+                BLOCK,
+                HASH,
+            ),
+            "unaligned-address": self.transcript(
+                BUFFER.replace("0xfff00000", "0xfff10000"),
+                CONTROLLER,
+                CARD,
+                BLOCK,
+                HASH,
+            ),
         }
         for name, transcript in cases.items():
             with self.subTest(name=name):
@@ -60,26 +82,34 @@ class MegrezSdhciGateTests(unittest.TestCase):
             "[mmc] controller 0x50460000 irq=81 bounded-pio-fallback reason=Unsupported",
         ]:
             with self.subTest(line=line):
-                result = classify(self.transcript(CONTROLLER, CARD, BLOCK, HASH, line))
+                result = classify(
+                    self.transcript(BUFFER, CONTROLLER, CARD, BLOCK, HASH, line)
+                )
                 self.assertFalse(result.passed)
 
     def test_rejects_invalid_capacity_hash_and_oversized_transcript(self):
         self.assertFalse(
             classify(
-                self.transcript(CONTROLLER, "[mmc] SDHC rca=1 sectors=0", BLOCK, HASH)
+                self.transcript(
+                    BUFFER, CONTROLLER, "[mmc] SDHC rca=1 sectors=0", BLOCK, HASH
+                )
             ).passed
         )
         self.assertFalse(
             classify(
                 self.transcript(
-                    CONTROLLER, CARD, BLOCK, "[mmc] partition-table sha256=xyz"
+                    BUFFER,
+                    CONTROLLER,
+                    CARD,
+                    BLOCK,
+                    "[mmc] partition-table sha256=xyz",
                 )
             ).passed
         )
         self.assertFalse(classify(b"x" * (MAX_TRANSCRIPT_BYTES + 1)).passed)
 
     def test_publishes_complete_log_and_atomic_json_result(self):
-        transcript = self.transcript(CONTROLLER, CARD, BLOCK, HASH)
+        transcript = self.transcript(BUFFER, CONTROLLER, CARD, BLOCK, HASH)
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "evidence"
             result = publish(transcript, output)
@@ -93,7 +123,7 @@ class MegrezSdhciGateTests(unittest.TestCase):
 
     def test_accepts_exact_bounded_read_against_uboot_crc(self):
         transcript = self.transcript(
-            CONTROLLER, CARD, BLOCK, HASH, READ_START, READ_PASS
+            BUFFER, CONTROLLER, CARD, BLOCK, HASH, READ_START, READ_PASS
         )
 
         result = classify(transcript, expected_crc32="5f85f90e")
@@ -114,20 +144,20 @@ class MegrezSdhciGateTests(unittest.TestCase):
             with self.subTest(name=name):
                 result = classify(
                     self.transcript(
-                        CONTROLLER, CARD, BLOCK, HASH, READ_START, pass_marker
+                        BUFFER, CONTROLLER, CARD, BLOCK, HASH, READ_START, pass_marker
                     ),
                     expected_crc32="5f85f90e",
                 )
                 self.assertFalse(result.passed)
 
         out_of_order = self.transcript(
-            CONTROLLER, CARD, BLOCK, HASH, READ_PASS, READ_START
+            BUFFER, CONTROLLER, CARD, BLOCK, HASH, READ_PASS, READ_START
         )
         self.assertFalse(classify(out_of_order, expected_crc32="5f85f90e").passed)
 
     def test_cli_binds_the_physical_log_to_the_uboot_crc(self):
         transcript = self.transcript(
-            CONTROLLER, CARD, BLOCK, HASH, READ_START, READ_PASS
+            BUFFER, CONTROLLER, CARD, BLOCK, HASH, READ_START, READ_PASS
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
