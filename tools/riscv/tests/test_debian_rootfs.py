@@ -663,6 +663,55 @@ int main(int argc, char **argv)
                 result = subprocess.run([binary, str(target_fd)], check=False)
                 self.assertEqual(result.returncode, 0)
 
+    def test_stage1_progress_markers_are_flushed_and_machine_readable(self) -> None:
+        harness_source = self.directory / "stage1-progress-harness.c"
+        harness_source.write_text(
+            f'''#define main stage1_production_main
+#include "{STAGE1_SOURCE}"
+#undef main
+
+int main(void)
+{{
+    report_progress("start", "mode", "systemd");
+    report_progress("probe-block", "device", "/dev/mmcblk0p2");
+    report_progress("handoff-enter", "action", "root-mount");
+    return 0;
+}}
+''',
+            encoding="utf-8",
+        )
+        binary = self.directory / "stage1-progress-harness"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wno-return-type",
+                harness_source,
+                "-o",
+                binary,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+
+        result = subprocess.run(
+            [binary], check=False, capture_output=True, text=True, timeout=2
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "DEBIAN_STAGE1_PROGRESS step=start mode=systemd\n"
+            "DEBIAN_STAGE1_PROGRESS step=probe-block device=/dev/mmcblk0p2\n"
+            "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=root-mount\n",
+        )
+
     def test_builder_declares_exact_tools_and_entries(self) -> None:
         tools = self.run_builder("--print-tools")
         entries = self.run_builder("--print-entries")
