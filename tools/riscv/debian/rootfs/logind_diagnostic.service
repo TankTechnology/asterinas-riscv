@@ -1,0 +1,16 @@
+[Unit]
+Description=Asterinas bounded systemd-logind diagnostic
+Wants=systemd-logind.service dbus.service systemd-udevd.service
+After=basic.target dbus.service systemd-udevd.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_LOGIND_DIAGNOSTIC_TIMEOUT_SECONDS=300
+Environment=ASTERINAS_LOGIND_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS=5
+ExecStart=/bin/sh -c '/usr/lib/asterinas/logind-diagnostic >/dev/null 2>&1 &'
+TimeoutStartSec=330s
+KillMode=none
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
