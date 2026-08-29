@@ -32,6 +32,14 @@ from tools.riscv.megrez_debian_shell_evidence import (
     validate_qemu_result,
 )
 from tools.riscv.megrez_debian_shell import qemu_gate_argv, run_qemu_gate
+from tools.riscv.megrez_debian_shell_board import (
+    InventoryError,
+    InventoryResult,
+    classify_inventory_log,
+    run_inventory,
+    verifier_bootargs,
+)
+from tools.riscv.megrez_board_session import PartitionGeometry
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -113,6 +121,25 @@ def _native_qemu_argv(directory: Path, boot_number: int) -> list[str]:
         "-monitor",
         f"unix:{runtime}/monitor.sock,server=on,wait=off",
     ]
+
+
+def _valid_permit(plan: PersistentShellPlan) -> ShellPermit:
+    artifacts = plan.artifact_map()
+    return ShellPermit(
+        schema_version=1,
+        passed=True,
+        reason="pass",
+        plan_sha256=plan.plan_sha256,
+        qemu_evidence_sha256="a" * 64,
+        git_commit=plan.git_commit,
+        megrez_kernel_sha256=artifacts["megrez_kernel"].sha256,
+        stage1_crc32=artifacts["stage1"].crc32,
+        megrez_dtb_crc32=artifacts["megrez_dtb"].crc32,
+        root_image_sha256=artifacts["root_image"].sha256,
+        gate_bootargs=plan.gate_bootargs,
+        gate_reboot_after=plan.gate_reboot_after,
+        long_operation_reboot_after=plan.long_operation_reboot_after,
+    )
 
 
 class PersistentShellContractTests(unittest.TestCase):
@@ -653,6 +680,241 @@ class PersistentShellQemuPermitTests(unittest.TestCase):
             QemuShellEvidence.from_bytes(self.qemu_evidence_path.read_bytes()),
             evidence,
         )
+
+
+class PersistentShellInventoryTests(unittest.TestCase):
+    GEOMETRY = (
+        PartitionGeometry(1, 0x8000, 0xF2022),
+        PartitionGeometry(2, P2_START_LBA, P2_NR_SECTORS),
+        PartitionGeometry(3, 0x8FA022, 0x100000),
+    )
+
+    class Operations:
+        def __init__(
+            self,
+            *,
+            transcript: bytes = b"",
+            install_result_sha256: str | None = None,
+            failure: str | None = None,
+        ) -> None:
+            self.transcript = transcript
+            self.install_result_sha256 = install_result_sha256
+            self.failure = failure
+            self.events: list[str] = []
+            self.published: InventoryResult | None = None
+
+        def invalidate(self) -> None:
+            self.events.append("invalidate")
+
+        def read_partition_geometry(self) -> tuple[PartitionGeometry, ...]:
+            self.events.append("geometry")
+            if self.failure == "geometry":
+                raise RuntimeError("geometry unavailable")
+            if self.failure == "timeout":
+                raise TimeoutError("serial timeout")
+            return PersistentShellInventoryTests.GEOMETRY
+
+        def matching_install_result(
+            self,
+            plan: PersistentShellPlan,
+            permit: ShellPermit,
+            geometry: tuple[PartitionGeometry, ...],
+        ) -> str | None:
+            del plan, permit, geometry
+            self.events.append("install-result")
+            if self.failure == "install-result":
+                raise RuntimeError("install result unreadable")
+            return self.install_result_sha256
+
+        def run_verifier(self, bootargs: str) -> bytes:
+            self.events.append(f"verify:{bootargs}")
+            if self.failure == "verifier":
+                raise RuntimeError("verifier failed")
+            return self.transcript
+
+        def publish(self, result: InventoryResult) -> None:
+            self.events.append("publish")
+            self.published = result
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.plan = _valid_plan(_artifact_fixture(self.directory))
+        self.permit = _valid_permit(self.plan)
+        self.root_sha256 = self.plan.artifact_map()["root_image"].sha256
+
+    def _transcript(self, outcome: str) -> bytes:
+        ready = (
+            "DEBIAN_INVENTORY_READY target=/dev/mmcblk0p2 "
+            "bytes=4294967296 write=disabled\n"
+        )
+        return (ready + outcome + "\nreboot: Restarting system\n").encode()
+
+    def test_inventory_classifier_accepts_only_ordered_exact_root_evidence(
+        self,
+    ) -> None:
+        matching = self._transcript(
+            f"DEBIAN_VERIFY_PASS sha256={self.root_sha256} bytes=1073741824"
+        ).decode()
+        needs_install = self._transcript(
+            "DEBIAN_VERIFY_FAIL reason=image-hash"
+        ).decode()
+
+        self.assertEqual(classify_inventory_log(matching, self.root_sha256), "matching")
+        self.assertEqual(
+            classify_inventory_log(
+                "Kernel command line: asterinas.reboot_after=600\n" + matching,
+                self.root_sha256,
+            ),
+            "matching",
+        )
+        self.assertEqual(
+            classify_inventory_log(needs_install, self.root_sha256), "needs-install"
+        )
+        invalid = (
+            f"DEBIAN_VERIFY_PASS sha256={self.root_sha256} bytes=1073741824",
+            "DEBIAN_VERIFY_FAIL reason=image-hash\n"
+            "DEBIAN_INVENTORY_READY target=/dev/mmcblk0p2 bytes=4294967296 write=disabled",
+            self._transcript("DEBIAN_VERIFY_FAIL reason=target-size-mismatch").decode(),
+            self._transcript("DEBIAN_VERIFY_FAIL reason=image-hash-output").decode(),
+            self._transcript(
+                f"DEBIAN_VERIFY_PASS sha256={'f' * 64} bytes=1073741824"
+            ).decode(),
+            self._transcript("DEBIAN_VERIFY_FAIL reason=image-hash").decode()
+            + f"DEBIAN_VERIFY_PASS sha256={self.root_sha256} bytes=1073741824\n",
+            "reboot: Restarting system\n" + matching,
+        )
+        for transcript in invalid:
+            with self.subTest(transcript=transcript), self.assertRaises(InventoryError):
+                classify_inventory_log(transcript, self.root_sha256)
+
+    def test_verifier_bootargs_are_read_only_and_use_long_recovery(self) -> None:
+        bootargs = verifier_bootargs(self.plan)
+
+        self.assertEqual(
+            bootargs,
+            "console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init "
+            "asterinas.reboot_after=600",
+        )
+        for forbidden in (
+            "asterinas.mmc_write_partition2",
+            "asterinas.net=",
+            "asterinas.neighbor=",
+            "hardware_watchdog",
+        ):
+            self.assertNotIn(forbidden, bootargs)
+
+    def test_inventory_result_is_exact_canonical_and_bound_to_geometry(self) -> None:
+        result = InventoryResult(
+            schema_version=1,
+            status="matching",
+            reason="verified-root",
+            plan_sha256=self.plan.plan_sha256,
+            permit_sha256=hashlib.sha256(self.permit.canonical_bytes()).hexdigest(),
+            partitions=self.GEOMETRY,
+            expected_root_sha256=self.root_sha256,
+            install_result_sha256=None,
+            serial_sha256="b" * 64,
+        )
+
+        payload = result.canonical_bytes()
+
+        self.assertEqual(InventoryResult.from_bytes(payload), result)
+        with self.assertRaisesRegex(InventoryError, "duplicate JSON key"):
+            InventoryResult.from_bytes(
+                payload.replace(
+                    b'"status":"matching"', b'"status":"matching","status":"matching"'
+                )
+            )
+        with self.assertRaises(InventoryError):
+            replace(
+                result,
+                partitions=(
+                    self.GEOMETRY[0],
+                    PartitionGeometry(2, P2_START_LBA + 1, P2_NR_SECTORS),
+                    self.GEOMETRY[2],
+                ),
+            ).validate()
+        with self.assertRaises(InventoryError):
+            replace(result, reason="unrelated").validate()
+        with self.assertRaises(InventoryError):
+            replace(
+                result,
+                status="not-measurable",
+                reason="verifier-evidence",
+                install_result_sha256="c" * 64,
+            ).validate()
+
+    def test_matching_install_result_skips_the_full_device_verifier(self) -> None:
+        operations = self.Operations(install_result_sha256="c" * 64)
+
+        result = run_inventory(self.plan, self.permit, operations)
+
+        self.assertEqual(result.status, "matching")
+        self.assertEqual(result.reason, "install-result")
+        self.assertEqual(result.install_result_sha256, "c" * 64)
+        self.assertIsNone(result.serial_sha256)
+        self.assertEqual(
+            operations.events,
+            ["invalidate", "geometry", "install-result", "publish"],
+        )
+        self.assertIs(operations.published, result)
+
+    def test_verifier_distinguishes_matching_from_install_needed(self) -> None:
+        cases = (
+            (
+                f"DEBIAN_VERIFY_PASS sha256={self.root_sha256} bytes=1073741824",
+                "matching",
+                "verified-root",
+            ),
+            ("DEBIAN_VERIFY_FAIL reason=image-hash", "needs-install", "image-hash"),
+        )
+        for marker, status, reason in cases:
+            operations = self.Operations(transcript=self._transcript(marker))
+            with self.subTest(status=status):
+                result = run_inventory(self.plan, self.permit, operations)
+            self.assertEqual(result.status, status)
+            self.assertEqual(result.reason, reason)
+            self.assertEqual(
+                result.serial_sha256,
+                hashlib.sha256(operations.transcript).hexdigest(),
+            )
+            self.assertEqual(
+                operations.events[:3], ["invalidate", "geometry", "install-result"]
+            )
+            self.assertTrue(operations.events[3].startswith("verify:"))
+            self.assertEqual(operations.events[4], "publish")
+
+    def test_ambiguous_failures_publish_not_measurable_never_needs_install(
+        self,
+    ) -> None:
+        for failure in ("geometry", "timeout", "install-result", "verifier"):
+            operations = self.Operations(failure=failure)
+            with self.subTest(failure=failure):
+                result = run_inventory(self.plan, self.permit, operations)
+            self.assertEqual(result.status, "not-measurable")
+            self.assertNotEqual(result.status, "needs-install")
+            self.assertIs(operations.published, result)
+
+        operations = self.Operations(
+            transcript=self._transcript(
+                "DEBIAN_VERIFY_FAIL reason=target-size-mismatch"
+            )
+        )
+        result = run_inventory(self.plan, self.permit, operations)
+        self.assertEqual(result.status, "not-measurable")
+        self.assertEqual(result.reason, "verifier-evidence")
+
+        operations = self.Operations()
+        operations.read_partition_geometry = lambda: (
+            self.GEOMETRY[0],
+            PartitionGeometry(2, P2_START_LBA + 1, P2_NR_SECTORS),
+            self.GEOMETRY[2],
+        )
+        result = run_inventory(self.plan, self.permit, operations)
+        self.assertEqual(result.status, "not-measurable")
+        self.assertEqual(result.partitions, ())
 
 
 if __name__ == "__main__":

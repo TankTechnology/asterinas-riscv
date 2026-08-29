@@ -528,7 +528,9 @@ emit() {{ printf '%s\\n' "$1" >/dev/ttyS0; }}
 fail() {{ emit "DEBIAN_VERIFY_FAIL reason=$1"; reboot -f; hold; }}
 target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
-[ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+size=$(blockdev --getsize64 "$target") || fail target-size-read
+[ "$size" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+emit "DEBIAN_INVENTORY_READY target=$target bytes=$size write=disabled"
 set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock count={read_blocks} 2>/dev/null | sha256sum)
 [ "$#" = 2 ] && [ "$2" = "-" ] || fail image-hash-output
 [ "$1" = "{root_sha256}" ] || fail image-hash
