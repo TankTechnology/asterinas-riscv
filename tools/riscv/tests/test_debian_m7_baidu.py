@@ -215,20 +215,21 @@ esac
         )
         self.assertLess(
             action_lines.index("windowfocus --sync 42"),
-            action_lines.index("key ctrl+l"),
+            action_lines.index("mousemove --sync --window 42 500 42"),
         )
-        search_focus = action_lines.index("key ctrl+l")
+        search_focus = action_lines.index("mousemove --sync --window 42 500 42")
         self.assertEqual(
-            action_lines[search_focus : search_focus + 4],
+            action_lines[search_focus : search_focus + 5],
             [
-                "key ctrl+l",
+                "mousemove --sync --window 42 500 42",
+                "click 1",
                 "key ctrl+a",
                 "type --delay 0 -- https://m.baidu.com/s?word=asterinas",
                 "key Return",
             ],
         )
-        self.assertFalse(any(line.startswith("mousemove ") for line in action_lines))
-        self.assertFalse(any(line.startswith("click ") for line in action_lines))
+        self.assertNotIn("mousemove --sync 500 42", action_lines)
+        self.assertNotIn("mousemove --sync 560 310", action_lines)
         self.assertEqual(action_lines.count("key Return"), 1)
 
     def test_guest_reports_bounded_home_and_search_navigation_failures(self) -> None:
