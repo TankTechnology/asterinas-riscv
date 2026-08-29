@@ -1337,9 +1337,13 @@ EOF
             "$stage/etc/systemd/system/systemd-logind.service.d"
         cat >"$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf" <<'EOF'
 [Service]
-# Software-emulated SMP RISC-V needs more than systemd's default while
-# constructing logind's mount namespace. Keep the extension profile-local.
-TimeoutStartSec=300s
+# systemd-logind uses Type=notify-reload upstream, but this kernel can leave
+# its readiness notification pending while it probes VT/seat devices.  Keep
+# logind running for diagnostics, while allowing the desktop unit to proceed
+# once the daemon has been exec'd instead of waiting for the notify handshake.
+Type=simple
+NotifyAccess=none
+TimeoutStartSec=60s
 EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"

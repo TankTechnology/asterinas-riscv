@@ -556,9 +556,13 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertEqual(
                 logind_timeout.read_text(),
                 "[Service]\n"
-                "# Software-emulated SMP RISC-V needs more than systemd's default while\n"
-                "# constructing logind's mount namespace. Keep the extension profile-local.\n"
-                "TimeoutStartSec=300s\n",
+                "# systemd-logind uses Type=notify-reload upstream, but this kernel can leave\n"
+                "# its readiness notification pending while it probes VT/seat devices.  Keep\n"
+                "# logind running for diagnostics, while allowing the desktop unit to proceed\n"
+                "# once the daemon has been exec'd instead of waiting for the notify handshake.\n"
+                "Type=simple\n"
+                "NotifyAccess=none\n"
+                "TimeoutStartSec=60s\n",
             )
             self.assertIn("PrivateNetwork=yes", firefox_unit_text)
             self.assertIn("User=asterinas", firefox_unit_text)
