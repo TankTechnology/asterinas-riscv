@@ -62,6 +62,34 @@ impl BlockPtrTree {
         self.raw_block_ptrs.clear_dirty();
     }
 
+    /// Updates `i_blocks` when an external xattr block is attached or detached.
+    pub(super) fn update_xattr_block_accounting(
+        &mut self,
+        old_bid: Ext2Bid,
+        new_bid: Ext2Bid,
+    ) -> Result<()> {
+        match (old_bid == 0, new_bid == 0) {
+            (true, false) => {
+                self.raw_block_ptrs.sector_count = self
+                    .raw_block_ptrs
+                    .sector_count
+                    .checked_add(SECTORS_PER_BLOCK)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+            }
+            (false, true) => {
+                self.raw_block_ptrs.sector_count = self
+                    .raw_block_ptrs
+                    .sector_count
+                    .checked_sub(SECTORS_PER_BLOCK)
+                    .ok_or_else(|| {
+                        Error::with_message(Errno::EIO, "inode block count underflow")
+                    })?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Flushes all dirty cached indirect blocks to the device.
     pub(in crate::fs::fs_impls::ext2::inode) fn sync_indirect_blocks(&self) -> Result<()> {
         self.indirect_blocks_manager.lock().sync()
