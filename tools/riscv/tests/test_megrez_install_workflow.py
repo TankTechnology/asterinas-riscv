@@ -432,6 +432,9 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
 
     def test_recovery_epoch_requires_new_ordered_firmware_and_prompt(self) -> None:
         validate_recovery_epoch("OpenSBI v1.7\nU-Boot 2026.07\n=> ")
+        validate_recovery_epoch(
+            "OpenSBI v1.5\nU-Boot 2024.01-gdbb5f9e3 (Jan 02 2025 - 09:00:24 +0000)\n=> "
+        )
         for invalid in (
             "U-Boot 2026.07\n=> ",
             "U-Boot 2026.07\nOpenSBI v1.7\n=> ",
