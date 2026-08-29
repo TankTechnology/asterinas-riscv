@@ -31,8 +31,9 @@ use crate::{
         DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH, DMA_CHANNEL0_TX_RING_LENGTH,
         DMA_CHANNEL0_TX_TAIL_POINTER, DMA_MODE, DMA_SYSTEM_BUS_MODE, MAC_ADDRESS0_HIGH,
         MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_ENABLE,
-        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER,
-        MTL_RX_QUEUE0_OPERATION_MODE, MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero,
+        MAC_PACKET_FILTER, MAC_QUEUE0_TX_FLOW_CONTROL, MAC_RX_FLOW_CONTROL, MAC_RX_QUEUE_CONTROL0,
+        MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER, MTL_RX_QUEUE0_OPERATION_MODE,
+        MTL_TX_QUEUE0_OPERATION_MODE, configure_flow_control, configure_queue_zero,
         decode_mtl_rx_loss, dma_interrupt_enable, dma_status_needs_rx_resume, dma_system_bus_mode,
         encode_ring_length, encode_rx_buffer_size,
     },
@@ -187,6 +188,13 @@ fn configure_selected(
         read(MAC_RX_QUEUE_CONTROL0.offset())?,
     )
     .map_err(|_| DeviceError::RegisterEncoding)?;
+    let flow_control = configure_flow_control(
+        mac_feature1,
+        queue_zero.mtl_rx_operation_mode,
+        selected.link_state.tx_pause(),
+        selected.link_state.rx_pause(),
+    )
+    .map_err(|_| DeviceError::RegisterEncoding)?;
 
     let system_bus_mode = dma_system_bus_mode(tx_high, rx_high);
     write(DMA_SYSTEM_BUS_MODE.offset(), system_bus_mode)?;
@@ -220,11 +228,19 @@ fn configure_selected(
     )?;
     write(
         MTL_RX_QUEUE0_OPERATION_MODE.offset(),
-        queue_zero.mtl_rx_operation_mode,
+        flow_control.mtl_rx_operation_mode,
     )?;
     write(
         MAC_RX_QUEUE_CONTROL0.offset(),
         queue_zero.mac_rx_queue_control0,
+    )?;
+    write(
+        MAC_QUEUE0_TX_FLOW_CONTROL.offset(),
+        flow_control.mac_tx_flow_control_queue0,
+    )?;
+    write(
+        MAC_RX_FLOW_CONTROL.offset(),
+        flow_control.mac_rx_flow_control,
     )?;
     ostd::info!(
         "configured GMAC{} queue zero: feature1={:#010x} system_bus={:#010x} tx_ring={:#018x} rx_ring={:#018x} mac_rxq={:#010x} mtl_tx={:#010x} mtl_rx={:#010x}",
@@ -235,7 +251,15 @@ fn configure_selected(
         addresses.rx_ring,
         queue_zero.mac_rx_queue_control0,
         queue_zero.mtl_tx_operation_mode,
-        queue_zero.mtl_rx_operation_mode,
+        flow_control.mtl_rx_operation_mode,
+    );
+    ostd::info!(
+        "ASTERINAS_GMAC_FLOW_CONTROL tx_pause={} rx_pause={} mac_tx={:#010x} mac_rx={:#010x} mtl_rx={:#010x}",
+        selected.link_state.tx_pause(),
+        selected.link_state.rx_pause(),
+        flow_control.mac_tx_flow_control_queue0,
+        flow_control.mac_rx_flow_control,
+        flow_control.mtl_rx_operation_mode,
     );
     ostd::info!(
         "ASTERINAS_GMAC_DMA_CONTRACT version={:#04x} ring_paddr={:#018x} ring_daddr={:#018x} ring_cpu_alias={:#018x?} tx_ring={:#018x} rx_ring={:#018x} tx_tail={:#018x} rx_tail={:#018x}",
