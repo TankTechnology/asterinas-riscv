@@ -255,13 +255,13 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"published")
 
     def test_network_installer_resumes_independently_verified_chunks(self):
-        payload = b"a" * 4096 + b"b" * 4096
+        payload = b"a" * (1024 * 1024) + b"b" * (1024 * 1024)
         root_hash = hashlib.sha256(payload).hexdigest()
         root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
         with tempfile.TemporaryDirectory() as temporary:
             image = Path(temporary) / "root.ext2"
             image.write_bytes(payload)
-            chunks = plan_chunks(image, chunk_size=4096)
+            chunks = plan_chunks(image, chunk_size=1024 * 1024)
 
         script = render_network_init(root_hash, len(payload), root_url, chunks).decode()
 
@@ -269,12 +269,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
         self.assertIn("done < /installer/network-chunks.tsv", script)
-        self.assertIn('dd if="$target" bs=4096 skip="$block"', script)
+        self.assertIn('dd if="$target" bs=1048576 skip="$block"', script)
         self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
         self.assertIn('wget -T 30 -O "$download" "$url"', script)
         self.assertIn('sha256sum "$download"', script)
         self.assertIn('gzip -t "$download"', script)
-        self.assertIn('gzip -dc "$download" | dd of="$target" bs=4096', script)
+        self.assertIn('gzip -dc "$download" | dd of="$target" bs=1048576', script)
         self.assertIn("sync || fail sync-$index", script)
         self.assertIn("DEBIAN_INSTALL_CHUNK_OK", script)
         self.assertNotIn("mkfifo", script)
@@ -301,15 +301,15 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             first = root / "first.cpio"
             second = root / "second.cpio"
             base.write_bytes(_archive(*_busybox_base_entries()))
-            image.write_bytes(b"a" * 4096 + b"b" * 4096)
+            image.write_bytes(b"a" * (1024 * 1024) + b"b" * (1024 * 1024))
             image_hash = hashlib.sha256(image.read_bytes()).hexdigest()
             root_url = "http://10.100.19.216:8080/debian-root.ext2.gz"
 
             build_network_archive(
-                base, image, first, image_hash, root_url, chunk_size=4096
+                base, image, first, image_hash, root_url, chunk_size=1024 * 1024
             )
             build_network_archive(
-                base, image, second, image_hash, root_url, chunk_size=4096
+                base, image, second, image_hash, root_url, chunk_size=1024 * 1024
             )
 
             self.assertEqual(first.read_bytes(), second.read_bytes())
@@ -329,7 +329,7 @@ class MegrezDebianInstallerTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     gzip.decompress(compressed.read_bytes()),
-                    image.read_bytes()[index * 4096 : (index + 1) * 4096],
+                    image.read_bytes()[index * 1024 * 1024 : (index + 1) * 1024 * 1024],
                 )
                 self.assertEqual(row[5], f"{root_url}.chunk-{index:04d}-{row[3]}.gz")
             self.assertFalse(
@@ -342,7 +342,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
             first_chunk.write_bytes(b"corrupt")
             with self.assertRaisesRegex(InstallerError, "identity mismatch"):
                 build_network_archive(
-                    base, image, first, image_hash, root_url, chunk_size=4096
+                    base,
+                    image,
+                    first,
+                    image_hash,
+                    root_url,
+                    chunk_size=1024 * 1024,
                 )
             self.assertEqual(first.read_bytes(), published_installer)
             first_chunk.write_bytes(first_chunk_payload)
@@ -360,7 +365,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
                 InstallerError, "missing executable installer runtime"
             ):
                 build_network_archive(
-                    base, image, first, image_hash, root_url, chunk_size=4096
+                    base,
+                    image,
+                    first,
+                    image_hash,
+                    root_url,
+                    chunk_size=1024 * 1024,
                 )
             self.assertLess(first.stat().st_size, base.stat().st_size + 16 * 1024)
 

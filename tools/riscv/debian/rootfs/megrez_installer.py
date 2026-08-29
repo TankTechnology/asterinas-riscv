@@ -411,8 +411,8 @@ def _network_manifest(root_url: str, chunks: Sequence[Chunk]) -> bytes:
             "\t".join(
                 (
                     f"{chunk.index:04d}",
-                    str(chunk.offset // BLOCK_SIZE),
-                    str(chunk.uncompressed_size // BLOCK_SIZE),
+                    str(chunk.offset // INSTALL_WRITE_BLOCK_SIZE),
+                    str(chunk.uncompressed_size // INSTALL_WRITE_BLOCK_SIZE),
                     chunk.compressed_sha256,
                     chunk.uncompressed_sha256,
                     _network_chunk_url(canonical_url, chunk),
@@ -420,6 +420,16 @@ def _network_manifest(root_url: str, chunks: Sequence[Chunk]) -> bytes:
             )
         )
     return ("\n".join(lines) + "\n").encode()
+
+
+def _validate_network_chunks(root_size: int, chunks: Sequence[Chunk]) -> None:
+    _validate_chunks(root_size, chunks)
+    if any(
+        chunk.offset % INSTALL_WRITE_BLOCK_SIZE
+        or chunk.uncompressed_size % INSTALL_WRITE_BLOCK_SIZE
+        for chunk in chunks
+    ):
+        raise InstallerError("network chunks must align to 1 MiB I/O units")
 
 
 def render_network_init(
@@ -434,7 +444,7 @@ def render_network_init(
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
     canonical_url = _canonical_root_url(root_url)
-    _validate_chunks(root_size, chunks)
+    _validate_network_chunks(root_size, chunks)
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -456,7 +466,7 @@ download=/run/debian-install.chunk.gz
 tab=$(printf '\t')
 while IFS="$tab" read -r index block blocks compressed uncompressed url; do
     case "$url" in "$root_url".chunk-*.gz) ;; *) fail chunk-url-$index ;; esac
-    set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+    set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
     if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
         echo "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
         continue
@@ -468,9 +478,9 @@ while IFS="$tab" read -r index block blocks compressed uncompressed url; do
         if wget -T 30 -O "$download" "$url"; then
             set -- $(sha256sum "$download")
             if [ "$#" = 2 ] && [ "$1" = "$compressed" ] && gzip -t "$download"; then
-                if gzip -dc "$download" | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock seek="$block" count="$blocks" conv=notrunc; then
+                if gzip -dc "$download" | dd of="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock seek="$block" count="$blocks" conv=notrunc; then
                     sync || fail sync-$index
-                    set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+                    set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
                     if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
                         verified=$1
                         break
