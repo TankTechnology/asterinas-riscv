@@ -1380,6 +1380,10 @@ WantedBy=multi-user.target
         )
 
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        self.assertIn(
+            "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
+            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+        )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
         (input_directory / "event0").touch()
