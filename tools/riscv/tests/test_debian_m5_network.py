@@ -380,9 +380,24 @@ configure_and_normalize_rootfs
         fake_bin.mkdir()
         actions = self.directory / "safe-reboot-actions"
         console = self.directory / "safe-reboot-console"
+        sleep_count = self.directory / "safe-reboot-sleep-count"
         uptime = self.directory / "uptime"
         uptime.write_text("100.25 80.00\n", encoding="utf-8")
-        for name in ("sleep", "sync", "reboot"):
+        sleep = fake_bin / "sleep"
+        sleep.write_text(
+            "#!/bin/sh\n"
+            "printf 'sleep:%s\\n' \"$*\" "
+            '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+            'if [ ! -e "$ASTERINAS_SAFE_REBOOT_SLEEP_COUNT" ]; then\n'
+            '    : >"$ASTERINAS_SAFE_REBOOT_SLEEP_COUNT"\n'
+            "else\n"
+            "    printf '130.00 100.00\\n' "
+            '>"$ASTERINAS_SAFE_REBOOT_UPTIME_FILE"\n'
+            "fi\n",
+            encoding="utf-8",
+        )
+        sleep.chmod(0o755)
+        for name in ("sync", "reboot"):
             command = fake_bin / name
             command.write_text(
                 "#!/bin/sh\n"
@@ -398,6 +413,7 @@ configure_and_normalize_rootfs
             ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
             ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
             ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_SLEEP_COUNT=str(sleep_count),
         )
 
         result = subprocess.run(
@@ -406,12 +422,13 @@ configure_and_normalize_rootfs
             check=False,
             capture_output=True,
             text=True,
+            timeout=2,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             actions.read_text(encoding="utf-8").splitlines(),
-            ["sleep:30", "sync:", "reboot:-f"],
+            ["sleep:5", "sleep:5", "sync:", "reboot:-f"],
         )
         self.assertEqual(
             console.read_text(encoding="utf-8").splitlines(),
