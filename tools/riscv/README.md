@@ -207,6 +207,11 @@ python3 tools/riscv/megrez_sdhci_gate.py \
   --expected-crc32 5f85f90e
 ```
 
+The 2026-08-29 physical gate completed the exact 32 MiB read in 5.195899
+seconds with CRC32 `5f85f90e`, then returned to U-Boot through the pre-boot
+hardware watchdog. Both the board lifecycle result and this independent SDHCI
+classifier reported pass.
+
 ## Megrez firmware framebuffer handoff
 
 `megrez_board_session.py` can add the physically established 1920x1080
