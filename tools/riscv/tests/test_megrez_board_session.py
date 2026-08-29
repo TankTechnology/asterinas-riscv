@@ -1155,5 +1155,108 @@ class BootTransactionTests(unittest.TestCase):
         self.assertFalse(any("saveenv" in str(event) for event in events))
 
 
+class MegrezPartitionInventoryTests(unittest.TestCase):
+    class Session:
+        def __init__(self, outputs: dict[int, str] | None = None) -> None:
+            self.commands: list[str] = []
+            self.outputs = outputs or {
+                1: "start=8000 size=f2022",
+                2: "start=fa022 size=800000",
+                3: "start=8fa022 size=100000",
+            }
+
+        def command(self, command: str) -> str:
+            self.commands.append(command)
+            if not command.startswith("echo __ASTERINAS_PARTITION_"):
+                return f"{command}\n=> "
+            number = int(command.split("__", 2)[1].rsplit("_", 1)[1])
+            values = self.outputs[number]
+            return f"{command}\n__ASTERINAS_PARTITION_{number}__{values}\n=> "
+
+    def test_read_partition_geometry_uses_current_uboot_values(self) -> None:
+        session = self.Session()
+
+        geometry = board.read_partition_geometry(session)
+
+        self.assertEqual(
+            session.commands,
+            [
+                "mmc dev 1",
+                "mmc rescan",
+                "part start mmc 1 1 ast_p1_start",
+                "part size mmc 1 1 ast_p1_size",
+                "echo __ASTERINAS_PARTITION_1__start=${ast_p1_start} size=${ast_p1_size}",
+                "part start mmc 1 2 ast_p2_start",
+                "part size mmc 1 2 ast_p2_size",
+                "echo __ASTERINAS_PARTITION_2__start=${ast_p2_start} size=${ast_p2_size}",
+                "part start mmc 1 3 ast_p3_start",
+                "part size mmc 1 3 ast_p3_size",
+                "echo __ASTERINAS_PARTITION_3__start=${ast_p3_start} size=${ast_p3_size}",
+            ],
+        )
+        self.assertEqual(
+            geometry,
+            (
+                board.PartitionGeometry(1, 0x8000, 0xF2022),
+                board.PartitionGeometry(2, board.P2_START_LBA, board.P2_NR_SECTORS),
+                board.PartitionGeometry(3, 0x8FA022, 0x100000),
+            ),
+        )
+        self.assertFalse(
+            any(
+                forbidden in command
+                for command in session.commands
+                for forbidden in ("saveenv", "mmc write", "mw ", "reset", "booti")
+            )
+        )
+
+    def test_partition_geometry_rejects_malformed_or_wrong_p2_evidence(self) -> None:
+        invalid_partition_two = (
+            "",
+            "start=0xfa022 size=800000",
+            "start=FA022 size=800000",
+            "start=0 size=800000",
+            "start=fa022 size=0",
+            "start=fa023 size=800000",
+            "start=fa022 size=7fffff",
+            "start=fa022 size=800000\n__ASTERINAS_PARTITION_2__start=fa022 size=800000",
+            "__ASTERINAS_PARTITION_3__start=fa022 size=800000",
+        )
+
+        for partition_two in invalid_partition_two:
+            session = self.Session(
+                {
+                    1: "start=8000 size=f2022",
+                    2: partition_two,
+                    3: "start=8fa022 size=100000",
+                }
+            )
+            with (
+                self.subTest(partition_two=partition_two),
+                self.assertRaises(RuntimeError),
+            ):
+                board.read_partition_geometry(session)
+
+    def test_partition_geometry_rejects_overlap_or_out_of_order_partitions(
+        self,
+    ) -> None:
+        invalid = (
+            {
+                1: "start=8000 size=f2023",
+                2: "start=fa022 size=800000",
+                3: "start=8fa022 size=100000",
+            },
+            {
+                1: "start=8000 size=f2022",
+                2: "start=fa022 size=800000",
+                3: "start=8fa021 size=100000",
+            },
+        )
+
+        for outputs in invalid:
+            with self.subTest(outputs=outputs), self.assertRaises(RuntimeError):
+                board.read_partition_geometry(self.Session(outputs))
+
+
 if __name__ == "__main__":
     unittest.main()
