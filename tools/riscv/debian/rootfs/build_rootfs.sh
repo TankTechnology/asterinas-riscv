@@ -982,7 +982,10 @@ EOF
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
+            local cache_service="asterinas-browser-web.service"
+            [[ "$PROFILE" == browser-m5 ]] && cache_service="asterinas-browser-m5.service"
             python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                --service-name "$cache_service" \
                 >"$WORK_DIR/browser-startup-cache-check.log"
             grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
                 "$WORK_DIR/browser-startup-cache-check.log" ||
