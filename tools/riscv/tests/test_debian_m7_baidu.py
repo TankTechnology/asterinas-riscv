@@ -149,6 +149,10 @@ case "$1" in
     elif [ "${2-}" = Return ]; then
       phase="$(cat "$ASTERINAS_M7_STATE")"
       printf '%s' "$((phase + 1))" >"$ASTERINAS_M7_STATE"
+      if [ "$ASTERINAS_M7_MODE" != search-timeout ]; then
+        printf 'browser_window_navigate: url https://m.baidu.com/s?word=asterinas\n' \
+          >>"$ASTERINAS_BROWSER_M7_NETSURF_LOG"
+      fi
     fi
     ;;
   *) exit 8 ;;
@@ -227,10 +231,10 @@ esac
         self.assertFalse(any(line.startswith("click ") for line in action_lines))
         self.assertEqual(action_lines.count("key Return"), 1)
 
-    def test_guest_reports_bounded_home_and_search_title_failures(self) -> None:
+    def test_guest_reports_bounded_home_and_search_navigation_failures(self) -> None:
         for mode, reason in (
             ("home-timeout", "home-title-timeout"),
-            ("search-timeout", "search-title-timeout"),
+            ("search-timeout", "search-navigation-timeout"),
         ):
             with self.subTest(mode=mode):
                 environment, console, _ = self._environment(mode=mode)
