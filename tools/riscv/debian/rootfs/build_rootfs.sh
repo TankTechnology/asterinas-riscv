@@ -497,6 +497,28 @@ install_rootfs_packages() {
         apt-get -o \
         Acquire::https::CaInfo=/etc/ssl/certs/asterinas-bootstrap-ca.crt update
 
+    # Reuse hash-addressed archives admitted by an earlier successful build.
+    # Without this bridge apt redownloads Firefox on every script-only rootfs
+    # rebuild; under qemu-riscv64 that can take many minutes or stall on the
+    # security mirror.  The package identity is checked against packages.lock
+    # before copying, and the normal post-install signed-index/hash audit still
+    # remains authoritative.
+    local cached archive package version architecture filename
+    mkdir -p -- "$stage/var/cache/apt/archives"
+    for cached in "$CACHE_DIR"/sha256/*/*.deb; do
+        [[ -f "$cached" ]] || continue
+        package="$(dpkg-deb -f "$cached" Package 2>/dev/null || true)"
+        version="$(dpkg-deb -f "$cached" Version 2>/dev/null || true)"
+        architecture="$(dpkg-deb -f "$cached" Architecture 2>/dev/null || true)"
+        [[ -n "$package" && -n "$version" && -n "$architecture" ]] || continue
+        if awk -F '\t' -v p="$package" -v a="$architecture" -v v="$version" \
+            '$1 == p && $2 == a && $3 == v { found=1 } END { exit(found ? 0 : 1) }' \
+            "$OUTPUT_DIR/packages.lock" 2>/dev/null; then
+            filename="${package}_${version}_${architecture}.deb"
+            cp -f -- "$cached" "$stage/var/cache/apt/archives/$filename"
+        fi
+    done
+
     log "phase 5/8: installing explicit minbase additions"
     chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
