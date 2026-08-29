@@ -24,8 +24,10 @@ from tools.riscv.megrez_gmac_gate import (
     _parse_args,
     GateConfig,
     GateFailure,
+    GateTarget,
     GateTermination,
     check_address_unused,
+    classify_physical_network_transcript,
     classify_physical_transcript,
     physical_bootargs,
     run_gate,
@@ -37,6 +39,10 @@ EXPECTED_PHYSICAL_MILESTONES = (
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
     DESKTOP_M4_MILESTONES[-1].encode(),
     DESKTOP_M6_REMOTE_MARKER.encode(),
+)
+EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
+    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
 
 
@@ -51,6 +57,10 @@ def complete_browser_evidence(status: str = "limited-pass") -> bytes:
         )
         + b"\n"
     )
+
+
+def complete_network_evidence() -> bytes:
+    return b"\n".join(EXPECTED_PHYSICAL_NETWORK_MILESTONES) + b"\n"
 
 
 class FakeOperations:
@@ -191,6 +201,12 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(parsed.load_transport, "ymodem")
         self.assertEqual(parsed.booti_compressed_crc32, "13572468")
         self.assertEqual(parsed.booti_uncompressed_size, 14530072)
+        self.assertEqual(parsed.target, GateTarget.BROWSER)
+
+        network = _parse_args(required[:-2] + ["--target", "network"])
+        self.assertEqual(network.target, GateTarget.NETWORK)
+        with self.assertRaises(SystemExit):
+            _parse_args(required[:-2] + ["--target", "desktop"])
 
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
@@ -203,6 +219,78 @@ class MegrezGmacGateTests(unittest.TestCase):
             ["invalidate", "address-check", "publish"],
         )
         self.assertIsNotNone(operations.published)
+        self.assertEqual(result["target"], "browser")
+
+    def test_network_target_passes_without_desktop_or_browser_evidence(self) -> None:
+        evidence = complete_network_evidence()
+        operations = FakeOperations(
+            chunks=(evidence[13:-17], evidence[-17:], b"late harmless log\n"),
+            boot=evidence[:13],
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+            ),
+            operations,
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["target"], "network")
+        self.assertNotIn("javascript_status", result)
+        self.assertNotIn(DESKTOP_M4_MILESTONES[-1].encode(), operations.published[0])
+        self.assertNotIn(DESKTOP_M6_REMOTE_MARKER.encode(), operations.published[0])
+        self.assertIn(b"late harmless log", operations.published[0])
+
+    def test_network_classifier_rejects_bad_or_fatal_evidence(self) -> None:
+        complete = complete_network_evidence()
+        self.assertTrue(classify_physical_network_transcript(complete).passed)
+        cases = (
+            (
+                complete.replace(EXPECTED_PHYSICAL_NETWORK_MILESTONES[-1], b""),
+                "missing physical network milestone",
+            ),
+            (
+                complete + EXPECTED_PHYSICAL_NETWORK_MILESTONES[-1] + b"\n",
+                "duplicate physical network milestone",
+            ),
+            (
+                b"\n".join(reversed(EXPECTED_PHYSICAL_NETWORK_MILESTONES)),
+                "physical network milestones out of order",
+            ),
+            (
+                complete + b"Kernel panic - not syncing\n",
+                "fatal transcript marker: kernel panic",
+            ),
+        )
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    classify_physical_network_transcript(transcript).reason,
+                    reason,
+                )
+
+    def test_network_target_rejects_fatal_marker_seen_during_drain(self) -> None:
+        operations = FakeOperations(
+            chunks=(complete_network_evidence(), b"Fatal bus error\n"),
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+            ),
+            operations,
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["target"], "network")
+        self.assertEqual(
+            result["reason"], "fatal transcript marker: GMAC fatal bus error"
+        )
 
     def test_split_browser_network_markers_pass_without_icmp(self) -> None:
         self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
@@ -236,6 +324,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("host_ping_count", result)
+        self.assertEqual(result["target"], "browser")
         self.assertEqual(result["javascript_status"], "limited-pass")
         self.assertIn(b"late harmless log", operations.published[0])
 
