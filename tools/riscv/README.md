@@ -162,15 +162,18 @@ PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
 ```
 
 The option follows the EIC7700X TRM's Synopsys DesignWare watchdog contract at
-`0x50800000`. Before `booti`, it verifies component type `0x44570120`, selects
-the maximum TOP/TOP_INIT values, kicks with `0x76`, enables interrupt-then-reset
-mode, and reads the control registers back. Any type or readback mismatch
-aborts before the kernel starts. It writes neither storage nor U-Boot
-environment. A watchdog recovery that occurs after the first current-guest
-marker but before the terminal marker is reported immediately as
-`guest-reboot-before-terminal`; a bare pre-boot prompt is not mistaken for
-current-attempt evidence. The exact wall-clock timeout depends on the board's
-watchdog clock, so the host still retains its independent 300-second cap.
+`0x50800000`. Before touching that block, it reads the system-controller clock
+gate at `0x51828200` and active-low reset at `0x51828444`, preserves unrelated
+bits, deasserts only WDT0 reset when required, and verifies both values again.
+It then verifies component type `0x44570120`, selects maximum `TOP=0xf`
+(`TORR[7:4]` is reserved on EIC7700X), kicks with `0x76`, enables
+interrupt-then-reset mode, and reads the control registers back. Any
+prerequisite, type, or readback mismatch aborts before the kernel starts. It
+writes neither storage nor U-Boot environment. A watchdog recovery that occurs
+after the first current-guest marker but before the terminal marker is reported
+immediately as `guest-reboot-before-terminal`; a bare pre-boot prompt is not
+mistaken for current-attempt evidence. The host retains its independent
+300-second cap even though the current DT describes a 200 MHz watchdog clock.
 
 ## Megrez SDHCI read-only evidence
 

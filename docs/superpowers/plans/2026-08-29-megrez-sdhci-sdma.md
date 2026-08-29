@@ -83,6 +83,14 @@ focused tests.
   a returned U-Boot banner as a failed current attempt. Host tests cover the
   exact command order and fail-closed behavior; physical watchdog recovery is
   not claimed until the next bounded board run.
+- The first watchdog-enabled attempt remained fail-closed at U-Boot: the
+  watchdog component register read as zero and no kernel was started. Read-only
+  follow-up showed `lsp_clk_en0=0xfe3fff83` (WDT0 clock enabled) but
+  `wdt_rst_ctrl=0` (all four watchdog resets asserted). This matches the TRM's
+  system-controller fields at offsets `0x200` and `0x444` and explains the zero
+  component ID. The workflow now preserves both registers' unrelated bits,
+  deasserts only WDT0 reset, verifies the prerequisites, and uses EIC7700X's
+  real `TOP=0xf` maximum; the upper TORR nibble is reserved on this SoC.
 
 ---
 

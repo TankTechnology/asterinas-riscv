@@ -72,8 +72,12 @@ PROBE_FAILURE_PATTERN = re.compile(
 )
 KERNEL_COMPRESSED_ADDRESS = 0x90000000
 EIC7700_WATCHDOG_BASE = 0x50800000
+EIC7700_SYSCFG_WATCHDOG_CLOCK = 0x51828200
+EIC7700_SYSCFG_WATCHDOG_RESET = 0x51828444
+EIC7700_WATCHDOG0_CLOCK_BIT = 1 << 28
+EIC7700_WATCHDOG0_RESET_N_BIT = 1 << 0
 DW_WATCHDOG_COMPONENT_TYPE = 0x44570120
-DW_WATCHDOG_MAX_TIMEOUT = 0xFF
+DW_WATCHDOG_MAX_TIMEOUT = 0x0F
 DW_WATCHDOG_RECOVERY_CONTROL = 0x1F
 _UBOOT_MEMORY_LINE = re.compile(
     r"(?m)^(?P<address>[0-9a-fA-F]{8,16}):"
@@ -417,6 +421,42 @@ class RealBoardOperations:
                 timeout=_remaining(deadline, time.monotonic, phase="hardware-watchdog"),
             )
 
+        clock = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_CLOCK,
+            1,
+        )[0]
+        reset = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_RESET,
+            1,
+        )[0]
+        if clock & EIC7700_WATCHDOG0_CLOCK_BIT == 0:
+            command(
+                f"mw.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} "
+                f"0x{clock | EIC7700_WATCHDOG0_CLOCK_BIT:x}"
+            )
+        if reset & EIC7700_WATCHDOG0_RESET_N_BIT == 0:
+            command(
+                f"mw.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} "
+                f"0x{reset | EIC7700_WATCHDOG0_RESET_N_BIT:x}"
+            )
+        clock = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_CLOCK,
+            1,
+        )[0]
+        reset = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_RESET,
+            1,
+        )[0]
+        if (
+            clock & EIC7700_WATCHDOG0_CLOCK_BIT == 0
+            or reset & EIC7700_WATCHDOG0_RESET_N_BIT == 0
+        ):
+            raise BoardRunFailure("hardware-watchdog-prerequisite-not-ready")
+
         component = command(f"md.l 0x{EIC7700_WATCHDOG_BASE + 0xFC:x} 1")
         if _uboot_words(component, EIC7700_WATCHDOG_BASE + 0xFC, 1) != (
             DW_WATCHDOG_COMPONENT_TYPE,
@@ -434,7 +474,7 @@ class RealBoardOperations:
         )
         if (
             control & DW_WATCHDOG_RECOVERY_CONTROL != DW_WATCHDOG_RECOVERY_CONTROL
-            or timeout & 0xFF != DW_WATCHDOG_MAX_TIMEOUT
+            or timeout & 0x0F != DW_WATCHDOG_MAX_TIMEOUT
         ):
             raise BoardRunFailure("hardware-watchdog-not-armed")
 
