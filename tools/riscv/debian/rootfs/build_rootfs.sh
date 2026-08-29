@@ -1006,7 +1006,7 @@ After=local-fs.target
 Before=asterinas-desktop-m5-network.service
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/lib/asterinas/megrez-safe-reboot
 RemainAfterExit=yes
 
