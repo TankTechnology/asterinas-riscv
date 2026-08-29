@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::ops::Range;
+
 use ostd::mm::{HasPaddr, Paddr, frame::linked_list::LinkedList};
 
 use crate::chunk::{BuddyOrder, FreeChunk, FreeHeadMeta, size_of_order};
@@ -98,6 +100,60 @@ impl<const MAX_ORDER: BuddyOrder> BuddySet<MAX_ORDER> {
         head_frame.reset_as_unused(); // It will "drop" the frame without up-calling us.
         Some(paddr)
     }
+
+    /// Allocates one chunk that is wholly contained in `range`.
+    pub(crate) fn alloc_chunk_in(
+        &mut self,
+        order: BuddyOrder,
+        range: Range<Paddr>,
+    ) -> Option<Paddr> {
+        if order >= MAX_ORDER || range.start >= range.end {
+            return None;
+        }
+
+        let requested_size = size_of_order(order);
+        let mut selected = None;
+        for source_order in order..MAX_ORDER {
+            let source_size = size_of_order(source_order);
+            let mut cursor = self.lists[source_order].cursor_front_mut();
+            while let Some(chunk_start) = cursor.current_paddr() {
+                let chunk_end = chunk_start.checked_add(source_size)?;
+                let candidate_start = chunk_start.max(range.start);
+                let candidate_start =
+                    candidate_start.checked_add(requested_size - 1)? & !(requested_size - 1);
+                let candidate_end = candidate_start.checked_add(requested_size)?;
+                if candidate_end <= chunk_end && candidate_end <= range.end {
+                    let chunk = FreeChunk::from_free_head(cursor.take_current().unwrap());
+                    selected = Some((chunk, source_order, candidate_start));
+                    break;
+                }
+                cursor.move_next();
+            }
+            if selected.is_some() {
+                break;
+            }
+        }
+
+        let (mut chunk, mut chunk_order, candidate_start) = selected?;
+        while chunk_order > order {
+            let (left, right) = chunk.split_free();
+            chunk_order -= 1;
+            let (selected_child, unused_child) = if candidate_start < right.addr() {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            self.lists[chunk_order].push_front(unused_child.into_unique_head());
+            chunk = selected_child;
+        }
+
+        debug_assert_eq!(chunk.addr(), candidate_start);
+        self.total_size -= requested_size;
+        let head_frame = chunk.into_unique_head();
+        let paddr = head_frame.paddr();
+        head_frame.reset_as_unused();
+        Some(paddr)
+    }
 }
 
 #[cfg(ktest)]
@@ -144,5 +200,50 @@ mod test {
         let chunk = set.alloc_chunk(region_order).unwrap();
         assert!(chunk == region_start);
         assert!(set.total_size() == 0);
+    }
+
+    #[ktest]
+    fn buddy_set_allocates_only_inside_the_requested_range() {
+        let region_order = 4;
+        let region_size = size_of_order(region_order);
+        let region = MockMemoryRegion::alloc(region_size);
+        let region_start = region.paddr();
+        let target_start = region_start + size_of_order(3);
+
+        let mut set = BuddySet::<5>::new_empty();
+        set.insert_chunk(region_start, region_order);
+
+        let selected = set
+            .alloc_chunk_in(1, target_start..target_start + size_of_order(2))
+            .unwrap();
+        assert_eq!(selected, target_start);
+        assert_eq!(set.total_size(), region_size - size_of_order(1));
+
+        assert_eq!(set.alloc_chunk(3), Some(region_start));
+        assert_eq!(set.alloc_chunk(2), Some(target_start + size_of_order(2)));
+        assert_eq!(set.alloc_chunk(1), Some(target_start + size_of_order(1)));
+        assert_eq!(set.total_size(), 0);
+    }
+
+    #[ktest]
+    fn buddy_set_rejects_an_out_of_range_request_without_mutation() {
+        let region_order = 3;
+        let region_size = size_of_order(region_order);
+        let region = MockMemoryRegion::alloc(region_size);
+        let region_start = region.paddr();
+
+        let mut set = BuddySet::<4>::new_empty();
+        set.insert_chunk(region_start, region_order);
+
+        assert_eq!(
+            set.alloc_chunk_in(
+                1,
+                region_start + region_size..region_start + region_size * 2
+            ),
+            None
+        );
+        assert_eq!(set.total_size(), region_size);
+        assert_eq!(set.alloc_chunk(region_order), Some(region_start));
+        assert_eq!(set.total_size(), 0);
     }
 }

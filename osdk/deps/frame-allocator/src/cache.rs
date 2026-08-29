@@ -2,7 +2,7 @@
 
 //! A fixed-size local cache for frame allocation.
 
-use core::{alloc::Layout, cell::RefCell};
+use core::{alloc::Layout, cell::RefCell, ops::Range};
 
 use ostd::{
     cpu_local,
@@ -133,6 +133,14 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
         4 => cache.cache4.alloc(guard),
         _ => super::pools::alloc(guard, layout),
     }
+}
+
+pub(super) fn alloc_in(
+    guard: &DisabledLocalIrqGuard,
+    layout: Layout,
+    paddr_range: Range<Paddr>,
+) -> Option<Paddr> {
+    super::pools::alloc_in(guard, layout, paddr_range)
 }
 
 pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {
