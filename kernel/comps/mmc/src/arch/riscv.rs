@@ -3,7 +3,11 @@
 use core::{hint::spin_loop, ops::Range};
 
 use fdt::{Fdt, node::FdtNode};
-use ostd::{arch::boot::DEVICE_TREE, io::IoMem, mm::io::VmIoOnce};
+use ostd::{
+    arch::boot::DEVICE_TREE,
+    io::IoMem,
+    mm::{dma::DmaWindow, io::VmIoOnce},
+};
 
 use crate::{
     card::{Card, HostController, Response},
@@ -29,6 +33,9 @@ const CLOCK_CORE_ENABLE: u32 = 1 << 16;
 const CLOCK_CORE_DIVISOR_MASK: u32 = 0x0fff << 4;
 const CLOCK_CORE_SELECT_416MHZ: u32 = 1;
 const POLL_BUDGET: usize = 1_000_000;
+const DMA_DEVICE_START: usize = 0x2000_0000;
+const DMA_CPU_START: usize = 0xc000_0000;
+const DMA_WINDOW_SIZE: usize = 0x4000_0000;
 
 const BLOCK_COUNT: usize = 0x06;
 const RESPONSE1: usize = 0x14;
@@ -56,6 +63,7 @@ const RESET_DATA: u8 = 1 << 2;
 struct PlatformConfig {
     mmio_range: Range<usize>,
     clock_mmio_range: Range<usize>,
+    dma_window: DmaWindow,
     interrupt: u32,
     bus_width: usize,
     clock_frequency: u32,
@@ -73,6 +81,8 @@ struct ConfigFields {
     max_frequency: Option<u32>,
     no_mmc: bool,
     clock_resource_valid: bool,
+    dma_window: Option<DmaWindow>,
+    dma_noncoherent: bool,
 }
 
 fn valid_clock_resource(cells: &[u32], range: Option<(usize, usize)>) -> bool {
@@ -87,7 +97,7 @@ fn valid_clock_resource(cells: &[u32], range: Option<(usize, usize)>) -> bool {
 }
 
 impl ConfigFields {
-    const fn invalid_field(self) -> Option<&'static str> {
+    fn invalid_field(self) -> Option<&'static str> {
         if !self.enabled {
             return Some("status");
         }
@@ -111,6 +121,12 @@ impl ConfigFields {
         }
         if !self.clock_resource_valid {
             return Some("eswin,syscrg_csr");
+        }
+        if self.dma_window != DmaWindow::new(DMA_DEVICE_START, DMA_CPU_START, DMA_WINDOW_SIZE) {
+            return Some("dma-ranges");
+        }
+        if !self.dma_noncoherent {
+            return Some("dma-noncoherent");
         }
         match self.max_frequency {
             Some(frequency) if frequency > 0 && frequency <= 208_000_000 => None,
@@ -145,6 +161,7 @@ fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
         mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
         clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
             ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+        dma_window: fields.dma_window.unwrap(),
         interrupt: INTERRUPT,
         bus_width: BUS_WIDTH,
         clock_frequency: fields.clock_frequency.unwrap(),
@@ -199,6 +216,43 @@ fn clock_resource_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
     valid_clock_resource(&cells, range)
 }
 
+fn dma_window_from_cells(cells: &[u32]) -> Option<DmaWindow> {
+    let [
+        device_high,
+        device_low,
+        cpu_high,
+        cpu_low,
+        size_high,
+        size_low,
+    ] = cells
+    else {
+        return None;
+    };
+    let combine = |high: u32, low: u32| ((high as u64) << 32) | low as u64;
+    DmaWindow::new(
+        combine(*device_high, *device_low).try_into().ok()?,
+        combine(*cpu_high, *cpu_low).try_into().ok()?,
+        combine(*size_high, *size_low).try_into().ok()?,
+    )
+}
+
+fn dma_window_from_node(node: FdtNode<'_, '_>) -> Option<DmaWindow> {
+    let property = node.property("dma-ranges")?;
+    let (chunks, remainder) = property.value.as_chunks::<4>();
+    if chunks.len() != 6 || !remainder.is_empty() {
+        return None;
+    }
+    let cells = [
+        u32::from_be_bytes(chunks[0]),
+        u32::from_be_bytes(chunks[1]),
+        u32::from_be_bytes(chunks[2]),
+        u32::from_be_bytes(chunks[3]),
+        u32::from_be_bytes(chunks[4]),
+        u32::from_be_bytes(chunks[5]),
+    ];
+    dma_window_from_cells(&cells)
+}
+
 fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
     let enabled = match node.property("status") {
         None => true,
@@ -236,6 +290,8 @@ fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
             .and_then(|value| value.try_into().ok()),
         no_mmc: node.property("no-mmc").is_some(),
         clock_resource_valid: clock_resource_from_node(tree, node),
+        dma_window: dma_window_from_node(node),
+        dma_noncoherent: node.property("dma-noncoherent").is_some(),
     }
 }
 
@@ -563,6 +619,8 @@ mod tests {
             max_frequency: Some(208_000_000),
             no_mmc: true,
             clock_resource_valid: true,
+            dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000),
+            dma_noncoherent: true,
         }
     }
 
@@ -574,6 +632,7 @@ mod tests {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+                dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
@@ -642,6 +701,7 @@ mod tests {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+                dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
@@ -668,5 +728,26 @@ mod tests {
             &[0x12, 0x164, 0x148, 0x14c],
             Some((0x5181_0000, 0x8_0000))
         ));
+    }
+
+    #[ktest]
+    fn accepts_only_the_exact_noncoherent_megrez_dma_window() {
+        assert_eq!(
+            dma_window_from_cells(&[0, 0x2000_0000, 0, 0xc000_0000, 0, 0x4000_0000]),
+            DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000)
+        );
+        assert_eq!(
+            dma_window_from_cells(&[0, 0x2000_0000, 0, 0xc000_0000, 0, 0]),
+            None
+        );
+        assert_eq!(dma_window_from_cells(&[0, 1, 2]), None);
+
+        let mut fields = valid_fields();
+        fields.dma_noncoherent = false;
+        assert_eq!(fields.invalid_field(), Some("dma-noncoherent"));
+
+        let mut fields = valid_fields();
+        fields.dma_window = DmaWindow::new(0, 0xc000_0000, 0x4000_0000);
+        assert_eq!(fields.invalid_field(), Some("dma-ranges"));
     }
 }
