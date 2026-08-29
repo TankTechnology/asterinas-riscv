@@ -2,9 +2,15 @@
 
 //! SD Host Controller Interface register and command definitions.
 
+use core::ops::Range;
+
+pub const SDMA_BOUNDARY_BYTES: usize = 512 * 1024;
+pub const SDMA_MAX_BLOCKS: usize = SDMA_BOUNDARY_BYTES / 512;
+
 /// Standard SDHCI registers used by the bounded PIO implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Register {
+    SystemAddress,
     BlockSize,
     Argument,
     TransferMode,
@@ -15,12 +21,14 @@ pub enum Register {
     ClockControl,
     SoftwareReset,
     InterruptStatus,
+    Capabilities,
 }
 
 impl Register {
     /// Returns the byte offset from the SDHCI register window.
     pub const fn offset(self) -> usize {
         match self {
+            Self::SystemAddress => 0x00,
             Self::BlockSize => 0x04,
             Self::Argument => 0x08,
             Self::TransferMode => 0x0c,
@@ -31,6 +39,7 @@ impl Register {
             Self::ClockControl => 0x2c,
             Self::SoftwareReset => 0x2f,
             Self::InterruptStatus => 0x30,
+            Self::Capabilities => 0x40,
         }
     }
 }
@@ -176,7 +185,79 @@ pub enum HostError {
     CommandIndex,
     DataCrc,
     DataEndBit,
+    Dma,
     Unsupported,
+}
+
+/// One SDMA request whose device-visible buffer stays inside one boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SdmaTransfer {
+    pub system_address: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub transfer_mode: u16,
+}
+
+impl SdmaTransfer {
+    pub fn new(command: Command, device_range: Range<usize>) -> Result<Self, HostError> {
+        let blocks = command.block_count();
+        let bytes = blocks.checked_mul(512).ok_or(HostError::Unsupported)?;
+        let range_bytes = device_range
+            .end
+            .checked_sub(device_range.start)
+            .ok_or(HostError::Unsupported)?;
+        if command.data.is_none()
+            || blocks == 0
+            || blocks > SDMA_MAX_BLOCKS
+            || bytes != range_bytes
+            || !device_range.start.is_multiple_of(SDMA_BOUNDARY_BYTES)
+            || u32::try_from(device_range.start).is_err()
+            || u32::try_from(device_range.end - 1).is_err()
+        {
+            return Err(HostError::Unsupported);
+        }
+        Ok(Self {
+            system_address: device_range.start as u32,
+            block_size: (7 << 12) | 512,
+            block_count: blocks as u16,
+            transfer_mode: command.transfer_mode_bits() | 1,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SdmaInterrupt {
+    Pending,
+    Boundary,
+    Complete,
+}
+
+pub const fn supports_sdma(capabilities: u32) -> bool {
+    capabilities & (1 << 22) != 0
+}
+
+pub const fn sdma_host_control(host_control: u8) -> u8 {
+    host_control & !(0b11 << 3)
+}
+
+pub const fn next_sdma_boundary(system_address: u32) -> Option<u32> {
+    system_address.checked_add(SDMA_BOUNDARY_BYTES as u32)
+}
+
+pub const fn classify_sdma_interrupt(status: u32) -> Result<SdmaInterrupt, HostError> {
+    if let Some(error) = decode_interrupt_error(status) {
+        return Err(error);
+    }
+    if status & (1 << 15) != 0 {
+        return Err(HostError::Unsupported);
+    }
+    if status & (1 << 1) != 0 {
+        Ok(SdmaInterrupt::Complete)
+    } else if status & (1 << 3) != 0 {
+        Ok(SdmaInterrupt::Boundary)
+    } else {
+        Ok(SdmaInterrupt::Pending)
+    }
 }
 
 /// Error context captured from one command interrupt status value.
@@ -207,6 +288,8 @@ pub const fn decode_interrupt_error(status: u32) -> Option<HostError> {
         Some(HostError::DataCrc)
     } else if status & (1 << 22) != 0 {
         Some(HostError::DataEndBit)
+    } else if status & (1 << 25) != 0 {
+        Some(HostError::Dma)
     } else {
         None
     }
@@ -279,6 +362,7 @@ mod tests {
     #[ktest]
     fn standard_register_offsets_are_frozen() {
         assert_eq!(Register::BlockSize.offset(), 0x04);
+        assert_eq!(Register::SystemAddress.offset(), 0x00);
         assert_eq!(Register::Argument.offset(), 0x08);
         assert_eq!(Register::TransferMode.offset(), 0x0c);
         assert_eq!(Register::Command.offset(), 0x0e);
@@ -288,6 +372,7 @@ mod tests {
         assert_eq!(Register::ClockControl.offset(), 0x2c);
         assert_eq!(Register::SoftwareReset.offset(), 0x2f);
         assert_eq!(Register::InterruptStatus.offset(), 0x30);
+        assert_eq!(Register::Capabilities.offset(), 0x40);
     }
 
     #[ktest]
@@ -365,7 +450,58 @@ mod tests {
         );
         assert_eq!(decode_interrupt_error(1 << 21), Some(HostError::DataCrc));
         assert_eq!(decode_interrupt_error(1 << 22), Some(HostError::DataEndBit));
+        assert_eq!(decode_interrupt_error(1 << 25), Some(HostError::Dma));
         assert_eq!(decode_interrupt_error(0), None);
+    }
+
+    #[ktest]
+    fn sdma_transfer_contract_matches_megrez_uboot() {
+        let command = Command::read_multiple_blocks(7, 1024);
+        let transfer = SdmaTransfer::new(command, 0x2000_0000..0x2008_0000).unwrap();
+
+        assert_eq!(transfer.system_address, 0x2000_0000);
+        assert_eq!(transfer.block_size, 0x7200);
+        assert_eq!(transfer.block_count, 1024);
+        assert_eq!(transfer.transfer_mode, 0x37);
+        assert_eq!(sdma_host_control(0xff), 0xe7);
+        assert!(supports_sdma(1 << 22));
+        assert!(!supports_sdma(0));
+        assert_eq!(next_sdma_boundary(0x2000_0000), Some(0x2008_0000));
+    }
+
+    #[ktest]
+    fn sdma_transfer_rejects_unaligned_or_unrepresentable_buffers() {
+        let command = Command::read_multiple_blocks(7, 1024);
+        assert_eq!(
+            SdmaTransfer::new(command, 0x2000_1000..0x2008_1000),
+            Err(HostError::Unsupported)
+        );
+        assert_eq!(
+            SdmaTransfer::new(command, 0x2000_0000..0x2004_0000),
+            Err(HostError::Unsupported)
+        );
+        assert_eq!(
+            SdmaTransfer::new(command, 0x1_0000_0000..0x1_0008_0000),
+            Err(HostError::Unsupported)
+        );
+        assert_eq!(
+            SdmaTransfer::new(Command::idle(), 0x2000_0000..0x2008_0000),
+            Err(HostError::Unsupported)
+        );
+    }
+
+    #[ktest]
+    fn sdma_interrupts_distinguish_progress_completion_and_failure() {
+        assert_eq!(classify_sdma_interrupt(0), Ok(SdmaInterrupt::Pending));
+        assert_eq!(classify_sdma_interrupt(1 << 3), Ok(SdmaInterrupt::Boundary));
+        assert_eq!(
+            classify_sdma_interrupt((1 << 3) | (1 << 1)),
+            Ok(SdmaInterrupt::Complete)
+        );
+        assert_eq!(
+            classify_sdma_interrupt((1 << 15) | (1 << 25)),
+            Err(HostError::Dma)
+        );
     }
 
     #[ktest]
