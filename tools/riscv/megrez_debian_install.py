@@ -6,14 +6,12 @@
 from __future__ import annotations
 
 import functools
-import gzip
 import http.server
 import lzma
 import os
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import zlib
 from collections.abc import Callable
@@ -24,6 +22,7 @@ from tools.riscv.debian.rootfs.megrez_installer import (
     _canonical_root_url,
     build_network_archive,
 )
+from tools.riscv.megrez_board_session import INCOMPLETE_RECOVERED_EXIT
 from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan, StageResult
 from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
 from tools.riscv.megrez_preboard import (
@@ -35,6 +34,7 @@ from tools.riscv.megrez_preboard import (
 
 RECOVERY_GRACE_SECONDS = 60.0
 BOARD_STAGING_BUDGET_SECONDS = 300.0
+MAX_INSTALL_ATTEMPTS = 3
 BOARD_ADDRESS = "10.100.19.200"
 SERVER_ADDRESS = "10.100.19.216"
 SERVER_PORT = 8080
@@ -46,7 +46,6 @@ DTB_FILENAME = "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb"
 ArtifactValidator = Callable[[DebugPlan], dict[str, ArtifactIdentity]]
 GitIdentity = Callable[[Path], str]
 BuildInstaller = Callable[[Path, Path, Path, str, str], None]
-CompressRoot = Callable[[Path, Path], None]
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 ServerFactory = Callable[[str, int, Path], AbstractContextManager[None]]
 
@@ -56,9 +55,9 @@ class InstallError(RuntimeError):
 
 
 class _RootServer:
-    def __init__(self, address: str, port: int, root: Path) -> None:
+    def __init__(self, address: str, port: int, directory: Path) -> None:
         handler = functools.partial(
-            http.server.SimpleHTTPRequestHandler, directory=str(root.parent)
+            http.server.SimpleHTTPRequestHandler, directory=str(directory)
         )
         try:
             self.server = http.server.ThreadingHTTPServer((address, port), handler)
@@ -79,8 +78,8 @@ class _RootServer:
         self.thread.join(timeout=5)
 
 
-def _root_server(address: str, port: int, root: Path) -> _RootServer:
-    return _RootServer(address, port, root)
+def _root_server(address: str, port: int, directory: Path) -> _RootServer:
+    return _RootServer(address, port, directory)
 
 
 def _safe_directory(path: Path, *, repository: Path) -> Path:
@@ -123,41 +122,6 @@ def _publish_lzma(source: Path, destination: Path) -> None:
             os.close(descriptor)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _publish_gzip(source: Path, destination: Path) -> None:
-    """Atomically publish one deterministic streaming gzip transport."""
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            delete=False,
-        ) as output:
-            temporary = Path(output.name)
-            with source.open("rb") as input_stream:
-                with gzip.GzipFile(
-                    filename="",
-                    mode="wb",
-                    compresslevel=1,
-                    fileobj=output,
-                    mtime=0,
-                ) as compressor:
-                    while chunk := input_stream.read(1024 * 1024):
-                        compressor.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, destination)
-        temporary = None
-        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _crc32(path: Path) -> str:
@@ -264,7 +228,6 @@ def run_network_install(
     artifact_validator: ArtifactValidator = _validate_current_artifacts,
     git_identity: GitIdentity = _git_identity,
     build_installer: BuildInstaller = build_network_archive,
-    compress_root: CompressRoot = _publish_gzip,
     server_factory: ServerFactory = _root_server,
     run_command: RunCommand = subprocess.run,
     repository_root: Path | None = None,
@@ -322,21 +285,19 @@ def run_network_install(
         tftp = _safe_directory(tftp_directory, repository=repository)
         kernel = Path(identities["kernel"].path)
         root = Path(identities["root_image"].path)
-        compressed_root = tftp / ROOT_ARCHIVE_FILENAME
         installer = tftp / INSTALLER_FILENAME
         compressed_kernel = tftp / KERNEL_FILENAME
-        try:
-            compress_root(root, compressed_root)
-        except OSError as error:
-            raise InstallError(f"cannot compress Debian root: {error}") from error
         _publish_lzma(kernel, compressed_kernel)
-        build_installer(
-            base_cpio,
-            root,
-            installer,
-            identities["root_image"].sha256,
-            canonical_url,
-        )
+        try:
+            build_installer(
+                base_cpio,
+                root,
+                installer,
+                identities["root_image"].sha256,
+                canonical_url,
+            )
+        except OSError as error:
+            raise InstallError(f"cannot build Debian installer: {error}") from error
         bootargs = _installer_bootargs(plan, identities["root_image"].sha256)
         command = _board_command(
             repository,
@@ -351,15 +312,18 @@ def run_network_install(
             milestone_timeout,
         )
         try:
-            with server_factory(SERVER_ADDRESS, SERVER_PORT, compressed_root):
-                completed = run_command(
-                    command,
-                    cwd=repository,
-                    check=False,
-                    capture_output=False,
-                    text=True,
-                    timeout=milestone_timeout + BOARD_STAGING_BUDGET_SECONDS,
-                )
+            with server_factory(SERVER_ADDRESS, SERVER_PORT, tftp):
+                for _attempt in range(1, MAX_INSTALL_ATTEMPTS + 1):
+                    completed = run_command(
+                        command,
+                        cwd=repository,
+                        check=False,
+                        capture_output=False,
+                        text=True,
+                        timeout=milestone_timeout + BOARD_STAGING_BUDGET_SECONDS,
+                    )
+                    if completed.returncode != INCOMPLETE_RECOVERED_EXIT:
+                        break
         except subprocess.TimeoutExpired as error:
             raise InstallError("board install timed out") from error
         except OSError as error:

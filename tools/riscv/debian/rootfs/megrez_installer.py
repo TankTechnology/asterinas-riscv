@@ -37,7 +37,7 @@ _INSTALLER_COMMANDS = (
     "sleep",
     "sync",
 )
-_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "mkfifo", "rm", "tee", "wget")
+_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "rm", "wget")
 _VERIFY_INSTALLER_COMMANDS = (
     "blockdev",
     "dd",
@@ -306,15 +306,7 @@ def _manifest(chunks: Sequence[Chunk]) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
-def render_init(
-    root_sha256: str,
-    root_size: int,
-    chunks: Sequence[Chunk],
-) -> bytes:
-    if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
-        raise InstallerError("root SHA-256 must be lowercase hexadecimal")
-    if root_size <= 0 or root_size % BLOCK_SIZE:
-        raise InstallerError("root size must be a positive multiple of 4096")
+def _validate_chunks(root_size: int, chunks: Sequence[Chunk]) -> None:
     expected_offset = 0
     for expected_index, chunk in enumerate(chunks):
         if chunk.index != expected_index or chunk.offset != expected_offset:
@@ -324,6 +316,18 @@ def render_init(
         expected_offset += chunk.uncompressed_size
     if expected_offset != root_size:
         raise InstallerError("chunk sizes do not cover the root image")
+
+
+def render_init(
+    root_sha256: str,
+    root_size: int,
+    chunks: Sequence[Chunk],
+) -> bytes:
+    if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
+        raise InstallerError("root SHA-256 must be lowercase hexadecimal")
+    if root_size <= 0 or root_size % BLOCK_SIZE:
+        raise InstallerError("root size must be a positive multiple of 4096")
+    _validate_chunks(root_size, chunks)
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -395,16 +399,42 @@ def _canonical_root_url(root_url: str) -> str:
     return canonical
 
 
-def render_network_init(root_sha256: str, root_size: int, root_url: str) -> bytes:
-    """Render an Asterinas-only LAN installer with bounded verified streaming."""
+def _network_chunk_url(root_url: str, chunk: Chunk) -> str:
+    return f"{root_url}.chunk-{chunk.index:04d}-{chunk.compressed_sha256}.gz"
+
+
+def _network_manifest(root_url: str, chunks: Sequence[Chunk]) -> bytes:
+    canonical_url = _canonical_root_url(root_url)
+    lines = []
+    for chunk in chunks:
+        lines.append(
+            "\t".join(
+                (
+                    f"{chunk.index:04d}",
+                    str(chunk.offset // BLOCK_SIZE),
+                    str(chunk.uncompressed_size // BLOCK_SIZE),
+                    chunk.compressed_sha256,
+                    chunk.uncompressed_sha256,
+                    _network_chunk_url(canonical_url, chunk),
+                )
+            )
+        )
+    return ("\n".join(lines) + "\n").encode()
+
+
+def render_network_init(
+    root_sha256: str,
+    root_size: int,
+    root_url: str,
+    chunks: Sequence[Chunk],
+) -> bytes:
+    """Render a restart-safe Asterinas-only LAN installer."""
     if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
         raise InstallerError("root SHA-256 must be lowercase hexadecimal")
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
-    quoted_url = f"'{_canonical_root_url(root_url)}'"
-    write_blocks = (
-        root_size + INSTALL_WRITE_BLOCK_SIZE - 1
-    ) // INSTALL_WRITE_BLOCK_SIZE
+    canonical_url = _canonical_root_url(root_url)
+    _validate_chunks(root_size, chunks)
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -421,40 +451,43 @@ case "$cmdline" in *" asterinas.debian_install_sha256={root_sha256} "*) ;; *) fa
 target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
 [ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
-hash_fifo=/run/debian-install.sha256.fifo
-hash_result=/run/debian-install.sha256
-rm -f "$hash_fifo" "$hash_result" || fail hash-state-cleanup
-mkfifo "$hash_fifo" || fail hash-fifo
-attempt=1
-fetched_hash=
-while [ "$attempt" -le 3 ]; do
-    sha256sum < "$hash_fifo" > "$hash_result" &
-    hash_pid=$!
-    pipeline_status=1
-    if wget -T 30 -O - {quoted_url} | gzip -dc | tee "$hash_fifo" | dd of="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock conv=notrunc count={write_blocks}; then
-        pipeline_status=0
+root_url='{canonical_url}'
+download=/run/debian-install.chunk.gz
+tab=$(printf '\t')
+while IFS="$tab" read -r index block blocks compressed uncompressed url; do
+    case "$url" in "$root_url".chunk-*.gz) ;; *) fail chunk-url-$index ;; esac
+    set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+    if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
+        echo "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
+        continue
     fi
-    hash_status=1
-    if wait "$hash_pid"; then
-        hash_status=0
-    fi
-    if [ "$pipeline_status" = 0 ] && [ "$hash_status" = 0 ]; then
-        set -- $(cat "$hash_result")
-        if [ "$#" = 2 ] && [ "$1" = "{root_sha256}" ] && [ "$2" = "-" ]; then
-            fetched_hash=$1
-            break
+    attempt=1
+    verified=
+    while [ "$attempt" -le 3 ]; do
+        rm -f "$download" || fail chunk-state-$index
+        if wget -T 30 -O "$download" "$url"; then
+            set -- $(sha256sum "$download")
+            if [ "$#" = 2 ] && [ "$1" = "$compressed" ] && gzip -t "$download"; then
+                if gzip -dc "$download" | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock seek="$block" count="$blocks" conv=notrunc; then
+                    sync || fail sync-$index
+                    set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+                    if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
+                        verified=$1
+                        break
+                    fi
+                fi
+            fi
         fi
-    fi
-    echo "DEBIAN_INSTALL_FETCH_RETRY attempt=$attempt"
-    attempt=$((attempt + 1))
-    sleep 2
-done
-rm -f "$hash_fifo" "$hash_result" || fail hash-state-cleanup
-[ "$fetched_hash" = "{root_sha256}" ] || fail network-fetch
-sync || fail network-sync
-echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$fetched_hash"
-echo "DEBIAN_INSTALL_PASS sha256=$fetched_hash bytes={root_size}"
+        echo "DEBIAN_INSTALL_CHUNK_RETRY index=$index attempt=$attempt"
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    [ "$verified" = "$uncompressed" ] || fail network-chunk-$index
+    echo "DEBIAN_INSTALL_CHUNK_OK index=$index sha256=$verified"
+done < /installer/network-chunks.tsv
+rm -f "$download" || fail chunk-state-cleanup
 sync || fail final-sync
+echo "DEBIAN_INSTALL_PASS sha256={root_sha256} bytes={root_size}"
 reboot -f
 fail reboot-returned
 """.encode()
@@ -578,22 +611,90 @@ def _publish_archive(output: Path, archive: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _publish_network_chunk(destination: Path, payload: bytes, digest: str) -> None:
+    try:
+        descriptor = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        descriptor = -1
+    except OSError as error:
+        raise InstallerError(f"unsafe network chunk: {destination.name}") from error
+    if descriptor >= 0:
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise InstallerError(
+                    f"network chunk identity mismatch: {destination.name}"
+                )
+            hasher = hashlib.sha256()
+            with os.fdopen(descriptor, "rb", closefd=False) as existing:
+                while block := existing.read(1024 * 1024):
+                    hasher.update(block)
+            actual = hasher.hexdigest()
+            if actual != digest:
+                raise InstallerError(
+                    f"network chunk identity mismatch: {destination.name}"
+                )
+            return
+        finally:
+            os.close(descriptor)
+
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+        temporary = None
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def build_network_archive(
     base_cpio: Path,
     root_image: Path,
     output: Path,
     root_sha256: str,
     root_url: str,
+    *,
+    chunk_size: int = CHUNK_SIZE,
 ) -> None:
-    """Build a small installer that fetches the frozen root through Asterinas."""
+    """Build a small installer and content-bound restartable LAN chunks."""
     entries = list(parse_newc(base_cpio.read_bytes()))
     _validate_installer_runtime(entries, _NETWORK_INSTALLER_COMMANDS)
     actual_hash = sha256_file(root_image)
     if actual_hash != root_sha256:
         raise InstallerError("root image SHA-256 mismatch")
-    if "init" not in {entry.name for entry in entries}:
+    names = {entry.name for entry in entries}
+    if "init" not in names:
         raise InstallerError("base initramfs has no init")
-    init_data = render_network_init(root_sha256, root_image.stat().st_size, root_url)
+    reserved = {"installer", "installer/network-chunks.tsv"}
+    if names & reserved:
+        raise InstallerError("base initramfs already contains installer paths")
+    canonical_url = _canonical_root_url(root_url)
+    chunks = plan_chunks(root_image, chunk_size=chunk_size)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    for chunk in chunks:
+        chunk_url = _network_chunk_url(canonical_url, chunk)
+        destination = (
+            output.parent / PurePosixPath(urllib.parse.urlsplit(chunk_url).path).name
+        )
+        _publish_network_chunk(destination, chunk.compressed, chunk.compressed_sha256)
+    init_data = render_network_init(
+        root_sha256, root_image.stat().st_size, canonical_url, chunks
+    )
     entries = [
         NewcEntry(
             entry.name,
@@ -608,7 +709,17 @@ def build_network_archive(
         )
         for entry in entries
     ]
-    _publish_archive(output, _encode_archive(entries))
+    next_ino = max(entry.ino for entry in entries) + 1
+    additions = (
+        _added_entry("installer", stat.S_IFDIR | 0o755, b"", next_ino),
+        _added_entry(
+            "installer/network-chunks.tsv",
+            stat.S_IFREG | 0o644,
+            _network_manifest(canonical_url, chunks),
+            next_ino + 1,
+        ),
+    )
+    _publish_archive(output, _encode_archive((*entries, *additions)))
 
 
 def build_verify_archive(

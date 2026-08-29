@@ -44,6 +44,8 @@ YMODEM_STAGING_ADDRESS = 0x9000_0000
 MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
 TX_DELAY = 0.02
 PROMPT = "=> "
+INCOMPLETE_RECOVERED_EXIT = 3
+RECOVERY_WINDOW_CHARACTERS = 64 * 1024
 MILESTONES = {
     "kernel_enter": "Enter riscv_boot",
     "banner": "Presented by the Asterinas developers",
@@ -272,6 +274,16 @@ def validate_recovery_epoch(text: str) -> None:
     )
     if min(positions) < 0 or positions != tuple(sorted(positions)):
         raise RuntimeError("automatic recovery did not reach a fresh U-Boot prompt")
+
+
+def _has_recovery_epoch(text: str) -> bool:
+    if PROMPT not in text:
+        return False
+    try:
+        validate_recovery_epoch(text)
+    except RuntimeError:
+        return False
+    return True
 
 
 class BoardSession:
@@ -898,11 +910,21 @@ def main(argv: list[str]) -> int:
 
         end = time.monotonic() + args.milestone_timeout
         expected_milestones = 3 if args.final_profile == "generic" else 2
+        recovery_window = ""
         while time.monotonic() < end and len(session.milestones) != expected_milestones:
             text = read_available(session.fd, min(5, end - time.monotonic()))
             if text:
                 session._log(text)
                 session.note_milestone(text)
+                if args.require_recovery:
+                    recovery_window = (recovery_window + text)[
+                        -RECOVERY_WINDOW_CHARACTERS:
+                    ]
+                    if len(
+                        session.milestones
+                    ) != expected_milestones and _has_recovery_epoch(recovery_window):
+                        print(json.dumps(session.milestones))
+                        return INCOMPLETE_RECOVERED_EXIT
         print(json.dumps(session.milestones))
         if len(session.milestones) != expected_milestones:
             return 2
