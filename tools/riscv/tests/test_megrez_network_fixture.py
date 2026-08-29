@@ -19,6 +19,7 @@ from tools.riscv.megrez_network_fixture import (
     FixtureConfig,
     FixtureServer,
     _parse_args,
+    is_successful_summary,
 )
 
 
@@ -62,6 +63,13 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             [record["status"] for record in summary["requests"]],
             [200, 404],
         )
+        self.assertFalse(is_successful_summary(summary, expected_requests=2))
+
+        with FixtureServer(FixtureConfig("127.0.0.1", 0)) as complete:
+            for _ in range(20):
+                self.assertEqual(self.request(complete)[0], 200)
+            complete_summary = complete.summary()
+        self.assertTrue(is_successful_summary(complete_summary, expected_requests=20))
 
     def test_peer_allowlist_and_request_record_cap(self) -> None:
         with FixtureServer(

@@ -43,6 +43,14 @@ from tools.riscv.megrez_board_session import (
     safe_ipv4,
     safe_ipv4_netmask,
 )
+from tools.riscv.megrez_network_fixture import (
+    FIXTURE_PATH,
+    PAYLOAD_SHA256,
+    PAYLOAD_SIZE,
+    FixtureConfig,
+    FixtureServer,
+    is_successful_summary,
+)
 
 
 BOARD_ADDRESS = "10.100.19.200"
@@ -52,6 +60,9 @@ GATEWAY_ADDRESS = "10.100.16.1"
 GATEWAY_HARDWARE_ADDRESS = "4c:d6:29:18:93:43"
 PROXY_PORT = 17893
 PROXY_URL = f"http://{HOST_ADDRESS}:{PROXY_PORT}"
+FIXTURE_PORT = 17894
+FIXTURE_REQUESTS = 20
+FIXTURE_URL = f"http://{HOST_ADDRESS}:{FIXTURE_PORT}{FIXTURE_PATH}"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
 ROOTFS_WRITE_BOOTARG = "asterinas.mmc_write_partition2"
 NEIGHBOR_BOOTARGS = " ".join(
@@ -76,6 +87,15 @@ DESKTOP_PROXY_BOOTARGS = " ".join(
         ("ASTERINAS_DESKTOP_PROXY_URL", PROXY_URL),
         ("ASTERINAS_DESKTOP_PROXY_HOST", HOST_ADDRESS),
         ("ASTERINAS_DESKTOP_PROXY_PORT", str(PROXY_PORT)),
+    )
+)
+DESKTOP_FIXTURE_BOOTARGS = " ".join(
+    f"systemd.setenv={name}={value}"
+    for name, value in (
+        ("ASTERINAS_DESKTOP_FIXTURE_URL", FIXTURE_URL),
+        ("ASTERINAS_DESKTOP_FIXTURE_SIZE", str(PAYLOAD_SIZE)),
+        ("ASTERINAS_DESKTOP_FIXTURE_SHA256", PAYLOAD_SHA256),
+        ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", str(FIXTURE_REQUESTS)),
     )
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
@@ -214,6 +234,7 @@ def physical_bootargs(reboot_after: int | None = None) -> str:
         f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
         f"{NEIGHBOR_BOOTARGS}{restart} "
         f"{SERIAL_EVIDENCE_BOOTARGS} {DESKTOP_PROXY_BOOTARGS} "
+        f"{DESKTOP_FIXTURE_BOOTARGS} "
         "-- --root-init=systemd"
     )
 
@@ -437,21 +458,47 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
 class PhysicalGateOperations:
     """Concrete serial, duplicate-address, and pinned-output adapter."""
 
-    def __init__(self, arguments: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        arguments: argparse.Namespace,
+        *,
+        fixture: FixtureServer | None = None,
+    ) -> None:
         self.arguments = arguments
         self.output = PinnedOutputDirectory(arguments.output_directory)
         self.session: BoardSession | None = None
+        self.fixture = fixture or FixtureServer(
+            FixtureConfig(
+                HOST_ADDRESS,
+                FIXTURE_PORT,
+                allowed_peer=BOARD_ADDRESS,
+            )
+        )
 
     def __enter__(self) -> PhysicalGateOperations:
-        return self
+        try:
+            self.fixture.start()
+            return self
+        except BaseException:
+            self.output.close()
+            raise
 
     def __exit__(self, *exc_info: object) -> None:
         del exc_info
-        self.close_board()
-        self.output.close()
+        try:
+            self.close_board()
+        finally:
+            try:
+                self.fixture.close()
+            finally:
+                self.output.close()
 
     def invalidate(self) -> None:
-        self.output.invalidate("megrez-gmac.serial.log", "result.json")
+        self.output.invalidate(
+            "megrez-gmac.serial.log",
+            "network-fixture.json",
+            "result.json",
+        )
 
     def ensure_address_unused(self) -> None:
         check_address_unused(self.arguments.host_interface)
@@ -509,7 +556,18 @@ class PhysicalGateOperations:
         os.close(session.fd)
 
     def publish(self, transcript: bytes, result: dict[str, object]) -> None:
+        summary = self.fixture.summary()
+        result["network_fixture"] = summary
+        if result.get("passed") is True and not is_successful_summary(
+            summary, expected_requests=FIXTURE_REQUESTS
+        ):
+            result["passed"] = False
+            result["reason"] = "network fixture evidence mismatch"
         self.output.atomic_write("megrez-gmac.serial.log", transcript)
+        fixture_payload = (
+            json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        self.output.atomic_write("network-fixture.json", fixture_payload)
         payload = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
         self.output.atomic_write("result.json", payload)
 

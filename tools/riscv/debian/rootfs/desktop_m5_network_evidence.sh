@@ -16,6 +16,7 @@ readonly MEGREZ_PROXY_URL='http://10.100.19.216:17893'
 readonly MEGREZ_PROXY_HOST='10.100.19.216'
 readonly MEGREZ_PROXY_PORT='17893'
 readonly MEGREZ_FIXTURE_URL='http://10.100.19.216:17894/asterinas-network-probe.bin'
+readonly QEMU_FIXTURE_URL='http://10.0.2.2:17894/asterinas-network-probe.bin'
 readonly MEGREZ_FIXTURE_SIZE='65536'
 readonly MEGREZ_FIXTURE_SHA256='7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2'
 readonly MEGREZ_FIXTURE_REQUESTS='20'
@@ -211,22 +212,34 @@ synchronize_megrez_clock() {
     emit "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
 }
 
-stress_megrez_fixture() {
+validate_fixture_config() {
+    local expected_url="$1"
+
+    [[ "$FIXTURE_URL" == "$expected_url" ]] || return 1
+    [[ "$FIXTURE_SIZE" == "$MEGREZ_FIXTURE_SIZE" ]] || return 1
+    [[ "$FIXTURE_SHA256" == "$MEGREZ_FIXTURE_SHA256" ]] || return 1
+    [[ "$FIXTURE_REQUESTS" == "$MEGREZ_FIXTURE_REQUESTS" ]] ||
+        return 1
+}
+
+stress_fixture() {
     local actual_sha256
     local actual_size
     local attempt
     local deadline="$1"
+    local endpoint="$2"
+    local reason_prefix="$3"
     local remaining
     local request_timeout
     local temporary_fixture
 
     temporary_fixture="$(mktemp "${URL_FILE}.fixture.XXXXXX")" ||
-        fail megrez-fixture-temporary
+        fail "${reason_prefix}-fixture-temporary"
     for ((attempt = 1; attempt <= FIXTURE_REQUESTS; attempt++)); do
         remaining=$((deadline - SECONDS))
         if ((remaining <= 0)); then
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-timeout
+            fail "${reason_prefix}-fixture-timeout"
         fi
         request_timeout="$remaining"
         if ((request_timeout > COMMAND_TIMEOUT_SECONDS)); then
@@ -242,34 +255,38 @@ stress_megrez_fixture() {
             --output "$temporary_fixture" \
             "$FIXTURE_URL"; then
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-download
+            fail "${reason_prefix}-fixture-download"
         fi
         actual_size="$(wc -c <"$temporary_fixture" | tr -d '[:space:]')" || {
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-size
+            fail "${reason_prefix}-fixture-size"
         }
         if [[ "$actual_size" != "$FIXTURE_SIZE" ]]; then
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-size
+            fail "${reason_prefix}-fixture-size"
         fi
         actual_sha256="$(sha256sum "$temporary_fixture" | awk '{print $1}')" || {
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-sha256
+            fail "${reason_prefix}-fixture-sha256"
         }
         if [[ "$actual_sha256" != "$FIXTURE_SHA256" ]]; then
             rm -f -- "$temporary_fixture"
-            fail megrez-fixture-sha256
+            fail "${reason_prefix}-fixture-sha256"
         fi
     done
-    rm -f -- "$temporary_fixture" || fail megrez-fixture-cleanup
-    emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=10.100.19.216:17894"
+    rm -f -- "$temporary_fixture" || fail "${reason_prefix}-fixture-cleanup"
+    emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=$endpoint"
 }
 
 qemu_network_evidence() {
     local curl_result
+    local deadline
     local http_status
     local local_address
 
+    validate_fixture_config "$QEMU_FIXTURE_URL" || fail qemu-fixture-config
+    deadline=$((SECONDS + TIMEOUT_SECONDS))
+    stress_fixture "$deadline" '10.0.2.2:17894' qemu
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
     resolve_qemu_host www.baidu.com \
         >/dev/null 2>>"$CONSOLE" || fail qemu-dns
@@ -298,12 +315,7 @@ megrez_network_evidence() {
     [[ "$PROXY_URL" == "$MEGREZ_PROXY_URL" ]] || fail megrez-proxy-config
     [[ "$PROXY_HOST" == "$MEGREZ_PROXY_HOST" ]] || fail megrez-proxy-config
     [[ "$PROXY_PORT" == "$MEGREZ_PROXY_PORT" ]] || fail megrez-proxy-config
-    [[ "$FIXTURE_URL" == "$MEGREZ_FIXTURE_URL" ]] || fail megrez-fixture-config
-    [[ "$FIXTURE_SIZE" == "$MEGREZ_FIXTURE_SIZE" ]] || fail megrez-fixture-config
-    [[ "$FIXTURE_SHA256" == "$MEGREZ_FIXTURE_SHA256" ]] ||
-        fail megrez-fixture-config
-    [[ "$FIXTURE_REQUESTS" == "$MEGREZ_FIXTURE_REQUESTS" ]] ||
-        fail megrez-fixture-config
+    validate_fixture_config "$MEGREZ_FIXTURE_URL" || fail megrez-fixture-config
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
@@ -313,7 +325,7 @@ megrez_network_evidence() {
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
     emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
-    stress_megrez_fixture "$deadline"
+    stress_fixture "$deadline" '10.100.19.216:17894' megrez
     synchronize_megrez_clock
 
     curl_result="$(request_megrez_https)" || fail megrez-https

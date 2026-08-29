@@ -13,7 +13,7 @@ import json
 import signal
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -22,6 +22,38 @@ PAYLOAD_SIZE = 64 * 1024
 PAYLOAD = bytes(range(256)) * (PAYLOAD_SIZE // 256)
 PAYLOAD_SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
 MAX_REQUEST_RECORDS = 64
+
+
+def is_successful_summary(
+    summary: Mapping[str, object], *, expected_requests: int
+) -> bool:
+    """Require an exact set of successful fixed-payload requests."""
+
+    if (
+        isinstance(expected_requests, bool)
+        or not isinstance(expected_requests, int)
+        or not 0 < expected_requests <= MAX_REQUEST_RECORDS
+    ):
+        return False
+    requests = summary.get("requests")
+    if not isinstance(requests, list) or len(requests) != expected_requests:
+        return False
+    if (
+        summary.get("schema_version") != 1
+        or summary.get("payload_path") != FIXTURE_PATH
+        or summary.get("payload_sha256") != PAYLOAD_SHA256
+        or summary.get("payload_size") != PAYLOAD_SIZE
+        or summary.get("request_count") != expected_requests
+        or summary.get("records_truncated") is not False
+    ):
+        return False
+    return all(
+        isinstance(record, dict)
+        and record.get("body_bytes") == PAYLOAD_SIZE
+        and record.get("path") == FIXTURE_PATH
+        and record.get("status") == 200
+        for record in requests
+    )
 
 
 @dataclass(frozen=True)
