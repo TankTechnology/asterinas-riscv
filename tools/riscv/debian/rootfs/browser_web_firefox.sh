@@ -30,7 +30,10 @@ marker() {
     guest_ns="$(guest_monotonic_ns)"
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$$"
     printf '%s\n' "$line" >>"$TIMELINE"
-    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
+    # Console access is best-effort for the unprivileged browser user.  Keep
+    # the failed redirection itself out of stderr so it cannot obscure the
+    # Firefox diagnostics we are trying to capture.
+    (printf '%s\n' "$line" >>"$CONSOLE") 2>/dev/null || true
 }
 
 printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
@@ -48,5 +51,10 @@ export MOZ_SANDBOX_LOGGING=1
 export MOZ_AVOID_OPENGL_ALTOGETHER=1
 printf 'ASTERINAS_FIREFOX_WEB_EXEC pid=%s\n' "$$"
 marker BOOT_FIREFOX_EXEC
+# Keep Firefox's stderr in its persistent evidence file while mirroring it to
+# the service journal.  The Firefox process remains the systemd MainPID
+# because the final exec below is unchanged; tail is merely a diagnostic
+# child and is killed with the service on restart.
+/usr/bin/tail -n 0 -f "$STDERR_LOG" >&2 &
 exec /usr/bin/firefox-esr --no-remote --new-instance --marionette \
     --profile "$PROFILE" "$START_URL" >>"$STDERR_LOG" 2>&1

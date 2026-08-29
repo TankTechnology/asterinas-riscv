@@ -31,7 +31,9 @@ marker() {
     # The browser phases run as the unprivileged asterinas user.  Asterinas
     # may intentionally reject writes to /dev/console from that uid; console
     # output is diagnostic only and must never restart the browser service.
-    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
+    # The timeline is authoritative in the per-user file; console output is
+    # diagnostic only and may be denied for uid 1000 on Asterinas.
+    (printf '%s\n' "$line" >>"$CONSOLE") 2>/dev/null || true
 }
 
 case "${1-}" in
