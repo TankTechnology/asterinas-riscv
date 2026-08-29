@@ -8,6 +8,26 @@
 
 **Tech Stack:** Rust 2024, OSTD safe DMA/frame APIs, Asterinas MMC component ktests, Python `unittest`, pinned project Docker toolchain, Megrez DTB, RockOS U-Boot SDHCI SDMA contract, Linux SDHCI register definitions.
 
+## Frozen reference contract
+
+- RockOS U-Boot commit `444734713e1dc65a525093999830f5bc12fd2b7c`
+  enables `CONFIG_MMC_SDHCI_SDMA` in
+  [`eic7700_milkv_megrez_defconfig`](https://github.com/rockos-riscv/rockos-u-boot/blob/444734713e1dc65a525093999830f5bc12fd2b7c/configs/eic7700_milkv_megrez_defconfig).
+- The board driver calls `sdhci_do_enable_v4_mode` in
+  [`eswin_sd_sdhci.c`](https://github.com/rockos-riscv/rockos-u-boot/blob/444734713e1dc65a525093999830f5bc12fd2b7c/drivers/mmc/eswin_sd_sdhci.c).
+  Therefore offset `0x00` is the v4 32-bit block-count register, not the
+  legacy SDMA address register.
+- RockOS writes the 64-bit SDMA address at `0x58/0x5c`, selects a 512 KiB
+  boundary, and resumes a boundary interrupt at the next aligned address in
+  [`drivers/mmc/sdhci.c`](https://github.com/rockos-riscv/rockos-u-boot/blob/444734713e1dc65a525093999830f5bc12fd2b7c/drivers/mmc/sdhci.c).
+- Linux documents the same v4 address selection and 32-bit block-count alias
+  in its generic
+  [`sdhci.c`](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.c)
+  and
+  [`sdhci.h`](https://github.com/torvalds/linux/blob/master/drivers/mmc/host/sdhci.h).
+
+Any future Megrez MMC change must preserve these four facts in focused tests.
+
 ---
 
 ### Task 1: Preserve high-information installer progress on UART
@@ -54,12 +74,13 @@ after deallocation.
 
 - [ ] **Step 2: Implement the minimum safe API**
 
-Add a default-failing `GlobalFrameAllocator::alloc_in`, an explicit
+Add a conservative `GlobalFrameAllocator::alloc_in` fallback, an explicit
 `FrameAllocOptions::alloc_segment_in`, and the OSDK buddy implementation.
 Search intrusive free lists without heap allocation, split only the selected
 chunk, and return every unused sibling/tail to the correct pool. Constrained
-allocations bypass the small per-CPU size cache so no out-of-range cached frame
-can escape the contract.
+allocations first reclaim the current CPU's small-object cache into the buddy
+pool so cached adjacent frames can coalesce before the bounded search. No
+out-of-range cached frame can escape the contract.
 
 - [ ] **Step 3: Verify allocator invariants**
 
@@ -76,9 +97,10 @@ RISC-V OSDK compile. No MMC code is changed in this task.
 - [ ] **Step 1: Write failing protocol/DT tests**
 
 Require exact Megrez `dma-ranges` (`device 0x20000000`, CPU
-`0xc0000000`, size `0x40000000`), `dma-noncoherent`, SDMA capability, a
-512 KiB maximum request, 512-byte block alignment, checked bus-address
-translation, SDHCI DMA select/address/transfer-mode values, 512 KiB boundary
+`0xc0000000`, size `0x40000000`), `dma-noncoherent`, SDMA capability, a 512 KiB
+maximum request, 512-byte block alignment, checked bus-address translation,
+the U-Boot-preserved SDHCI v4 mode, address registers `0x58/0x5c`, the
+block-count alias at `0x00`, DMA select/transfer-mode values, 512 KiB boundary
 continuation, and DMA-error decoding.
 
 - [ ] **Step 2: Implement pure constructors and classifiers**

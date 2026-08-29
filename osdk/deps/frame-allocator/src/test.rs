@@ -28,7 +28,7 @@ fn frame_allocator_alloc_layout_match() {
 }
 
 #[ktest]
-fn frame_allocator_honors_a_physical_address_range() {
+fn megrez_sdma_frame_allocator_honors_a_physical_address_range() {
     let instance = FrameAllocator;
     let region_size = PAGE_SIZE * 32;
     let segment = FrameAllocOptions::new()
