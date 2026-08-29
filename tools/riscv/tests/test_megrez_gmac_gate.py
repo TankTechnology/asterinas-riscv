@@ -146,6 +146,14 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=150",
+            recovery_bootargs.split(),
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0",
+            recovery_bootargs.split(),
+        )
         self.assertNotIn("saveenv", recovery_bootargs)
 
     def test_physical_gate_accepts_only_complete_ymodem_contract(self) -> None:

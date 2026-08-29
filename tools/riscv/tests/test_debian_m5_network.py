@@ -33,6 +33,7 @@ MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
 )
+SAFE_REBOOT_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
 MEGREZ_TCP_PROBE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
 )
@@ -304,6 +305,19 @@ configure_and_normalize_rootfs
         installed = stage / "usr/lib/asterinas/desktop-m5-network-evidence"
         self.assertEqual(installed.read_bytes(), EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o755)
+        safe_reboot = stage / "usr/lib/asterinas/megrez-safe-reboot"
+        self.assertEqual(safe_reboot.read_bytes(), SAFE_REBOOT_SCRIPT.read_bytes())
+        self.assertEqual(stat.S_IMODE(safe_reboot.stat().st_mode), 0o755)
+        safe_reboot_unit = stage / "etc/systemd/system/asterinas-safe-reboot.service"
+        self.assertIn(
+            "ExecStart=/usr/lib/asterinas/megrez-safe-reboot",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            (
+                stage / "etc/systemd/system/basic.target.wants" / safe_reboot_unit.name
+            ).is_symlink()
+        )
         self.assertTrue(
             (stage / "usr/lib/asterinas/desktop-m6-browser-evidence").is_file()
         )
@@ -357,6 +371,52 @@ configure_and_normalize_rootfs
             "\n"
             "[Service]\n"
             "Environment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
+        )
+
+    def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
+        fake_bin = self.directory / "safe-reboot-bin"
+        fake_bin.mkdir()
+        actions = self.directory / "safe-reboot-actions"
+        console = self.directory / "safe-reboot-console"
+        uptime = self.directory / "uptime"
+        uptime.write_text("100.25 80.00\n", encoding="utf-8")
+        for name in ("sleep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="130",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            actions.read_text(encoding="utf-8").splitlines(),
+            ["sleep:30", "sync:", "reboot:-f"],
+        )
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            [
+                "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=100 deadline=130",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC deadline=130",
+            ],
         )
 
     def _fake_network_tools(
