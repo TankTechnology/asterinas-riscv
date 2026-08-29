@@ -79,6 +79,62 @@ See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
 the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
 explicit two-boot target, and evidence inspection commands.
 
+## Megrez persistent Debian shell
+
+This workflow freezes separate current kernels for the two MMU contracts:
+generic QEMU is built with `FEATURES=riscv_sv39_mode`, while Megrez uses the
+default Sv48 build. Never reuse one artifact for the other platform. The
+bundle also binds the signed Debian root, Stage1, both four-hart DTBs, and
+U-Boot to one clean Git commit.
+
+The physical order is deliberately read-only first: run ` inventory ` before
+` install-if-needed `. A matching inventory skips installation. A measured
+mismatch may authorize the Asterinas-only installer to write exactly
+`/dev/mmcblk0p2`; this workflow must not boot Linux as an installer or runtime.
+The short EIC7700X watchdog is forbidden during a full-device hash or install;
+the bounded Asterinas reboot timer and fresh U-Boot recovery epoch are used
+instead. `gate` performs two boots with one persistence nonce, and `handoff`
+is allowed only after that physical result passes.
+
+Use one stable evidence directory:
+
+```bash
+RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
+python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+  "$RUN/plan.json" --output "$RUN/qemu"
+python3 -m tools.riscv.megrez_debian_shell permit \
+  "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
+  --output "$RUN/permit.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --output "$RUN/inventory-before" --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
+if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
+  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+    "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+    --prior-inventory "$RUN/inventory-before/result.json" \
+    --install-result "$RUN/install/result.json" \
+    --output "$RUN/inventory-after" --yes
+  cp "$RUN/inventory-after/result.json" "$RUN/inventory-current.json"
+else
+  cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
+fi
+sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
+  --host-interface enp12s0 --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+  "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
+  --host-interface enp12s0 --yes
+picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
+```
+
+This milestone proves a persistent interactive Debian shell. The next scope is
+systemd, network, and desktop; none is claimed by this gate.
+
 ## VirtIO-GPU hardware cursor gate
 
 The DRM R1 gate boots current-main Asterinas with the generic Sv39, SMP=4

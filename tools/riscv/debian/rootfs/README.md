@@ -381,3 +381,61 @@ the second-boot probe; nonce plaintext is replaced by `<nonce-redacted>`.
 This evidence proves the generic QEMU Sv39/SMP=4 two-boot persistence
 contract. It does not claim physical Megrez operation, guest networking,
 systemd boot, display, USB, or desktop support.
+
+## Megrez persistent Debian shell
+
+Build two distinct current kernels. The generic QEMU artifact requires
+`FEATURES=riscv_sv39_mode`; the Megrez artifact is a separate default Sv48
+build. The frozen plan rejects swapping them and also records the exact
+signed root, Stage1, U-Boot, and four-hart DTBs.
+
+The board sequence is ` inventory ` before ` install-if-needed `. Inventory is
+read-only, and a matching result skips installation. Only a measured image
+hash mismatch may enter the Asterinas-only installer, which may write only
+`/dev/mmcblk0p2`. The operator must not boot Linux to install or validate this
+root. Do not arm the short EIC7700X watchdog while hashing the full device or
+installing; use the bounded Asterinas timer and require a fresh U-Boot recovery
+epoch. The `gate` command performs two bounded boots, and `handoff` is refused
+unless their physical result passes.
+
+```bash
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/qemu-sv39.booti
+make kernel TARGET_ARCH=riscv64 SMP=4
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/megrez-sv48.booti
+
+RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
+python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+  "$RUN/plan.json" --output "$RUN/qemu"
+python3 -m tools.riscv.megrez_debian_shell permit \
+  "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
+  --output "$RUN/permit.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --output "$RUN/inventory-before" --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
+if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
+  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+    "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+    --prior-inventory "$RUN/inventory-before/result.json" \
+    --install-result "$RUN/install/result.json" \
+    --output "$RUN/inventory-after" --yes
+  cp "$RUN/inventory-after/result.json" "$RUN/inventory-current.json"
+else
+  cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
+fi
+sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
+  --host-interface enp12s0 --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+  "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
+  --host-interface enp12s0 --yes
+picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
+```
+
+This stage proves an interactive persistent shell only. The next scope is
+systemd, network, and desktop; none is claimed by this milestone.
