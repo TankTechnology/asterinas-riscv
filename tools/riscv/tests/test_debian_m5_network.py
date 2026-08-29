@@ -351,6 +351,10 @@ configure_and_normalize_rootfs
         self.assertEqual(
             evidence_drop_in,
             "# SPDX-License-Identifier: MPL-2.0\n"
+            "[Unit]\n"
+            "Requires=asterinas-desktop-m5-network.service\n"
+            "After=asterinas-desktop-m5-network.service\n"
+            "\n"
             "[Service]\n"
             "Environment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
         )
