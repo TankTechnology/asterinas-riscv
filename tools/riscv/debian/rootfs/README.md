@@ -284,9 +284,12 @@ fallback DNS=10.2.0.6
 Install a newly built ext2 image with
 `tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
 back eMMC partition 2. Linux may stage immutable boot files but is not an
-accepted runtime or installer kernel. Serve the current Image, frozen Megrez
-DTB, and Stage1 from a private TFTP root on `10.100.19.216`, then compute the
-two changing U-Boot CRC32 values and run the bounded gate:
+accepted runtime or installer kernel. On the currently verified firmware,
+U-Boot exposes only `ethernet@50400000`, while the live RJ45 path selected by
+Asterinas is the other GMAC. Its TFTP path therefore cannot be the default
+recovery transport. Stage the current Image, frozen Megrez DTB, and Stage1
+under their basenames on eMMC partition 1, verify the copied hashes, unmount
+the partition, and run the bounded gate with the read-only MMC loader:
 
 ```bash
 crc32_file() {
@@ -299,12 +302,10 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
   --dtb eic7700-milkv-megrez.dtb \
   --initrd debian-browser-stage1.cpio \
   --expected-crc32 "booti=$BOOTI_CRC32,dtb=4afcb20e,initrd=$STAGE1_CRC32" \
-  --host-interface enp12s0 --load-transport tftp \
-  --tftp-board-address 10.100.19.200 \
-  --tftp-server-address 10.100.19.216 \
-  --tftp-netmask 255.255.248.0 \
+  --host-interface enp12s0 --load-transport mmc \
+  --reboot-after 420 \
   --output-directory target/megrez-browser-network/gate \
-  --boot-timeout 300 --drain-timeout 5
+  --boot-timeout 360 --drain-timeout 5
 ```
 
 The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
