@@ -876,6 +876,123 @@ class SerialContractTests(unittest.TestCase):
         )
 
 
+class MegrezDebianShellPhaseTests(unittest.TestCase):
+    NONCE = "0123456789abcdef" * 4
+    PACKAGES = (
+        ("base-files", "13.8+deb13u2"),
+        ("bash", "5.2.37-2+b5"),
+        ("coreutils", "9.7-3"),
+        ("libc6", "2.41-12"),
+        ("util-linux", "2.41-5"),
+    )
+
+    @staticmethod
+    def _output(command: object, nonce: str, status: int = 0) -> bytes:
+        values = {
+            "architecture": "riscv64",
+            "debian-release": "13.6",
+            "bash-version": "5.2.37(1)-release",
+            "packages": "\n".join(
+                f"{name}\t{version}"
+                for name, version in MegrezDebianShellPhaseTests.PACKAGES
+            ),
+            "root-filesystem": "ext2/ext3",
+            "persistence": nonce,
+            "second-probe": "boot2-probe-created",
+        }
+        return (
+            f"{command.payload}\r\n{command.begin_marker}\r\n"
+            f"{values[command.name]}\r\n{command.status_prefix}{status}\r\n"
+            f"{command.end_marker}\r\n"
+        ).encode()
+
+    def _run_phase(
+        self,
+        *,
+        status: int = 0,
+        fatal: bytes = b"",
+    ) -> tuple[object, list[bytes], str]:
+        host, guest = socket.socketpair()
+        sent: list[bytes] = []
+        failures: list[BaseException] = []
+        commands = board.shell_commands(boot_number=1, nonce=self.NONCE)
+
+        def guest_shell() -> None:
+            try:
+                guest.sendall(b"__DEBIAN_ROOTFS_SHELL_")
+                guest.sendall(b"READY__\r\n")
+                pending = b""
+                for index, command in enumerate(commands):
+                    while b"\n" not in pending:
+                        pending += guest.recv(65536)
+                    line, pending = pending.split(b"\n", 1)
+                    sent.append(line + b"\n")
+                    guest.sendall(
+                        self._output(
+                            command,
+                            self.NONCE,
+                            status=status if index == 0 else 0,
+                        )
+                    )
+                if fatal:
+                    guest.sendall(fatal)
+                if status == 0 and not fatal:
+                    while b"\n" not in pending:
+                        pending += guest.recv(4096)
+                    sent.append(pending.split(b"\n", 1)[0] + b"\n")
+            except BaseException as error:
+                failures.append(error)
+
+        stream = io.StringIO()
+        session = board.BoardSession.from_fd(
+            host.fileno(),
+            None,
+            confirm=False,
+            final_marker="__DEBIAN_ROOTFS_SHELL_READY__",
+            log_stream=stream,
+        )
+        thread = threading.Thread(target=guest_shell)
+        try:
+            thread.start()
+            result = board.run_debian_shell_phase(
+                session,
+                boot_number=1,
+                nonce=self.NONCE,
+                debian_release="13.6",
+                packages=self.PACKAGES,
+                deadline=time.monotonic() + 1.0,
+                reboot=True,
+            )
+        finally:
+            thread.join(timeout=1)
+            host.close()
+            guest.close()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        return result, sent, stream.getvalue()
+
+    def test_debian_shell_phase_uses_protocol_and_normal_reboot(self) -> None:
+        result, sent, transcript = self._run_phase()
+
+        self.assertTrue(result.passed)
+        self.assertEqual(sent[-1], b"sync; reboot -f\n")
+        self.assertIn("__DEBIAN_ROOTFS_SHELL_READY__", transcript)
+        self.assertEqual(len(sent), 7)
+
+    def test_debian_shell_phase_rejects_nonzero_and_late_fatal(self) -> None:
+        nonzero, sent, _transcript = self._run_phase(status=7)
+        self.assertFalse(nonzero.passed)
+        self.assertIn("status 7", nonzero.reason)
+        self.assertNotIn(b"sync; reboot -f\n", sent)
+
+        fatal, sent, _transcript = self._run_phase(
+            fatal=b"Kernel panic - not syncing\r\n"
+        )
+        self.assertFalse(fatal.passed)
+        self.assertIn("fatal transcript marker", fatal.reason)
+        self.assertNotIn(b"sync; reboot -f\n", sent)
+
+
 class BootTransactionTests(unittest.TestCase):
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []

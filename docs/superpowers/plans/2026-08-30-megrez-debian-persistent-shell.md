@@ -20,8 +20,10 @@
 - Create `tools/riscv/megrez_debian_shell_board.py`: physical inventory,
   and conditional-install decisions. It consumes the pure contract and
   existing board/session protocol; it does not build a rootfs.
-- Create `tools/riscv/megrez_debian_shell_physical.py`: dnsmasq TFTP lifetime,
-  two-boot orchestration, physical evidence, and final handoff.
+- Create `tools/riscv/megrez_debian_shell_physical.py`: pure serial phases,
+  two-boot orchestration, physical evidence, and final handoff policy.
+- Create `tools/riscv/megrez_debian_shell_physical_io.py`: dnsmasq TFTP lifetime,
+  descriptor-pinned publication, and the concrete physical serial adapter.
 - Create `tools/riscv/megrez_debian_shell.py`: small CLI that dispatches plan,
   check, QEMU, permit, inventory, install-if-needed, gate, and handoff.
 - Create `tools/riscv/tests/test_megrez_debian_shell.py`: contract, workflow,
@@ -43,8 +45,8 @@
   final hashes, commands, QEMU result, board inventory, optional install, two
   boot results, and final handoff. Create it only after the real evidence exists.
 
-The new modules must stay focused: contract, QEMU evidence, and the physical
-workflow each under 500 lines, board inventory/install decisions under 600
+The new modules must stay focused: contract, QEMU evidence, and each physical
+workflow module under 500 lines, board inventory/install decisions under 600
 lines, and CLI under 300 lines. Stop and split by the boundaries above if any
 limit would be exceeded; do not grow another thousand-line orchestrator.
 
@@ -767,6 +769,7 @@ git commit -m "feat(riscv): condition Megrez Debian installation"
 - Modify: `tools/riscv/megrez_board_session.py`
 - Modify: `tools/riscv/tests/test_megrez_board_session.py`
 - Create: `tools/riscv/megrez_debian_shell_physical.py`
+- Create: `tools/riscv/megrez_debian_shell_physical_io.py`
 - Modify: `tools/riscv/tests/test_megrez_debian_shell.py`
 
 - [ ] **Step 1: Write shell-phase PTY and classification RED tests**
@@ -922,17 +925,21 @@ python3 -W error::ResourceWarning -m unittest \
   tools.riscv.tests.test_megrez_debian_shell.PersistentShellPhysicalGateTests -v
 make test_riscv_megrez_debian_shell
 python3 -m py_compile tools/riscv/megrez_board_session.py \
-  tools/riscv/megrez_debian_shell_physical.py
+  tools/riscv/megrez_debian_shell_physical.py \
+  tools/riscv/megrez_debian_shell_physical_io.py
 ruff check tools/riscv/megrez_board_session.py \
   tools/riscv/megrez_debian_shell_physical.py \
+  tools/riscv/megrez_debian_shell_physical_io.py \
   tools/riscv/tests/test_megrez_board_session.py \
   tools/riscv/tests/test_megrez_debian_shell.py
 ruff format --check tools/riscv/megrez_board_session.py \
   tools/riscv/megrez_debian_shell_physical.py \
+  tools/riscv/megrez_debian_shell_physical_io.py \
   tools/riscv/tests/test_megrez_board_session.py \
   tools/riscv/tests/test_megrez_debian_shell.py
 git diff --check
-pgrep -af 'dnsmasq.*tftp-root|megrez_board_session.py' && exit 1 || true
+pgrep -af 'dnsmasq.*asterinas-megrez-tftp|megrez_board_session.py.*debian-shell' \
+  && exit 1 || true
 ```
 
 Expected: all tests/static checks pass and the final leak check prints nothing.
@@ -942,6 +949,7 @@ Expected: all tests/static checks pass and the final leak check prints nothing.
 ```bash
 git add tools/riscv/megrez_board_session.py \
   tools/riscv/megrez_debian_shell_physical.py \
+  tools/riscv/megrez_debian_shell_physical_io.py \
   tools/riscv/tests/test_megrez_board_session.py \
   tools/riscv/tests/test_megrez_debian_shell.py
 git commit -m "feat(riscv): gate Megrez Debian persistence"

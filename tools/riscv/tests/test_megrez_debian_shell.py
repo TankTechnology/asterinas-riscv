@@ -6,11 +6,13 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest import mock
 import zlib
@@ -32,6 +34,7 @@ from tools.riscv.megrez_debian_shell_evidence import (
     validate_qemu_result,
 )
 from tools.riscv.megrez_debian_shell import qemu_gate_argv, run_qemu_gate
+from tools.riscv.debian.rootfs.gate_protocol import shell_commands
 from tools.riscv.megrez_debian_shell_board import (
     InventoryError,
     InventoryResult,
@@ -44,6 +47,18 @@ from tools.riscv.megrez_debian_shell_board import (
 from tools.riscv.megrez_board_session import PartitionGeometry
 from tools.riscv.megrez_debug_contract import StageResult
 from tools.riscv.megrez_preboard import PreboardError
+from tools.riscv import megrez_debian_shell_physical_io as physical_io
+from tools.riscv.megrez_debian_shell_physical import (
+    PhysicalBoot,
+    PhysicalShellResult,
+    dnsmasq_tftp_argv,
+    run_physical_gate,
+)
+from tools.riscv.megrez_debian_shell_physical_io import (
+    PhysicalBoardOperations,
+    TftpOnlyServer,
+    _copy_verified,
+)
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -1117,6 +1132,311 @@ class PersistentShellInstallTests(unittest.TestCase):
 
         self.assertEqual(calls, [])
         self.assertFalse((self.output / "attempt.json").exists())
+
+
+class PersistentShellPhysicalGateTests(unittest.TestCase):
+    NONCE = "0123456789abcdef" * 4
+    PACKAGES = (
+        ("base-files", "13.8+deb13u2"),
+        ("bash", "5.2.37-2+b5"),
+        ("coreutils", "9.7-3"),
+        ("libc6", "2.41-12"),
+        ("util-linux", "2.41-5"),
+    )
+    GEOMETRY = PersistentShellInventoryTests.GEOMETRY
+
+    class Operations:
+        def __init__(
+            self,
+            owner: PersistentShellPhysicalGateTests,
+            *,
+            recovered: tuple[bool, bool] = (True, True),
+            fatal_boot: int | None = None,
+        ) -> None:
+            self.owner = owner
+            self.recovered = recovered
+            self.fatal_boot = fatal_boot
+            self.events: list[str] = []
+            self.boot_numbers: list[int] = []
+            self.nonces: list[str] = []
+            self.published: tuple[tuple[bytes, bytes], PhysicalShellResult] | None = (
+                None
+            )
+
+        def invalidate(self) -> None:
+            self.events.append("invalidate")
+
+        def validate_artifacts(
+            self,
+            plan: PersistentShellPlan,
+        ) -> tuple[str, tuple[tuple[str, str], ...]]:
+            self.events.append("validate")
+            self.owner.assertIs(plan, self.owner.plan)
+            return "13.6", self.owner.PACKAGES
+
+        def run_boot(
+            self,
+            plan: PersistentShellPlan,
+            boot_number: int,
+            nonce: str,
+        ) -> PhysicalBoot:
+            self.owner.assertIs(plan, self.owner.plan)
+            self.events.append(f"boot{boot_number}")
+            self.boot_numbers.append(boot_number)
+            self.nonces.append(nonce)
+            protocol = self.owner._transcript(boot_number, nonce)
+            complete = protocol + b"OpenSBI v1.7\r\nU-Boot 2026.07\r\n=> "
+            if self.fatal_boot == boot_number:
+                complete += b"Kernel panic - not syncing\r\n"
+            return PhysicalBoot(
+                protocol_transcript=protocol,
+                complete_transcript=complete,
+                recovered=self.recovered[boot_number - 1],
+            )
+
+        def publish(
+            self,
+            logs: tuple[bytes, bytes],
+            result: PhysicalShellResult,
+        ) -> None:
+            self.events.append("publish")
+            self.published = logs, result
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.plan = _valid_plan(_artifact_fixture(self.directory))
+        self.permit = _valid_permit(self.plan)
+        self.inventory = InventoryResult(
+            schema_version=1,
+            status="matching",
+            reason="verified-root",
+            plan_sha256=self.plan.plan_sha256,
+            permit_sha256=hashlib.sha256(self.permit.canonical_bytes()).hexdigest(),
+            partitions=self.GEOMETRY,
+            expected_root_sha256=self.plan.artifact_map()["root_image"].sha256,
+            install_result_sha256=None,
+            serial_sha256="a" * 64,
+        )
+
+    def _transcript(self, boot_number: int, nonce: str) -> bytes:
+        outputs = {
+            "architecture": "riscv64",
+            "debian-release": "13.6",
+            "bash-version": "5.2.37(1)-release",
+            "packages": "\n".join(
+                f"{name}\t{version}" for name, version in self.PACKAGES
+            ),
+            "root-filesystem": "ext2/ext3",
+            "persistence": nonce,
+            "second-probe": "boot2-probe-created",
+        }
+        lines = ["__DEBIAN_ROOTFS_SHELL_READY__"]
+        for command in shell_commands(boot_number=boot_number, nonce=nonce):
+            lines.extend(
+                (
+                    command.payload,
+                    command.begin_marker,
+                    outputs[command.name],
+                    f"{command.status_prefix}0",
+                    command.end_marker,
+                )
+            )
+        return ("\n".join(lines) + "\n").encode()
+
+    def test_two_boot_gate_resets_epoch_and_reuses_one_nonce(self) -> None:
+        operations = self.Operations(self)
+
+        result = run_physical_gate(
+            self.plan,
+            self.permit,
+            self.inventory,
+            operations,
+            nonce_factory=lambda: self.NONCE,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(operations.boot_numbers, [1, 2])
+        self.assertEqual(operations.nonces, [self.NONCE, self.NONCE])
+        self.assertEqual(
+            operations.events,
+            ["invalidate", "validate", "boot1", "boot2", "publish"],
+        )
+        logs, published = operations.published
+        self.assertIs(published, result)
+        self.assertNotIn(self.NONCE.encode(), logs[0] + logs[1])
+        self.assertEqual(
+            PhysicalShellResult.from_bytes(result.canonical_bytes()), result
+        )
+
+    def test_failed_recovery_or_fatal_log_never_starts_or_passes_boot_two(self) -> None:
+        for operations in (
+            self.Operations(self, recovered=(False, True)),
+            self.Operations(self, fatal_boot=1),
+        ):
+            with self.subTest(operations=operations):
+                result = run_physical_gate(
+                    self.plan,
+                    self.permit,
+                    self.inventory,
+                    operations,
+                    nonce_factory=lambda: self.NONCE,
+                )
+            self.assertFalse(result.passed)
+            self.assertEqual(operations.boot_numbers, [1])
+            self.assertIs(operations.published[1], result)
+
+    def test_gate_rejects_unmatched_inventory_before_artifact_or_serial_use(
+        self,
+    ) -> None:
+        operations = self.Operations(self)
+        inventory = replace(
+            self.inventory,
+            status="not-measurable",
+            reason="verifier-failed",
+            serial_sha256=None,
+        )
+
+        result = run_physical_gate(
+            self.plan,
+            self.permit,
+            inventory,
+            operations,
+            nonce_factory=lambda: self.NONCE,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(operations.events, ["invalidate", "publish"])
+
+    def test_dnsmasq_tftp_contract_has_no_dhcp_or_host_network_mutation(self) -> None:
+        root = self.directory / "tftp"
+        argv = dnsmasq_tftp_argv("enp12s0", root)
+
+        self.assertEqual(
+            argv,
+            (
+                "/usr/sbin/dnsmasq",
+                "--no-daemon",
+                "--port=0",
+                "--no-hosts",
+                "--no-resolv",
+                "--interface=enp12s0",
+                "--bind-interfaces",
+                "--enable-tftp",
+                f"--tftp-root={root}",
+                "--log-facility=-",
+            ),
+        )
+        self.assertFalse(any("dhcp" in argument for argument in argv))
+
+
+class PersistentShellPhysicalIoTests(unittest.TestCase):
+    class Process:
+        def __init__(self) -> None:
+            self.terminated = 0
+
+        def poll(self) -> None:
+            return None
+
+        def terminate_group(self, term_deadline: float, kill_deadline: float) -> None:
+            self.terminated += 1
+            if not 0 < term_deadline < kill_deadline:
+                raise AssertionError("invalid process-group deadlines")
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    def test_tftp_server_waits_for_ready_and_cleans_process_group(self) -> None:
+        process = self.Process()
+        launched: list[tuple[str, ...]] = []
+
+        def launcher(argv: tuple[str, ...], *, stdio_fd: int) -> object:
+            launched.append(argv)
+            os.write(stdio_fd, b"dnsmasq: started, version 2.90\n")
+            return process
+
+        server = TftpOnlyServer("enp12s0", self.directory, launcher=launcher)
+        server.start(time.monotonic() + 1.0)
+        server.stop()
+
+        self.assertEqual(launched, [server.argv])
+        self.assertEqual(process.terminated, 1)
+        self.assertFalse(any("dhcp" in argument for argument in server.argv))
+
+        def failed_launcher(argv: tuple[str, ...], *, stdio_fd: int) -> object:
+            del argv, stdio_fd
+            raise OSError("spawn failed")
+
+        failed = TftpOnlyServer("enp12s0", self.directory, launcher=failed_launcher)
+        with self.assertRaisesRegex(OSError, "spawn failed"):
+            failed.start(time.monotonic() + 1.0)
+        self.assertEqual(failed._reader, -1)
+
+    def test_tftp_staging_rechecks_held_source_identity(self) -> None:
+        source = self.directory / "kernel"
+        source.write_bytes(b"asterinas-kernel")
+        artifact = FrozenArtifact.from_path("megrez_kernel", source)
+        destination = self.directory / "staged"
+
+        _copy_verified(artifact, destination)
+        self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+        destination.unlink()
+        original_write = physical_io.os.write
+
+        def short_write(descriptor: int, payload: bytes) -> int:
+            amount = max(1, len(payload) // 2)
+            return original_write(descriptor, payload[:amount])
+
+        with mock.patch.object(physical_io.os, "write", side_effect=short_write):
+            _copy_verified(artifact, destination)
+        self.assertEqual(destination.read_bytes(), source.read_bytes())
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o644)
+
+        destination.unlink()
+        with self.assertRaisesRegex(RuntimeError, "changed while staging"):
+            _copy_verified(replace(artifact, sha256="f" * 64), destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.directory.glob(".staged.tmp")), [])
+
+    def test_publication_invalidates_stale_result_and_writes_result_last(self) -> None:
+        output = self.directory / "output"
+        output.mkdir()
+        (output / "result.json").write_text('{"passed":true}\n')
+        result = PhysicalShellResult(
+            schema_version=1,
+            passed=False,
+            reason="boot1-failed",
+            plan_sha256="1" * 64,
+            permit_sha256="2" * 64,
+            inventory_sha256="3" * 64,
+            nonce_sha256="4" * 64,
+            boot1_serial_sha256=hashlib.sha256(b"first").hexdigest(),
+            boot2_serial_sha256=hashlib.sha256(b"second").hexdigest(),
+            boot1_recovered=False,
+            boot2_recovered=False,
+        )
+        operations = PhysicalBoardOperations(
+            device="/dev/null",
+            interface="enp12s0",
+            output=output,
+        )
+        try:
+            operations.invalidate()
+            self.assertFalse((output / "result.json").exists())
+            operations.publish((b"first", b"second"), result)
+        finally:
+            operations.close()
+
+        self.assertEqual((output / "boot1.serial.log").read_bytes(), b"first")
+        self.assertEqual((output / "boot2.serial.log").read_bytes(), b"second")
+        self.assertEqual(
+            PhysicalShellResult.from_bytes((output / "result.json").read_bytes()),
+            result,
+        )
 
 
 if __name__ == "__main__":
