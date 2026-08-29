@@ -57,6 +57,7 @@ FATAL_MARKERS = (
     "unexpected exception",
     "Kernel panic",
     "Oops:",
+    "MEGREZ_SDHCI_READ_FAIL",
 )
 PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
 UBOOT_AUTOBOOT_PATTERN = re.compile(

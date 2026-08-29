@@ -28,6 +28,32 @@
 
 Any future Megrez MMC change must preserve these four facts in focused tests.
 
+## Frozen pre-board evidence (2026-08-29)
+
+- Physical paging mode is **Sv48**. The generic QEMU fast profile remains Sv39
+  and now rejects an Sv48 plan before launching a process; physical plans must
+  pass `--paging-mode sv48` rather than inheriting an implicit Sv39 value.
+- Kernel Image: `5be4680c03269eb5cf220a99104d9f9742157a2922eed58cf8174cd7c4747fce`
+  (`14,695,864` bytes), built from kernel commit `899096473d14`.
+- Megrez DTB: `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17`.
+  `/soc/mmc@0x50460000` is enabled and records the exact DMA window above.
+- U-Boot read-only baseline: `mmc dev 1`, then
+  `mmc read 0x90000000 0 0x10000`, read all `65,536` sectors successfully;
+  `crc32 0x90000000 0x2000000` returned `5f85f90e`.
+- Static read-only probe initramfs:
+  `08969066b1f6d2e83ddd98d547783cae34cc4d926df9bb6757d8706818564df5`
+  (`479,744` bytes), raw newc entries exactly `.` and `init`. It opens only
+  `/dev/mmcblk0` with `O_RDONLY`, reads exactly 32 MiB with positional I/O,
+  compares the U-Boot CRC32, emits monotonic UART markers, and reboots.
+- QEMU contract approximation reaches the exact static `/init` in about six
+  wall-clock seconds and reports the expected `target-open` failure because
+  QEMU virt has no EIC7700 SDHCI. QEMU therefore validates Sv48, SMP=4,
+  initramfs unpacking, marker output, and recovery only; it does not claim to
+  validate the physical controller.
+- Frozen physical plan:
+  `c6c86a881af56ea29f409c6dc094ac821f0b121fa7becb8e7ed2823faecd7309`,
+  with a 60-second software-recovery timer and no write-authority token.
+
 ---
 
 ### Task 1: Preserve high-information installer progress on UART

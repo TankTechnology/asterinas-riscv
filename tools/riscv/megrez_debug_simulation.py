@@ -192,6 +192,9 @@ def simulate_fast(
         raise SimulationError("simulation-timeout-invalid")
     if not math.isfinite(timeout) or timeout <= 0:
         raise SimulationError("simulation-timeout-invalid")
+    plan.validate()
+    if not plan.sv39:
+        raise SimulationError("fast-simulation-requires-sv39")
     repository = (
         repository_root.absolute()
         if repository_root is not None

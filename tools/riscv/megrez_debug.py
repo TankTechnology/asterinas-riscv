@@ -231,7 +231,7 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         artifacts=artifacts,
         bootargs=arguments.bootargs,
         smp=4,
-        sv39=True,
+        sv39=getattr(arguments, "paging_mode", "sv39") == "sv39",
         markers=markers,
         reboot_after=arguments.reboot_after,
     )
@@ -317,6 +317,7 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--package-checksums", type=Path)
     plan.add_argument("--in-release", type=Path)
     plan.add_argument("--bootargs", required=True)
+    plan.add_argument("--paging-mode", choices=("sv39", "sv48"), default="sv39")
     plan.add_argument("--marker", action="append")
     plan.add_argument("--reboot-after", type=int, default=180)
     plan.add_argument("--output", required=True, type=Path)
