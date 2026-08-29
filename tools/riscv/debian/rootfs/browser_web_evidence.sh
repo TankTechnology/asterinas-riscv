@@ -106,10 +106,17 @@ validate_dns_and_tls() {
     # helper interface).  The security-relevant contract is that at least one
     # non-loopback link exists and that the verified address/route below use
     # the slirp network.
-    [[ "$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l)" -ge 1 ]] ||
-        fail nic-count
-    ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' || fail nic-address
-    ip -4 route show default | grep -Eq '^default via 10\.0\.2\.2 dev ' || fail nic-default-route
+    local ready=false
+    for _ in {1..60}; do
+        if [[ "$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l)" -ge 1 ]] &&
+            ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' &&
+            ip -4 route show default | grep -Eq '^default via 10\.0\.2\.2 dev '; then
+            ready=true
+            break
+        fi
+        /usr/bin/sleep 1
+    done
+    [[ "$ready" == true ]] || fail nic-count
     for name in www.baidu.com www.bilibili.com; do
         hosts="$(getent ahostsv4 "$name")" || fail "dns-$name"
         ip="$(awk 'NR == 1 { print $1 }' <<<"$hosts")"
