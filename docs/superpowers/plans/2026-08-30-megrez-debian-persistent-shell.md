@@ -12,9 +12,11 @@
 
 ## File Map and Boundaries
 
-- Create `tools/riscv/megrez_debian_shell_contract.py`: canonical bundle,
-  QEMU evidence, pre-board permit, inventory result, and physical result types;
-  one-open hashing and exact JSON validation only.
+- Create `tools/riscv/megrez_debian_shell_contract.py`: canonical bundle and
+  one-open artifact identities only.
+- Create `tools/riscv/megrez_debian_shell_evidence.py`: QEMU evidence and the
+  physical pre-board permit; inventory and physical results remain owned by
+  the board workflow that produces them.
 - Create `tools/riscv/megrez_debian_shell_board.py`: physical inventory,
   dnsmasq TFTP lifetime, two-boot orchestration, and final handoff. It consumes
   the pure contract and existing board/session protocol; it does not build a
@@ -40,9 +42,10 @@
   final hashes, commands, QEMU result, board inventory, optional install, two
   boot results, and final handoff. Create it only after the real evidence exists.
 
-The new modules must stay focused: contract under 500 lines, board workflow
-under 600 lines, CLI under 300 lines. Stop and split by the boundaries above if
-any limit would be exceeded; do not grow another thousand-line orchestrator.
+The new modules must stay focused: contract and QEMU evidence each under 500
+lines, board workflow under 600 lines, CLI under 300 lines. Stop and split by
+the boundaries above if any limit would be exceeded; do not grow another
+thousand-line orchestrator.
 
 ### Task 1: Freeze the dual-platform persistent-shell bundle
 
@@ -252,6 +255,7 @@ git commit -m "test(riscv): define Megrez Debian shell bundle"
 
 **Files:**
 - Modify: `tools/riscv/megrez_debian_shell_contract.py`
+- Create: `tools/riscv/megrez_debian_shell_evidence.py`
 - Create: `tools/riscv/megrez_debian_shell.py`
 - Modify: `tools/riscv/tests/test_megrez_debian_shell.py`
 
