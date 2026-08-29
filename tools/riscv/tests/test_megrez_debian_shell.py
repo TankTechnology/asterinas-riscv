@@ -36,10 +36,14 @@ from tools.riscv.megrez_debian_shell_board import (
     InventoryError,
     InventoryResult,
     classify_inventory_log,
+    install_if_needed,
+    installer_bootargs,
     run_inventory,
     verifier_bootargs,
 )
 from tools.riscv.megrez_board_session import PartitionGeometry
+from tools.riscv.megrez_debug_contract import StageResult
+from tools.riscv.megrez_preboard import PreboardError
 
 
 ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
@@ -915,6 +919,204 @@ class PersistentShellInventoryTests(unittest.TestCase):
         result = run_inventory(self.plan, self.permit, operations)
         self.assertEqual(result.status, "not-measurable")
         self.assertEqual(result.partitions, ())
+
+
+class PersistentShellInstallTests(unittest.TestCase):
+    GEOMETRY = PersistentShellInventoryTests.GEOMETRY
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.repository = Path(self.temporary_directory.name)
+        self.plan = _valid_plan(_artifact_fixture(self.repository))
+        self.permit = _valid_permit(self.plan)
+        self.output = self.repository / "target/install"
+        self.root_sha256 = self.plan.artifact_map()["root_image"].sha256
+        self.permit_sha256 = hashlib.sha256(self.permit.canonical_bytes()).hexdigest()
+        self.matching_inventory = self._inventory("matching", "verified-root")
+        self.needs_install_inventory = self._inventory("needs-install", "image-hash")
+
+    def _inventory(self, status: str, reason: str) -> InventoryResult:
+        return InventoryResult(
+            schema_version=1,
+            status=status,
+            reason=reason,
+            plan_sha256=self.plan.plan_sha256,
+            permit_sha256=self.permit_sha256,
+            partitions=self.GEOMETRY,
+            expected_root_sha256=self.root_sha256,
+            install_result_sha256=None,
+            serial_sha256="b" * 64,
+        )
+
+    def _artifact_reader(self, name: str, _path: Path) -> FrozenArtifact:
+        return self.plan.artifact_map()[name]
+
+    def _install_result(self) -> StageResult:
+        return StageResult(
+            1,
+            "install",
+            True,
+            "install-pass",
+            self.plan.plan_sha256,
+            ("installer.serial.log", "debian-current-network-installer.cpio"),
+        )
+
+    def test_matching_inventory_skips_install_without_consuming_permit(self) -> None:
+        calls: list[str] = []
+
+        def forbidden(_request: object) -> StageResult:
+            calls.append("run")
+            raise AssertionError("matching root must not start an installer")
+
+        result = install_if_needed(
+            self.plan,
+            self.permit,
+            self.matching_inventory,
+            self.output,
+            repository=self.repository,
+            run=forbidden,
+            artifact_reader=self._artifact_reader,
+        )
+
+        self.assertEqual(result.reason, "already-matching")
+        self.assertEqual(calls, [])
+        self.assertFalse((self.output / "attempt.json").exists())
+        self.assertEqual(
+            StageResult.from_bytes((self.output / "result.json").read_bytes()),
+            result,
+        )
+
+    def test_needs_install_publishes_attempt_then_runs_exactly_once(self) -> None:
+        requests: list[object] = []
+
+        def success(request: object) -> StageResult:
+            requests.append(request)
+            self.assertTrue((self.output / "attempt.json").is_file())
+            self.assertFalse((self.output / "result.json").exists())
+            return self._install_result()
+
+        result = install_if_needed(
+            self.plan,
+            self.permit,
+            self.needs_install_inventory,
+            self.output,
+            repository=self.repository,
+            run=success,
+            artifact_reader=self._artifact_reader,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(len(requests), 1)
+        request = requests[0]
+        self.assertEqual(
+            request.kernel,
+            Path(self.plan.artifact_map()["megrez_kernel"].path),
+        )
+        self.assertEqual(
+            request.installer_base,
+            Path(self.plan.artifact_map()["installer_base"].path),
+        )
+        self.assertEqual(request.root_sha256, self.root_sha256)
+        self.assertEqual(
+            request.bootargs,
+            installer_bootargs(self.plan, self.root_sha256),
+        )
+        attempt = StageResult.from_bytes((self.output / "attempt.json").read_bytes())
+        self.assertFalse(attempt.passed)
+        self.assertEqual(attempt.reason, "attempt-started")
+        self.assertIn(f"permit-sha256:{self.permit_sha256}", attempt.evidence)
+
+    def test_failed_attempt_cannot_relaunch_with_the_same_permit(self) -> None:
+        run_count = 0
+
+        def fail(_request: object) -> StageResult:
+            nonlocal run_count
+            run_count += 1
+            raise RuntimeError("board write failed")
+
+        with self.assertRaisesRegex(RuntimeError, "board write failed"):
+            install_if_needed(
+                self.plan,
+                self.permit,
+                self.needs_install_inventory,
+                self.output,
+                repository=self.repository,
+                run=fail,
+                artifact_reader=self._artifact_reader,
+            )
+        with self.assertRaises(PreboardError):
+            install_if_needed(
+                self.plan,
+                self.permit,
+                self.needs_install_inventory,
+                self.output,
+                repository=self.repository,
+                run=fail,
+                artifact_reader=self._artifact_reader,
+            )
+
+        self.assertEqual(run_count, 1)
+        self.assertTrue((self.output / "attempt.json").is_file())
+        self.assertFalse((self.output / "result.json").exists())
+
+    def test_install_rejects_untrusted_or_changed_inputs_before_attempt(self) -> None:
+        calls: list[str] = []
+
+        def forbidden(_request: object) -> StageResult:
+            calls.append("run")
+            raise AssertionError("invalid input reached the installer")
+
+        wrong_geometry = replace(
+            self.needs_install_inventory,
+            partitions=(
+                self.GEOMETRY[0],
+                PartitionGeometry(2, P2_START_LBA + 1, P2_NR_SECTORS),
+                self.GEOMETRY[2],
+            ),
+        )
+        variants = (
+            replace(
+                self.needs_install_inventory,
+                status="not-measurable",
+                reason="verifier-failed",
+            ),
+            replace(self.needs_install_inventory, plan_sha256="f" * 64),
+            replace(self.needs_install_inventory, permit_sha256="f" * 64),
+            replace(self.needs_install_inventory, expected_root_sha256="f" * 64),
+            wrong_geometry,
+        )
+        for inventory in variants:
+            with self.subTest(inventory=inventory), self.assertRaises(InventoryError):
+                install_if_needed(
+                    self.plan,
+                    self.permit,
+                    inventory,
+                    self.output,
+                    repository=self.repository,
+                    run=forbidden,
+                    artifact_reader=self._artifact_reader,
+                )
+        changed_root = replace(self.plan.artifact_map()["root_image"], sha256="f" * 64)
+
+        def changed_reader(name: str, _path: Path) -> FrozenArtifact:
+            if name == "root_image":
+                return changed_root
+            return self.plan.artifact_map()[name]
+
+        with self.assertRaises(InventoryError):
+            install_if_needed(
+                self.plan,
+                self.permit,
+                self.needs_install_inventory,
+                self.output,
+                repository=self.repository,
+                run=forbidden,
+                artifact_reader=changed_reader,
+            )
+
+        self.assertEqual(calls, [])
+        self.assertFalse((self.output / "attempt.json").exists())
 
 
 if __name__ == "__main__":
