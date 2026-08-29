@@ -163,7 +163,21 @@ esac
 """,
             encoding="utf-8",
         )
-        for command in ("pgrep", "runuser", "xdotool"):
+        (fake_bin / "sleep").write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'if [ -n "${ASTERINAS_M7_PRE_HOME_DELAY-}" ] && [ "$1" != 0 ]; then\n'
+            '  [ "$1" = "$ASTERINAS_M7_PRE_HOME_DELAY" ] || exit 91\n'
+            '  if grep -Fq -- "$ASTERINAS_M7_HOME_MARKER" '
+            '"$ASTERINAS_BROWSER_M7_CONSOLE"; then\n'
+            "    exit 90\n"
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
+            'exec /usr/bin/sleep "$@"\n',
+            encoding="utf-8",
+        )
+        for command in ("pgrep", "runuser", "sleep", "xdotool"):
             (fake_bin / command).chmod(0o755)
 
         environment = os.environ.copy()
@@ -234,6 +248,24 @@ esac
         self.assertNotIn("mousemove --sync 500 42", action_lines)
         self.assertNotIn("mousemove --sync 560 310", action_lines)
         self.assertEqual(action_lines.count("key Return"), 1)
+
+    def test_guest_waits_for_home_render_before_announcing_home(self) -> None:
+        environment, _, _ = self._environment()
+        environment.pop("ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS")
+        environment.update(
+            ASTERINAS_M7_PRE_HOME_DELAY="30",
+            ASTERINAS_M7_HOME_MARKER=DESKTOP_M7_HOME_MARKER,
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_guest_reports_bounded_home_and_search_process_failures(self) -> None:
         for mode, reason in (

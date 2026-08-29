@@ -7,7 +7,7 @@ readonly CONSOLE="${ASTERINAS_BROWSER_M7_CONSOLE:-/dev/console}"
 readonly PROC_ROOT="${ASTERINAS_BROWSER_M7_PROC_ROOT:-/proc}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS:-60}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_COMMAND_TIMEOUT_SECONDS:-10}"
-readonly CAPTURE_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS:-10}"
+readonly CAPTURE_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS:-30}"
 readonly FOCUS_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_FOCUS_DELAY_SECONDS:-1}"
 readonly POLL_DELAY_SECONDS="${ASTERINAS_BROWSER_M7_POLL_DELAY_SECONDS:-1}"
 readonly NETSURF_LOG="${ASTERINAS_BROWSER_M7_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
@@ -166,8 +166,10 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowfocus --sync "$window_id" || fail window-focus
 sleep "$FOCUS_DELAY_SECONDS"
 wait_for_home_title
-emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 sleep "$CAPTURE_DELAY_SECONDS"
+find_single_process || fail home-process
+find_single_window || fail home-window
+emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool mousemove --sync --window "$window_id" 500 42 || fail search-focus
