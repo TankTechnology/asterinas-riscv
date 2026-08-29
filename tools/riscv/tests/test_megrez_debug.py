@@ -1667,21 +1667,36 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
-    def test_hardware_watchdog_refuses_unknown_component_before_writes(self) -> None:
+    def test_hardware_watchdog_refuses_unknown_component_without_arming(self) -> None:
         commands: list[str] = []
 
         class Session:
             def command(self, command: str, timeout: float) -> str:
                 del timeout
                 commands.append(command)
-                return f"{command}\r\n508000fc: 00000000\r\n=> "
+                values = {
+                    "md.l 0x51828200 1": "51828200: fe3fff83",
+                    "md.l 0x51828444 1": "51828444: 00000001",
+                    "md.l 0x508000fc 1": "508000fc: 00000000",
+                }
+                return f"{command}\r\n{values[command]}\r\n=> "
 
         with self.assertRaisesRegex(BoardRunFailure, "watchdog-type-mismatch"):
             RealBoardOperations._arm_hardware_watchdog(
                 Session(), time.monotonic() + 1.0
             )
 
-        self.assertEqual(commands, ["md.l 0x508000fc 1"])
+        self.assertEqual(
+            commands,
+            [
+                "md.l 0x51828200 1",
+                "md.l 0x51828444 1",
+                "md.l 0x51828200 1",
+                "md.l 0x51828444 1",
+                "md.l 0x508000fc 1",
+            ],
+        )
+        self.assertFalse(any(command.startswith("mw.l 0x5080") for command in commands))
 
     def test_real_adapter_reuses_one_fd_and_publishes_result_last(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1722,6 +1737,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
 
             class Session:
                 fd = 23
+                reset_deasserted = False
 
                 def send(self, command: str) -> None:
                     sends.append(command)
@@ -1733,10 +1749,18 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 def command(self, command: str, timeout: float) -> str:
                     commands.append(command)
                     self.log.write(f"{command}\n")
+                    if command == "md.l 0x51828200 1":
+                        return f"{command}\r\n51828200: fe3fff83\r\n=> "
+                    if command == "md.l 0x51828444 1":
+                        reset = 1 if self.reset_deasserted else 0
+                        return f"{command}\r\n51828444: {reset:08x}\r\n=> "
+                    if command == "mw.l 0x51828444 0x1":
+                        self.reset_deasserted = True
+                        return f"{command}\r\n=> "
                     if command == "md.l 0x508000fc 1":
                         return f"{command}\r\n508000fc: 44570120\r\n=> "
                     if command == "md.l 0x50800000 2":
-                        return f"{command}\r\n50800000: 0000001f 000000ff\r\n=> "
+                        return f"{command}\r\n50800000: 0000001f 0000000f\r\n=> "
                     if command.startswith("crc32 "):
                         address = int(command.split()[1], 16)
                         return (
@@ -1828,11 +1852,16 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 any("asterinas,usb-host" in command for command in commands)
             )
             self.assertEqual(
-                commands[-6:],
+                commands[-11:],
                 [
                     MEGREZ_USB_HOST_COMMAND,
+                    "md.l 0x51828200 1",
+                    "md.l 0x51828444 1",
+                    "mw.l 0x51828444 0x1",
+                    "md.l 0x51828200 1",
+                    "md.l 0x51828444 1",
                     "md.l 0x508000fc 1",
-                    "mw.l 0x50800004 0xff",
+                    "mw.l 0x50800004 0xf",
                     "mw.l 0x5080000c 0x76",
                     "mw.l 0x50800000 0x1f",
                     "md.l 0x50800000 2",
