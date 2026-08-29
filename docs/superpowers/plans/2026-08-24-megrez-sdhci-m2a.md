@@ -266,13 +266,19 @@ Commit: `feat(riscv): register Megrez SD as read-only block storage`
 The gate parses a bounded serial transcript and requires, in order:
 
 ```text
-[mmc] controller 0x50460000 irq=81 read-only
+[mmc] SDMA buffer cpu=0xfff00000 device=0xfff00000 bytes=524288
+[mmc] controller 0x50460000 irq=81 sdma boundary=524288
 [mmc] SDHC rca=... sectors=...
 [mmc] mmcblk0 registered read-only
-[mmc] partition-table sha256=...
+MEGREZ_SDHCI_READ_START bytes=33554432 ...
+MEGREZ_SDHCI_READ_PASS bytes=33554432 crc32=... ...
 ```
 
-It rejects panic/fatal markers, duplicate/out-of-order markers, missing capacity, write-enabled text, oversized logs, and timeouts. Output is an atomic JSON result plus complete serial log.
+It rejects panic/fatal markers, duplicate/out-of-order markers, missing capacity,
+write-enabled text, oversized logs, timeouts, and a 32 MiB CRC32 that differs
+from the U-Boot baseline. The bounded CRC read covers the partition table and
+replaces the early design's never-implemented partition-hash marker. Output is
+an atomic JSON result plus complete serial log.
 
 **Step 2: Run proportional local gates**
 

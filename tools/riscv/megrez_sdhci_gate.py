@@ -31,7 +31,6 @@ _CARD = re.compile(
     r"(?: sector0=[0-9a-fA-F]{4})?"
 )
 _BLOCK = re.compile(r"\[mmc\] mmcblk0 registered read-only")
-_PARTITION = re.compile(r"\[mmc\] partition-table sha256=(?P<sha256>[0-9a-f]{64})")
 _UPTIME = r"(?:0|[1-9][0-9]*)\.[0-9]+"
 _READ_START = re.compile(
     rf"MEGREZ_SDHCI_READ_START bytes=(?P<bytes>[0-9]+) "
@@ -54,7 +53,6 @@ class GateResult:
     passed: bool
     reason: str
     sectors: int | None = None
-    partition_sha256: str | None = None
     read_bytes: int | None = None
     read_crc32: str | None = None
     elapsed_seconds: float | None = None
@@ -78,7 +76,6 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         list(_CONTROLLER.finditer(text)),
         list(_CARD.finditer(text)),
         list(_BLOCK.finditer(text)),
-        list(_PARTITION.finditer(text)),
     ]
     if any(len(found) != 1 for found in matches):
         return _failure("missing-or-duplicate-marker")
@@ -102,7 +99,6 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         True,
         "passed",
         sectors=sectors,
-        partition_sha256=matches[4][0].group("sha256"),
     )
     if expected_crc32 is None:
         return result
@@ -116,7 +112,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
     start_match = start_matches[0]
     pass_match = pass_matches[0]
     if (
-        matches[4][0].start() > start_match.start()
+        matches[3][0].start() > start_match.start()
         or start_match.start() > pass_match.start()
     ):
         return _failure("out-of-order-read-marker")
@@ -140,7 +136,6 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         True,
         "passed",
         sectors=sectors,
-        partition_sha256=matches[4][0].group("sha256"),
         read_bytes=read_bytes,
         read_crc32=pass_match.group("crc32"),
         elapsed_seconds=float(end - start),

@@ -43,8 +43,8 @@ focused tests.
 - Physical paging mode is **Sv48**. The generic QEMU fast profile remains Sv39
   and now rejects an Sv48 plan before launching a process; physical plans must
   pass `--paging-mode sv48` rather than inheriting an implicit Sv39 value.
-- Kernel Image: `5be4680c03269eb5cf220a99104d9f9742157a2922eed58cf8174cd7c4747fce`
-  (`14,695,864` bytes), built from kernel commit `899096473d14`.
+- Kernel Image: `a4cf3a4f40d00dd83d0c057c94ebc5a611a74f32f41ea9198632a627d034d928`
+  (`14,698,872` bytes), built from kernel commit `4960dc2d0`.
 - Megrez DTB: `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17`.
   `/soc/mmc@0x50460000` is enabled and records the exact DMA window above.
 - U-Boot read-only baseline: `mmc dev 1`, then
@@ -60,9 +60,13 @@ focused tests.
   QEMU virt has no EIC7700 SDHCI. QEMU therefore validates Sv48, SMP=4,
   initramfs unpacking, marker output, and recovery only; it does not claim to
   validate the physical controller.
-- Frozen physical plan:
-  `c6c86a881af56ea29f409c6dc094ac821f0b121fa7becb8e7ed2823faecd7309`,
-  with a 60-second software-recovery timer and no write-authority token.
+- The first post-fix physical run proved identity DMA on hardware:
+  `cpu=0xfff00000 device=0xfff00000`, followed by controller, card, read-only
+  block registration, and the 32 MiB read-start marker. The prior
+  `0x02008000` SDHCI bus error did not recur. Its host runner then stopped on
+  the early design's `partition-table sha256` marker, which had never existed
+  in the kernel. The final gate therefore binds the already-defined 32 MiB
+  read to U-Boot CRC32 `5f85f90e` instead of accepting imaginary evidence.
 - The first physical SDMA run at commit `8127014e997` reached the card through
   PIO, then failed the first 32 MiB transfer with status `0x02008000` after
   programming `0x5ff00000`. Bit 25 is the SDHCI ADMA/system-bus error. The
