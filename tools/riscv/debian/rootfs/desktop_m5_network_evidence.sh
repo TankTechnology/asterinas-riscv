@@ -18,6 +18,7 @@ readonly MEGREZ_PROXY_PORT='17893'
 readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL='https://www.baidu.com/'
 readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
 
@@ -170,6 +171,38 @@ request_megrez_https() {
     return 1
 }
 
+synchronize_megrez_clock() {
+    local clock_date=''
+    local header
+    local headers
+
+    if ! headers="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+            --fail \
+            --head \
+            --ipv4 \
+            --silent \
+            --show-error \
+            --max-time "$COMMAND_TIMEOUT_SECONDS" \
+            --proxy "$PROXY_URL" \
+            "$CLOCK_URL"
+    )"; then
+        fail megrez-clock
+    fi
+    while IFS= read -r header; do
+        header="${header%$'\r'}"
+        if [[ "${header,,}" == date:* ]]; then
+            clock_date="${header#*:}"
+            clock_date="${clock_date#${clock_date%%[![:space:]]*}}"
+            break
+        fi
+    done <<<"$headers"
+    [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
+        fail megrez-clock-date
+    date --utc --set "$clock_date" >/dev/null || fail megrez-clock-set
+    emit "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
+}
+
 qemu_network_evidence() {
     local curl_result
     local http_status
@@ -212,6 +245,7 @@ megrez_network_evidence() {
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
     emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
+    synchronize_megrez_clock
 
     curl_result="$(request_megrez_https)" || fail megrez-https
     [[ "$curl_result" == *$'\t'* ]] || fail megrez-curl-output
