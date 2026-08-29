@@ -72,6 +72,15 @@ impl FrameAllocOptions {
         self.alloc_segment_with(nframes, |_| ())
     }
 
+    /// Allocates a contiguous range of untyped frames inside `paddr_range`.
+    pub fn alloc_segment_in(
+        &self,
+        nframes: usize,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Segment<()>> {
+        self.alloc_segment_with_in(nframes, paddr_range, |_| ())
+    }
+
     /// Allocates a contiguous range of frames with additional metadata.
     ///
     /// The returned [`Segment`] contains at least one frame. The method returns
@@ -99,6 +108,39 @@ impl FrameAllocOptions {
             let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
             // SAFETY: The newly allocated segment is guaranteed to be valid.
             unsafe { core::ptr::write_bytes(addr, 0, nframes * PAGE_SIZE) }
+        }
+
+        Ok(segment)
+    }
+
+    /// Allocates contiguous frames with metadata inside `paddr_range`.
+    pub fn alloc_segment_with_in<M: AnyFrameMeta, F>(
+        &self,
+        nframes: usize,
+        paddr_range: Range<Paddr>,
+        metadata_fn: F,
+    ) -> Result<Segment<M>>
+    where
+        F: FnMut(Paddr) -> M,
+    {
+        if nframes == 0
+            || paddr_range.start >= paddr_range.end
+            || !paddr_range.start.is_multiple_of(PAGE_SIZE)
+            || !paddr_range.end.is_multiple_of(PAGE_SIZE)
+        {
+            return Err(Error::InvalidArgs);
+        }
+        let size = nframes.checked_mul(PAGE_SIZE).ok_or(Error::InvalidArgs)?;
+        let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_| Error::InvalidArgs)?;
+        let segment = get_global_frame_allocator()
+            .alloc_in(layout, paddr_range)
+            .map(|start| Segment::from_unused(start..start + size, metadata_fn).unwrap())
+            .ok_or(Error::NoMemory)?;
+
+        if self.zeroed {
+            let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
+            // SAFETY: The newly allocated segment is guaranteed to be valid.
+            unsafe { core::ptr::write_bytes(addr, 0, size) }
         }
 
         Ok(segment)
@@ -152,6 +194,12 @@ pub trait GlobalFrameAllocator: Sync {
     /// calling [`GlobalFrameAllocator::dealloc`]. If multiple frames are
     /// allocated, they may be returned in any order with any number of calls.
     fn alloc(&self, layout: Layout) -> Option<Paddr>;
+
+    /// Allocates contiguous frames wholly contained in `paddr_range`.
+    ///
+    /// The caller guarantees that both range endpoints and the layout size
+    /// are aligned to [`PAGE_SIZE`].
+    fn alloc_in(&self, layout: Layout, paddr_range: Range<Paddr>) -> Option<Paddr>;
 
     /// Deallocates a contiguous range of frames.
     ///
