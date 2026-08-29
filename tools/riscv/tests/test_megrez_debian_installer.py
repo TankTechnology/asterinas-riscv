@@ -266,8 +266,16 @@ class MegrezDebianInstallerTests(unittest.TestCase):
         script = render_network_init(root_hash, len(payload), root_url, chunks).decode()
 
         self.assertIn("mkdir -p /proc /sys /dev /run", script)
+        self.assertIn(
+            "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY",
+            script,
+        )
         self.assertIn("asterinas.mmc_write_partition2", script)
         self.assertIn(f"asterinas.debian_install_sha256={root_hash}", script)
+        self.assertIn(
+            "DEBIAN_INSTALL_RESUME_START chunks=2 block_bytes=1048576", script
+        )
+        self.assertIn("DEBIAN_INSTALL_CHUNK_SCAN index=$index", script)
         self.assertIn("done < /installer/network-chunks.tsv", script)
         self.assertIn('dd if="$target" bs=1048576 skip="$block"', script)
         self.assertIn("DEBIAN_INSTALL_CHUNK_SKIP", script)
