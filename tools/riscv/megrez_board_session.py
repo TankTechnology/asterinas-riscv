@@ -38,6 +38,8 @@ import time
 from dataclasses import dataclass
 from typing import TextIO
 
+from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+
 BAUD = 115200
 YMODEM_BAUD = 1_500_000
 YMODEM_STAGING_ADDRESS = 0x9000_0000
@@ -91,6 +93,10 @@ MEGREZ_USB_HOST_COMMAND = (
     "fdt set /chosen asterinas,usb-host "
     "/soc/usb0@50480000/dwc3@50480000 "
     "/soc/usb1@50490000/dwc3@50490000"
+)
+PARTITION_MARKER = re.compile(
+    r"(?m)^__ASTERINAS_PARTITION_(?P<number>[123])__"
+    r"start=(?P<start>[0-9a-f]+) size=(?P<size>[0-9a-f]+)\r?$"
 )
 
 
@@ -147,6 +153,15 @@ class FramebufferHandoff:
             f'fdt set {path} status "okay"',
             f"fdt print {path}",
         )
+
+
+@dataclass(frozen=True)
+class PartitionGeometry:
+    """One U-Boot-reported eMMC partition extent in 512-byte sectors."""
+
+    number: int
+    start_lba: int
+    nr_sectors: int
 
 
 MEGREZ_FRAMEBUFFER = FramebufferHandoff(
@@ -598,6 +613,40 @@ class BoardSession:
         self.milestones.clear()
         self._milestone_tail = ""
         self._next_milestone = 0
+
+
+def read_partition_geometry(
+    session: BoardSession,
+) -> tuple[PartitionGeometry, PartitionGeometry, PartitionGeometry]:
+    """Reads all eMMC partition extents without issuing a mutation command."""
+
+    session.command("mmc dev 1")
+    session.command("mmc rescan")
+    geometry = []
+    for number in (1, 2, 3):
+        session.command(f"part start mmc 1 {number} ast_p{number}_start")
+        session.command(f"part size mmc 1 {number} ast_p{number}_size")
+        output = session.command(
+            f"echo __ASTERINAS_PARTITION_{number}__"
+            f"start=${{ast_p{number}_start}} size=${{ast_p{number}_size}}"
+        )
+        matches = list(PARTITION_MARKER.finditer(output))
+        if len(matches) != 1 or int(matches[0]["number"]) != number:
+            raise RuntimeError(f"partition {number} geometry is missing or ambiguous")
+        start_lba = int(matches[0]["start"], 16)
+        nr_sectors = int(matches[0]["size"], 16)
+        if start_lba <= 0 or nr_sectors <= 0:
+            raise RuntimeError(f"partition {number} geometry must be positive")
+        geometry.append(PartitionGeometry(number, start_lba, nr_sectors))
+
+    first, second, third = geometry
+    if (second.start_lba, second.nr_sectors) != (P2_START_LBA, P2_NR_SECTORS):
+        raise RuntimeError("partition 2 does not match the frozen write contract")
+    if first.start_lba + first.nr_sectors > second.start_lba:
+        raise RuntimeError("partitions 1 and 2 overlap")
+    if second.start_lba + second.nr_sectors > third.start_lba:
+        raise RuntimeError("partitions 2 and 3 overlap")
+    return first, second, third
 
 
 def parse_expected_crc32(spec: str) -> dict[str, str]:

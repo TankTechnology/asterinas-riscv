@@ -11,6 +11,7 @@ from unittest import mock
 
 from tools.riscv.debian.rootfs.megrez_installer import (
     InstallerError,
+    PARTITION_SIZE,
     build_archive,
     build_network_archive,
     build_verify_archive,
@@ -399,6 +400,12 @@ class MegrezDebianInstallerTests(unittest.TestCase):
 
         script = render_verify_init(root_hash, 1024 * 1024).decode()
 
+        ready = (
+            'emit "DEBIAN_INVENTORY_READY target=$target bytes=$size write=disabled"'
+        )
+        self.assertIn(ready, script)
+        self.assertIn(f'[ "$size" = "{PARTITION_SIZE}" ]', script)
+        self.assertLess(script.index(ready), script.index('dd if="$target"'))
         self.assertIn('dd if="$target" bs=1048576 iflag=fullblock count=1', script)
         self.assertIn(f'[ "$1" = "{root_hash}" ]', script)
         self.assertIn("DEBIAN_VERIFY_PASS", script)
