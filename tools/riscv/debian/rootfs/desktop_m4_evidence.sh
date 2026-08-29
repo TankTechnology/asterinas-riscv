@@ -62,6 +62,10 @@ fail() {
         printf '%s\n' '--- NetSurf log tail ---' >>"$CONSOLE"
         tail -c 8192 -- "$NETSURF_LOG" >>"$CONSOLE" 2>&1 || true
     fi
+    printf '%s\n' '--- X window tree tail ---' >>"$CONSOLE"
+    bounded env DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        xwininfo -root -tree 2>&1 | tail -c 16384 >>"$CONSOLE" || true
+    printf '\n' >>"$CONSOLE"
     if [[ -f "$XORG_LOG" ]]; then
         printf '%s\n' '--- Xorg log ---' >>"$CONSOLE"
         cat -- "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
@@ -142,7 +146,7 @@ ready() {
     probe xterm pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
     probe netsurf-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
-        xdotool search --onlyvisible --class NetSurf-bin \
+        xdotool search --onlyvisible --class NetSurf \
         >/dev/null || return 1
     probe xterm-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
@@ -177,7 +181,7 @@ while ! ready; do
 done
 
 if [[ "${ASTERINAS_DESKTOP_SHOW_OVERVIEW:-0}" == 1 ]]; then
-    move_single_window_to_overview_workspace NetSurf-bin overview-browser
+    move_single_window_to_overview_workspace NetSurf overview-browser
     move_single_window_to_overview_workspace XTerm overview-terminal
     sleep 1
 fi

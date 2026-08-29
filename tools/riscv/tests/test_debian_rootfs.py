@@ -1445,6 +1445,12 @@ WantedBy=multi-user.target
                         f"DEBIAN_DESKTOP_M4_DIAGNOSTIC missing={expected_diagnostic}\n",
                         evidence,
                     )
+                    if missing == "mapped-netsurf":
+                        self.assertIn(
+                            '0x200003 "Asterinas Start - NetSurf": '
+                            '("netsurf" "NetSurf")',
+                            evidence,
+                        )
                     self.assertTrue(
                         evidence.endswith(
                             "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
@@ -1497,9 +1503,9 @@ WantedBy=multi-user.target
                     self.assertEqual(
                         xdotool_log.read_text(encoding="utf-8").splitlines(),
                         [
-                            "search --onlyvisible --class NetSurf-bin",
+                            "search --onlyvisible --class NetSurf",
                             "search --onlyvisible --class XTerm",
-                            "search --onlyvisible --class NetSurf-bin",
+                            "search --onlyvisible --class NetSurf",
                             "set_desktop_for_window 42 1",
                             "search --onlyvisible --class XTerm",
                             "set_desktop_for_window 43 1",
@@ -1664,9 +1670,9 @@ printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
   printf '%s\n' "$*" >>"$ASTERINAS_DESKTOP_M4_XDOTOOL_LOG"
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != overview-xdotool ] || exit 1
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != mapped-netsurf ] || \
-  [ "$*" != 'search --onlyvisible --class NetSurf-bin' ] || exit 1
+  [ "$*" != 'search --onlyvisible --class NetSurf' ] || exit 1
 case "$*" in
-  'search --onlyvisible --class NetSurf-bin') printf '42\n' ;;
+  'search --onlyvisible --class NetSurf') printf '42\n' ;;
   'search --onlyvisible --class XTerm') printf '43\n' ;;
 esac
 """,
