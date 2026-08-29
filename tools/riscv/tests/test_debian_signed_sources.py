@@ -494,7 +494,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             )
             logind_diagnostic_want = (
                 stage
-                / "etc/systemd/system/multi-user.target.wants"
+                / "etc/systemd/system/sysinit.target.wants"
                 / "asterinas-logind-diagnostic.service"
             )
             network_evidence = (
@@ -547,7 +547,8 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 logind_diagnostic_unit.read_text(),
             )
             self.assertIn("ExecStart=/bin/sh -c", logind_diagnostic_unit.read_text())
-            self.assertIn("KillMode=none", logind_diagnostic_unit.read_text())
+            self.assertIn("KillMode=mixed", logind_diagnostic_unit.read_text())
+            self.assertIn("WantedBy=sysinit.target", logind_diagnostic_unit.read_text())
             self.assertIn("TimeoutStartSec=330s", logind_diagnostic_unit.read_text())
             self.assertEqual(
                 logind_timeout.read_text(),

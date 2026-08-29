@@ -929,10 +929,10 @@ EOF
             "$script_directory/logind_diagnostic.service" \
             "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
         install -d -m 0755 -- \
-            "$stage/etc/systemd/system/multi-user.target.wants"
+            "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- \
             ../asterinas-logind-diagnostic.service \
-            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-logind-diagnostic.service"
+            "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
