@@ -13,6 +13,7 @@ from tools.riscv.debian.rootfs.gate_protocol import GateResult
 DESKTOP_M5_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
     "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.100.19.216:17894",
     "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",

@@ -25,6 +25,12 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
+from tools.riscv.megrez_network_fixture import (
+    FIXTURE_PATH,
+    PAYLOAD,
+    PAYLOAD_SHA256,
+    PAYLOAD_SIZE,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -40,6 +46,8 @@ MEGREZ_TCP_PROBE_SOURCE = (
 EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
     "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
+    f"sha256={PAYLOAD_SHA256} endpoint=10.100.19.216:17894",
     "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
@@ -490,6 +498,8 @@ exit 0
         getent_log = directory / "getent.log"
         curl_log = directory / "curl.log"
         date_log = directory / "date.log"
+        fixture_payload = directory / "fixture.bin"
+        fixture_payload.write_bytes(PAYLOAD)
         getent = fake_bin / "getent"
         getent.write_text(
             """#!/bin/sh
@@ -503,6 +513,24 @@ exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
             """#!/bin/sh
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
+    *asterinas-network-probe.bin*)
+        output=
+        previous=
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then output="$argument"; break; fi
+            previous="$argument"
+        done
+        [ -n "$output" ] || exit 95
+        [ "${ASTERINAS_M5_FIXTURE_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_FIXTURE_STATUS"
+        if [ "${ASTERINAS_M5_FIXTURE_SHORT:-0}" = 1 ]; then
+            head -c 65535 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >"$output"
+        elif [ "${ASTERINAS_M5_FIXTURE_CORRUPT:-0}" = 1 ]; then
+            printf X >"$output"
+            tail -c +2 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >>"$output"
+        else
+            cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$output"
+        fi
+        ;;
     *http://www.baidu.com/*)
         [ "${ASTERINAS_M5_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_CLOCK_STATUS"
         printf 'HTTP/1.1 200 OK\r\n'
@@ -548,7 +576,7 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
             ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
+            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="5",
             ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline_path),
             ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
             ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
@@ -556,9 +584,14 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
             ASTERINAS_M5_GETENT_LOG=str(getent_log),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
             ASTERINAS_M5_DATE_LOG=str(date_log),
+            ASTERINAS_M5_FIXTURE_PAYLOAD=str(fixture_payload),
             ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
             ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
             ASTERINAS_DESKTOP_PROXY_PORT="17893",
+            ASTERINAS_DESKTOP_FIXTURE_URL=(f"http://10.100.19.216:17894{FIXTURE_PATH}"),
+            ASTERINAS_DESKTOP_FIXTURE_SIZE=str(PAYLOAD_SIZE),
+            ASTERINAS_DESKTOP_FIXTURE_SHA256=PAYLOAD_SHA256,
+            ASTERINAS_DESKTOP_FIXTURE_REQUESTS="20",
         )
         return environment, console, resolv_conf, url_file, ping_log, curl_log
 
@@ -594,13 +627,17 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
         curl_calls = curl_log.read_text().splitlines()
-        self.assertEqual(len(curl_calls), 3)
-        self.assertIn("--head", curl_calls[0])
-        self.assertIn("http://www.baidu.com/", curl_calls[0])
-        self.assertIn("https://www.baidu.com/", curl_calls[1])
-        self.assertIn("result.png", curl_calls[2])
+        self.assertEqual(len(curl_calls), 23)
+        self.assertTrue(all(FIXTURE_PATH in call for call in curl_calls[:20]))
+        self.assertTrue(all("--proxy" not in call for call in curl_calls[:20]))
+        self.assertIn("--head", curl_calls[20])
+        self.assertIn("http://www.baidu.com/", curl_calls[20])
+        self.assertIn("https://www.baidu.com/", curl_calls[21])
+        self.assertIn("result.png", curl_calls[22])
         self.assertTrue(
-            all("--proxy http://10.100.19.216:17893" in call for call in curl_calls)
+            all(
+                "--proxy http://10.100.19.216:17893" in call for call in curl_calls[20:]
+            )
         )
         self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
         self.assertEqual(
@@ -655,6 +692,26 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
                 "megrez-clock-set",
             ),
             (
+                "fixture-config",
+                {"ASTERINAS_DESKTOP_FIXTURE_REQUESTS": "19"},
+                "megrez-fixture-config",
+            ),
+            (
+                "fixture-download",
+                {"ASTERINAS_M5_FIXTURE_STATUS": "28"},
+                "megrez-fixture-download",
+            ),
+            (
+                "fixture-short",
+                {"ASTERINAS_M5_FIXTURE_SHORT": "1"},
+                "megrez-fixture-size",
+            ),
+            (
+                "fixture-corrupt",
+                {"ASTERINAS_M5_FIXTURE_CORRUPT": "1"},
+                "megrez-fixture-sha256",
+            ),
+            (
                 "https",
                 {
                     "ASTERINAS_M5_HTTPS_STATUS": "42",
@@ -707,6 +764,10 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
                         "stderr_hex=6375726c3a2072656376206661696c7572650a",
                     )
                 self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
+                self.assertEqual(
+                    tuple((self.directory / name).glob("desktop-url.fixture.*")),
+                    (),
+                )
 
     def test_guest_evidence_preserves_url_when_proxy_config_is_missing(self) -> None:
         environment, console, resolv_conf, url_file, _, _ = (
@@ -752,6 +813,10 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
             ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
             ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
             ASTERINAS_DESKTOP_PROXY_PORT="17893",
+            ASTERINAS_DESKTOP_FIXTURE_URL=(f"http://10.100.19.216:17894{FIXTURE_PATH}"),
+            ASTERINAS_DESKTOP_FIXTURE_SIZE=str(PAYLOAD_SIZE),
+            ASTERINAS_DESKTOP_FIXTURE_SHA256=PAYLOAD_SHA256,
+            ASTERINAS_DESKTOP_FIXTURE_REQUESTS="20",
         )
 
         result = subprocess.run(
