@@ -465,12 +465,18 @@ bootstrap_rootfs() {
 }
 
 verify_riscv_binfmt() {
-    local registration="/proc/sys/fs/binfmt_misc/qemu-riscv64"
+    # Docker gives the build container its own proc sys tree, which may expose
+    # an empty binfmt_misc mount even though the host has the required fixed
+    # qemu-riscv64 registration.  The workflow can bind that host tree at a
+    # stable path and point the check at it without weakening the actual
+    # kernel execution boundary.
+    local binfmt_root="${ASTERINAS_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+    local registration="$binfmt_root/qemu-riscv64"
 
     [[ "$(uname -m)" != riscv64 ]] ||
         die "refusing a native RISC-V host; an enabled binfmt boundary is required"
-    [[ -r /proc/sys/fs/binfmt_misc/status ]] &&
-        grep -qx enabled /proc/sys/fs/binfmt_misc/status ||
+    [[ -r "$binfmt_root/status" ]] &&
+        grep -qx enabled "$binfmt_root/status" ||
         die "RISC-V binfmt_misc is not enabled"
     [[ -r "$registration" ]] && grep -qx enabled "$registration" ||
         die "qemu-riscv64 binfmt registration is not enabled"
