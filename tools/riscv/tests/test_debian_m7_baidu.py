@@ -63,7 +63,11 @@ class DebianDesktopM7BaiduContractTests(unittest.TestCase):
         )
         self.assertEqual(
             DESKTOP_M7_SEARCH_MARKER,
-            "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded",
+            "DEBIAN_BROWSER_M7_SEARCH query=asterinas state=submitted",
+        )
+        self.assertEqual(
+            DESKTOP_M7_READY_MARKER,
+            "DEBIAN_BROWSER_M7_READY page=baidu capture=pending",
         )
 
     def test_classifier_rejects_missing_duplicate_reordered_and_failure(self) -> None:
@@ -149,9 +153,8 @@ case "$1" in
     elif [ "${2-}" = Return ]; then
       phase="$(cat "$ASTERINAS_M7_STATE")"
       printf '%s' "$((phase + 1))" >"$ASTERINAS_M7_STATE"
-      if [ "$ASTERINAS_M7_MODE" != search-timeout ]; then
-        printf 'browser_window_navigate: url https://m.baidu.com/s?word=asterinas\n' \
-          >>"$ASTERINAS_BROWSER_M7_NETSURF_LOG"
+      if [ "$ASTERINAS_M7_MODE" = search-exit ]; then
+        printf 'closed' >"$ASTERINAS_M7_BROWSER_STATE"
       fi
     fi
     ;;
@@ -232,10 +235,10 @@ esac
         self.assertNotIn("mousemove --sync 560 310", action_lines)
         self.assertEqual(action_lines.count("key Return"), 1)
 
-    def test_guest_reports_bounded_home_and_search_navigation_failures(self) -> None:
+    def test_guest_reports_bounded_home_and_search_process_failures(self) -> None:
         for mode, reason in (
             ("home-timeout", "home-title-timeout"),
-            ("search-timeout", "search-navigation-timeout"),
+            ("search-exit", "search-process"),
         ):
             with self.subTest(mode=mode):
                 environment, console, _ = self._environment(mode=mode)
@@ -249,12 +252,15 @@ esac
 
                 self.assertNotEqual(result.returncode, 0)
                 lines = console.read_text(encoding="utf-8").splitlines()
-                self.assertEqual(
-                    lines[-3],
-                    "DEBIAN_BROWSER_M7_NETSURF_LOG "
-                    "tail_hex=6e6574737572662d6c6f672d72656164790a",
-                )
-                self.assertTrue(lines[-2].startswith("DEBIAN_BROWSER_M7_DIAGNOSTIC"))
+                if mode == "home-timeout":
+                    self.assertEqual(
+                        lines[-3],
+                        "DEBIAN_BROWSER_M7_NETSURF_LOG "
+                        "tail_hex=6e6574737572662d6c6f672d72656164790a",
+                    )
+                    self.assertTrue(
+                        lines[-2].startswith("DEBIAN_BROWSER_M7_DIAGNOSTIC")
+                    )
                 self.assertEqual(lines[-1], f"DEBIAN_BROWSER_M7_FAIL reason={reason}")
 
     def test_builder_installs_m7_service_after_m6(self) -> None:
@@ -332,12 +338,20 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
                 "capture_rendered_ppm",
                 side_effect=captures,
             ) as capture,
+            mock.patch.object(
+                DesktopM7BaiduOperations,
+                "_settle_search_render",
+                autospec=True,
+                side_effect=lambda *_: events.append("search-settle"),
+            ) as settle,
         ):
             operations.run_protocol(session, config)
 
         self.assertEqual(events[0], "m6")
         self.assertEqual(operations._home_screenshot, b"home-ppm")
         self.assertEqual(operations._search_screenshot, b"search-ppm")
+        settle.assert_called_once_with(operations)
+        self.assertEqual(events[-1], "search-settle")
         self.assertEqual(
             [call.args[1].name for call in capture.call_args_list],
             ["desktop-m7-baidu-home.ppm", "desktop-m7-baidu-search.ppm"],
