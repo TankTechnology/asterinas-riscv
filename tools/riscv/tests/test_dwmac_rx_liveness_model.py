@@ -166,7 +166,12 @@ use phy::{{
     BMCR_AUTONEG_ENABLE, BMSR_AUTONEG_COMPLETE, BMSR_LINK_STATUS, Deadline, MdioBus,
     MdioError, read_link_state,
 }};
-use regs::configure_flow_control;
+use regs::{{
+    DMA_DEBUG_STATUS0, MAC_DEBUG, MTL_QUEUE0_INTERRUPT_CONTROL_STATUS,
+    MTL_RX_QUEUE0_DEBUG, RegisterValueError, configure_flow_control,
+    decode_flow_control_debug, mac_tx_flow_control_busy,
+    validate_flow_control_readback, validate_rx_fifo_readback,
+}};
 
 struct FakeMdio {{
     reads: VecDeque<u16>,
@@ -226,20 +231,65 @@ fn main() {{
     assert!(!half_duplex.tx_pause());
     assert!(!half_duplex.rx_pause());
 
-    let configured = configure_flow_control(5, 0x4000_0020, true, true).unwrap();
-    assert_eq!(configured.mtl_rx_operation_mode, 0x4000_c1a0);
+    assert_eq!(DMA_DEBUG_STATUS0.offset(), 0x100c);
+    assert_eq!(MAC_DEBUG.offset(), 0x0114);
+    assert_eq!(MTL_QUEUE0_INTERRUPT_CONTROL_STATUS.offset(), 0x0d2c);
+    assert_eq!(MTL_RX_QUEUE0_DEBUG.offset(), 0x0d38);
+
+    validate_rx_fifo_readback(5, 0x00f0_0020).unwrap();
+    assert_eq!(
+        validate_rx_fifo_readback(5, 0x0070_0020),
+        Err(RegisterValueError::ReadbackMismatch),
+    );
+
+    let configured = configure_flow_control(0x40f0_0020, true, true).unwrap();
+    assert_eq!(configured.rx_fifo_bytes, 4096);
+    assert_eq!(configured.mtl_rx_operation_mode, 0x40f0_c1a0);
     assert_eq!(configured.mac_tx_flow_control_queue0, 0xffff_0002);
     assert_eq!(configured.mac_rx_flow_control, 1);
+    validate_flow_control_readback(
+        configured,
+        configured.mtl_rx_operation_mode,
+        configured.mac_tx_flow_control_queue0,
+        configured.mac_rx_flow_control,
+    )
+    .unwrap();
+    assert_eq!(
+        validate_flow_control_readback(
+            configured,
+            configured.mtl_rx_operation_mode ^ (1 << 8),
+            configured.mac_tx_flow_control_queue0,
+            configured.mac_rx_flow_control,
+        ),
+        Err(RegisterValueError::ReadbackMismatch),
+    );
+    assert!(!mac_tx_flow_control_busy(configured.mac_tx_flow_control_queue0));
+    assert!(mac_tx_flow_control_busy(configured.mac_tx_flow_control_queue0 | 1));
 
-    let receive_only = configure_flow_control(5, 0x20, false, true).unwrap();
-    assert_eq!(receive_only.mtl_rx_operation_mode, 0x20);
+    let receive_only = configure_flow_control(0x00f0_0020, false, true).unwrap();
+    assert_eq!(receive_only.rx_fifo_bytes, 4096);
+    assert_eq!(receive_only.mtl_rx_operation_mode, 0x00f0_0020);
     assert_eq!(receive_only.mac_tx_flow_control_queue0, 0);
     assert_eq!(receive_only.mac_rx_flow_control, 1);
 
-    let small_fifo = configure_flow_control(4, 0x20, true, false).unwrap();
-    assert_eq!(small_fifo.mtl_rx_operation_mode, 0x20);
+    let small_fifo = configure_flow_control(0x0070_0020, true, false).unwrap();
+    assert_eq!(small_fifo.rx_fifo_bytes, 2048);
+    assert_eq!(small_fifo.mtl_rx_operation_mode, 0x0070_0020);
     assert_eq!(small_fifo.mac_tx_flow_control_queue0, 0xffff_0002);
     assert_eq!(small_fifo.mac_rx_flow_control, 0);
+
+    let debug = decode_flow_control_debug(0x0007_0005, 0x0008_0027, 0x0000_6400, 1 << 16);
+    assert_eq!(debug.mac_tx_controller_state, 3);
+    assert!(debug.mac_tx_engine_active);
+    assert_eq!(debug.mac_rx_fifo_state, 2);
+    assert!(debug.mac_rx_engine_active);
+    assert_eq!(debug.mtl_rx_queued_packets, 8);
+    assert_eq!(debug.mtl_rx_fill_level, 2);
+    assert_eq!(debug.mtl_rx_read_state, 3);
+    assert!(debug.mtl_rx_write_active);
+    assert_eq!(debug.dma_tx_state, 6);
+    assert_eq!(debug.dma_rx_state, 4);
+    assert!(debug.mtl_rx_overflow);
 }}
 '''
             )
@@ -692,6 +742,33 @@ fn main() {{
             "fifo_overflow_packets={}",
             "fifo_counter_overflows={}",
             "read_failures={}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+
+    def test_device_reports_documented_mac_mtl_dma_state_machines(self) -> None:
+        source = DEVICE_SOURCE.read_text()
+        for register in (
+            "MAC_DEBUG",
+            "MTL_QUEUE0_INTERRUPT_CONTROL_STATUS",
+            "MTL_RX_QUEUE0_DEBUG",
+            "DMA_DEBUG_STATUS0",
+        ):
+            with self.subTest(register=register):
+                self.assertIn(register, source)
+        self.assertIn("ASTERINAS_GMAC_HW_STATE", source)
+        for field in (
+            "mac_tx_state={}",
+            "mac_tx_active={}",
+            "mac_rx_fifo_state={}",
+            "mac_rx_active={}",
+            "mtl_rx_packets={}",
+            "mtl_rx_fill={}",
+            "mtl_rx_read_state={}",
+            "mtl_rx_write_active={}",
+            "dma_tx_state={}",
+            "dma_rx_state={}",
+            "mtl_rx_overflow={}",
         ):
             with self.subTest(field=field):
                 self.assertIn(field, source)
