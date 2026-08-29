@@ -60,9 +60,10 @@ int main(void)
 
 	struct inotify_event *event = (struct inotify_event *)buffer;
 	bool is_expected_event = event->wd == watch_descriptor &&
-		(event->mask & (IN_CREATE | IN_ISDIR)) ==
-			(IN_CREATE | IN_ISDIR) &&
-		event->len > 0 && strcmp(event->name, TEST_CHILD) == 0;
+				 (event->mask & (IN_CREATE | IN_ISDIR)) ==
+					 (IN_CREATE | IN_ISDIR) &&
+				 event->len > 0 &&
+				 strcmp(event->name, TEST_CHILD) == 0;
 	if (!is_expected_event) {
 		fprintf(stderr,
 			"unexpected inotify event: wd=%d mask=0x%x name=%s\n",

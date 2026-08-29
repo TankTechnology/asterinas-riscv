@@ -654,7 +654,12 @@ impl ExfatInode {
     }
 
     // The offset and the length of buffer must be multiples of the block size.
-    fn read_direct_at(&self, offset: usize, writer: &mut VmWriter, no_atime: bool) -> Result<usize> {
+    fn read_direct_at(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+        no_atime: bool,
+    ) -> Result<usize> {
         let inner = self.inner.upread();
         if inner.inode_type.is_directory() {
             return_errno!(Errno::EISDIR)

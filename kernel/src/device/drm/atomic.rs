@@ -755,6 +755,7 @@ fn prepare_hardware_update(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn submit_nonblocking_commit(
     handle: &super::DriHandle,
     kms_state: &mut super::KmsState,
@@ -776,12 +777,12 @@ fn submit_nonblocking_commit(
 
     let gpu_manager = handle.gpu_manager.clone();
     queue_slot.submit(Box::new(move || {
-        let result = (|| {
+        let result = {
             if let Some(input_fence) = input_fence {
                 input_fence.wait_for_dependency();
             }
             apply_nonblocking_hardware_update(&gpu_manager, hardware_update)
-        })();
+        };
 
         match result {
             Ok(()) => {

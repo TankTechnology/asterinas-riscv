@@ -64,7 +64,11 @@ pub fn sys_name_to_handle_at(
     // followed when it is a symlink; `AT_SYMLINK_FOLLOW` opts in to following.
     let path = {
         let pathname = pathname.to_string_lossy();
-        let fs_path = FsPath::from_fd_at(dirfd, pathname.as_ref(), EmptyPathStr::AllowIfFlag(flags.bits()))?;
+        let fs_path = FsPath::from_fd_at(
+            dirfd,
+            pathname.as_ref(),
+            EmptyPathStr::AllowIfFlag(flags.bits()),
+        )?;
         let fs_ref = ctx.thread_local.borrow_fs();
         let resolver = fs_ref.resolver().read();
         if flags.contains(NameToHandleFlags::AT_SYMLINK_FOLLOW) {

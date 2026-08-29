@@ -705,10 +705,10 @@ struct FenceBarrier {
 
 impl FenceBarrier {
     fn complete_one(&self) {
-        if self.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-            if let Some(output) = self.output.upgrade() {
-                Fence::enqueue_chain_completion(output);
-            }
+        if self.remaining.fetch_sub(1, Ordering::AcqRel) == 1
+            && let Some(output) = self.output.upgrade()
+        {
+            Fence::enqueue_chain_completion(output);
         }
     }
 }

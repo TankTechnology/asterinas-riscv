@@ -234,6 +234,7 @@ impl Process {
         Some(Task::current()?.as_posix_thread()?.process())
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         pid: Pid,
         vmar: Arc<Vmar>,
@@ -248,9 +249,7 @@ impl Process {
         Arc::new_cyclic(|process_ref: &Weak<Process>| {
             // Register the process in its PID namespace and all ancestors,
             // allocating a virtual PID in each.
-            let ns_vpids = pid_ns
-                .register_process(process_ref, pid as u32)
-                .into_boxed_slice();
+            let ns_vpids = pid_ns.register_process(process_ref, pid).into_boxed_slice();
 
             // SIGCHID does not interrupt pauser. Child process will
             // resume paused parent when doing exit.

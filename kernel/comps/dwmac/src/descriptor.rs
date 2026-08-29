@@ -2,8 +2,6 @@
 
 //! Queue-zero DMA descriptor state transitions.
 
-use core::sync::atomic::{Ordering, fence};
-
 const DESCRIPTOR_OWN: u32 = 1 << 31;
 const PACKET_SIZE_MASK: u32 = 0x7fff;
 const RX_BUFFER1_VALID: u32 = 1 << 24;
@@ -54,7 +52,25 @@ impl Descriptor {
 
     /// Returns whether the descriptor is currently owned by the DMA engine.
     pub fn is_owned_by_dma(&self) -> bool {
-        self.words[3] & DESCRIPTOR_OWN != 0
+        Self::control_owned_by_dma(self.control_word())
+    }
+
+    pub(super) const fn from_parts(body: [u32; 3], control: u32) -> Self {
+        Self {
+            words: [body[0], body[1], body[2], control],
+        }
+    }
+
+    pub(super) const fn body_words(&self) -> [u32; 3] {
+        [self.words[0], self.words[1], self.words[2]]
+    }
+
+    pub(super) const fn control_word(&self) -> u32 {
+        self.words[3]
+    }
+
+    pub(super) const fn control_owned_by_dma(control: u32) -> bool {
+        control & DESCRIPTOR_OWN != 0
     }
 
     /// Returns the buffer address encoded in the descriptor read format.
@@ -73,7 +89,6 @@ impl Descriptor {
 
         self.write_address(address);
         self.words[2] = 0;
-        fence(Ordering::Release);
         self.words[3] = DESCRIPTOR_OWN | RX_BUFFER1_VALID | RX_INTERRUPT_ON_COMPLETION;
         Ok(())
     }
@@ -90,7 +105,6 @@ impl Descriptor {
         self.write_address(address);
         let packet_length = length as u32;
         self.words[2] = packet_length;
-        fence(Ordering::Release);
         self.words[3] = DESCRIPTOR_OWN | TX_FIRST_DESCRIPTOR | TX_LAST_DESCRIPTOR | packet_length;
         Ok(())
     }
@@ -100,7 +114,6 @@ impl Descriptor {
         if self.is_owned_by_dma() {
             return Ok(None);
         }
-        fence(Ordering::Acquire);
 
         let status = self.words[3];
         if status & (RX_FIRST_DESCRIPTOR | RX_LAST_DESCRIPTOR)
@@ -125,7 +138,6 @@ impl Descriptor {
         if self.is_owned_by_dma() {
             return Ok(false);
         }
-        fence(Ordering::Acquire);
         if self.words == [0; 4] {
             return Ok(false);
         }
@@ -251,11 +263,11 @@ mod tests {
         assert_eq!(rx.take_completed_rx(2048).unwrap(), None);
 
         let mut tx = Descriptor::zeroed();
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), false);
+        assert!(!tx.reclaim_completed_tx().unwrap());
         tx.publish_tx(DmaAddress::new(0x9000), 128).unwrap();
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), false);
+        assert!(!tx.reclaim_completed_tx().unwrap());
         tx.words[3] &= !DESCRIPTOR_OWN;
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), true);
+        assert!(tx.reclaim_completed_tx().unwrap());
         assert_eq!(tx.words, [0; 4]);
 
         tx.words[3] = TX_ERROR_SUMMARY;

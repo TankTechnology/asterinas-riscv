@@ -1066,3 +1066,25 @@ legacy and atomic kmscube, PRIME, syncobj, raw virgl, and EGL, including four
 explicit-sync frames, and ended with `MINI_VIRGL_PASS`. Thus the imported
 Debian/network/board work does not regress the exercised
 Mesa-to-DRM-to-virtio-gpu-to-virglrenderer path.
+
+## 2026-08-29 post-merge correctness and acceleration gates
+
+The previously recorded DRM ktest failures were resolved. The vblank queue
+tests now use explicit synthetic snapshots instead of depending on an
+uninitialized early-boot clock, and the future-fence syncobj test initializes
+the ktest clock before converting its timeout. Each affected RISC-V Sv39 test
+passes in isolation, and an unfiltered RISC-V Sv39 ktest run passed the complete
+DRM test set before later stalling in the unrelated
+`tty_echo_runs_without_the_line_discipline_lock` test. This checkpoint therefore
+claims the DRM ktest scope as green, not the entire kernel test suite.
+
+A three-round, order-rotated display matrix also established a visible
+acceleration effect for the QEMU virtio-gpu/virgl path. Median virgl throughput
+was 7.416 FPS versus 0.614 FPS for the same DRM/Xorg stack using llvmpipe, a
+12.08x improvement. Median p95 frame latency improved from 1938.340 ms to
+172.187 ms (11.26x), while guest process CPU time per frame fell from
+1316.033 ms to 40.267 ms (96.9%). All six primary comparison boots passed the
+renderer, direct-rendering, pixel, and raw-metric checks. The evidence is under
+`target/xfce-display-perf/runs/primary-3round-20260829/`; this is a strong
+development gate, but it is not the ten-round release gate and does not claim
+native Megrez GPU acceleration.

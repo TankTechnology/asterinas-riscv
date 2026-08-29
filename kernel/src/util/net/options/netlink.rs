@@ -2,10 +2,15 @@
 
 use ostd::mm::VmIo;
 
-use super::{RawSocketOption, SocketOption, impl_raw_sock_option_get_only, impl_raw_sock_option_set_only, impl_raw_socket_option};
+use super::{
+    RawSocketOption, SocketOption, impl_raw_sock_option_get_only, impl_raw_sock_option_set_only,
+    impl_raw_socket_option,
+};
 use crate::{
     context::current_userspace,
-    net::socket::netlink::{AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships, PktInfo},
+    net::socket::netlink::{
+        AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships, PktInfo,
+    },
     prelude::*,
 };
 
@@ -57,8 +62,7 @@ impl RawSocketOption for ListMemberships {
         if addr != 0 {
             let count = (*max_len as usize / size_of::<u32>()).min(groups.len());
             for (i, group) in groups.iter().take(count).enumerate() {
-                current_userspace!()
-                    .write_val(addr + i * size_of::<u32>(), group)?;
+                current_userspace!().write_val(addr + i * size_of::<u32>(), group)?;
             }
         }
 

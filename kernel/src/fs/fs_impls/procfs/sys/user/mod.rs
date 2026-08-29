@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_util::printer::VmPrinter;
-
 use crate::{
     fs::{
         file::{InodeType, mkmod},

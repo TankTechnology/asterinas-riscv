@@ -11,27 +11,26 @@ use ostd::{
 };
 
 use super::{
-    pid_table,
+    Credentials, Pid, Process, pid_table,
     posix_thread::{AsPosixThread, PosixThreadBuilder},
     rlimit::ResourceLimits,
     signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
-    Credentials, Pid, Process,
 };
 use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
     fs::{
-        cgroupfs::{cgroup_node_from_fd, CgroupMembership, CgroupSysNode},
+        cgroupfs::{CgroupMembership, CgroupSysNode, cgroup_node_from_fd},
         file::file_table::{FdFlags, FileTable, RawFileDesc},
         thread_info::ThreadFsInfo,
     },
     prelude::*,
     process::{
+        NsProxy, PidNamespace, UserNamespace,
         credentials::capabilities::CapSet,
         pid_file::PidFile,
-        posix_thread::{allocate_posix_tid, PosixThread, ThreadLocal},
+        posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
         stats::PROCESS_CREATION_COUNTER,
-        NsProxy, PidNamespace, UserNamespace,
     },
     sched::Nice,
     thread::{AsThread, Tid},

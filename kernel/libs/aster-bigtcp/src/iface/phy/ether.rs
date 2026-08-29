@@ -288,9 +288,7 @@ impl<D, E: Ext> EtherIface<D, E> {
                 return;
             };
 
-            match self
-                .resolve_ether_or_generate_arp(&IpAddress::Ipv4(ip_repr.dst_addr), iface_cx)
-            {
+            match self.resolve_ether_or_generate_arp(&IpAddress::Ipv4(ip_repr.dst_addr), iface_cx) {
                 Ok(ether) => {
                     Self::emit_frame(&ether, &pkt_bytes, tx_token);
                     self.pending_tx.lock().pop_front();

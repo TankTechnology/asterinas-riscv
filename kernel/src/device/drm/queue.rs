@@ -460,6 +460,8 @@ impl Drop for DrmEventReservation {
 
 #[cfg(ktest)]
 mod tests {
+    use core::time::Duration;
+
     use ostd::prelude::ktest;
 
     use super::*;
@@ -500,7 +502,7 @@ mod tests {
             state.schedule(target, Box::new(move |_| completed.lock().push(id)));
         }
 
-        let snapshot = super::super::vblank::VblankClock::new().snapshot();
+        let snapshot = VblankSnapshot::active_for_test(2, Duration::from_millis(34));
         for work in state.take_ready(snapshot) {
             work(snapshot);
         }
@@ -526,8 +528,7 @@ mod tests {
 
     #[ktest]
     fn flip_event_uses_supplied_vblank_snapshot() {
-        let clock = super::super::vblank::VblankClock::new();
-        let snapshot = clock.snapshot();
+        let snapshot = VblankSnapshot::active_for_test(7, Duration::from_millis(117));
         let DrmEvent::Vblank(event) = new_vblank_event(DRM_EVENT_FLIP_COMPLETE, snapshot, 42)
         else {
             panic!("expected a vblank event");
@@ -541,7 +542,7 @@ mod tests {
 
     #[ktest]
     fn crtc_sequence_event_uses_64_bit_clock_values() {
-        let snapshot = super::super::vblank::VblankClock::new().snapshot();
+        let snapshot = VblankSnapshot::active_for_test(8, Duration::from_millis(134));
         let DrmEvent::CrtcSequence(event) = new_crtc_sequence_event(snapshot, 43) else {
             panic!("expected a CRTC sequence event");
         };

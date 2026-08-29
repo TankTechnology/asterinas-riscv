@@ -668,6 +668,11 @@ def _inspect_port(
         run=run,
         context=f"{prefix}.properties",
     )
+    for property_name in ("iommus", "dma-ranges"):
+        if property_name in properties:
+            raise ContractError(
+                f"{prefix}.{property_name}: unsupported DMA translation"
+            )
     for name in (
         "status",
         "compatible",

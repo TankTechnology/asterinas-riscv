@@ -1447,6 +1447,18 @@ mod tests {
     use super::*;
     use crate::thread::kernel_thread::ThreadOptions;
 
+    const WATCHER_REGISTRATION_YIELDS: usize = 10_000;
+
+    fn wait_for_registered_watcher(syncobj: &SyncObject) {
+        for _ in 0..WATCHER_REGISTRATION_YIELDS {
+            if !syncobj.watchers.lock().is_empty() {
+                return;
+            }
+            ostd::task::Task::yield_now();
+        }
+        panic!("syncobj waiter did not register");
+    }
+
     #[ktest]
     fn binary_reset_and_signal() {
         let syncobj = SyncObject::new().unwrap();
@@ -1484,7 +1496,7 @@ mod tests {
         {
             let state = syncobj.state.lock();
             assert_eq!(state.reserved_point_count, 1);
-            assert!(state.points.capacity() >= state.points.len() + 1);
+            assert!(state.points.capacity() > state.points.len());
         }
 
         // A normal producer may append while the GPU submission owns its
@@ -1494,7 +1506,7 @@ mod tests {
         {
             let state = syncobj.state.lock();
             assert_eq!(state.reserved_point_count, 1);
-            assert!(state.points.capacity() >= state.points.len() + 1);
+            assert!(state.points.capacity() > state.points.len());
         }
 
         reservation.publish(Fence::new_signaled());
@@ -1552,6 +1564,7 @@ mod tests {
 
     #[ktest]
     fn wait_for_submit_wakes_on_future_fence() {
+        crate::time::clocks::init_for_ktest();
         let syncobj = SyncObject::new().unwrap();
         let finished = Arc::new(AtomicBool::new(false));
         let waiter = {
@@ -1563,9 +1576,7 @@ mod tests {
             })
             .spawn()
         };
-        while syncobj.watchers.lock().is_empty() {
-            ostd::task::Task::yield_now();
-        }
+        wait_for_registered_watcher(&syncobj);
         syncobj.signal_binary();
         waiter.join();
         assert!(finished.load(Ordering::Acquire));
@@ -1586,9 +1597,7 @@ mod tests {
             })
             .spawn()
         };
-        while syncobj.watchers.lock().is_empty() {
-            ostd::task::Task::yield_now();
-        }
+        wait_for_registered_watcher(&syncobj);
 
         syncobj.clear_fence();
         fence.signal_success();
@@ -1622,9 +1631,7 @@ mod tests {
             })
             .spawn()
         };
-        while original.watchers.lock().is_empty() {
-            ostd::task::Task::yield_now();
-        }
+        wait_for_registered_watcher(&original);
 
         drop(original);
         assert!(weak.upgrade().is_some());

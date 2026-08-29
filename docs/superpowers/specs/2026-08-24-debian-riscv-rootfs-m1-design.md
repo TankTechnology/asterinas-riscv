@@ -1,6 +1,6 @@
 # Debian RISC-V Rootfs M1 Design
 
-Date: 2026-08-24  
+Date: 2026-08-24
 Status: Approved design, implementation not started
 
 ## Decision Summary

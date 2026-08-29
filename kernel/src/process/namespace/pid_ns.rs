@@ -105,7 +105,11 @@ impl PidNamespace {
     ///
     /// Returns the `(namespace, virtual PID)` pairs from the innermost
     /// namespace outwards.
-    pub fn register_process(self: &Arc<Self>, process: &Weak<Process>, global_pid: u32) -> Vec<(Arc<PidNamespace>, u32)> {
+    pub fn register_process(
+        self: &Arc<Self>,
+        process: &Weak<Process>,
+        global_pid: u32,
+    ) -> Vec<(Arc<PidNamespace>, u32)> {
         let mut result = Vec::new();
         let mut current = self;
         loop {

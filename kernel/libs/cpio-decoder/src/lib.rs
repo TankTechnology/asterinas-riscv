@@ -163,7 +163,7 @@ where
         // libraries) get fewer read/write round-trips, while small files avoid
         // allocating a needlessly large buffer. The minimum of 4 bytes leaves
         // room for the 0-3 byte data-padding read below.
-        let mut buffer = vec![0u8; data_len.min(0x10000).max(4)];
+        let mut buffer = vec![0u8; data_len.clamp(4, 0x10000)];
         while send_len < data_len {
             let len = min(buffer.len(), data_len - send_len);
             self.reader.read_exact(&mut buffer[..len])?;

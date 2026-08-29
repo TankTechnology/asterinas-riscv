@@ -4,7 +4,7 @@ use alloc::vec;
 
 use crate::{
     mm::{
-        FrameAllocOptions, PAGE_SIZE, VmReader, VmWriter,
+        FrameAllocOptions, HasDaddr, PAGE_SIZE, Split, VmReader, VmWriter,
         dma::*,
         io::{VmIo, VmIoOnce, util::HasVmReaderWriter},
     },
@@ -18,6 +18,43 @@ mod dma_coherent {
     fn alloc_with_coherent_device() {
         let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
         assert_eq!(dma_coherent.size(), PAGE_SIZE);
+    }
+
+    #[ktest]
+    fn coherent_allocation_cannot_be_converted_to_uncached() {
+        let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
+
+        assert!(dma_coherent.into_uncached().is_err());
+    }
+
+    #[ktest]
+    fn uncached_conversion_preserves_identity_and_split_access() {
+        let dma_coherent = DmaCoherent::alloc(2, false).unwrap();
+        let paddr = dma_coherent.paddr();
+        let daddr = dma_coherent.daddr();
+        let size = dma_coherent.size();
+        assert_eq!(dma_coherent.uncached_alias_paddr(), None);
+
+        let dma_coherent = dma_coherent.into_uncached().unwrap();
+        let alias = dma_coherent.uncached_alias_paddr();
+        assert_eq!(dma_coherent.paddr(), paddr);
+        assert_eq!(dma_coherent.daddr(), daddr);
+        assert_eq!(dma_coherent.size(), size);
+
+        let (first, second) = dma_coherent.split(PAGE_SIZE);
+        first.write_once(0, &0x1122_3344_5566_7788u64).unwrap();
+        second.write_once(0, &0x8877_6655_4433_2211u64).unwrap();
+        assert_eq!(first.read_once::<u64>(0).unwrap(), 0x1122_3344_5566_7788);
+        assert_eq!(second.read_once::<u64>(0).unwrap(), 0x8877_6655_4433_2211);
+        assert_eq!(first.paddr(), paddr);
+        assert_eq!(second.paddr(), paddr + PAGE_SIZE);
+        assert_eq!(first.daddr(), daddr);
+        assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
     }
 
     #[ktest]
@@ -131,7 +168,13 @@ mod dma_window {
         assert_eq!(window.translate(0xbfff_f000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_0000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_1000..0xc000_3000), None);
-        assert_eq!(window.translate(0xc000_1000..0xc000_0800), None);
+        assert_eq!(
+            window.translate(core::ops::Range {
+                start: 0xc000_1000,
+                end: 0xc000_0800,
+            }),
+            None
+        );
     }
 }
 
@@ -249,6 +292,40 @@ mod usb_kernel_op {
 
 mod dma_stream {
     use super::*;
+    #[cfg(target_arch = "riscv64")]
+    use crate::mm::dma::dma_stream::needs_guaranteed_uncached_view;
+
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn requires_real_uncached_view_without_coherence_or_cache_maintenance() {
+        assert!(needs_guaranteed_uncached_view(false, false));
+        assert!(!needs_guaranteed_uncached_view(true, false));
+        assert!(!needs_guaranteed_uncached_view(false, true));
+        assert!(!needs_guaranteed_uncached_view(true, true));
+    }
+
+    #[ktest]
+    fn split_preserves_stream_identity_and_uncached_alias() {
+        let segment = FrameAllocOptions::new()
+            .alloc_segment_with(2, |_| ())
+            .unwrap();
+        let dma_stream = DmaStream::<FromAndToDevice>::map(segment.into(), false).unwrap();
+        let paddr = dma_stream.paddr();
+        let daddr = dma_stream.daddr();
+        let alias = dma_stream.uncached_alias_paddr();
+
+        let (first, second) = dma_stream.split(PAGE_SIZE);
+
+        assert_eq!(first.paddr(), paddr);
+        assert_eq!(second.paddr(), paddr + PAGE_SIZE);
+        assert_eq!(first.daddr(), daddr);
+        assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
+    }
 
     #[ktest]
     fn streaming_map() {

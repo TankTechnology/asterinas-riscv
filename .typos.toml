@@ -31,6 +31,15 @@ THR = "THR"
 TestNG = "TestNG"
 hda = "hda"
 testca = "testca"
+Synopsys = "Synopsys"
+synopsys = "synopsys"
+ser = "ser"
+zink = "zink"
+WRITEN = "WRITEN"
+writen = "writen"
+abd = "abd"
+laceholder = "laceholder"
+mis = "mis"
 
 # Files with svg suffix are ignored to check.
 [type.svg]

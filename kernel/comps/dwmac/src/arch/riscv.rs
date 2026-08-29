@@ -4,10 +4,18 @@ use core::{array, hint::spin_loop, ops::Range, time::Duration};
 
 use fdt::{Fdt, node::FdtNode};
 use ostd::{
-    arch::{boot::DEVICE_TREE, irq::InterruptSourceInFdt},
+    arch::{boot::DEVICE_TREE, device::io_mem, irq::InterruptSourceInFdt},
     io::IoMem,
     mm::io::VmIoOnce,
 };
+
+pub(super) fn dma_write_barrier() {
+    io_mem::fence();
+}
+
+pub(super) fn dma_read_barrier() {
+    io_mem::fence();
+}
 
 use crate::{
     phy::{Deadline, LinkState, MdioBus, MdioError},
@@ -47,8 +55,7 @@ const ETH_AXI_REQUEST: u32 = 1;
 const TX_CLOCK_GATE: u32 = 1;
 const TX_CLOCK_PARENT_MASK: u32 = 1 << 1;
 const TX_CLOCK_DIVISOR_MASK: u32 = 0x7f << 4;
-const GMAC4_MIN_VERSION: u8 = 0x40;
-const GMAC5_MAX_VERSION: u8 = 0x5f;
+const EIC7700_DWMAC_VERSION: u8 = 0x52;
 const MDIO_BUSY: u32 = 1;
 const MDIO_WRITE: u32 = 1 << 2;
 const MDIO_READ: u32 = 3 << 2;
@@ -68,6 +75,8 @@ struct PortFields {
     interrupt_parent: Option<u32>,
     interrupt: Option<u32>,
     dma_noncoherent: bool,
+    iommu_absent: bool,
+    dma_ranges_absent: bool,
     clock_names_valid: bool,
     clock_cells: Option<[u32; 6]>,
     reset_name_valid: bool,
@@ -181,6 +190,8 @@ fn expected_fields(alias_index: u8) -> Option<PortFields> {
         interrupt_parent: Some(16),
         interrupt: None,
         dma_noncoherent: true,
+        iommu_absent: true,
+        dma_ranges_absent: true,
         clock_names_valid: true,
         clock_cells: None,
         reset_name_valid: true,
@@ -366,6 +377,8 @@ fn fields_from_node(tree: &Fdt<'_>, alias_index: u8, node: FdtNode<'_, '_>) -> P
         interrupt_parent: cells::<1>(node, "interrupt-parent").map(|cells| cells[0]),
         interrupt: cells::<1>(node, "interrupts").map(|cells| cells[0]),
         dma_noncoherent: node.property("dma-noncoherent").is_some(),
+        iommu_absent: node.property("iommus").is_none(),
+        dma_ranges_absent: node.property("dma-ranges").is_none(),
         clock_names_valid: exact_text(node, "clock-names", CLOCK_NAMES),
         clock_cells: cells(node, "clocks"),
         reset_name_valid: exact_text(node, "reset-names", RESET_NAME),
@@ -615,7 +628,7 @@ fn validate_controllers(registers: &mut dyn PlatformRegisters) -> Result<[u8; 2]
     for alias in [0, 1] {
         let version =
             registers.read(RegisterBank::Gmac(alias), MAC_VERSION.offset() as usize)? as u8;
-        if !(GMAC4_MIN_VERSION..=GMAC5_MAX_VERSION).contains(&version) {
+        if version != EIC7700_DWMAC_VERSION {
             return Err(PlatformError::UnsupportedController);
         }
         versions[usize::from(alias)] = version;
@@ -849,6 +862,8 @@ mod tests {
                 interrupt_parent: Some(16),
                 interrupt: Some(61),
                 dma_noncoherent: true,
+                iommu_absent: true,
+                dma_ranges_absent: true,
                 clock_names_valid: true,
                 clock_cells: Some([3, 550, 3, 551, 3, 552]),
                 reset_name_valid: true,
@@ -879,6 +894,8 @@ mod tests {
                 interrupt_parent: Some(16),
                 interrupt: Some(70),
                 dma_noncoherent: true,
+                iommu_absent: true,
+                dma_ranges_absent: true,
                 clock_names_valid: true,
                 clock_cells: Some([3, 550, 3, 551, 3, 553]),
                 reset_name_valid: true,
@@ -924,6 +941,12 @@ mod tests {
         let mut coherent = frozen_port(0);
         coherent.dma_noncoherent = false;
         cases.push(coherent);
+        let mut translated_by_iommu = frozen_port(0);
+        translated_by_iommu.iommu_absent = false;
+        cases.push(translated_by_iommu);
+        let mut translated_by_dma_ranges = frozen_port(1);
+        translated_by_dma_ranges.dma_ranges_absent = false;
+        cases.push(translated_by_dma_ranges);
         let mut wrong_irq = frozen_port(1);
         wrong_irq.interrupt = Some(61);
         cases.push(wrong_irq);
@@ -933,6 +956,20 @@ mod tests {
 
         for fields in cases {
             assert_eq!(validate_port(fields), Err(PlatformError::InvalidDeviceTree));
+        }
+    }
+
+    #[ktest]
+    fn requires_documented_dwmac_5_20_on_both_ports() {
+        let mut exact = VersionRegisters([0x52, 0x52]);
+        assert_eq!(validate_controllers(&mut exact).unwrap(), [0x52, 0x52]);
+
+        for versions in [[0x51, 0x52], [0x52, 0x53], [0x52, 0x51]] {
+            let mut registers = VersionRegisters(versions);
+            assert_eq!(
+                validate_controllers(&mut registers),
+                Err(PlatformError::UnsupportedController)
+            );
         }
     }
 
@@ -969,6 +1006,46 @@ mod tests {
     struct FakeRegisters {
         writes: Vec<(RegisterBank, usize, u32)>,
         readbacks: Vec<(RegisterBank, usize, u32)>,
+    }
+
+    struct VersionRegisters([u8; 2]);
+
+    impl PlatformRegisters for VersionRegisters {
+        fn read(&mut self, bank: RegisterBank, offset: usize) -> Result<u32, PlatformError> {
+            if offset != MAC_VERSION.offset() as usize {
+                return Err(PlatformError::RegisterAccess);
+            }
+            let RegisterBank::Gmac(alias) = bank else {
+                return Err(PlatformError::RegisterAccess);
+            };
+            self.0
+                .get(usize::from(alias))
+                .copied()
+                .map(u32::from)
+                .ok_or(PlatformError::RegisterAccess)
+        }
+
+        fn write(
+            &mut self,
+            _bank: RegisterBank,
+            _offset: usize,
+            _value: u32,
+        ) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
+
+        fn write_readback(
+            &mut self,
+            _bank: RegisterBank,
+            _offset: usize,
+            _value: u32,
+        ) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
+
+        fn wait_reset_pulse(&mut self) -> Result<(), PlatformError> {
+            Err(PlatformError::RegisterAccess)
+        }
     }
 
     impl PlatformRegisters for FakeRegisters {

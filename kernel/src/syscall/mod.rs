@@ -139,6 +139,7 @@ mod recvfrom;
 mod recvmsg;
 mod removexattr;
 mod rename;
+#[cfg(target_arch = "riscv64")]
 mod riscv_flush_icache;
 mod riscv_hwprobe;
 mod rmdir;

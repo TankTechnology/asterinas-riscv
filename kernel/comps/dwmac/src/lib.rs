@@ -22,10 +22,13 @@ use component::{ComponentInitError, init_component};
 mod arch;
 #[cfg(target_arch = "riscv64")]
 mod device;
+#[cfg(target_arch = "riscv64")]
+mod diagnostics;
 mod poll;
 
 pub mod descriptor;
 pub mod phy;
+#[cfg(any(target_arch = "riscv64", ktest))]
 pub mod queue;
 pub mod regs;
 pub mod select;

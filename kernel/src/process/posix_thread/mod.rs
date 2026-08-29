@@ -10,22 +10,22 @@ use ostd::{
 use spin::Once;
 
 use super::{
-    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
     Credentials, Process,
+    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
 };
 use crate::{
     events::IoEvents,
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
+        ExitCode, Pid,
         namespace::nsproxy::NsProxy,
         posix_thread::ptrace::TraceeStatus,
-        signal::{sig_mask::SigMask, PauseReason, PollHandle},
-        ExitCode, Pid,
+        signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
     syscall::SockFilter,
     thread::{Thread, Tid},
-    time::{clocks::ProfClock, timer::TimerGuard, Timer, TimerManager},
+    time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
 
 pub mod alien_access;
@@ -44,13 +44,13 @@ mod thread_local;
 pub use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
-pub use name::{ThreadName, MAX_THREAD_NAME_LEN};
+pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
 pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
 pub use rseq::{
-    Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
-    RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+    RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER, RSEQ_MIN_SIZE,
+    RSEQ_SIG_OFFSET, Rseq,
 };
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 

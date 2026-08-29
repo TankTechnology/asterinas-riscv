@@ -22,10 +22,6 @@ static NETWORK_PROFILES: Once<Vec<BootNetworkProfile>> = Once::new();
 
 aster_cmdline::define_repeatable_kv_param!("asterinas.net", NETWORK_PROFILES);
 
-fn loopback_iface() -> &'static Arc<Iface> {
-    &IFACES.get().unwrap()[0]
-}
-
 pub fn iter_all_ifaces() -> Iter<'static, Arc<Iface>> {
     IFACES.get().unwrap().iter()
 }

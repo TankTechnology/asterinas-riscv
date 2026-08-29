@@ -1,17 +1,75 @@
 # RISC-V Xfce display-path benchmark and Debian compatibility
 
-Date: 2026-08-27
+Date: 2026-08-29
 
 ## Result
 
-Asterinas has two kinds of fbdev-versus-DRM measurements:
+Asterinas has three kinds of fbdev-versus-DRM measurements:
 
 1. the existing M14 `xbench` primitive-operation benchmark; and
-2. a new controlled Xfce cold-boot comparison using the same kernel, base root, Debian runtime closure, CPU count, memory, and 1280x800 display size, with display-specific Xorg configuration.
+2. a controlled Xfce cold-boot comparison using the same kernel, base root, Debian runtime closure, CPU count, memory, and 1280x800 display size, with display-specific Xorg configuration; and
+3. a repeatable three-path GL frame-time matrix comparing virgl, DRM with llvmpipe, and firmware fbdev with llvmpipe.
 
 The hardened cold-boot sample reached the complete Xfce gate in 2min 8.415s on firmware fbdev and 2min 26.517s on DRM modesetting with a software shadow framebuffer.
 DRM was 18.102s, or 14.1%, slower in this sample.
 This is an initial TCG result with one run per path, not a stable performance claim.
+
+The GL matrix provides the missing acceleration evidence.
+In the current three-round, order-rotated comparison, virgl reached a median 7.416 FPS with a 172.187 ms p95 frame time, while software DRM reached 0.614 FPS with a 1938.340 ms p95.
+That is a 12.08x FPS improvement and an 11.26x p95 frame-latency improvement for virgl over the same DRM/Xorg stack using llvmpipe.
+Median guest process CPU time fell from 1316.033 ms to 40.267 ms per frame, a 96.9% reduction.
+All six runs passed the renderer, direct-rendering, pixel, and raw-metric checks.
+This establishes a repeatable acceleration effect for QEMU virtio-gpu/virgl, but three rounds are not the release-quality ten-round result and do not establish native Megrez GPU acceleration.
+
+## Accelerated rendering matrix
+
+### Method
+
+[`display_perf_matrix.py`](display_perf_matrix.py) builds an immutable root-disk baseline for each path and gives every boot a temporary reflink clone.
+Runs are sequential, path order rotates between rounds, and the harness refuses to start while another QEMU process is active unless explicitly overridden.
+It records the Git state, QEMU version, kernel and root-disk hashes, host load, raw serial output, and parsed metrics.
+
+The GL benchmark warms the renderer, then calls `glFinish()` after every measured frame.
+This measures completed-frame latency rather than how quickly the guest can enqueue 30 frames before one final synchronization.
+All 30 raw frame times are emitted and independently checked against the reported mean, p50, p95, p99, and maximum.
+FPS is independently checked against the frame count and overall elapsed time.
+Guest process CPU time per frame is checked for arithmetic consistency with the reported total CPU time.
+Duplicate or incomplete records fail parsing.
+
+The primary acceleration comparison is virgl versus software DRM:
+
+| Path | Scanout stack | Renderer | FPS | p50 | p95 | p99 | Guest CPU/frame |
+|---|---|---|---:|---:|---:|---:|---:|
+| virgl | virtio-gpu DRM + Xorg modesetting | virgl | 7.416 | 133.473 ms | 172.187 ms | 179.864 ms | 40.267 ms |
+| software DRM | virtio-gpu DRM + Xorg modesetting/ShadowFB | llvmpipe | 0.614 | 1579.588 ms | 1938.340 ms | 3028.061 ms | 1316.033 ms |
+| firmware fbdev | bochs simple-framebuffer + Xorg fbdev | llvmpipe | 1.032 | 940.648 ms | 1329.154 ms | 1553.631 ms | 909.267 ms |
+
+The virgl and software-DRM rows are medians from `primary-3round-20260829`.
+All six samples use the final harness, including deterministic back-buffer pixel validation; every guest functional marker passed.
+The kernel image SHA-256 is `4684475bb824abbdf588424832c011ddebba5604b91cad2a2748fc36feff78f3`.
+The fbdev row comes from the earlier `smoke-v3-20260828`, whose visible-frame and functional gates passed before deterministic GL pixel validation was added.
+The three-round result proves substantial, repeatable acceleration but is not the ten-round release gate.
+
+The default acceptance policy requires all requested rounds to pass their boot, renderer, direct-rendering, deterministic-pixel, and raw-metric checks, plus at least a 2x median p95 improvement from software DRM to virgl.
+Run the release matrix on an otherwise idle host:
+
+```sh
+python3 tools/riscv/xfce/display_perf_matrix.py \
+    --base target/qemu-uboot/systemd-desktop-xfce-initramfs.cpio \
+    --rounds 10
+```
+
+After the source-validated baselines exist, they can be reused:
+
+```sh
+python3 tools/riscv/xfce/display_perf_matrix.py \
+    --base target/qemu-uboot/systemd-desktop-xfce-initramfs.cpio \
+    --rounds 10 \
+    --reuse-baselines
+```
+
+Evidence is written outside Git under `target/xfce-display-perf/runs/<run>/`.
+The machine-readable verdict is `result.json`; `summary.md` is the compact human-readable table.
 
 ## Existing operation benchmark
 
@@ -124,11 +182,12 @@ The explicit `--base` avoids the launcher's historical sibling-worktree default 
 
 The DRM implementation already supports Debian user space.
 The M19 runtime used by the DRM, virgl, and Xfce gates consists of Debian Trixie riscv64 binaries.
-Debian's Xorg modesetting driver opens Asterinas `/dev/dri/card0`, and the M19
-raw-EGL gate exercises Debian Mesa's virgl driver.
-The software-DRM comparison above confirms the Xorg/Xfce integration but does
-not itself prove application-side GPU rendering. That direct GLX/DRI3 gate is
-recorded separately in [`XFCE-DRM-M2-report.md`](XFCE-DRM-M2-report.md).
+Debian's Xorg modesetting driver opens Asterinas `/dev/dri/card0`,
+and the M19 raw-EGL gate exercises Debian Mesa's virgl driver.
+The software-DRM comparison above confirms the Xorg/Xfce integration
+but does not itself prove application-side GPU rendering.
+That direct GLX/DRI3 gate is recorded separately
+in [`XFCE-DRM-M2-report.md`](XFCE-DRM-M2-report.md).
 
 The official Asterinas Debian desktop pipeline has not adopted DRM yet.
 Its `desktop-m3` and `desktop-m4` profiles explicitly install `xserver-xorg-video-fbdev`.

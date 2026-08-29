@@ -180,6 +180,7 @@ pub enum HostError {
 }
 
 /// Error context captured from one command interrupt status value.
+#[cfg(any(target_arch = "riscv64", ktest))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CommandFailure {
     pub index: u8,
@@ -188,6 +189,7 @@ pub(crate) struct CommandFailure {
 }
 
 /// Error context captured while waiting for one data-phase interrupt.
+#[cfg(any(target_arch = "riscv64", ktest))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DataFailure {
     pub wanted: u32,
@@ -212,6 +214,7 @@ pub const fn decode_interrupt_error(status: u32) -> Option<HostError> {
     }
 }
 
+#[cfg(any(target_arch = "riscv64", ktest))]
 pub(crate) const fn decode_command_failure(index: u8, status: u32) -> Option<CommandFailure> {
     match decode_interrupt_error(status) {
         Some(error) => Some(CommandFailure {
@@ -223,6 +226,7 @@ pub(crate) const fn decode_command_failure(index: u8, status: u32) -> Option<Com
     }
 }
 
+#[cfg(any(target_arch = "riscv64", ktest))]
 pub(crate) const fn decode_data_failure(wanted: u32, status: u32) -> Option<DataFailure> {
     match decode_interrupt_error(status) {
         Some(error) => Some(DataFailure {
@@ -234,6 +238,7 @@ pub(crate) const fn decode_data_failure(wanted: u32, status: u32) -> Option<Data
     }
 }
 
+#[cfg(any(target_arch = "riscv64", ktest))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Eic7700CoreClock {
     pub divisor: u16,
@@ -242,6 +247,7 @@ pub(crate) struct Eic7700CoreClock {
 
 /// Selects the external EIC7700 MSHC core clock, following the vendor driver's
 /// `eswin_sdhci_set_core_clock` policy.
+#[cfg(any(target_arch = "riscv64", ktest))]
 pub(crate) const fn eic7700_core_clock_config(
     requested_hz: u32,
 ) -> Result<Eic7700CoreClock, HostError> {

@@ -7,7 +7,6 @@
 //! provides the instruction type and an interpreter.
 
 use ostd::mm::VmIo;
-use ostd_pod::Pod;
 
 use crate::prelude::*;
 
@@ -35,7 +34,7 @@ pub struct SockFilter {
 pub fn read_prog_from_user(addr: Vaddr) -> Result<Vec<SockFilter>> {
     let task = ostd::task::Task::current().unwrap();
     let thread_local = AsThreadLocal::as_thread_local(&task).unwrap();
-    let user_space = crate::context::CurrentUserSpace::new(thread_local);
+    let user_space = CurrentUserSpace::new(thread_local);
 
     let len = user_space.read_val::<u16>(addr)? as usize;
     let filter_addr = user_space.read_val::<Vaddr>(
@@ -213,8 +212,8 @@ pub fn run_filter(insns: &[SockFilter], data: &[u8], big_endian_loads: bool) -> 
                 };
             }
             BPF_MISC => match code & 0xf8 {
-                0x00 => x = a,  // `MISC | TAX`
-                0x80 => a = x,  // `MISC | TXA`
+                0x00 => x = a, // `MISC | TAX`
+                0x80 => a = x, // `MISC | TXA`
                 _ => return None,
             },
             _ => return None,

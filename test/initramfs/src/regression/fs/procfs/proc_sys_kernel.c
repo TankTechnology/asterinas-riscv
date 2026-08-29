@@ -93,7 +93,8 @@ FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
 		if (i == 8 || i == 13 || i == 18 || i == 23) {
 			continue;
 		}
-		TEST_RES(first[i], isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
+		TEST_RES(first[i],
+			 isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
 	}
 }
 END_TEST()

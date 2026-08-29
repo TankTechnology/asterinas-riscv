@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
+import signal
 import socket
 import time
 from enum import Enum
@@ -90,9 +92,43 @@ class BootOutcome(Enum):
     INTERRUPTED = "interrupted"
 
 
+def positive_seconds(value: str) -> float:
+    """Parse a finite, positive command-line duration in seconds."""
+
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid duration: {value}") from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("duration must be finite and positive")
+    return seconds
+
+
+def handle_termination_signal(_signum: int, _frame: object) -> None:
+    """Converts SIGTERM into the normal QEMU-cleanup path."""
+
+    raise KeyboardInterrupt
+
+
 def contains_panic(output: bytes) -> bool:
     return any(marker in output for marker in PANIC_MARKERS) or bool(
         BUG_MARKER_RE.search(output)
+    )
+
+
+def renderer_is_ready(display_path: DisplayPath, output: bytes) -> bool:
+    if display_path is DisplayPath.FBDEV:
+        return True
+    expected_renderer = (
+        GL_RENDERER_VIRGL
+        if display_path is DisplayPath.VIRGL
+        else GL_RENDERER_SOFTWARE
+    )
+    return (
+        GL_BENCH_PASS in output
+        and GL_DIRECT in output
+        and (display_path is not DisplayPath.VIRGL or MESA_DRI3_ACTIVE in output)
+        and expected_renderer in output
     )
 
 
@@ -260,8 +296,8 @@ def capture_visible_fbdev_frame(path: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=float, default=900.0)
-    parser.add_argument("--settle", type=float, default=15.0)
+    parser.add_argument("--timeout", type=positive_seconds, default=900.0)
+    parser.add_argument("--settle", type=positive_seconds, default=15.0)
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument(
         "--software-display",
@@ -281,6 +317,18 @@ def main() -> int:
         help="RISC-V Linux Image to place in the temporary boot disk",
     )
     parser.add_argument(
+        "--root-disk",
+        type=Path,
+        default=ROOT_DISK,
+        help="persistent root image to attach to the guest",
+    )
+    parser.add_argument(
+        "--serial-log",
+        type=Path,
+        default=WORK / "serial.log",
+        help="path for the complete serial transcript",
+    )
+    parser.add_argument(
         "--kernel-loglevel",
         choices=("warn", "info", "debug"),
         default="warn",
@@ -294,10 +342,10 @@ def main() -> int:
     # Keep the boot image and DTB synchronized with the current kernel, CPU
     # page-table mode, memory size, and requested hart count.
     pack_boot_disk(STAGE1_INITRAMFS, args.smp, args.kernel_image)
-    for path in (UBOOT, BOOT_DISK, ROOT_DISK):
+    for path in (UBOOT, BOOT_DISK, args.root_disk):
         if not path.exists():
             raise SystemExit(f"missing {path}; run build_xfce_drm.py first")
-    serial_log = WORK / "serial.log"
+    args.serial_log.parent.mkdir(parents=True, exist_ok=True)
     MONITOR_SOCKET.unlink(missing_ok=True)
 
     if args.fbdev_display:
@@ -329,7 +377,7 @@ def main() -> int:
         "-kernel", str(UBOOT),
         "-drive", f"if=none,format=raw,file={BOOT_DISK},id=bootdisk",
         "-device", "virtio-blk-device,drive=bootdisk",
-        "-drive", f"if=none,format=raw,file={ROOT_DISK},id=rootdisk",
+        "-drive", f"if=none,format=raw,file={args.root_disk},id=rootdisk",
         "-device", "virtio-blk-device,drive=rootdisk",
         "-device", gpu_device,
         "-device", "virtio-keyboard-device",
@@ -338,7 +386,7 @@ def main() -> int:
         "-monitor", f"unix:{MONITOR_SOCKET},server=on,wait=off",
     ]
 
-    boot = Boot(argv, serial_log)
+    boot = Boot(argv, args.serial_log)
     reached = BootOutcome.TIMEOUT
     visible_fbdev_frame = False
     try:
@@ -364,20 +412,7 @@ def main() -> int:
                 display_path is not DisplayPath.VIRGL
                 or GLAMOR_VIRGL_ACTIVE in clean.lower()
             )
-            renderer_ready = (
-                display_path is DisplayPath.FBDEV
-                or (
-                    GL_BENCH_PASS in clean
-                    and GL_DIRECT in clean
-                    and MESA_DRI3_ACTIVE in clean
-                    and (
-                        GL_RENDERER_VIRGL
-                        if display_path is DisplayPath.VIRGL
-                        else GL_RENDERER_SOFTWARE
-                    )
-                    in clean
-                )
-            )
+            renderer_ready = renderer_is_ready(display_path, clean)
             if (
                 GRAPHICAL_TARGET in clean
                 and SESSION_STARTED in clean
@@ -449,19 +484,7 @@ def main() -> int:
             display_path is not DisplayPath.VIRGL
             or GLAMOR_VIRGL_ACTIVE in clean.lower()
         ),
-        "renderer": (
-            True
-            if display_path is DisplayPath.FBDEV
-            else GL_BENCH_PASS in clean
-            and GL_DIRECT in clean
-            and MESA_DRI3_ACTIVE in clean
-            and (
-                GL_RENDERER_VIRGL
-                if display_path is DisplayPath.VIRGL
-                else GL_RENDERER_SOFTWARE
-            )
-            in clean
-        ),
+        "renderer": renderer_is_ready(display_path, clean),
         "xorg-ready": XORG_READY in clean,
         "x11-connect": X11_CONNECT_OK in clean,
         "framebuffer": (
@@ -489,4 +512,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, handle_termination_signal)
     raise SystemExit(main())

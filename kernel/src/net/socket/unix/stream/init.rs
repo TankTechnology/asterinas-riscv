@@ -84,6 +84,7 @@ impl Init {
         backlog: usize,
         pollee: Pollee,
         is_seqpacket: bool,
+        owner: &crate::net::socket::unix::scm_graph::SocketNode,
     ) -> Result<Listener, (Error, Self)> {
         let Some(addr) = self.addr else {
             return Err((
@@ -101,6 +102,7 @@ impl Init {
             self.is_write_shutdown.into_inner(),
             pollee,
             is_seqpacket,
+            owner,
         ))
     }
 

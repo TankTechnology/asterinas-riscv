@@ -100,6 +100,11 @@ impl StreamBacklogNode {
     pub(super) fn new() -> Self {
         Self(NodeHandle::new(NodeKind::StreamBacklog))
     }
+
+    #[cfg(ktest)]
+    pub(super) fn downgrade(&self) -> WeakNode {
+        WeakNode(Arc::downgrade(&self.0.0))
+    }
 }
 
 impl DatagramQueueNode {
@@ -479,6 +484,12 @@ impl ScmGraph {
 }
 
 fn scm_graph() -> &'static SpinLock<ScmGraph> {
+    // Edge guards can be the last strong owner of a socket or queue and may
+    // therefore drop while another kernel spin lock has preemption disabled.
+    // A sleeping Mutex cannot be entered from that context. ScmGraph contains
+    // only IDs, weak registrations, and counters; removing graph entries cannot
+    // recursively drop another edge guard. Its small BTreeMap/Vec allocations
+    // use the IRQ-safe kernel allocator, like other SpinLock<BTreeMap> users.
     SCM_GRAPH.call_once(|| SpinLock::new(ScmGraph::default()))
 }
 
@@ -505,12 +516,27 @@ impl WeakNode {
 
 #[cfg(ktest)]
 pub(super) fn permanent_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Permanent)
+}
+
+#[cfg(ktest)]
+pub(super) fn reserved_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Reserved)
+}
+
+#[cfg(ktest)]
+pub(super) fn committed_edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode) -> usize {
+    edge_count(from, to, EdgeClass::Committed)
+}
+
+#[cfg(ktest)]
+fn edge_count(from: &impl ScmGraphNode, to: &impl ScmGraphNode, class: EdgeClass) -> usize {
     scm_graph()
         .lock()
         .edges
         .get(&from.node_handle().id())
         .and_then(|targets| targets.get(&to.node_handle().id()))
-        .map(|counts| counts.get(EdgeClass::Permanent))
+        .map(|counts| counts.get(class))
         .unwrap_or(0)
 }
 

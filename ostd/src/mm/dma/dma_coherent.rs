@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::ManuallyDrop, ptr::NonNull};
+#[cfg(target_arch = "riscv64")]
+use core::ptr::NonNull;
+use core::{fmt::Debug, mem::ManuallyDrop};
 
 use super::util::{
     alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
 };
+#[cfg(target_arch = "riscv64")]
+use crate::mm::paddr_to_vaddr;
 use crate::{
     arch::irq,
     error::Error,
+    io::IoMem,
     mm::{
         Daddr, FrameAllocOptions, HasDaddr, HasPaddr, HasPaddrRange, HasSize, Infallible,
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
         io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
         kspace::kvirt_area::KVirtArea,
-        paddr_to_vaddr,
     },
 };
 
@@ -31,6 +35,7 @@ pub struct DmaCoherent {
     inner: Inner,
     map_daddr: Option<Daddr>,
     is_cache_coherent: bool,
+    uncached_alias: Option<IoMem>,
 }
 
 #[derive(Debug)]
@@ -89,10 +94,46 @@ impl DmaCoherent {
             inner,
             map_daddr,
             is_cache_coherent,
+            uncached_alias: None,
         })
     }
 
+    /// Converts a non-coherent DMA allocation to guaranteed uncached CPU access.
+    ///
+    /// On RISC-V this retains the existing PBMT_NC mapping when Svpbmt is
+    /// available, otherwise it uses a platform-provided uncached alias. The
+    /// operation fails rather than silently retaining a cacheable mapping when
+    /// neither mechanism is available.
+    pub fn into_uncached(self) -> Result<Self, Error> {
+        if self.is_cache_coherent {
+            return Err(Error::InvalidArgs);
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut dma = self;
+            dma.uncached_alias = crate::arch::mm::create_uncached_dma_alias(dma.paddr_range())?;
+            Ok(dma)
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            Ok(self)
+        }
+    }
+
+    /// Returns the physical start of the platform uncached alias, if one is active.
+    ///
+    /// A `None` result means CPU access uses the allocation's page-based mapping,
+    /// which may still be uncached through an architecture memory-type attribute.
+    pub fn uncached_alias_paddr(&self) -> Option<Paddr> {
+        self.uncached_alias.as_ref().map(HasPaddr::paddr)
+    }
+
     pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
+        if let Some(alias) = &self.uncached_alias {
+            return alias.as_non_null_ptr();
+        }
         let vaddr = match &self.inner {
             Inner::Segment(segment) => paddr_to_vaddr(segment.paddr()),
             Inner::Kva(kva, _) => kva.start(),
@@ -106,13 +147,17 @@ impl Split for DmaCoherent {
         assert!(offset.is_multiple_of(PAGE_SIZE));
         assert!(0 < offset && offset < self.size());
 
-        let (inner, map_daddr, is_cache_coherent) = {
+        let (inner, map_daddr, is_cache_coherent, uncached_alias, size) = {
             let this = ManuallyDrop::new(self);
+            let size = this.size();
             (
                 // SAFETY: `this.inner` will never be used or dropped later.
                 unsafe { core::ptr::read(&this.inner as *const Inner) },
                 this.map_daddr,
                 this.is_cache_coherent,
+                // SAFETY: `this.uncached_alias` will never be used or dropped later.
+                unsafe { core::ptr::read(&this.uncached_alias) },
+                size,
             )
         };
 
@@ -129,17 +174,26 @@ impl Split for DmaCoherent {
         };
 
         let (daddr1, daddr2) = split_daddr(map_daddr, offset);
+        let (uncached_alias1, uncached_alias2) = match uncached_alias {
+            Some(alias) => (
+                Some(alias.slice(0..offset)),
+                Some(alias.slice(offset..size)),
+            ),
+            None => (None, None),
+        };
 
         (
             Self {
                 inner: inner1,
                 map_daddr: daddr1,
                 is_cache_coherent,
+                uncached_alias: uncached_alias1,
             },
             Self {
                 inner: inner2,
                 map_daddr: daddr2,
                 is_cache_coherent,
+                uncached_alias: uncached_alias2,
             },
         )
     }
@@ -180,6 +234,15 @@ impl HasVmReaderWriter for DmaCoherent {
     type Types = VmReaderWriterIdentity;
 
     fn reader(&self) -> VmReader<'_, Infallible> {
+        if let Some(alias) = &self.uncached_alias {
+            // SAFETY:
+            //  - The alias maps the same untyped backing memory owned by `self`.
+            //  - The alias mapping remains alive for the lifetime `'_`.
+            //  - All safe CPU access is routed through this reader or `writer`.
+            return unsafe {
+                VmReader::from_kernel_space(alias.as_non_null_ptr().as_ptr(), alias.size())
+            };
+        }
         match &self.inner {
             Inner::Segment(seg) => seg.reader(),
             Inner::Kva(kva, _) => {
@@ -193,6 +256,15 @@ impl HasVmReaderWriter for DmaCoherent {
     }
 
     fn writer(&self) -> VmWriter<'_, Infallible> {
+        if let Some(alias) = &self.uncached_alias {
+            // SAFETY:
+            //  - The alias maps the same untyped backing memory owned by `self`.
+            //  - The alias mapping remains alive for the lifetime `'_`.
+            //  - All safe CPU access is routed through `reader` or this writer.
+            return unsafe {
+                VmWriter::from_kernel_space(alias.as_non_null_ptr().as_ptr(), alias.size())
+            };
+        }
         match &self.inner {
             Inner::Segment(seg) => seg.writer(),
             Inner::Kva(kva, _) => {

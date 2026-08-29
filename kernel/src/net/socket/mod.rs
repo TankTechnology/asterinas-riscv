@@ -14,10 +14,8 @@ use crate::{
         pseudofs::SockFs,
     },
     prelude::*,
-    util::{MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, ioctl::RawIoctl},
 };
-
-use crate::util::ioctl::RawIoctl;
 
 pub mod ip;
 pub mod netlink;
@@ -207,12 +205,12 @@ impl<T: Socket + 'static> FileLike for T {
     }
 
     fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        use aster_bigtcp::iface::InterfaceFlags;
+
         use crate::{
             net::{iface::Iface, net_ns::current_net_ns},
             util::ioctl::{InData, InOutData, dispatch_ioctl, ioc},
         };
-
-        use aster_bigtcp::iface::InterfaceFlags;
 
         /// The legacy `SIOCGIFFLAGS`/`SIOCSIFFLAGS` argument: the interface
         /// name (16 bytes) followed by the flags (a 16-bit `short`).

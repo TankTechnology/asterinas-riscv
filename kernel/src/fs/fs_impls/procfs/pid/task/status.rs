@@ -54,6 +54,7 @@ use crate::{
 /// - CapEff: Effective capabilities.
 /// - CapBnd: Bounding set.
 /// - CapAmb: Ambient capabilities.
+/// - NoNewPrivs: Whether this thread has disabled privilege gains across exec.
 /// - Seccomp: Seccomp mode.
 /// - Cpus_allowed: CPUs allowed for this process.
 /// - Cpus_allowed_list: List of CPUs allowed for this process.
@@ -118,9 +119,8 @@ impl ProcFileOps for StatusFileOps {
             .process()
             .pid_ns()
             .clone();
-        let vpid_of = |process: &Arc<crate::process::Process>| {
-            process.pid_in_ns(&reader_ns).unwrap_or(0)
-        };
+        let vpid_of =
+            |process: &Arc<crate::process::Process>| process.pid_in_ns(&reader_ns).unwrap_or(0);
 
         writeln!(printer, "Tgid:\t{}", vpid_of(&process))?;
         writeln!(
@@ -240,6 +240,14 @@ impl ProcFileOps for StatusFileOps {
             "CapAmb:\t{:016x}",
             credentials.ambient_capset().bits()
         )?;
+        writeln!(
+            printer,
+            "NoNewPrivs:\t{}",
+            u8::from(credentials.no_new_privs())
+        )?;
+        // Seccomp is a per-thread policy. In particular, /proc/<pid>/status reports the main
+        // thread while /proc/<pid>/task/<tid>/status reports the selected thread's own mode.
+        writeln!(printer, "Seccomp:\t{}", posix_thread.seccomp_mode())?;
 
         Ok(printer.bytes_written())
     }

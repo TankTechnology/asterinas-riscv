@@ -13,11 +13,14 @@ use aster_softirq::BottomHalfDisabled;
 use ostd::{
     arch::irq::{DeferredMappedIrqLine, IRQ_CHIP},
     irq::IrqLine,
+    mm::VmWriter,
     sync::SpinLock,
 };
 
 use crate::{
-    arch::{MegrezPlatform, PlatformError, SelectedPortInfo},
+    arch::{MegrezPlatform, PlatformError, SelectedPortInfo, dma_write_barrier},
+    descriptor::DescriptorError,
+    diagnostics::{MtlRxLossDiagnostics, RxDescriptorDrop, RxDiagnostics, TxDiagnostics},
     poll::{PollEndAction, RxPollBudget},
     queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
     regs::{
@@ -28,9 +31,10 @@ use crate::{
         DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH, DMA_CHANNEL0_TX_RING_LENGTH,
         DMA_CHANNEL0_TX_TAIL_POINTER, DMA_MODE, DMA_SYSTEM_BUS_MODE, MAC_ADDRESS0_HIGH,
         MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_ENABLE,
-        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_OPERATION_MODE,
-        MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero, dma_interrupt_enable,
-        dma_status_needs_rx_resume, dma_system_bus_mode, encode_ring_length, encode_rx_buffer_size,
+        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER,
+        MTL_RX_QUEUE0_OPERATION_MODE, MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero,
+        decode_mtl_rx_loss, dma_interrupt_enable, dma_status_needs_rx_resume, dma_system_bus_mode,
+        encode_ring_length, encode_rx_buffer_size,
     },
 };
 
@@ -49,6 +53,7 @@ const MAC_CONFIG_PORT_SELECT: u32 = 1 << 15;
 const MAC_CONFIG_TX_ENABLE: u32 = 1 << 1;
 const MAC_CONFIG_RX_ENABLE: u32 = 1;
 const MAC_ADDRESS_ENABLE: u32 = 1 << 31;
+const RX_DIAGNOSTIC_PREFIX_LEN: usize = 94;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeviceError {
@@ -96,6 +101,9 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         queue,
         irq,
         rx_poll: RxPollBudget::default(),
+        rx_diagnostics: RxDiagnostics::default(),
+        mtl_rx_loss: MtlRxLossDiagnostics::default(),
+        tx_diagnostics: TxDiagnostics::default(),
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -190,6 +198,7 @@ fn configure_selected(
     let ring_length = encode_ring_length(QUEUE_SIZE).map_err(|_| DeviceError::RegisterEncoding)?;
     write(DMA_CHANNEL0_TX_RING_LENGTH.offset(), ring_length)?;
     write(DMA_CHANNEL0_RX_RING_LENGTH.offset(), ring_length)?;
+    dma_write_barrier();
     write(
         DMA_CHANNEL0_TX_TAIL_POINTER.offset(),
         addresses.initial_tx_tail as u32,
@@ -227,6 +236,17 @@ fn configure_selected(
         queue_zero.mac_rx_queue_control0,
         queue_zero.mtl_tx_operation_mode,
         queue_zero.mtl_rx_operation_mode,
+    );
+    ostd::info!(
+        "ASTERINAS_GMAC_DMA_CONTRACT version={:#04x} ring_paddr={:#018x} ring_daddr={:#018x} ring_cpu_alias={:#018x?} tx_ring={:#018x} rx_ring={:#018x} tx_tail={:#018x} rx_tail={:#018x}",
+        selected.version,
+        addresses.ring_paddr,
+        addresses.ring_daddr,
+        addresses.ring_cpu_alias,
+        addresses.tx_ring,
+        addresses.rx_ring,
+        addresses.initial_tx_tail,
+        addresses.initial_rx_tail,
     );
     let mac_low = u32::from_le_bytes([
         selected.mac_address[0],
@@ -290,6 +310,9 @@ struct DwmacDevice {
     queue: DmaQueue,
     irq: DeferredMappedIrqLine,
     rx_poll: RxPollBudget,
+    rx_diagnostics: RxDiagnostics,
+    mtl_rx_loss: MtlRxLossDiagnostics,
+    tx_diagnostics: TxDiagnostics,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -313,6 +336,9 @@ impl DwmacDevice {
             return u32::MAX;
         };
         let needs_rx_resume = dma_status_needs_rx_resume(status);
+        if needs_rx_resume {
+            self.rx_poll.record_rx_buffer_unavailable();
+        }
         if status & DMA_STATUS_FATAL_BUS != 0 {
             self.fatal = true;
         }
@@ -323,17 +349,43 @@ impl DwmacDevice {
             self.fatal = true;
             return status;
         }
-        if needs_rx_resume
-            && self
-                .write(
-                    DMA_CHANNEL0_RX_TAIL_POINTER.offset(),
-                    self.queue.rx_resume_tail() as u32,
-                )
-                .is_err()
-        {
+        if needs_rx_resume && {
+            dma_write_barrier();
+            self.write(
+                DMA_CHANNEL0_RX_TAIL_POINTER.offset(),
+                self.queue.rx_resume_tail() as u32,
+            )
+            .is_err()
+        } {
             self.fatal = true;
         }
         status
+    }
+
+    fn record_received_frame(&mut self, buffer: &RxBuffer) {
+        if !self.rx_diagnostics.can_sample_frame() {
+            return;
+        }
+
+        let mut prefix = [0u8; RX_DIAGNOSTIC_PREFIX_LEN];
+        let mut payload = buffer.payload();
+        let prefix_len = payload.remain().min(prefix.len());
+        payload.limit(prefix_len);
+        let copied = payload.read(&mut VmWriter::from(&mut prefix[..prefix_len]));
+        debug_assert_eq!(copied, prefix_len);
+        self.rx_diagnostics.record_frame(&prefix[..copied]);
+    }
+
+    fn record_receive_error(&mut self, error: QueueError) {
+        let drop = match error {
+            QueueError::Descriptor(DescriptorError::FragmentedFrame) => {
+                RxDescriptorDrop::Fragmented
+            }
+            QueueError::Descriptor(DescriptorError::FrameTooLong) => RxDescriptorDrop::FrameTooLong,
+            QueueError::Descriptor(DescriptorError::ReceiveError) => RxDescriptorDrop::ReceiveError,
+            _ => RxDescriptorDrop::Other,
+        };
+        self.rx_diagnostics.record_descriptor_drop(drop);
     }
 }
 
@@ -356,22 +408,26 @@ impl AnyNetworkDevice for DwmacDevice {
 
     fn receive(&mut self) -> Result<RxBuffer, NetError> {
         let packet = self.queue.receive();
-        if let Some(tail) = self.queue.take_rx_tail()
-            && self
+        if let Some(tail) = self.queue.take_rx_tail() {
+            dma_write_barrier();
+            if self
                 .write(DMA_CHANNEL0_RX_TAIL_POINTER.offset(), tail as u32)
                 .is_err()
-        {
-            self.fatal = true;
-            return Err(NetError::NotReady);
+            {
+                self.fatal = true;
+                return Err(NetError::NotReady);
+            }
         }
         match packet {
             Ok(buffer) => {
                 self.rx_poll.record_received();
+                self.record_received_frame(&buffer);
                 Ok(buffer)
             }
             Err(QueueError::Allocation) => Err(NetError::NoMemory),
             Err(QueueError::NotReady) => Err(NetError::NotReady),
-            Err(_) => {
+            Err(error) => {
+                self.record_receive_error(error);
                 self.service_status();
                 Err(NetError::NotReady)
             }
@@ -385,6 +441,10 @@ impl AnyNetworkDevice for DwmacDevice {
             Err(QueueError::Full) => return Err(NetError::Busy),
             Err(_) => return Err(NetError::NotReady),
         };
+        if self.tx_diagnostics.record_frame(packet) {
+            ostd::info!("ASTERINAS_GMAC_TX stage=tcp-data-submitted");
+        }
+        dma_write_barrier();
         self.write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
             .map_err(|_| NetError::NotReady)
     }
@@ -404,11 +464,12 @@ impl AnyNetworkDevice for DwmacDevice {
                     self.fatal = true;
                 } else if let Some(stats) = self.rx_poll.record_rearmed() {
                     ostd::info!(
-                        "ASTERINAS_GMAC_RX_POLL received={} budget_exhaustions={} reschedules={} plic_rearms={}",
+                        "ASTERINAS_GMAC_RX_POLL received={} budget_exhaustions={} reschedules={} plic_rearms={} rx_buffer_unavailable={}",
                         stats.received,
                         stats.budget_exhaustions,
                         stats.reschedules,
                         stats.plic_rearms,
+                        stats.rx_buffer_unavailable,
                     );
                 }
             }
@@ -419,19 +480,62 @@ impl AnyNetworkDevice for DwmacDevice {
             PollEndAction::Stop => {}
         }
         if let Some(rx) = self.rx_poll.take_progress_report() {
+            match self.read(MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER.offset()) {
+                Ok(register) => self.mtl_rx_loss.record(decode_mtl_rx_loss(register)),
+                Err(_) => self.mtl_rx_loss.record_read_failure(),
+            }
             let tx = self.queue.progress();
+            let diagnostics = self.rx_diagnostics.report();
+            let mtl_rx_loss = self.mtl_rx_loss.report();
+            let tx_diagnostics = self.tx_diagnostics.report();
             ostd::info!(
-                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
+                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} rx_buffer_unavailable={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
                 rx.received,
                 rx.budget_exhaustions,
                 rx.reschedules,
                 rx.plic_rearms,
+                rx.rx_buffer_unavailable,
                 tx.tx_submitted,
                 tx.tx_reclaimed,
                 tx.tx_outstanding,
                 tx.rx_head,
                 tx.rx_tail,
                 dma_status,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_MTL_RX_LOSS missed_packets={} missed_counter_overflows={} fifo_overflow_packets={} fifo_counter_overflows={} read_failures={}",
+                mtl_rx_loss.missed_packets,
+                mtl_rx_loss.missed_counter_overflows,
+                mtl_rx_loss.fifo_overflow_packets,
+                mtl_rx_loss.fifo_counter_overflows,
+                mtl_rx_loss.read_failures,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
+                diagnostics.observed,
+                diagnostics.arp,
+                diagnostics.ipv4_other,
+                diagnostics.tcp_syn,
+                diagnostics.tcp_syn_ack,
+                diagnostics.tcp_other,
+                diagnostics.other,
+                diagnostics.malformed,
+                diagnostics.descriptor_fragmented,
+                diagnostics.descriptor_receive_error,
+                diagnostics.descriptor_frame_too_long,
+                diagnostics.descriptor_other,
+            );
+            ostd::info!(
+                "ASTERINAS_GMAC_TX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_ack_only={} tcp_data={} tcp_other={} other={} malformed={}",
+                tx_diagnostics.observed,
+                tx_diagnostics.arp,
+                tx_diagnostics.ipv4_other,
+                tx_diagnostics.tcp_syn,
+                tx_diagnostics.tcp_ack_only,
+                tx_diagnostics.tcp_data,
+                tx_diagnostics.tcp_other,
+                tx_diagnostics.other,
+                tx_diagnostics.malformed,
             );
         }
     }

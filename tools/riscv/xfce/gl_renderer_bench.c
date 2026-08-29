@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Identifies Mesa's active renderer and times a small OpenGL/X11 workload.
-// Results are mirrored to the serial console for the QEMU acceptance harness.
+// The systemd service directs stdout to the serial console for the QEMU
+// acceptance harness.
 
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -17,29 +18,49 @@
 #define BENCH_WIDTH 320
 #define BENCH_HEIGHT 240
 #define BENCH_FRAMES 30
-
-static FILE *serial;
+#define VALIDATION_RED 32
+#define VALIDATION_GREEN 128
+#define VALIDATION_BLUE 223
+#define VALIDATION_ALPHA 255
+#define VALIDATION_TOLERANCE 2
 
 static void report(const char *format, ...) {
-    va_list stdout_args;
-    va_start(stdout_args, format);
-    vfprintf(stdout, format, stdout_args);
-    va_end(stdout_args);
+    va_list args;
+    va_start(args, format);
+    vfprintf(stdout, format, args);
+    va_end(args);
     fflush(stdout);
-
-    if (serial != NULL) {
-        va_list serial_args;
-        va_start(serial_args, format);
-        vfprintf(serial, format, serial_args);
-        va_end(serial_args);
-        fflush(serial);
-    }
 }
 
 static double monotonic_ms(void) {
     struct timespec timestamp;
     clock_gettime(CLOCK_MONOTONIC, &timestamp);
     return timestamp.tv_sec * 1000.0 + timestamp.tv_nsec / 1000000.0;
+}
+
+static double process_cpu_ms(void) {
+    struct timespec timestamp;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &timestamp);
+    return timestamp.tv_sec * 1000.0 + timestamp.tv_nsec / 1000000.0;
+}
+
+static int compare_doubles(const void *left, const void *right) {
+    double left_value = *(const double *)left;
+    double right_value = *(const double *)right;
+    return (left_value > right_value) - (left_value < right_value);
+}
+
+static double percentile_ms(const double *sorted_frame_ms,
+                            unsigned int percentile) {
+    unsigned int rank =
+        (percentile * BENCH_FRAMES + 99) / 100;
+    return sorted_frame_ms[rank - 1];
+}
+
+static bool component_matches(GLubyte actual, unsigned int expected) {
+    unsigned int actual_value = actual;
+    return actual_value + VALIDATION_TOLERANCE >= expected &&
+           actual_value <= expected + VALIDATION_TOLERANCE;
 }
 
 static GLuint compile_shader(GLenum type, const char *source) {
@@ -117,7 +138,6 @@ static bool draw_frame(Display *display, Window window, GLuint program,
 }
 
 int main(void) {
-    serial = fopen("/dev/ttyS0", "w");
     report("XFCE_GL_BENCH_START\n");
 
     Display *x_display = XOpenDisplay(NULL);
@@ -190,23 +210,67 @@ int main(void) {
     }
     glFinish();
 
+    double frame_ms[BENCH_FRAMES];
     double start_ms = monotonic_ms();
+    double start_cpu_ms = process_cpu_ms();
     for (unsigned int frame = 0; frame < BENCH_FRAMES; ++frame) {
+        double frame_start_ms = monotonic_ms();
         if (!draw_frame(x_display, window, program, phase_location, frame + 3)) {
             report("XFCE_GL_ERROR bench-frame=%u\n", frame);
             return 1;
         }
+        // Complete every submitted frame before timing the next one. A single
+        // final `glFinish` measures queueing throughput rather than the
+        // presentation latency experienced by an interactive client.
+        glFinish();
+        frame_ms[frame] = monotonic_ms() - frame_start_ms;
     }
-    glFinish();
     double elapsed_ms = monotonic_ms() - start_ms;
+    double cpu_ms = process_cpu_ms() - start_cpu_ms;
 
+    double sorted_frame_ms[BENCH_FRAMES];
+    double frame_total_ms = 0.0;
+    for (unsigned int frame = 0; frame < BENCH_FRAMES; ++frame) {
+        sorted_frame_ms[frame] = frame_ms[frame];
+        frame_total_ms += frame_ms[frame];
+    }
+    qsort(sorted_frame_ms, BENCH_FRAMES, sizeof(sorted_frame_ms[0]),
+          compare_doubles);
+
+    glDrawBuffer(GL_BACK);
+    glClearColor(0.125f, 0.5f, 0.875f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    glReadBuffer(GL_BACK);
     GLubyte pixel[4] = {0};
     glReadPixels(BENCH_WIDTH / 2, BENCH_HEIGHT / 2, 1, 1, GL_RGBA,
                  GL_UNSIGNED_BYTE, pixel);
+    bool pixel_is_valid = glGetError() == GL_NO_ERROR &&
+                          component_matches(pixel[0], VALIDATION_RED) &&
+                          component_matches(pixel[1], VALIDATION_GREEN) &&
+                          component_matches(pixel[2], VALIDATION_BLUE) &&
+                          component_matches(pixel[3], VALIDATION_ALPHA);
     double fps = BENCH_FRAMES * 1000.0 / elapsed_ms;
     report("XFCE_GL_PIXEL %u,%u,%u,%u\n", pixel[0], pixel[1], pixel[2], pixel[3]);
     report("XFCE_GL_BENCH frames=%d elapsed_ms=%.3f fps=%.3f\n",
            BENCH_FRAMES, elapsed_ms, fps);
+    for (unsigned int frame = 0; frame < BENCH_FRAMES; ++frame) {
+        report("XFCE_GL_FRAME index=%u elapsed_ms=%.3f\n", frame,
+               frame_ms[frame]);
+    }
+    report("XFCE_GL_FRAME_TIMES frames=%d mean_ms=%.3f p50_ms=%.3f "
+           "p95_ms=%.3f p99_ms=%.3f max_ms=%.3f cpu_ms=%.3f "
+           "cpu_ms_per_frame=%.3f\n",
+           BENCH_FRAMES, frame_total_ms / BENCH_FRAMES,
+           percentile_ms(sorted_frame_ms, 50),
+           percentile_ms(sorted_frame_ms, 95),
+           percentile_ms(sorted_frame_ms, 99),
+           sorted_frame_ms[BENCH_FRAMES - 1], cpu_ms,
+           cpu_ms / BENCH_FRAMES);
+    if (!pixel_is_valid) {
+        report("XFCE_GL_ERROR validation-pixel\n");
+        return 1;
+    }
     report("XFCE_GL_BENCH_PASS\n");
 
     glDeleteProgram(program);
@@ -216,8 +280,5 @@ int main(void) {
     XFreeColormap(x_display, colormap);
     XFree(visual);
     XCloseDisplay(x_display);
-    if (serial != NULL) {
-        fclose(serial);
-    }
     return 0;
 }

@@ -1,8 +1,8 @@
 # DRM-M16 Report — VT Node Verification + GEM/Render-Node + virgl 3D
 
-**Date:** 2026-08-18  
-**Branch:** `track/drm`  
-**Commits:** `0d5c443f8` (VT report), `a7106b425` (GEM+render node), `949557eeb` (virgl wire types), `2fb447afd` (virtio-gpu 3D ioctls)  
+**Date:** 2026-08-18
+**Branch:** `track/drm`
+**Commits:** `0d5c443f8` (VT report), `a7106b425` (GEM+render node), `949557eeb` (virgl wire types), `2fb447afd` (virtio-gpu 3D ioctls)
 
 ## Phase 1: /dev/ttyN VT Node Verification
 

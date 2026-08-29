@@ -4,28 +4,43 @@
 
 extern crate alloc;
 
+#[cfg(target_arch = "riscv64")]
 use alloc::{sync::Arc, vec::Vec};
 
+#[cfg(target_arch = "riscv64")]
 use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
+#[cfg(target_arch = "riscv64")]
 use ostd::mm::{
-    HasDaddr, PAGE_SIZE, VmIo,
+    HasDaddr, HasPaddr, PAGE_SIZE, VmIo, VmIoOnce,
     dma::{DmaCoherent, FromDevice, ToDevice},
 };
+#[cfg(target_arch = "riscv64")]
 use spin::Once;
 
-use crate::descriptor::{Descriptor, DescriptorError, DmaAddress};
+use crate::{
+    arch::{dma_read_barrier, dma_write_barrier},
+    descriptor::{Descriptor, DescriptorError, DmaAddress},
+};
 
 pub const QUEUE_SIZE: usize = 64;
 pub const BUFFER_SIZE: usize = 2048;
 pub const POLL_BUDGET: usize = 32;
+#[cfg(target_arch = "riscv64")]
 const TX_RING_OFFSET: usize = 0;
+#[cfg(target_arch = "riscv64")]
 const RX_RING_OFFSET: usize = QUEUE_SIZE * size_of::<Descriptor>();
+#[cfg(target_arch = "riscv64")]
 const RING_BYTES: usize = RX_RING_OFFSET + QUEUE_SIZE * size_of::<Descriptor>();
+#[cfg(target_arch = "riscv64")]
 const MAX_FRAME_SIZE: usize = 1514;
+#[cfg(target_arch = "riscv64")]
 const POOL_INIT_PAGES: usize = 32;
+#[cfg(target_arch = "riscv64")]
 const POOL_HIGH_WATERMARK: usize = 64;
 
+#[cfg(target_arch = "riscv64")]
 static RX_POOL: Once<Arc<DmaPool<FromDevice>>> = Once::new();
+#[cfg(target_arch = "riscv64")]
 static TX_POOL: Once<Arc<DmaPool<ToDevice>>> = Once::new();
 
 /// A bounded queue-state failure.
@@ -129,14 +144,19 @@ impl RingState {
 }
 
 /// DMA addresses used to program DWMAC queue zero.
+#[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QueueAddresses {
+    pub ring_paddr: usize,
+    pub ring_daddr: usize,
+    pub ring_cpu_alias: Option<usize>,
     pub tx_ring: usize,
     pub rx_ring: usize,
     pub initial_tx_tail: usize,
     pub initial_rx_tail: usize,
 }
 
+#[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QueueProgress {
     pub tx_submitted: u64,
@@ -147,6 +167,7 @@ pub(super) struct QueueProgress {
 }
 
 /// One fresh 64-entry receive/transmit queue pair.
+#[cfg(target_arch = "riscv64")]
 pub(super) struct DmaQueue {
     ring: DmaCoherent,
     rx_buffers: Vec<Option<RxBuffer>>,
@@ -159,6 +180,7 @@ pub(super) struct DmaQueue {
     tx_reclaimed: u64,
 }
 
+#[cfg(target_arch = "riscv64")]
 impl DmaQueue {
     pub fn new() -> Result<Self, QueueError> {
         const { assert!(RING_BYTES <= PAGE_SIZE) };
@@ -170,7 +192,9 @@ impl DmaQueue {
         // Hardware and the CPU update adjacent 16-byte descriptors independently.
         // An uncached mapping prevents one side from writing back a stale sibling
         // descriptor while synchronizing their shared 64-byte cache line.
-        let ring = DmaCoherent::alloc(1, false).map_err(|_| QueueError::Allocation)?;
+        let ring = DmaCoherent::alloc(1, false)
+            .and_then(DmaCoherent::into_uncached)
+            .map_err(|_| QueueError::Allocation)?;
         let rx_ring = ring.daddr() + RX_RING_OFFSET;
         let mut queue = Self {
             ring,
@@ -194,9 +218,13 @@ impl DmaQueue {
     }
 
     pub fn addresses(&self) -> QueueAddresses {
-        let tx_ring = self.ring.daddr() + TX_RING_OFFSET;
-        let rx_ring = self.ring.daddr() + RX_RING_OFFSET;
+        let ring_daddr = self.ring.daddr();
+        let tx_ring = ring_daddr + TX_RING_OFFSET;
+        let rx_ring = ring_daddr + RX_RING_OFFSET;
         QueueAddresses {
+            ring_paddr: self.ring.paddr(),
+            ring_daddr,
+            ring_cpu_alias: self.ring.uncached_alias_paddr(),
             tx_ring,
             rx_ring,
             initial_tx_tail: tx_ring,
@@ -324,9 +352,26 @@ impl DmaQueue {
     }
 
     fn read_descriptor(&self, is_tx: bool, slot: usize) -> Result<Descriptor, QueueError> {
+        let control = self.read_descriptor_control(is_tx, slot)?;
+        if Descriptor::control_owned_by_dma(control) {
+            return Ok(Descriptor::from_parts([0; 3], control));
+        }
+        dma_read_barrier();
+        let body = self.read_descriptor_body(is_tx, slot)?;
+        Ok(Descriptor::from_parts(body, control))
+    }
+
+    fn read_descriptor_body(&self, is_tx: bool, slot: usize) -> Result<[u32; 3], QueueError> {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
             .read_val(offset)
+            .map_err(|_| QueueError::DmaAccess)
+    }
+
+    fn read_descriptor_control(&self, is_tx: bool, slot: usize) -> Result<u32, QueueError> {
+        let control_offset = Self::descriptor_offset(is_tx, slot) + 3 * size_of::<u32>();
+        self.ring
+            .read_once(control_offset)
             .map_err(|_| QueueError::DmaAccess)
     }
 
@@ -336,9 +381,32 @@ impl DmaQueue {
         slot: usize,
         descriptor: &Descriptor,
     ) -> Result<(), QueueError> {
+        self.write_descriptor_body(is_tx, slot, &descriptor.body_words())?;
+        dma_write_barrier();
+        self.write_descriptor_control(is_tx, slot, &descriptor.control_word())
+    }
+
+    fn write_descriptor_body(
+        &self,
+        is_tx: bool,
+        slot: usize,
+        body: &[u32; 3],
+    ) -> Result<(), QueueError> {
         let offset = Self::descriptor_offset(is_tx, slot);
         self.ring
-            .write_val(offset, descriptor)
+            .write_val(offset, body)
+            .map_err(|_| QueueError::DmaAccess)
+    }
+
+    fn write_descriptor_control(
+        &self,
+        is_tx: bool,
+        slot: usize,
+        control: &u32,
+    ) -> Result<(), QueueError> {
+        let control_offset = Self::descriptor_offset(is_tx, slot) + 3 * size_of::<u32>();
+        self.ring
+            .write_once(control_offset, control)
             .map_err(|_| QueueError::DmaAccess)
     }
 }

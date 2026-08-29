@@ -17,13 +17,13 @@ use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
+        Credentials, NsProxy, Process, UserNamespace,
         posix_thread::{name::ThreadName, thread_local::SuppUserContext},
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
-        Credentials, NsProxy, Process, UserNamespace,
     },
     sched::{Nice, SchedPolicy},
-    thread::{task, Thread, Tid},
-    time::{clocks::ProfClock, TimerManager},
+    thread::{Thread, Tid, task},
+    time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,
 };
 

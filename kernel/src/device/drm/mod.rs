@@ -598,15 +598,15 @@ impl GpuManager {
             }
         }
         let mut cleanup_status = HostCleanupStatus::Confirmed;
-        if let Some(resource_id) = resource.map(GemResourceState::resource_id) {
-            if let Err(error) = self.gpu.resource_unref(resource_id) {
-                warn!(
-                    "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
-                    resource_id, object_id, error
-                );
-                cleanup_status = HostCleanupStatus::Unconfirmed;
-                self.pending_resource_cleanup.lock().insert(resource_id);
-            }
+        if let Some(resource_id) = resource.map(GemResourceState::resource_id)
+            && let Err(error) = self.gpu.resource_unref(resource_id)
+        {
+            warn!(
+                "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
+                resource_id, object_id, error
+            );
+            cleanup_status = HostCleanupStatus::Unconfirmed;
+            self.pending_resource_cleanup.lock().insert(resource_id);
         }
         Ok(cleanup_status)
     }
@@ -1468,14 +1468,14 @@ impl DriHandle {
                 false
             }
         };
-        if is_last && let Some(resource_id) = resource_id {
-            if let Err(error) = self.detach_resource_from_context_locked(&mut context, resource_id)
-            {
-                warn!(
-                    "poisoned virgl context {} after resource detach failed: {:?}",
-                    context.id, error
-                );
-            }
+        if is_last
+            && let Some(resource_id) = resource_id
+            && let Err(error) = self.detach_resource_from_context_locked(&mut context, resource_id)
+        {
+            warn!(
+                "poisoned virgl context {} after resource detach failed: {:?}",
+                context.id, error
+            );
         }
         Ok(())
     }

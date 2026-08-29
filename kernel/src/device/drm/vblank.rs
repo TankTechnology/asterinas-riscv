@@ -212,6 +212,15 @@ impl VblankSnapshot {
     pub(super) fn is_active(self) -> bool {
         self.active
     }
+
+    #[cfg(ktest)]
+    pub(super) const fn active_for_test(sequence: u64, timestamp: Duration) -> Self {
+        Self {
+            sequence,
+            timestamp,
+            active: true,
+        }
+    }
 }
 
 #[derive(Debug)]

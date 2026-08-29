@@ -36,11 +36,7 @@ impl VmDirOps {
             InodeType::File,
             MmapMinAddrFileOps::new_inode,
         ),
-        (
-            "drop_caches",
-            InodeType::File,
-            DropCachesFileOps::new_inode,
-        ),
+        ("drop_caches", InodeType::File, DropCachesFileOps::new_inode),
     ];
 }
 

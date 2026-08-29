@@ -9,9 +9,11 @@ extern crate alloc;
 
 use core::sync::atomic::AtomicBool;
 
+#[cfg(target_arch = "riscv64")]
 use aster_block::MajorIdOwner;
 use aster_logger as _;
 use component::{ComponentInitError, init_component};
+#[cfg(target_arch = "riscv64")]
 use spin::Once;
 
 macro_rules! __log_prefix {
@@ -28,6 +30,7 @@ mod block;
 pub mod card;
 pub mod sdhci;
 
+#[cfg(target_arch = "riscv64")]
 static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 static MMC_WRITE_PARTITION2: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.mmc_write_partition2", MMC_WRITE_PARTITION2);
