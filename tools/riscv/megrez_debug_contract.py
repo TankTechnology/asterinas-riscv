@@ -80,6 +80,7 @@ RESULT_FIELDS = frozenset(
     ("schema_version", "stage", "passed", "reason", "plan_sha256", "evidence")
 )
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
+STALE_MEGREZ_INIT_ARG = "cpu_no_boost_1_6ghz"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 CRC32_PATTERN = re.compile(r"[0-9a-f]{8}")
 RESULT_STAGES = frozenset(("check", "fast", "desktop", "install", "board"))
@@ -264,6 +265,8 @@ class DebugPlan:
             or BOOTARGS_PATTERN.fullmatch(self.bootargs) is None
         ):
             raise DebugContractError("unsafe debug bootargs")
+        if self.schema_version == 2 and STALE_MEGREZ_INIT_ARG in self.bootargs.split():
+            raise DebugContractError("stale Megrez argument reaches init argv")
         if type(self.smp) is not int or self.smp != 4:
             raise DebugContractError("debug plan requires SMP=4")
         if type(self.sv39) is not bool:

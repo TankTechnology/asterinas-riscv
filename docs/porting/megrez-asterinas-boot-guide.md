@@ -302,7 +302,7 @@ CRC 和提炼后的结构契约。QEMU preflight 使用的是按 profile 生成�
 
 `/chosen` 至少需要承载：
 
-- `bootargs = "cpu_no_boost_1_6ghz loglevel=info init=/init"`；
+- `bootargs = "loglevel=info init=/init"`；
 - U-Boot 根据 initramfs 自动写入的 `linux,initrd-start`；
 - U-Boot 根据 initramfs 自动写入的 `linux,initrd-end`。
 
@@ -674,19 +674,25 @@ ext4load mmc 1:1 0xf0000000 \
 setenv dtb_size ${filesize}
 fdt addr 0xf0000000
 fdt resize 0x1000
-setenv bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init"
+setenv bootargs "loglevel=info init=/init"
 printenv bootargs
-fdt set /chosen bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init"
+fdt set /chosen bootargs "loglevel=info init=/init"
 fdt print /chosen
 fdt print / model
 ```
 
 从 `printenv bootargs` 和 `fdt print /chosen` 两份输出中解析出的
 `bootargs` 值必须逐字相等，
-且都必须是精确值 `cpu_no_boost_1_6ghz loglevel=info init=/init`。
+且都必须是精确值 `loglevel=info init=/init`。
 这里的 `setenv` 只修改当前 U-Boot RAM 环境，
 不会写入持久环境。
 不要执行 `saveenv`。
+
+`cpu_no_boost_1_6ghz` 是历史 RockOS/Linux 启动参数，不是当前
+Asterinas 已注册的内核参数。Asterinas 会按 Linux 兼容规则把未知且不带
+`=` 的参数转发给 PID 1；把该参数放进当前 Debian Stage1 的 bootargs 会让
+严格的 init 参数检查以 `root-init-argument` 失败。当前 Asterinas 启动
+不得再复制这个历史参数；CPU 频率策略需要独立、可验证的内核实现。
 
 以上是非诊断基线事务，用于说明 RAM 环境与 DTB 必须同步。10.2 节带
 两个临时参数的值也只归档 `3ef99e6bd` 历史实验；下一轮显示 console
