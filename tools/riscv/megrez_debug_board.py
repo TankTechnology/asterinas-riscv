@@ -52,6 +52,8 @@ CloseDevice = Callable[[int], None]
 SessionFactory = Callable[..., BoardSession]
 ProbeTraceProvider = Callable[[str], bytes]
 MAX_BOARD_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+MAX_UBOOT_COMMAND_BYTES = 512
+_UBOOT_BOOTARGS_CHUNK_BYTES = 384
 FATAL_MARKERS = (
     "Uncaught panic",
     "unexpected exception",
@@ -217,6 +219,37 @@ class BoardTermination(RuntimeError):
     def __init__(self, signum: int) -> None:
         super().__init__(f"board termination signal {signum}")
         self.signum = signum
+
+
+def _uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
+    """Stage exact boot arguments without exceeding U-Boot's line buffer."""
+
+    tokens = bootargs.split()
+    if not tokens or " ".join(tokens) != bootargs:
+        raise BoardRunFailure("uboot-bootargs-not-canonical")
+    chunks: list[str] = []
+    current = ""
+    for token in tokens:
+        candidate = f"{current} {token}" if current else token
+        if len(candidate.encode()) <= _UBOOT_BOOTARGS_CHUNK_BYTES:
+            current = candidate
+            continue
+        if not current or len(token.encode()) > _UBOOT_BOOTARGS_CHUNK_BYTES:
+            raise BoardRunFailure("uboot-bootargs-token-too-long")
+        chunks.append(current)
+        current = token
+    chunks.append(current)
+
+    names = tuple(f"asterinas_bootargs_{index}" for index in range(len(chunks)))
+    commands = (
+        *(f'setenv {name} "{chunk}"' for name, chunk in zip(names, chunks)),
+        f'setenv bootargs "{" ".join(f"${{{name}}}" for name in names)}"',
+        'fdt set /chosen bootargs "${bootargs}"',
+        *(f"setenv {name}" for name in names),
+    )
+    if any(len(command.encode()) > MAX_UBOOT_COMMAND_BYTES for command in commands):
+        raise BoardRunFailure("uboot-bootargs-command-too-long")
+    return commands
 
 
 @dataclass(frozen=True)
@@ -402,8 +435,7 @@ class RealBoardOperations:
             "fdt resize 0x1000",
             *MEGREZ_FRAMEBUFFER.commands(),
             f"setenv initrd_size 0x{initramfs.size:x}",
-            f'setenv bootargs "{plan.bootargs}"',
-            f'fdt set /chosen bootargs "{plan.bootargs}"',
+            *_uboot_bootargs_commands(plan.bootargs),
             MEGREZ_USB_HOST_COMMAND,
         )
         for command in commands:
