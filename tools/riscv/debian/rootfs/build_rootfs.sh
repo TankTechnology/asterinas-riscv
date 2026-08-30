@@ -1105,6 +1105,27 @@ EOF
     fi
 }
 
+configure_logind_namespace_compatibility() {
+    local stage="$1"
+    local directory="$stage/etc/systemd/system/systemd-logind.service.d"
+    local output="$directory/asterinas-namespace-compat.conf"
+
+    install -d -m 0755 -- "$directory"
+    cat >"$output" <<'EOF'
+[Service]
+# Asterinas does not yet provide the user/mount namespace contract used by
+# Debian's systemd-logind sandbox. Keep functional logind without that sandbox.
+PrivateTmp=no
+ProtectControlGroups=no
+ProtectHome=no
+ProtectKernelLogs=no
+ProtectKernelModules=no
+ProtectSystem=no
+ReadWritePaths=
+EOF
+    chmod 0644 -- "$output"
+}
+
 configure_desktop() {
     local stage="$1"
     local generation="$2"
@@ -1131,6 +1152,7 @@ configure_desktop() {
         desktop_standard_output=journal
         desktop_standard_error=journal
     fi
+    configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
             'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \
@@ -1298,16 +1320,6 @@ EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/asterinas-browser-m5.service" \
             "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
-        install -d -m 0755 -- \
-            "$stage/etc/systemd/system/systemd-logind.service.d"
-        cat >"$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf" <<'EOF'
-[Service]
-# Software-emulated SMP RISC-V needs more than systemd's default while
-# constructing logind's mount namespace. Keep the extension profile-local.
-TimeoutStartSec=300s
-EOF
-        chmod 0644 -- \
-            "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"
         fi
     fi
 
