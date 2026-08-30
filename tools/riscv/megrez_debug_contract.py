@@ -81,6 +81,31 @@ RESULT_FIELDS = frozenset(
 )
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 STALE_MEGREZ_INIT_ARG = "cpu_no_boost_1_6ghz"
+DEBIAN_BROWSER_REQUIRED_BOOTARGS = (
+    "console=ttyS0",
+    "console=tty0",
+    "init=/init",
+    "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
+    "asterinas.mmc_write_partition2",
+    "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
+    "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+    "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893",
+    (
+        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL="
+        "http://10.100.19.216:17894/asterinas-network-probe.bin"
+    ),
+    "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536",
+    (
+        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256="
+        "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2"
+    ),
+    "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20",
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 CRC32_PATTERN = re.compile(r"[0-9a-f]{8}")
 RESULT_STAGES = frozenset(("check", "fast", "desktop", "install", "board"))
@@ -295,6 +320,15 @@ class DebugPlan:
             raise DebugContractError(
                 "Debian browser bootargs require one partition-2 write gate"
             )
+        if self.schema_version == 2:
+            bootarg_tokens = self.bootargs.split()
+            if any(
+                bootarg_tokens.count(token) != 1
+                for token in DEBIAN_BROWSER_REQUIRED_BOOTARGS
+            ):
+                raise DebugContractError(
+                    "Debian plan requires complete physical browser bootargs"
+                )
 
     def to_dict(self) -> dict[str, object]:
         self.validate()
