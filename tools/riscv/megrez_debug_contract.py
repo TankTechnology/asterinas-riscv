@@ -14,6 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_REMOTE_MARKER,
+)
+
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
 ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
@@ -34,32 +42,9 @@ METADATA_ARTIFACT_NAMES = frozenset(
 )
 DEBIAN_BROWSER_MARKERS = (
     "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
-    "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    (
-        "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 "
-        "fallback=10.2.0.6 host=www.baidu.com"
-    ),
-    (
-        "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com "
-        "status=200 address=10.100.19.200"
-    ),
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
-    "DEBIAN_DESKTOP_M4_UDEV state=active",
-    "DEBIAN_DESKTOP_M4_LOGIND state=active",
-    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
-    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
-    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
-    (
-        "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm "
-        "panel=lxpanel launchers=3"
-    ),
-    (
-        "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm "
-        "browser=netsurf terminal=xterm"
-    ),
-    "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
-    "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com resource=logo-png foreground=active",
+    *DESKTOP_M5_MEGREZ_MILESTONES,
+    *DESKTOP_M4_MILESTONES,
+    DESKTOP_M6_REMOTE_MARKER,
     "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
     "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
 )
