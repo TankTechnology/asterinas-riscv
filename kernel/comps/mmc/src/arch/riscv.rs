@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{hint::spin_loop, ops::Range};
+use core::{hint::spin_loop, ops::Range, sync::atomic::Ordering};
 
 use fdt::{Fdt, node::FdtNode};
 use ostd::{
@@ -14,6 +14,7 @@ use ostd::{
 };
 
 use crate::{
+    MMC_BOUNDED_PIO,
     card::{Card, HostController, Response},
     sdhci::{
         Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
@@ -374,19 +375,27 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         sdma: None,
     };
     host.validate_handoff().map_err(ProbeError::Host)?;
-    match host.enable_sdma(config.dma_window) {
-        Ok(()) => ostd::info!(
-            "[mmc] controller {:#x} irq={} sdma boundary={}",
+    if sdma_allowed(MMC_BOUNDED_PIO.load(Ordering::Relaxed)) {
+        match host.enable_sdma(config.dma_window) {
+            Ok(()) => ostd::info!(
+                "[mmc] controller {:#x} irq={} sdma boundary={}",
+                config.mmio_range.start,
+                config.interrupt,
+                SDMA_BOUNDARY_BYTES
+            ),
+            Err(error) => ostd::warn!(
+                "[mmc] controller {:#x} irq={} bounded-pio-fallback reason={:?}",
+                config.mmio_range.start,
+                config.interrupt,
+                error
+            ),
+        }
+    } else {
+        ostd::warn!(
+            "[mmc] controller {:#x} irq={} bounded-pio-forced",
             config.mmio_range.start,
-            config.interrupt,
-            SDMA_BOUNDARY_BYTES
-        ),
-        Err(error) => ostd::warn!(
-            "[mmc] controller {:#x} irq={} bounded-pio-fallback reason={:?}",
-            config.mmio_range.start,
-            config.interrupt,
-            error
-        ),
+            config.interrupt
+        );
     }
     let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
     let mut sector0 = [0u8; 512];
@@ -400,6 +409,10 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         sector0[511]
     );
     Ok(Some((host, card)))
+}
+
+const fn sdma_allowed(force_bounded_pio: bool) -> bool {
+    !force_bounded_pio
 }
 
 /// Safe MMIO-backed SDHCI polling host.
@@ -993,6 +1006,12 @@ mod tests {
         let mut fields = valid_fields();
         fields.iommu_stream_valid = false;
         assert_eq!(fields.invalid_field(), Some("iommus"));
+    }
+
+    #[ktest]
+    fn bounded_pio_boot_policy_skips_sdma_without_changing_the_default() {
+        assert!(!sdma_allowed(true));
+        assert!(sdma_allowed(false));
     }
 
     #[ktest]
