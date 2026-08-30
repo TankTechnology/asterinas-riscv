@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 FIXTURE_PATH = "/asterinas-network-probe.bin"
@@ -22,6 +23,50 @@ PAYLOAD_SIZE = 64 * 1024
 PAYLOAD = bytes(range(256)) * (PAYLOAD_SIZE // 256)
 PAYLOAD_SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
 MAX_REQUEST_RECORDS = 64
+BROWSER_INDEX_PATH = "/browser-quality/index.html"
+BROWSER_SECOND_PATH = "/browser-quality/second.html"
+BROWSER_IMAGE_PATH = "/browser-quality/pattern.png"
+BROWSER_DOWNLOAD_PATH = "/browser-quality/download.bin"
+BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
+MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+BROWSER_DOWNLOAD = bytes(range(256)) * 1024
+BROWSER_DOWNLOAD_SHA256 = hashlib.sha256(BROWSER_DOWNLOAD).hexdigest()
+BROWSER_IMAGE = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000020000000200806000000737a7af4"
+    "000000414944415478da6310cf58f31f19a3035acb338c3a60c01d406f0bd1e547"
+    "1d30f00e18cd05a30e18cd05a30e18cd05a30e18cd05a30e18cd05a30e18cd0523"
+    "de0100a3694cb594617d3a0000000049454e44ae426082"
+)
+BROWSER_INDEX = b"""<!doctype html>
+<meta charset=utf-8><title>Asterinas Browser Quality</title>
+<style>body{font-family:sans-serif}.scroll{height:1600px}
+.second{position:absolute;left:40px;top:220px}
+.download{position:absolute;left:40px;top:260px}</style>
+<h1>Asterinas browser quality / \xe6\xb5\x8f\xe8\xa7\x88\xe5\x99\xa8\xe8\xb4\xa8\xe9\x87\x8f</h1>
+<form method=get><input name=q><button>Search</button></form>
+<img src=/browser-quality/pattern.png alt=pattern>
+<p class=second><a href=/browser-quality/second.html>Second page</a></p>
+<p class=download><a href=/browser-quality/download.bin>Download</a></p>
+<div class=scroll></div>"""
+BROWSER_SECOND = b"""<!doctype html>
+<meta charset=utf-8><title>Second - Asterinas Browser Quality</title>
+<h1>Second page / \xe7\xac\xac\xe4\xba\x8c\xe9\xa1\xb5</h1>
+<a href=/browser-quality/index.html>First page</a>"""
+BROWSER_SEARCH = BROWSER_INDEX.replace(
+    b"<title>Asterinas Browser Quality</title>",
+    b"<title>asterinas - Asterinas Browser Quality</title>",
+)
+
+
+def browser_resource(path: str) -> tuple[str, bytes] | None:
+    """Return one deterministic browser resource for an exact path."""
+
+    return {
+        BROWSER_INDEX_PATH: ("text/html; charset=utf-8", BROWSER_INDEX),
+        BROWSER_SECOND_PATH: ("text/html; charset=utf-8", BROWSER_SECOND),
+        BROWSER_IMAGE_PATH: ("image/png", BROWSER_IMAGE),
+        BROWSER_DOWNLOAD_PATH: ("application/octet-stream", BROWSER_DOWNLOAD),
+    }.get(path)
 
 
 def is_successful_summary(
@@ -96,6 +141,8 @@ class FixtureServer:
         self._request_count = 0
         self._records: list[dict[str, object]] = []
         self._last_timestamp = 0
+        self._capture: bytes | None = None
+        self._capture_evidence: dict[str, object] | None = None
 
     def __enter__(self) -> FixtureServer:
         return self.start()
@@ -144,6 +191,9 @@ class FixtureServer:
             def do_GET(self) -> None:
                 owner._handle_get(self)
 
+            def do_POST(self) -> None:
+                owner._handle_post(self)
+
             def log_message(self, format: str, *args: object) -> None:
                 del format, args
 
@@ -176,26 +226,124 @@ class FixtureServer:
 
     def _handle_get(self, request: http.server.BaseHTTPRequestHandler) -> None:
         peer = request.client_address[0]
+        target = urlsplit(request.path)
+        is_browser_request = target.path.startswith("/browser-quality/")
         if self.config.allowed_peer is not None and peer != self.config.allowed_peer:
             status = 403
             body = b""
+            content_type = "application/octet-stream"
+        elif is_browser_request:
+            status, content_type, body = self._browser_response(
+                target.path, target.query
+            )
         elif request.path != FIXTURE_PATH:
             status = 404
             body = b""
+            content_type = "application/octet-stream"
         else:
             status = 200
             body = PAYLOAD
+            content_type = "application/octet-stream"
 
-        request.send_response(status)
-        request.send_header("Content-Length", str(len(body)))
-        request.send_header("Content-Type", "application/octet-stream")
-        request.send_header("Cache-Control", "no-store")
-        request.send_header("Connection", "close")
-        request.end_headers()
+        self._send_response(request, status, body, content_type)
         try:
             request.wfile.write(body)
         finally:
-            self._record(peer, request.path, status, len(body))
+            if not is_browser_request:
+                self._record(peer, request.path, status, len(body))
+
+    def _browser_response(self, path: str, query: str) -> tuple[int, str, bytes]:
+        if path == BROWSER_INDEX_PATH:
+            if not query:
+                return 200, "text/html; charset=utf-8", BROWSER_INDEX
+            if query == "q=asterinas":
+                return 200, "text/html; charset=utf-8", BROWSER_SEARCH
+            return 400, "text/plain; charset=utf-8", b""
+        if query:
+            return 400, "text/plain; charset=utf-8", b""
+        resource = browser_resource(path)
+        if resource is None:
+            return 404, "text/plain; charset=utf-8", b""
+        content_type, body = resource
+        return 200, content_type, body
+
+    def _handle_post(self, request: http.server.BaseHTTPRequestHandler) -> None:
+        peer = request.client_address[0]
+        target = urlsplit(request.path)
+        if self.config.allowed_peer is not None and peer != self.config.allowed_peer:
+            self._send_response(request, 403)
+            return
+        if target.path != BROWSER_CAPTURE_PATH or target.query:
+            self._send_response(request, 404)
+            return
+        if request.headers.get("Transfer-Encoding") is not None:
+            self._send_response(request, 400)
+            return
+        lengths = request.headers.get_all("Content-Length", failobj=[])
+        if not lengths:
+            self._send_response(request, 411)
+            return
+        if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdecimal():
+            self._send_response(request, 400)
+            return
+        size = int(lengths[0])
+        if size == 0:
+            self._send_response(request, 400)
+            return
+        if size > MAX_CAPTURE_BYTES:
+            self._send_response(request, 413)
+            return
+        request.connection.settimeout(1.0)
+        try:
+            payload = request.rfile.read(size)
+        except OSError:
+            self._send_response(request, 400)
+            return
+        if len(payload) != size:
+            self._send_response(request, 400)
+            return
+        with self._lock:
+            if self._capture is not None:
+                status = 409
+            else:
+                self._capture = bytes(payload)
+                self._capture_evidence = {
+                    "bytes": size,
+                    "path": BROWSER_CAPTURE_PATH,
+                    "peer": peer,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+                status = 201
+        self._send_response(request, status)
+
+    def _send_response(
+        self,
+        request: http.server.BaseHTTPRequestHandler,
+        status: int,
+        body: bytes = b"",
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        request.send_response(status)
+        request.send_header("Content-Length", str(len(body)))
+        request.send_header("Content-Type", content_type)
+        request.send_header("Cache-Control", "no-store")
+        request.send_header("Connection", "close")
+        request.end_headers()
+        request.close_connection = True
+
+    def capture_payload(self) -> bytes | None:
+        """Return the immutable accepted capture, if one exists."""
+
+        with self._lock:
+            return self._capture
+
+    def capture_summary(self) -> dict[str, object] | None:
+        """Return detached evidence for the accepted capture."""
+
+        with self._lock:
+            if self._capture_evidence is None:
+                return None
+            return dict(self._capture_evidence)
 
     def _record(self, peer: str, path: str, status: int, body_bytes: int) -> None:
         with self._lock:
