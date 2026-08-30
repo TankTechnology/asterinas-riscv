@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-60}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
@@ -12,8 +12,22 @@ readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
 readonly ADDRESS="10.100.19.200/21"
 readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1'
-readonly MEGREZ_PRIMARY_DNS='10.2.0.5'
-readonly MEGREZ_FALLBACK_DNS='10.2.0.6'
+readonly MEGREZ_PROXY_URL='http://10.100.19.216:17893'
+readonly MEGREZ_PROXY_HOST='10.100.19.216'
+readonly MEGREZ_PROXY_PORT='17893'
+readonly MEGREZ_FIXTURE_URL='http://10.100.19.216:17894/asterinas-network-probe.bin'
+readonly QEMU_FIXTURE_URL='http://10.0.2.2:17894/asterinas-network-probe.bin'
+readonly MEGREZ_FIXTURE_SIZE='65536'
+readonly MEGREZ_FIXTURE_SHA256='7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2'
+readonly MEGREZ_FIXTURE_REQUESTS='20'
+readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
+readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+readonly FIXTURE_URL="${ASTERINAS_DESKTOP_FIXTURE_URL:-}"
+readonly FIXTURE_SIZE="${ASTERINAS_DESKTOP_FIXTURE_SIZE:-}"
+readonly FIXTURE_SHA256="${ASTERINAS_DESKTOP_FIXTURE_SHA256:-}"
+readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
+readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL='https://www.baidu.com/'
 readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
 
@@ -46,26 +60,6 @@ link_and_address_ready() {
     addresses="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
         return 1
     [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
-}
-
-publish_megrez_resolver() {
-    local temporary_resolver
-
-    temporary_resolver="$(mktemp "${RESOLV_CONF}.tmp.XXXXXX")" ||
-        fail resolver-temporary
-    if ! chmod 0644 -- "$temporary_resolver"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-mode
-    fi
-    if ! printf 'nameserver %s\nnameserver %s\n' \
-        "$MEGREZ_PRIMARY_DNS" "$MEGREZ_FALLBACK_DNS" >"$temporary_resolver"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-write
-    fi
-    if ! mv -T -- "$temporary_resolver" "$RESOLV_CONF"; then
-        rm -f -- "$temporary_resolver"
-        fail resolver-publish
-    fi
 }
 
 publish_remote_url() {
@@ -141,8 +135,174 @@ request_qemu_https() {
     return 1
 }
 
+request_megrez_https() {
+    local attempt
+    local curl_error
+    local curl_result
+    local curl_status=1
+    local stderr_hex
+
+    curl_error="$(mktemp "${URL_FILE}.curl-error.XXXXXX")" ||
+        fail megrez-curl-temporary
+    for attempt in 1 2 3; do
+        : >"$curl_error" || fail megrez-curl-error-reset
+        if curl_result="$(
+            timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+                --fail \
+                --ipv4 \
+                --location \
+                --silent \
+                --show-error \
+                --max-time "$COMMAND_TIMEOUT_SECONDS" \
+                --proxy "$PROXY_URL" \
+                --output /dev/null \
+                --write-out $'%{http_code}\t%{local_ip}' \
+                "$BAIDU_URL" 2>"$curl_error"
+        )"; then
+            rm -f -- "$curl_error"
+            printf '%s' "$curl_result"
+            return 0
+        else
+            curl_status=$?
+        fi
+        if ((attempt != 3)); then
+            sleep 1
+        fi
+    done
+
+    stderr_hex="$(
+        head -c 2048 -- "$curl_error" |
+            od -An -v -tx1 |
+            tr -d '[:space:]'
+    )"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=3 status=$curl_status stderr_hex=${stderr_hex:-none}"
+    rm -f -- "$curl_error"
+    return 1
+}
+
+synchronize_megrez_clock() {
+    local clock_date=''
+    local header
+    local headers
+
+    if ! headers="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+            --fail \
+            --head \
+            --ipv4 \
+            --silent \
+            --show-error \
+            --max-time "$COMMAND_TIMEOUT_SECONDS" \
+            --proxy "$PROXY_URL" \
+            "$CLOCK_URL"
+    )"; then
+        fail megrez-clock
+    fi
+    while IFS= read -r header; do
+        header="${header%$'\r'}"
+        if [[ "${header,,}" == date:* ]]; then
+            clock_date="${header#*:}"
+            clock_date="${clock_date#${clock_date%%[![:space:]]*}}"
+            break
+        fi
+    done <<<"$headers"
+    [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
+        fail megrez-clock-date
+    date --utc --set "$clock_date" >/dev/null || fail megrez-clock-set
+    emit "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
+}
+
+validate_fixture_config() {
+    local expected_url="$1"
+
+    [[ "$FIXTURE_URL" == "$expected_url" ]] || return 1
+    [[ "$FIXTURE_SIZE" == "$MEGREZ_FIXTURE_SIZE" ]] || return 1
+    [[ "$FIXTURE_SHA256" == "$MEGREZ_FIXTURE_SHA256" ]] || return 1
+    [[ "$FIXTURE_REQUESTS" == "$MEGREZ_FIXTURE_REQUESTS" ]] ||
+        return 1
+}
+
+cleanup_fixture_batch() {
+    local directory="$1"
+    shift
+
+    rm -f -- "$@" && rmdir -- "$directory"
+}
+
+stress_fixture() {
+    local attempt
+    local deadline="$1"
+    local endpoint="$2"
+    local hashes
+    local reason_prefix="$3"
+    local remaining
+    local sizes
+    local temporary_directory
+    local -a curl_arguments=(
+        --fail
+        --ipv4
+        --silent
+        --show-error
+        --max-time "$COMMAND_TIMEOUT_SECONDS"
+        --noproxy '*'
+    )
+    local -a temporary_fixtures=()
+
+    temporary_directory="$(mktemp -d "${URL_FILE}.fixture.XXXXXX")" ||
+        fail "${reason_prefix}-fixture-temporary"
+    for ((attempt = 1; attempt <= FIXTURE_REQUESTS; attempt++)); do
+        temporary_fixtures+=("$temporary_directory/$attempt")
+        curl_arguments+=(--output "${temporary_fixtures[-1]}" "$FIXTURE_URL")
+    done
+
+    remaining=$((deadline - SECONDS))
+    if ((remaining <= 0)); then
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-timeout"
+    fi
+    if ! timeout "$remaining" curl "${curl_arguments[@]}"; then
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-download"
+    fi
+
+    sizes="$(stat -c '%s' -- "${temporary_fixtures[@]}")" || {
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-size"
+    }
+    while IFS= read -r size; do
+        if [[ "$size" != "$FIXTURE_SIZE" ]]; then
+            cleanup_fixture_batch \
+                "$temporary_directory" "${temporary_fixtures[@]}" ||
+                fail "${reason_prefix}-fixture-cleanup"
+            fail "${reason_prefix}-fixture-size"
+        fi
+    done <<<"$sizes"
+
+    hashes="$(sha256sum -- "${temporary_fixtures[@]}")" || {
+        cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+            fail "${reason_prefix}-fixture-cleanup"
+        fail "${reason_prefix}-fixture-sha256"
+    }
+    while IFS=' ' read -r hash _; do
+        if [[ "$hash" != "$FIXTURE_SHA256" ]]; then
+            cleanup_fixture_batch \
+                "$temporary_directory" "${temporary_fixtures[@]}" ||
+                fail "${reason_prefix}-fixture-cleanup"
+            fail "${reason_prefix}-fixture-sha256"
+        fi
+    done <<<"$hashes"
+
+    cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
+        fail "${reason_prefix}-fixture-cleanup"
+    emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=$endpoint"
+}
+
 qemu_network_evidence() {
     local curl_result
+    local deadline
     local http_status
     local local_address
     local lookup_time
@@ -150,6 +310,9 @@ qemu_network_evidence() {
     local tls_time
     local first_byte_time
 
+    validate_fixture_config "$QEMU_FIXTURE_URL" || fail qemu-fixture-config
+    deadline=$((SECONDS + TIMEOUT_SECONDS))
+    stress_fixture "$deadline" '10.0.2.2:17894' qemu
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
     if [[ "${ASTERINAS_DESKTOP_M5_NETWORK_MODE:-full}" == lightweight ]]; then
         # Browser startup must not wait for a remote TLS probe.  The browser
@@ -196,6 +359,10 @@ megrez_network_evidence() {
 
     tr '[:space:]' '\n' <"$CMDLINE_PATH" | grep -Fxq "$MEGREZ_BOOTARG" ||
         fail megrez-bootarg
+    [[ "$PROXY_URL" == "$MEGREZ_PROXY_URL" ]] || fail megrez-proxy-config
+    [[ "$PROXY_HOST" == "$MEGREZ_PROXY_HOST" ]] || fail megrez-proxy-config
+    [[ "$PROXY_PORT" == "$MEGREZ_PROXY_PORT" ]] || fail megrez-proxy-config
+    validate_fixture_config "$MEGREZ_FIXTURE_URL" || fail megrez-fixture-config
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
@@ -204,30 +371,17 @@ megrez_network_evidence() {
     done
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
+    stress_fixture "$deadline" '10.100.19.216:17894' megrez
+    synchronize_megrez_clock
 
-    publish_megrez_resolver
-    timeout "$COMMAND_TIMEOUT_SECONDS" getent ahostsv4 www.baidu.com \
-        >/dev/null 2>>"$CONSOLE" || fail megrez-dns
-    emit "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=$MEGREZ_PRIMARY_DNS fallback=$MEGREZ_FALLBACK_DNS host=www.baidu.com"
-
-    curl_result="$(
-        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
-            --fail \
-            --ipv4 \
-            --location \
-            --silent \
-            --show-error \
-            --max-time "$COMMAND_TIMEOUT_SECONDS" \
-            --output /dev/null \
-            --write-out $'%{http_code}\t%{local_ip}' \
-            "$BAIDU_URL"
-    )" || fail megrez-https
+    curl_result="$(request_megrez_https)" || fail megrez-https
     [[ "$curl_result" == *$'\t'* ]] || fail megrez-curl-output
     http_status="${curl_result%%$'\t'*}"
     local_address="${curl_result#*$'\t'}"
     [[ "$http_status" == 200 ]] || fail megrez-http-status
     [[ "$local_address" == "10.100.19.200" ]] || fail megrez-local-address
-    emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
 
     temporary_asset="$(mktemp "${URL_FILE}.asset.XXXXXX")" || fail asset-temporary
     if ! timeout "$COMMAND_TIMEOUT_SECONDS" curl \
@@ -237,6 +391,7 @@ megrez_network_evidence() {
         --silent \
         --show-error \
         --max-time "$COMMAND_TIMEOUT_SECONDS" \
+        --proxy "$PROXY_URL" \
         --output "$temporary_asset" \
         "$BAIDU_ASSET"; then
         rm -f -- "$temporary_asset"
@@ -247,10 +402,10 @@ megrez_network_evidence() {
         fail megrez-asset
     fi
     rm -f -- "$temporary_asset" || fail asset-cleanup
-    emit "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=$PROXY_HOST:$PROXY_PORT"
 
     publish_remote_url
-    emit "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45"
+    emit "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy"
 }
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout

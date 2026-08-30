@@ -9,13 +9,29 @@ const MAC_RX_QUEUE0_ENABLE: RegisterField = RegisterField::new(0x0000_0003, 0);
 const MTL_TX_QUEUE0_ENABLE: RegisterField = RegisterField::new(0x0000_000c, 2);
 const MTL_TX_QUEUE0_SIZE: RegisterField = RegisterField::new(0x01ff_0000, 16);
 const MTL_RX_QUEUE0_SIZE: RegisterField = RegisterField::new(0x3ff0_0000, 20);
+const MTL_RX_QUEUE0_FLOW_CONTROL_DEACTIVATION: RegisterField = RegisterField::new(0x0001_c000, 14);
+const MTL_RX_QUEUE0_FLOW_CONTROL_ACTIVATION: RegisterField = RegisterField::new(0x0000_0700, 8);
 const MTL_RX_MISSED_PACKET_COUNT: RegisterField = RegisterField::new(0x07ff_0000, 16);
 const MTL_RX_FIFO_OVERFLOW_PACKET_COUNT: RegisterField = RegisterField::new(0x0000_07ff, 0);
+const MAC_DEBUG_TX_CONTROLLER_STATE: RegisterField = RegisterField::new(0x0006_0000, 17);
+const MAC_DEBUG_RX_FIFO_STATE: RegisterField = RegisterField::new(0x0000_0006, 1);
+const MTL_RX_DEBUG_PACKETS: RegisterField = RegisterField::new(0x3fff_0000, 16);
+const MTL_RX_DEBUG_FILL_LEVEL: RegisterField = RegisterField::new(0x0000_0030, 4);
+const MTL_RX_DEBUG_READ_STATE: RegisterField = RegisterField::new(0x0000_0006, 1);
+const DMA_DEBUG_TX_STATE0: RegisterField = RegisterField::new(0x0000_f000, 12);
+const DMA_DEBUG_RX_STATE0: RegisterField = RegisterField::new(0x0000_0f00, 8);
 
 const MAC_RX_QUEUE_ENABLED_DCB: u32 = 2;
 const MTL_TX_QUEUE_ENABLED: u32 = 2;
 const MTL_TX_STORE_AND_FORWARD: u32 = 1 << 1;
 const MTL_RX_STORE_AND_FORWARD: u32 = 1 << 5;
+const MTL_RX_ENHANCED_FLOW_CONTROL: u32 = 1 << 7;
+const MAC_TX_FLOW_CONTROL_ENABLE: u32 = 1 << 1;
+const MAC_RX_FLOW_CONTROL_ENABLE: u32 = 1;
+const MAC_TX_FLOW_CONTROL_BUSY: u32 = 1;
+const MAC_PAUSE_TIME: u32 = 0xffff << 16;
+const FIFO_SIZE_UNIT_BYTES: u32 = 128;
+const MINIMUM_FLOW_CONTROL_FIFO_BYTES: u32 = 4096;
 const DMA_ADDRESS_ALIGNED_BEATS: u32 = 1 << 12;
 const DMA_EXTENDED_ADDRESS_MODE: u32 = 1 << 11;
 const DMA_AXI_BURSTS_16_8_4: u32 = (1 << 3) | (1 << 2) | (1 << 1);
@@ -52,6 +68,7 @@ impl RegisterOffset {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisterValueError {
     OutOfRange,
+    ReadbackMismatch,
 }
 
 /// A contiguous bit field in a 32-bit DWMAC register.
@@ -96,6 +113,31 @@ pub struct QueueZeroConfiguration {
     pub mtl_rx_operation_mode: u32,
 }
 
+/// Queue-zero flow-control values negotiated with the link partner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlowControlConfiguration {
+    pub rx_fifo_bytes: u32,
+    pub mtl_rx_operation_mode: u32,
+    pub mac_tx_flow_control_queue0: u32,
+    pub mac_rx_flow_control: u32,
+}
+
+/// One read-only snapshot of the MAC, MTL, and DMA receive/transmit state machines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlowControlDebugSnapshot {
+    pub mac_tx_controller_state: u32,
+    pub mac_tx_engine_active: bool,
+    pub mac_rx_fifo_state: u32,
+    pub mac_rx_engine_active: bool,
+    pub mtl_rx_queued_packets: u32,
+    pub mtl_rx_fill_level: u32,
+    pub mtl_rx_read_state: u32,
+    pub mtl_rx_write_active: bool,
+    pub dma_tx_state: u32,
+    pub dma_rx_state: u32,
+    pub mtl_rx_overflow: bool,
+}
+
 /// One clear-on-read queue-zero receive-loss register sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MtlRxLossSnapshot {
@@ -107,9 +149,12 @@ pub struct MtlRxLossSnapshot {
 
 pub const MAC_CONFIGURATION: RegisterOffset = RegisterOffset::new(0x0000);
 pub const MAC_PACKET_FILTER: RegisterOffset = RegisterOffset::new(0x0008);
+pub const MAC_QUEUE0_TX_FLOW_CONTROL: RegisterOffset = RegisterOffset::new(0x0070);
+pub const MAC_RX_FLOW_CONTROL: RegisterOffset = RegisterOffset::new(0x0090);
 pub const MAC_INTERRUPT_STATUS: RegisterOffset = RegisterOffset::new(0x00b0);
 pub const MAC_INTERRUPT_ENABLE: RegisterOffset = RegisterOffset::new(0x00b4);
 pub const MAC_VERSION: RegisterOffset = RegisterOffset::new(0x0110);
+pub const MAC_DEBUG: RegisterOffset = RegisterOffset::new(0x0114);
 pub const MAC_HW_FEATURE1: RegisterOffset = RegisterOffset::new(0x0120);
 pub const MAC_MDIO_ADDRESS: RegisterOffset = RegisterOffset::new(0x0200);
 pub const MAC_MDIO_DATA: RegisterOffset = RegisterOffset::new(0x0204);
@@ -117,12 +162,15 @@ pub const MAC_ADDRESS0_HIGH: RegisterOffset = RegisterOffset::new(0x0300);
 pub const MAC_ADDRESS0_LOW: RegisterOffset = RegisterOffset::new(0x0304);
 pub const MAC_RX_QUEUE_CONTROL0: RegisterOffset = RegisterOffset::new(0x00a0);
 pub const MTL_TX_QUEUE0_OPERATION_MODE: RegisterOffset = RegisterOffset::new(0x0d00);
+pub const MTL_QUEUE0_INTERRUPT_CONTROL_STATUS: RegisterOffset = RegisterOffset::new(0x0d2c);
 pub const MTL_RX_QUEUE0_OPERATION_MODE: RegisterOffset = RegisterOffset::new(0x0d30);
 pub const MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER: RegisterOffset =
     RegisterOffset::new(0x0d34);
+pub const MTL_RX_QUEUE0_DEBUG: RegisterOffset = RegisterOffset::new(0x0d38);
 pub const DMA_MODE: RegisterOffset = RegisterOffset::new(0x1000);
 pub const DMA_SYSTEM_BUS_MODE: RegisterOffset = RegisterOffset::new(0x1004);
 pub const DMA_STATUS: RegisterOffset = RegisterOffset::new(0x1008);
+pub const DMA_DEBUG_STATUS0: RegisterOffset = RegisterOffset::new(0x100c);
 pub const DMA_AXI_BUS_MODE: RegisterOffset = RegisterOffset::new(0x1028);
 pub const DMA_CHANNEL0_CONTROL: RegisterOffset = RegisterOffset::new(0x1100);
 pub const DMA_CHANNEL0_TX_CONTROL: RegisterOffset = RegisterOffset::new(0x1104);
@@ -200,6 +248,28 @@ pub const fn decode_mtl_rx_loss(register: u32) -> MtlRxLossSnapshot {
     }
 }
 
+/// Decodes the read-only hardware state described by the EIC7700X GMAC TRM.
+pub const fn decode_flow_control_debug(
+    mac_debug: u32,
+    mtl_rx_debug: u32,
+    dma_debug: u32,
+    mtl_queue_interrupt: u32,
+) -> FlowControlDebugSnapshot {
+    FlowControlDebugSnapshot {
+        mac_tx_controller_state: MAC_DEBUG_TX_CONTROLLER_STATE.decode(mac_debug),
+        mac_tx_engine_active: mac_debug & (1 << 16) != 0,
+        mac_rx_fifo_state: MAC_DEBUG_RX_FIFO_STATE.decode(mac_debug),
+        mac_rx_engine_active: mac_debug & 1 != 0,
+        mtl_rx_queued_packets: MTL_RX_DEBUG_PACKETS.decode(mtl_rx_debug),
+        mtl_rx_fill_level: MTL_RX_DEBUG_FILL_LEVEL.decode(mtl_rx_debug),
+        mtl_rx_read_state: MTL_RX_DEBUG_READ_STATE.decode(mtl_rx_debug),
+        mtl_rx_write_active: mtl_rx_debug & 1 != 0,
+        dma_tx_state: DMA_DEBUG_TX_STATE0.decode(dma_debug),
+        dma_rx_state: DMA_DEBUG_RX_STATE0.decode(dma_debug),
+        mtl_rx_overflow: mtl_queue_interrupt & (1 << 16) != 0,
+    }
+}
+
 /// Enables queue zero and assigns the complete hardware-advertised FIFO to it.
 pub fn configure_queue_zero(
     mac_feature1: u32,
@@ -230,11 +300,111 @@ pub fn configure_queue_zero(
     })
 }
 
+/// Configures negotiated pause handling for queue zero.
+///
+/// The 4-KiB thresholds follow the EIC7700X TRM Part 4 definitions of
+/// `MTL_RxQ0_Operation_Mode`, `MAC_Q0_Tx_Flow_Ctrl`, and `MAC_Rx_Flow_Ctrl`:
+/// <https://github.com/eswincomputing/EIC7700X-SoC-Technical-Reference-Manual/releases/tag/v1.0.0-20250103>.
+/// They match the DWMAC4 policy in Linux `dwmac4_dma_rx_chan_op_mode()`.
+/// The FIFO capacity comes from the queue-size field read back from hardware;
+/// callers must first compare it with the advertised feature register.
+pub fn configure_flow_control(
+    current_mtl_rx: u32,
+    tx_pause: bool,
+    rx_pause: bool,
+) -> Result<FlowControlConfiguration, RegisterValueError> {
+    let rx_fifo_bytes = MTL_RX_QUEUE0_SIZE
+        .decode(current_mtl_rx)
+        .checked_add(1)
+        .and_then(|units| units.checked_mul(256))
+        .ok_or(RegisterValueError::OutOfRange)?;
+    let mut mtl_rx_operation_mode =
+        MTL_RX_QUEUE0_FLOW_CONTROL_DEACTIVATION.replace(current_mtl_rx, 0)?;
+    mtl_rx_operation_mode =
+        MTL_RX_QUEUE0_FLOW_CONTROL_ACTIVATION.replace(mtl_rx_operation_mode, 0)?;
+    mtl_rx_operation_mode &= !MTL_RX_ENHANCED_FLOW_CONTROL;
+
+    if tx_pause && rx_fifo_bytes >= MINIMUM_FLOW_CONTROL_FIFO_BYTES {
+        let (deactivation_threshold, activation_threshold) =
+            if rx_fifo_bytes == MINIMUM_FLOW_CONTROL_FIFO_BYTES {
+                (3, 1)
+            } else {
+                (7, 4)
+            };
+        mtl_rx_operation_mode = MTL_RX_QUEUE0_FLOW_CONTROL_DEACTIVATION
+            .replace(mtl_rx_operation_mode, deactivation_threshold)?;
+        mtl_rx_operation_mode = MTL_RX_QUEUE0_FLOW_CONTROL_ACTIVATION
+            .replace(mtl_rx_operation_mode, activation_threshold)?;
+        mtl_rx_operation_mode |= MTL_RX_ENHANCED_FLOW_CONTROL;
+    }
+
+    let mac_tx_flow_control_queue0 = if tx_pause {
+        MAC_PAUSE_TIME | MAC_TX_FLOW_CONTROL_ENABLE
+    } else {
+        0
+    };
+    let mac_rx_flow_control = if rx_pause {
+        MAC_RX_FLOW_CONTROL_ENABLE
+    } else {
+        0
+    };
+    Ok(FlowControlConfiguration {
+        rx_fifo_bytes,
+        mtl_rx_operation_mode,
+        mac_tx_flow_control_queue0,
+        mac_rx_flow_control,
+    })
+}
+
+/// Checks that the queue-size readback agrees with the feature register.
+pub fn validate_rx_fifo_readback(
+    mac_feature1: u32,
+    actual_mtl_rx: u32,
+) -> Result<(), RegisterValueError> {
+    let expected = encode_fifo_queue_size(
+        MAC_FEATURE1_RX_FIFO_SIZE.decode(mac_feature1),
+        MTL_RX_QUEUE0_SIZE,
+    )?;
+    if MTL_RX_QUEUE0_SIZE.decode(actual_mtl_rx) != expected {
+        return Err(RegisterValueError::ReadbackMismatch);
+    }
+    Ok(())
+}
+
+/// Reports the access-restricted busy bit that must clear before a MAC flow write.
+pub const fn mac_tx_flow_control_busy(register: u32) -> bool {
+    register & MAC_TX_FLOW_CONTROL_BUSY != 0
+}
+
+/// Verifies all writable flow-control fields after programming the hardware.
+pub fn validate_flow_control_readback(
+    expected: FlowControlConfiguration,
+    actual_mtl_rx: u32,
+    actual_mac_tx: u32,
+    actual_mac_rx: u32,
+) -> Result<(), RegisterValueError> {
+    const MTL_MASK: u32 = MTL_RX_QUEUE0_SIZE.mask
+        | MTL_RX_QUEUE0_FLOW_CONTROL_DEACTIVATION.mask
+        | MTL_RX_QUEUE0_FLOW_CONTROL_ACTIVATION.mask
+        | MTL_RX_ENHANCED_FLOW_CONTROL
+        | MTL_RX_STORE_AND_FORWARD;
+    const MAC_TX_MASK: u32 = 0xffff_00f2;
+    if actual_mtl_rx & MTL_MASK != expected.mtl_rx_operation_mode & MTL_MASK
+        || actual_mac_tx & MAC_TX_MASK != expected.mac_tx_flow_control_queue0 & MAC_TX_MASK
+        || actual_mac_rx & MAC_RX_FLOW_CONTROL_ENABLE
+            != expected.mac_rx_flow_control & MAC_RX_FLOW_CONTROL_ENABLE
+        || mac_tx_flow_control_busy(actual_mac_tx)
+    {
+        return Err(RegisterValueError::ReadbackMismatch);
+    }
+    Ok(())
+}
+
 fn encode_fifo_queue_size(
     feature_encoding: u32,
     queue_size: RegisterField,
 ) -> Result<u32, RegisterValueError> {
-    let fifo_bytes = 128u32
+    let fifo_bytes = FIFO_SIZE_UNIT_BYTES
         .checked_shl(feature_encoding)
         .ok_or(RegisterValueError::OutOfRange)?;
     let encoded = fifo_bytes

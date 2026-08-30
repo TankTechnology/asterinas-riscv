@@ -260,6 +260,7 @@ MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
+DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
 QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
@@ -287,13 +288,20 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
-		tools.riscv.tests.test_debian_m7_baidu -v
+		tools.riscv.tests.test_debian_m7_baidu \
+		tools.riscv.tests.test_debian_m8_browser_quality -v
+
+.PHONY: test_riscv_megrez_debian_shell
+test_riscv_megrez_debian_shell:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_debian_shell -v
 
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_gmac_contract \
 		tools.riscv.tests.test_megrez_gmac_gate \
+		tools.riscv.tests.test_megrez_network_fixture \
 		tools.riscv.tests.test_megrez_xmodem -v
 
 .PHONY: test_riscv_dwmac_rx_model
@@ -304,6 +312,7 @@ test_riscv_dwmac_rx_model:
 .PHONY: test_riscv_megrez_debug_unit
 test_riscv_megrez_debug_unit:
 	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_first_process_diag_source \
 		tools.riscv.tests.test_megrez_debug \
 		tools.riscv.tests.test_megrez_debug_desktop \
 		tools.riscv.tests.test_megrez_install_workflow \
@@ -433,6 +442,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
+		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \

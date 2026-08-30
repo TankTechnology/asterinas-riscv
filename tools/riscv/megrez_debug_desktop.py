@@ -18,7 +18,9 @@ from typing import Any
 
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_JAVASCRIPT_STATUSES,
-    classify_desktop_m6_browser,
+)
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    classify_desktop_m7_baidu,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.megrez_debug_contract import (
@@ -35,8 +37,9 @@ from tools.riscv.megrez_debug_simulation import (
 )
 
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
-DEFAULT_TIMEOUT = 480.0
-BOOT_TIMEOUT = 420
+BOOT_TIMEOUT = 720
+SIMULATION_SETUP_GRACE_SECONDS = 120.0
+DEFAULT_TIMEOUT = BOOT_TIMEOUT + SIMULATION_SETUP_GRACE_SECONDS
 _DEBIAN_13_RELEASE = re.compile(r"13\.[0-9]+")
 _EXPECTED_INPUT_HASHES = {
     "dtb": "qemu_dtb",
@@ -231,6 +234,10 @@ def _validate_native_result(
     _validate_screenshot(
         native.get("javascript_screenshot"), label="javascript-screenshot"
     )
+    _validate_screenshot(native.get("homepage_screenshot"), label="homepage-screenshot")
+    _validate_screenshot(native.get("search_screenshot"), label="search-screenshot")
+    if native.get("failure_screenshot") != {}:
+        raise DesktopSimulationError("desktop-failure-screenshot-present")
     return release
 
 
@@ -240,7 +247,7 @@ def _desktop_command(
     return [
         sys.executable,
         "-m",
-        "tools.riscv.debian.rootfs.desktop_m6_browser_gate",
+        "tools.riscv.debian.rootfs.desktop_m7_baidu_gate",
         "--kernel",
         identities["kernel"].path,
         "--uboot",
@@ -275,12 +282,14 @@ def simulate_desktop(
     repository_root: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> StageResult:
-    """Run the existing M6 desktop gate against one exact schema-2 plan."""
+    """Run the M7 Baidu desktop gate against one exact schema-2 plan."""
 
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         raise DesktopSimulationError("desktop-timeout-invalid")
     if not math.isfinite(timeout) or timeout <= 0:
         raise DesktopSimulationError("desktop-timeout-invalid")
+    if timeout < BOOT_TIMEOUT + SIMULATION_SETUP_GRACE_SECONDS:
+        raise DesktopSimulationError("desktop timeout must reserve image setup grace")
     if plan.schema_version != 2 or plan.profile != "debian-browser":
         raise DesktopSimulationError("desktop-plan-profile-invalid")
     try:
@@ -334,16 +343,18 @@ def simulate_desktop(
     except SimulationError as error:
         raise DesktopSimulationError(str(error)) from error
     release = _validate_native_result(native, identities)
-    transcript = _read_evidence(native_output / "desktop-m6-browser.serial.log")
-    classification = classify_desktop_m6_browser(
+    transcript = _read_evidence(native_output / "desktop-m7-baidu.serial.log")
+    classification = classify_desktop_m7_baidu(
         transcript, expected_debian_release=release
     )
     if not classification.passed:
         raise DesktopSimulationError(
             f"desktop-evidence-invalid: {classification.reason}"
         )
-    _read_evidence(native_output / "desktop-m6-browser.ppm")
+    _read_evidence(native_output / "desktop-m7-baidu.ppm")
     _read_evidence(native_output / "desktop-m6-javascript.ppm")
+    _read_evidence(native_output / "desktop-m7-baidu-home.ppm")
+    _read_evidence(native_output / "desktop-m7-baidu-search.ppm")
 
     result = StageResult(
         schema_version=1,
@@ -353,9 +364,11 @@ def simulate_desktop(
         plan_sha256=plan.plan_sha256,
         evidence=(
             "native/result.json",
-            "native/desktop-m6-browser.serial.log",
-            "native/desktop-m6-browser.ppm",
+            "native/desktop-m7-baidu.serial.log",
+            "native/desktop-m7-baidu.ppm",
             "native/desktop-m6-javascript.ppm",
+            "native/desktop-m7-baidu-home.ppm",
+            "native/desktop-m7-baidu-search.ppm",
         ),
     )
     result.validate()

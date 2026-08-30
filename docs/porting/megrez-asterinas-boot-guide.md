@@ -302,7 +302,7 @@ CRC 和提炼后的结构契约。QEMU preflight 使用的是按 profile 生成�
 
 `/chosen` 至少需要承载：
 
-- `bootargs = "cpu_no_boost_1_6ghz loglevel=info init=/init"`；
+- `bootargs = "loglevel=info init=/init"`；
 - U-Boot 根据 initramfs 自动写入的 `linux,initrd-start`；
 - U-Boot 根据 initramfs 自动写入的 `linux,initrd-end`。
 
@@ -490,7 +490,10 @@ Megrez preflight。所有精确命令和证据字段仍以工具文档为准。
 #### 7.3.1 第一进程 console-loss 诊断
 
 临时诊断参数是 `asterinas.first_process_diag=1`；默认关闭，且只有注册
-console registry 为空时才激活。suppression probe 保留普通 `ns16550a`
+console registry 为空时才激活。真机保留可用 UART 时，必须同时显式传入
+`asterinas.first_process_diag_force=1`，激活 marker 会记录
+`console_registry=registered`；force 参数单独出现不会激活诊断。suppression
+probe 保留普通 `ns16550a`
 payload UART，要求观察到 NS16550A console 注册、正常用户态 marker，并且
 诊断前缀计数为零。console-loss stage 则只把 payload DTB 的 UART compatible
 改成 `snps,dw-apb-uart`，其 terminal marker 必须精确证明
@@ -505,7 +508,7 @@ QEMU PASS 不授权真机启动，也不能证明 Megrez 上的 UART MMIO 契约
 
 | Last evidence | 解读 |
 |---|---|
-| no `diagnostic_active` | registry 非空、参数缺失或 SBI sink 不可用；不能据此推断 PID 1 边界 |
+| no `diagnostic_active` | registry 非空且未 force、参数缺失或 SBI sink 不可用；不能据此推断 PID 1 边界 |
 | `process_components_ready` only | 第一进程的设备初始化没有返回 |
 | `device_init_ready` only | 标准 I/O 初始化没有返回 |
 | `stdio_init_ready` only | PID 1 task 没有到达第一次 U-mode 入口 |
@@ -671,19 +674,25 @@ ext4load mmc 1:1 0xf0000000 \
 setenv dtb_size ${filesize}
 fdt addr 0xf0000000
 fdt resize 0x1000
-setenv bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init"
+setenv bootargs "loglevel=info init=/init"
 printenv bootargs
-fdt set /chosen bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init"
+fdt set /chosen bootargs "loglevel=info init=/init"
 fdt print /chosen
 fdt print / model
 ```
 
 从 `printenv bootargs` 和 `fdt print /chosen` 两份输出中解析出的
 `bootargs` 值必须逐字相等，
-且都必须是精确值 `cpu_no_boost_1_6ghz loglevel=info init=/init`。
+且都必须是精确值 `loglevel=info init=/init`。
 这里的 `setenv` 只修改当前 U-Boot RAM 环境，
 不会写入持久环境。
 不要执行 `saveenv`。
+
+`cpu_no_boost_1_6ghz` 是历史 RockOS/Linux 启动参数，不是当前
+Asterinas 已注册的内核参数。Asterinas 会按 Linux 兼容规则把未知且不带
+`=` 的参数转发给 PID 1；把该参数放进当前 Debian Stage1 的 bootargs 会让
+严格的 init 参数检查以 `root-init-argument` 失败。当前 Asterinas 启动
+不得再复制这个历史参数；CPU 频率策略需要独立、可验证的内核实现。
 
 以上是非诊断基线事务，用于说明 RAM 环境与 DTB 必须同步。10.2 节带
 两个临时参数的值也只归档 `3ef99e6bd` 历史实验；下一轮显示 console

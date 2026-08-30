@@ -2,7 +2,7 @@
 
 //! A fixed-size local cache for frame allocation.
 
-use core::{alloc::Layout, cell::RefCell};
+use core::{alloc::Layout, cell::RefCell, ops::Range};
 
 use ostd::{
     cpu_local,
@@ -104,6 +104,13 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
         self.size -= 1;
         Some(frame)
     }
+
+    /// Returns every cached segment to the buddy pools.
+    fn flush(&mut self, guard: &DisabledLocalIrqGuard) {
+        while let Some(addr) = self.pop_front() {
+            super::pools::dealloc(guard, [(addr, Self::segment_size())].into_iter());
+        }
+    }
 }
 
 impl CacheOfSizes {
@@ -133,6 +140,25 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
         4 => cache.cache4.alloc(guard),
         _ => super::pools::alloc(guard, layout),
     }
+}
+
+pub(super) fn alloc_in(
+    guard: &DisabledLocalIrqGuard,
+    layout: Layout,
+    paddr_range: Range<Paddr>,
+) -> Option<Paddr> {
+    // A bounded allocation must consider frames previously returned to the
+    // current CPU's small-object caches. Reclaim them into the buddy pools so
+    // adjacent cached frames can coalesce before the range search.
+    let cache_cell = CACHE.get_with(guard);
+    let mut cache = cache_cell.borrow_mut();
+    cache.cache1.flush(guard);
+    cache.cache2.flush(guard);
+    cache.cache3.flush(guard);
+    cache.cache4.flush(guard);
+    drop(cache);
+
+    super::pools::alloc_in(guard, layout, paddr_range)
 }
 
 pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {

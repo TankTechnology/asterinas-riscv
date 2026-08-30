@@ -55,6 +55,8 @@ mod device;
 mod driver;
 mod error;
 mod events;
+#[cfg(target_arch = "riscv64")]
+mod first_process_diag;
 mod fs;
 mod init;
 mod ipc;

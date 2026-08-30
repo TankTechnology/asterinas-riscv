@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{hint::spin_loop, ops::Range};
+use core::{hint::spin_loop, ops::Range, sync::atomic::Ordering};
 
 use fdt::{Fdt, node::FdtNode};
-use ostd::{arch::boot::DEVICE_TREE, io::IoMem, mm::io::VmIoOnce};
+use ostd::{
+    arch::boot::DEVICE_TREE,
+    io::IoMem,
+    mm::{
+        HasPaddr, HasSize, PAGE_SIZE,
+        dma::{DmaCoherent, DmaWindow},
+        io::{VmIo, VmIoOnce},
+    },
+};
 
 use crate::{
+    MMC_BOUNDED_PIO,
     card::{Card, HostController, Response},
     sdhci::{
-        Command, HostError, Register, ResponseType, decode_command_failure, decode_data_failure,
-        eic7700_core_clock_config,
+        Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
+        SdmaInterrupt, SdmaTransfer, classify_sdma_interrupt, decode_command_failure,
+        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary, sdma_host_control,
+        sdma_v4_control, split_sdma_address, supports_sdma,
     },
 };
 
@@ -29,6 +40,12 @@ const CLOCK_CORE_ENABLE: u32 = 1 << 16;
 const CLOCK_CORE_DIVISOR_MASK: u32 = 0x0fff << 4;
 const CLOCK_CORE_SELECT_416MHZ: u32 = 1;
 const POLL_BUDGET: usize = 1_000_000;
+const DMA_DEVICE_START: usize = 0x2000_0000;
+const DMA_CPU_START: usize = 0xc000_0000;
+const DMA_WINDOW_SIZE: usize = 0x4000_0000;
+const SMMU_MMIO_START: usize = 0x50c0_0000;
+const SMMU_MMIO_SIZE: usize = 0x10_0000;
+const SD0_STREAM_ID: u32 = 16;
 
 const BLOCK_COUNT: usize = 0x06;
 const RESPONSE1: usize = 0x14;
@@ -43,6 +60,7 @@ const PRESENT_COMMAND_INHIBIT: u32 = 1 << 0;
 const PRESENT_DATA_INHIBIT: u32 = 1 << 1;
 const INTERRUPT_COMMAND_COMPLETE: u32 = 1 << 0;
 const INTERRUPT_TRANSFER_COMPLETE: u32 = 1 << 1;
+const INTERRUPT_DMA: u32 = 1 << 3;
 const INTERRUPT_BUFFER_WRITE_READY: u32 = 1 << 4;
 const INTERRUPT_BUFFER_READ_READY: u32 = 1 << 5;
 const INTERRUPT_ERROR: u32 = 1 << 15;
@@ -56,6 +74,7 @@ const RESET_DATA: u8 = 1 << 2;
 struct PlatformConfig {
     mmio_range: Range<usize>,
     clock_mmio_range: Range<usize>,
+    dma_window: DmaWindow,
     interrupt: u32,
     bus_width: usize,
     clock_frequency: u32,
@@ -73,6 +92,9 @@ struct ConfigFields {
     max_frequency: Option<u32>,
     no_mmc: bool,
     clock_resource_valid: bool,
+    iommu_stream_valid: bool,
+    dma_window: Option<DmaWindow>,
+    dma_noncoherent: bool,
 }
 
 fn valid_clock_resource(cells: &[u32], range: Option<(usize, usize)>) -> bool {
@@ -87,7 +109,7 @@ fn valid_clock_resource(cells: &[u32], range: Option<(usize, usize)>) -> bool {
 }
 
 impl ConfigFields {
-    const fn invalid_field(self) -> Option<&'static str> {
+    fn invalid_field(self) -> Option<&'static str> {
         if !self.enabled {
             return Some("status");
         }
@@ -111,6 +133,15 @@ impl ConfigFields {
         }
         if !self.clock_resource_valid {
             return Some("eswin,syscrg_csr");
+        }
+        if !self.iommu_stream_valid {
+            return Some("iommus");
+        }
+        if self.dma_window != DmaWindow::new(DMA_DEVICE_START, DMA_CPU_START, DMA_WINDOW_SIZE) {
+            return Some("dma-ranges");
+        }
+        if !self.dma_noncoherent {
+            return Some("dma-noncoherent");
         }
         match self.max_frequency {
             Some(frequency) if frequency > 0 && frequency <= 208_000_000 => None,
@@ -141,10 +172,16 @@ fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
         return Err(ProbeError::InvalidDeviceTree);
     }
     let max_frequency = fields.max_frequency.unwrap();
+    // The Linux DT describes an IOVA window backed by SMMUv3 stream 16.
+    // Asterinas does not configure a RISC-V IOMMU yet, so preserve U-Boot's
+    // direct-DMA handoff instead of applying the unmapped IOVA offset.
+    let dma_window = DmaWindow::new(DMA_CPU_START, DMA_CPU_START, DMA_WINDOW_SIZE)
+        .ok_or(ProbeError::InvalidDeviceTree)?;
     Ok(PlatformConfig {
         mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
         clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
             ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+        dma_window,
         interrupt: INTERRUPT,
         bus_width: BUS_WIDTH,
         clock_frequency: fields.clock_frequency.unwrap(),
@@ -199,6 +236,83 @@ fn clock_resource_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
     valid_clock_resource(&cells, range)
 }
 
+fn dma_window_from_cells(cells: &[u32]) -> Option<DmaWindow> {
+    let [
+        device_high,
+        device_low,
+        cpu_high,
+        cpu_low,
+        size_high,
+        size_low,
+    ] = cells
+    else {
+        return None;
+    };
+    let combine = |high: u32, low: u32| ((high as u64) << 32) | low as u64;
+    DmaWindow::new(
+        combine(*device_high, *device_low).try_into().ok()?,
+        combine(*cpu_high, *cpu_low).try_into().ok()?,
+        combine(*size_high, *size_low).try_into().ok()?,
+    )
+}
+
+fn dma_window_from_node(node: FdtNode<'_, '_>) -> Option<DmaWindow> {
+    let property = node.property("dma-ranges")?;
+    let (chunks, remainder) = property.value.as_chunks::<4>();
+    if chunks.len() != 6 || !remainder.is_empty() {
+        return None;
+    }
+    let cells = [
+        u32::from_be_bytes(chunks[0]),
+        u32::from_be_bytes(chunks[1]),
+        u32::from_be_bytes(chunks[2]),
+        u32::from_be_bytes(chunks[3]),
+        u32::from_be_bytes(chunks[4]),
+        u32::from_be_bytes(chunks[5]),
+    ];
+    dma_window_from_cells(&cells)
+}
+
+fn valid_iommu_stream(
+    cells: &[u32],
+    provider_compatible: bool,
+    provider_mmio: Option<(usize, usize)>,
+    iommu_cells: Option<usize>,
+) -> bool {
+    matches!(cells, [_, SD0_STREAM_ID])
+        && provider_compatible
+        && provider_mmio == Some((SMMU_MMIO_START, SMMU_MMIO_SIZE))
+        && iommu_cells == Some(1)
+}
+
+fn iommu_stream_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
+    let Some(property) = node.property("iommus") else {
+        return false;
+    };
+    let (chunks, remainder) = property.value.as_chunks::<4>();
+    if chunks.len() != 2 || !remainder.is_empty() {
+        return false;
+    }
+    let cells = [u32::from_be_bytes(chunks[0]), u32::from_be_bytes(chunks[1])];
+    let Some(provider) = tree.find_phandle(cells[0]) else {
+        return false;
+    };
+    let provider_compatible = provider
+        .compatible()
+        .is_some_and(|values| values.all().any(|value| value == "arm,smmu-v3"));
+    let provider_mmio = provider.reg().and_then(|mut regions| {
+        let first = regions.next()?;
+        if regions.next().is_some() {
+            return None;
+        }
+        Some((first.starting_address as usize, first.size?))
+    });
+    let iommu_cells = provider
+        .property("#iommu-cells")
+        .and_then(|property| property.as_usize());
+    valid_iommu_stream(&cells, provider_compatible, provider_mmio, iommu_cells)
+}
+
 fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
     let enabled = match node.property("status") {
         None => true,
@@ -236,6 +350,9 @@ fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
             .and_then(|value| value.try_into().ok()),
         no_mmc: node.property("no-mmc").is_some(),
         clock_resource_valid: clock_resource_from_node(tree, node),
+        iommu_stream_valid: iommu_stream_from_node(tree, node),
+        dma_window: dma_window_from_node(node),
+        dma_noncoherent: node.property("dma-noncoherent").is_some(),
     }
 }
 
@@ -252,13 +369,34 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         IoMem::acquire(config.mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
     let clock_mmio =
         IoMem::acquire(config.clock_mmio_range.clone()).map_err(|_| ProbeError::MmioUnavailable)?;
-    let mut host = MmioHost { mmio, clock_mmio };
+    let mut host = MmioHost {
+        mmio,
+        clock_mmio,
+        sdma: None,
+    };
     host.validate_handoff().map_err(ProbeError::Host)?;
-    ostd::info!(
-        "[mmc] controller {:#x} irq={} bounded-pio",
-        config.mmio_range.start,
-        config.interrupt
-    );
+    if sdma_allowed(MMC_BOUNDED_PIO.load(Ordering::Relaxed)) {
+        match host.enable_sdma(config.dma_window) {
+            Ok(()) => ostd::info!(
+                "[mmc] controller {:#x} irq={} sdma boundary={}",
+                config.mmio_range.start,
+                config.interrupt,
+                SDMA_BOUNDARY_BYTES
+            ),
+            Err(error) => ostd::warn!(
+                "[mmc] controller {:#x} irq={} bounded-pio-fallback reason={:?}",
+                config.mmio_range.start,
+                config.interrupt,
+                error
+            ),
+        }
+    } else {
+        ostd::warn!(
+            "[mmc] controller {:#x} irq={} bounded-pio-forced",
+            config.mmio_range.start,
+            config.interrupt
+        );
+    }
     let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
     let mut sector0 = [0u8; 512];
     card.read_sector(&mut host, 0, &mut sector0)
@@ -273,13 +411,66 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
     Ok(Some((host, card)))
 }
 
+const fn sdma_allowed(force_bounded_pio: bool) -> bool {
+    !force_bounded_pio
+}
+
 /// Safe MMIO-backed SDHCI polling host.
 pub(super) struct MmioHost {
     mmio: IoMem,
     clock_mmio: IoMem,
+    sdma: Option<SdmaBuffer>,
+}
+
+struct SdmaBuffer {
+    memory: DmaCoherent,
+    device_start: usize,
 }
 
 impl MmioHost {
+    fn enable_sdma(&mut self, window: DmaWindow) -> Result<(), HostError> {
+        let capabilities = self.read32(Register::Capabilities.offset())?;
+        if !supports_sdma(capabilities) {
+            return Err(HostError::Unsupported);
+        }
+        let host_control2 = sdma_v4_control(self.read16(Register::HostControl2.offset())?)?;
+        self.write16(Register::HostControl2.offset(), host_control2)?;
+        let cpu_end = window
+            .cpu_start()
+            .checked_add(window.size())
+            .ok_or(HostError::Unsupported)?;
+        let memory = DmaCoherent::alloc_in(
+            SDMA_BOUNDARY_BYTES / PAGE_SIZE,
+            false,
+            window.cpu_start()..cpu_end,
+        )
+        .and_then(DmaCoherent::into_uncached)
+        .map_err(|_| HostError::Unsupported)?;
+        let physical_end = memory
+            .paddr()
+            .checked_add(memory.size())
+            .ok_or(HostError::Unsupported)?;
+        let device_range = window
+            .translate(memory.paddr()..physical_end)
+            .ok_or(HostError::Unsupported)?;
+        if device_range.len() != SDMA_BOUNDARY_BYTES
+            || !device_range.start.is_multiple_of(SDMA_BOUNDARY_BYTES)
+        {
+            return Err(HostError::Unsupported);
+        }
+        ostd::info!(
+            "[mmc] SDMA buffer cpu={:#x} device={:#x} bytes={}",
+            memory.paddr(),
+            device_range.start,
+            memory.size()
+        );
+        self.sdma = Some(SdmaBuffer {
+            memory,
+            device_start: device_range.start,
+        });
+        Ok(())
+    }
+
     fn validate_handoff(&self) -> Result<(), HostError> {
         let version = self.read16(HOST_VERSION)?;
         if version == 0 || version == u16::MAX {
@@ -363,6 +554,74 @@ impl MmioHost {
             spin_loop();
         }
         Err(HostError::Timeout)
+    }
+
+    fn submit_sdma(&mut self, command: Command, length: usize) -> Result<(), HostError> {
+        let device_start = self
+            .sdma
+            .as_ref()
+            .ok_or(HostError::Unsupported)?
+            .device_start;
+        let device_end = device_start
+            .checked_add(length)
+            .ok_or(HostError::Unsupported)?;
+        let transfer = SdmaTransfer::new(command, device_start..device_end)?;
+        self.wait_clear(
+            Register::PresentState.offset(),
+            PRESENT_COMMAND_INHIBIT | PRESENT_DATA_INHIBIT,
+        )?;
+        self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
+        self.write8(HOST_CONTROL, sdma_host_control(self.read8(HOST_CONTROL)?))?;
+        self.write_sdma_address(transfer.system_address as u64)?;
+        self.write16(Register::BlockSize.offset(), transfer.block_size)?;
+        self.write16(BLOCK_COUNT, transfer.block_count)?;
+        // RockOS U-Boot leaves this controller in SDHCI v4 mode, where 0x00
+        // is the 32-bit block-count register rather than the legacy SDMA
+        // system-address register. Mirror its compatibility write.
+        self.write16(Register::SystemAddress.offset(), transfer.block_count)?;
+        self.write16(Register::TransferMode.offset(), transfer.transfer_mode)?;
+        self.write32(Register::Argument.offset(), command.argument)?;
+        self.write16(Register::Command.offset(), command.command_bits())?;
+        self.wait_command_complete(command.index)?;
+        self.wait_sdma(transfer.system_address as u64)
+    }
+
+    fn wait_sdma(&self, mut system_address: u64) -> Result<(), HostError> {
+        for _ in 0..POLL_BUDGET {
+            let status = self.read32(Register::InterruptStatus.offset())?;
+            match classify_sdma_interrupt(status) {
+                Ok(SdmaInterrupt::Pending) => spin_loop(),
+                Ok(SdmaInterrupt::Complete) => {
+                    self.write32(
+                        Register::InterruptStatus.offset(),
+                        status & (INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA),
+                    )?;
+                    return Ok(());
+                }
+                Ok(SdmaInterrupt::Boundary) => {
+                    self.write32(Register::InterruptStatus.offset(), INTERRUPT_DMA)?;
+                    system_address = next_sdma_boundary(system_address).ok_or(HostError::Dma)?;
+                    self.write_sdma_address(system_address)?;
+                }
+                Err(error) => {
+                    self.write32(Register::InterruptStatus.offset(), status)?;
+                    ostd::error!(
+                        "[mmc] SDMA failed: status={:#x} address={:#x} error={:?}",
+                        status,
+                        system_address,
+                        error
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        Err(HostError::Timeout)
+    }
+
+    fn write_sdma_address(&self, address: u64) -> Result<(), HostError> {
+        let (low, high) = split_sdma_address(address);
+        self.write32(Register::SdmaAddress.offset(), low)?;
+        self.write32(Register::SdmaAddressHigh.offset(), high)
     }
 
     fn read8(&self, offset: usize) -> Result<u8, HostError> {
@@ -544,6 +803,48 @@ impl HostController for MmioHost {
     fn reset_data_line(&mut self) {
         let _ = self.write8(Register::SoftwareReset.offset(), RESET_DATA);
     }
+
+    fn max_blocks_per_command(&self) -> usize {
+        if self.sdma.is_some() {
+            SDMA_BOUNDARY_BYTES / 512
+        } else {
+            u16::MAX as usize
+        }
+    }
+
+    fn try_read_blocks(&mut self, command: Command, output: &mut [u8]) -> Result<bool, HostError> {
+        if self.sdma.is_none() {
+            return Ok(false);
+        }
+        if command.data != Some(DataDirection::Read) {
+            return Err(HostError::Unsupported);
+        }
+        self.submit_sdma(command, output.len())?;
+        self.sdma
+            .as_ref()
+            .unwrap()
+            .memory
+            .read_bytes(0, output)
+            .map_err(|_| HostError::Dma)?;
+        Ok(true)
+    }
+
+    fn try_write_blocks(&mut self, command: Command, data: &[u8]) -> Result<bool, HostError> {
+        if self.sdma.is_none() {
+            return Ok(false);
+        }
+        if command.data != Some(DataDirection::Write) {
+            return Err(HostError::Unsupported);
+        }
+        self.sdma
+            .as_ref()
+            .unwrap()
+            .memory
+            .write_bytes(0, data)
+            .map_err(|_| HostError::Dma)?;
+        self.submit_sdma(command, data.len())?;
+        Ok(true)
+    }
 }
 
 #[cfg(ktest)]
@@ -563,22 +864,33 @@ mod tests {
             max_frequency: Some(208_000_000),
             no_mmc: true,
             clock_resource_valid: true,
+            iommu_stream_valid: true,
+            dma_window: DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000),
+            dma_noncoherent: true,
         }
     }
 
     #[ktest]
-    fn accepts_only_frozen_megrez_sd_resources() {
+    fn uses_uboot_identity_dma_after_validating_linux_resources() {
         assert_eq!(
             validate(valid_fields()).unwrap(),
             PlatformConfig {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+                dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
                 max_frequency: 208_000_000,
             }
+        );
+        assert_eq!(
+            validate(valid_fields())
+                .unwrap()
+                .dma_window
+                .translate(0xfff0_0000..0xfff8_0000),
+            Some(0xfff0_0000..0xfff8_0000)
         );
     }
 
@@ -642,6 +954,7 @@ mod tests {
                 mmio_range: MMIO_START..MMIO_START + MMIO_SIZE,
                 clock_mmio_range: CLOCK_MMIO_START + CLOCK_CORE_OFFSET
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
+                dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
@@ -667,6 +980,65 @@ mod tests {
         assert!(!valid_clock_resource(
             &[0x12, 0x164, 0x148, 0x14c],
             Some((0x5181_0000, 0x8_0000))
+        ));
+    }
+
+    #[ktest]
+    fn megrez_sdma_accepts_only_the_exact_noncoherent_dma_window() {
+        assert_eq!(
+            dma_window_from_cells(&[0, 0x2000_0000, 0, 0xc000_0000, 0, 0x4000_0000]),
+            DmaWindow::new(0x2000_0000, 0xc000_0000, 0x4000_0000)
+        );
+        assert_eq!(
+            dma_window_from_cells(&[0, 0x2000_0000, 0, 0xc000_0000, 0, 0]),
+            None
+        );
+        assert_eq!(dma_window_from_cells(&[0, 1, 2]), None);
+
+        let mut fields = valid_fields();
+        fields.dma_noncoherent = false;
+        assert_eq!(fields.invalid_field(), Some("dma-noncoherent"));
+
+        let mut fields = valid_fields();
+        fields.dma_window = DmaWindow::new(0, 0xc000_0000, 0x4000_0000);
+        assert_eq!(fields.invalid_field(), Some("dma-ranges"));
+
+        let mut fields = valid_fields();
+        fields.iommu_stream_valid = false;
+        assert_eq!(fields.invalid_field(), Some("iommus"));
+    }
+
+    #[ktest]
+    fn bounded_pio_boot_policy_skips_sdma_without_changing_the_default() {
+        assert!(!sdma_allowed(true));
+        assert!(sdma_allowed(false));
+    }
+
+    #[ktest]
+    fn accepts_only_the_linux_smmuv3_sd0_stream_contract() {
+        assert!(valid_iommu_stream(
+            &[0x15, 16],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 15],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 16],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(2)
+        ));
+        assert!(!valid_iommu_stream(
+            &[0x15, 16, 0],
+            true,
+            Some((0x50c0_0000, 0x10_0000)),
+            Some(1)
         ));
     }
 }

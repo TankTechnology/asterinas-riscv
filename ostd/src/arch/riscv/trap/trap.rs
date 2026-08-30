@@ -26,6 +26,11 @@ use crate::arch::cpu::{
 /// FPU status bits.
 /// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#sstatus>.
 pub(in crate::arch) const SSTATUS_FS_MASK: usize = 0b11 << 13;
+
+/// Selects the 64-bit base ISA for U-mode on RV64.
+/// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#base-isa-control-in-sstatus-register>.
+const SSTATUS_UXL_64: usize = 0b10 << 32;
+
 /// Supervisor User Memory access bit.
 /// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#sstatus>.
 pub(in crate::arch) const SSTATUS_SUM: usize = 0b1 << 18;
@@ -97,7 +102,7 @@ pub(in crate::arch) struct RawUserContext {
 
 impl Default for RawUserContext {
     fn default() -> Self {
-        let sstatus = if has_extensions(IsaExtensions::F)
+        let fpu_status = if has_extensions(IsaExtensions::F)
             || has_extensions(IsaExtensions::D)
             || has_extensions(IsaExtensions::Q)
         {
@@ -109,7 +114,7 @@ impl Default for RawUserContext {
 
         Self {
             general: GeneralRegs::default(),
-            sstatus,
+            sstatus: SSTATUS_UXL_64 | fpu_status,
             sepc: 0,
         }
     }
@@ -125,6 +130,10 @@ impl RawUserContext {
 
         crate::task::call_pre_user_run_handler(&guard);
 
+        if clear_previous_virtualization_mode() {
+            crate::warn!("Cleared stale hstatus.SPV before returning to user mode");
+        }
+
         // Return to userspace with interrupts disabled. Otherwise, interrupts
         // after switching `sscratch` will mess up the CPU state.
         core::mem::forget(guard);
@@ -133,7 +142,74 @@ impl RawUserContext {
     }
 }
 
+/// Ensures that `sret` enters ordinary U-mode rather than virtual U-mode.
+///
+/// The H extension makes `hstatus.SPV` part of the return-mode state used by
+/// `sret`. A non-hypervisor kernel must not inherit a stale SPV bit from
+/// firmware or an earlier boot stage.
+fn clear_previous_virtualization_mode() -> bool {
+    if !has_extensions(IsaExtensions::H) {
+        return false;
+    }
+
+    const HSTATUS_SPV: usize = 1 << 7;
+    let previous: usize;
+    // SAFETY: The H extension was detected on every application hart. Clearing
+    // SPV only selects ordinary (non-virtualized) mode for the next `sret`.
+    unsafe {
+        asm!(
+            "csrrc {previous}, hstatus, {mask}",
+            previous = out(reg) previous,
+            mask = in(reg) HSTATUS_SPV,
+            options(nostack)
+        )
+    };
+    previous & HSTATUS_SPV != 0
+}
+
 unsafe extern "C" {
     unsafe fn trap_entry();
     unsafe fn run_user(regs: &mut RawUserContext);
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::arch::asm;
+
+    use super::{RawUserContext, SSTATUS_UXL_64, clear_previous_virtualization_mode};
+    use crate::{
+        arch::cpu::extension::{IsaExtensions, has_extensions},
+        prelude::ktest,
+    };
+
+    const HSTATUS_SPV: usize = 1 << 7;
+    const SSTATUS_UXL_MASK: usize = 0b11 << 32;
+
+    #[ktest]
+    fn defaults_to_64_bit_user_mode() {
+        let context = RawUserContext::default();
+
+        assert_eq!(context.sstatus & SSTATUS_UXL_MASK, SSTATUS_UXL_64);
+    }
+
+    #[ktest]
+    fn clears_stale_hypervisor_virtualization_before_user_return() {
+        if !has_extensions(IsaExtensions::H) {
+            return;
+        }
+
+        let interrupt_guard = crate::irq::disable_local();
+
+        // SAFETY: H is present, and the test restores the only bit that it
+        // changes before returning to the rest of the kernel tests.
+        unsafe { asm!("csrs hstatus, {mask}", mask = in(reg) HSTATUS_SPV) };
+
+        assert!(clear_previous_virtualization_mode());
+
+        let hstatus: usize;
+        // SAFETY: H is present, so hstatus is accessible from HS-mode.
+        unsafe { asm!("csrr {value}, hstatus", value = out(reg) hstatus) };
+        assert_eq!(hstatus & HSTATUS_SPV, 0);
+        drop(interrupt_guard);
+    }
 }

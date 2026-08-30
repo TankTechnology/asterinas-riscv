@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import json
@@ -21,6 +22,19 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tools.riscv import megrez_debug as debug_module
+from tools.riscv import megrez_debug_board as board_module
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_REMOTE_MARKER,
+)
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
@@ -31,6 +45,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_gmac_gate import physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import (
     PROBE_STRESS_BYTES,
@@ -48,6 +63,7 @@ from tools.riscv.megrez_debug_board import (
     ensure_board_artifacts,
     run_board,
 )
+from tools.riscv.megrez_board_session import MEGREZ_USB_HOST_COMMAND
 from tools.riscv.megrez_preboard import RecoveryEvidence
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -407,7 +423,7 @@ class MegrezDebugPlanTests(unittest.TestCase):
         invalid = (
             replace(plan, schema_version=True),
             replace(plan, smp=2),
-            replace(plan, sv39=False),
+            replace(plan, sv39="true"),
             replace(plan, reboot_after=True),
             replace(plan, reboot_after=0),
             replace(plan, bootargs="init=/init; saveenv"),
@@ -497,12 +513,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             schema_version=2,
             profile="debian-browser",
             artifacts=self.artifacts,
-            bootargs=(
-                "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz "
-                "loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
@@ -521,6 +532,45 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         self.assertEqual(plan.markers, DEBIAN_BROWSER_MARKERS)
         self.assertEqual(plan.plan_sha256, hashlib.sha256(encoded).hexdigest())
 
+    def test_schema_two_reuses_the_authoritative_physical_gate_milestones(self) -> None:
+        self.assertEqual(
+            DEBIAN_BROWSER_MARKERS,
+            (
+                "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+                *DESKTOP_M5_MEGREZ_MILESTONES,
+                *DESKTOP_M4_MILESTONES,
+                DESKTOP_M6_REMOTE_MARKER,
+                "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
+                "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
+                DESKTOP_M7_HOME_MARKER,
+                DESKTOP_M7_SEARCH_MARKER,
+                DESKTOP_M7_READY_MARKER,
+            ),
+        )
+
+    def test_schema_two_physical_gate_requires_desktop_simulation(self) -> None:
+        plan = self._plan()
+        result_path = self.directory / "simulation-result.json"
+        desktop = StageResult(
+            schema_version=1,
+            stage="desktop",
+            passed=True,
+            reason="desktop-pass",
+            plan_sha256=plan.plan_sha256,
+            evidence=("native/result.json",),
+        )
+        result_path.write_bytes(desktop.canonical_bytes())
+
+        debug_module._validate_simulation(result_path, plan)
+
+        result_path.write_bytes(
+            replace(desktop, stage="fast", reason="fast-pass").canonical_bytes()
+        )
+        with self.assertRaisesRegex(
+            debug_module.WorkflowError, "plan-simulation-mismatch"
+        ):
+            debug_module._validate_simulation(result_path, plan)
+
     def test_schema_two_rejects_a_narrower_or_reinterpreted_contract(self) -> None:
         plan = self._plan()
         root_index = DEBIAN_BROWSER_ARTIFACT_ORDER.index("root_image")
@@ -537,11 +587,71 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             replace(plan, artifacts=tuple(invalid_artifacts)),
             replace(plan, markers=plan.markers[:-1]),
             replace(plan, smp=1),
-            replace(plan, sv39=False),
+            replace(plan, sv39="false"),
             replace(plan, reboot_after=0),
         ):
             with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
                 invalid.validate()
+
+    def test_schema_two_requires_a_full_desktop_recovery_window(self) -> None:
+        plan = self._plan()
+
+        with self.assertRaisesRegex(DebugContractError, "desktop recovery window"):
+            replace(
+                plan,
+                bootargs=physical_bootargs(599),
+                reboot_after=599,
+            ).validate()
+
+    def test_schema_two_requires_exactly_one_partition_two_write_gate(self) -> None:
+        plan = self._plan()
+
+        for bootargs in (
+            plan.bootargs.replace("asterinas.mmc_write_partition2 ", ""),
+            plan.bootargs.replace(
+                "asterinas.mmc_write_partition2 ",
+                "asterinas.mmc_write_partition2 asterinas.mmc_write_partition2 ",
+            ),
+        ):
+            with (
+                self.subTest(bootargs=bootargs),
+                self.assertRaisesRegex(DebugContractError, "partition-2 write gate"),
+            ):
+                replace(plan, bootargs=bootargs).validate()
+
+    def test_schema_two_requires_the_complete_physical_browser_environment(
+        self,
+    ) -> None:
+        plan = self._plan()
+        required_tokens = (
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
+            "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.100.19.216:17894/asterinas-network-probe.bin",
+        )
+
+        for token in required_tokens:
+            with (
+                self.subTest(token=token),
+                self.assertRaisesRegex(DebugContractError, "physical browser bootargs"),
+            ):
+                replace(
+                    plan, bootargs=plan.bootargs.replace(f"{token} ", "")
+                ).validate()
+
+    def test_schema_two_rejects_stale_bare_megrez_argument(self) -> None:
+        plan = self._plan()
+        stale_bootargs = plan.bootargs.replace(
+            "console=ttyS0 ",
+            "console=ttyS0 cpu_no_boost_1_6ghz ",
+        )
+
+        with self.assertRaisesRegex(
+            DebugContractError, "stale Megrez argument reaches init argv"
+        ):
+            replace(plan, bootargs=stale_bootargs).validate()
 
     def test_schema_one_canonical_contract_remains_unchanged(self) -> None:
         legacy = MegrezDebugPlanTests()
@@ -607,11 +717,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             packages_lock=self.paths["packages_lock"],
             package_checksums=self.paths["package_checksums"],
             in_release=self.paths["in_release"],
-            bootargs=(
-                "console=tty0 console=ttyS0 loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             marker=None,
             reboot_after=600,
         )
@@ -648,6 +754,32 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
         load_checksums.assert_called_once_with(self.paths["package_checksums"])
+
+    def test_create_plan_defaults_browser_recovery_window_to_six_hundred_seconds(
+        self,
+    ) -> None:
+        arguments = self._arguments()
+        arguments.reboot_after = None
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=self.manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=self.manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=self.package_rows,
+                create=True,
+            ),
+        ):
+            plan = debug_module._create_plan(arguments)
+
+        self.assertEqual(plan.reboot_after, 600)
 
     def test_create_plan_rejects_unbound_metadata_and_download_rows(self) -> None:
         mismatched_rows = (
@@ -883,6 +1015,20 @@ class MegrezDebugSimulationTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 1)
+
+    def test_fast_simulation_rejects_sv48_before_any_process_launch(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        with self.assertRaisesRegex(SimulationError, "fast-simulation-requires-sv39"):
+            simulate_fast(
+                replace(self.plan, sv39=False),
+                self.output,
+                self.build,
+                run_command=self._runner(calls),
+                repository_root=self.repository,
+            )
+
+        self.assertEqual(calls, [])
 
     def test_fast_simulation_rejects_a_false_guarded_result(self) -> None:
         calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
@@ -1182,6 +1328,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         directory = Path(self.temporary_directory.name)
+        self.directory = directory
         addresses = {
             "kernel": 0x80200000,
             "initramfs": 0x83000000,
@@ -1216,7 +1363,112 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
 
         return monotonic
 
-    def test_success_uses_one_declining_budget_one_booti_and_recovery(self) -> None:
+    def _browser_plan(self) -> DebugPlan:
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = tuple(
+            ArtifactIdentity(
+                name=name,
+                path=str((self.directory / name).absolute()),
+                load_address=addresses.get(name, 0),
+                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                sha256=hashlib.sha256(name.encode()).hexdigest(),
+                crc32=f"{zlib.crc32(name.encode()):08x}",
+            )
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER
+        )
+        return DebugPlan(
+            schema_version=2,
+            profile="debian-browser",
+            artifacts=artifacts,
+            bootargs=physical_bootargs(600),
+            smp=4,
+            sv39=True,
+            markers=DEBIAN_BROWSER_MARKERS,
+            reboot_after=600,
+        )
+
+    @staticmethod
+    def _concrete_browser_marker(marker: str) -> str:
+        if marker.endswith("key=eic7700-rj45 "):
+            return marker + "base=0x50410000 interface=eth0"
+        if marker == "DEBIAN_BROWSER_M6_JAVASCRIPT status=":
+            return marker + "limited-pass"
+        if marker == "DEBIAN_BROWSER_M6_READY remote=baidu javascript=":
+            return marker + "limited-pass"
+        return marker
+
+    def _browser_marker_block(self, markers: tuple[str, ...]) -> str:
+        return "\n".join(self._concrete_browser_marker(marker) for marker in markers)
+
+    def test_pointer_missing_degradation_collects_browser_and_recovery(self) -> None:
+        plan = self._browser_plan()
+        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
+        m4_end = m4_start + len(DESKTOP_M4_MILESTONES)
+        chunks = [
+            self._browser_marker_block(plan.markers[:m4_start])
+            + "\nDEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-",
+            "device\nDEBIAN_DESKTOP_M4_FAIL reason=desktop-",
+            "timeout\n" + self._browser_marker_block(plan.markers[m4_end:]) + "\n",
+            "pll config ok\nHit any key to stop auto",
+            "boot: 29\n",
+            "U-Boot 2024.01\n=> ",
+        ]
+        operations = self.Operations(chunks)
+
+        result = run_board(
+            plan,
+            BoardRunConfig(timeout=660.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "guest-failure-recovered:browser-pass-input-missing:pointer-device",
+        )
+        self.assertEqual(operations.chunks, [])
+        stop_calls = [call for call in operations.calls if call[0] == "stop-autoboot"]
+        self.assertEqual(len(stop_calls), 1)
+        self.assertEqual(operations.published, result)
+
+    def test_pointer_degradation_rejects_inexact_or_reordered_branch(self) -> None:
+        plan = self._browser_plan()
+        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
+        prefix = self._browser_marker_block(plan.markers[:m4_start]) + "\n"
+        remote = self._concrete_browser_marker(DESKTOP_M6_REMOTE_MARKER) + "\n"
+        diagnostic = "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device\n"
+        failure = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
+        cases = (
+            prefix + failure + remote,
+            prefix
+            + "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=xorg-log\n"
+            + failure
+            + remote,
+            prefix + failure + diagnostic + remote,
+            prefix + remote + diagnostic + failure,
+        )
+
+        for transcript in cases:
+            with self.subTest(transcript=transcript[-128:]):
+                operations = self.Operations([transcript])
+                result = run_board(
+                    plan,
+                    BoardRunConfig(timeout=660.0),
+                    operations,
+                    clock=lambda: 10.0,
+                )
+
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, "guest-marker-order")
+                self.assertEqual(operations.booti_count, 1)
+
+    def test_success_resets_guest_budget_after_transport(self) -> None:
         operations = self.Operations(
             [
                 "old text Enter ris",
@@ -1238,9 +1490,17 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertEqual(operations.booti_count, 1)
         self.assertEqual(operations.published, result)
         self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
-        budgets = [value for _name, value in operations.calls if value is not None]
-        self.assertTrue(all(0 < value < 300 for value in budgets))
-        self.assertEqual(budgets, sorted(budgets, reverse=True))
+        transport_budgets = [
+            value
+            for name, value in operations.calls
+            if name in ("open", "ensure", "prepare", "booti")
+        ]
+        guest_budgets = [value for name, value in operations.calls if name == "read"]
+        self.assertTrue(all(value is not None for value in transport_budgets))
+        self.assertTrue(all(value is not None for value in guest_budgets))
+        self.assertEqual(transport_budgets, sorted(transport_budgets, reverse=True))
+        self.assertEqual(guest_budgets, sorted(guest_budgets, reverse=True))
+        self.assertGreater(guest_budgets[0], transport_budgets[-1])
 
     def test_guest_failure_waits_for_a_fresh_uboot_recovery(self) -> None:
         operations = self.Operations(
@@ -1326,6 +1586,11 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
     def test_marker_and_timeout_failures_never_retry_booti(self) -> None:
         cases = (
             (["ASTERINAS_GMAC_TCP_PROBE_READY\n"], "guest-marker-order"),
+            (["MEGREZ_SDHCI_READ_FAIL reason=target-open\n"], "kernel-fatal"),
+            (
+                ["Enter riscv_boot\nU-Boot 2024.01\n=> "],
+                "guest-reboot-before-terminal",
+            ),
             ([], "kernel-timeout"),
             (["Enter riscv_boot\n"], "guest-timeout"),
             (
@@ -1426,7 +1691,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
 
     def test_absolute_deadline_expires_without_starting_an_extra_read(self) -> None:
         operations = self.Operations(["unreachable"])
-        times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
+        times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
 
         result = run_board(
             self.plan,
@@ -1440,8 +1705,13 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertFalse(any(name == "read" for name, _value in operations.calls))
 
     def test_configuration_and_preboot_failure_forbid_booti(self) -> None:
-        with self.assertRaisesRegex(ValueError, "300"):
-            BoardRunConfig(timeout=301.0)
+        try:
+            desktop_config = BoardRunConfig(timeout=900.0)
+        except ValueError as error:
+            self.fail(f"900-second desktop recovery budget was rejected: {error}")
+        self.assertEqual(desktop_config.timeout, 900.0)
+        with self.assertRaisesRegex(ValueError, "900"):
+            BoardRunConfig(timeout=901.0)
 
         class FailingOperations(self.Operations):
             def prepare_boot(self, _plan: DebugPlan, timeout: float) -> None:
@@ -1527,6 +1797,17 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             *extra,
         )
 
+    def test_board_cli_accepts_only_the_bounded_desktop_recovery_budget(self) -> None:
+        from tools.riscv import megrez_debug
+
+        try:
+            desktop_timeout = megrez_debug._board_timeout("900")
+        except argparse.ArgumentTypeError as error:
+            self.fail(f"900-second desktop recovery budget was rejected: {error}")
+        self.assertEqual(desktop_timeout, 900.0)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            megrez_debug._board_timeout("901")
+
     def test_board_cli_runs_one_physical_adapter_after_all_prechecks(self) -> None:
         from tools.riscv import megrez_debug
 
@@ -1584,6 +1865,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             "/dev/ttyUSB-test",
             self.output,
             timeout=240.0,
+            hardware_watchdog=False,
             probe_trace_provider=mock.ANY,
         )
 
@@ -1646,6 +1928,58 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    def test_long_bootargs_are_staged_below_the_uboot_line_limit(self) -> None:
+        bootargs = physical_bootargs(180).replace(
+            " -- ",
+            " systemd.setenv=ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS=60 -- ",
+        )
+
+        commands = board_module._uboot_bootargs_commands(bootargs)
+
+        self.assertTrue(all(len(command.encode()) <= 512 for command in commands))
+        staged = [
+            command.split('"', 2)[1]
+            for command in commands
+            if command.startswith("setenv asterinas_bootargs_") and '"' in command
+        ]
+        self.assertEqual(" ".join(staged), bootargs)
+        self.assertTrue(
+            any(command.startswith("setenv bootargs ") for command in commands)
+        )
+        self.assertNotIn('fdt set /chosen bootargs "${bootargs}"', commands)
+        self.assertFalse(any("saveenv" in command for command in commands))
+
+    def test_hardware_watchdog_refuses_unknown_component_without_arming(self) -> None:
+        commands: list[str] = []
+
+        class Session:
+            def command(self, command: str, timeout: float) -> str:
+                del timeout
+                commands.append(command)
+                values = {
+                    "md.l 0x51828200 1": "51828200: fe3fff83",
+                    "md.l 0x51828444 1": "51828444: 00000001",
+                    "md.l 0x508000fc 1": "508000fc: 00000000",
+                }
+                return f"{command}\r\r\n{values[command]}\r\r\n=> "
+
+        with self.assertRaisesRegex(BoardRunFailure, "watchdog-type-mismatch"):
+            RealBoardOperations._arm_hardware_watchdog(
+                Session(), time.monotonic() + 1.0
+            )
+
+        self.assertEqual(
+            commands,
+            [
+                "md.l 0x51828200 1",
+                "md.l 0x51828444 1",
+                "md.l 0x51828200 1",
+                "md.l 0x51828444 1",
+                "md.l 0x508000fc 1",
+            ],
+        )
+        self.assertFalse(any(command.startswith("mw.l 0x5080") for command in commands))
+
     def test_real_adapter_reuses_one_fd_and_publishes_result_last(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -1685,6 +2019,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
 
             class Session:
                 fd = 23
+                reset_deasserted = False
 
                 def send(self, command: str) -> None:
                     sends.append(command)
@@ -1696,6 +2031,22 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 def command(self, command: str, timeout: float) -> str:
                     commands.append(command)
                     self.log.write(f"{command}\n")
+                    if command == "md.l 0x51828200 1":
+                        return (
+                            f"{command}\r\r\n"
+                            "51828200: fe3fff83                             ..?."
+                            "\r\r\n=> "
+                        )
+                    if command == "md.l 0x51828444 1":
+                        reset = 1 if self.reset_deasserted else 0
+                        return f"{command}\r\r\n51828444: {reset:08x}\r\r\n=> "
+                    if command == "mw.l 0x51828444 0x1":
+                        self.reset_deasserted = True
+                        return f"{command}\r\n=> "
+                    if command == "md.l 0x508000fc 1":
+                        return f"{command}\r\r\n508000fc: 44570120\r\r\n=> "
+                    if command == "md.l 0x50800000 2":
+                        return f"{command}\r\r\n50800000: 0000001f 0000000f\r\r\n=> "
                     if command.startswith("crc32 "):
                         address = int(command.split()[1], 16)
                         return (
@@ -1728,6 +2079,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
                 lock_device=lambda _fd: None,
                 close_device=closed.append,
                 session_factory=session_factory,
+                hardware_watchdog=True,
                 probe_trace_provider=lambda plan_sha256: (
                     json.dumps(
                         {
@@ -1785,6 +2137,22 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             self.assertTrue(
                 any("asterinas,usb-host" in command for command in commands)
             )
+            self.assertEqual(
+                commands[-11:],
+                [
+                    MEGREZ_USB_HOST_COMMAND,
+                    "md.l 0x51828200 1",
+                    "md.l 0x51828444 1",
+                    "mw.l 0x51828444 0x1",
+                    "md.l 0x51828200 1",
+                    "md.l 0x51828444 1",
+                    "md.l 0x508000fc 1",
+                    "mw.l 0x50800004 0xf",
+                    "mw.l 0x5080000c 0x76",
+                    "mw.l 0x50800000 0x1f",
+                    "md.l 0x50800000 2",
+                ],
+            )
             self.assertTrue((output / "serial.log").is_file())
             self.assertTrue((output / "transport.json").is_file())
             trace = json.loads((output / "probe-tcp-info.json").read_bytes())
@@ -1827,7 +2195,7 @@ class MegrezDebugCliTests(unittest.TestCase):
             timeout=5,
         )
 
-    def _create_plan(self) -> DebugPlan:
+    def _create_plan(self, *, paging_mode: str = "sv39") -> DebugPlan:
         result = self._run(
             "plan",
             "--kernel",
@@ -1844,11 +2212,18 @@ class MegrezDebugCliTests(unittest.TestCase):
             "Enter riscv_boot",
             "--marker",
             "ASTERINAS_GMAC_TCP_PROBE_READY",
+            "--paging-mode",
+            paging_mode,
             "--output",
             self.plan_path,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return DebugPlan.from_bytes(self.plan_path.read_bytes())
+
+    def test_plan_records_the_explicit_physical_paging_mode(self) -> None:
+        plan = self._create_plan(paging_mode="sv48")
+
+        self.assertIs(plan.sv39, False)
 
     def test_plan_and_check_work_from_an_arbitrary_directory(self) -> None:
         plan = self._create_plan()
@@ -1942,6 +2317,21 @@ class MegrezDebugCliTests(unittest.TestCase):
                 {"action": "capture-markers"},
                 {"action": "await-automatic-recovery"},
             ],
+        )
+
+        watchdog = self._run(
+            "board",
+            self.plan_path,
+            self.directory / "missing-serial-device",
+            "--simulation-result",
+            self.directory / "missing-result.json",
+            "--hardware-watchdog",
+            "--dry-run",
+        )
+        self.assertEqual(watchdog.returncode, 0, watchdog.stderr)
+        self.assertIn(
+            {"action": "arm-hardware-watchdog", "mode": "interrupt-then-reset"},
+            json.loads(watchdog.stdout),
         )
 
     def test_board_refuses_missing_simulation_before_serial_access(self) -> None:

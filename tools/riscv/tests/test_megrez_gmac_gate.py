@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+import tempfile
 import subprocess
 import signal
 import unittest
 from collections.abc import Iterable
+from pathlib import Path
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
@@ -18,17 +22,28 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_JAVASCRIPT_STATUSES,
     DESKTOP_M6_REMOTE_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_MILESTONES,
+    PHYSICAL_M7_MILESTONES,
+    _parse_args,
     GateConfig,
     GateFailure,
+    GateTarget,
     GateTermination,
+    PhysicalGateOperations,
     check_address_unused,
+    classify_physical_network_transcript,
     classify_physical_transcript,
     physical_bootargs,
     run_gate,
 )
+from tools.riscv.megrez_network_fixture import FixtureConfig, FixtureServer
 
 
 EXPECTED_PHYSICAL_MILESTONES = (
@@ -36,6 +51,15 @@ EXPECTED_PHYSICAL_MILESTONES = (
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
     DESKTOP_M4_MILESTONES[-1].encode(),
     DESKTOP_M6_REMOTE_MARKER.encode(),
+)
+EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
+    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+)
+EXPECTED_PHYSICAL_M7_MILESTONES = (
+    DESKTOP_M7_HOME_MARKER.encode(),
+    DESKTOP_M7_SEARCH_MARKER.encode(),
+    DESKTOP_M7_READY_MARKER.encode(),
 )
 
 
@@ -46,10 +70,15 @@ def complete_browser_evidence(status: str = "limited-pass") -> bytes:
                 *EXPECTED_PHYSICAL_MILESTONES,
                 f"DEBIAN_BROWSER_M6_JAVASCRIPT status={status}".encode(),
                 f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode(),
+                *EXPECTED_PHYSICAL_M7_MILESTONES,
             )
         )
         + b"\n"
     )
+
+
+def complete_network_evidence() -> bytes:
+    return b"\n".join(EXPECTED_PHYSICAL_NETWORK_MILESTONES) + b"\n"
 
 
 class FakeOperations:
@@ -110,12 +139,146 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
             bootargs.split(),
         )
-        self.assertEqual(bootargs.split()[0:2], ["console=tty0", "console=ttyS0"])
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
+            bootargs.split(),
+        )
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            bootargs.split(),
+        )
+        self.assertNotIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.16.28,d8:43:ae:b1:f8:12",
+            bootargs.split(),
+        )
+        self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
+        self.assertNotIn("cpu_no_boost_1_6ghz", bootargs.split())
+        self.assertIn("asterinas.mmc_write_partition2", bootargs.split())
+        for variable in (
+            "ASTERINAS_DESKTOP_M4_CONSOLE",
+            "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_BROWSER_M6_CONSOLE",
+        ):
+            self.assertIn(
+                f"systemd.setenv={variable}=/dev/ttyS0",
+                bootargs.split(),
+            )
+        self.assertNotIn("ASTERINAS_BROWSER_M7_CONSOLE", bootargs)
+        for variable, value in (
+            ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
+            ("ASTERINAS_DESKTOP_PROXY_HOST", "10.100.19.216"),
+            ("ASTERINAS_DESKTOP_PROXY_PORT", "17893"),
+            (
+                "ASTERINAS_DESKTOP_FIXTURE_URL",
+                "http://10.100.19.216:17894/asterinas-network-probe.bin",
+            ),
+            ("ASTERINAS_DESKTOP_FIXTURE_SIZE", "65536"),
+            (
+                "ASTERINAS_DESKTOP_FIXTURE_SHA256",
+                "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+            ),
+            ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", "20"),
+        ):
+            self.assertIn(f"systemd.setenv={variable}={value}", bootargs.split())
         self.assertNotIn("saveenv", bootargs)
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
+        self.assertNotIn("ASTERINAS_SAFE_REBOOT_AFTER", recovery_bootargs)
+        self.assertNotIn("ASTERINAS_SAFE_REBOOT_CONSOLE", recovery_bootargs)
         self.assertNotIn("saveenv", recovery_bootargs)
+        self.assertLess(
+            len(f'setenv bootargs "{recovery_bootargs}"'.encode()),
+            1024,
+        )
+
+        network_bootargs = physical_bootargs(180, target=GateTarget.NETWORK)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            network_bootargs.split(),
+        )
+        for unused_variable in (
+            "ASTERINAS_DESKTOP_M4_CONSOLE",
+            "ASTERINAS_BROWSER_M6_CONSOLE",
+            "ASTERINAS_BROWSER_M7_CONSOLE",
+        ):
+            self.assertNotIn(unused_variable, network_bootargs)
+        self.assertLess(
+            len(f'setenv bootargs "{network_bootargs}"'.encode()),
+            1024,
+        )
+
+    def test_physical_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "evidence"
+            output.mkdir()
+            fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+            arguments = argparse.Namespace(output_directory=output)
+            operations = PhysicalGateOperations(arguments, fixture=fixture)
+
+            with operations:
+                self.assertTrue(fixture.running)
+                operations.invalidate()
+                result: dict[str, object] = {
+                    "passed": True,
+                    "reason": "pass",
+                    "target": "network",
+                }
+                operations.publish(b"serial\n", result)
+                self.assertIn("network_fixture", result)
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["reason"], "network fixture evidence mismatch")
+            self.assertFalse(fixture.running)
+
+            summary = json.loads(
+                (output / "network-fixture.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["request_count"], 0)
+            self.assertEqual(summary["payload_size"], 65536)
+            published = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(published["network_fixture"]["request_count"], 0)
+
+    def test_physical_gate_accepts_only_complete_ymodem_contract(self) -> None:
+        required = [
+            "/dev/ttyUSB0",
+            "--booti",
+            "kernel.lzma",
+            "--initrd",
+            "stage1.cpio",
+            "--dtb",
+            "board.dtb",
+            "--expected-crc32",
+            "booti=12345678,dtb=90abcdef,initrd=deadbeef",
+            "--host-interface",
+            "enp12s0",
+            "--output-directory",
+            "/tmp/gmac-gate",
+            "--load-transport",
+            "ymodem",
+        ]
+        with self.assertRaises(SystemExit):
+            _parse_args(required)
+
+        parsed = _parse_args(
+            required
+            + [
+                "--ymodem-directory",
+                "/tmp/transfer",
+                "--booti-compressed-crc32",
+                "13572468",
+                "--booti-uncompressed-size",
+                "14530072",
+            ]
+        )
+        self.assertEqual(parsed.load_transport, "ymodem")
+        self.assertEqual(parsed.booti_compressed_crc32, "13572468")
+        self.assertEqual(parsed.booti_uncompressed_size, 14530072)
+        self.assertEqual(parsed.target, GateTarget.BROWSER)
+
+        network = _parse_args(required[:-2] + ["--target", "network"])
+        self.assertEqual(network.target, GateTarget.NETWORK)
+        with self.assertRaises(SystemExit):
+            _parse_args(required[:-2] + ["--target", "desktop"])
 
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
@@ -128,9 +291,82 @@ class MegrezGmacGateTests(unittest.TestCase):
             ["invalidate", "address-check", "publish"],
         )
         self.assertIsNotNone(operations.published)
+        self.assertEqual(result["target"], "browser")
+
+    def test_network_target_passes_without_desktop_or_browser_evidence(self) -> None:
+        evidence = complete_network_evidence()
+        operations = FakeOperations(
+            chunks=(evidence[13:-17], evidence[-17:], b"late harmless log\n"),
+            boot=evidence[:13],
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+            ),
+            operations,
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["target"], "network")
+        self.assertNotIn("javascript_status", result)
+        self.assertNotIn(DESKTOP_M4_MILESTONES[-1].encode(), operations.published[0])
+        self.assertNotIn(DESKTOP_M6_REMOTE_MARKER.encode(), operations.published[0])
+        self.assertIn(b"late harmless log", operations.published[0])
+
+    def test_network_classifier_rejects_bad_or_fatal_evidence(self) -> None:
+        complete = complete_network_evidence()
+        self.assertTrue(classify_physical_network_transcript(complete).passed)
+        cases = (
+            (
+                complete.replace(EXPECTED_PHYSICAL_NETWORK_MILESTONES[-1], b""),
+                "missing physical network milestone",
+            ),
+            (
+                complete + EXPECTED_PHYSICAL_NETWORK_MILESTONES[-1] + b"\n",
+                "duplicate physical network milestone",
+            ),
+            (
+                b"\n".join(reversed(EXPECTED_PHYSICAL_NETWORK_MILESTONES)),
+                "physical network milestones out of order",
+            ),
+            (
+                complete + b"Kernel panic - not syncing\n",
+                "fatal transcript marker: kernel panic",
+            ),
+        )
+        for transcript, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    classify_physical_network_transcript(transcript).reason,
+                    reason,
+                )
+
+    def test_network_target_rejects_fatal_marker_seen_during_drain(self) -> None:
+        operations = FakeOperations(
+            chunks=(complete_network_evidence(), b"Fatal bus error\n"),
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+            ),
+            operations,
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["target"], "network")
+        self.assertEqual(
+            result["reason"], "fatal transcript marker: GMAC fatal bus error"
+        )
 
     def test_split_browser_network_markers_pass_without_icmp(self) -> None:
         self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
+        self.assertEqual(PHYSICAL_M7_MILESTONES, EXPECTED_PHYSICAL_M7_MILESTONES)
         evidence = complete_browser_evidence()
         operations = FakeOperations(
             chunks=(
@@ -161,8 +397,17 @@ class MegrezGmacGateTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("host_ping_count", result)
+        self.assertEqual(result["target"], "browser")
         self.assertEqual(result["javascript_status"], "limited-pass")
         self.assertIn(b"late harmless log", operations.published[0])
+
+    def test_quiet_serial_interval_is_not_treated_as_disconnect(self) -> None:
+        evidence = complete_browser_evidence()
+        operations = FakeOperations(chunks=(b"", evidence, b""))
+
+        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
+
+        self.assertTrue(result["passed"], result)
 
     def test_failure_or_fatal_drain_closes_and_never_passes(self) -> None:
         evidence = complete_browser_evidence()
@@ -177,6 +422,22 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertLess(
             operations.events.index("close"), operations.events.index("publish")
         )
+
+    def test_stage1_failure_stops_the_boot_wait_immediately(self) -> None:
+        operations = FakeOperations(
+            chunks=(
+                b"DEBIAN_ROOTFS_FAIL reason=root-init-argument\n",
+                b"this second boot read must not happen\n",
+            )
+        )
+
+        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["reason"], "fatal transcript marker: Stage1 rootfs failure"
+        )
+        self.assertEqual(operations.events.count("read"), 1)
 
     def test_termination_unwinds_serial_without_publishing_result(self) -> None:
         class TerminatedOperations(FakeOperations):
@@ -210,7 +471,8 @@ class MegrezGmacGateTests(unittest.TestCase):
             (
                 b"\n".join(reversed(EXPECTED_PHYSICAL_MILESTONES))
                 + b"\nDEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass"
-                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass\n"
+                + b"\n".join(EXPECTED_PHYSICAL_M7_MILESTONES),
                 "physical milestones out of order",
             ),
             (
@@ -259,6 +521,10 @@ class MegrezGmacGateTests(unittest.TestCase):
             (
                 complete + b"DEBIAN_BROWSER_M6_FAIL reason=remote-window-timeout\n",
                 "fatal transcript marker: browser guest failure",
+            ),
+            (
+                complete + b"DEBIAN_BROWSER_M7_FAIL reason=home-title-timeout\n",
+                "fatal transcript marker: Baidu page guest failure",
             ),
         )
         for transcript, reason in cases:

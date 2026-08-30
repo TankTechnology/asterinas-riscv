@@ -76,7 +76,7 @@ impl Inode {
         }
         inner.set_dtime(utils::now());
         inner.set_file_size(0);
-        inner.set_file_acl(0);
+        inner.set_file_acl(0)?;
         if inner.desc.sector_count > 0
             && let Some(block_manager) = block_manager
         {
