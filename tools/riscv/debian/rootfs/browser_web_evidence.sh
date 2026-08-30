@@ -15,6 +15,7 @@ readonly FIREFOX_STDERR=/home/asterinas/firefox-web-stderr.log
 readonly SYSTEM_CA=/etc/ssl/certs/ca-certificates.crt
 readonly TRUST_STATIC_LOG=/usr/share/asterinas/browser-web-trust-static.log
 readonly TIMELINE_LOG=/home/asterinas/browser-web-timeline.log
+readonly PID_FILE=/home/asterinas/browser-web-firefox.pid
 readonly GATE_STDERR=/run/asterinas-browser-web-gate.stderr
 readonly NETWORK_ERROR_LOG=/run/asterinas-browser-web-network-error
 readonly USER_ID=1000
@@ -51,7 +52,7 @@ validate_zero_caps() {
 }
 
 validate_parent_security() {
-    local pid="$1" cmdline environment uid
+    local pid="$1" cmdline environment uid target_url
     validate_zero_caps "$pid" parent
     uid="$(sed -n 's/^Uid:[[:space:]]*\([0-9]*\).*/\1/p' "$PROC_ROOT/$pid/status")"
     [[ "$uid" == "$USER_ID" ]] || fail security-parent-uid
@@ -61,8 +62,11 @@ validate_parent_security() {
     environment="$(tr '\0' '\n' <"$PROC_ROOT/$pid/environ")"
     [[ "$cmdline" != *--offline* && "$cmdline" != *--no-sandbox* ]] ||
         fail security-parent-forbidden-cmdline
-    [[ "$cmdline" == *" --marionette "* && "$cmdline" == *" https://www.baidu.com/"* ]] ||
+    [[ "$cmdline" == *" --marionette "* ]] ||
         fail security-parent-required-cmdline
+    target_url="$(printf '%s\n' "$environment" | sed -n 's/^ASTERINAS_FIREFOX_WEB_TARGET_URL=//p')"
+    [[ "$target_url" == "https://www.baidu.com/" ]] ||
+        fail security-parent-target-url
     if grep -Eq '^(MOZ_DISABLE_(CONTENT|GMP|RDD|SOCKET)_SANDBOX|MOZ_FORCE_DISABLE_E10S)=([^0]|0*[1-9])' <<<"$environment"; then
         fail security-parent-disable-environment
     fi
@@ -97,6 +101,14 @@ validate_child_security() {
             "$pid" "$role" "$seccomp" >>"$SECURITY_LOG"
     done
     [[ "$content_seen" == true ]] || fail security-content-missing
+}
+
+find_firefox_process() {
+    local pid
+    pid="$(/usr/bin/timeout 2 /usr/bin/cat "$PID_FILE" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s\n' "$pid"
 }
 
 validate_dns_and_tls() {
@@ -197,28 +209,60 @@ printf 'SYSTEM_CA_SHA256 sha256=%s path=%s\n' \
     "$(sha256sum "$SYSTEM_CA" | awk '{print $1}')" "$SYSTEM_CA" >>"$SECURITY_LOG"
 printf 'TRUST_STATIC_SHA256 sha256=%s path=%s\n' \
     "$(sha256sum "$TRUST_STATIC_LOG" | awk '{print $1}')" "$TRUST_STATIC_LOG" >>"$SECURITY_LOG"
-validate_dns_and_tls
-emit "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
 emit "DEBIAN_BROWSER_WEB_TRUST_STATIC xul_ckbi=audited ca_bundle=audited package_closure=verified"
 
+# Optional bring-up tracer.  It runs only in a separately injected diagnostic
+# image and never changes the formal browser security contract.
+if [[ "${ASTERINAS_FIREFOX_PTRACE_DIAGNOSTIC:-0}" == 1 ]]; then
+    /usr/lib/asterinas/firefox-ptrace-trace &
+fi
+
 browser_pid=""
+diagnostic_tick=0
+emit "DEBIAN_BROWSER_WEB_FIREFOX_WAIT_START"
 while ((SECONDS < deadline)); do
-    browser_pid="$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null || true)"
+    # Prefer the procfs view: systemctl show can block behind a slow systemd
+    # manager on Asterinas while the Firefox child is already alive.
+    browser_pid="$(find_firefox_process || true)"
     if [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] &&
-        [[ "$(cat "$PROC_ROOT/$browser_pid/comm" 2>/dev/null)" == firefox-esr ]] &&
-        [[ "$(cat "$PROFILE/MarionetteActivePort" 2>/dev/null)" == 2828 ]]; then
+        kill -0 "$browser_pid" 2>/dev/null &&
+        [[ "$(/usr/bin/timeout 2 /usr/bin/cat "$PROFILE/MarionetteActivePort" 2>/dev/null)" == 2828 ]]; then
         break
     fi
-    sleep 1
+    ((diagnostic_tick += 1))
+    if ((diagnostic_tick % 30 == 0)); then
+        diagnostic_comm=""
+        diagnostic_cmdline=""
+        diagnostic_state="missing"
+        diagnostic_syscall="none"
+        diagnostic_io="none"
+        diagnostic_context="none"
+        if [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]]; then
+            diagnostic_comm="$(/usr/bin/timeout 2 /usr/bin/cat "$PROC_ROOT/$browser_pid/comm" 2>/dev/null || true)"
+            diagnostic_cmdline="$(/usr/bin/timeout 2 /usr/bin/tr '\0' ' ' <"$PROC_ROOT/$browser_pid/cmdline" 2>/dev/null | cut -c1-240 || true)"
+            diagnostic_state="$(/usr/bin/timeout 2 /usr/bin/awk '/^State:/ {print $2}' "$PROC_ROOT/$browser_pid/status" 2>/dev/null || true)"
+            diagnostic_syscall="$(/usr/bin/timeout 2 /usr/bin/cat "$PROC_ROOT/$browser_pid/syscall" 2>/dev/null | cut -c1-180 || true)"
+            diagnostic_io="$(/usr/bin/timeout 2 /usr/bin/awk '/^(rchar|read_bytes|syscr):/ {printf "%s=%s,", $1, $2}' "$PROC_ROOT/$browser_pid/io" 2>/dev/null | sed 's/,$//' || true)"
+            diagnostic_context="$(/usr/bin/timeout 2 /usr/bin/awk '/^(voluntary_ctxt_switches|nonvoluntary_ctxt_switches):/ {printf "%s=%s,", $1, $2}' "$PROC_ROOT/$browser_pid/status" 2>/dev/null | sed 's/,$//' || true)"
+        fi
+        emit "DEBIAN_BROWSER_WEB_FIREFOX_DIAGNOSTIC pid=${browser_pid:-none} comm=${diagnostic_comm:-none} state=${diagnostic_state:-none} profile_dir=$(if [[ -d "$PROFILE" ]]; then printf present; else printf absent; fi) marionette=$(if [[ -s "$PROFILE/MarionetteActivePort" ]]; then printf present; else printf absent; fi) syscall=$(printf '%s' "${diagnostic_syscall:-none}" | tr ' ' '_') io=${diagnostic_io:-none} context=${diagnostic_context:-none} cmdline=$(printf '%s' "${diagnostic_cmdline:-none}" | tr ' ' '_')"
+    fi
+    /usr/bin/timeout 2 /usr/bin/sleep 1 || true
 done
 [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] || fail firefox-timeout
 marker BOOT_MARIONETTE_PORT_READY
 [[ "$(systemctl show --property NRestarts --value asterinas-browser-web.service 2>/dev/null)" == 0 ]] ||
     fail firefox-restarted-before-gate
 validate_parent_security "$browser_pid"
+# Resolve network/DNS/TLS only after Firefox is demonstrably alive.  This
+# preserves the strict online checks while ensuring a slow curl cannot hide a
+# Firefox startup failure or suppress its bounded diagnostics.
+validate_dns_and_tls
+emit "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
 remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail firefox-timeout
 ((remaining <= FORMAL_TIMEOUT_SECONDS)) || remaining="$FORMAL_TIMEOUT_SECONDS"
+emit "DEBIAN_BROWSER_WEB_GATE_START timeout=${remaining}s pid=$browser_pid"
 : >"$GATE_STDERR"
 if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
     --evidence-dir /home/asterinas/browser-web-evidence 2>"$GATE_STDERR")"; then

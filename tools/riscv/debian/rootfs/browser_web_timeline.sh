@@ -50,11 +50,21 @@ case "${1-}" in
     wait-x)
         marker BOOT_NETWORK_READY
         deadline=$((SECONDS + 300))
-        while [[ ! -S /tmp/.X11-unix/X0 ]]; do
-            ((SECONDS < deadline)) || exit 1
+        # A stale X11 socket can survive a failed Xorg start.  Treat the
+        # socket as a hint only; xdpyinfo must complete against the live
+        # server before Firefox is allowed to exec.
+        while :; do
+            if [[ -S /tmp/.X11-unix/X0 ]] &&
+                /usr/bin/timeout 5 /usr/bin/xdpyinfo -display "${DISPLAY:-:0}" >/dev/null 2>&1; then
+                marker BOOT_X_SOCKET_READY
+                exit 0
+            fi
+            if ((SECONDS >= deadline)); then
+                printf '%s\n' 'ASTERINAS_BROWSER_WEB wait-x failed: bounded xdpyinfo probe did not succeed' >&2
+                exit 1
+            fi
             sleep 1
         done
-        marker BOOT_X_SOCKET_READY
         ;;
     *)
         exit 2

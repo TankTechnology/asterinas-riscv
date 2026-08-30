@@ -10,6 +10,20 @@ Run all commands from the repository root. The validated development image is
 
 ## Proxy and container setup
 
+### binfmt safety boundary
+
+The rootfs builder needs a `qemu-riscv64` binfmt handler for the target-side
+`chroot` steps.  **Do not enable or register that handler on the host** with
+`update-binfmts`, `tonistiigi/binfmt`, or a write to
+`/proc/sys/fs/binfmt_misc/register`: Docker's privileged mount can propagate
+the registration back to the host and leave a persistent global interpreter.
+Before any build, inspect the host registration read-only and stop if it is
+missing or unexpected.  The supported build runner must provide an already
+audited, isolated binfmt boundary and pass its mounted tree through
+`ASTERINAS_BINFMT_ROOT`; the builder only verifies the tree and never mutates
+it.  If that boundary is unavailable, keep the rootfs build deferred and run
+the unit/contract tests instead of changing host binfmt state.
+
 Check Clash without changing Docker, apt, Cargo, or Git configuration:
 
 ```bash
@@ -21,7 +35,7 @@ curl --proxy "$ASTERINAS_PROXY" --fail --head \
 Pass the proxy only to this container invocation:
 
 ```bash
-docker run --rm -it --privileged --network=host -v /dev:/dev \
+docker run --rm -it --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -e http_proxy="$ASTERINAS_PROXY" -e https_proxy="$ASTERINAS_PROXY" \
   -e HTTP_PROXY="$ASTERINAS_PROXY" -e HTTPS_PROXY="$ASTERINAS_PROXY" \
@@ -38,7 +52,8 @@ apt-get install -y --no-install-recommends \
   gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
   linux-libc-dev-riscv64-cross cpio e2fsprogs curl gpgv device-tree-compiler \
   qemu-system-misc
-update-binfmts --enable qemu-riscv64
+# Historical host-mutating command; do not run:
+# update-binfmts --enable qemu-riscv64
 cat /proc/sys/fs/binfmt_misc/qemu-riscv64
 ```
 
