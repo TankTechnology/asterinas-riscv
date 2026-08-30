@@ -1136,8 +1136,10 @@ configure_logind_namespace_compatibility() {
 # Asterinas does not yet provide the user/mount namespace contract used by
 # Debian's systemd-logind sandbox. Keep functional logind without that sandbox.
 PrivateTmp=no
+ProtectClock=no
 ProtectControlGroups=no
 ProtectHome=no
+ProtectHostname=no
 ProtectKernelLogs=no
 ProtectKernelModules=no
 ProtectSystem=no
