@@ -125,6 +125,10 @@ impl RawUserContext {
 
         crate::task::call_pre_user_run_handler(&guard);
 
+        if clear_previous_virtualization_mode() {
+            crate::warn!("Cleared stale hstatus.SPV before returning to user mode");
+        }
+
         // Return to userspace with interrupts disabled. Otherwise, interrupts
         // after switching `sscratch` will mess up the CPU state.
         core::mem::forget(guard);
@@ -133,7 +137,66 @@ impl RawUserContext {
     }
 }
 
+/// Ensures that `sret` enters ordinary U-mode rather than virtual U-mode.
+///
+/// The H extension makes `hstatus.SPV` part of the return-mode state used by
+/// `sret`. A non-hypervisor kernel must not inherit a stale SPV bit from
+/// firmware or an earlier boot stage.
+fn clear_previous_virtualization_mode() -> bool {
+    if !has_extensions(IsaExtensions::H) {
+        return false;
+    }
+
+    const HSTATUS_SPV: usize = 1 << 7;
+    let previous: usize;
+    // SAFETY: The H extension was detected on every application hart. Clearing
+    // SPV only selects ordinary (non-virtualized) mode for the next `sret`.
+    unsafe {
+        asm!(
+            "csrrc {previous}, hstatus, {mask}",
+            previous = out(reg) previous,
+            mask = in(reg) HSTATUS_SPV,
+            options(nostack)
+        )
+    };
+    previous & HSTATUS_SPV != 0
+}
+
 unsafe extern "C" {
     unsafe fn trap_entry();
     unsafe fn run_user(regs: &mut RawUserContext);
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::arch::asm;
+
+    use super::clear_previous_virtualization_mode;
+    use crate::{
+        arch::cpu::extension::{IsaExtensions, has_extensions},
+        prelude::ktest,
+    };
+
+    const HSTATUS_SPV: usize = 1 << 7;
+
+    #[ktest]
+    fn clears_stale_hypervisor_virtualization_before_user_return() {
+        if !has_extensions(IsaExtensions::H) {
+            return;
+        }
+
+        let interrupt_guard = crate::irq::disable_local();
+
+        // SAFETY: H is present, and the test restores the only bit that it
+        // changes before returning to the rest of the kernel tests.
+        unsafe { asm!("csrs hstatus, {mask}", mask = in(reg) HSTATUS_SPV) };
+
+        assert!(clear_previous_virtualization_mode());
+
+        let hstatus: usize;
+        // SAFETY: H is present, so hstatus is accessible from HS-mode.
+        unsafe { asm!("csrr {value}, hstatus", value = out(reg) hstatus) };
+        assert_eq!(hstatus & HSTATUS_SPV, 0);
+        drop(interrupt_guard);
+    }
 }
