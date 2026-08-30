@@ -499,8 +499,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             profile="debian-browser",
             artifacts=self.artifacts,
             bootargs=(
-                "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz "
-                "loglevel=info init=/init "
+                "console=tty0 console=ttyS0 loglevel=info init=/init "
                 "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
                 "asterinas.mmc_write_partition2 "
                 "asterinas.reboot_after=600 -- --root-init=systemd"
@@ -583,6 +582,18 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
                 self.assertRaisesRegex(DebugContractError, "partition-2 write gate"),
             ):
                 replace(plan, bootargs=bootargs).validate()
+
+    def test_schema_two_rejects_stale_bare_megrez_argument(self) -> None:
+        plan = self._plan()
+        stale_bootargs = plan.bootargs.replace(
+            "console=ttyS0 ",
+            "console=ttyS0 cpu_no_boost_1_6ghz ",
+        )
+
+        with self.assertRaisesRegex(
+            DebugContractError, "stale Megrez argument reaches init argv"
+        ):
+            replace(plan, bootargs=stale_bootargs).validate()
 
     def test_schema_one_canonical_contract_remains_unchanged(self) -> None:
         legacy = MegrezDebugPlanTests()
