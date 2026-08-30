@@ -21,6 +21,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_gmac_gate import physical_bootargs
 from tools.riscv.megrez_preboard import (
     PreboardError,
     PreboardPermit,
@@ -62,11 +63,7 @@ class MegrezPreboardTests(unittest.TestCase):
             artifacts=tuple(
                 self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER
             ),
-            bootargs=(
-                "console=tty0 console=ttyS0 loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
