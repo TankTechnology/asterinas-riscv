@@ -490,7 +490,10 @@ Megrez preflight。所有精确命令和证据字段仍以工具文档为准。
 #### 7.3.1 第一进程 console-loss 诊断
 
 临时诊断参数是 `asterinas.first_process_diag=1`；默认关闭，且只有注册
-console registry 为空时才激活。suppression probe 保留普通 `ns16550a`
+console registry 为空时才激活。真机保留可用 UART 时，必须同时显式传入
+`asterinas.first_process_diag_force=1`，激活 marker 会记录
+`console_registry=registered`；force 参数单独出现不会激活诊断。suppression
+probe 保留普通 `ns16550a`
 payload UART，要求观察到 NS16550A console 注册、正常用户态 marker，并且
 诊断前缀计数为零。console-loss stage 则只把 payload DTB 的 UART compatible
 改成 `snps,dw-apb-uart`，其 terminal marker 必须精确证明
@@ -505,7 +508,7 @@ QEMU PASS 不授权真机启动，也不能证明 Megrez 上的 UART MMIO 契约
 
 | Last evidence | 解读 |
 |---|---|
-| no `diagnostic_active` | registry 非空、参数缺失或 SBI sink 不可用；不能据此推断 PID 1 边界 |
+| no `diagnostic_active` | registry 非空且未 force、参数缺失或 SBI sink 不可用；不能据此推断 PID 1 边界 |
 | `process_components_ready` only | 第一进程的设备初始化没有返回 |
 | `device_init_ready` only | 标准 I/O 初始化没有返回 |
 | `stdio_init_ready` only | PID 1 task 没有到达第一次 U-mode 入口 |
