@@ -20,6 +20,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_gmac_gate import physical_bootargs
 from tools.riscv import megrez_debian_install
 from tools.riscv.megrez_debian_install import (
     InstallError,
@@ -60,11 +61,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             2,
             "debian-browser",
             tuple(self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER),
-            (
-                "console=tty0 console=ttyS0 cpu_no_boost_1_6ghz loglevel=info "
-                "init=/init asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            physical_bootargs(600),
             4,
             True,
             DEBIAN_BROWSER_MARKERS,
