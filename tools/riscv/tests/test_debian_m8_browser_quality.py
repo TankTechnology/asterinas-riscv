@@ -470,8 +470,13 @@ case "$1" in
         printf '%s' "$value" >"$ASTERINAS_M8_TYPED"
         ;;
     mousemove)
-        [[ "$*" == 'mousemove --window 42 80 240 click 1' ]] || exit 11
-        printf '3' >"$ASTERINAS_M8_STATE"
+        case "$*" in
+            'mousemove --window 42 100 165 click 1') : ;;
+            'mousemove --window 42 90 313 click 1')
+                printf '3' >"$ASTERINAS_M8_STATE"
+                ;;
+            *) exit 11 ;;
+        esac
         ;;
     key)
         case "${2-}" in
@@ -493,7 +498,7 @@ case "$1" in
                 ;;
             alt+Left) printf '2' >"$ASTERINAS_M8_STATE" ;;
             alt+Right) printf '3' >"$ASTERINAS_M8_STATE" ;;
-            ctrl+l|ctrl+a|End|Home|Tab) : ;;
+            ctrl+l|ctrl+a|End|Home) : ;;
             *) exit 13 ;;
         esac
         ;;
@@ -624,10 +629,10 @@ done
             "key Return",
             "key End",
             "key Home",
-            "key Tab",
+            "mousemove --window 42 100 165 click 1",
             "type --delay 0 -- asterinas",
             "key Return",
-            "mousemove --window 42 80 240 click 1",
+            "mousemove --window 42 90 313 click 1",
             "key alt+Left",
             "key alt+Right",
             "key ctrl+l",
