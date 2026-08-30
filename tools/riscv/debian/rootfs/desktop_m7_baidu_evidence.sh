@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-readonly CONSOLE="${ASTERINAS_BROWSER_M7_CONSOLE:-/dev/console}"
+readonly CONSOLE="${ASTERINAS_BROWSER_M7_CONSOLE:-${ASTERINAS_BROWSER_M6_CONSOLE:-/dev/console}}"
 readonly PROC_ROOT="${ASTERINAS_BROWSER_M7_PROC_ROOT:-/proc}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS:-60}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_BROWSER_M7_COMMAND_TIMEOUT_SECONDS:-10}"
@@ -15,6 +15,8 @@ readonly HOME_URL='https://m.baidu.com/'
 readonly SEARCH_QUERY='asterinas'
 readonly SEARCH_URL="https://m.baidu.com/s?word=$SEARCH_QUERY&from=1020539d"
 readonly USER_ID=1000
+readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 export DISPLAY=:0
 export XAUTHORITY=/home/asterinas/.Xauthority
 
@@ -32,6 +34,17 @@ fail() {
 [[ "$CAPTURE_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-capture-delay
 [[ "$FOCUS_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-focus-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
+browser_arguments=(--enable_javascript=0)
+if [[ -n "$PROXY_HOST" || -n "$PROXY_PORT" ]]; then
+    [[ "$PROXY_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail invalid-proxy
+    [[ "$PROXY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || fail invalid-proxy
+    ((PROXY_PORT <= 65535)) || fail invalid-proxy
+    browser_arguments+=(
+        --http_proxy=1
+        --http_proxy_host="$PROXY_HOST"
+        --http_proxy_port="$PROXY_PORT"
+    )
+fi
 
 window_id=""
 process_id=""
@@ -176,7 +189,7 @@ runuser -u asterinas -- /usr/bin/env \
     DISPLAY=:0 \
     XAUTHORITY=/home/asterinas/.Xauthority \
     HOME=/home/asterinas \
-    /usr/bin/netsurf-gtk -v --enable_javascript=0 "$HOME_URL" \
+    /usr/bin/netsurf-gtk -v "${browser_arguments[@]}" "$HOME_URL" \
     >>"$NETSURF_LOG" 2>&1 &
 wait_for_browser_start
 timeout "$COMMAND_TIMEOUT_SECONDS" \
@@ -190,10 +203,7 @@ find_single_process || fail home-process
 find_single_window || fail home-window
 emit "DEBIAN_BROWSER_M7_HOME url=https://m.baidu.com/ variant=mobile title=baidu process=netsurf"
 
-timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --sync --window "$window_id" 500 17 || fail search-focus
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool click 1 || fail search-click
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail search-select
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+l || fail search-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$SEARCH_URL" || fail search-type
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail search-submit

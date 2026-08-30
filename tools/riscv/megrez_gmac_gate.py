@@ -26,8 +26,12 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
 )
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
-    DESKTOP_M6_JAVASCRIPT_STATUSES,
     DESKTOP_M6_REMOTE_MARKER,
+)
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
@@ -106,16 +110,18 @@ PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
+PHYSICAL_M7_MILESTONES = (
+    DESKTOP_M7_HOME_MARKER.encode(),
+    DESKTOP_M7_SEARCH_MARKER.encode(),
+    DESKTOP_M7_READY_MARKER.encode(),
+)
 _BROWSER_JAVASCRIPT_RE = re.compile(
     rb"DEBIAN_BROWSER_M6_JAVASCRIPT status=(limited-pass|disabled|failed)"
 )
 _BROWSER_READY_RE = re.compile(
     rb"DEBIAN_BROWSER_M6_READY remote=baidu javascript=(limited-pass|disabled|failed)"
 )
-PHYSICAL_READY_MARKERS = tuple(
-    f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode()
-    for status in DESKTOP_M6_JAVASCRIPT_STATUSES
-)
+PHYSICAL_READY_MARKERS = (DESKTOP_M7_READY_MARKER.encode(),)
 PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
@@ -123,6 +129,7 @@ _FATAL_MARKERS = (
     (b"debian_rootfs_fail reason=", "Stage1 rootfs failure"),
     (b"debian_network_m5_fail reason=", "guest network failure"),
     (b"debian_browser_m6_fail reason=", "browser guest failure"),
+    (b"debian_browser_m7_fail reason=", "Baidu page guest failure"),
     (b"fatal bus error", "GMAC fatal bus error"),
 )
 
@@ -290,6 +297,13 @@ def classify_physical_transcript(transcript: bytes) -> GateResult:
     if javascript.group(1) != ready.group(1):
         return GateResult(False, "missing or mismatched browser ready evidence", None)
     positions.extend((javascript.start(), ready.start()))
+    for marker in PHYSICAL_M7_MILESTONES:
+        count = transcript.count(marker)
+        if count == 0:
+            return GateResult(False, "missing physical Baidu page milestone", None)
+        if count != 1:
+            return GateResult(False, "duplicate physical Baidu page milestone", None)
+        positions.append(transcript.find(marker))
     if positions != sorted(positions):
         return GateResult(False, "physical milestones out of order", None)
     return GateResult(True, "pass", None)
