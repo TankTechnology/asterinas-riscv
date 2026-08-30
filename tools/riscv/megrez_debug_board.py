@@ -84,7 +84,7 @@ EIC7700_WATCHDOG0_CLOCK_BIT = 1 << 28
 EIC7700_WATCHDOG0_RESET_N_BIT = 1 << 0
 DW_WATCHDOG_COMPONENT_TYPE = 0x44570120
 DW_WATCHDOG_MAX_TIMEOUT = 0x0F
-MAX_BOARD_TIMEOUT = 660.0
+MAX_BOARD_TIMEOUT = 900.0
 DW_WATCHDOG_RECOVERY_CONTROL = 0x1F
 _UBOOT_MEMORY_LINE = re.compile(
     r"(?m)^(?P<address>[0-9a-fA-F]{8,16}):"
@@ -269,7 +269,10 @@ class BoardRunConfig:
             or not math.isfinite(self.timeout)
             or not 0 < self.timeout <= MAX_BOARD_TIMEOUT
         ):
-            raise ValueError("board timeout must be finite, positive, and at most 660")
+            raise ValueError(
+                "board timeout must be finite, positive, and at most "
+                f"{MAX_BOARD_TIMEOUT:g}"
+            )
 
 
 class BoardOperations(Protocol):

@@ -207,9 +207,13 @@ make test_riscv_megrez_debug_board \
   MEGREZ_DEBUG_SIMULATION_RESULT="$PWD/target/qemu-uboot/megrez-debug/fast/result.json"
 ```
 
-The command has one declining timeout, capped at 300 seconds. Reusing RAM is
-safe only when U-Boot reports the exact planned size/address CRC; otherwise
-the artifact is retransmitted and verified again before `booti`.
+The command has one declining timeout, capped at 900 seconds. Its default
+remains 300 seconds. A desktop plan using `asterinas.reboot_after=600` must use
+`--timeout 900`: the Megrez guest clock can advance more slowly than host
+monotonic time, so a 660-second host budget can expire before the bounded guest
+recovery. Reusing RAM is safe only when U-Boot reports the exact planned
+size/address CRC; otherwise the artifact is retransmitted and verified again
+before `booti`.
 
 For a diagnostic boot that may hang before Asterinas can arm
 `asterinas.reboot_after`, add `--hardware-watchdog`. This is an explicit
