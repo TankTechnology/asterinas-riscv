@@ -99,6 +99,24 @@ The existing `systemd-sysusers` failure and `fs.nr_open` warning are recorded
 as separate compatibility work. They do not invalidate a passing M7 browser
 gate and are not mixed into speculative browser fixes.
 
+## Physical input-capability degradation
+
+The physical serial collector must not stop before M6/M7 merely because the
+board has no pointer device. Systemd orders the browser services after the M4
+evidence service even when M4 exits unsuccessfully, so an exact pair of
+`DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device` followed by
+`DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout` is a supported degraded branch.
+Only that exact branch may replace the ordered M4 success milestones. M5 and
+every M6/M7 marker remain mandatory, unique, and ordered, and the collector
+must still wait for the fresh automatic U-Boot recovery.
+
+A completed degraded branch is deliberately published as `passed: false` with
+an input-missing reason even when the Baidu homepage and search markers pass.
+This keeps browser evidence and input capability separate: it proves the live
+page without claiming a fully usable mouse desktop. Any other M4 failure,
+missing diagnostic, reordered branch, kernel fatal marker, or incomplete M6/M7
+sequence remains a hard gate failure.
+
 ## Acceptance
 
 M7 is complete when:
@@ -109,4 +127,7 @@ M7 is complete when:
 - one real QEMU run publishes a passing M7 result and both screenshots;
 - visual inspection confirms the real homepage has recognizable basic content
   and the second screenshot shows the submitted search result;
+- one physical run can retain complete M6/M7 and automatic-recovery evidence
+  when the exact pointer-missing degradation occurs, without reporting the
+  overall desktop as passed;
 - no Docker, QEMU, Unix socket, or temporary runtime directory is left behind.
