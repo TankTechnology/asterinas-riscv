@@ -191,6 +191,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                         "fonts-wqy-microhei",
                         "iproute2",
                         "iputils-ping",
+                        "x11-apps",
                         "xdotool",
                     )
                 )
@@ -198,7 +199,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages + ("curl", "iproute2", "iputils-ping", "xdotool"),
+            m4.identity_packages
+            + ("curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"),
         )
         self.assertIn("fonts-wqy-microhei", m5.requested_packages)
         self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)

@@ -288,7 +288,8 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
-		tools.riscv.tests.test_debian_m7_baidu -v
+		tools.riscv.tests.test_debian_m7_baidu \
+		tools.riscv.tests.test_debian_m8_browser_quality -v
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
