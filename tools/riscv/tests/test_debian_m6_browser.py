@@ -168,7 +168,7 @@ set -eu
 printf '%s\n' "$*" >>"$ASTERINAS_M6_ACTIONS"
 case "$1" in
   search)
-    [ "$*" = 'search --onlyvisible --classname ^netsurf-gtk$' ] || exit 10
+    [ "$*" = 'search --classname ^netsurf-gtk$' ] || exit 10
     if [ "$ASTERINAS_M6_XDOTOOL_MODE" = duplicate ]; then
       printf '42\n43\n'
     else
@@ -190,7 +190,7 @@ case "$1" in
       printf 'result.png - NetSurf\n'
     fi
     ;;
-  set_desktop|windowmap|windowactivate) ;;
+  set_desktop|set_desktop_for_window|windowmap|windowactivate) ;;
   type) printf '%s\n' "$*" >"$ASTERINAS_M6_TYPED" ;;
   key)
     [ "${2-}" != Return ] || : >"$ASTERINAS_M6_STATE"
@@ -248,8 +248,12 @@ esac
             typed.read_text(encoding="utf-8"),
         )
         actions = Path(environment["ASTERINAS_M6_ACTIONS"]).read_text(encoding="utf-8")
-        self.assertIn("set_desktop 1\n", actions)
-        self.assertIn("search --onlyvisible --classname ^netsurf-gtk$\n", actions)
+        self.assertIn("search --classname ^netsurf-gtk$\n", actions)
+        self.assertIn("set_desktop_for_window 42 1\n", actions)
+        self.assertLess(
+            actions.index("set_desktop_for_window 42 1\n"),
+            actions.index("set_desktop 1\n"),
+        )
         self.assertNotIn("windowmap --sync 42\n", actions)
 
     def test_guest_evidence_distinguishes_failed_and_disabled_javascript(

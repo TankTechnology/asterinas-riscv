@@ -22,9 +22,15 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_JAVASCRIPT_STATUSES,
     DESKTOP_M6_REMOTE_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_MILESTONES,
+    PHYSICAL_M7_MILESTONES,
     _parse_args,
     GateConfig,
     GateFailure,
@@ -50,6 +56,11 @@ EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
+EXPECTED_PHYSICAL_M7_MILESTONES = (
+    DESKTOP_M7_HOME_MARKER.encode(),
+    DESKTOP_M7_SEARCH_MARKER.encode(),
+    DESKTOP_M7_READY_MARKER.encode(),
+)
 
 
 def complete_browser_evidence(status: str = "limited-pass") -> bytes:
@@ -59,6 +70,7 @@ def complete_browser_evidence(status: str = "limited-pass") -> bytes:
                 *EXPECTED_PHYSICAL_MILESTONES,
                 f"DEBIAN_BROWSER_M6_JAVASCRIPT status={status}".encode(),
                 f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode(),
+                *EXPECTED_PHYSICAL_M7_MILESTONES,
             )
         )
         + b"\n"
@@ -354,6 +366,7 @@ class MegrezGmacGateTests(unittest.TestCase):
 
     def test_split_browser_network_markers_pass_without_icmp(self) -> None:
         self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
+        self.assertEqual(PHYSICAL_M7_MILESTONES, EXPECTED_PHYSICAL_M7_MILESTONES)
         evidence = complete_browser_evidence()
         operations = FakeOperations(
             chunks=(
@@ -458,7 +471,8 @@ class MegrezGmacGateTests(unittest.TestCase):
             (
                 b"\n".join(reversed(EXPECTED_PHYSICAL_MILESTONES))
                 + b"\nDEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass"
-                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass\n"
+                + b"\n".join(EXPECTED_PHYSICAL_M7_MILESTONES),
                 "physical milestones out of order",
             ),
             (
@@ -507,6 +521,10 @@ class MegrezGmacGateTests(unittest.TestCase):
             (
                 complete + b"DEBIAN_BROWSER_M6_FAIL reason=remote-window-timeout\n",
                 "fatal transcript marker: browser guest failure",
+            ),
+            (
+                complete + b"DEBIAN_BROWSER_M7_FAIL reason=home-title-timeout\n",
+                "fatal transcript marker: Baidu page guest failure",
             ),
         )
         for transcript, reason in cases:

@@ -198,6 +198,8 @@ esac
             ASTERINAS_M7_BROWSER_STATE=str(browser_state),
             ASTERINAS_M7_STATE=str(state),
             ASTERINAS_M7_MODE=mode,
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
         )
         return environment, console, actions
 
@@ -228,6 +230,9 @@ esac
             action for action in action_lines if action.startswith("runuser ")
         )
         self.assertIn("--enable_javascript=0", runuser_action)
+        self.assertIn("--http_proxy=1", runuser_action)
+        self.assertIn("--http_proxy_host=10.100.19.216", runuser_action)
+        self.assertIn("--http_proxy_port=17893", runuser_action)
         self.assertTrue(runuser_action.endswith(" https://m.baidu.com/"))
         self.assertLess(
             action_lines.index("windowactivate --sync 42"),
@@ -235,22 +240,60 @@ esac
         )
         self.assertLess(
             action_lines.index("windowfocus --sync 42"),
-            action_lines.index("mousemove --sync --window 42 500 17"),
+            action_lines.index("key ctrl+l"),
         )
-        search_focus = action_lines.index("mousemove --sync --window 42 500 17")
+        search_focus = action_lines.index("key ctrl+l")
         self.assertEqual(
-            action_lines[search_focus : search_focus + 5],
+            action_lines[search_focus : search_focus + 3],
             [
-                "mousemove --sync --window 42 500 17",
-                "click 1",
-                "key ctrl+a",
+                "key ctrl+l",
                 "type --delay 0 -- https://m.baidu.com/s?word=asterinas&from=1020539d",
                 "key Return",
             ],
         )
-        self.assertNotIn("mousemove --sync 500 17", action_lines)
-        self.assertNotIn("mousemove --sync 560 310", action_lines)
+        self.assertFalse(any(line.startswith("mousemove ") for line in action_lines))
+        self.assertNotIn("click 1", action_lines)
         self.assertEqual(action_lines.count("key Return"), 1)
+
+    def test_guest_reuses_the_serial_browser_console_when_m7_is_unset(self) -> None:
+        environment, m7_console, _ = self._environment()
+        shared_console = self.directory / "shared-browser-console"
+        shared_console.write_text("", encoding="utf-8")
+        environment.pop("ASTERINAS_BROWSER_M7_CONSOLE")
+        environment["ASTERINAS_BROWSER_M6_CONSOLE"] = str(shared_console)
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(m7_console.read_text(encoding="utf-8"), "")
+        self.assertIn(
+            DESKTOP_M7_READY_MARKER, shared_console.read_text(encoding="utf-8")
+        )
+
+    def test_guest_rejects_incomplete_physical_proxy_configuration(self) -> None:
+        environment, console, actions = self._environment()
+        del environment["ASTERINAS_DESKTOP_PROXY_PORT"]
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            ["DEBIAN_BROWSER_M7_FAIL reason=invalid-proxy"],
+        )
+        self.assertFalse(actions.exists())
 
     def test_guest_waits_for_home_render_before_announcing_home(self) -> None:
         environment, _, _ = self._environment()
