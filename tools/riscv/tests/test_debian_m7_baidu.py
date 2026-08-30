@@ -131,7 +131,10 @@ class DebianDesktopM7BaiduGuestTests(unittest.TestCase):
 set -eu
 printf '%s\n' "$*" >>"$ASTERINAS_M7_ACTIONS"
 case "$1" in
-  search) printf '42\n' ;;
+  search)
+    [ "$*" = 'search --onlyvisible --classname ^netsurf-gtk$' ] || exit 10
+    printf '42\n'
+    ;;
   getwindowname)
     phase="$(cat "$ASTERINAS_M7_STATE")"
     if [ "$ASTERINAS_M7_MODE" = home-timeout ] && [ "$phase" = 1 ]; then
@@ -219,7 +222,7 @@ esac
             ],
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
-        self.assertIn("search --onlyvisible --class NetSurf", action_lines)
+        self.assertIn("search --onlyvisible --classname ^netsurf-gtk$", action_lines)
         self.assertIn("key ctrl+q", action_lines)
         runuser_action = next(
             action for action in action_lines if action.startswith("runuser ")

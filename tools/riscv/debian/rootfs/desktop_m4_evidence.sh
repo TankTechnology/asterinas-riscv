@@ -75,14 +75,14 @@ fail() {
 }
 
 move_single_window_to_overview_workspace() {
-    local class_name="$1"
+    local instance_name="$1"
     local failure_prefix="$2"
     local window_output
     local -a windows=()
 
     if ! window_output="$(
         DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
-            xdotool search --onlyvisible --class "$class_name"
+            xdotool search --onlyvisible --classname "^${instance_name}$"
     )"; then
         fail "$failure_prefix-search"
     fi
@@ -146,11 +146,11 @@ ready() {
     probe xterm pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
     probe netsurf-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
-        xdotool search --onlyvisible --class NetSurf \
+        xdotool search --onlyvisible --classname '^netsurf-gtk$' \
         >/dev/null || return 1
     probe xterm-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
-        xdotool search --onlyvisible --class XTerm \
+        xdotool search --onlyvisible --classname '^xterm$' \
         >/dev/null || return 1
     window_tree="$(
         bounded env DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
@@ -181,8 +181,8 @@ while ! ready; do
 done
 
 if [[ "${ASTERINAS_DESKTOP_SHOW_OVERVIEW:-0}" == 1 ]]; then
-    move_single_window_to_overview_workspace NetSurf overview-browser
-    move_single_window_to_overview_workspace XTerm overview-terminal
+    move_single_window_to_overview_workspace netsurf-gtk overview-browser
+    move_single_window_to_overview_workspace xterm overview-terminal
     sleep 1
 fi
 

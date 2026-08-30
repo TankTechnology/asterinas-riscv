@@ -1552,11 +1552,11 @@ WantedBy=multi-user.target
                     self.assertEqual(
                         xdotool_log.read_text(encoding="utf-8").splitlines(),
                         [
-                            "search --onlyvisible --class NetSurf",
-                            "search --onlyvisible --class XTerm",
-                            "search --onlyvisible --class NetSurf",
+                            "search --onlyvisible --classname ^netsurf-gtk$",
+                            "search --onlyvisible --classname ^xterm$",
+                            "search --onlyvisible --classname ^netsurf-gtk$",
                             "set_desktop_for_window 42 1",
-                            "search --onlyvisible --class XTerm",
+                            "search --onlyvisible --classname ^xterm$",
                             "set_desktop_for_window 43 1",
                         ],
                     )
@@ -1719,10 +1719,11 @@ printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
   printf '%s\n' "$*" >>"$ASTERINAS_DESKTOP_M4_XDOTOOL_LOG"
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != overview-xdotool ] || exit 1
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != mapped-netsurf ] || \
-  [ "$*" != 'search --onlyvisible --class NetSurf' ] || exit 1
+  [ "$*" != 'search --onlyvisible --classname ^netsurf-gtk$' ] || exit 1
 case "$*" in
-  'search --onlyvisible --class NetSurf') printf '42\n' ;;
-  'search --onlyvisible --class XTerm') printf '43\n' ;;
+  'search --onlyvisible --classname ^netsurf-gtk$') printf '42\n' ;;
+  'search --onlyvisible --classname ^xterm$') printf '43\n' ;;
+  'search '*) exit 9 ;;
 esac
 """,
         }
