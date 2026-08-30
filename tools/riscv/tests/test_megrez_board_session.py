@@ -197,7 +197,11 @@ class ArgumentContractTests(unittest.TestCase):
         )
         self.assertEqual(args.mock_timeout, 0.05)
         self.assertIsNone(args.expected_crc32)
-        self.assertEqual(args.bootargs, board.DEFAULT_BOOTARGS)
+        self.assertEqual(
+            args.bootargs,
+            "loglevel=info init=/init asterinas.reboot_after=120",
+        )
+        self.assertNotIn("cpu_no_boost_1_6ghz", args.bootargs.split())
 
         help_output = io.StringIO()
         with contextlib.redirect_stdout(help_output), self.assertRaises(SystemExit):

@@ -10,7 +10,7 @@ short timeout aborts the session before any risky input. Key steps
 Usage:
     megrez_board_session.py DEVICE \
         --booti booti-name --initrd initrd-name --dtb dtb-name \
-        [--bootargs "cpu_no_boost_1_6ghz ... asterinas.reboot_after=120"] \
+        [--bootargs "loglevel=info init=/init asterinas.reboot_after=120"] \
         --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
         [--yes] [--log FILE]
 
@@ -92,9 +92,7 @@ ARTIFACT_NAME_PATTERN = re.compile(
 AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
 MAX_UBOOT_WAIT_BYTES = 256 * 1024
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
-DEFAULT_BOOTARGS = (
-    "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
-)
+DEFAULT_BOOTARGS = "loglevel=info init=/init asterinas.reboot_after=120"
 MEGREZ_USB_HOST_COMMAND = (
     "fdt set /chosen asterinas,usb-host "
     "/soc/usb0@50480000/dwc3@50480000 "
