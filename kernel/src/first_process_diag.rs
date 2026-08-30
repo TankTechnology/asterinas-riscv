@@ -25,10 +25,27 @@ const STARTUP_STDIO_READY: u8 = 3;
 const WRITE_SYSCALL_NUMBER: usize = 64;
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
+static FORCE: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static STARTUP_STAGE: AtomicU8 = AtomicU8::new(STARTUP_INACTIVE);
 
 aster_cmdline::define_flag_param!("asterinas.first_process_diag", REQUESTED);
+aster_cmdline::define_flag_param!("asterinas.first_process_diag_force", FORCE);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConsoleRegistryToken {
+    Empty,
+    Registered,
+}
+
+impl fmt::Display for ConsoleRegistryToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "empty",
+            Self::Registered => "registered",
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReturnReasonToken {
@@ -120,7 +137,9 @@ impl fmt::Display for ExceptionSnapshot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Marker {
-    DiagnosticActive,
+    DiagnosticActive {
+        console_registry: ConsoleRegistryToken,
+    },
     ProcessComponentsReady,
     DeviceInitReady,
     StdioInitReady,
@@ -148,10 +167,10 @@ enum Marker {
 impl fmt::Display for Marker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DiagnosticActive => write!(
+            Self::DiagnosticActive { console_registry } => write!(
                 f,
-                "{} stage=diagnostic_active console_registry=empty",
-                PREFIX
+                "{} stage=diagnostic_active console_registry={}",
+                PREFIX, console_registry
             ),
             Self::ProcessComponentsReady => {
                 write!(f, "{} stage=process_components_ready", PREFIX)
@@ -331,6 +350,7 @@ pub(super) fn on_process_components_ready() {
     let console_registry_empty = aster_console::all_devices_lock().is_empty();
     let Some(markers) = activation_markers(
         REQUESTED.load(Ordering::Relaxed),
+        FORCE.load(Ordering::Relaxed),
         console_registry_empty,
         &ACTIVE,
         &STARTUP_STAGE,
@@ -362,11 +382,12 @@ pub(super) fn on_stdio_init_ready() {
 
 fn activation_markers(
     requested: bool,
+    forced: bool,
     console_registry_empty: bool,
     active: &AtomicBool,
     stage: &AtomicU8,
 ) -> Option<[Marker; 2]> {
-    if !requested || !console_registry_empty {
+    if !(requested && (console_registry_empty || forced)) {
         return None;
     }
     stage
@@ -378,7 +399,15 @@ fn activation_markers(
         )
         .ok()?;
     active.store(true, Ordering::Release);
-    Some([Marker::DiagnosticActive, Marker::ProcessComponentsReady])
+    let console_registry = if console_registry_empty {
+        ConsoleRegistryToken::Empty
+    } else {
+        ConsoleRegistryToken::Registered
+    };
+    Some([
+        Marker::DiagnosticActive { console_registry },
+        Marker::ProcessComponentsReady,
+    ])
 }
 
 fn advance_startup_stage(
@@ -415,18 +444,35 @@ mod tests {
     use ostd::prelude::*;
 
     use super::{
-        DiagnosticState, ExceptionSnapshot, ExceptionValue, Marker, ReturnReasonToken,
-        activation_markers,
+        ConsoleRegistryToken, DiagnosticState, ExceptionSnapshot, ExceptionValue, Marker,
+        ReturnReasonToken, activation_markers,
     };
 
     #[ktest]
-    fn activation_is_explicit_empty_console_and_one_shot() {
+    fn activation_is_explicit_and_registered_console_requires_force() {
         let active = AtomicBool::new(false);
         let stage = AtomicU8::new(0);
-        assert!(activation_markers(false, true, &active, &stage).is_none());
-        assert!(activation_markers(true, false, &active, &stage).is_none());
-        assert!(activation_markers(true, true, &active, &stage).is_some());
-        assert!(activation_markers(true, true, &active, &stage).is_none());
+        assert!(activation_markers(false, false, true, &active, &stage).is_none());
+        assert!(activation_markers(true, false, false, &active, &stage).is_none());
+
+        let markers = activation_markers(true, true, false, &active, &stage).unwrap();
+        assert_eq!(
+            markers[0],
+            Marker::DiagnosticActive {
+                console_registry: ConsoleRegistryToken::Registered,
+            }
+        );
+        assert!(activation_markers(true, true, false, &active, &stage).is_none());
+
+        let empty_active = AtomicBool::new(false);
+        let empty_stage = AtomicU8::new(0);
+        let markers = activation_markers(true, false, true, &empty_active, &empty_stage).unwrap();
+        assert_eq!(
+            markers[0],
+            Marker::DiagnosticActive {
+                console_registry: ConsoleRegistryToken::Empty,
+            }
+        );
     }
 
     #[ktest]

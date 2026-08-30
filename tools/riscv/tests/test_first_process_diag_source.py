@@ -91,6 +91,50 @@ class FirstProcessDiagnosticSourceTests(unittest.TestCase):
             )
         )
 
+    def test_registered_console_requires_explicit_force_opt_in(self) -> None:
+        source = DIAGNOSTIC_SOURCE.read_text()
+
+        self.assertIn(
+            'define_flag_param!("asterinas.first_process_diag_force", FORCE)',
+            source,
+        )
+        self.assertIn("requested && (console_registry_empty || forced)", source)
+        self.assertIn('Self::Registered => "registered"', source)
+
+    def test_audit_accepts_forced_registered_console_marker(self) -> None:
+        import sys
+
+        tools_directory = str(REPOSITORY_ROOT / "tools/riscv")
+        sys.path.insert(0, tools_directory)
+        try:
+            from qemu_uboot_audit import audit_diagnostic_markers
+            from qemu_uboot_variants import FIRST_PROCESS_CONSOLE_LOSS
+        finally:
+            sys.path.remove(tools_directory)
+
+        lines = (
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=diagnostic_active "
+            "console_registry=registered",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=process_components_ready",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=device_init_ready",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=stdio_init_ready",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=user_enter "
+            "cpu=0 sepc=0x1000 sp=0x2000",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=user_first_return "
+            "reason=user_syscall sepc=0x1000",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=user_first_syscall "
+            "id=64 sepc=0x1000",
+            "ASTERINAS_FIRST_PROCESS_DIAG stage=user_first_write_returned "
+            "fd=1 requested=50 result=50",
+        )
+
+        audit = audit_diagnostic_markers(
+            "\n".join(lines) + "\n",
+            variant=FIRST_PROCESS_CONSOLE_LOSS,
+        )
+
+        self.assertTrue(audit.passed, audit.failures)
+
 
 if __name__ == "__main__":
     unittest.main()
