@@ -25,6 +25,7 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
 ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
+DEBIAN_BROWSER_MIN_REBOOT_AFTER = 600
 ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
     *ARTIFACT_ORDER,
@@ -295,6 +296,11 @@ class DebugPlan:
             or not 1 <= self.reboot_after <= 0xFFFF_FFFF
         ):
             raise DebugContractError("invalid automatic reboot interval")
+        if (
+            self.schema_version == 2
+            and self.reboot_after < DEBIAN_BROWSER_MIN_REBOOT_AFTER
+        ):
+            raise DebugContractError("Debian desktop recovery window is too short")
         token = f"asterinas.reboot_after={self.reboot_after}"
         if self.bootargs.split().count(token) != 1:
             raise DebugContractError("bootargs do not match automatic reboot interval")
