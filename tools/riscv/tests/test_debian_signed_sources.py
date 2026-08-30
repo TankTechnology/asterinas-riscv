@@ -54,6 +54,50 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
         self.assertNotIn("xdotool", profile.requested_packages)
 
+    def test_desktop_profiles_disable_logind_mount_namespace(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        expected = (
+            "[Service]\n"
+            "# Asterinas does not yet provide the user/mount namespace contract used by\n"
+            "# Debian's systemd-logind sandbox. Keep functional logind without that sandbox.\n"
+            "PrivateTmp=no\n"
+            "ProtectControlGroups=no\n"
+            "ProtectHome=no\n"
+            "ProtectKernelLogs=no\n"
+            "ProtectKernelModules=no\n"
+            "ProtectSystem=no\n"
+            "ReadWritePaths=\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory) / "stage"
+            stage.mkdir()
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; configure_logind_namespace_compatibility "$2"',
+                    "logind-compat-test",
+                    str(builder),
+                    str(stage),
+                ],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            drop_in = (
+                stage
+                / "etc/systemd/system/systemd-logind.service.d"
+                / "asterinas-namespace-compat.conf"
+            )
+            self.assertEqual(drop_in.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(drop_in.read_text(), expected)
+            self.assertFalse(
+                (drop_in.parent / "asterinas-browser-m5-timeout.conf").exists()
+            )
+
     @mock.patch("subprocess.run")
     def test_each_release_is_independently_gpg_verified(self, run: mock.Mock) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -482,10 +526,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 stage / "etc/systemd/system/asterinas-desktop-m6-browser.service"
             )
             evidence_unit = stage / "etc/systemd/system/asterinas-desktop-m5-evidence.service"
-            logind_timeout = (
+            logind_compat = (
                 stage
                 / "etc/systemd/system/systemd-logind.service.d"
-                / "asterinas-browser-m5-timeout.conf"
+                / "asterinas-namespace-compat.conf"
             )
             network_evidence = (
                 stage / "usr/lib/asterinas/desktop-m5-network-evidence"
@@ -527,13 +571,19 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             firefox_unit_text = firefox_unit.read_text()
             observer_unit_text = observer_unit.read_text()
             evidence_unit_text = evidence_unit.read_text()
-            self.assertEqual(logind_timeout.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(logind_compat.stat().st_mode & 0o777, 0o644)
             self.assertEqual(
-                logind_timeout.read_text(),
+                logind_compat.read_text(),
                 "[Service]\n"
-                "# Software-emulated SMP RISC-V needs more than systemd's default while\n"
-                "# constructing logind's mount namespace. Keep the extension profile-local.\n"
-                "TimeoutStartSec=300s\n",
+                "# Asterinas does not yet provide the user/mount namespace contract used by\n"
+                "# Debian's systemd-logind sandbox. Keep functional logind without that sandbox.\n"
+                "PrivateTmp=no\n"
+                "ProtectControlGroups=no\n"
+                "ProtectHome=no\n"
+                "ProtectKernelLogs=no\n"
+                "ProtectKernelModules=no\n"
+                "ProtectSystem=no\n"
+                "ReadWritePaths=\n",
             )
             self.assertIn("PrivateNetwork=yes", firefox_unit_text)
             self.assertIn("User=asterinas", firefox_unit_text)
