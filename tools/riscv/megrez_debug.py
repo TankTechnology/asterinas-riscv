@@ -34,6 +34,7 @@ from tools.riscv.megrez_debug_contract import (
 from tools.riscv.megrez_debug_board import (
     BoardRunFailure,
     BoardTermination,
+    MAX_BOARD_TIMEOUT,
     run_physical_board,
 )
 from tools.riscv.megrez_debug_desktop import (
@@ -70,8 +71,8 @@ def _board_timeout(value: str) -> float:
         timeout = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("timeout must be a number") from error
-    if not 0 < timeout <= 300 or not math.isfinite(timeout):
-        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 300]")
+    if not 0 < timeout <= MAX_BOARD_TIMEOUT or not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 660]")
     return timeout
 
 
