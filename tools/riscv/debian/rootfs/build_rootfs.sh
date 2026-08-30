@@ -987,7 +987,13 @@ EOF
         # closed if a real workspace somehow does not.
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
-        elif [[ ("$PROFILE" == browser-web || "$PROFILE" == browser-m5) && -d "$WORK_DIR/source-metadata" ]]; then
+        elif [[ "$PROFILE" == desktop-m5-network ]]; then
+            # Keep the helper overrideable for the skeletal desktop-M5 unit
+            # tests; real builds have target systemd-sysusers and take the
+            # branch above.
+            finalize_browser_startup_caches "$stage"
+        elif [[ ("$PROFILE" == browser-web || "$PROFILE" == browser-m5) &&
+                -d "$WORK_DIR/source-metadata" ]]; then
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
         fi
     fi
