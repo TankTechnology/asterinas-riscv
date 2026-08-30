@@ -348,8 +348,17 @@ prepare_private_workspace() {
 
 cleanup() {
     local exit_status=$?
+    local mount_target
     trap - EXIT INT TERM HUP
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+        # debootstrap may leave helper mounts (notably test-dev-null and
+        # proc) behind when a target-side command fails. Unmount descendants
+        # before removing the private workspace so cleanup itself cannot mask
+        # the original diagnostic or leave a stale mount in the build runner.
+        while read -r mount_target; do
+            [[ -n "$mount_target" ]] || continue
+            umount -l -- "$mount_target" 2>/dev/null || true
+        done < <(findmnt -R -n -o TARGET --target "$WORK_DIR/stage" 2>/dev/null | sort -r)
         chmod -R u+w -- "$WORK_DIR" 2>/dev/null || true
         rm -rf -- "$WORK_DIR"
     fi
@@ -519,7 +528,7 @@ install_rootfs_packages() {
         [[ -n "$package" && -n "$version" && -n "$architecture" ]] || continue
         if awk -F '\t' -v p="$package" -v a="$architecture" -v v="$version" \
             '$1 == p && $2 == a && $3 == v { found=1 } END { exit(found ? 0 : 1) }' \
-            "$OUTPUT_DIR/packages.lock" 2>/dev/null; then
+            "$WORK_DIR/packages.lock" 2>/dev/null; then
             filename="${package}_${version}_${architecture}.deb"
             cp -f -- "$cached" "$stage/var/cache/apt/archives/$filename"
         fi
@@ -1041,7 +1050,39 @@ finalize_browser_startup_caches() {
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
     chroot "$stage" /usr/bin/journalctl --update-catalog
-    generate_fontconfig_cache "$stage"
+    # Keep the target-side diagnostic visible without rewriting Debian's
+    # usr-is-merged cache aliases.  The package postinst has already created
+    # the target-side caches; a force scan here can remove those files after
+    # treating the intentional /usr/share/fonts aliases as loops.  `-n`
+    # performs the target-side check while preserving the materialised cache.
+    local fontcache_log="$WORK_DIR/fontconfig-cache.log"
+    if ! chroot "$stage" /usr/bin/fc-cache -f -n -v >"$fontcache_log" 2>&1; then
+        printf '%s\n' 'fontconfig non-mutating probe failed' >&2
+    fi
+    # Materialise caches from the concrete font directories only.  Scanning
+    # /usr/share/fonts as a whole follows Debian's compatibility symlinks and
+    # can discard every cache as a loop; these real directories avoid that
+    # alias walk while covering the fonts shipped in this image.
+    local font_dir
+    for font_dir in \
+        /usr/share/fonts/X11/Type1 /usr/share/fonts/X11/misc \
+        /usr/share/fonts/truetype/dejavu /usr/share/fonts/truetype/wqy \
+        /usr/share/fonts/opentype/urw-base35 /usr/share/fonts/type1/urw-base35; do
+        [[ -d "$stage$font_dir" ]] || continue
+        if ! chroot "$stage" /usr/bin/fc-cache -f "$font_dir" >>"$fontcache_log" 2>&1; then
+            printf 'fontconfig directory scan failed: %s\n' "$font_dir" >&2
+        fi
+    done
+    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
+        printf '%s\n' 'fontconfig cache listing:' >&2
+        find "$stage/var/cache/fontconfig" -maxdepth 2 -printf '%M %u %g %p %s\\n' >&2 || :
+        printf '%s\n' 'fontconfig command output:' >&2
+        sed -n '1,120p' "$fontcache_log" >&2 || :
+    fi
+    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
+        die "staged fontconfig cache is absent"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
@@ -1256,6 +1297,7 @@ configure_desktop() {
     local desktop_standard_error=journal+console
     local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
+    local desktop_user=asterinas
     local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1269,8 +1311,8 @@ configure_desktop() {
         # M5 gates write their authoritative markers directly to /dev/console.
         # Keep the high-volume desktop/Xorg stream in the journal instead of
         # duplicating it on the emulated serial console.
-        desktop_standard_output=journal
-        desktop_standard_error=journal
+        desktop_standard_output=journal+console
+        desktop_standard_error=journal+console
     fi
     if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
         # The online browser image receives a fixed /dev from Asterinas stage1;
@@ -1278,7 +1320,15 @@ configure_desktop() {
         # costs nearly a minute while probing unsupported device events.
         desktop_after="local-fs.target dbus.service"
         desktop_wants="dbus.service"
-        desktop_session_options=$'StandardInput=null\nStandardOutput=journal\nStandardError=journal'
+        # Xorg's fbdev backend must own a controlling virtual terminal.  The
+        # earlier null-stdin variant left the unprivileged provider unable to
+        # open /dev/tty1 even when it belonged to the tty supplementary group.
+        # Keep logind/udev disabled, but give this service the fixed tty.
+        desktop_session_options=$'TTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
+        # Opening and controlling a virtual terminal requires the privileged
+        # display provider.  The browser service and openbox remain UID 1000;
+        # only this narrow Xorg owner runs as root.
+        desktop_user=root
     fi
     configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
@@ -1347,6 +1397,15 @@ configure_desktop() {
                 "$stage/etc/systemd/system/asterinas-browser-web-timeline-basic.service"
             install -m 0600 -o 1000 -g 1000 /dev/null \
                 "$stage/home/asterinas/browser-web-timeline.log"
+            install -d -m 0700 -o 1000 -g 1000 \
+                "$stage/home/asterinas/.mozilla" \
+                "$stage/home/asterinas/.mozilla/asterinas-browser-web"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/firefox-web-stderr.log"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/firefox-web-mozilla.log"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/browser-web-firefox.pid"
             install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
             cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
@@ -1492,11 +1551,16 @@ Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
-User=asterinas
-SupplementaryGroups=video input
+User=$desktop_user
+PrivateTmp=no
+SupplementaryGroups=video input tty
 $desktop_session_options
-# The offline template values remain named here for contract tests and for
-# profiles that retain the PAM/tty session options above.
+# Keep the selected stream policy active.  In the browser-web profile this is
+# journal+console so Xorg/device diagnostics remain observable on the QEMU
+# serial contract; offline profiles still use journal-only below.
+StandardOutput=$desktop_standard_output
+StandardError=$desktop_standard_error
+# The template values remain named here for contract tests and profile audits.
 # StandardOutput=$desktop_standard_output
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas

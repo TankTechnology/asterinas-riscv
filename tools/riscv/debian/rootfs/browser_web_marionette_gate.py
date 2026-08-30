@@ -336,11 +336,30 @@ def run_gate(
     host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
 ) -> str:
     deadline = time.monotonic() + timeout
-    client = _connect(host, port, deadline)
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
+        if error is not None:
+            line += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(line, file=sys.stderr, flush=True)
+
+    client = _connect(host, port, deadline, phase=phase)
+    def command(stage: str, name: str, parameters: object | None = None) -> object:
+        phase(stage, "start")
+        try:
+            result = client.command(name, parameters)
+        except BaseException as error:
+            phase(stage, "exception", error)
+            raise
+        phase(stage, "done")
+        return result
     _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
     try:
-        session = client.command("WebDriver:NewSession", {
+        session = command("new-session", "WebDriver:NewSession", {
             "acceptInsecureCerts": False,
+            "pageLoadStrategy": "none",
             "strictFileInteractability": True,
         })
         _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
@@ -349,15 +368,17 @@ def run_gate(
         capabilities = session.get("capabilities", {})
         if not isinstance(capabilities, dict) or capabilities.get("acceptInsecureCerts") is not False:
             raise GateError("Firefox did not preserve certificate verification")
-        handles = client.command("WebDriver:GetWindowHandles")
+        handles = command("window-handles", "WebDriver:GetWindowHandles")
         if not isinstance(handles, list) or not handles or not all(
             isinstance(handle, str) for handle in handles
         ):
             raise GateError("Firefox created no first browser window")
         _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
 
-        _navigate(client, BAIDU_HOME)
+        command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
+        phase("snapshot-baidu-home", "start")
         baidu_home, _ = _wait(client, validate_baidu_home, deadline)
+        phase("snapshot-baidu-home", "done")
         _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
         _write_evidence(client, evidence_dir, "baidu-home", baidu_home)
 
