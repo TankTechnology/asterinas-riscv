@@ -31,6 +31,7 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_gmac_gate import physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import (
     PROBE_STRESS_BYTES,
@@ -498,12 +499,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             schema_version=2,
             profile="debian-browser",
             artifacts=self.artifacts,
-            bootargs=(
-                "console=tty0 console=ttyS0 loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.mmc_write_partition2 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
@@ -583,6 +579,28 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             ):
                 replace(plan, bootargs=bootargs).validate()
 
+    def test_schema_two_requires_the_complete_physical_browser_environment(
+        self,
+    ) -> None:
+        plan = self._plan()
+        required_tokens = (
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
+            "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.100.19.216:17894/asterinas-network-probe.bin",
+        )
+
+        for token in required_tokens:
+            with (
+                self.subTest(token=token),
+                self.assertRaisesRegex(DebugContractError, "physical browser bootargs"),
+            ):
+                replace(
+                    plan, bootargs=plan.bootargs.replace(f"{token} ", "")
+                ).validate()
+
     def test_schema_two_rejects_stale_bare_megrez_argument(self) -> None:
         plan = self._plan()
         stale_bootargs = plan.bootargs.replace(
@@ -659,12 +677,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             packages_lock=self.paths["packages_lock"],
             package_checksums=self.paths["package_checksums"],
             in_release=self.paths["in_release"],
-            bootargs=(
-                "console=tty0 console=ttyS0 loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.mmc_write_partition2 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             marker=None,
             reboot_after=600,
         )
