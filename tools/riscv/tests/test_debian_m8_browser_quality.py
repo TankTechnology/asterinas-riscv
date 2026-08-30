@@ -9,9 +9,24 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
+from tools.riscv.debian.rootfs import desktop_m8_browser_quality_gate
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import DesktopM7BaiduOperations
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+    DESKTOP_M8_CAPTURE_PATTERN,
+    DESKTOP_M8_FAILURE_MARKER,
+    DESKTOP_M8_FIXED_MILESTONES,
+    DESKTOP_M8_READY_MARKER,
+    QUALITY_CAPTURE_NAMES,
+    DesktopM8BrowserQualityOperations,
+    classify_desktop_m8_browser_quality,
+)
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.megrez_network_fixture import BROWSER_DOWNLOAD_SHA256
+from tools.riscv.tests.test_debian_m7_baidu import _m7_transcript
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -32,6 +47,325 @@ DOWNLOAD_MARKER = (
 SOAK_MARKER = "DEBIAN_BROWSER_M8_SOAK seconds=120 process=alive"
 CAPTURE_PREFIX = "DEBIAN_BROWSER_M8_CAPTURE bytes="
 READY_MARKER = "DEBIAN_BROWSER_M8_READY quality=lightweight"
+
+
+def _m8_transcript(capture: bytes = b"gzip-xwd") -> bytes:
+    capture_marker = (
+        f"DEBIAN_BROWSER_M8_CAPTURE bytes={len(capture)} "
+        f"sha256={hashlib.sha256(capture).hexdigest()}\n"
+    ).encode()
+    return (
+        _m7_transcript()
+        + b"\n".join(DESKTOP_M8_FIXED_MILESTONES)
+        + b"\n"
+        + capture_marker
+        + DESKTOP_M8_READY_MARKER.encode()
+        + b"\n"
+    )
+
+
+class DebianDesktopM8BrowserQualityGateTests(unittest.TestCase):
+    def _operations(self) -> DesktopM8BrowserQualityOperations:
+        operations = object.__new__(DesktopM8BrowserQualityOperations)
+        operations._quality_screenshots = {
+            name: (b"", {}) for name in QUALITY_CAPTURE_NAMES
+        }
+        operations._quality_failure_screenshot = b""
+        operations._quality_failure_screenshot_metadata = {}
+        return operations
+
+    def test_classifier_accepts_one_exact_ordered_m8_contract(self) -> None:
+        result = classify_desktop_m8_browser_quality(
+            _m8_transcript(), expected_debian_release="13.6"
+        )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(
+            DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+            (
+                FIXTURE_MARKER,
+                SCROLL_MARKER,
+                NAVIGATION_MARKER,
+                DOWNLOAD_MARKER,
+                SOAK_MARKER,
+                CAPTURE_PREFIX,
+                READY_MARKER,
+            ),
+        )
+        capture = DESKTOP_M8_CAPTURE_PATTERN.search(_m8_transcript())
+        self.assertIsNotNone(capture)
+        assert capture is not None
+        self.assertEqual(int(capture.group(1)), len(b"gzip-xwd"))
+
+    def test_classifier_rejects_invalid_m8_evidence(self) -> None:
+        valid = _m8_transcript()
+        fixture = DESKTOP_M8_FIXED_MILESTONES[0] + b"\n"
+        scroll = DESKTOP_M8_FIXED_MILESTONES[1] + b"\n"
+        capture = DESKTOP_M8_CAPTURE_PATTERN.search(valid)
+        self.assertIsNotNone(capture)
+        assert capture is not None
+        capture_line = capture.group(0)
+        cases = (
+            valid.replace(fixture, b"", 1),
+            valid.replace(fixture, fixture * 2, 1),
+            valid.replace(fixture + scroll, scroll + fixture, 1),
+            valid[len(_m7_transcript()) :] + _m7_transcript(),
+            valid + DESKTOP_M8_FAILURE_MARKER + b"title-timeout\n",
+            valid.replace(capture_line, b"", 1),
+            valid.replace(capture_line, capture_line * 2, 1),
+            valid + b"DEBIAN_BROWSER_M8_CAPTURE bytes=0 sha256=bad\n",
+            valid.replace(
+                capture_line, b"DEBIAN_BROWSER_M8_CAPTURE bytes=0 sha256=bad\n"
+            ),
+        )
+
+        for transcript in cases:
+            with self.subTest(transcript=transcript[-240:]):
+                result = classify_desktop_m8_browser_quality(
+                    transcript, expected_debian_release="13.6"
+                )
+                self.assertFalse(result.passed)
+
+    def test_protocol_captures_four_ordered_quality_states_after_m7(self) -> None:
+        operations = self._operations()
+        events: list[object] = []
+        marker_queue = [
+            *DESKTOP_M8_FIXED_MILESTONES,
+            b"DEBIAN_BROWSER_M8_CAPTURE bytes=8 "
+            + hashlib.sha256(b"gzip-xwd").hexdigest().encode(),
+            DESKTOP_M8_READY_MARKER.encode(),
+        ]
+
+        class Serial:
+            def checkpoint(self) -> int:
+                return 37
+
+            def wait_for_any(
+                self,
+                markers: tuple[bytes, ...],
+                deadline: float,
+                *,
+                start: int = 0,
+            ) -> bytes:
+                del deadline
+                self_outer.assertEqual(start, 37)
+                observed = marker_queue.pop(0)
+                self_outer.assertTrue(
+                    any(observed.startswith(marker) for marker in markers),
+                    (observed, markers),
+                )
+                events.append(observed)
+                return observed
+
+        self_outer = self
+        session = {
+            "serial": Serial(),
+            "monitor": object(),
+            "directory": Path("/private/session"),
+        }
+        config = SimpleNamespace(boot_timeout=2.0, command_timeout=1.0)
+        captures = [
+            (f"ppm-{index}".encode(), {"width": 1280, "height": 1024})
+            for index in range(4)
+        ]
+
+        with (
+            mock.patch.object(
+                DesktopM7BaiduOperations,
+                "run_protocol",
+                autospec=True,
+                side_effect=lambda *_: events.append("m7"),
+            ),
+            mock.patch.object(
+                desktop_m8_browser_quality_gate,
+                "capture_rendered_ppm",
+                side_effect=captures,
+            ) as capture_ppm,
+        ):
+            operations.run_protocol(session, config)
+
+        self.assertEqual(events[0], "m7")
+        self.assertEqual(marker_queue, [])
+        self.assertEqual(
+            [call.args[1].name for call in capture_ppm.call_args_list],
+            list(QUALITY_CAPTURE_NAMES),
+        )
+        self.assertEqual(
+            [
+                operations._quality_screenshots[name][0]
+                for name in QUALITY_CAPTURE_NAMES
+            ],
+            [item[0] for item in captures],
+        )
+
+    def test_protocol_captures_failure_frame(self) -> None:
+        operations = self._operations()
+        operations._failure_screenshot = b"m7-failure"
+        operations._failure_screenshot_metadata = {"width": 800}
+
+        class Serial:
+            def checkpoint(self) -> int:
+                return 0
+
+            def wait_for_any(
+                self,
+                markers: tuple[bytes, ...],
+                deadline: float,
+                *,
+                start: int = 0,
+            ) -> bytes:
+                del markers, deadline, start
+                return DESKTOP_M8_FAILURE_MARKER + b"title-timeout"
+
+        session = {
+            "serial": Serial(),
+            "monitor": object(),
+            "directory": self.directory if hasattr(self, "directory") else Path("/tmp"),
+        }
+        config = SimpleNamespace(boot_timeout=2.0, command_timeout=1.0)
+
+        with (
+            mock.patch.object(DesktopM7BaiduOperations, "run_protocol", autospec=True),
+            mock.patch.object(
+                desktop_m8_browser_quality_gate,
+                "capture_rendered_ppm",
+                return_value=(b"failure-ppm", {"width": 1024}),
+            ) as capture_ppm,
+        ):
+            with self.assertRaisesRegex(
+                desktop_m8_browser_quality_gate.GateFailure,
+                "guest reported browser quality failure",
+            ):
+                operations.run_protocol(session, config)
+
+        self.assertEqual(operations._failure_screenshot, b"m7-failure")
+        self.assertEqual(operations._failure_screenshot_metadata, {"width": 800})
+        self.assertEqual(operations._quality_failure_screenshot, b"failure-ppm")
+        self.assertEqual(
+            operations._quality_failure_screenshot_metadata,
+            {"width": 1024},
+        )
+        self.assertEqual(
+            capture_ppm.call_args.args[1].name,
+            "desktop-m8-failure.ppm",
+        )
+
+    def test_publish_binds_uploaded_capture_and_writes_result_last(self) -> None:
+        payload = b"gzip-xwd"
+        operations = self._operations()
+        operations._quality_screenshots = {
+            name: (name.encode(), {"width": 1280, "height": 1024})
+            for name in QUALITY_CAPTURE_NAMES
+        }
+        operations.fixture = SimpleNamespace(
+            capture_summary=lambda: {
+                "bytes": len(payload),
+                "path": "/browser-quality/capture.xwd.gz",
+                "peer": "127.0.0.1",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+            capture_payload=lambda: payload,
+        )
+        writes: list[tuple[str, bytes, int]] = []
+        result: dict[str, object] = {"passed": True, "reason": "pass"}
+
+        class Output:
+            def atomic_write(
+                self, name: str, data: bytes, *, mode: int = 0o600
+            ) -> None:
+                writes.append((name, data, mode))
+
+        operations._require_config = lambda config: None
+        operations._require_output = lambda: Output()
+        with mock.patch.object(
+            DesktopM7BaiduOperations,
+            "publish",
+            autospec=True,
+            side_effect=lambda *_: writes.append(("result.json", b"result", 0o600)),
+        ) as inherited:
+            operations.publish(object(), object(), _m8_transcript(payload), result)
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(
+            [name for name, _, _ in writes[:-1]], list(QUALITY_CAPTURE_NAMES)
+        )
+        self.assertEqual(writes[-1][0], "result.json")
+        for name in QUALITY_CAPTURE_NAMES:
+            self.assertEqual(
+                result["screenshots"][name], {"width": 1280, "height": 1024}
+            )
+        inherited.assert_called_once()
+
+        for summary, captured, reason in (
+            (None, None, "browser capture missing"),
+            (
+                {
+                    "bytes": len(payload),
+                    "sha256": "0" * 64,
+                },
+                payload,
+                "browser capture evidence mismatch",
+            ),
+            (
+                {
+                    "bytes": len(payload),
+                    "path": "/wrong",
+                    "peer": "127.0.0.1",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                },
+                payload,
+                "browser capture evidence mismatch",
+            ),
+            (
+                {
+                    "bytes": len(payload),
+                    "path": "/browser-quality/capture.xwd.gz",
+                    "peer": "127.0.0.2",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                },
+                payload,
+                "browser capture evidence mismatch",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                failed = self._operations()
+                failed.fixture = SimpleNamespace(
+                    capture_summary=lambda value=summary: value,
+                    capture_payload=lambda value=captured: value,
+                )
+                failed._require_config = lambda config: None
+                failed._require_output = lambda: Output()
+                failure_result: dict[str, object] = {
+                    "passed": True,
+                    "reason": "pass",
+                }
+                with mock.patch.object(DesktopM7BaiduOperations, "publish"):
+                    failed.publish(
+                        object(), object(), _m8_transcript(payload), failure_result
+                    )
+                self.assertEqual(failure_result["passed"], False)
+                self.assertEqual(failure_result["reason"], reason)
+
+    def test_invalidation_and_make_target_cover_every_m8_artifact(self) -> None:
+        operations = self._operations()
+        invalidated: list[str] = []
+        operations._require_output = lambda: SimpleNamespace(
+            invalidate=lambda *names: invalidated.extend(names)
+        )
+        with mock.patch.object(DesktopM7BaiduOperations, "invalidate"):
+            operations.invalidate(object())
+
+        self.assertEqual(
+            invalidated,
+            [*QUALITY_CAPTURE_NAMES, "desktop-m8-failure.ppm"],
+        )
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+        target = makefile.split(
+            ".PHONY: test_riscv_debian_desktop_m8_browser_quality_gate", 1
+        )[1].split(".PHONY:", 1)[0]
+        self.assertIn("desktop_m8_browser_quality_gate", target)
+        self.assertIn("DEBIAN_DESKTOP_M8_BROWSER_QUALITY_GATE_OUTPUT", target)
+        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
 
 
 class DebianDesktopM8BrowserQualityGuestTests(unittest.TestCase):

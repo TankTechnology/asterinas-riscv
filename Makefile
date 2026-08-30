@@ -568,6 +568,38 @@ test_riscv_debian_desktop_m7_baidu_gate:
 		--output-directory "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
+.PHONY: test_riscv_debian_desktop_m8_browser_quality_gate
+test_riscv_debian_desktop_m8_browser_quality_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_M8_BROWSER_QUALITY_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DESKTOP_M8_BROWSER_QUALITY_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_M8_BROWSER_QUALITY_GATE_OUTPUT)" \
+		--smp 4 --boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit
 	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
