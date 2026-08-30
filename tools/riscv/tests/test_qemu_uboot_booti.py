@@ -7135,9 +7135,12 @@ class PreparationContractTests(unittest.TestCase):
         for label, variant, profile, expected_error in cases:
             with (
                 self.subTest(label=label),
-                tempfile.TemporaryDirectory(dir=output_root) as tmp,
             ):
-                root = Path(tmp)
+                # These cases fail during variant/profile validation, before
+                # the builder creates any output.  Do not require write access
+                # to a possibly root-owned persistent cache directory merely
+                # to exercise the no-side-effect contract.
+                root = output_root / f"validation-{os.getpid()}-{label.replace(' ', '-')}"
                 out_dir = root / "out"
                 cache_dir = root / "cache"
                 environment = {
@@ -7262,6 +7265,8 @@ class PreparationContractTests(unittest.TestCase):
     def test_rejects_an_output_directory_through_a_symlink(self) -> None:
         output_root = REPO_ROOT / "target/qemu-uboot"
         output_root.mkdir(parents=True, exist_ok=True)
+        if not os.access(output_root, os.W_OK):
+            self.skipTest("persistent qemu-uboot output directory is not writable")
         with tempfile.TemporaryDirectory(dir=output_root) as tmp:
             link = Path(tmp) / "outside"
             link.symlink_to(Path(tmp).parent.parent.parent)
