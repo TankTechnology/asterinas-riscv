@@ -244,7 +244,6 @@ def _uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
     commands = (
         *(f'setenv {name} "{chunk}"' for name, chunk in zip(names, chunks)),
         f'setenv bootargs "{" ".join(f"${{{name}}}" for name in names)}"',
-        'fdt set /chosen bootargs "${bootargs}"',
         *(f"setenv {name}" for name in names),
     )
     if any(len(command.encode()) > MAX_UBOOT_COMMAND_BYTES for command in commands):

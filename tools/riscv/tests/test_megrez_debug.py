@@ -1776,7 +1776,10 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             if command.startswith("setenv asterinas_bootargs_") and '"' in command
         ]
         self.assertEqual(" ".join(staged), bootargs)
-        self.assertIn('fdt set /chosen bootargs "${bootargs}"', commands)
+        self.assertTrue(
+            any(command.startswith("setenv bootargs ") for command in commands)
+        )
+        self.assertNotIn('fdt set /chosen bootargs "${bootargs}"', commands)
         self.assertFalse(any("saveenv" in command for command in commands))
 
     def test_hardware_watchdog_refuses_unknown_component_without_arming(self) -> None:
