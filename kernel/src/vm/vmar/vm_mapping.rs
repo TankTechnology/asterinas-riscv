@@ -359,6 +359,19 @@ impl VmMapping {
         page_fault_info: &PageFaultInfo,
         rss_delta: &mut RssDelta,
     ) -> Result<()> {
+        let result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
+        if result.is_ok() {
+            sync_instruction_cache_after_fault(page_fault_info.required_perms);
+        }
+        result
+    }
+
+    fn handle_page_fault_inner(
+        &self,
+        vm_space: &VmSpace,
+        page_fault_info: &PageFaultInfo,
+        rss_delta: &mut RssDelta,
+    ) -> Result<()> {
         self.check_perms_for_page_fault(page_fault_info)?;
 
         let page_aligned_addr = page_fault_info.address.align_down(PAGE_SIZE);
@@ -662,6 +675,25 @@ impl VmMapping {
             }
         }
     }
+}
+
+fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
+    #[cfg(target_arch = "riscv64")]
+    if must_sync_instruction_cache(required_perms) {
+        // RISC-V instruction caches are not required to observe bytes written
+        // through the data side.  Executable file pages can be populated by a
+        // different hart before this PTE is installed, so synchronize all
+        // harts before returning to user mode.
+        ostd::arch::flush_icache(false);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    let _ = required_perms;
+}
+
+#[cfg(any(target_arch = "riscv64", ktest))]
+fn must_sync_instruction_cache(required_perms: VmPerms) -> bool {
+    required_perms.contains(VmPerms::EXEC)
 }
 
 fn record_page_access(cursor: &mut CursorMut<'_>, va: Range<Vaddr>, access: PageAccess) {
@@ -1064,6 +1096,14 @@ mod tests {
 
     use super::*;
     use crate::vm::page_cache::{LockedCachePage, PageCacheBackend, VmoOptions};
+
+    #[ktest]
+    fn only_executable_faults_require_instruction_cache_sync() {
+        assert!(must_sync_instruction_cache(VmPerms::EXEC));
+        assert!(must_sync_instruction_cache(VmPerms::READ | VmPerms::EXEC));
+        assert!(!must_sync_instruction_cache(VmPerms::READ));
+        assert!(!must_sync_instruction_cache(VmPerms::WRITE));
+    }
 
     struct FailingPageCacheBackend;
 
