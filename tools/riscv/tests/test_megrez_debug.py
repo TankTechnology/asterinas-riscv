@@ -1328,6 +1328,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         directory = Path(self.temporary_directory.name)
+        self.directory = directory
         addresses = {
             "kernel": 0x80200000,
             "initramfs": 0x83000000,
@@ -1361,6 +1362,111 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
             return current
 
         return monotonic
+
+    def _browser_plan(self) -> DebugPlan:
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = tuple(
+            ArtifactIdentity(
+                name=name,
+                path=str((self.directory / name).absolute()),
+                load_address=addresses.get(name, 0),
+                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                sha256=hashlib.sha256(name.encode()).hexdigest(),
+                crc32=f"{zlib.crc32(name.encode()):08x}",
+            )
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER
+        )
+        return DebugPlan(
+            schema_version=2,
+            profile="debian-browser",
+            artifacts=artifacts,
+            bootargs=physical_bootargs(600),
+            smp=4,
+            sv39=True,
+            markers=DEBIAN_BROWSER_MARKERS,
+            reboot_after=600,
+        )
+
+    @staticmethod
+    def _concrete_browser_marker(marker: str) -> str:
+        if marker.endswith("key=eic7700-rj45 "):
+            return marker + "base=0x50410000 interface=eth0"
+        if marker == "DEBIAN_BROWSER_M6_JAVASCRIPT status=":
+            return marker + "limited-pass"
+        if marker == "DEBIAN_BROWSER_M6_READY remote=baidu javascript=":
+            return marker + "limited-pass"
+        return marker
+
+    def _browser_marker_block(self, markers: tuple[str, ...]) -> str:
+        return "\n".join(self._concrete_browser_marker(marker) for marker in markers)
+
+    def test_pointer_missing_degradation_collects_browser_and_recovery(self) -> None:
+        plan = self._browser_plan()
+        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
+        m4_end = m4_start + len(DESKTOP_M4_MILESTONES)
+        chunks = [
+            self._browser_marker_block(plan.markers[:m4_start])
+            + "\nDEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-",
+            "device\nDEBIAN_DESKTOP_M4_FAIL reason=desktop-",
+            "timeout\n" + self._browser_marker_block(plan.markers[m4_end:]) + "\n",
+            "pll config ok\nHit any key to stop auto",
+            "boot: 29\n",
+            "U-Boot 2024.01\n=> ",
+        ]
+        operations = self.Operations(chunks)
+
+        result = run_board(
+            plan,
+            BoardRunConfig(timeout=660.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "guest-failure-recovered:browser-pass-input-missing:pointer-device",
+        )
+        self.assertEqual(operations.chunks, [])
+        stop_calls = [call for call in operations.calls if call[0] == "stop-autoboot"]
+        self.assertEqual(len(stop_calls), 1)
+        self.assertEqual(operations.published, result)
+
+    def test_pointer_degradation_rejects_inexact_or_reordered_branch(self) -> None:
+        plan = self._browser_plan()
+        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
+        prefix = self._browser_marker_block(plan.markers[:m4_start]) + "\n"
+        remote = self._concrete_browser_marker(DESKTOP_M6_REMOTE_MARKER) + "\n"
+        diagnostic = "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device\n"
+        failure = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
+        cases = (
+            prefix + failure + remote,
+            prefix
+            + "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=xorg-log\n"
+            + failure
+            + remote,
+            prefix + failure + diagnostic + remote,
+            prefix + remote + diagnostic + failure,
+        )
+
+        for transcript in cases:
+            with self.subTest(transcript=transcript[-128:]):
+                operations = self.Operations([transcript])
+                result = run_board(
+                    plan,
+                    BoardRunConfig(timeout=660.0),
+                    operations,
+                    clock=lambda: 10.0,
+                )
+
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, "guest-marker-order")
+                self.assertEqual(operations.booti_count, 1)
 
     def test_success_resets_guest_budget_after_transport(self) -> None:
         operations = self.Operations(

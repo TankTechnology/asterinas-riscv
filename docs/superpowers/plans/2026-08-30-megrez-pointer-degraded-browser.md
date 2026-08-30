@@ -26,7 +26,7 @@ serial state machine.
 
 - Modify: `tools/riscv/tests/test_megrez_debug.py`
 
-- [ ] **Step 1: Write the failing complete-run test**
+- [x] **Step 1: Write the failing complete-run test**
 
 Add a schema-2 `run_board` test whose chunks contain the existing ordered GMAC
 and M5 markers, then:
@@ -45,14 +45,14 @@ passed is False
 reason == "guest-failure-recovered:browser-pass-input-missing:pointer-device"
 ```
 
-- [ ] **Step 2: Add rejection subcases**
+- [x] **Step 2: Add rejection subcases**
 
 Using the same fixture, assert `guest-marker-order` for a missing pointer
 diagnostic, a non-pointer M4 diagnostic, the failure marker before its
 diagnostic, or M6 appearing before the complete degradation pair. Keep the
 existing full M4 success test unchanged and passing.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run:
 
@@ -71,7 +71,7 @@ subcases and existing tests retain their current behavior.
 - Modify: `tools/riscv/megrez_debug_board.py`
 - Modify: `tools/riscv/tests/test_megrez_debug.py`
 
-- [ ] **Step 1: Add exact branch identities**
+- [x] **Step 1: Add exact branch identities**
 
 Import `DESKTOP_M4_MILESTONES` and define only these accepted physical strings:
 
@@ -83,7 +83,7 @@ _M4_TIMEOUT_FAILURE = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout"
 _POINTER_MISSING_REASON = "browser-pass-input-missing:pointer-device"
 ```
 
-- [ ] **Step 2: Extend `_MarkerTracker` minimally**
+- [x] **Step 2: Extend `_MarkerTracker` minimally**
 
 Give the tracker an `allow_pointer_degradation` constructor flag. When the next
 expected marker is the first M4 success marker, accept the exact diagnostic,
@@ -95,7 +95,7 @@ When the final M7 marker completes, construct `GuestTerminal(False,
 _POINTER_MISSING_REASON)` if the degradation was recorded; otherwise retain
 the existing passing terminal.
 
-- [ ] **Step 3: Enable the branch only for the Debian browser schema**
+- [x] **Step 3: Enable the branch only for the Debian browser schema**
 
 Construct the tracker as:
 
@@ -108,7 +108,7 @@ tracker = _MarkerTracker(
 
 Schema-1 TCP probe behavior must remain byte-for-byte equivalent.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the same focused class command. Expected: all tests pass, including the
 complete degraded run, full browser pass, split reads, duplicate terminal,
@@ -121,14 +121,14 @@ timeout, termination, and recovery cases.
 - Modify: `tools/riscv/debian/rootfs/README.md`
 - Test: `tools/riscv/tests/test_megrez_debug.py`
 
-- [ ] **Step 1: Document result semantics**
+- [x] **Step 1: Document result semantics**
 
 In the Megrez physical browser section, state that exact pointer absence does
 not stop M6/M7 collection, but the final result stays false with
 `guest-failure-recovered:browser-pass-input-missing:pointer-device`. State that
 all other M4 failures remain hard failures.
 
-- [ ] **Step 2: Run one bounded verification set**
+- [x] **Step 2: Run one bounded verification set**
 
 ```bash
 python3 -W error::ResourceWarning -m unittest \
@@ -148,7 +148,7 @@ git diff --check
 Expected: all commands exit zero. Do not rebuild the rootfs, launch QEMU, or
 repeat the physical boot for this host-only state-machine fix.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tools/riscv/megrez_debug_board.py \

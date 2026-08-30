@@ -322,6 +322,17 @@ It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
 Asterinas network path does not provide the Linux ping-socket contract, and a
 ping result would not prove that browser traffic works.
 
+On a physical browser run, one exact input-capability degradation is collected
+rather than treated as a reason to release the serial port early. If M4 emits
+`DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device` followed by
+`DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout`, the collector continues to
+require every M6/M7 marker and the fresh automatic U-Boot recovery. A complete
+Baidu homepage and search sequence is then published as `passed: false` with
+`guest-failure-recovered:browser-pass-input-missing:pointer-device`; it proves
+the browser path but deliberately does not claim mouse usability. Missing,
+reordered, duplicated, or differently attributed M4 failure evidence remains
+a hard failure.
+
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
 recovery, live GMAC failover, USB Ethernet, Wi-Fi, Firefox, and modern
