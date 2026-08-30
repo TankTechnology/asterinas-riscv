@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
 import json
@@ -1590,8 +1591,9 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertFalse(any(name == "read" for name, _value in operations.calls))
 
     def test_configuration_and_preboot_failure_forbid_booti(self) -> None:
-        with self.assertRaisesRegex(ValueError, "300"):
-            BoardRunConfig(timeout=301.0)
+        self.assertEqual(BoardRunConfig(timeout=660.0).timeout, 660.0)
+        with self.assertRaisesRegex(ValueError, "660"):
+            BoardRunConfig(timeout=661.0)
 
         class FailingOperations(self.Operations):
             def prepare_boot(self, _plan: DebugPlan, timeout: float) -> None:
@@ -1676,6 +1678,13 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             str(self.recovery),
             *extra,
         )
+
+    def test_board_cli_accepts_only_the_bounded_desktop_recovery_budget(self) -> None:
+        from tools.riscv import megrez_debug
+
+        self.assertEqual(megrez_debug._board_timeout("660"), 660.0)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            megrez_debug._board_timeout("661")
 
     def test_board_cli_runs_one_physical_adapter_after_all_prechecks(self) -> None:
         from tools.riscv import megrez_debug
