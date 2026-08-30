@@ -22,9 +22,14 @@ from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
 from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     classify_desktop_m7_baidu,
 )
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    QUALITY_CAPTURE_NAMES,
+    classify_desktop_m8_browser_quality,
+)
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
     DebugContractError,
     DebugPlan,
     StageResult,
@@ -214,7 +219,10 @@ def _validate_screenshot(value: object, *, label: str) -> None:
 
 
 def _validate_native_result(
-    native: dict[str, Any], identities: dict[str, ArtifactIdentity]
+    native: dict[str, Any],
+    identities: dict[str, ArtifactIdentity],
+    *,
+    quality: bool,
 ) -> str:
     release = native.get("debian_release")
     javascript = native.get("javascript_status")
@@ -238,16 +246,33 @@ def _validate_native_result(
     _validate_screenshot(native.get("search_screenshot"), label="search-screenshot")
     if native.get("failure_screenshot") != {}:
         raise DesktopSimulationError("desktop-failure-screenshot-present")
+    if quality:
+        screenshots = native.get("screenshots")
+        if not isinstance(screenshots, dict) or set(screenshots) != set(
+            QUALITY_CAPTURE_NAMES
+        ):
+            raise DesktopSimulationError("desktop-quality-screenshots-invalid")
+        for name in QUALITY_CAPTURE_NAMES:
+            _validate_screenshot(screenshots[name], label=f"quality-{name}")
+        if native.get("quality_failure_screenshot") != {}:
+            raise DesktopSimulationError("desktop-quality-failure-screenshot-present")
     return release
 
 
 def _desktop_command(
-    identities: dict[str, ArtifactIdentity], native_output: Path
+    identities: dict[str, ArtifactIdentity],
+    native_output: Path,
+    *,
+    quality: bool,
 ) -> list[str]:
     return [
         sys.executable,
         "-m",
-        "tools.riscv.debian.rootfs.desktop_m7_baidu_gate",
+        (
+            "tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate"
+            if quality
+            else "tools.riscv.debian.rootfs.desktop_m7_baidu_gate"
+        ),
         "--kernel",
         identities["kernel"].path,
         "--uboot",
@@ -282,7 +307,7 @@ def simulate_desktop(
     repository_root: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> StageResult:
-    """Run the M7 Baidu desktop gate against one exact schema-2 plan."""
+    """Run the plan-selected M7 or M8 gate against one exact browser plan."""
 
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         raise DesktopSimulationError("desktop-timeout-invalid")
@@ -290,7 +315,10 @@ def simulate_desktop(
         raise DesktopSimulationError("desktop-timeout-invalid")
     if timeout < BOOT_TIMEOUT + SIMULATION_SETUP_GRACE_SECONDS:
         raise DesktopSimulationError("desktop timeout must reserve image setup grace")
-    if plan.schema_version != 2 or plan.profile != "debian-browser":
+    quality = (
+        plan.schema_version == 3 and plan.profile == DEBIAN_BROWSER_QUALITY_PROFILE
+    )
+    if not quality and (plan.schema_version != 2 or plan.profile != "debian-browser"):
         raise DesktopSimulationError("desktop-plan-profile-invalid")
     try:
         plan.validate()
@@ -318,7 +346,7 @@ def simulate_desktop(
         if old_pythonpath
         else str(repository)
     )
-    command = _desktop_command(identities, native_output)
+    command = _desktop_command(identities, native_output, quality=quality)
     try:
         execution = run_command(
             command,
@@ -342,19 +370,34 @@ def simulate_desktop(
         native = _load_guarded_result(native_output / "result.json")
     except SimulationError as error:
         raise DesktopSimulationError(str(error)) from error
-    release = _validate_native_result(native, identities)
-    transcript = _read_evidence(native_output / "desktop-m7-baidu.serial.log")
-    classification = classify_desktop_m7_baidu(
-        transcript, expected_debian_release=release
+    release = _validate_native_result(native, identities, quality=quality)
+    artifact_prefix = "desktop-m8-browser-quality" if quality else "desktop-m7-baidu"
+    transcript = _read_evidence(native_output / f"{artifact_prefix}.serial.log")
+    classifier = (
+        classify_desktop_m8_browser_quality if quality else classify_desktop_m7_baidu
     )
+    classification = classifier(transcript, expected_debian_release=release)
     if not classification.passed:
         raise DesktopSimulationError(
             f"desktop-evidence-invalid: {classification.reason}"
         )
-    _read_evidence(native_output / "desktop-m7-baidu.ppm")
+    _read_evidence(native_output / f"{artifact_prefix}.ppm")
     _read_evidence(native_output / "desktop-m6-javascript.ppm")
     _read_evidence(native_output / "desktop-m7-baidu-home.ppm")
     _read_evidence(native_output / "desktop-m7-baidu-search.ppm")
+    if quality:
+        for name in QUALITY_CAPTURE_NAMES:
+            _read_evidence(native_output / name)
+
+    evidence = (
+        "native/result.json",
+        f"native/{artifact_prefix}.serial.log",
+        f"native/{artifact_prefix}.ppm",
+        "native/desktop-m6-javascript.ppm",
+        "native/desktop-m7-baidu-home.ppm",
+        "native/desktop-m7-baidu-search.ppm",
+        *(f"native/{name}" for name in QUALITY_CAPTURE_NAMES if quality),
+    )
 
     result = StageResult(
         schema_version=1,
@@ -362,14 +405,7 @@ def simulate_desktop(
         passed=True,
         reason="desktop-pass",
         plan_sha256=plan.plan_sha256,
-        evidence=(
-            "native/result.json",
-            "native/desktop-m7-baidu.serial.log",
-            "native/desktop-m7-baidu.ppm",
-            "native/desktop-m6-javascript.ppm",
-            "native/desktop-m7-baidu-home.ppm",
-            "native/desktop-m7-baidu-search.ppm",
-        ),
+        evidence=evidence,
     )
     result.validate()
     return result

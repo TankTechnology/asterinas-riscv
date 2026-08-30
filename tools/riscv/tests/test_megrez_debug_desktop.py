@@ -25,9 +25,16 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+    QUALITY_CAPTURE_NAMES,
+)
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_QUALITY_MARKERS,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
@@ -76,6 +83,12 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
             reboot_after=600,
+        )
+        self.quality_plan = replace(
+            self.plan,
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
         )
 
     def _identities(self, _plan: DebugPlan) -> dict[str, ArtifactIdentity]:
@@ -162,6 +175,21 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             },
         }
 
+    def _quality_native_result(self) -> dict[str, object]:
+        result = self._native_result()
+        result["screenshots"] = {
+            name: {
+                "distinct_sampled_colors": 200,
+                "height": 1024,
+                "non_background_pixels": 900000,
+                "pixel_count": 1310720,
+                "width": 1280,
+            }
+            for name in QUALITY_CAPTURE_NAMES
+        }
+        result["quality_failure_screenshot"] = {}
+        return result
+
     @staticmethod
     def _transcript() -> bytes:
         markers = (
@@ -176,6 +204,12 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         )
         return ("\n".join(markers) + "\n").encode()
 
+    @classmethod
+    def _quality_transcript(cls) -> bytes:
+        markers = list(DESKTOP_M8_BROWSER_QUALITY_MILESTONES)
+        markers[-2] += "8 sha256=" + hashlib.sha256(b"gzip-xwd").hexdigest()
+        return cls._transcript() + ("\n".join(markers) + "\n").encode()
+
     def _runner(
         self,
         calls: list[tuple[tuple[str, ...], dict[str, object]]],
@@ -189,13 +223,26 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             calls.append((tuple(arguments), kwargs))
             output = Path(arguments[arguments.index("--output-directory") + 1])
             output.mkdir(parents=True, exist_ok=True)
+            quality = arguments[2].endswith("desktop_m8_browser_quality_gate")
             (output / "result.json").write_text(
                 json.dumps(
-                    self._native_result() if native_result is None else native_result
+                    (
+                        self._quality_native_result()
+                        if quality and native_result is None
+                        else self._native_result()
+                        if native_result is None
+                        else native_result
+                    )
                 )
             )
             (output / "desktop-m7-baidu.serial.log").write_bytes(self._transcript())
+            (output / "desktop-m8-browser-quality.serial.log").write_bytes(
+                self._quality_transcript()
+            )
             (output / "desktop-m7-baidu.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
+            (output / "desktop-m8-browser-quality.ppm").write_bytes(
+                b"P6\n1 1\n255\n\0\0\0"
+            )
             (output / "desktop-m6-javascript.ppm").write_bytes(
                 b"P6\n1 1\n255\n\xff\xff\xff"
             )
@@ -205,6 +252,8 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             (output / "desktop-m7-baidu-search.ppm").write_bytes(
                 b"P6\n1 1\n255\n\x40\x40\x40"
             )
+            for name in QUALITY_CAPTURE_NAMES:
+                (output / name).write_bytes(b"P6\n1 1\n255\n\x20\x20\x20")
             return subprocess.CompletedProcess(arguments, returncode, "", "")
 
         return run
@@ -267,6 +316,64 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--boot-timeout") + 1], "720")
         self.assertEqual(options["cwd"], self.repository)
         self.assertLessEqual(float(options["timeout"]), 840)
+
+    def test_schema_three_invokes_m8_and_binds_every_quality_screenshot(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        result = simulate_desktop(
+            self.quality_plan,
+            self.output,
+            run_command=self._runner(calls),
+            artifact_validator=lambda plan: self._identities(self.plan),
+            repository_root=self.repository,
+            timeout=840,
+        )
+
+        self.assertTrue(result.passed)
+        command, _ = calls[0]
+        self.assertEqual(
+            command[:3],
+            (
+                sys.executable,
+                "-m",
+                "tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate",
+            ),
+        )
+        self.assertEqual(
+            result.evidence,
+            (
+                "native/result.json",
+                "native/desktop-m8-browser-quality.serial.log",
+                "native/desktop-m8-browser-quality.ppm",
+                "native/desktop-m6-javascript.ppm",
+                "native/desktop-m7-baidu-home.ppm",
+                "native/desktop-m7-baidu-search.ppm",
+                *(f"native/{name}" for name in QUALITY_CAPTURE_NAMES),
+            ),
+        )
+
+    def test_schema_three_rejects_missing_or_failed_quality_screenshot(self) -> None:
+        missing = self._quality_native_result()
+        missing["screenshots"] = dict(missing["screenshots"])
+        missing["screenshots"].pop(QUALITY_CAPTURE_NAMES[-1])
+        failed = self._quality_native_result()
+        failed["quality_failure_screenshot"] = next(
+            iter(failed["screenshots"].values())
+        )
+
+        for native in (missing, failed):
+            with (
+                self.subTest(native=native),
+                self.assertRaises(DesktopSimulationError),
+            ):
+                simulate_desktop(
+                    self.quality_plan,
+                    self.output,
+                    run_command=self._runner([], native_result=native),
+                    artifact_validator=lambda plan: self._identities(self.plan),
+                    repository_root=self.repository,
+                    timeout=840,
+                )
 
     def test_adapter_timeout_reserves_image_preparation_budget(self) -> None:
         with self.assertRaisesRegex(DesktopSimulationError, "setup grace"):

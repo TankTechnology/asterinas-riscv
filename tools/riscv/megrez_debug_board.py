@@ -34,6 +34,7 @@ from tools.riscv.megrez_board_session import (
     read_available,
 )
 from tools.riscv.megrez_debug_contract import (
+    DEBIAN_BROWSER_QUALITY_PROFILE,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
@@ -879,7 +880,9 @@ def run_board(
     deadline = clock() + config.timeout
     tracker = _MarkerTracker(
         plan.markers,
-        allow_pointer_degradation=(plan.schema_version == 2),
+        allow_pointer_degradation=(
+            plan.profile in ("debian-browser", DEBIAN_BROWSER_QUALITY_PROFILE)
+        ),
     )
     transcript: list[str] = []
     transcript_bytes = 0

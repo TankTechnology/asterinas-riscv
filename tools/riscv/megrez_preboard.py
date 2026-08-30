@@ -25,6 +25,7 @@ from tools.riscv.debian.rootfs.contract import (
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.debian.rootfs.rootfs_gate import verify_four_hart_dtb
 from tools.riscv.megrez_debug_contract import (
+    DEBIAN_BROWSER_QUALITY_PROFILE,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
@@ -323,8 +324,7 @@ def _validate_native_recovery(native: dict[str, Any], kernel: ArtifactIdentity) 
         or audit.get("passed") is not True
         or audit.get("failures") != []
         or audit.get("booti_command_count") != 1
-        or native.get("boot_disk_sha256_before")
-        != native.get("boot_disk_sha256_after")
+        or native.get("boot_disk_sha256_before") != native.get("boot_disk_sha256_after")
         or not isinstance(native.get("boot_disk_sha256_before"), str)
         or _SHA256.fullmatch(native["boot_disk_sha256_before"]) is None
         or native.get("passed") is not True
@@ -394,6 +394,7 @@ def create_recovery_evidence(
     if (plan.schema_version, plan.profile) not in (
         (1, "tcp-probe"),
         (2, "debian-browser"),
+        (3, DEBIAN_BROWSER_QUALITY_PROFILE),
     ):
         raise PreboardError("recovery requires a Megrez probe or browser plan")
     identities = {identity.name: identity for identity in plan.artifacts}
@@ -583,7 +584,10 @@ def issue_preboard_permit(
         publication.invalidate()
         try:
             plan.validate()
-            if plan.schema_version != 2 or plan.profile != "debian-browser":
+            if (plan.schema_version, plan.profile) not in (
+                (2, "debian-browser"),
+                (3, DEBIAN_BROWSER_QUALITY_PROFILE),
+            ):
                 raise PreboardError("preboard requires a Debian browser plan")
             identities = artifact_validator(plan)
             rootfs_validator(identities)

@@ -26,6 +26,9 @@ from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     DEBIAN_BROWSER_MIN_REBOOT_AFTER,
+    DEBIAN_BROWSER_QUALITY_MARKERS,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -228,13 +231,17 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         ):
             raise WorkflowError("plan-rootfs-provenance-mismatch")
         artifacts = (*boot_artifacts, *evidence_artifacts)
-        schema_version = 2
-        markers = DEBIAN_BROWSER_MARKERS
+        if arguments.profile == DEBIAN_BROWSER_QUALITY_PROFILE:
+            schema_version = DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION
+            markers = DEBIAN_BROWSER_QUALITY_MARKERS
+        else:
+            schema_version = 2
+            markers = DEBIAN_BROWSER_MARKERS
     reboot_after = arguments.reboot_after
     if reboot_after is None:
         reboot_after = (
             DEBIAN_BROWSER_MIN_REBOOT_AFTER
-            if arguments.profile == "debian-browser"
+            if arguments.profile in ("debian-browser", DEBIAN_BROWSER_QUALITY_PROFILE)
             else TCP_PROBE_DEFAULT_REBOOT_AFTER
         )
     plan = DebugPlan(
@@ -289,7 +296,7 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
         raise WorkflowError(f"plan-simulation-invalid: {error}") from error
     expected_stage = (
         "desktop"
-        if plan.schema_version == 2 and plan.profile == "debian-browser"
+        if plan.profile in ("debian-browser", DEBIAN_BROWSER_QUALITY_PROFILE)
         else "fast"
     )
     if (
@@ -327,7 +334,9 @@ def _parser() -> argparse.ArgumentParser:
 
     plan = subparsers.add_parser("plan", help="freeze one exact artifact set")
     plan.add_argument(
-        "--profile", choices=("tcp-probe", "debian-browser"), default="tcp-probe"
+        "--profile",
+        choices=("tcp-probe", "debian-browser", DEBIAN_BROWSER_QUALITY_PROFILE),
+        default="tcp-probe",
     )
     plan.add_argument("--kernel", required=True, type=Path)
     plan.add_argument("--initramfs", required=True, type=Path)

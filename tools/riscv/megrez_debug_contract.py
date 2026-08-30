@@ -26,6 +26,9 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+)
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -56,6 +59,12 @@ DEBIAN_BROWSER_MARKERS = (
     DESKTOP_M7_HOME_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
     DESKTOP_M7_READY_MARKER,
+)
+DEBIAN_BROWSER_QUALITY_PROFILE = "debian-browser-quality"
+DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION = 3
+DEBIAN_BROWSER_QUALITY_MARKERS = (
+    *DEBIAN_BROWSER_MARKERS,
+    *DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
 )
 PLAN_FIELDS = frozenset(
     (
@@ -254,13 +263,16 @@ class DebugPlan:
     reboot_after: int
 
     def validate(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version not in (1, 2):
-            raise DebugContractError("debug plan schema must be 1 or 2")
+        if type(self.schema_version) is not int or self.schema_version not in (1, 2, 3):
+            raise DebugContractError("debug plan schema must be 1, 2, or 3")
         if self.schema_version == 1:
             expected_profile = "tcp-probe"
             expected_order = ARTIFACT_ORDER
-        else:
+        elif self.schema_version == 2:
             expected_profile = "debian-browser"
+            expected_order = DEBIAN_BROWSER_ARTIFACT_ORDER
+        else:
+            expected_profile = DEBIAN_BROWSER_QUALITY_PROFILE
             expected_order = DEBIAN_BROWSER_ARTIFACT_ORDER
         if self.profile != expected_profile:
             raise DebugContractError("unsupported debug profile")
@@ -284,7 +296,8 @@ class DebugPlan:
             or BOOTARGS_PATTERN.fullmatch(self.bootargs) is None
         ):
             raise DebugContractError("unsafe debug bootargs")
-        if self.schema_version == 2 and STALE_MEGREZ_INIT_ARG in self.bootargs.split():
+        is_browser = self.schema_version in (2, 3)
+        if is_browser and STALE_MEGREZ_INIT_ARG in self.bootargs.split():
             raise DebugContractError("stale Megrez argument reaches init argv")
         if type(self.smp) is not int or self.smp != 4:
             raise DebugContractError("debug plan requires SMP=4")
@@ -297,29 +310,31 @@ class DebugPlan:
             or any(not _safe_text(marker) for marker in self.markers)
         ):
             raise DebugContractError("debug markers must be unique safe strings")
-        if self.schema_version == 2 and self.markers != DEBIAN_BROWSER_MARKERS:
+        expected_markers = (
+            DEBIAN_BROWSER_QUALITY_MARKERS
+            if self.schema_version == DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION
+            else DEBIAN_BROWSER_MARKERS
+        )
+        if is_browser and self.markers != expected_markers:
             raise DebugContractError("Debian browser markers do not match the contract")
         if (
             type(self.reboot_after) is not int
             or not 1 <= self.reboot_after <= 0xFFFF_FFFF
         ):
             raise DebugContractError("invalid automatic reboot interval")
-        if (
-            self.schema_version == 2
-            and self.reboot_after < DEBIAN_BROWSER_MIN_REBOOT_AFTER
-        ):
+        if is_browser and self.reboot_after < DEBIAN_BROWSER_MIN_REBOOT_AFTER:
             raise DebugContractError("Debian desktop recovery window is too short")
         token = f"asterinas.reboot_after={self.reboot_after}"
         if self.bootargs.split().count(token) != 1:
             raise DebugContractError("bootargs do not match automatic reboot interval")
         if (
-            self.schema_version == 2
+            is_browser
             and self.bootargs.split().count("asterinas.mmc_write_partition2") != 1
         ):
             raise DebugContractError(
                 "Debian browser bootargs require one partition-2 write gate"
             )
-        if self.schema_version == 2:
+        if is_browser:
             bootarg_tokens = self.bootargs.split()
             if any(
                 bootarg_tokens.count(token) != 1

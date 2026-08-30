@@ -35,9 +35,15 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+)
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_QUALITY_MARKERS,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     MAX_ARTIFACT_BYTES,
     ROOT_IMAGE_BYTES,
     ArtifactIdentity,
@@ -668,6 +674,76 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         self.assertEqual(plan, DebugPlan.from_bytes(plan.canonical_bytes()))
 
 
+class MegrezDebugBrowserQualityPlanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        legacy = MegrezDebugDebianPlanTests()
+        legacy.setUp()
+        self.addCleanup(legacy.doCleanups)
+        self.legacy_plan = legacy._plan()
+        self.plan = replace(
+            self.legacy_plan,
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+        )
+
+    def test_schema_three_round_trip_extends_schema_two_exactly_once(self) -> None:
+        encoded = self.plan.canonical_bytes()
+
+        self.assertEqual(DebugPlan.from_bytes(encoded), self.plan)
+        self.assertEqual(DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION, 3)
+        self.assertEqual(DEBIAN_BROWSER_QUALITY_PROFILE, "debian-browser-quality")
+        self.assertEqual(
+            DEBIAN_BROWSER_QUALITY_MARKERS,
+            (*DEBIAN_BROWSER_MARKERS, *DESKTOP_M8_BROWSER_QUALITY_MILESTONES),
+        )
+        self.assertEqual(
+            tuple(identity.name for identity in self.plan.artifacts),
+            DEBIAN_BROWSER_ARTIFACT_ORDER,
+        )
+
+    def test_schema_three_rejects_missing_reordered_or_reinterpreted_m8(self) -> None:
+        markers = self.plan.markers
+        for invalid in (
+            replace(self.plan, markers=markers[:-1]),
+            replace(self.plan, markers=(*markers[:-2], markers[-1], markers[-2])),
+            replace(self.plan, schema_version=2),
+            replace(self.plan, profile="debian-browser"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
+                invalid.validate()
+
+    def test_schema_two_canonical_bytes_remain_stable_after_schema_three(self) -> None:
+        before = self.legacy_plan.canonical_bytes()
+
+        self.plan.validate()
+
+        self.assertEqual(self.legacy_plan.canonical_bytes(), before)
+        self.assertEqual(DebugPlan.from_bytes(before), self.legacy_plan)
+
+    def test_schema_three_requires_desktop_simulation(self) -> None:
+        result_path = Path(self.legacy_plan.artifacts[0].path).parent / "quality.json"
+        desktop = StageResult(
+            schema_version=1,
+            stage="desktop",
+            passed=True,
+            reason="desktop-pass",
+            plan_sha256=self.plan.plan_sha256,
+            evidence=("native/result.json",),
+        )
+        result_path.write_bytes(desktop.canonical_bytes())
+
+        debug_module._validate_simulation(result_path, self.plan)
+
+        result_path.write_bytes(
+            replace(desktop, stage="fast", reason="fast-pass").canonical_bytes()
+        )
+        with self.assertRaisesRegex(
+            debug_module.WorkflowError, "plan-simulation-mismatch"
+        ):
+            debug_module._validate_simulation(result_path, self.plan)
+
+
 class MegrezDebugDebianPlanCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -754,6 +830,52 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
         load_checksums.assert_called_once_with(self.paths["package_checksums"])
+
+    def test_create_plan_selects_schema_three_for_browser_quality(self) -> None:
+        arguments = self._arguments()
+        arguments.profile = DEBIAN_BROWSER_QUALITY_PROFILE
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=self.manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=self.manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=self.package_rows,
+                create=True,
+            ),
+        ):
+            plan = debug_module._create_plan(arguments)
+
+        self.assertEqual(plan.schema_version, DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION)
+        self.assertEqual(plan.profile, DEBIAN_BROWSER_QUALITY_PROFILE)
+        self.assertEqual(plan.markers, DEBIAN_BROWSER_QUALITY_MARKERS)
+        parsed = debug_module._parser().parse_args(
+            (
+                "plan",
+                "--profile",
+                DEBIAN_BROWSER_QUALITY_PROFILE,
+                "--kernel",
+                "kernel",
+                "--initramfs",
+                "initramfs",
+                "--qemu-dtb",
+                "qemu.dtb",
+                "--megrez-dtb",
+                "megrez.dtb",
+                "--bootargs",
+                physical_bootargs(600),
+                "--output",
+                "plan.json",
+            )
+        )
+        self.assertEqual(parsed.profile, DEBIAN_BROWSER_QUALITY_PROFILE)
 
     def test_create_plan_defaults_browser_recovery_window_to_six_hundred_seconds(
         self,
@@ -1392,6 +1514,14 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
             reboot_after=600,
         )
 
+    def _browser_quality_plan(self) -> DebugPlan:
+        return replace(
+            self._browser_plan(),
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+        )
+
     @staticmethod
     def _concrete_browser_marker(marker: str) -> str:
         if marker.endswith("key=eic7700-rj45 "):
@@ -1436,6 +1566,35 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         stop_calls = [call for call in operations.calls if call[0] == "stop-autoboot"]
         self.assertEqual(len(stop_calls), 1)
         self.assertEqual(operations.published, result)
+
+    def test_schema_three_pointer_degradation_uses_the_profile_contract(self) -> None:
+        plan = self._browser_quality_plan()
+        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
+        m4_end = m4_start + len(DESKTOP_M4_MILESTONES)
+        chunks = [
+            self._browser_marker_block(plan.markers[:m4_start])
+            + "\nDEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-",
+            "device\nDEBIAN_DESKTOP_M4_FAIL reason=desktop-",
+            "timeout\n" + self._browser_marker_block(plan.markers[m4_end:]) + "\n",
+            "pll config ok\nHit any key to stop auto",
+            "boot: 29\n",
+            "U-Boot 2024.01\n=> ",
+        ]
+        operations = self.Operations(chunks)
+
+        result = run_board(
+            plan,
+            BoardRunConfig(timeout=660.0),
+            operations,
+            clock=self._clock(),
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "guest-failure-recovered:browser-pass-input-missing:pointer-device",
+        )
+        self.assertEqual(operations.chunks, [])
 
     def test_pointer_degradation_rejects_inexact_or_reordered_branch(self) -> None:
         plan = self._browser_plan()

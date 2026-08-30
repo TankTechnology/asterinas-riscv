@@ -16,6 +16,9 @@ from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_QUALITY_MARKERS,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
@@ -266,6 +269,43 @@ class MegrezPreboardTests(unittest.TestCase):
             checked_dtbs,
             [Path(self.identities[name].path) for name in ("qemu_dtb", "megrez_dtb")],
         )
+
+    def test_schema_three_recovery_and_permit_reuse_browser_quality_plan(self) -> None:
+        quality_plan = replace(
+            self.plan,
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+        )
+        desktop = replace(self.desktop, plan_sha256=quality_plan.plan_sha256)
+        recovery = replace(self.recovery, plan_sha256=quality_plan.plan_sha256)
+        self.desktop_path.write_bytes(desktop.canonical_bytes())
+        self.recovery_path.write_bytes(recovery.canonical_bytes())
+
+        permit = issue_preboard_permit(
+            quality_plan,
+            self.desktop_path,
+            self.recovery_path,
+            self.output,
+            artifact_validator=lambda plan: self.identities,
+            rootfs_validator=lambda _identities: None,
+            dtb_validator=lambda _path: None,
+            git_identity=lambda _repository: "c" * 40,
+            repository_root=self.repository,
+        )
+
+        self.assertEqual(permit.plan_sha256, quality_plan.plan_sha256)
+
+        native = self.repository / "quality-native-recovery.json"
+        serial = self.repository / "quality-recovery.serial.log"
+        sums = self.repository / "QUALITY-SHA256SUMS"
+        native.write_text(json.dumps(self._native_recovery()))
+        serial.write_bytes(self._recovery_transcript())
+        sums.write_text(
+            f"{self.identities['kernel'].sha256}  /tmp/fs-root/asterinas.booti\n"
+        )
+        evidence = create_recovery_evidence(quality_plan, native, serial, sums)
+        self.assertEqual(evidence.plan_sha256, quality_plan.plan_sha256)
 
     def test_permit_rejects_result_plan_kernel_artifact_and_dtb_drift(self) -> None:
         variants = (
