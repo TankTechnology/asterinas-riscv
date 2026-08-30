@@ -731,6 +731,57 @@ class BrowserWebContractTests(unittest.TestCase):
                 ):
                     cache_check.check_cache_profile(root)
 
+    def test_fontconfig_cache_uses_audited_scan_and_fails_closed(self) -> None:
+        script = r"""
+source "$1"
+stage="$2/stage"
+mkdir -p "$stage/var/cache/fontconfig"
+attempt_file="$2/attempts"
+scenario="$3"
+printf '0\n' >"$attempt_file"
+export SOURCE_DATE_EPOCH=1704067200
+chroot() {
+    current="$(cat "$attempt_file")"
+    current="$((current + 1))"
+    printf '%s\n' "$current" >"$attempt_file"
+    if [[ "$scenario" == success && -z "${SOURCE_DATE_EPOCH-}" && " $* " == *" -v "* ]]; then
+        printf 'cache\n' >"$1/var/cache/fontconfig/retry.cache-9"
+    fi
+    return 0
+}
+generate_fontconfig_cache "$stage" "$3"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for scenario, expected_status, expected_attempts in (
+                ("success", 0, "1"),
+                ("empty", 2, "1"),
+            ):
+                with self.subTest(scenario=scenario):
+                    work = root / scenario
+                    work.mkdir()
+                    result = subprocess.run(
+                        [
+                            "/bin/bash",
+                            "-c",
+                            script,
+                            "fontconfig-retry-test",
+                            str(ROOTFS / "build_rootfs.sh"),
+                            str(work),
+                            scenario,
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(result.returncode, expected_status, result.stderr)
+                    self.assertEqual(
+                        (work / "attempts").read_text().strip(), expected_attempts
+                    )
+                    if scenario == "empty":
+                        self.assertIn("fontconfig cache is absent", result.stderr)
+
     def test_desktop_network_profile_requires_prebuilt_startup_caches(self) -> None:
         builder = ROOTFS / "build_rootfs.sh"
         tools = subprocess.run(
