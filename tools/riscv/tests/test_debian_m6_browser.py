@@ -169,14 +169,24 @@ printf '%s\n' "$*" >>"$ASTERINAS_M6_ACTIONS"
 case "$1" in
   search)
     [ "$*" = 'search --classname ^netsurf-gtk$' ] || exit 10
-    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = duplicate ]; then
+    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = duplicate ] || \
+       [ "$ASTERINAS_M6_XDOTOOL_MODE" = nested ] || \
+       [ "$ASTERINAS_M6_XDOTOOL_MODE" = auxiliary ]; then
       printf '42\n43\n'
     else
       printf '42\n'
     fi
     ;;
+  getwindowpid)
+    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = nested ] && [ "$2" = 43 ]; then
+      exit 1
+    fi
+    printf '777\n'
+    ;;
   getwindowname)
-    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = remote-pending ]; then
+    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = auxiliary ] && [ "$2" = 43 ]; then
+      printf 'NetSurf auxiliary\n'
+    elif [ "$ASTERINAS_M6_XDOTOOL_MODE" = remote-pending ]; then
       printf 'NetSurf\n'
     elif [ "$ASTERINAS_M6_XDOTOOL_MODE" = oversized ]; then
       printf 'baidu%02050d\n' 0
@@ -281,6 +291,50 @@ esac
                         f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={expected}",
                     ],
                 )
+
+    def test_guest_evidence_ignores_internal_window_without_process_identity(
+        self,
+    ) -> None:
+        environment, console, _ = self._fake_environment(
+            javascript_result="pass",
+            xdotool_mode="nested",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+        )
+
+    def test_guest_evidence_selects_remote_page_from_same_process_windows(
+        self,
+    ) -> None:
+        environment, console, _ = self._fake_environment(
+            javascript_result="pass",
+            xdotool_mode="auxiliary",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+        )
 
     def test_guest_evidence_rejects_ambiguous_window_and_oversized_title(
         self,
