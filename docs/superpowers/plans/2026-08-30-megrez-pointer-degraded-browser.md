@@ -58,7 +58,7 @@ Run:
 
 ```bash
 python3 -W error::ResourceWarning -m unittest \
-  tools.riscv.tests.test_megrez_debug.MegrezDebugBoardRunnerTests -v
+  tools.riscv.tests.test_megrez_debug.MegrezDebugBoardStateTests -v
 ```
 
 Expected: the complete-run test fails with `guest-marker-order`; all rejection
