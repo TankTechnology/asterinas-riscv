@@ -1316,7 +1316,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
 
         return monotonic
 
-    def test_success_uses_one_declining_budget_one_booti_and_recovery(self) -> None:
+    def test_success_resets_guest_budget_after_transport(self) -> None:
         operations = self.Operations(
             [
                 "old text Enter ris",
@@ -1338,9 +1338,17 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertEqual(operations.booti_count, 1)
         self.assertEqual(operations.published, result)
         self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
-        budgets = [value for _name, value in operations.calls if value is not None]
-        self.assertTrue(all(0 < value < 300 for value in budgets))
-        self.assertEqual(budgets, sorted(budgets, reverse=True))
+        transport_budgets = [
+            value
+            for name, value in operations.calls
+            if name in ("open", "ensure", "prepare", "booti")
+        ]
+        guest_budgets = [value for name, value in operations.calls if name == "read"]
+        self.assertTrue(all(value is not None for value in transport_budgets))
+        self.assertTrue(all(value is not None for value in guest_budgets))
+        self.assertEqual(transport_budgets, sorted(transport_budgets, reverse=True))
+        self.assertEqual(guest_budgets, sorted(guest_budgets, reverse=True))
+        self.assertGreater(guest_budgets[0], transport_budgets[-1])
 
     def test_guest_failure_waits_for_a_fresh_uboot_recovery(self) -> None:
         operations = self.Operations(
@@ -1531,7 +1539,7 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
 
     def test_absolute_deadline_expires_without_starting_an_extra_read(self) -> None:
         operations = self.Operations(["unreachable"])
-        times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
+        times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
 
         result = run_board(
             self.plan,

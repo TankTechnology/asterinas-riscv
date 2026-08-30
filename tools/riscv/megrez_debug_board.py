@@ -803,6 +803,7 @@ def run_board(
             plan, _remaining(deadline, clock, phase="uboot-prepare")
         )
         operations.booti(plan, _remaining(deadline, clock, phase="uboot-booti"))
+        deadline = clock() + config.timeout
 
         while True:
             remaining = deadline - clock()
