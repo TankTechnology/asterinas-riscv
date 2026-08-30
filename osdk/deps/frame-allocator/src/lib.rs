@@ -28,7 +28,7 @@
 #[cfg(ktest)]
 extern crate alloc;
 
-use core::alloc::Layout;
+use core::{alloc::Layout, ops::Range};
 
 use ostd::{
     cpu::PinCurrentCpu,
@@ -66,6 +66,15 @@ impl GlobalFrameAllocator for FrameAllocator {
     fn alloc(&self, layout: Layout) -> Option<Paddr> {
         let guard = irq::disable_local();
         let res = cache::alloc(&guard, layout);
+        if res.is_some() {
+            TOTAL_FREE_SIZE.sub(guard.current_cpu(), layout.size());
+        }
+        res
+    }
+
+    fn alloc_in(&self, layout: Layout, paddr_range: Range<Paddr>) -> Option<Paddr> {
+        let guard = irq::disable_local();
+        let res = cache::alloc_in(&guard, layout, paddr_range);
         if res.is_some() {
             TOTAL_FREE_SIZE.sub(guard.current_cpu(), layout.size());
         }

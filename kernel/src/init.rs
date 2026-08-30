@@ -169,14 +169,25 @@ fn print_banner() {
 }
 
 pub(super) fn on_first_process_startup(ctx: &Context) {
+    info!("ASTERINAS_USERMODE_STARTUP step=process-components-enter");
     component::init_all(InitStage::Process, component::parse_metadata!()).unwrap();
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_process_components_ready();
+    info!("ASTERINAS_USERMODE_STARTUP step=process-components-done");
     crate::device::init_in_first_process(ctx).unwrap();
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_device_init_ready();
+    info!("ASTERINAS_USERMODE_STARTUP step=device-done");
     #[cfg(target_arch = "riscv64")]
     {
         ThreadOptions::new(aster_usb::run_polling).spawn();
         ThreadOptions::new(aster_usb::run_polling_secondary).spawn();
+        info!("ASTERINAS_USERMODE_STARTUP step=usb-workers-spawned");
     }
     crate::fs::init_in_first_process(ctx);
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_stdio_init_ready();
+    info!("ASTERINAS_USERMODE_STARTUP step=stdio-ready");
 }
 
 static INIT_PATH: Once<String> = Once::new();

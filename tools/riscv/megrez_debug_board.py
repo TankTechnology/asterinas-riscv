@@ -22,6 +22,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol, TextIO
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import (
     CRC_RESULT_PATTERN,
     MEGREZ_FRAMEBUFFER,
@@ -31,7 +33,6 @@ from tools.riscv.megrez_board_session import (
     open_serial,
     read_available,
 )
-from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
     DebugPlan,
@@ -52,27 +53,58 @@ CloseDevice = Callable[[int], None]
 SessionFactory = Callable[..., BoardSession]
 ProbeTraceProvider = Callable[[str], bytes]
 MAX_BOARD_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+MAX_UBOOT_COMMAND_BYTES = 512
+_UBOOT_BOOTARGS_CHUNK_BYTES = 384
 FATAL_MARKERS = (
     "Uncaught panic",
     "unexpected exception",
     "Kernel panic",
     "Oops:",
+    "MEGREZ_SDHCI_READ_FAIL",
 )
 PROMPT_PATTERN = re.compile(r"(?:^|[\r\n])=> ")
 UBOOT_AUTOBOOT_PATTERN = re.compile(
     r"(?:^|[\r\n])Hit any key to stop autoboot:\s*[0-9]+"
 )
+UBOOT_BANNER_PATTERN = re.compile(r"(?:^|[\r\n])U-Boot [0-9]{4}\.[0-9]{2}")
 PROBE_FAILURE_PATTERN = re.compile(
     r"ASTERINAS_GMAC_TCP_PROBE_FAIL "
     r"reason=(?P<reason>[a-z0-9-]+) "
     r"errno=[0-9]+ attempts=[0-9]+ "
     r"current_bytes=[0-9]+ completed_bytes=[0-9]+(?:\r?\n|$)"
 )
+_POINTER_MISSING_DIAGNOSTIC = "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device"
+_M4_TIMEOUT_FAILURE = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout"
+_POINTER_MISSING_REASON = "browser-pass-input-missing:pointer-device"
 KERNEL_COMPRESSED_ADDRESS = 0x90000000
+EIC7700_WATCHDOG_BASE = 0x50800000
+EIC7700_SYSCFG_WATCHDOG_CLOCK = 0x51828200
+EIC7700_SYSCFG_WATCHDOG_RESET = 0x51828444
+EIC7700_WATCHDOG0_CLOCK_BIT = 1 << 28
+EIC7700_WATCHDOG0_RESET_N_BIT = 1 << 0
+DW_WATCHDOG_COMPONENT_TYPE = 0x44570120
+DW_WATCHDOG_MAX_TIMEOUT = 0x0F
+MAX_BOARD_TIMEOUT = 900.0
+DW_WATCHDOG_RECOVERY_CONTROL = 0x1F
+_UBOOT_MEMORY_LINE = re.compile(
+    r"(?m)^(?P<address>[0-9a-fA-F]{8,16}):"
+    r"(?P<values>(?: [0-9a-fA-F]{8})+)"
+    r"(?:[ \t]{2,}[^\r\n]*)?\r*$"
+)
 
 
 class BoardTransportError(RuntimeError):
     """One cache validation or XMODEM transport failure."""
+
+
+def _uboot_words(output: str, address: int, count: int) -> tuple[int, ...]:
+    for match in _UBOOT_MEMORY_LINE.finditer(output):
+        if int(match.group("address"), 16) != address:
+            continue
+        values = tuple(int(value, 16) for value in match.group("values").split())
+        if len(values) == count:
+            return values
+    raise BoardRunFailure("hardware-watchdog-readback-invalid")
 
 
 @dataclass(frozen=True)
@@ -194,6 +226,36 @@ class BoardTermination(RuntimeError):
         self.signum = signum
 
 
+def _uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
+    """Stage exact boot arguments without exceeding U-Boot's line buffer."""
+
+    tokens = bootargs.split()
+    if not tokens or " ".join(tokens) != bootargs:
+        raise BoardRunFailure("uboot-bootargs-not-canonical")
+    chunks: list[str] = []
+    current = ""
+    for token in tokens:
+        candidate = f"{current} {token}" if current else token
+        if len(candidate.encode()) <= _UBOOT_BOOTARGS_CHUNK_BYTES:
+            current = candidate
+            continue
+        if not current or len(token.encode()) > _UBOOT_BOOTARGS_CHUNK_BYTES:
+            raise BoardRunFailure("uboot-bootargs-token-too-long")
+        chunks.append(current)
+        current = token
+    chunks.append(current)
+
+    names = tuple(f"asterinas_bootargs_{index}" for index in range(len(chunks)))
+    commands = (
+        *(f'setenv {name} "{chunk}"' for name, chunk in zip(names, chunks)),
+        f'setenv bootargs "{" ".join(f"${{{name}}}" for name in names)}"',
+        *(f"setenv {name}" for name in names),
+    )
+    if any(len(command.encode()) > MAX_UBOOT_COMMAND_BYTES for command in commands):
+        raise BoardRunFailure("uboot-bootargs-command-too-long")
+    return commands
+
+
 @dataclass(frozen=True)
 class BoardRunConfig:
     """Bounded policy for one physical boot attempt."""
@@ -205,9 +267,12 @@ class BoardRunConfig:
             not isinstance(self.timeout, (int, float))
             or isinstance(self.timeout, bool)
             or not math.isfinite(self.timeout)
-            or not 0 < self.timeout <= 300.0
+            or not 0 < self.timeout <= MAX_BOARD_TIMEOUT
         ):
-            raise ValueError("board timeout must be finite, positive, and at most 300")
+            raise ValueError(
+                "board timeout must be finite, positive, and at most "
+                f"{MAX_BOARD_TIMEOUT:g}"
+            )
 
 
 class BoardOperations(Protocol):
@@ -287,6 +352,7 @@ class RealBoardOperations:
         close_device: CloseDevice = os.close,
         session_factory: SessionFactory = BoardSession.from_fd,
         probe_trace_provider: ProbeTraceProvider | None = None,
+        hardware_watchdog: bool = False,
     ) -> None:
         self._plan = plan
         self._device = device
@@ -301,6 +367,7 @@ class RealBoardOperations:
         self._close_device = close_device
         self._session_factory = session_factory
         self._probe_trace_provider = probe_trace_provider
+        self._hardware_watchdog = hardware_watchdog
         self._output: PinnedOutputDirectory | None = None
         self._fd: int | None = None
         self._session: BoardSession | None = None
@@ -375,8 +442,7 @@ class RealBoardOperations:
             "fdt resize 0x1000",
             *MEGREZ_FRAMEBUFFER.commands(),
             f"setenv initrd_size 0x{initramfs.size:x}",
-            f'setenv bootargs "{plan.bootargs}"',
-            f'fdt set /chosen bootargs "{plan.bootargs}"',
+            *_uboot_bootargs_commands(plan.bootargs),
             MEGREZ_USB_HOST_COMMAND,
         )
         for command in commands:
@@ -384,6 +450,73 @@ class RealBoardOperations:
                 command,
                 timeout=_remaining(deadline, time.monotonic, phase="uboot-prepare"),
             )
+        if self._hardware_watchdog:
+            self._arm_hardware_watchdog(session, deadline)
+
+    @staticmethod
+    def _arm_hardware_watchdog(session: BoardSession, deadline: float) -> None:
+        def command(text: str) -> str:
+            return session.command(
+                text,
+                timeout=_remaining(deadline, time.monotonic, phase="hardware-watchdog"),
+            )
+
+        clock = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_CLOCK,
+            1,
+        )[0]
+        reset = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_RESET,
+            1,
+        )[0]
+        if clock & EIC7700_WATCHDOG0_CLOCK_BIT == 0:
+            command(
+                f"mw.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} "
+                f"0x{clock | EIC7700_WATCHDOG0_CLOCK_BIT:x}"
+            )
+        if reset & EIC7700_WATCHDOG0_RESET_N_BIT == 0:
+            command(
+                f"mw.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} "
+                f"0x{reset | EIC7700_WATCHDOG0_RESET_N_BIT:x}"
+            )
+        clock = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_CLOCK:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_CLOCK,
+            1,
+        )[0]
+        reset = _uboot_words(
+            command(f"md.l 0x{EIC7700_SYSCFG_WATCHDOG_RESET:x} 1"),
+            EIC7700_SYSCFG_WATCHDOG_RESET,
+            1,
+        )[0]
+        if (
+            clock & EIC7700_WATCHDOG0_CLOCK_BIT == 0
+            or reset & EIC7700_WATCHDOG0_RESET_N_BIT == 0
+        ):
+            raise BoardRunFailure("hardware-watchdog-prerequisite-not-ready")
+
+        component = command(f"md.l 0x{EIC7700_WATCHDOG_BASE + 0xFC:x} 1")
+        if _uboot_words(component, EIC7700_WATCHDOG_BASE + 0xFC, 1) != (
+            DW_WATCHDOG_COMPONENT_TYPE,
+        ):
+            raise BoardRunFailure("hardware-watchdog-type-mismatch")
+        command(
+            f"mw.l 0x{EIC7700_WATCHDOG_BASE + 0x04:x} 0x{DW_WATCHDOG_MAX_TIMEOUT:x}"
+        )
+        command(f"mw.l 0x{EIC7700_WATCHDOG_BASE + 0x0C:x} 0x76")
+        command(f"mw.l 0x{EIC7700_WATCHDOG_BASE:x} 0x{DW_WATCHDOG_RECOVERY_CONTROL:x}")
+        control, timeout = _uboot_words(
+            command(f"md.l 0x{EIC7700_WATCHDOG_BASE:x} 2"),
+            EIC7700_WATCHDOG_BASE,
+            2,
+        )
+        if (
+            control & DW_WATCHDOG_RECOVERY_CONTROL != DW_WATCHDOG_RECOVERY_CONTROL
+            or timeout & 0x0F != DW_WATCHDOG_MAX_TIMEOUT
+        ):
+            raise BoardRunFailure("hardware-watchdog-not-armed")
 
     def booti(self, plan: DebugPlan, timeout: float) -> None:
         del timeout
@@ -506,6 +639,7 @@ def run_physical_board(
     *,
     timeout: float = 300.0,
     probe_trace_provider: ProbeTraceProvider | None = None,
+    hardware_watchdog: bool = False,
 ) -> StageResult:
     """Run one board attempt without reset or persistent U-Boot writes."""
 
@@ -514,6 +648,7 @@ def run_physical_board(
         device,
         output_directory,
         probe_trace_provider=probe_trace_provider,
+        hardware_watchdog=hardware_watchdog,
     )
     try:
         try:
@@ -537,12 +672,27 @@ def run_physical_board(
 
 
 class _MarkerTracker:
-    def __init__(self, markers: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        markers: tuple[str, ...],
+        *,
+        allow_pointer_degradation: bool = False,
+    ) -> None:
         self._markers = markers
         self._index = 0
         self._terminal: GuestTerminal | None = None
         self._autoboot_stop_pending = False
         self._autoboot_stop_sent = False
+        self._pointer_diagnostic_seen = False
+        self._degradation_reason: str | None = None
+        if allow_pointer_degradation:
+            self._m4_start = markers.index(DESKTOP_M4_MILESTONES[0])
+            self._m4_end = self._m4_start + len(DESKTOP_M4_MILESTONES)
+            if markers[self._m4_start : self._m4_end] != DESKTOP_M4_MILESTONES:
+                raise ValueError("M4 milestones must be contiguous")
+        else:
+            self._m4_start = -1
+            self._m4_end = -1
         self._tail = ""
         self._tail_limit = (
             max(
@@ -587,11 +737,60 @@ class _MarkerTracker:
             failure = PROBE_FAILURE_PATTERN.search(window, cursor)
             if failure is not None:
                 occurrences.append((failure.start(), "failure", -1, failure.end()))
+            if self._m4_start >= 0:
+                for event, marker in (
+                    ("pointer-diagnostic", _POINTER_MISSING_DIAGNOSTIC),
+                    ("m4-timeout", _M4_TIMEOUT_FAILURE),
+                ):
+                    position = window.find(marker, cursor)
+                    if position >= 0:
+                        occurrences.append(
+                            (position, event, -1, position + len(marker))
+                        )
+            banner = UBOOT_BANNER_PATTERN.search(window, cursor)
+            if banner is not None:
+                occurrences.append((banner.start(), "banner", -1, banner.end()))
+            autoboot = UBOOT_AUTOBOOT_PATTERN.search(window, cursor)
+            if autoboot is not None:
+                occurrences.append((autoboot.start(), "autoboot", -1, autoboot.end()))
             if not occurrences:
                 break
             _position, event, marker_index, event_end = min(occurrences)
+            if event in ("banner", "autoboot"):
+                if self._terminal is None and self._index > 0:
+                    raise BoardRunFailure("guest-reboot-before-terminal")
+                if (
+                    self._terminal is not None
+                    and event == "autoboot"
+                    and not self._autoboot_stop_sent
+                ):
+                    self._autoboot_stop_pending = True
+                cursor = event_end
+                continue
             if self._terminal is not None:
                 raise BoardRunFailure("guest-terminal-duplicate")
+            if event == "pointer-diagnostic":
+                if (
+                    self._index != self._m4_start
+                    or self._pointer_diagnostic_seen
+                    or self._degradation_reason is not None
+                ):
+                    raise BoardRunFailure("guest-marker-order")
+                self._pointer_diagnostic_seen = True
+                cursor = event_end
+                continue
+            if event == "m4-timeout":
+                if (
+                    self._index != self._m4_start
+                    or not self._pointer_diagnostic_seen
+                    or self._degradation_reason is not None
+                ):
+                    raise BoardRunFailure("guest-marker-order")
+                self._index = self._m4_end
+                self._pointer_diagnostic_seen = False
+                self._degradation_reason = _POINTER_MISSING_REASON
+                cursor = event_end
+                continue
             if event == "failure":
                 if self._index == 0:
                     raise BoardRunFailure("guest-marker-order")
@@ -602,23 +801,23 @@ class _MarkerTracker:
                 )
                 cursor = event_end
                 continue
+            if self._pointer_diagnostic_seen:
+                raise BoardRunFailure("guest-marker-order")
             if marker_index != self._index:
                 raise BoardRunFailure("guest-marker-order")
             self._index += 1
             cursor = event_end
             if self.complete:
-                self._terminal = GuestTerminal(passed=True, reason="pass")
+                reason = self._degradation_reason
+                self._terminal = GuestTerminal(
+                    passed=reason is None,
+                    reason=reason or "pass",
+                )
 
         recovered = (
             self._terminal is not None
             and PROMPT_PATTERN.search(window, cursor) is not None
         )
-        if (
-            self._terminal is not None
-            and not self._autoboot_stop_sent
-            and UBOOT_AUTOBOOT_PATTERN.search(window, cursor) is not None
-        ):
-            self._autoboot_stop_pending = True
         self._tail = window[cursor:][-self._tail_limit :]
         return recovered
 
@@ -678,7 +877,10 @@ def run_board(
     operations.invalidate()
     evidence = operations.evidence_names()
     deadline = clock() + config.timeout
-    tracker = _MarkerTracker(plan.markers)
+    tracker = _MarkerTracker(
+        plan.markers,
+        allow_pointer_degradation=(plan.schema_version == 2),
+    )
     transcript: list[str] = []
     transcript_bytes = 0
     outcomes: tuple[str, ...] = ()
@@ -696,6 +898,7 @@ def run_board(
             plan, _remaining(deadline, clock, phase="uboot-prepare")
         )
         operations.booti(plan, _remaining(deadline, clock, phase="uboot-booti"))
+        deadline = clock() + config.timeout
 
         while True:
             remaining = deadline - clock()

@@ -12,13 +12,16 @@ from tools.riscv.debian.rootfs.gate_protocol import GateResult
 
 DESKTOP_M5_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
+    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.100.19.216:17894",
+    "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
 )
 DESKTOP_M5_NETWORK_MILESTONES = DESKTOP_M5_MEGREZ_MILESTONES
 DESKTOP_M5_QEMU_MILESTONES = (
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.0.2.2:17894",
     "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com",
     "DEBIAN_NETWORK_M5_QEMU_HTTPS host=www.baidu.com status=200 address=10.0.2.15",
     "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp",
@@ -53,5 +56,18 @@ def classify_desktop_m5_qemu(
         transcript,
         expected_debian_release=expected_debian_release,
         milestones=(*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES),
+        failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
+    )
+
+
+def classify_network_m5_qemu(
+    transcript: bytes, *, expected_debian_release: str
+) -> GateResult:
+    """Require only ordered QEMU transfer, DNS, and HTTPS evidence."""
+
+    return classify_desktop(
+        transcript,
+        expected_debian_release=expected_debian_release,
+        milestones=DESKTOP_M5_QEMU_MILESTONES,
         failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
     )

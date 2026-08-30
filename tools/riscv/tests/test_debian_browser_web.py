@@ -123,8 +123,11 @@ def png(width: int = 2, height: int = 2) -> bytes:
 
 def png_claiming_large_decode() -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
-        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(
-            ">I", zlib.crc32(kind + payload) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
         )
 
     return (
@@ -279,7 +282,12 @@ class BrowserWebContractTests(unittest.TestCase):
             len(profile.identity_packages), len(set(profile.identity_packages))
         )
         printed = subprocess.run(
-            [str(ROOTFS / "build_rootfs.sh"), "--profile", "browser-web", "--print-packages"],
+            [
+                str(ROOTFS / "build_rootfs.sh"),
+                "--profile",
+                "browser-web",
+                "--print-packages",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -301,9 +309,15 @@ class BrowserWebContractTests(unittest.TestCase):
             payload = self._schema7_payload()
             path.write_text(json.dumps(payload))
             manifest = load_manifest(path)
-            self.assertEqual((manifest.schema_version, manifest.profile), (7, "browser-web"))
+            self.assertEqual(
+                (manifest.schema_version, manifest.profile), (7, "browser-web")
+            )
             self.assertEqual(manifest.downloaded_packages[0][4], "security")
-            for mutation in ("schema6-browser-web", "schema7-browser-m5", "missing-source-role"):
+            for mutation in (
+                "schema6-browser-web",
+                "schema7-browser-m5",
+                "missing-source-role",
+            ):
                 forged = copy.deepcopy(payload)
                 if mutation == "schema6-browser-web":
                     forged["schema_version"] = 6
@@ -315,7 +329,9 @@ class BrowserWebContractTests(unittest.TestCase):
                 with self.subTest(mutation=mutation), self.assertRaises(ContractError):
                     load_manifest(path)
 
-    @mock.patch("tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically")
+    @mock.patch(
+        "tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically"
+    )
     def test_schema_seven_writer_emits_profile_and_source_roles(
         self, publish: mock.Mock
     ) -> None:
@@ -329,14 +345,18 @@ class BrowserWebContractTests(unittest.TestCase):
             package_lock = root / "packages.lock"
             package_lock.write_text("".join(f"{n}\t{a}\t{v}\n" for n, a, v in rows))
             checksums = root / "checksums"
-            checksums.write_text("".join(
-                f"{n}\t{a}\t{v}\t{hashlib.sha256(n.encode()).hexdigest()}\t"
-                f"{'security' if n == 'firefox-esr' else 'base'}\n"
-                for n, a, v in rows
-            ))
+            checksums.write_text(
+                "".join(
+                    f"{n}\t{a}\t{v}\t{hashlib.sha256(n.encode()).hexdigest()}\t"
+                    f"{'security' if n == 'firefox-esr' else 'base'}\n"
+                    for n, a, v in rows
+                )
+            )
             inrelease = root / "legacy-InRelease"
             inrelease.write_bytes(b"legacy")
-            sources = {role: root / f"{role}-InRelease" for role in ("base", "security")}
+            sources = {
+                role: root / f"{role}-InRelease" for role in ("base", "security")
+            }
             for role, path in sources.items():
                 path.write_bytes(role.encode())
             write_manifest(
@@ -354,8 +374,14 @@ class BrowserWebContractTests(unittest.TestCase):
                 signed_source_files=sources,
             )
         payload = json.loads(publish.call_args.args[1])
-        self.assertEqual((payload["schema_version"], payload["profile"]), (7, "browser-web"))
-        firefox = next(row for row in payload["downloaded_packages"] if row["name"] == "firefox-esr")
+        self.assertEqual(
+            (payload["schema_version"], payload["profile"]), (7, "browser-web")
+        )
+        firefox = next(
+            row
+            for row in payload["downloaded_packages"]
+            if row["name"] == "firefox-esr"
+        )
         self.assertEqual(firefox["source_role"], "security")
 
     def test_unit_launcher_and_evidence_preserve_normal_sandbox_and_tls(self) -> None:
@@ -434,8 +460,10 @@ class BrowserWebContractTests(unittest.TestCase):
         basic_unit = (ROOTFS / "browser_web_timeline_basic.service").read_text()
         self.assertIn("After=systemd-remount-fs.service", begin_unit)
         for boundary in (
-            "systemd-sysusers.service", "ldconfig.service",
-            "systemd-journal-catalog-update.service", "sysinit.target",
+            "systemd-sysusers.service",
+            "ldconfig.service",
+            "systemd-journal-catalog-update.service",
+            "sysinit.target",
         ):
             self.assertIn(boundary, begin_unit)
         self.assertIn("DefaultDependencies=no", basic_unit)
@@ -480,21 +508,28 @@ class BrowserWebContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative in (
-                "etc/systemd/system", "usr/share/asterinas", "usr/lib/udev",
-                "usr/lib/systemd/system", "var/lib/systemd/catalog",
+                "etc/systemd/system",
+                "usr/share/asterinas",
+                "usr/lib/udev",
+                "usr/lib/systemd/system",
+                "var/lib/systemd/catalog",
                 "var/cache/fontconfig",
             ):
                 (root / relative).mkdir(parents=True, exist_ok=True)
             passwd = root / "etc/passwd"
-            passwd.write_text("".join(
-                f"{name}:x:{uid}:{gid}:{name}:/:/usr/sbin/nologin\n"
-                for name, (uid, gid) in cache_check.EXPECTED_USERS.items()
-            ))
+            passwd.write_text(
+                "".join(
+                    f"{name}:x:{uid}:{gid}:{name}:/:/usr/sbin/nologin\n"
+                    for name, (uid, gid) in cache_check.EXPECTED_USERS.items()
+                )
+            )
             groups = root / "etc/group"
-            groups.write_text("".join(
-                f"{name}:x:{gid}:\n"
-                for name, gid in cache_check.EXPECTED_GROUPS.items()
-            ))
+            groups.write_text(
+                "".join(
+                    f"{name}:x:{gid}:\n"
+                    for name, gid in cache_check.EXPECTED_GROUPS.items()
+                )
+            )
             (root / "etc/shadow").write_text(
                 "root:!:0:0:99999:7:::\nasterinas:!:0:0:99999:7:::\n"
             )
@@ -518,7 +553,10 @@ class BrowserWebContractTests(unittest.TestCase):
                 "[Service]\nUser=asterinas\nAmbientCapabilities=\n"
                 "CapabilityBoundingSet=\nNoNewPrivileges=yes\n"
             )
-            for maintenance_unit, required_lines in cache_check.MAINTENANCE_UNITS.items():
+            for (
+                maintenance_unit,
+                required_lines,
+            ) in cache_check.MAINTENANCE_UNITS.items():
                 (root / "usr/lib/systemd/system" / maintenance_unit).write_text(
                     "[Unit]\n" + "\n".join(required_lines) + "\n"
                 )
@@ -529,15 +567,27 @@ class BrowserWebContractTests(unittest.TestCase):
             with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", os.getuid()):
                 self.assertIn("ldconfig=riscv64", cache_check.check_cache_profile(root))
 
+                unit_contents = unit.read_text()
+                unit.unlink()
+                self.assertEqual(
+                    cache_check.check_cache_profile(root, profile="desktop-m5-network"),
+                    "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
+                    "sysusers=static ldconfig=riscv64 journal=catalog "
+                    "fontconfig=cached stamps=current",
+                )
+                unit.write_text(unit_contents)
+
                 original = passwd.read_text()
                 for mutation in (
                     original.replace("asterinas:x:1000:1000", "asterinas:x:1001:1000"),
                     original + "duplicate:x:1000:1001::/:/bin/false\n",
                     original.replace("messagebus:x:997:997", "messagebus:x:996:997"),
                     "\n".join(
-                        line for line in original.splitlines()
+                        line
+                        for line in original.splitlines()
                         if not line.startswith("systemd-network:")
-                    ) + "\n",
+                    )
+                    + "\n",
                     original + "uid-alias:x:998:998:alias:/:/usr/sbin/nologin\n",
                 ):
                     passwd.write_text(mutation)
@@ -571,18 +621,24 @@ class BrowserWebContractTests(unittest.TestCase):
                 cache.write_bytes(original_cache)
                 os.utime(cache, ns=(100, 100))
                 cache.write_bytes(b"host-cache-format")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "unknown format"
+                ):
                     cache_check.check_cache_profile(root)
                 cache.write_bytes(original_cache)
 
                 original_listing = listing.read_text()
                 cache.write_bytes(original_cache)
-                listing.write_text(original_listing.replace("riscv64-linux", "x86_64-linux"))
+                listing.write_text(
+                    original_listing.replace("riscv64-linux", "x86_64-linux")
+                )
                 with self.assertRaisesRegex(cache_check.CacheCheckError, "host paths"):
                     cache_check.check_cache_profile(root)
-                listing.write_text(original_listing.replace(
-                    "/lib/riscv64-linux-gnu/libc.so.6", "/usr/lib/x86_64/libhost.so"
-                ))
+                listing.write_text(
+                    original_listing.replace(
+                        "/lib/riscv64-linux-gnu/libc.so.6", "/usr/lib/x86_64/libhost.so"
+                    )
+                )
                 with self.assertRaisesRegex(cache_check.CacheCheckError, "host paths"):
                     cache_check.check_cache_profile(root)
                 listing.write_text(original_listing)
@@ -594,7 +650,9 @@ class BrowserWebContractTests(unittest.TestCase):
 
                 os.utime(cache, ns=(100, 100))
                 os.utime(root / "usr", ns=(200, 200))
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "cache is older"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "cache is older"
+                ):
                     cache_check.check_cache_profile(root)
                 os.utime(root / "usr", ns=(100, 100))
 
@@ -611,17 +669,23 @@ class BrowserWebContractTests(unittest.TestCase):
 
                 catalog = root / "var/lib/systemd/catalog/database"
                 catalog.write_bytes(b"")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "empty cache input"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "empty cache input"
+                ):
                     cache_check.check_cache_profile(root)
                 catalog.write_bytes(b"arbitrary-catalog")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "unknown format"
+                ):
                     cache_check.check_cache_profile(root)
                 catalog.write_bytes(b"RHHHKSLP" + b"\0" * 24)
 
                 hwdb = root / "usr/lib/udev/hwdb.bin"
                 original_hwdb = hwdb.read_bytes()
                 hwdb.write_bytes(b"arbitrary-hwdb")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "unknown format"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "unknown format"
+                ):
                     cache_check.check_cache_profile(root)
                 hwdb.write_bytes(original_hwdb)
                 local_hwdb = root / "etc/udev/hwdb.bin"
@@ -635,12 +699,16 @@ class BrowserWebContractTests(unittest.TestCase):
                 os.utime(root / "usr", ns=(200, 200))
                 os.utime(cache, ns=(200, 200))
                 os.utime(stamp, ns=(100, 100))
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "older than /usr"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "older than /usr"
+                ):
                     cache_check.check_cache_profile(root)
                 os.utime(stamp, ns=(200, 200))
                 other_stamp = root / "var/.updated"
                 other_stamp.unlink()
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "missing or unsafe"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "missing or unsafe"
+                ):
                     cache_check.check_cache_profile(root)
 
                 other_stamp.touch()
@@ -648,26 +716,120 @@ class BrowserWebContractTests(unittest.TestCase):
                 maintenance = "systemd-sysusers.service"
                 override = root / "etc/systemd/system" / maintenance
                 override.symlink_to("/dev/null")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "masked or overridden"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "masked or overridden"
+                ):
                     cache_check.check_cache_profile(root)
                 override.unlink()
                 vendor = root / "usr/lib/systemd/system" / maintenance
                 vendor_contents = vendor.read_text()
                 vendor.unlink()
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "missing or unsafe"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "missing or unsafe"
+                ):
                     cache_check.check_cache_profile(root)
                 vendor.write_text(vendor_contents)
                 dropin = root / "etc/systemd/system" / f"{maintenance}.d"
                 dropin.mkdir()
-                (dropin / "bypass.conf").write_text("[Service]\nExecStart=\nExecStart=/bin/true\n")
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "masked or overridden"):
+                (dropin / "bypass.conf").write_text(
+                    "[Service]\nExecStart=\nExecStart=/bin/true\n"
+                )
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "masked or overridden"
+                ):
                     cache_check.check_cache_profile(root)
                 (dropin / "bypass.conf").unlink()
                 dropin.rmdir()
 
             with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", -1):
-                with self.assertRaisesRegex(cache_check.CacheCheckError, "non-root-owned"):
+                with self.assertRaisesRegex(
+                    cache_check.CacheCheckError, "non-root-owned"
+                ):
                     cache_check.check_cache_profile(root)
+
+    def test_fontconfig_cache_uses_audited_scan_and_fails_closed(self) -> None:
+        script = r"""
+source "$1"
+stage="$2/stage"
+mkdir -p "$stage/var/cache/fontconfig"
+attempt_file="$2/attempts"
+scenario="$3"
+printf '0\n' >"$attempt_file"
+export SOURCE_DATE_EPOCH=1704067200
+chroot() {
+    current="$(cat "$attempt_file")"
+    current="$((current + 1))"
+    printf '%s\n' "$current" >"$attempt_file"
+    if [[ "$scenario" == success && -z "${SOURCE_DATE_EPOCH-}" && " $* " == *" -v "* ]]; then
+        printf 'cache\n' >"$1/var/cache/fontconfig/retry.cache-9"
+    fi
+    return 0
+}
+generate_fontconfig_cache "$stage" "$3"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for scenario, expected_status, expected_attempts in (
+                ("success", 0, "1"),
+                ("empty", 2, "1"),
+            ):
+                with self.subTest(scenario=scenario):
+                    work = root / scenario
+                    work.mkdir()
+                    result = subprocess.run(
+                        [
+                            "/bin/bash",
+                            "-c",
+                            script,
+                            "fontconfig-retry-test",
+                            str(ROOTFS / "build_rootfs.sh"),
+                            str(work),
+                            scenario,
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(result.returncode, expected_status, result.stderr)
+                    self.assertEqual(
+                        (work / "attempts").read_text().strip(), expected_attempts
+                    )
+                    if scenario == "empty":
+                        self.assertIn("fontconfig cache is absent", result.stderr)
+
+    def test_desktop_network_profile_requires_prebuilt_startup_caches(self) -> None:
+        builder = ROOTFS / "build_rootfs.sh"
+        tools = subprocess.run(
+            [str(builder), "--profile", "desktop-m5-network", "--print-tools"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        self.assertNotIn("systemd-sysusers", tools)
+        self.assertNotIn("journalctl", tools)
+        for profile, expected in (
+            ("desktop-m5-network", 0),
+            ("browser-web", 0),
+            ("minimal-m1", 1),
+        ):
+            with self.subTest(profile=profile):
+                result = subprocess.run(
+                    [
+                        "/bin/bash",
+                        "-c",
+                        'source "$1"; profile_uses_startup_caches "$2"',
+                        "startup-cache-profile-test",
+                        str(builder),
+                        profile,
+                    ],
+                    cwd=ROOT,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
 
     def test_qemu_runner_has_one_slirp_virtio_nic_and_fail_closed_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -691,7 +853,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("cache=directsync", root_drives[0])
         self.assertNotIn("cache=unsafe", root_drives[0])
         passing = ("\n".join(BROWSER_WEB_MILESTONES) + "\n").encode()
-        self.assertTrue(classify_browser_web_qemu(passing, expected_debian_release="13.6").passed)
+        self.assertTrue(
+            classify_browser_web_qemu(passing, expected_debian_release="13.6").passed
+        )
         for marker in (
             b"DEBIAN_BROWSER_WEB_FAIL reason=challenge",
             b"DEBIAN_NETWORK_M5_FAIL reason=qemu-https",
@@ -713,10 +877,12 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("document.querySelector('#kw')", arguments["script"])
         self.assertIn("document.querySelector('#su')", arguments["script"])
         self.assertIn("submit.click()", arguments["script"])
-        run_source = inspect.getsource(__import__(
-            "tools.riscv.debian.rootfs.browser_web_marionette_gate",
-            fromlist=["run_gate"],
-        ).run_gate)
+        run_source = inspect.getsource(
+            __import__(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate",
+                fromlist=["run_gate"],
+            ).run_gate
+        )
         self.assertIn("_submit_baidu_search(client)", run_source)
         self.assertNotIn("_navigate(client, BAIDU_SEARCH)", run_source)
         client.command.return_value = {"value": "missing-controls"}
@@ -767,11 +933,13 @@ class BrowserWebContractTests(unittest.TestCase):
         with self.assertRaises(GateFailure):
             validate_web_evidence({**evidence, "security.log": trust_mismatch})
 
-        duplicate_ca = evidence["security.log"].replace(
-            b"TRUST_STATIC_SHA256", b"SYSTEM_CA_SHA256"
-        ).replace(
-            b"path=/usr/share/asterinas/browser-web-trust-static.log",
-            b"path=/etc/ssl/certs/ca-certificates.crt",
+        duplicate_ca = (
+            evidence["security.log"]
+            .replace(b"TRUST_STATIC_SHA256", b"SYSTEM_CA_SHA256")
+            .replace(
+                b"path=/usr/share/asterinas/browser-web-trust-static.log",
+                b"path=/etc/ssl/certs/ca-certificates.crt",
+            )
         )
         with self.assertRaises(GateFailure):
             validate_web_evidence({**evidence, "security.log": duplicate_ca})
@@ -816,12 +984,16 @@ class BrowserWebContractTests(unittest.TestCase):
             b"BROWSER_WEB_SECURITY service_pid=999 nrestarts=0 stable=1 active=1",
             b"BROWSER_WEB_SECURITY service_pid=100 nrestarts=1 stable=1 active=1",
         ):
-            original = b"BROWSER_WEB_SECURITY service_pid=100 nrestarts=0 stable=1 active=1"
+            original = (
+                b"BROWSER_WEB_SECURITY service_pid=100 nrestarts=0 stable=1 active=1"
+            )
             with self.subTest(changed=changed), self.assertRaises(GateFailure):
                 validate_web_evidence(
                     {
                         **evidence,
-                        "security.log": evidence["security.log"].replace(original, changed),
+                        "security.log": evidence["security.log"].replace(
+                            original, changed
+                        ),
                     }
                 )
 
@@ -829,17 +1001,23 @@ class BrowserWebContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative in (
-                "var/lib/dpkg/status", "usr/bin/getent", "usr/bin/curl",
-                "usr/lib/firefox-esr/firefox-esr", "etc/nsswitch.conf", "etc/resolv.conf",
+                "var/lib/dpkg/status",
+                "usr/bin/getent",
+                "usr/bin/curl",
+                "usr/lib/firefox-esr/firefox-esr",
+                "etc/nsswitch.conf",
+                "etc/resolv.conf",
             ):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("", encoding="utf-8")
                 path.chmod(0o755)
-            (root / "var/lib/dpkg/status").write_text("".join(
-                f"Package: {package}\nStatus: install ok installed\n\n"
-                for package in ("firefox-esr", "ca-certificates", "curl")
-            ))
+            (root / "var/lib/dpkg/status").write_text(
+                "".join(
+                    f"Package: {package}\nStatus: install ok installed\n\n"
+                    for package in ("firefox-esr", "ca-certificates", "curl")
+                )
+            )
             (root / "etc/nsswitch.conf").write_text("hosts: files dns\n")
             (root / "etc/resolv.conf").write_text("nameserver 1.1.1.1\n")
             launcher = root / "usr/bin/firefox-esr"
@@ -923,7 +1101,12 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("WebDriver:TakeScreenshot", gate)
         self.assertIn("ResourceTiming", gate)
         self.assertIn("NavigationTiming", gate)
-        for forbidden in ("mock", "snapshot.html", "host proxy", "acceptInsecureCerts\": True"):
+        for forbidden in (
+            "mock",
+            "snapshot.html",
+            "host proxy",
+            'acceptInsecureCerts": True',
+        ):
             self.assertNotIn(forbidden, gate)
 
 

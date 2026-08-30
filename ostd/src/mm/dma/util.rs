@@ -10,6 +10,7 @@ use crate::{
     mm::{
         CachePolicy, Daddr, FrameAllocOptions, HasPaddr, HasSize, PAGE_SIZE, Paddr, PageFlags,
         PageProperty, PrivilegedPageFlags, Segment,
+        frame::meta::AnyFrameMeta,
         kspace::kvirt_area::KVirtArea,
         tlb::{TlbFlushOp, TlbFlusher},
     },
@@ -124,7 +125,26 @@ pub(super) fn alloc_kva(
             .zeroed(false)
             .alloc_segment_with(nframes, |_| DmaBufferMeta)?,
     );
+    map_dma_segment(segment, is_cache_coherent)
+}
 
+pub(super) fn alloc_kva_in(
+    nframes: usize,
+    is_cache_coherent: bool,
+    paddr_range: Range<Paddr>,
+) -> Result<(KVirtArea, Paddr), Error> {
+    let segment = Segment::from_unsized(
+        FrameAllocOptions::new()
+            .zeroed(false)
+            .alloc_segment_with_in(nframes, paddr_range, |_| DmaBufferMeta)?,
+    );
+    map_dma_segment(segment, is_cache_coherent)
+}
+
+fn map_dma_segment(
+    segment: Segment<dyn AnyFrameMeta>,
+    is_cache_coherent: bool,
+) -> Result<(KVirtArea, Paddr), Error> {
     #[cfg_attr(not(target_arch = "x86_64"), expect(unused_labels))]
     let priv_flags = 'priv_flags: {
         #[cfg(target_arch = "x86_64")]

@@ -885,6 +885,7 @@ copy_into_content_cache() {
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
+    local startup_cache_marker
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
@@ -964,7 +965,7 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
-    if [[ "$PROFILE" == browser-web || "$PROFILE" == browser-m5 ]]; then
+    if profile_uses_startup_caches "$PROFILE"; then
         # Both browser profiles must enter the guest with the target-owned
         # systemd/sysusers, dynamic-linker, journal, and font caches already
         # converged.  Otherwise systemd repeats these maintenance jobs on
@@ -977,28 +978,46 @@ EOF
         # closed if a real workspace somehow does not.
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
-        elif [[ -d "$WORK_DIR/source-metadata" ]]; then
+        elif [[ ("$PROFILE" == browser-web || "$PROFILE" == browser-m5) && -d "$WORK_DIR/source-metadata" ]]; then
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
         fi
     fi
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
     [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
         die "qemu-riscv64-static remains in staged rootfs"
-    if [[ "$PROFILE" == browser-web || "$PROFILE" == browser-m5 ]]; then
+    if profile_uses_startup_caches "$PROFILE"; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
-            local cache_service="asterinas-browser-web.service"
-            [[ "$PROFILE" == browser-m5 ]] && cache_service="asterinas-browser-m5.service"
-            python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-                --service-name "$cache_service" \
-                >"$WORK_DIR/browser-startup-cache-check.log"
-            grep -qx 'BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current' \
+            local startup_cache_marker
+            if [[ "$PROFILE" == browser-m5 ]]; then
+                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                    --profile browser-web --service-name asterinas-browser-m5.service \
+                    >"$WORK_DIR/browser-startup-cache-check.log"
+                startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+            else
+                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                    --profile "$PROFILE" \
+                    >"$WORK_DIR/browser-startup-cache-check.log"
+                if [[ "$PROFILE" == browser-web ]]; then
+                    startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+                else
+                    startup_cache_marker='DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+                fi
+            fi
+            grep -Fqx "$startup_cache_marker" \
                 "$WORK_DIR/browser-startup-cache-check.log" ||
-                die "browser startup cache checker did not emit its exact PASS"
+                die "startup cache checker did not emit its exact PASS"
         fi
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+profile_uses_startup_caches() {
+    case "$1" in
+        desktop-m5-network | browser-web | browser-m5) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 finalize_browser_startup_caches() {
@@ -1022,14 +1041,34 @@ finalize_browser_startup_caches() {
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
     chroot "$stage" /usr/bin/journalctl --update-catalog
-    chroot "$stage" /usr/bin/fc-cache -f
+    generate_fontconfig_cache "$stage"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
         die "staged journal catalog is absent"
-    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
-        die "staged fontconfig cache is absent"
+}
+
+generate_fontconfig_cache() {
+    local stage="$1"
+    local cache_file
+    local scan_log="$stage/usr/share/asterinas/fontconfig-build.log"
+
+    install -d -m 0755 -- "$stage/usr/share/asterinas"
+    printf 'FONTCONFIG_BUILD_SOURCE_DATE_EPOCH unset\n' >"$scan_log"
+    if ! (
+        unset SOURCE_DATE_EPOCH
+        chroot "$stage" /usr/bin/fc-cache -f -v
+    ) >>"$scan_log" 2>&1; then
+        cat -- "$scan_log" >&2
+        die "staged fontconfig cache rebuild failed"
+    fi
+    cache_file="$(find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit)"
+    if [[ -n "$cache_file" ]]; then
+        return 0
+    fi
+    cat -- "$scan_log" >&2
+    die "staged fontconfig cache is absent after an audited rebuild"
 }
 
 configure_desktop_m5_network() {
@@ -1041,11 +1080,36 @@ configure_desktop_m5_network() {
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
     local baidu_service_name="asterinas-desktop-m7-baidu"
+    local quality_service_name="asterinas-desktop-m8-browser-quality"
+    local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     install -D -m 0755 -- \
         "$script_directory/desktop_m5_network_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
+    install -D -m 0755 -- \
+        "$script_directory/megrez_safe_reboot.sh" \
+        "$stage/usr/lib/asterinas/megrez-safe-reboot"
+    cat >"$stage/etc/systemd/system/$safe_reboot_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas synchronized Megrez recovery
+After=local-fs.target
+Before=asterinas-desktop-m5-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/asterinas/megrez-safe-reboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- \
+        "$stage/etc/systemd/system/$safe_reboot_service_name.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -s -- \
+        "../$safe_reboot_service_name.service" \
+        "$stage/etc/systemd/system/basic.target.wants/$safe_reboot_service_name.service"
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
@@ -1130,7 +1194,53 @@ EOF
     ln -s -- \
         "../$baidu_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m8_browser_quality_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m8-browser-quality-evidence"
+    install -d -o 1000 -g 1000 -m 0755 -- "$stage/home/asterinas/Downloads"
+    cat >"$stage/etc/systemd/system/$quality_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M8 lightweight browser quality evidence
+After=asterinas-desktop-m7-baidu.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_BROWSER_M8_TIMEOUT_SECONDS=300
+TimeoutStartSec=360
+ExecStart=/usr/lib/asterinas/desktop-m8-browser-quality-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$quality_service_name.service"
+    ln -s -- \
+        "../$quality_service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$quality_service_name.service"
     fi
+}
+
+configure_logind_namespace_compatibility() {
+    local stage="$1"
+    local directory="$stage/etc/systemd/system/systemd-logind.service.d"
+    local output="$directory/asterinas-namespace-compat.conf"
+
+    install -d -m 0755 -- "$directory"
+    cat >"$output" <<'EOF'
+[Service]
+# Asterinas does not yet provide the user/mount namespace contract used by
+# Debian's systemd-logind sandbox. Keep functional logind without that sandbox.
+PrivateTmp=no
+ProtectClock=no
+ProtectControlGroups=no
+ProtectHome=no
+ProtectHostname=no
+ProtectKernelLogs=no
+ProtectKernelModules=no
+ProtectSystem=no
+ReadWritePaths=
+EOF
+    chmod 0644 -- "$output"
 }
 
 configure_desktop() {
@@ -1170,6 +1280,7 @@ configure_desktop() {
         desktop_wants="dbus.service"
         desktop_session_options=$'StandardInput=null\nStandardOutput=journal\nStandardError=journal'
     fi
+    configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
             'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \

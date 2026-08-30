@@ -17,7 +17,9 @@ use crate::{
     },
     net::socket::util::{CControlHeader, ControlMessage, RecvFlags},
     prelude::*,
-    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
+    process::{
+        PidFile, UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread,
+    },
     security::lsm::hooks as lsm_hooks,
     util::net::CSocketOptionLevel,
 };
@@ -479,12 +481,14 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
     // arbitrary file descriptions. Other `InodeHandle` implementations are not safe to
     // generalize: a loop-device open file may strongly retain its backing `FileLike`.
     // Epoll's interest and ready sets retain only weak watched-file references. Other socket
-    // families also cannot own AF_UNIX file descriptions.
+    // families also cannot own AF_UNIX file descriptions. A pidfd retains only a weak process
+    // reference, so it cannot keep that process or any file description in its table alive.
     if is_proven_leaf(
         file.downcast_ref::<InodeHandle>()
             .is_some_and(InodeHandle::is_scm_rights_proven_leaf),
         file.downcast_ref::<EpollFile>().is_some(),
         file.as_socket().is_some(),
+        file.downcast_ref::<PidFile>().is_some(),
     ) {
         return ScmFileClass::ProvenLeaf;
     }
@@ -495,8 +499,13 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
     ScmFileClass::Unsupported
 }
 
-fn is_proven_leaf(is_safe_inode: bool, is_epoll: bool, is_non_unix_socket: bool) -> bool {
-    is_safe_inode || is_epoll || is_non_unix_socket
+fn is_proven_leaf(
+    is_safe_inode: bool,
+    is_epoll: bool,
+    is_non_unix_socket: bool,
+    is_pidfd: bool,
+) -> bool {
+    is_safe_inode || is_epoll || is_non_unix_socket || is_pidfd
 }
 
 #[cfg(ktest)]
@@ -514,10 +523,11 @@ mod test {
 
     #[ktest]
     fn classifies_file_shapes_and_marks_unknown() {
-        assert!(is_proven_leaf(true, false, false));
-        assert!(is_proven_leaf(false, true, false));
-        assert!(is_proven_leaf(false, false, true));
-        assert!(!is_proven_leaf(false, false, false));
+        assert!(is_proven_leaf(true, false, false, false));
+        assert!(is_proven_leaf(false, true, false, false));
+        assert!(is_proven_leaf(false, false, true, false));
+        assert!(is_proven_leaf(false, false, false, true));
+        assert!(!is_proven_leaf(false, false, false, false));
 
         let stream = SocketNode::new();
         let datagram = SocketNode::new();

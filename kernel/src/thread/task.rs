@@ -9,6 +9,8 @@ use ostd::{
 };
 
 use super::{Thread, oops};
+#[cfg(target_arch = "riscv64")]
+use crate::first_process_diag::FirstProcessDiagnostics;
 use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
@@ -64,12 +66,24 @@ pub fn create_new_user_task(
 
         let has_kernel_event_fn = || ctx.has_pending();
 
+        #[cfg(target_arch = "riscv64")]
+        let mut first_process_diagnostics = None;
+
         // The startup method is only executed when the first user thread starts up.
         if ctx.posix_thread.tid() == FIRST_POSIX_TID {
             crate::init::on_first_process_startup(&ctx);
+            #[cfg(target_arch = "riscv64")]
+            {
+                first_process_diagnostics = FirstProcessDiagnostics::new_if_active();
+            }
         }
 
         while !current_thread.is_exited() {
+            #[cfg(target_arch = "riscv64")]
+            if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                diagnostics.on_user_enter(user_mode.context());
+            }
+
             // Execute the user code
             let return_reason = user_mode.execute(has_kernel_event_fn);
 
@@ -78,21 +92,41 @@ pub fn create_new_user_task(
             match return_reason {
                 ReturnReason::UserException => {
                     let exception = user_ctx.take_exception().unwrap();
+                    #[cfg(target_arch = "riscv64")]
+                    if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                        diagnostics.on_user_exception(user_ctx, &exception);
+                    }
                     ctx.thread_local.set_orig_syscall_ret(None);
                     handle_exception(&ctx, user_ctx, exception)
                 }
                 ReturnReason::UserSyscall => {
+                    #[cfg(target_arch = "riscv64")]
+                    if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                        diagnostics.on_user_syscall_trap(user_ctx);
+                    }
                     ctx.thread_local
                         .set_orig_syscall_ret(Some(user_ctx.syscall_ret()));
 
                     let res = ctx.posix_thread.ptrace_may_stop_on_syscall(&ctx, user_ctx);
                     if !matches!(res, PtraceStopResult::Interrupted) {
+                        #[cfg(target_arch = "riscv64")]
+                        if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                            diagnostics.on_syscall_enter(user_ctx);
+                        }
                         handle_syscall(&ctx, user_ctx);
+                        #[cfg(target_arch = "riscv64")]
+                        if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                            diagnostics.on_syscall_return(user_ctx);
+                        }
 
                         ctx.posix_thread.ptrace_may_stop_on_syscall(&ctx, user_ctx);
                     }
                 }
                 ReturnReason::KernelEvent => {
+                    #[cfg(target_arch = "riscv64")]
+                    if let Some(diagnostics) = first_process_diagnostics.as_mut() {
+                        diagnostics.on_kernel_event(user_ctx);
+                    }
                     ctx.thread_local.set_orig_syscall_ret(None);
                 }
             };

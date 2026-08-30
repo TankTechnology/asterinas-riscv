@@ -52,6 +52,22 @@ pub trait HostController {
     fn write_data_word(&mut self, value: u32) -> Result<(), HostError>;
     fn wait_transfer_complete(&mut self) -> Result<(), HostError>;
     fn reset_data_line(&mut self);
+
+    fn max_blocks_per_command(&self) -> usize {
+        MAX_BLOCKS_PER_COMMAND
+    }
+
+    fn try_read_blocks(
+        &mut self,
+        _command: Command,
+        _output: &mut [u8],
+    ) -> Result<bool, HostError> {
+        Ok(false)
+    }
+
+    fn try_write_blocks(&mut self, _command: Command, _data: &[u8]) -> Result<bool, HostError> {
+        Ok(false)
+    }
 }
 
 /// Immutable SDHC identity learned during discovery.
@@ -169,19 +185,22 @@ impl Card {
             return Err(HostError::Unsupported);
         }
         let mut lba = first_lba;
-        for blocks in out.chunks_mut(MAX_BLOCKS_PER_COMMAND * SECTOR_SIZE) {
+        let max_blocks = host
+            .max_blocks_per_command()
+            .clamp(1, MAX_BLOCKS_PER_COMMAND);
+        for blocks in out.chunks_mut(max_blocks * SECTOR_SIZE) {
             let block_count = blocks.len() / SECTOR_SIZE;
             if block_count == 1 {
                 let sector: &mut [u8; SECTOR_SIZE] =
                     blocks.try_into().map_err(|_| HostError::Unsupported)?;
                 self.read_sector(host, lba, sector)?;
             } else if block_count != 0 {
+                let command = Command::read_multiple_blocks(lba as u32, block_count as u16);
                 let result = (|| {
-                    host.command(Command::read_multiple_blocks(
-                        lba as u32,
-                        block_count as u16,
-                    ))?
-                    .short()?;
+                    if host.try_read_blocks(command, blocks)? {
+                        return Ok(());
+                    }
+                    host.command(command)?.short()?;
                     for sector in blocks.as_chunks_mut::<SECTOR_SIZE>().0 {
                         host.wait_buffer_read_ready()?;
                         for word in sector.as_chunks_mut::<4>().0 {
@@ -241,19 +260,22 @@ impl Card {
             return Err(HostError::Unsupported);
         }
         let mut lba = first_lba;
-        for blocks in data.chunks(MAX_BLOCKS_PER_COMMAND * SECTOR_SIZE) {
+        let max_blocks = host
+            .max_blocks_per_command()
+            .clamp(1, MAX_BLOCKS_PER_COMMAND);
+        for blocks in data.chunks(max_blocks * SECTOR_SIZE) {
             let block_count = blocks.len() / SECTOR_SIZE;
             if block_count == 1 {
                 let sector: &[u8; SECTOR_SIZE] =
                     blocks.try_into().map_err(|_| HostError::Unsupported)?;
                 self.write_sector(host, lba, sector)?;
             } else if block_count != 0 {
+                let command = Command::write_multiple_blocks(lba as u32, block_count as u16);
                 let result = (|| {
-                    host.command(Command::write_multiple_blocks(
-                        lba as u32,
-                        block_count as u16,
-                    ))?
-                    .short()?;
+                    if host.try_write_blocks(command, blocks)? {
+                        return Ok(());
+                    }
+                    host.command(command)?.short()?;
                     for sector in blocks.as_chunks::<SECTOR_SIZE>().0 {
                         host.wait_buffer_write_ready()?;
                         for word in sector.as_chunks::<4>().0 {
@@ -428,6 +450,111 @@ mod tests {
         }
     }
 
+    struct FastHost {
+        reads: Vec<Command>,
+        writes: Vec<u8>,
+        write_commands: Vec<Command>,
+        resets: usize,
+    }
+
+    impl HostController for FastHost {
+        fn reset(&mut self) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn set_clock(&mut self, _hz: u32) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn command(&mut self, _command: Command) -> Result<Response, HostError> {
+            unreachable!("PIO command must not run after a fast transfer")
+        }
+
+        fn set_bus_width_4(&mut self) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn wait_buffer_read_ready(&mut self) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn read_data_word(&mut self) -> Result<u32, HostError> {
+            unreachable!()
+        }
+
+        fn wait_buffer_write_ready(&mut self) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn write_data_word(&mut self, _value: u32) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn wait_transfer_complete(&mut self) -> Result<(), HostError> {
+            unreachable!()
+        }
+
+        fn reset_data_line(&mut self) {
+            self.resets += 1;
+        }
+
+        fn max_blocks_per_command(&self) -> usize {
+            2
+        }
+
+        fn try_read_blocks(
+            &mut self,
+            command: Command,
+            output: &mut [u8],
+        ) -> Result<bool, HostError> {
+            self.reads.push(command);
+            output.fill(0x5a);
+            Ok(true)
+        }
+
+        fn try_write_blocks(&mut self, command: Command, data: &[u8]) -> Result<bool, HostError> {
+            self.write_commands.push(command);
+            self.writes.extend_from_slice(data);
+            Ok(true)
+        }
+    }
+
+    #[ktest]
+    fn megrez_sdma_multi_sector_transfers_prefer_the_host_fast_path() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+        };
+        let mut host = FastHost {
+            reads: Vec::new(),
+            writes: Vec::new(),
+            write_commands: Vec::new(),
+            resets: 0,
+        };
+        let mut read = [0u8; 4 * SECTOR_SIZE];
+        card.read_sectors(&mut host, 2, &mut read).unwrap();
+        assert_eq!(read, [0x5a; 4 * SECTOR_SIZE]);
+        assert_eq!(
+            host.reads,
+            [
+                Command::read_multiple_blocks(2, 2),
+                Command::read_multiple_blocks(4, 2),
+            ]
+        );
+
+        let write = [0xa5; 4 * SECTOR_SIZE];
+        card.write_sectors(&mut host, 2, &write).unwrap();
+        assert_eq!(host.writes, write);
+        assert_eq!(
+            host.write_commands,
+            [
+                Command::write_multiple_blocks(2, 2),
+                Command::write_multiple_blocks(4, 2),
+            ]
+        );
+        assert_eq!(host.resets, 0);
+    }
+
     #[ktest]
     fn discovers_sdhc_with_exact_command_order() {
         let c_size = 0x1234u128;
@@ -568,6 +695,29 @@ mod tests {
         assert_eq!(host.written_words.len(), 256);
         assert_eq!(host.written_words[0], 1);
         assert_eq!(host.written_words[128], 2);
+        assert_eq!(host.data_resets, 0);
+        host.assert_done();
+    }
+
+    #[ktest]
+    fn writes_one_standard_sdhci_request_with_one_command() {
+        const BLOCKS: usize = 1024;
+        let card = Card {
+            rca: 1,
+            nr_sectors: 2048,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![Step::DataCommand(25, 2, BLOCKS as u16, Response::Short(0))].into();
+        let mut sectors = vec![0u8; BLOCKS * SECTOR_SIZE];
+        sectors[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sectors[(BLOCKS - 1) * SECTOR_SIZE..(BLOCKS - 1) * SECTOR_SIZE + 4]
+            .copy_from_slice(&2u32.to_le_bytes());
+
+        card.write_sectors(&mut host, 2, &sectors).unwrap();
+
+        assert_eq!(host.written_words.len(), BLOCKS * SECTOR_SIZE / 4);
+        assert_eq!(host.written_words[0], 1);
+        assert_eq!(host.written_words[(BLOCKS - 1) * SECTOR_SIZE / 4], 2);
         assert_eq!(host.data_resets, 0);
         host.assert_done();
     }

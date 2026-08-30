@@ -581,8 +581,13 @@ impl InodeInner {
         self.desc.flags.remove(flags);
     }
 
-    fn set_file_acl(&mut self, file_acl: u32) {
+    fn set_file_acl(&mut self, file_acl: u32) -> Result<()> {
+        let old_file_acl = self.desc.file_acl;
+        if let Ok(block_manager) = self.block_manager() {
+            block_manager.update_xattr_block_accounting(old_file_acl, file_acl)?;
+        }
         self.desc.file_acl = file_acl;
+        Ok(())
     }
 }
 
@@ -717,7 +722,7 @@ bitflags! {
 }
 
 #[cfg(ktest)]
-mod test {
+pub(in crate::fs::fs_impls::ext2) mod test {
     use super::*;
     use crate::{
         fs::fs_impls::ext2::test_utils::{self, RawInodeBuilder},
@@ -725,7 +730,10 @@ mod test {
     };
 
     /// Reads a `RawInode` directly from the test fixture's disk image.
-    pub(super) fn read_raw_inode_from_disk(f: &test_utils::Ext2Fixture, ino: u32) -> RawInode {
+    pub(in crate::fs::fs_impls::ext2) fn read_raw_inode_from_disk(
+        f: &test_utils::Ext2Fixture,
+        ino: u32,
+    ) -> RawInode {
         let nr_inodes_per_group = f.sb.nr_inodes_per_group();
         let group_idx = ((ino - 1) / nr_inodes_per_group) as usize;
         let inode_idx = (ino - 1) % nr_inodes_per_group;

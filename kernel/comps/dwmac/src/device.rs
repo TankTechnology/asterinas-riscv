@@ -29,12 +29,15 @@ use crate::{
         DMA_CHANNEL0_RX_RING_LENGTH, DMA_CHANNEL0_RX_TAIL_POINTER, DMA_CHANNEL0_STATUS,
         DMA_CHANNEL0_TX_CONTROL, DMA_CHANNEL0_TX_DESCRIPTOR_LIST,
         DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH, DMA_CHANNEL0_TX_RING_LENGTH,
-        DMA_CHANNEL0_TX_TAIL_POINTER, DMA_MODE, DMA_SYSTEM_BUS_MODE, MAC_ADDRESS0_HIGH,
-        MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_ENABLE,
-        MAC_PACKET_FILTER, MAC_RX_QUEUE_CONTROL0, MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER,
-        MTL_RX_QUEUE0_OPERATION_MODE, MTL_TX_QUEUE0_OPERATION_MODE, configure_queue_zero,
-        decode_mtl_rx_loss, dma_interrupt_enable, dma_status_needs_rx_resume, dma_system_bus_mode,
-        encode_ring_length, encode_rx_buffer_size,
+        DMA_CHANNEL0_TX_TAIL_POINTER, DMA_DEBUG_STATUS0, DMA_MODE, DMA_SYSTEM_BUS_MODE,
+        MAC_ADDRESS0_HIGH, MAC_ADDRESS0_LOW, MAC_CONFIGURATION, MAC_DEBUG, MAC_HW_FEATURE1,
+        MAC_INTERRUPT_ENABLE, MAC_PACKET_FILTER, MAC_QUEUE0_TX_FLOW_CONTROL, MAC_RX_FLOW_CONTROL,
+        MAC_RX_QUEUE_CONTROL0, MTL_QUEUE0_INTERRUPT_CONTROL_STATUS, MTL_RX_QUEUE0_DEBUG,
+        MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER, MTL_RX_QUEUE0_OPERATION_MODE,
+        MTL_TX_QUEUE0_OPERATION_MODE, configure_flow_control, configure_queue_zero,
+        decode_flow_control_debug, decode_mtl_rx_loss, dma_interrupt_enable,
+        dma_status_needs_rx_resume, dma_system_bus_mode, encode_ring_length, encode_rx_buffer_size,
+        mac_tx_flow_control_busy, validate_flow_control_readback, validate_rx_fifo_readback,
     },
 };
 
@@ -62,7 +65,9 @@ pub(super) enum DeviceError {
     Platform(PlatformError),
     Registration,
     RegisterEncoding,
+    RegisterReadback,
     ResetTimeout,
+    TxFlowControlBusyTimeout,
 }
 
 impl From<PlatformError> for DeviceError {
@@ -107,6 +112,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
+    device.log_hardware_state("started");
     let interrupt_enable = dma_interrupt_enable(selected.version);
     device.write(DMA_CHANNEL0_INTERRUPT_ENABLE.offset(), interrupt_enable)?;
     ostd::info!(
@@ -187,7 +193,6 @@ fn configure_selected(
         read(MAC_RX_QUEUE_CONTROL0.offset())?,
     )
     .map_err(|_| DeviceError::RegisterEncoding)?;
-
     let system_bus_mode = dma_system_bus_mode(tx_high, rx_high);
     write(DMA_SYSTEM_BUS_MODE.offset(), system_bus_mode)?;
     write(DMA_CHANNEL0_CONTROL.offset(), 0)?;
@@ -218,36 +223,29 @@ fn configure_selected(
         MTL_TX_QUEUE0_OPERATION_MODE.offset(),
         queue_zero.mtl_tx_operation_mode,
     )?;
+    let flow_disabled = configure_flow_control(queue_zero.mtl_rx_operation_mode, false, false)
+        .map_err(|_| DeviceError::RegisterEncoding)?;
     write(
         MTL_RX_QUEUE0_OPERATION_MODE.offset(),
-        queue_zero.mtl_rx_operation_mode,
+        flow_disabled.mtl_rx_operation_mode,
+    )?;
+    let actual_mtl_rx = read(MTL_RX_QUEUE0_OPERATION_MODE.offset())?;
+    validate_rx_fifo_readback(mac_feature1, actual_mtl_rx)
+        .map_err(|_| DeviceError::RegisterReadback)?;
+    let flow_control = configure_flow_control(
+        actual_mtl_rx,
+        selected.link_state.tx_pause(),
+        selected.link_state.rx_pause(),
+    )
+    .map_err(|_| DeviceError::RegisterEncoding)?;
+    write(
+        MTL_RX_QUEUE0_OPERATION_MODE.offset(),
+        flow_control.mtl_rx_operation_mode,
     )?;
     write(
         MAC_RX_QUEUE_CONTROL0.offset(),
         queue_zero.mac_rx_queue_control0,
     )?;
-    ostd::info!(
-        "configured GMAC{} queue zero: feature1={:#010x} system_bus={:#010x} tx_ring={:#018x} rx_ring={:#018x} mac_rxq={:#010x} mtl_tx={:#010x} mtl_rx={:#010x}",
-        alias,
-        mac_feature1,
-        system_bus_mode,
-        addresses.tx_ring,
-        addresses.rx_ring,
-        queue_zero.mac_rx_queue_control0,
-        queue_zero.mtl_tx_operation_mode,
-        queue_zero.mtl_rx_operation_mode,
-    );
-    ostd::info!(
-        "ASTERINAS_GMAC_DMA_CONTRACT version={:#04x} ring_paddr={:#018x} ring_daddr={:#018x} ring_cpu_alias={:#018x?} tx_ring={:#018x} rx_ring={:#018x} tx_tail={:#018x} rx_tail={:#018x}",
-        selected.version,
-        addresses.ring_paddr,
-        addresses.ring_daddr,
-        addresses.ring_cpu_alias,
-        addresses.tx_ring,
-        addresses.rx_ring,
-        addresses.initial_tx_tail,
-        addresses.initial_rx_tail,
-    );
     let mac_low = u32::from_le_bytes([
         selected.mac_address[0],
         selected.mac_address[1],
@@ -260,6 +258,54 @@ fn configure_selected(
     write(MAC_ADDRESS0_HIGH.offset(), mac_high)?;
     write(MAC_ADDRESS0_LOW.offset(), mac_low)?;
     write(MAC_PACKET_FILTER.offset(), 0)?;
+    wait_for_tx_flow_control_idle(platform, alias)?;
+    write(
+        MAC_QUEUE0_TX_FLOW_CONTROL.offset(),
+        flow_control.mac_tx_flow_control_queue0,
+    )?;
+    write(
+        MAC_RX_FLOW_CONTROL.offset(),
+        flow_control.mac_rx_flow_control,
+    )?;
+    let actual_mtl_rx = read(MTL_RX_QUEUE0_OPERATION_MODE.offset())?;
+    let actual_mac_tx = read(MAC_QUEUE0_TX_FLOW_CONTROL.offset())?;
+    let actual_mac_rx = read(MAC_RX_FLOW_CONTROL.offset())?;
+    validate_flow_control_readback(flow_control, actual_mtl_rx, actual_mac_tx, actual_mac_rx)
+        .map_err(|_| DeviceError::RegisterReadback)?;
+    ostd::info!(
+        "configured GMAC{} queue zero: feature1={:#010x} system_bus={:#010x} tx_ring={:#018x} rx_ring={:#018x} mac_rxq={:#010x} mtl_tx={:#010x} mtl_rx={:#010x}",
+        alias,
+        mac_feature1,
+        system_bus_mode,
+        addresses.tx_ring,
+        addresses.rx_ring,
+        queue_zero.mac_rx_queue_control0,
+        queue_zero.mtl_tx_operation_mode,
+        flow_control.mtl_rx_operation_mode,
+    );
+    ostd::info!(
+        "ASTERINAS_GMAC_FLOW_CONTROL tx_pause={} rx_pause={} rx_fifo_bytes={} mac_tx={:#010x} mac_rx={:#010x} mtl_rx={:#010x} actual_mac_tx={:#010x} actual_mac_rx={:#010x} actual_mtl_rx={:#010x}",
+        selected.link_state.tx_pause(),
+        selected.link_state.rx_pause(),
+        flow_control.rx_fifo_bytes,
+        flow_control.mac_tx_flow_control_queue0,
+        flow_control.mac_rx_flow_control,
+        flow_control.mtl_rx_operation_mode,
+        actual_mac_tx,
+        actual_mac_rx,
+        actual_mtl_rx,
+    );
+    ostd::info!(
+        "ASTERINAS_GMAC_DMA_CONTRACT version={:#04x} ring_paddr={:#018x} ring_daddr={:#018x} ring_cpu_alias={:#018x?} tx_ring={:#018x} rx_ring={:#018x} tx_tail={:#018x} rx_tail={:#018x}",
+        selected.version,
+        addresses.ring_paddr,
+        addresses.ring_daddr,
+        addresses.ring_cpu_alias,
+        addresses.tx_ring,
+        addresses.rx_ring,
+        addresses.initial_tx_tail,
+        addresses.initial_rx_tail,
+    );
     write(MAC_INTERRUPT_ENABLE.offset(), 0)?;
     write(DMA_CHANNEL0_STATUS.offset(), DMA_STATUS_KNOWN)?;
     write(
@@ -275,6 +321,22 @@ fn configure_selected(
         mac_configuration(selected) | MAC_CONFIG_TX_ENABLE | MAC_CONFIG_RX_ENABLE,
     )
     .map_err(DeviceError::Platform)
+}
+
+fn wait_for_tx_flow_control_idle(platform: &MegrezPlatform, alias: u8) -> Result<(), DeviceError> {
+    let deadline = aster_time::read_monotonic_time()
+        .checked_add(Duration::from_millis(10))
+        .ok_or(DeviceError::TxFlowControlBusyTimeout)?;
+    loop {
+        let register = platform.read_gmac(alias, MAC_QUEUE0_TX_FLOW_CONTROL.offset() as usize)?;
+        if !mac_tx_flow_control_busy(register) {
+            return Ok(());
+        }
+        if aster_time::read_monotonic_time() >= deadline {
+            return Err(DeviceError::TxFlowControlBusyTimeout);
+        }
+        spin_loop();
+    }
 }
 
 fn mac_configuration(selected: SelectedPortInfo) -> u32 {
@@ -330,6 +392,41 @@ impl DwmacDevice {
             .map_err(DeviceError::Platform)
     }
 
+    fn log_hardware_state(&self, stage: &str) {
+        let registers = (
+            self.read(MAC_DEBUG.offset()),
+            self.read(MTL_RX_QUEUE0_DEBUG.offset()),
+            self.read(DMA_DEBUG_STATUS0.offset()),
+            self.read(MTL_QUEUE0_INTERRUPT_CONTROL_STATUS.offset()),
+        );
+        let (Ok(mac_debug), Ok(mtl_rx_debug), Ok(dma_debug), Ok(mtl_queue_interrupt)) = registers
+        else {
+            ostd::info!("ASTERINAS_GMAC_HW_STATE stage={} read_failure=true", stage);
+            return;
+        };
+        let state =
+            decode_flow_control_debug(mac_debug, mtl_rx_debug, dma_debug, mtl_queue_interrupt);
+        ostd::info!(
+            "ASTERINAS_GMAC_HW_STATE stage={} mac_debug={:#010x} mtl_rx_debug={:#010x} dma_debug={:#010x} mtl_irq={:#010x} mac_tx_state={} mac_tx_active={} mac_rx_fifo_state={} mac_rx_active={} mtl_rx_packets={} mtl_rx_fill={} mtl_rx_read_state={} mtl_rx_write_active={} dma_tx_state={} dma_rx_state={} mtl_rx_overflow={}",
+            stage,
+            mac_debug,
+            mtl_rx_debug,
+            dma_debug,
+            mtl_queue_interrupt,
+            state.mac_tx_controller_state,
+            state.mac_tx_engine_active,
+            state.mac_rx_fifo_state,
+            state.mac_rx_engine_active,
+            state.mtl_rx_queued_packets,
+            state.mtl_rx_fill_level,
+            state.mtl_rx_read_state,
+            state.mtl_rx_write_active,
+            state.dma_tx_state,
+            state.dma_rx_state,
+            state.mtl_rx_overflow,
+        );
+    }
+
     fn service_status(&mut self) -> u32 {
         let Ok(status) = self.read(DMA_CHANNEL0_STATUS.offset()) else {
             self.fatal = true;
@@ -373,7 +470,8 @@ impl DwmacDevice {
         payload.limit(prefix_len);
         let copied = payload.read(&mut VmWriter::from(&mut prefix[..prefix_len]));
         debug_assert_eq!(copied, prefix_len);
-        self.rx_diagnostics.record_frame(&prefix[..copied]);
+        self.rx_diagnostics
+            .record_frame(&prefix[..copied], self.selected.mac_address);
     }
 
     fn record_receive_error(&mut self, error: QueueError) {
@@ -480,6 +578,7 @@ impl AnyNetworkDevice for DwmacDevice {
             PollEndAction::Stop => {}
         }
         if let Some(rx) = self.rx_poll.take_progress_report() {
+            self.log_hardware_state("rx-progress");
             match self.read(MTL_RX_QUEUE0_MISSED_PACKET_OVERFLOW_COUNTER.offset()) {
                 Ok(register) => self.mtl_rx_loss.record(decode_mtl_rx_loss(register)),
                 Err(_) => self.mtl_rx_loss.record_read_failure(),
@@ -511,9 +610,12 @@ impl AnyNetworkDevice for DwmacDevice {
                 mtl_rx_loss.read_failures,
             );
             ostd::info!(
-                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
+                "ASTERINAS_GMAC_RX_CLASS observed={} arp={} arp_requests={} arp_replies={} arp_replies_to_us={} ipv4_other={} tcp_syn={} tcp_syn_ack={} tcp_other={} other={} malformed={} descriptor_fragmented={} descriptor_receive_error={} descriptor_frame_too_long={} descriptor_other={}",
                 diagnostics.observed,
                 diagnostics.arp,
+                diagnostics.arp_requests,
+                diagnostics.arp_replies,
+                diagnostics.arp_replies_to_us,
                 diagnostics.ipv4_other,
                 diagnostics.tcp_syn,
                 diagnostics.tcp_syn_ack,

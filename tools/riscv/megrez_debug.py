@@ -25,6 +25,7 @@ from tools.riscv.debian.rootfs.contract import (
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_MIN_REBOOT_AFTER,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -33,6 +34,7 @@ from tools.riscv.megrez_debug_contract import (
 from tools.riscv.megrez_debug_board import (
     BoardRunFailure,
     BoardTermination,
+    MAX_BOARD_TIMEOUT,
     run_physical_board,
 )
 from tools.riscv.megrez_debug_desktop import (
@@ -57,6 +59,7 @@ KERNEL_ADDRESS = 0x80200000
 INITRAMFS_ADDRESS = 0x83000000
 DTB_ADDRESS = 0xF0000000
 MAX_PLAN_BYTES = 1024 * 1024
+TCP_PROBE_DEFAULT_REBOOT_AFTER = 180
 
 
 class WorkflowError(RuntimeError):
@@ -68,8 +71,10 @@ def _board_timeout(value: str) -> float:
         timeout = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("timeout must be a number") from error
-    if not 0 < timeout <= 300 or not math.isfinite(timeout):
-        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 300]")
+    if not 0 < timeout <= MAX_BOARD_TIMEOUT or not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError(
+            f"timeout must be finite and in (0, {MAX_BOARD_TIMEOUT:g}]"
+        )
     return timeout
 
 
@@ -225,21 +230,30 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         artifacts = (*boot_artifacts, *evidence_artifacts)
         schema_version = 2
         markers = DEBIAN_BROWSER_MARKERS
+    reboot_after = arguments.reboot_after
+    if reboot_after is None:
+        reboot_after = (
+            DEBIAN_BROWSER_MIN_REBOOT_AFTER
+            if arguments.profile == "debian-browser"
+            else TCP_PROBE_DEFAULT_REBOOT_AFTER
+        )
     plan = DebugPlan(
         schema_version=schema_version,
         profile=arguments.profile,
         artifacts=artifacts,
         bootargs=arguments.bootargs,
         smp=4,
-        sv39=True,
+        sv39=getattr(arguments, "paging_mode", "sv39") == "sv39",
         markers=markers,
-        reboot_after=arguments.reboot_after,
+        reboot_after=reboot_after,
     )
     plan.validate()
     return plan
 
 
-def _physical_actions(plan: DebugPlan) -> list[dict[str, object]]:
+def _physical_actions(
+    plan: DebugPlan, *, hardware_watchdog: bool = False
+) -> list[dict[str, object]]:
     identities = {identity.name: identity for identity in plan.artifacts}
     actions: list[dict[str, object]] = [
         {"action": "require-simulation", "tier": "fast"},
@@ -253,6 +267,10 @@ def _physical_actions(plan: DebugPlan) -> list[dict[str, object]]:
                 "artifact": name,
                 "address": identity.load_address,
             }
+        )
+    if hardware_watchdog:
+        actions.append(
+            {"action": "arm-hardware-watchdog", "mode": "interrupt-then-reset"}
         )
     actions.extend(
         (
@@ -269,8 +287,13 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
         result = StageResult.from_bytes(_read_regular(path, label="plan-simulation"))
     except DebugContractError as error:
         raise WorkflowError(f"plan-simulation-invalid: {error}") from error
+    expected_stage = (
+        "desktop"
+        if plan.schema_version == 2 and plan.profile == "debian-browser"
+        else "fast"
+    )
     if (
-        result.stage != "fast"
+        result.stage != expected_stage
         or not result.passed
         or result.plan_sha256 != plan.plan_sha256
     ):
@@ -279,9 +302,7 @@ def _validate_simulation(path: Path, plan: DebugPlan) -> None:
 
 def _validate_recovery(path: Path, plan: DebugPlan) -> None:
     try:
-        result = RecoveryEvidence.from_bytes(
-            _read_regular(path, label="plan-recovery")
-        )
+        result = RecoveryEvidence.from_bytes(_read_regular(path, label="plan-recovery"))
     except PreboardError as error:
         raise WorkflowError(f"plan-recovery-invalid: {error}") from error
     kernel = next(
@@ -319,8 +340,9 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--package-checksums", type=Path)
     plan.add_argument("--in-release", type=Path)
     plan.add_argument("--bootargs", required=True)
+    plan.add_argument("--paging-mode", choices=("sv39", "sv48"), default="sv39")
     plan.add_argument("--marker", action="append")
-    plan.add_argument("--reboot-after", type=int, default=180)
+    plan.add_argument("--reboot-after", type=int)
     plan.add_argument("--output", required=True, type=Path)
 
     check = subparsers.add_parser("check", help="revalidate every plan artifact")
@@ -359,7 +381,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--base-cpio", required=True, type=Path)
     install.add_argument("--tftp-directory", required=True, type=Path)
     install.add_argument("--root-url", required=True)
-    install.add_argument("--timeout", type=_install_timeout, default=900.0)
+    install.add_argument("--timeout", type=_install_timeout)
 
     board = subparsers.add_parser("board", help="show or execute physical actions")
     board.add_argument("plan", type=Path)
@@ -368,6 +390,7 @@ def _parser() -> argparse.ArgumentParser:
     board.add_argument("--recovery-result", type=Path)
     board.add_argument("--output-directory", type=Path)
     board.add_argument("--timeout", type=_board_timeout, default=300.0)
+    board.add_argument("--hardware-watchdog", action="store_true")
     board.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -452,7 +475,12 @@ def main(
 
         plan = _load_plan(values.plan)
         if values.dry_run:
-            print(json.dumps(_physical_actions(plan), separators=(",", ":")))
+            print(
+                json.dumps(
+                    _physical_actions(plan, hardware_watchdog=values.hardware_watchdog),
+                    separators=(",", ":"),
+                )
+            )
             return 0
         _check_artifacts(plan)
         _validate_simulation(values.simulation_result, plan)
@@ -468,6 +496,7 @@ def main(
                 values.device,
                 values.output_directory,
                 timeout=values.timeout,
+                hardware_watchdog=values.hardware_watchdog,
                 **(
                     {
                         "probe_trace_provider": lambda plan_sha256: trace_provider(

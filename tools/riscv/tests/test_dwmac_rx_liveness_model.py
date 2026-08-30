@@ -17,6 +17,7 @@ DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 DESCRIPTOR_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/descriptor.rs"
 DWMAC_DIAGNOSTICS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/diagnostics.rs"
 DWMAC_REGS_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/regs.rs"
+DWMAC_PHY_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/phy.rs"
 RISCV_PLATFORM_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/arch/riscv.rs"
 BIGTCP_DIAGNOSTICS_SOURCE = (
     REPOSITORY_ROOT / "kernel/libs/aster-bigtcp/src/iface/tcp_diagnostics.rs"
@@ -146,6 +147,177 @@ class DwmacRxLivenessModelTests(unittest.TestCase):
 
 
 class DwmacRxPollContractTests(unittest.TestCase):
+    def test_pause_flow_control_follows_negotiation_and_fifo_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = Path(directory) / "pause-flow-control.rs"
+            binary = Path(directory) / "pause-flow-control"
+            harness.write_text(
+                f'''#[allow(dead_code)]
+#[path = r"{DWMAC_PHY_SOURCE}"]
+mod phy;
+#[allow(dead_code)]
+#[path = r"{DWMAC_REGS_SOURCE}"]
+mod regs;
+
+use std::collections::VecDeque;
+
+use phy::{{
+    ADVERTISE_100_FULL, ADVERTISE_PAUSE_ASYM, ADVERTISE_PAUSE_CAP,
+    BMCR_AUTONEG_ENABLE, BMSR_AUTONEG_COMPLETE, BMSR_LINK_STATUS, Deadline, MdioBus,
+    MdioError, read_link_state,
+}};
+use regs::{{
+    DMA_DEBUG_STATUS0, MAC_DEBUG, MTL_QUEUE0_INTERRUPT_CONTROL_STATUS,
+    MTL_RX_QUEUE0_DEBUG, RegisterValueError, configure_flow_control,
+    decode_flow_control_debug, mac_tx_flow_control_busy,
+    validate_flow_control_readback, validate_rx_fifo_readback,
+}};
+
+struct FakeMdio {{
+    reads: VecDeque<u16>,
+}}
+
+impl MdioBus for FakeMdio {{
+    fn read(&mut self, _: u8, _: u8, _: Deadline) -> Result<u16, MdioError> {{
+        Ok(self.reads.pop_front().unwrap())
+    }}
+
+    fn write(&mut self, _: u8, _: u8, _: u16, _: Deadline) -> Result<(), MdioError> {{
+        Ok(())
+    }}
+}}
+
+fn negotiated(local: u16, partner: u16, full_duplex: bool) -> phy::LinkState {{
+    let mode = if full_duplex {{ ADVERTISE_100_FULL }} else {{ 1 << 7 }};
+    let mut mdio = FakeMdio {{
+        reads: [
+            BMSR_LINK_STATUS,
+            BMSR_LINK_STATUS | BMSR_AUTONEG_COMPLETE,
+            BMCR_AUTONEG_ENABLE,
+            0,
+            0,
+            mode | local,
+            mode | partner,
+        ]
+        .into(),
+    }};
+    read_link_state(&mut mdio, 0, Deadline::from_nanoseconds(1))
+        .unwrap()
+        .unwrap()
+}}
+
+fn main() {{
+    let symmetric = negotiated(ADVERTISE_PAUSE_CAP, ADVERTISE_PAUSE_CAP, true);
+    assert!(symmetric.tx_pause());
+    assert!(symmetric.rx_pause());
+
+    let tx_only = negotiated(
+        ADVERTISE_PAUSE_ASYM,
+        ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM,
+        true,
+    );
+    assert!(tx_only.tx_pause());
+    assert!(!tx_only.rx_pause());
+
+    let rx_only = negotiated(
+        ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM,
+        ADVERTISE_PAUSE_ASYM,
+        true,
+    );
+    assert!(!rx_only.tx_pause());
+    assert!(rx_only.rx_pause());
+
+    let half_duplex = negotiated(ADVERTISE_PAUSE_CAP, ADVERTISE_PAUSE_CAP, false);
+    assert!(!half_duplex.tx_pause());
+    assert!(!half_duplex.rx_pause());
+
+    assert_eq!(DMA_DEBUG_STATUS0.offset(), 0x100c);
+    assert_eq!(MAC_DEBUG.offset(), 0x0114);
+    assert_eq!(MTL_QUEUE0_INTERRUPT_CONTROL_STATUS.offset(), 0x0d2c);
+    assert_eq!(MTL_RX_QUEUE0_DEBUG.offset(), 0x0d38);
+
+    validate_rx_fifo_readback(5, 0x00f0_0020).unwrap();
+    assert_eq!(
+        validate_rx_fifo_readback(5, 0x0070_0020),
+        Err(RegisterValueError::ReadbackMismatch),
+    );
+
+    let configured = configure_flow_control(0x40f0_0020, true, true).unwrap();
+    assert_eq!(configured.rx_fifo_bytes, 4096);
+    assert_eq!(configured.mtl_rx_operation_mode, 0x40f0_c1a0);
+    assert_eq!(configured.mac_tx_flow_control_queue0, 0xffff_0002);
+    assert_eq!(configured.mac_rx_flow_control, 1);
+    validate_flow_control_readback(
+        configured,
+        configured.mtl_rx_operation_mode,
+        configured.mac_tx_flow_control_queue0,
+        configured.mac_rx_flow_control,
+    )
+    .unwrap();
+    assert_eq!(
+        validate_flow_control_readback(
+            configured,
+            configured.mtl_rx_operation_mode ^ (1 << 8),
+            configured.mac_tx_flow_control_queue0,
+            configured.mac_rx_flow_control,
+        ),
+        Err(RegisterValueError::ReadbackMismatch),
+    );
+    assert!(!mac_tx_flow_control_busy(configured.mac_tx_flow_control_queue0));
+    assert!(mac_tx_flow_control_busy(configured.mac_tx_flow_control_queue0 | 1));
+
+    let receive_only = configure_flow_control(0x00f0_0020, false, true).unwrap();
+    assert_eq!(receive_only.rx_fifo_bytes, 4096);
+    assert_eq!(receive_only.mtl_rx_operation_mode, 0x00f0_0020);
+    assert_eq!(receive_only.mac_tx_flow_control_queue0, 0);
+    assert_eq!(receive_only.mac_rx_flow_control, 1);
+
+    let small_fifo = configure_flow_control(0x0070_0020, true, false).unwrap();
+    assert_eq!(small_fifo.rx_fifo_bytes, 2048);
+    assert_eq!(small_fifo.mtl_rx_operation_mode, 0x0070_0020);
+    assert_eq!(small_fifo.mac_tx_flow_control_queue0, 0xffff_0002);
+    assert_eq!(small_fifo.mac_rx_flow_control, 0);
+
+    let debug = decode_flow_control_debug(0x0007_0005, 0x0008_0027, 0x0000_6400, 1 << 16);
+    assert_eq!(debug.mac_tx_controller_state, 3);
+    assert!(debug.mac_tx_engine_active);
+    assert_eq!(debug.mac_rx_fifo_state, 2);
+    assert!(debug.mac_rx_engine_active);
+    assert_eq!(debug.mtl_rx_queued_packets, 8);
+    assert_eq!(debug.mtl_rx_fill_level, 2);
+    assert_eq!(debug.mtl_rx_read_state, 3);
+    assert!(debug.mtl_rx_write_active);
+    assert_eq!(debug.dma_tx_state, 6);
+    assert_eq!(debug.dma_rx_state, 4);
+    assert!(debug.mtl_rx_overflow);
+}}
+'''
+            )
+            compile_result = subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-Dwarnings",
+                    str(harness),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run(
+                [str(binary)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_packet_diagnostics_distinguish_rx_and_tx_tcp_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = Path(directory) / "packet-diagnostics.rs"
@@ -171,26 +343,58 @@ fn ethernet_frame(ethertype: u16, protocol: u8, tcp_flags: u8, payload_len: usiz
     frame
 }}
 
+fn arp_frame(operation: u16, ethernet_dst: [u8; 6], target_hardware: [u8; 6]) -> Vec<u8> {{
+    let mut frame = vec![0u8; 60];
+    frame[..6].copy_from_slice(&ethernet_dst);
+    frame[6..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    frame[12..14].copy_from_slice(&0x0806u16.to_be_bytes());
+    frame[14..16].copy_from_slice(&1u16.to_be_bytes());
+    frame[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
+    frame[18] = 6;
+    frame[19] = 4;
+    frame[20..22].copy_from_slice(&operation.to_be_bytes());
+    frame[22..28].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+    frame[28..32].copy_from_slice(&[10, 100, 16, 136]);
+    frame[32..38].copy_from_slice(&target_hardware);
+    frame[38..42].copy_from_slice(&[10, 100, 19, 200]);
+    frame
+}}
+
 fn main() {{
+    let local_hardware = [0x00, 0x48, 0x54, 0x71, 0x00, 0x48];
     let mut diagnostics = RxDiagnostics::default();
-    diagnostics.record_frame(&ethernet_frame(0x0806, 0, 0, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x02, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x12, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x10, 0));
-    diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0, 0));
-    diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0, 0));
-    diagnostics.record_frame(&[0u8; 13]);
+    diagnostics.record_frame(
+        &arp_frame(1, [0xff; 6], [0xff; 6]),
+        local_hardware,
+    );
+    diagnostics.record_frame(
+        &arp_frame(2, local_hardware, local_hardware),
+        local_hardware,
+    );
+    diagnostics.record_frame(
+        &arp_frame(2, [0x02, 0, 0, 0, 0, 2], [0x02, 0, 0, 0, 0, 2]),
+        local_hardware,
+    );
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x02, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x12, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 6, 0x10, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x0800, 17, 0, 0), local_hardware);
+    diagnostics.record_frame(&ethernet_frame(0x86dd, 0, 0, 0), local_hardware);
+    diagnostics.record_frame(&[0u8; 13], local_hardware);
     let mut truncated_payload = ethernet_frame(0x0800, 6, 0x18, 40);
     truncated_payload[16..18].copy_from_slice(&1500u16.to_be_bytes());
-    diagnostics.record_frame(&truncated_payload);
+    diagnostics.record_frame(&truncated_payload, local_hardware);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Fragmented);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::ReceiveError);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::FrameTooLong);
     diagnostics.record_descriptor_drop(RxDescriptorDrop::Other);
 
     let report = diagnostics.report();
-    assert_eq!(report.observed, 8);
-    assert_eq!(report.arp, 1);
+    assert_eq!(report.observed, 10);
+    assert_eq!(report.arp, 3);
+    assert_eq!(report.arp_requests, 1);
+    assert_eq!(report.arp_replies, 2);
+    assert_eq!(report.arp_replies_to_us, 1);
     assert_eq!(report.ipv4_other, 1);
     assert_eq!(report.tcp_syn, 1);
     assert_eq!(report.tcp_syn_ack, 1);
@@ -327,13 +531,18 @@ fn main() {{
 
         self.assertIn("rx_diagnostics: RxDiagnostics", device)
         self.assertIn("tx_diagnostics: TxDiagnostics", device)
-        self.assertIn("self.rx_diagnostics.record_frame", device)
+        self.assertIn(
+            ".record_frame(&prefix[..copied], self.selected.mac_address)", device
+        )
         self.assertIn("self.tx_diagnostics.record_frame", device)
         self.assertIn("self.rx_diagnostics.record_descriptor_drop", device)
         self.assertIn("ASTERINAS_GMAC_RX_CLASS", device)
         self.assertIn("ASTERINAS_GMAC_TX_CLASS", device)
         self.assertIn("ASTERINAS_GMAC_TX stage=tcp-data-submitted", device)
         for field in (
+            "arp_requests={}",
+            "arp_replies={}",
+            "arp_replies_to_us={}",
             "tcp_syn_ack={}",
             "descriptor_fragmented={}",
             "descriptor_receive_error={}",
@@ -533,6 +742,33 @@ fn main() {{
             "fifo_overflow_packets={}",
             "fifo_counter_overflows={}",
             "read_failures={}",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+
+    def test_device_reports_documented_mac_mtl_dma_state_machines(self) -> None:
+        source = DEVICE_SOURCE.read_text()
+        for register in (
+            "MAC_DEBUG",
+            "MTL_QUEUE0_INTERRUPT_CONTROL_STATUS",
+            "MTL_RX_QUEUE0_DEBUG",
+            "DMA_DEBUG_STATUS0",
+        ):
+            with self.subTest(register=register):
+                self.assertIn(register, source)
+        self.assertIn("ASTERINAS_GMAC_HW_STATE", source)
+        for field in (
+            "mac_tx_state={}",
+            "mac_tx_active={}",
+            "mac_rx_fifo_state={}",
+            "mac_rx_active={}",
+            "mtl_rx_packets={}",
+            "mtl_rx_fill={}",
+            "mtl_rx_read_state={}",
+            "mtl_rx_write_active={}",
+            "dma_tx_state={}",
+            "dma_rx_state={}",
+            "mtl_rx_overflow={}",
         ):
             with self.subTest(field=field):
                 self.assertIn(field, source)

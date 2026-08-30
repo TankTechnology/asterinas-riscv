@@ -108,6 +108,19 @@ class MilestoneDetectionTests(unittest.TestCase):
         )
         self.assertEqual(tuple(session.milestones), tuple(board.MILESTONES))
 
+    def test_specific_profile_does_not_require_the_optional_banner(self):
+        session = board.BoardSession.from_fd(
+            -1,
+            None,
+            confirm=False,
+            final_marker=board.FINAL_MILESTONE_MARKERS["verifier"],
+            log_stream=io.StringIO(),
+        )
+        session.note_milestone(
+            "Enter riscv_boot\nDEBIAN_VERIFY_PASS sha256=abc bytes=1073741824\n"
+        )
+        self.assertEqual(tuple(session.milestones), ("kernel_enter", "userspace"))
+
 
 class ArgumentContractTests(unittest.TestCase):
     def test_physical_mode_parses_complete_crc_map(self):
@@ -184,7 +197,11 @@ class ArgumentContractTests(unittest.TestCase):
         )
         self.assertEqual(args.mock_timeout, 0.05)
         self.assertIsNone(args.expected_crc32)
-        self.assertEqual(args.bootargs, board.DEFAULT_BOOTARGS)
+        self.assertEqual(
+            args.bootargs,
+            "loglevel=info init=/init asterinas.reboot_after=120",
+        )
+        self.assertNotIn("cpu_no_boost_1_6ghz", args.bootargs.split())
 
         help_output = io.StringIO()
         with contextlib.redirect_stdout(help_output), self.assertRaises(SystemExit):
@@ -294,6 +311,13 @@ class ArgumentContractTests(unittest.TestCase):
         self.assertEqual(
             board.FINAL_MILESTONE_MARKERS[installer.final_profile],
             "DEBIAN_INSTALL_PASS",
+        )
+        verifier = board.parse_args(
+            _required_args() + crc_args + ["--final-profile", "verifier"]
+        )
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS[verifier.final_profile],
+            "DEBIAN_VERIFY_PASS",
         )
         _parse_fails(
             _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
@@ -856,6 +880,123 @@ class SerialContractTests(unittest.TestCase):
         )
 
 
+class MegrezDebianShellPhaseTests(unittest.TestCase):
+    NONCE = "0123456789abcdef" * 4
+    PACKAGES = (
+        ("base-files", "13.8+deb13u2"),
+        ("bash", "5.2.37-2+b5"),
+        ("coreutils", "9.7-3"),
+        ("libc6", "2.41-12"),
+        ("util-linux", "2.41-5"),
+    )
+
+    @staticmethod
+    def _output(command: object, nonce: str, status: int = 0) -> bytes:
+        values = {
+            "architecture": "riscv64",
+            "debian-release": "13.6",
+            "bash-version": "5.2.37(1)-release",
+            "packages": "\n".join(
+                f"{name}\t{version}"
+                for name, version in MegrezDebianShellPhaseTests.PACKAGES
+            ),
+            "root-filesystem": "ext2/ext3",
+            "persistence": nonce,
+            "second-probe": "boot2-probe-created",
+        }
+        return (
+            f"{command.payload}\r\n{command.begin_marker}\r\n"
+            f"{values[command.name]}\r\n{command.status_prefix}{status}\r\n"
+            f"{command.end_marker}\r\n"
+        ).encode()
+
+    def _run_phase(
+        self,
+        *,
+        status: int = 0,
+        fatal: bytes = b"",
+    ) -> tuple[object, list[bytes], str]:
+        host, guest = socket.socketpair()
+        sent: list[bytes] = []
+        failures: list[BaseException] = []
+        commands = board.shell_commands(boot_number=1, nonce=self.NONCE)
+
+        def guest_shell() -> None:
+            try:
+                guest.sendall(b"__DEBIAN_ROOTFS_SHELL_")
+                guest.sendall(b"READY__\r\n")
+                pending = b""
+                for index, command in enumerate(commands):
+                    while b"\n" not in pending:
+                        pending += guest.recv(65536)
+                    line, pending = pending.split(b"\n", 1)
+                    sent.append(line + b"\n")
+                    guest.sendall(
+                        self._output(
+                            command,
+                            self.NONCE,
+                            status=status if index == 0 else 0,
+                        )
+                    )
+                if fatal:
+                    guest.sendall(fatal)
+                if status == 0 and not fatal:
+                    while b"\n" not in pending:
+                        pending += guest.recv(4096)
+                    sent.append(pending.split(b"\n", 1)[0] + b"\n")
+            except BaseException as error:
+                failures.append(error)
+
+        stream = io.StringIO()
+        session = board.BoardSession.from_fd(
+            host.fileno(),
+            None,
+            confirm=False,
+            final_marker="__DEBIAN_ROOTFS_SHELL_READY__",
+            log_stream=stream,
+        )
+        thread = threading.Thread(target=guest_shell)
+        try:
+            thread.start()
+            result = board.run_debian_shell_phase(
+                session,
+                boot_number=1,
+                nonce=self.NONCE,
+                debian_release="13.6",
+                packages=self.PACKAGES,
+                deadline=time.monotonic() + 1.0,
+                reboot=True,
+            )
+        finally:
+            thread.join(timeout=1)
+            host.close()
+            guest.close()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        return result, sent, stream.getvalue()
+
+    def test_debian_shell_phase_uses_protocol_and_normal_reboot(self) -> None:
+        result, sent, transcript = self._run_phase()
+
+        self.assertTrue(result.passed)
+        self.assertEqual(sent[-1], b"sync; reboot -f\n")
+        self.assertIn("__DEBIAN_ROOTFS_SHELL_READY__", transcript)
+        self.assertEqual(len(sent), 7)
+
+    def test_debian_shell_phase_rejects_nonzero_and_late_fatal(self) -> None:
+        nonzero, sent, _transcript = self._run_phase(status=7)
+        self.assertFalse(nonzero.passed)
+        self.assertIn("status 7", nonzero.reason)
+        self.assertNotIn(b"sync; reboot -f\n", sent)
+
+        fatal, sent, _transcript = self._run_phase(
+            fatal=b"Kernel panic - not syncing\r\n"
+        )
+        self.assertFalse(fatal.passed)
+        self.assertIn("fatal transcript marker", fatal.reason)
+        self.assertNotIn(b"sync; reboot -f\n", sent)
+
+
 class BootTransactionTests(unittest.TestCase):
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []
@@ -952,6 +1093,43 @@ class BootTransactionTests(unittest.TestCase):
             ),
         )
         physical_session.note_milestone.assert_called_once_with(current_boot)
+
+    def test_incomplete_install_returns_distinctly_after_automatic_recovery(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.milestones = {}
+        physical_session.log = mock.Mock()
+        physical_session.fd = -1
+
+        def record(text: str) -> None:
+            if "Enter riscv_boot" in text:
+                physical_session.milestones["kernel_enter"] = 1.0
+
+        physical_session.note_milestone.side_effect = record
+        recovery = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value="Enter riscv_boot\n"
+            ),
+            mock.patch.object(board, "read_available", return_value=recovery),
+            mock.patch.object(board.time, "monotonic", side_effect=(0, 0, 0, 151)),
+            mock.patch.object(board.os, "close"),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "installer",
+                    "--milestone-timeout",
+                    "150",
+                    "--require-recovery",
+                ]
+            )
+
+        self.assertEqual(result, board.INCOMPLETE_RECOVERED_EXIT)
 
     def test_framebuffer_handoff_is_complete_before_booti(self):
         events: list[str] = []
@@ -1096,6 +1274,109 @@ class BootTransactionTests(unittest.TestCase):
         )
         self.assertIn(("command", "setenv initrd_size 0xd882d", {}), events)
         self.assertFalse(any("saveenv" in str(event) for event in events))
+
+
+class MegrezPartitionInventoryTests(unittest.TestCase):
+    class Session:
+        def __init__(self, outputs: dict[int, str] | None = None) -> None:
+            self.commands: list[str] = []
+            self.outputs = outputs or {
+                1: "start=8000 size=f2022",
+                2: "start=fa022 size=800000",
+                3: "start=8fa022 size=100000",
+            }
+
+        def command(self, command: str) -> str:
+            self.commands.append(command)
+            if not command.startswith("echo __ASTERINAS_PARTITION_"):
+                return f"{command}\n=> "
+            number = int(command.split("__", 2)[1].rsplit("_", 1)[1])
+            values = self.outputs[number]
+            return f"{command}\n__ASTERINAS_PARTITION_{number}__{values}\n=> "
+
+    def test_read_partition_geometry_uses_current_uboot_values(self) -> None:
+        session = self.Session()
+
+        geometry = board.read_partition_geometry(session)
+
+        self.assertEqual(
+            session.commands,
+            [
+                "mmc dev 1",
+                "mmc rescan",
+                "part start mmc 1 1 ast_p1_start",
+                "part size mmc 1 1 ast_p1_size",
+                "echo __ASTERINAS_PARTITION_1__start=${ast_p1_start} size=${ast_p1_size}",
+                "part start mmc 1 2 ast_p2_start",
+                "part size mmc 1 2 ast_p2_size",
+                "echo __ASTERINAS_PARTITION_2__start=${ast_p2_start} size=${ast_p2_size}",
+                "part start mmc 1 3 ast_p3_start",
+                "part size mmc 1 3 ast_p3_size",
+                "echo __ASTERINAS_PARTITION_3__start=${ast_p3_start} size=${ast_p3_size}",
+            ],
+        )
+        self.assertEqual(
+            geometry,
+            (
+                board.PartitionGeometry(1, 0x8000, 0xF2022),
+                board.PartitionGeometry(2, board.P2_START_LBA, board.P2_NR_SECTORS),
+                board.PartitionGeometry(3, 0x8FA022, 0x100000),
+            ),
+        )
+        self.assertFalse(
+            any(
+                forbidden in command
+                for command in session.commands
+                for forbidden in ("saveenv", "mmc write", "mw ", "reset", "booti")
+            )
+        )
+
+    def test_partition_geometry_rejects_malformed_or_wrong_p2_evidence(self) -> None:
+        invalid_partition_two = (
+            "",
+            "start=0xfa022 size=800000",
+            "start=FA022 size=800000",
+            "start=0 size=800000",
+            "start=fa022 size=0",
+            "start=fa023 size=800000",
+            "start=fa022 size=7fffff",
+            "start=fa022 size=800000\n__ASTERINAS_PARTITION_2__start=fa022 size=800000",
+            "__ASTERINAS_PARTITION_3__start=fa022 size=800000",
+        )
+
+        for partition_two in invalid_partition_two:
+            session = self.Session(
+                {
+                    1: "start=8000 size=f2022",
+                    2: partition_two,
+                    3: "start=8fa022 size=100000",
+                }
+            )
+            with (
+                self.subTest(partition_two=partition_two),
+                self.assertRaises(RuntimeError),
+            ):
+                board.read_partition_geometry(session)
+
+    def test_partition_geometry_rejects_overlap_or_out_of_order_partitions(
+        self,
+    ) -> None:
+        invalid = (
+            {
+                1: "start=8000 size=f2023",
+                2: "start=fa022 size=800000",
+                3: "start=8fa022 size=100000",
+            },
+            {
+                1: "start=8000 size=f2022",
+                2: "start=fa022 size=800000",
+                3: "start=8fa021 size=100000",
+            },
+        )
+
+        for outputs in invalid:
+            with self.subTest(outputs=outputs), self.assertRaises(RuntimeError):
+                board.read_partition_geometry(self.Session(outputs))
 
 
 if __name__ == "__main__":

@@ -171,6 +171,7 @@ _PROFILES = {
             "systemd-sysv",
             "udev",
             "util-linux",
+            "x11-apps",
             "x11-utils",
             "xauth",
             "xdotool",
@@ -199,6 +200,7 @@ _PROFILES = {
             "iproute2",
             "iputils-ping",
             "xdotool",
+            "x11-apps",
         ),
     ),
 }
@@ -228,8 +230,7 @@ _PROFILES["browser-web"] = RootfsProfile(
     root_label="ASTER_BROWSERWEB",
     root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
     requested_packages=_PROFILES["browser-m5"].requested_packages,
-    identity_packages=_PROFILES["browser-m5"].identity_packages
-    + ("ca-certificates",),
+    identity_packages=_PROFILES["browser-m5"].identity_packages + ("ca-certificates",),
 )
 
 

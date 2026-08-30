@@ -663,6 +663,55 @@ int main(int argc, char **argv)
                 result = subprocess.run([binary, str(target_fd)], check=False)
                 self.assertEqual(result.returncode, 0)
 
+    def test_stage1_progress_markers_are_flushed_and_machine_readable(self) -> None:
+        harness_source = self.directory / "stage1-progress-harness.c"
+        harness_source.write_text(
+            f'''#define main stage1_production_main
+#include "{STAGE1_SOURCE}"
+#undef main
+
+int main(void)
+{{
+    report_progress("start", "mode", "systemd");
+    report_progress("probe-block", "device", "/dev/mmcblk0p2");
+    report_progress("handoff-enter", "action", "root-mount");
+    return 0;
+}}
+''',
+            encoding="utf-8",
+        )
+        binary = self.directory / "stage1-progress-harness"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wno-return-type",
+                harness_source,
+                "-o",
+                binary,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+
+        result = subprocess.run(
+            [binary], check=False, capture_output=True, text=True, timeout=2
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "DEBIAN_STAGE1_PROGRESS step=start mode=systemd\n"
+            "DEBIAN_STAGE1_PROGRESS step=probe-block device=/dev/mmcblk0p2\n"
+            "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=root-mount\n",
+        )
+
     def test_builder_declares_exact_tools_and_entries(self) -> None:
         tools = self.run_builder("--print-tools")
         entries = self.run_builder("--print-entries")
@@ -1345,6 +1394,11 @@ WantedBy=multi-user.target
             session_text,
         )
         self.assertIn("ASTERINAS_DESKTOP_URL_FILE", session_text)
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_HOST", session_text)
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_PORT", session_text)
+        self.assertIn("--http_proxy=1", session_text)
+        self.assertIn('--http_proxy_host="$proxy_host"', session_text)
+        self.assertIn('--http_proxy_port="$proxy_port"', session_text)
         self.assertIn("^https?://", session_text)
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
@@ -1375,6 +1429,10 @@ WantedBy=multi-user.target
         )
 
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        self.assertIn(
+            "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
+            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+        )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
         (input_directory / "event0").touch()
@@ -1389,15 +1447,17 @@ WantedBy=multi-user.target
         )
         fake_bin = self._make_desktop_m4_evidence_tools()
 
-        for missing in (
-            "",
-            "desktop-pcmanfm",
-            "lxpanel",
-            "openbox",
-            "netsurf",
-            "xterm",
-            "mapped-netsurf",
-        ):
+        cases = {
+            "": None,
+            "desktop-pcmanfm": "pcmanfm",
+            "lxpanel": "lxpanel",
+            "openbox": "openbox",
+            "hung-openbox": "openbox-probe-timeout",
+            "netsurf": "netsurf",
+            "xterm": "xterm",
+            "mapped-netsurf": "netsurf-window",
+        }
+        for missing, expected_diagnostic in cases.items():
             with self.subTest(missing=missing or "none"):
                 console = self.directory / f"desktop-m4-console-{missing or 'complete'}"
                 console.write_text("", encoding="utf-8")
@@ -1408,9 +1468,11 @@ WantedBy=multi-user.target
                     ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY=str(input_directory),
                     ASTERINAS_DESKTOP_M4_XORG_LOG=str(xorg_log),
                     ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS="0",
+                    ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS="1",
                     ASTERINAS_DESKTOP_M4_TEST_MISSING=missing,
                 )
 
+                started_at = time.monotonic()
                 result = subprocess.run(
                     ["/bin/bash", str(DESKTOP_M4_EVIDENCE_SCRIPT)],
                     env=environment,
@@ -1418,6 +1480,7 @@ WantedBy=multi-user.target
                     capture_output=True,
                     text=True,
                 )
+                elapsed = time.monotonic() - started_at
 
                 evidence = console.read_text(encoding="utf-8")
                 if not missing:
@@ -1425,6 +1488,18 @@ WantedBy=multi-user.target
                     self.assertEqual(evidence, "\n".join(DESKTOP_M4_MILESTONES) + "\n")
                 else:
                     self.assertNotEqual(result.returncode, 0)
+                    if missing == "hung-openbox":
+                        self.assertLess(elapsed, 1.8)
+                    self.assertIn(
+                        f"DEBIAN_DESKTOP_M4_DIAGNOSTIC missing={expected_diagnostic}\n",
+                        evidence,
+                    )
+                    if missing == "mapped-netsurf":
+                        self.assertIn(
+                            '0x200003 "Asterinas Start - NetSurf": '
+                            '("netsurf" "NetSurf")',
+                            evidence,
+                        )
                     self.assertTrue(
                         evidence.endswith(
                             "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
@@ -1477,11 +1552,11 @@ WantedBy=multi-user.target
                     self.assertEqual(
                         xdotool_log.read_text(encoding="utf-8").splitlines(),
                         [
-                            "search --onlyvisible --class Netsurf-gtk",
-                            "search --onlyvisible --class XTerm",
-                            "search --onlyvisible --class Netsurf-gtk",
+                            "search --onlyvisible --classname ^netsurf-gtk$",
+                            "search --onlyvisible --classname ^xterm$",
+                            "search --onlyvisible --classname ^netsurf-gtk$",
                             "set_desktop_for_window 42 1",
-                            "search --onlyvisible --class XTerm",
+                            "search --onlyvisible --classname ^xterm$",
                             "set_desktop_for_window 43 1",
                         ],
                     )
@@ -1626,6 +1701,7 @@ printf '1 1000 asterinas seat0 tty1\n'
 """,
             "pgrep": """#!/bin/sh
 case "$ASTERINAS_DESKTOP_M4_TEST_MISSING:$*" in
+  'hung-openbox:'*'openbox'*) sleep 2; exit 0 ;;
   'desktop-pcmanfm:'*'--desktop'*|\
   'lxpanel:'*'lxpanel'*|\
   'openbox:'*'openbox'*|\
@@ -1643,10 +1719,11 @@ printf '0x200003 "Asterinas Start - NetSurf": ("netsurf" "NetSurf")\n'
   printf '%s\n' "$*" >>"$ASTERINAS_DESKTOP_M4_XDOTOOL_LOG"
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != overview-xdotool ] || exit 1
 [ "$ASTERINAS_DESKTOP_M4_TEST_MISSING" != mapped-netsurf ] || \
-  [ "$*" != 'search --onlyvisible --class Netsurf-gtk' ] || exit 1
+  [ "$*" != 'search --onlyvisible --classname ^netsurf-gtk$' ] || exit 1
 case "$*" in
-  'search --onlyvisible --class Netsurf-gtk') printf '42\n' ;;
-  'search --onlyvisible --class XTerm') printf '43\n' ;;
+  'search --onlyvisible --classname ^netsurf-gtk$') printf '42\n' ;;
+  'search --onlyvisible --classname ^xterm$') printf '43\n' ;;
+  'search '*) exit 9 ;;
 esac
 """,
         }
@@ -4506,14 +4583,18 @@ class DebianRootfsGateBackendSessionTests(unittest.TestCase):
                 gate_packages=(),
             )
             with (
-                mock.patch.object(gate_backend_module, "load_manifest", return_value=manifest),
+                mock.patch.object(
+                    gate_backend_module, "load_manifest", return_value=manifest
+                ),
                 mock.patch.object(gate_backend_module, "validate_frozen_root"),
                 mock.patch.object(
                     gate_backend_module,
                     "load_package_checksums",
                     return_value=downloaded_packages,
                 ) as load_checksums,
-                mock.patch.object(gate_backend_module, "verify_four_hart_dtb", return_value=4),
+                mock.patch.object(
+                    gate_backend_module, "verify_four_hart_dtb", return_value=4
+                ),
                 gate_backend_module.ConcreteOperations(config) as operations,
             ):
                 operations.validate_inputs(config, operations.snapshot_inputs(config))
@@ -4847,6 +4928,9 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             "boot2.serial.log",
             "result.json",
             "final_root_sha256",
+            "U-Boot exposes only `ethernet@50400000`",
+            "--host-interface enp12s0 --load-transport mmc",
+            "--reboot-after 420",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, guide)

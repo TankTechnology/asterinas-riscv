@@ -33,7 +33,7 @@ DESKTOP_M7_HOME_MARKER = (
     "variant=mobile title=baidu process=netsurf"
 )
 DESKTOP_M7_SEARCH_MARKER = "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded"
-DESKTOP_M7_READY_MARKER = "DEBIAN_BROWSER_M7_READY page=baidu search=pass"
+DESKTOP_M7_READY_MARKER = "DEBIAN_BROWSER_M7_READY page=baidu capture=pending"
 DESKTOP_M7_FAILURE_MARKER = b"DEBIAN_BROWSER_M7_FAIL reason="
 
 
@@ -68,6 +68,7 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
     """Capture homepage and search frames after the complete M6 baseline."""
 
     ARTIFACT_PREFIX = "desktop-m7-baidu"
+    SEARCH_CAPTURE_DELAY_SECONDS = 30.0
 
     def __init__(self, config: GateConfig) -> None:
         super().__init__(config)
@@ -85,6 +86,9 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
             "desktop-m7-baidu-search.ppm",
             "desktop-m7-baidu-failure.ppm",
         )
+
+    def _settle_search_render(self) -> None:
+        time.sleep(self.SEARCH_CAPTURE_DELAY_SECONDS)
 
     @staticmethod
     def _wait_marker(
@@ -114,6 +118,7 @@ class DesktopM7BaiduOperations(DesktopM6BrowserOperations):
                 DESKTOP_M7_READY_MARKER.encode(),
                 time.monotonic() + config.boot_timeout,
             )
+            self._settle_search_render()
             (
                 self._search_screenshot,
                 self._search_screenshot_metadata,

@@ -28,16 +28,62 @@ fail() {
 [[ "$CAPTURE_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-capture-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
 
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool set_desktop 1 || fail workspace-select
+process_output="$(
+    timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
+)" || fail process-search
+((${#process_output} <= 128)) || fail process-search-output-too-long
+mapfile -t processes <<<"$process_output"
+((${#processes[@]} == 1)) || fail ambiguous-process
+readonly process_id="${processes[0]}"
+[[ "$process_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
+readonly command_line_path="$PROC_ROOT/$process_id/cmdline"
+[[ -f "$command_line_path" && ! -L "$command_line_path" ]] || fail process-cmdline
+
+window_matches_remote_page() {
+    local candidate="$1"
+    local candidate_title
+    local candidate_title_lower
+    candidate_title="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" xdotool getwindowname "$candidate"
+    )" || return 1
+    ((${#candidate_title} <= 2048)) || fail window-title-too-long
+    [[ "$candidate_title" != *$'\n'* ]] || fail invalid-window-title
+    candidate_title_lower="${candidate_title,,}"
+    [[ "$candidate_title_lower" == *baidu* || \
+        "$candidate_title_lower" == *result.png* || \
+        "$candidate_title" == *百度* ]]
+}
+
 window_output="$(
     timeout "$COMMAND_TIMEOUT_SECONDS" \
-        xdotool search --onlyvisible --class Netsurf-gtk
+        xdotool search --classname '^netsurf-gtk$'
 )" || fail window-search
 ((${#window_output} <= 4096)) || fail window-search-output-too-long
-mapfile -t windows <<<"$window_output"
-((${#windows[@]} == 1)) || fail ambiguous-window
-readonly window_id="${windows[0]}"
-[[ "$window_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
+mapfile -t window_candidates <<<"$window_output"
+process_windows=()
+remote_windows=()
+for candidate in "${window_candidates[@]}"; do
+    [[ "$candidate" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
+    if candidate_process_id="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" xdotool getwindowpid "$candidate" \
+            2>/dev/null
+    )" && [[ "$candidate_process_id" == "$process_id" ]]; then
+        process_windows+=("$candidate")
+        if window_matches_remote_page "$candidate"; then
+            remote_windows+=("$candidate")
+        fi
+    fi
+done
+if ((${#remote_windows[@]} == 1)); then
+    readonly window_id="${remote_windows[0]}"
+elif ((${#remote_windows[@]} == 0 && ${#process_windows[@]} == 1)); then
+    readonly window_id="${process_windows[0]}"
+else
+    fail ambiguous-window
+fi
+timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool set_desktop_for_window "$window_id" 1 || fail workspace-move
+timeout "$COMMAND_TIMEOUT_SECONDS" xdotool set_desktop 1 || fail workspace-select
 window_title() {
     local title
     title="$(
@@ -75,16 +121,10 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
 emit "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com resource=logo-png foreground=active"
 sleep "$CAPTURE_DELAY_SECONDS"
 
-process_output="$(
+current_process_output="$(
     timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
 )" || fail process-search
-((${#process_output} <= 128)) || fail process-search-output-too-long
-mapfile -t processes <<<"$process_output"
-((${#processes[@]} == 1)) || fail ambiguous-process
-readonly process_id="${processes[0]}"
-[[ "$process_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
-readonly command_line_path="$PROC_ROOT/$process_id/cmdline"
-[[ -f "$command_line_path" && ! -L "$command_line_path" ]] || fail process-cmdline
+[[ "$current_process_output" == "$process_id" ]] || fail ambiguous-process
 javascript_requested=false
 while IFS= read -r argument; do
     if [[ "$argument" == --enable_javascript=1 ]]; then

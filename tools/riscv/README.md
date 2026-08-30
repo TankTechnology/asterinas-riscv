@@ -79,6 +79,69 @@ See [the Debian persistent-root operator guide](debian/rootfs/README.md) for
 the signed root build, current-main kernel/U-Boot/DTB/stage-1 preparation,
 explicit two-boot target, and evidence inspection commands.
 
+## Megrez persistent Debian shell
+
+This workflow freezes separate current kernels for the two MMU contracts:
+generic QEMU is built with `FEATURES=riscv_sv39_mode`, while Megrez uses the
+default Sv48 build. Never reuse one artifact for the other platform. The
+bundle also binds the signed Debian root, Stage1, both four-hart DTBs, and
+U-Boot to one clean Git commit.
+
+The physical order is deliberately read-only first: run ` inventory ` before
+` install-if-needed `. A matching inventory skips installation. A measured
+mismatch may authorize the Asterinas-only installer to write exactly
+`/dev/mmcblk0p2`; this workflow must not boot Linux as an installer or runtime.
+The short EIC7700X watchdog is forbidden during a full-device hash or install;
+the bounded Asterinas reboot timer and fresh U-Boot recovery epoch are used
+instead. `gate` performs two boots with one persistence nonce, and `handoff`
+is allowed only after that physical result passes.
+
+The physical boot transport is serial YMODEM for the compressed current
+kernel and Stage1, plus a read-only, CRC-checked load of
+`eic7700-milkv-megrez.dtb` from eMMC partition 1. The board's U-Boot GMAC at
+`0x50400000` is not the RJ45 path used by Asterinas, so TFTP is deliberately
+not used for inventory, the two-boot gate, or handoff. The network installer
+starts only after Asterinas owns its verified RJ45 GMAC.
+
+Use one stable evidence directory:
+
+```bash
+RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
+python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+  "$RUN/plan.json" --output "$RUN/qemu"
+python3 -m tools.riscv.megrez_debian_shell permit \
+  "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
+  --output "$RUN/permit.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --output "$RUN/inventory-before" --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
+if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
+  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+    "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+    --prior-inventory "$RUN/inventory-before/result.json" \
+    --install-result "$RUN/install/result.json" \
+    --output "$RUN/inventory-after" --yes
+  cp "$RUN/inventory-after/result.json" "$RUN/inventory-current.json"
+else
+  cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
+fi
+sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
+  --host-interface enp12s0 --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+  "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
+  --host-interface enp12s0 --yes
+picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
+```
+
+This milestone proves a persistent interactive Debian shell. The next scope is
+systemd, network, and desktop; none is claimed by this gate.
+
 ## VirtIO-GPU hardware cursor gate
 
 The DRM R1 gate boots current-main Asterinas with the generic Sv39, SMP=4
@@ -144,17 +207,56 @@ make test_riscv_megrez_debug_board \
   MEGREZ_DEBUG_SIMULATION_RESULT="$PWD/target/qemu-uboot/megrez-debug/fast/result.json"
 ```
 
-The command has one declining timeout, capped at 300 seconds. Reusing RAM is
-safe only when U-Boot reports the exact planned size/address CRC; otherwise
-the artifact is retransmitted and verified again before `booti`.
+The command has one declining timeout, capped at 900 seconds. Its default
+remains 300 seconds. A desktop plan using `asterinas.reboot_after=600` must use
+`--timeout 900`: the Megrez guest clock can advance more slowly than host
+monotonic time, so a 660-second host budget can expire before the bounded guest
+recovery. Reusing RAM is safe only when U-Boot reports the exact planned
+size/address CRC; otherwise the artifact is retransmitted and verified again
+before `booti`.
+
+For a diagnostic boot that may hang before Asterinas can arm
+`asterinas.reboot_after`, add `--hardware-watchdog`. This is an explicit
+pre-boot recovery option, not the desktop default:
+
+```bash
+PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
+  /absolute/path/to/plan.json /dev/ttyUSB0 \
+  --simulation-result /absolute/path/to/fast/result.json \
+  --output-directory /absolute/path/to/physical-evidence \
+  --timeout 120 \
+  --hardware-watchdog
+```
+
+The option follows the EIC7700X TRM's Synopsys DesignWare watchdog contract at
+`0x50800000`. Before touching that block, it reads the system-controller clock
+gate at `0x51828200` and active-low reset at `0x51828444`, preserves unrelated
+bits, deasserts only WDT0 reset when required, and verifies both values again.
+It then verifies component type `0x44570120`, selects maximum `TOP=0xf`
+(`TORR[7:4]` is reserved on EIC7700X), kicks with `0x76`, enables
+interrupt-then-reset mode, and reads the control registers back. Any
+prerequisite, type, or readback mismatch aborts before the kernel starts. It
+writes neither storage nor U-Boot environment. A watchdog recovery that occurs
+after the first current-guest marker but before the terminal marker is reported
+immediately as `guest-reboot-before-terminal`; a bare pre-boot prompt is not
+mistaken for current-attempt evidence. The host retains its independent
+300-second cap even though the current DT describes a 200 MHz watchdog clock.
 
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
-requires the EIC7700 removable-card controller, a nonzero SDHC capacity,
-read-only `mmcblk0` registration, and a partition-table SHA-256 marker in that
-order. Panic, fatal, probe-failure, writable, duplicate, and out-of-order
-evidence is rejected. Linux boot output is not an accepted substitute.
+requires an aligned 512 KiB SDMA buffer whose CPU and device addresses are
+identical inside `0xc0000000..0x100000000`, the EIC7700 removable-card
+controller, a nonzero SDHC capacity, and read-only `mmcblk0` registration in
+that order. For the physical data-path gate it then requires one exact 32 MiB
+read whose CRC32 matches the value measured by U-Boot. That read covers the
+partition table and is stronger than the old, never-implemented
+`partition-table sha256` log requirement. The identity address is the RockOS
+U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID 16 and
+is not usable as a fixed offset while Asterinas RISC-V has no IOMMU. Panic,
+fatal, probe-failure, writable, translated, misaligned, duplicate, and
+out-of-order evidence is rejected. Linux boot output is not an accepted
+substitute.
 
 Run the host tests with:
 
@@ -162,14 +264,20 @@ Run the host tests with:
 python3 -m unittest tools.riscv.tests.test_megrez_sdhci_gate -v
 ```
 
-After a real Asterinas board run has produced the partition hash marker,
-publish the complete log and atomic JSON result with:
+After a real Asterinas board run has completed the bounded read, publish the
+complete log and atomic JSON result with the U-Boot CRC32 bound explicitly:
 
 ```bash
 python3 tools/riscv/megrez_sdhci_gate.py \
   --transcript /absolute/path/to/megrez.serial.log \
-  --output-dir /absolute/path/to/evidence
+  --output-dir /absolute/path/to/evidence \
+  --expected-crc32 5f85f90e
 ```
+
+The 2026-08-29 physical gate completed the exact 32 MiB read in 5.195899
+seconds with CRC32 `5f85f90e`, then returned to U-Boot through the pre-boot
+hardware watchdog. Both the board lifecycle result and this independent SDHCI
+classifier reported pass.
 
 ## Megrez firmware framebuffer handoff
 
@@ -286,6 +394,52 @@ for the interactive-GUI input verification status.
 Use the repository development container.
 Preparing U-Boot additionally needs the RISC-V cross compiler, `dtc`, OpenSSL/GnuTLS development packages, and the Python development headers and `setuptools` used to build `pylibfdt`.
 The unit tests use only the Python standard library and repository files.
+
+### Host-side Megrez debugging
+
+Keep builds and QEMU runs in the pinned development container.
+On the host, install only the tools that observe the physical serial and Ethernet paths:
+
+```bash
+sudo apt-get install -y ethtool iperf3 arping
+```
+
+`ethtool` reports the host-side link state, negotiated speed, and error counters.
+`arping` separates layer-2/ARP reachability from DNS, TCP, and the browser.
+`iperf3` provides a controlled throughput test when a matching guest endpoint has explicitly been installed;
+it is not a substitute for the HTTPS browser gate.
+
+Packet decoding and screenshot OCR are optional:
+
+```bash
+sudo apt-get install -y tshark tesseract-ocr tesseract-ocr-chi-sim
+```
+
+The repository workflow already uses `picocom`/Python for serial I/O,
+`tcpdump` for packet capture,
+`dtc`/`fdtget` for device trees,
+`gdb-multiarch` for debugging,
+and e2fsprogs for Debian root images.
+Do not install a second host QEMU merely for this workflow:
+use the pinned container so that the emulator and cross-toolchain versions remain reproducible.
+
+Verify the host once before a physical session:
+
+```bash
+for tool in docker picocom socat tcpdump ethtool iperf3 arping; do
+  command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+done
+id -nG | tr ' ' '\n' | grep -qx dialout
+test -r /dev/ttyUSB0 && test -w /dev/ttyUSB0
+MEGREZ_HOST_IFACE=${MEGREZ_HOST_IFACE:-enp12s0}
+ip -br link show "$MEGREZ_HOST_IFACE"
+ethtool "$MEGREZ_HOST_IFACE"
+```
+
+The `dialout` check avoids running the serial gate as root.
+`ttyUSB0` is the currently validated path;
+resolve the actual USB-serial node again after unplugging or re-enumerating the adapter.
+Broad passwordless `sudo` access is not required.
 
 Profiles are reviewed code objects; command-line CPU, memory, bootarg, and resource-gate overrides are intentionally restricted.
 Add a new machine by defining its contract and tests instead of adding board-specific branches to the runner.

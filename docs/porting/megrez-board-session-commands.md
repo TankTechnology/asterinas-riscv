@@ -103,8 +103,8 @@ systemd/Xorg 的控制台路径真正落到 HDMI，bootargs 必须以
 ## 6. bootargs 与 booti
 
 ```text
-setenv bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=400"
-fdt set /chosen bootargs "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=400"
+setenv bootargs "loglevel=info init=/init asterinas.reboot_after=400"
+fdt set /chosen bootargs "loglevel=info init=/init asterinas.reboot_after=400"
 printenv bootargs
 fdt print /chosen
 booti 0x80200000 0x83000000:${initrd_size} 0xf0000000

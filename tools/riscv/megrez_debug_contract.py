@@ -14,9 +14,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_REMOTE_MARKER,
+)
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
+
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
 ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
+DEBIAN_BROWSER_MIN_REBOOT_AFTER = 600
 ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
     *ARTIFACT_ORDER,
@@ -34,34 +48,14 @@ METADATA_ARTIFACT_NAMES = frozenset(
 )
 DEBIAN_BROWSER_MARKERS = (
     "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
-    "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    (
-        "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 "
-        "fallback=10.2.0.6 host=www.baidu.com"
-    ),
-    (
-        "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com "
-        "status=200 address=10.100.19.200"
-    ),
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
-    "DEBIAN_DESKTOP_M4_UDEV state=active",
-    "DEBIAN_DESKTOP_M4_LOGIND state=active",
-    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
-    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
-    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
-    (
-        "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm "
-        "panel=lxpanel launchers=3"
-    ),
-    (
-        "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm "
-        "browser=netsurf terminal=xterm"
-    ),
-    "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
-    "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com resource=logo-png foreground=active",
+    *DESKTOP_M5_MEGREZ_MILESTONES,
+    *DESKTOP_M4_MILESTONES,
+    DESKTOP_M6_REMOTE_MARKER,
     "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
     "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+    DESKTOP_M7_READY_MARKER,
 )
 PLAN_FIELDS = frozenset(
     (
@@ -80,6 +74,32 @@ RESULT_FIELDS = frozenset(
     ("schema_version", "stage", "passed", "reason", "plan_sha256", "evidence")
 )
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
+STALE_MEGREZ_INIT_ARG = "cpu_no_boost_1_6ghz"
+DEBIAN_BROWSER_REQUIRED_BOOTARGS = (
+    "console=ttyS0",
+    "console=tty0",
+    "init=/init",
+    "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
+    "asterinas.mmc_write_partition2",
+    "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
+    "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+    "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216",
+    "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893",
+    (
+        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL="
+        "http://10.100.19.216:17894/asterinas-network-probe.bin"
+    ),
+    "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536",
+    (
+        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256="
+        "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2"
+    ),
+    "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20",
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 CRC32_PATTERN = re.compile(r"[0-9a-f]{8}")
 RESULT_STAGES = frozenset(("check", "fast", "desktop", "install", "board"))
@@ -264,10 +284,12 @@ class DebugPlan:
             or BOOTARGS_PATTERN.fullmatch(self.bootargs) is None
         ):
             raise DebugContractError("unsafe debug bootargs")
+        if self.schema_version == 2 and STALE_MEGREZ_INIT_ARG in self.bootargs.split():
+            raise DebugContractError("stale Megrez argument reaches init argv")
         if type(self.smp) is not int or self.smp != 4:
             raise DebugContractError("debug plan requires SMP=4")
-        if self.sv39 is not True:
-            raise DebugContractError("debug plan requires Sv39")
+        if type(self.sv39) is not bool:
+            raise DebugContractError("debug plan paging mode must be Sv39 or Sv48")
         if (
             not isinstance(self.markers, tuple)
             or not self.markers
@@ -282,9 +304,30 @@ class DebugPlan:
             or not 1 <= self.reboot_after <= 0xFFFF_FFFF
         ):
             raise DebugContractError("invalid automatic reboot interval")
+        if (
+            self.schema_version == 2
+            and self.reboot_after < DEBIAN_BROWSER_MIN_REBOOT_AFTER
+        ):
+            raise DebugContractError("Debian desktop recovery window is too short")
         token = f"asterinas.reboot_after={self.reboot_after}"
         if self.bootargs.split().count(token) != 1:
             raise DebugContractError("bootargs do not match automatic reboot interval")
+        if (
+            self.schema_version == 2
+            and self.bootargs.split().count("asterinas.mmc_write_partition2") != 1
+        ):
+            raise DebugContractError(
+                "Debian browser bootargs require one partition-2 write gate"
+            )
+        if self.schema_version == 2:
+            bootarg_tokens = self.bootargs.split()
+            if any(
+                bootarg_tokens.count(token) != 1
+                for token in DEBIAN_BROWSER_REQUIRED_BOOTARGS
+            ):
+                raise DebugContractError(
+                    "Debian plan requires complete physical browser bootargs"
+                )
 
     def to_dict(self) -> dict[str, object]:
         self.validate()

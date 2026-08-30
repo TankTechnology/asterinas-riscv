@@ -281,12 +281,20 @@ primary DNS=10.2.0.5
 fallback DNS=10.2.0.6
 ```
 
+Prepare the host with the canonical
+[Megrez debugging tool list](../../README.md#host-side-megrez-debugging).
+Keep QEMU and cross-build dependencies in the pinned container;
+the host tools are only for serial, link, packet, throughput, and screenshot observations.
+
 Install a newly built ext2 image with
 `tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
 back eMMC partition 2. Linux may stage immutable boot files but is not an
-accepted runtime or installer kernel. Serve the current Image, frozen Megrez
-DTB, and Stage1 from a private TFTP root on `10.100.19.216`, then compute the
-two changing U-Boot CRC32 values and run the bounded gate:
+accepted runtime or installer kernel. On the currently verified firmware,
+U-Boot exposes only `ethernet@50400000`, while the live RJ45 path selected by
+Asterinas is the other GMAC. Its TFTP path therefore cannot be the default
+recovery transport. Stage the current Image, frozen Megrez DTB, and Stage1
+under their basenames on eMMC partition 1, verify the copied hashes, unmount
+the partition, and run the bounded gate with the read-only MMC loader:
 
 ```bash
 crc32_file() {
@@ -299,12 +307,10 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
   --dtb eic7700-milkv-megrez.dtb \
   --initrd debian-browser-stage1.cpio \
   --expected-crc32 "booti=$BOOTI_CRC32,dtb=4afcb20e,initrd=$STAGE1_CRC32" \
-  --host-interface enp12s0 --load-transport tftp \
-  --tftp-board-address 10.100.19.200 \
-  --tftp-server-address 10.100.19.216 \
-  --tftp-netmask 255.255.248.0 \
+  --host-interface enp12s0 --load-transport mmc \
+  --reboot-after 420 \
   --output-directory target/megrez-browser-network/gate \
-  --boot-timeout 300 --drain-timeout 5
+  --boot-timeout 360 --drain-timeout 5
 ```
 
 The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
@@ -315,6 +321,24 @@ The gate drains the full serial transcript before publishing `passed: true`.
 It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
 Asterinas network path does not provide the Linux ping-socket contract, and a
 ping result would not prove that browser traffic works.
+
+On a physical browser run, one exact input-capability degradation is collected
+rather than treated as a reason to release the serial port early. If M4 emits
+`DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device` followed by
+`DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout`, the collector continues to
+require every M6/M7 marker and the fresh automatic U-Boot recovery. A complete
+Baidu homepage and search sequence is then published as `passed: false` with
+`guest-failure-recovered:browser-pass-input-missing:pointer-device`; it proves
+the browser path but deliberately does not claim mouse usability. Missing,
+reordered, duplicated, or differently attributed M4 failure evidence remains
+a hard failure.
+
+For a desktop plan with `asterinas.reboot_after=600`, invoke
+`tools.riscv.megrez_debug board` with `--timeout 900`. The timeout is measured
+by the host, while the recovery timer is measured by Asterinas; the guest clock
+can advance more slowly on Megrez. Shorter host budgets can therefore publish
+`recovery-not-observed` after the browser evidence even though the board later
+returns to U-Boot automatically.
 
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
@@ -375,3 +399,68 @@ the second-boot probe; nonce plaintext is replaced by `<nonce-redacted>`.
 This evidence proves the generic QEMU Sv39/SMP=4 two-boot persistence
 contract. It does not claim physical Megrez operation, guest networking,
 systemd boot, display, USB, or desktop support.
+
+## Megrez persistent Debian shell
+
+Build two distinct current kernels. The generic QEMU artifact requires
+`FEATURES=riscv_sv39_mode`; the Megrez artifact is a separate default Sv48
+build. The frozen plan rejects swapping them and also records the exact
+signed root, Stage1, U-Boot, and four-hart DTBs.
+
+The board sequence is ` inventory ` before ` install-if-needed `. Inventory is
+read-only, and a matching result skips installation. Only a measured image
+hash mismatch may enter the Asterinas-only installer, which may write only
+`/dev/mmcblk0p2`. The operator must not boot Linux to install or validate this
+root. Do not arm the short EIC7700X watchdog while hashing the full device or
+installing; use the bounded Asterinas timer and require a fresh U-Boot recovery
+epoch. The `gate` command performs two bounded boots, and `handoff` is refused
+unless their physical result passes.
+
+Inventory, `gate`, and `handoff` transfer the compressed current kernel and
+Stage1 over serial YMODEM. They load `eic7700-milkv-megrez.dtb` read-only from
+eMMC partition 1 and reject a CRC mismatch. The current U-Boot GMAC probes
+`0x50400000`, which is not the RJ45 path selected by Asterinas; consequently
+these boot paths do not depend on TFTP. Only the Asterinas network installer
+uses the verified board RJ45 path after the kernel has started.
+
+```bash
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/qemu-sv39.booti
+make kernel TARGET_ARCH=riscv64 SMP=4
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/megrez-sv48.booti
+
+RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
+python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+  "$RUN/plan.json" --output "$RUN/qemu"
+python3 -m tools.riscv.megrez_debian_shell permit \
+  "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
+  --output "$RUN/permit.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --output "$RUN/inventory-before" --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
+if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
+  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+    "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+    --prior-inventory "$RUN/inventory-before/result.json" \
+    --install-result "$RUN/install/result.json" \
+    --output "$RUN/inventory-after" --yes
+  cp "$RUN/inventory-after/result.json" "$RUN/inventory-current.json"
+else
+  cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
+fi
+sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
+  --host-interface enp12s0 --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+  "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
+  --host-interface enp12s0 --yes
+picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
+```
+
+This stage proves an interactive persistent shell only. The next scope is
+systemd, network, and desktop; none is claimed by this milestone.
