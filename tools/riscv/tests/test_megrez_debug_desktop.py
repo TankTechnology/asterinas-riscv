@@ -20,6 +20,11 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_REMOTE_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
@@ -32,6 +37,7 @@ from tools.riscv.megrez_debug_desktop import (
     DesktopSimulationError,
     simulate_desktop,
 )
+from tools.riscv.megrez_gmac_gate import physical_bootargs
 
 
 class MegrezDebugDesktopSimulationTests(unittest.TestCase):
@@ -65,11 +71,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             schema_version=2,
             profile="debian-browser",
             artifacts=self.artifacts,
-            bootargs=(
-                "console=tty0 console=ttyS0 loglevel=info init=/init "
-                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-                "asterinas.reboot_after=600 -- --root-init=systemd"
-            ),
+            bootargs=physical_bootargs(600),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
@@ -103,6 +105,21 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                 "width": 1280,
             },
             "javascript_status": "limited-pass",
+            "homepage_screenshot": {
+                "distinct_sampled_colors": 200,
+                "height": 1024,
+                "non_background_pixels": 900000,
+                "pixel_count": 1310720,
+                "width": 1280,
+            },
+            "search_screenshot": {
+                "distinct_sampled_colors": 200,
+                "height": 1024,
+                "non_background_pixels": 900000,
+                "pixel_count": 1310720,
+                "width": 1280,
+            },
+            "failure_screenshot": {},
             "passed": True,
             "profile": "desktop-m5-network",
             "qemu_argv": [
@@ -153,6 +170,9 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             DESKTOP_M6_REMOTE_MARKER,
             "DEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass",
             "DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+            DESKTOP_M7_HOME_MARKER,
+            DESKTOP_M7_SEARCH_MARKER,
+            DESKTOP_M7_READY_MARKER,
         )
         return ("\n".join(markers) + "\n").encode()
 
@@ -174,16 +194,22 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                     self._native_result() if native_result is None else native_result
                 )
             )
-            (output / "desktop-m6-browser.serial.log").write_bytes(self._transcript())
-            (output / "desktop-m6-browser.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
+            (output / "desktop-m7-baidu.serial.log").write_bytes(self._transcript())
+            (output / "desktop-m7-baidu.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
             (output / "desktop-m6-javascript.ppm").write_bytes(
                 b"P6\n1 1\n255\n\xff\xff\xff"
+            )
+            (output / "desktop-m7-baidu-home.ppm").write_bytes(
+                b"P6\n1 1\n255\n\x80\x80\x80"
+            )
+            (output / "desktop-m7-baidu-search.ppm").write_bytes(
+                b"P6\n1 1\n255\n\x40\x40\x40"
             )
             return subprocess.CompletedProcess(arguments, returncode, "", "")
 
         return run
 
-    def test_adapter_invokes_m6_with_only_plan_paths_and_binds_result(self) -> None:
+    def test_adapter_invokes_m7_with_only_plan_paths_and_binds_result(self) -> None:
         calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
         self.output.mkdir(parents=True, mode=0o700)
         (self.output / "result.json").write_text('{"passed":true}\n')
@@ -205,9 +231,11 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             result.evidence,
             (
                 "native/result.json",
-                "native/desktop-m6-browser.serial.log",
-                "native/desktop-m6-browser.ppm",
+                "native/desktop-m7-baidu.serial.log",
+                "native/desktop-m7-baidu.ppm",
                 "native/desktop-m6-javascript.ppm",
+                "native/desktop-m7-baidu-home.ppm",
+                "native/desktop-m7-baidu-search.ppm",
             ),
         )
         self.assertFalse((self.output / "result.json").exists())
@@ -218,7 +246,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             (
                 sys.executable,
                 "-m",
-                "tools.riscv.debian.rootfs.desktop_m6_browser_gate",
+                "tools.riscv.debian.rootfs.desktop_m7_baidu_gate",
             ),
         )
         for option, name in (
@@ -268,6 +296,17 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         weak_screenshot = self._native_result()
         weak_screenshot["screenshot"] = {**weak_screenshot["screenshot"], "width": 1}
         variants.append(weak_screenshot)
+        weak_homepage = self._native_result()
+        weak_homepage["homepage_screenshot"] = {
+            **weak_homepage["homepage_screenshot"],
+            "non_background_pixels": 1,
+        }
+        variants.append(weak_homepage)
+        retained_failure = self._native_result()
+        retained_failure["failure_screenshot"] = {
+            **retained_failure["homepage_screenshot"]
+        }
+        variants.append(retained_failure)
 
         for native in variants:
             with (
@@ -297,7 +336,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             result = self._runner([])(arguments, **kwargs)
             native = Path(arguments[arguments.index("--output-directory") + 1])
-            (native / "desktop-m6-browser.serial.log").write_text("incomplete\n")
+            (native / "desktop-m7-baidu.serial.log").write_text("incomplete\n")
             return result
 
         with self.assertRaisesRegex(DesktopSimulationError, "desktop-evidence"):
