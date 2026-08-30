@@ -25,6 +25,7 @@ from tools.riscv.debian.rootfs.contract import (
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_MIN_REBOOT_AFTER,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -57,6 +58,7 @@ KERNEL_ADDRESS = 0x80200000
 INITRAMFS_ADDRESS = 0x83000000
 DTB_ADDRESS = 0xF0000000
 MAX_PLAN_BYTES = 1024 * 1024
+TCP_PROBE_DEFAULT_REBOOT_AFTER = 180
 
 
 class WorkflowError(RuntimeError):
@@ -225,6 +227,13 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         artifacts = (*boot_artifacts, *evidence_artifacts)
         schema_version = 2
         markers = DEBIAN_BROWSER_MARKERS
+    reboot_after = arguments.reboot_after
+    if reboot_after is None:
+        reboot_after = (
+            DEBIAN_BROWSER_MIN_REBOOT_AFTER
+            if arguments.profile == "debian-browser"
+            else TCP_PROBE_DEFAULT_REBOOT_AFTER
+        )
     plan = DebugPlan(
         schema_version=schema_version,
         profile=arguments.profile,
@@ -233,7 +242,7 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         smp=4,
         sv39=getattr(arguments, "paging_mode", "sv39") == "sv39",
         markers=markers,
-        reboot_after=arguments.reboot_after,
+        reboot_after=reboot_after,
     )
     plan.validate()
     return plan
@@ -330,7 +339,7 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--bootargs", required=True)
     plan.add_argument("--paging-mode", choices=("sv39", "sv48"), default="sv39")
     plan.add_argument("--marker", action="append")
-    plan.add_argument("--reboot-after", type=int, default=180)
+    plan.add_argument("--reboot-after", type=int)
     plan.add_argument("--output", required=True, type=Path)
 
     check = subparsers.add_parser("check", help="revalidate every plan artifact")
