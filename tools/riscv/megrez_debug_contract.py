@@ -21,6 +21,11 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_REMOTE_MARKER,
 )
+from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_READY_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+)
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -48,6 +53,9 @@ DEBIAN_BROWSER_MARKERS = (
     DESKTOP_M6_REMOTE_MARKER,
     "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
     "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
+    DESKTOP_M7_HOME_MARKER,
+    DESKTOP_M7_SEARCH_MARKER,
+    DESKTOP_M7_READY_MARKER,
 )
 PLAN_FIELDS = frozenset(
     (
