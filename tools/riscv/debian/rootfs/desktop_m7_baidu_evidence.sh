@@ -41,7 +41,7 @@ find_single_window() {
     local -a windows=()
     window_output="$(
         timeout "$COMMAND_TIMEOUT_SECONDS" \
-            xdotool search --onlyvisible --class NetSurf
+            xdotool search --onlyvisible --classname '^netsurf-gtk$'
     )" || return 1
     ((${#window_output} <= 4096)) || fail window-search-output-too-long
     mapfile -t windows <<<"$window_output"
