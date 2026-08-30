@@ -60,7 +60,7 @@ class DebianDesktopM6BrowserContractTests(unittest.TestCase):
         profile = get_profile("desktop-m5-network")
 
         self.assertIn("xdotool", profile.requested_packages)
-        self.assertEqual(profile.identity_packages[-1], "xdotool")
+        self.assertEqual(profile.identity_packages[-2:], ("xdotool", "x11-apps"))
         self.assertEqual(
             DESKTOP_M6_REMOTE_MARKER,
             "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com "

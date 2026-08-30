@@ -1010,6 +1010,7 @@ configure_desktop_m5_network() {
     local service_name="asterinas-desktop-m5-network"
     local browser_service_name="asterinas-desktop-m6-browser"
     local baidu_service_name="asterinas-desktop-m7-baidu"
+    local quality_service_name="asterinas-desktop-m8-browser-quality"
     local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1122,6 +1123,29 @@ EOF
     ln -s -- \
         "../$baidu_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m8_browser_quality_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m8-browser-quality-evidence"
+    install -d -o 1000 -g 1000 -m 0755 -- "$stage/home/asterinas/Downloads"
+    cat >"$stage/etc/systemd/system/$quality_service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M8 lightweight browser quality evidence
+After=asterinas-desktop-m7-baidu.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_BROWSER_M8_TIMEOUT_SECONDS=300
+TimeoutStartSec=360
+ExecStart=/usr/lib/asterinas/desktop-m8-browser-quality-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$quality_service_name.service"
+    ln -s -- \
+        "../$quality_service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$quality_service_name.service"
     fi
 }
 
