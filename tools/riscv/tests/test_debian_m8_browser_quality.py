@@ -471,8 +471,12 @@ case "$1" in
         ;;
     mousemove)
         case "$*" in
-            'mousemove --window 42 100 165 click 1') : ;;
-            'mousemove --window 42 90 313 click 1')
+            'mousemove --window 42 100 135 click 1') : ;;
+            'mousemove --window 42 230 135 click 1')
+                [[ "$(cat "$ASTERINAS_M8_TYPED")" == asterinas ]] || exit 11
+                printf '2' >"$ASTERINAS_M8_STATE"
+                ;;
+            'mousemove --window 42 90 284 click 1')
                 printf '3' >"$ASTERINAS_M8_STATE"
                 ;;
             *) exit 11 ;;
@@ -484,7 +488,6 @@ case "$1" in
                 value="$(cat "$ASTERINAS_M8_TYPED")"
                 case "$value" in
                     */browser-quality/index.html) printf '1' >"$ASTERINAS_M8_STATE" ;;
-                    asterinas) printf '2' >"$ASTERINAS_M8_STATE" ;;
                     */browser-quality/download.bin) : ;;
                     "$ASTERINAS_M8_DOWNLOAD")
                         if [[ "$ASTERINAS_M8_MODE" == download-mismatch ]]; then
@@ -629,10 +632,10 @@ done
             "key Return",
             "key End",
             "key Home",
-            "mousemove --window 42 100 165 click 1",
+            "mousemove --window 42 100 135 click 1",
             "type --delay 0 -- asterinas",
-            "key Return",
-            "mousemove --window 42 90 313 click 1",
+            "mousemove --window 42 230 135 click 1",
+            "mousemove --window 42 90 284 click 1",
             "key alt+Left",
             "key alt+Right",
             "key ctrl+l",

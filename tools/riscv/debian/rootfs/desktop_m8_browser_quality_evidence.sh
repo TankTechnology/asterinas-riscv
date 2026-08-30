@@ -167,16 +167,17 @@ timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key End || fail scroll-end
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Home || fail scroll-home
 emit "DEBIAN_BROWSER_M8_SCROLL direction=end-home"
 
-# NetSurf's Tab order includes browser chrome, so focus the fixed fixture's
-# form by its window-relative position instead of assuming a widget order.
+# NetSurf's Tab order includes browser chrome. Use coordinates relative to the
+# client area, which is the coordinate space selected by xdotool --window.
 timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --window "$window_id" 100 165 click 1 || fail form-focus
+    xdotool mousemove --window "$window_id" 100 135 click 1 || fail form-focus
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- asterinas || fail form-type
-timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail form-submit
+timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool mousemove --window "$window_id" 230 135 click 1 || fail form-submit
 wait_for_title "asterinas - Asterinas Browser Quality"
 timeout "$COMMAND_TIMEOUT_SECONDS" \
-    xdotool mousemove --window "$window_id" 90 313 click 1 || fail second-click
+    xdotool mousemove --window "$window_id" 90 284 click 1 || fail second-click
 wait_for_title "Second - Asterinas Browser Quality"
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key alt+Left || fail navigation-back
 wait_for_title "asterinas - Asterinas Browser Quality"
