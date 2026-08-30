@@ -198,13 +198,11 @@ fn selected_host_paths(value: &[u8]) -> Option<[Option<&str>; MAX_SELECTED_DWC3_
     }
 
     let mut paths = [None; MAX_SELECTED_DWC3_HOSTS];
-    let mut count = 0;
-    for bytes in strings.split(|byte| *byte == 0) {
+    for (count, bytes) in strings.split(|byte| *byte == 0).enumerate() {
         if bytes.is_empty() || count == MAX_SELECTED_DWC3_HOSTS {
             return None;
         }
         paths[count] = Some(str::from_utf8(bytes).ok()?);
-        count += 1;
     }
     Some(paths)
 }
