@@ -216,6 +216,9 @@ def _parse_diagnostic_marker(line: str) -> _ParsedDiagnosticMarker | None:
         f"{DIAGNOSTIC_PREFIX} stage=diagnostic_active console_registry=empty": (
             "diagnostic_active"
         ),
+        f"{DIAGNOSTIC_PREFIX} stage=diagnostic_active console_registry=registered": (
+            "diagnostic_active"
+        ),
         f"{DIAGNOSTIC_PREFIX} stage=process_components_ready": (
             "process_components_ready"
         ),
