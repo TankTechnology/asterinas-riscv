@@ -584,6 +584,16 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
                 invalid.validate()
 
+    def test_schema_two_requires_a_full_desktop_recovery_window(self) -> None:
+        plan = self._plan()
+
+        with self.assertRaisesRegex(DebugContractError, "desktop recovery window"):
+            replace(
+                plan,
+                bootargs=physical_bootargs(599),
+                reboot_after=599,
+            ).validate()
+
     def test_schema_two_requires_exactly_one_partition_two_write_gate(self) -> None:
         plan = self._plan()
 
@@ -735,6 +745,32 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
         load_checksums.assert_called_once_with(self.paths["package_checksums"])
+
+    def test_create_plan_defaults_browser_recovery_window_to_six_hundred_seconds(
+        self,
+    ) -> None:
+        arguments = self._arguments()
+        arguments.reboot_after = None
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=self.manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=self.manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=self.package_rows,
+                create=True,
+            ),
+        ):
+            plan = debug_module._create_plan(arguments)
+
+        self.assertEqual(plan.reboot_after, 600)
 
     def test_create_plan_rejects_unbound_metadata_and_download_rows(self) -> None:
         mismatched_rows = (
