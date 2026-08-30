@@ -22,6 +22,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol, TextIO
 
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import (
     CRC_RESULT_PATTERN,
     MEGREZ_FRAMEBUFFER,
@@ -31,7 +33,6 @@ from tools.riscv.megrez_board_session import (
     open_serial,
     read_available,
 )
-from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
     DebugPlan,
@@ -72,6 +73,9 @@ PROBE_FAILURE_PATTERN = re.compile(
     r"errno=[0-9]+ attempts=[0-9]+ "
     r"current_bytes=[0-9]+ completed_bytes=[0-9]+(?:\r?\n|$)"
 )
+_POINTER_MISSING_DIAGNOSTIC = "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device"
+_M4_TIMEOUT_FAILURE = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout"
+_POINTER_MISSING_REASON = "browser-pass-input-missing:pointer-device"
 KERNEL_COMPRESSED_ADDRESS = 0x90000000
 EIC7700_WATCHDOG_BASE = 0x50800000
 EIC7700_SYSCFG_WATCHDOG_CLOCK = 0x51828200
@@ -665,12 +669,27 @@ def run_physical_board(
 
 
 class _MarkerTracker:
-    def __init__(self, markers: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        markers: tuple[str, ...],
+        *,
+        allow_pointer_degradation: bool = False,
+    ) -> None:
         self._markers = markers
         self._index = 0
         self._terminal: GuestTerminal | None = None
         self._autoboot_stop_pending = False
         self._autoboot_stop_sent = False
+        self._pointer_diagnostic_seen = False
+        self._degradation_reason: str | None = None
+        if allow_pointer_degradation:
+            self._m4_start = markers.index(DESKTOP_M4_MILESTONES[0])
+            self._m4_end = self._m4_start + len(DESKTOP_M4_MILESTONES)
+            if markers[self._m4_start : self._m4_end] != DESKTOP_M4_MILESTONES:
+                raise ValueError("M4 milestones must be contiguous")
+        else:
+            self._m4_start = -1
+            self._m4_end = -1
         self._tail = ""
         self._tail_limit = (
             max(
@@ -715,6 +734,16 @@ class _MarkerTracker:
             failure = PROBE_FAILURE_PATTERN.search(window, cursor)
             if failure is not None:
                 occurrences.append((failure.start(), "failure", -1, failure.end()))
+            if self._m4_start >= 0:
+                for event, marker in (
+                    ("pointer-diagnostic", _POINTER_MISSING_DIAGNOSTIC),
+                    ("m4-timeout", _M4_TIMEOUT_FAILURE),
+                ):
+                    position = window.find(marker, cursor)
+                    if position >= 0:
+                        occurrences.append(
+                            (position, event, -1, position + len(marker))
+                        )
             banner = UBOOT_BANNER_PATTERN.search(window, cursor)
             if banner is not None:
                 occurrences.append((banner.start(), "banner", -1, banner.end()))
@@ -737,6 +766,28 @@ class _MarkerTracker:
                 continue
             if self._terminal is not None:
                 raise BoardRunFailure("guest-terminal-duplicate")
+            if event == "pointer-diagnostic":
+                if (
+                    self._index != self._m4_start
+                    or self._pointer_diagnostic_seen
+                    or self._degradation_reason is not None
+                ):
+                    raise BoardRunFailure("guest-marker-order")
+                self._pointer_diagnostic_seen = True
+                cursor = event_end
+                continue
+            if event == "m4-timeout":
+                if (
+                    self._index != self._m4_start
+                    or not self._pointer_diagnostic_seen
+                    or self._degradation_reason is not None
+                ):
+                    raise BoardRunFailure("guest-marker-order")
+                self._index = self._m4_end
+                self._pointer_diagnostic_seen = False
+                self._degradation_reason = _POINTER_MISSING_REASON
+                cursor = event_end
+                continue
             if event == "failure":
                 if self._index == 0:
                     raise BoardRunFailure("guest-marker-order")
@@ -747,12 +798,18 @@ class _MarkerTracker:
                 )
                 cursor = event_end
                 continue
+            if self._pointer_diagnostic_seen:
+                raise BoardRunFailure("guest-marker-order")
             if marker_index != self._index:
                 raise BoardRunFailure("guest-marker-order")
             self._index += 1
             cursor = event_end
             if self.complete:
-                self._terminal = GuestTerminal(passed=True, reason="pass")
+                reason = self._degradation_reason
+                self._terminal = GuestTerminal(
+                    passed=reason is None,
+                    reason=reason or "pass",
+                )
 
         recovered = (
             self._terminal is not None
@@ -817,7 +874,10 @@ def run_board(
     operations.invalidate()
     evidence = operations.evidence_names()
     deadline = clock() + config.timeout
-    tracker = _MarkerTracker(plan.markers)
+    tracker = _MarkerTracker(
+        plan.markers,
+        allow_pointer_degradation=(plan.schema_version == 2),
+    )
     transcript: list[str] = []
     transcript_bytes = 0
     outcomes: tuple[str, ...] = ()
