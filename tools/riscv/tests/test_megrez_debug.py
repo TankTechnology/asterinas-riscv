@@ -21,6 +21,13 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tools.riscv import megrez_debug as debug_module
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+    DESKTOP_M5_MEGREZ_MILESTONES,
+)
+from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_REMOTE_MARKER,
+)
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
@@ -517,6 +524,19 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         )
         self.assertEqual(plan.markers, DEBIAN_BROWSER_MARKERS)
         self.assertEqual(plan.plan_sha256, hashlib.sha256(encoded).hexdigest())
+
+    def test_schema_two_reuses_the_authoritative_physical_gate_milestones(self) -> None:
+        self.assertEqual(
+            DEBIAN_BROWSER_MARKERS,
+            (
+                "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+                *DESKTOP_M5_MEGREZ_MILESTONES,
+                *DESKTOP_M4_MILESTONES,
+                DESKTOP_M6_REMOTE_MARKER,
+                "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
+                "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
+            ),
+        )
 
     def test_schema_two_physical_gate_requires_desktop_simulation(self) -> None:
         plan = self._plan()
