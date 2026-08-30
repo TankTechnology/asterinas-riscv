@@ -972,14 +972,34 @@ finalize_browser_startup_caches() {
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
     chroot "$stage" /usr/bin/journalctl --update-catalog
-    chroot "$stage" /usr/bin/fc-cache -f
+    generate_fontconfig_cache "$stage"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
         die "staged journal catalog is absent"
-    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
-        die "staged fontconfig cache is absent"
+}
+
+generate_fontconfig_cache() {
+    local stage="$1"
+    local cache_file
+    local scan_log="$stage/usr/share/asterinas/fontconfig-build.log"
+
+    install -d -m 0755 -- "$stage/usr/share/asterinas"
+    printf 'FONTCONFIG_BUILD_SOURCE_DATE_EPOCH unset\n' >"$scan_log"
+    if ! (
+        unset SOURCE_DATE_EPOCH
+        chroot "$stage" /usr/bin/fc-cache -f -v
+    ) >>"$scan_log" 2>&1; then
+        cat -- "$scan_log" >&2
+        die "staged fontconfig cache rebuild failed"
+    fi
+    cache_file="$(find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit)"
+    if [[ -n "$cache_file" ]]; then
+        return 0
+    fi
+    cat -- "$scan_log" >&2
+    die "staged fontconfig cache is absent after an audited rebuild"
 }
 
 configure_desktop_m5_network() {
