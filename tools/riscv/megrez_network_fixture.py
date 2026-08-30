@@ -345,6 +345,16 @@ class FixtureServer:
                 return None
             return dict(self._capture_evidence)
 
+    def capture_summary_json(self) -> bytes | None:
+        """Return the accepted capture evidence in canonical JSON form."""
+
+        summary = self.capture_summary()
+        if summary is None:
+            return None
+        return (
+            json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+
     def _record(self, peer: str, path: str, status: int, body_bytes: int) -> None:
         with self._lock:
             self._request_count += 1
@@ -383,7 +393,7 @@ class FixtureServer:
         ).encode()
 
 
-def _ipv4_argument(value: str) -> str:
+def ipv4_argument(value: str) -> str:
     try:
         _validate_ipv4(value, "address")
     except ValueError as error:
@@ -391,7 +401,7 @@ def _ipv4_argument(value: str) -> str:
     return value
 
 
-def _port_argument(value: str) -> int:
+def port_argument(value: str) -> int:
     try:
         port = int(value)
     except ValueError as error:
@@ -403,9 +413,9 @@ def _port_argument(value: str) -> int:
 
 def _parse_args(arguments: Sequence[str] | None = None) -> FixtureConfig:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind-address", type=_ipv4_argument, default="127.0.0.1")
-    parser.add_argument("--port", type=_port_argument, default=17894)
-    parser.add_argument("--allow-peer", type=_ipv4_argument)
+    parser.add_argument("--bind-address", type=ipv4_argument, default="127.0.0.1")
+    parser.add_argument("--port", type=port_argument, default=17894)
+    parser.add_argument("--allow-peer", type=ipv4_argument)
     values = parser.parse_args(arguments)
     return FixtureConfig(values.bind_address, values.port, values.allow_peer)
 

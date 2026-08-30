@@ -198,6 +198,14 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                     "sha256": hashlib.sha256(payload).hexdigest(),
                 },
             )
+            self.assertEqual(
+                server.capture_summary_json(),
+                (
+                    '{"bytes":11,"path":"/browser-quality/capture.xwd.gz",'
+                    '"peer":"127.0.0.1",'
+                    f'"sha256":"{hashlib.sha256(payload).hexdigest()}"}}\n'
+                ).encode(),
+            )
             self.assertEqual(server.summary()["request_count"], 0)
             self.assertEqual(
                 self.post(server, BROWSER_CAPTURE_PATH, b"second")[0],

@@ -15,6 +15,7 @@ from contextlib import AbstractContextManager
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from tools.riscv.debian.rootfs.contract import (
     ContractError,
@@ -51,6 +52,13 @@ from tools.riscv.megrez_debug_probe import (
     ProbeServerError,
 )
 from tools.riscv.megrez_debian_install import InstallError, run_network_install
+from tools.riscv.megrez_network_fixture import (
+    FIXTURE_PATH,
+    FixtureConfig,
+    FixtureServer,
+    ipv4_argument,
+    port_argument,
+)
 from tools.riscv.megrez_preboard import (
     PreboardError,
     RecoveryEvidence,
@@ -63,6 +71,7 @@ INITRAMFS_ADDRESS = 0x83000000
 DTB_ADDRESS = 0xF0000000
 MAX_PLAN_BYTES = 1024 * 1024
 TCP_PROBE_DEFAULT_REBOOT_AFTER = 180
+DEFAULT_FIXTURE_PORT = 17894
 
 
 class WorkflowError(RuntimeError):
@@ -89,6 +98,73 @@ def _install_timeout(value: str) -> float:
     if not 0 < timeout <= 3600 or not math.isfinite(timeout):
         raise argparse.ArgumentTypeError("timeout must be finite and in (0, 3600]")
     return timeout
+
+
+def _board_fixture_config(
+    plan: DebugPlan,
+    bind_address: str | None,
+    allowed_peer: str | None,
+    port: int | None,
+) -> FixtureConfig | None:
+    supplied = bind_address is not None or allowed_peer is not None or port is not None
+    quality = (
+        plan.schema_version == DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION
+        and plan.profile == DEBIAN_BROWSER_QUALITY_PROFILE
+    )
+    if not quality:
+        if supplied:
+            raise WorkflowError("board-fixture-options-require-quality-plan")
+        return None
+    if bind_address is None or allowed_peer is None:
+        raise WorkflowError("board-quality-fixture-addresses-required")
+    fixture = FixtureConfig(
+        bind_address,
+        DEFAULT_FIXTURE_PORT if port is None else port,
+        allowed_peer,
+    )
+
+    fixture_tokens = tuple(
+        token.split("=", 2)[2]
+        for token in plan.bootargs.split()
+        if token.startswith("systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=")
+    )
+    if len(fixture_tokens) != 1:
+        raise WorkflowError("board-fixture-plan-url-missing")
+    try:
+        parsed = urlsplit(fixture_tokens[0])
+        parsed_port = parsed.port
+    except ValueError as error:
+        raise WorkflowError("board-fixture-plan-url-invalid") from error
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != fixture.bind_address
+        or parsed_port != fixture.port
+        or parsed.path != FIXTURE_PATH
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise WorkflowError("board-fixture-plan-url-mismatch")
+
+    network_prefix = "asterinas.net=eic7700-rj45,"
+    network_tokens = tuple(
+        token[len(network_prefix) :]
+        for token in plan.bootargs.split()
+        if token.startswith(network_prefix)
+    )
+    if len(network_tokens) != 1:
+        raise WorkflowError("board-fixture-plan-peer-missing")
+    address_prefix, separator, _gateway = network_tokens[0].partition(",")
+    board_address, slash, prefix = address_prefix.partition("/")
+    if (
+        not separator
+        or slash != "/"
+        or not prefix.isdecimal()
+        or board_address != fixture.allowed_peer
+    ):
+        raise WorkflowError("board-fixture-plan-peer-mismatch")
+    return fixture
 
 
 def _read_regular(path: Path, *, label: str) -> bytes:
@@ -400,6 +476,9 @@ def _parser() -> argparse.ArgumentParser:
     board.add_argument("--output-directory", type=Path)
     board.add_argument("--timeout", type=_board_timeout, default=300.0)
     board.add_argument("--hardware-watchdog", action="store_true")
+    board.add_argument("--fixture-bind-address", type=ipv4_argument)
+    board.add_argument("--fixture-allow-peer", type=ipv4_argument)
+    board.add_argument("--fixture-port", type=port_argument)
     board.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -483,6 +562,12 @@ def main(
             return 0
 
         plan = _load_plan(values.plan)
+        fixture_config = _board_fixture_config(
+            plan,
+            values.fixture_bind_address,
+            values.fixture_allow_peer,
+            values.fixture_port,
+        )
         if values.dry_run:
             print(
                 json.dumps(
@@ -500,6 +585,9 @@ def main(
             raise WorkflowError("board-output-directory-required")
         with probe_server_factory() as probe_server:
             trace_provider = getattr(probe_server, "canonical_trace", None)
+            browser_fixture = (
+                FixtureServer(fixture_config) if fixture_config is not None else None
+            )
             result = run_physical_board(
                 plan,
                 values.device,
@@ -513,6 +601,11 @@ def main(
                         )
                     }
                     if callable(trace_provider)
+                    else {}
+                ),
+                **(
+                    {"browser_fixture": browser_fixture}
+                    if browser_fixture is not None
                     else {}
                 ),
             )

@@ -7,7 +7,9 @@ from __future__ import annotations
 import errno
 import fcntl
 import gzip
+import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -17,12 +19,15 @@ import stat
 import termios
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, TextIO
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
+    DESKTOP_M8_CAPTURE_PREFIX,
+)
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import (
     CRC_RESULT_PATTERN,
@@ -35,9 +40,14 @@ from tools.riscv.megrez_board_session import (
 )
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
+)
+from tools.riscv.megrez_network_fixture import (
+    BROWSER_CAPTURE_PATH,
+    MAX_CAPTURE_BYTES,
 )
 from tools.riscv.megrez_xmodem import (
     INITIAL_BAUD,
@@ -92,6 +102,9 @@ _UBOOT_MEMORY_LINE = re.compile(
     r"(?P<values>(?: [0-9a-fA-F]{8})+)"
     r"(?:[ \t]{2,}[^\r\n]*)?\r*$"
 )
+_NETWORK_BOOTARG = re.compile(
+    r"asterinas\.net=eic7700-rj45,(?P<address>[0-9.]+)/[0-9]{1,2},[0-9.]+"
+)
 
 
 class BoardTransportError(RuntimeError):
@@ -106,6 +119,24 @@ def _uboot_words(output: str, address: int, count: int) -> tuple[int, ...]:
         if len(values) == count:
             return values
     raise BoardRunFailure("hardware-watchdog-readback-invalid")
+
+
+def _planned_board_address(plan: DebugPlan) -> str:
+    matches = tuple(
+        match
+        for token in plan.bootargs.split()
+        if (match := _NETWORK_BOOTARG.fullmatch(token)) is not None
+    )
+    if len(matches) != 1:
+        raise BoardRunFailure("browser-capture-plan-address-missing")
+    address = matches[0].group("address")
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError as error:
+        raise BoardRunFailure("browser-capture-plan-address-invalid") from error
+    if parsed.version != 4 or str(parsed) != address:
+        raise BoardRunFailure("browser-capture-plan-address-invalid")
+    return address
 
 
 @dataclass(frozen=True)
@@ -297,12 +328,72 @@ class BoardOperations(Protocol):
 
     def evidence_names(self) -> tuple[str, ...]: ...
 
+    def publication_evidence_names(self) -> tuple[str, ...]: ...
+
+    def finalize_result(
+        self,
+        result: StageResult,
+        transcript: str,
+    ) -> StageResult: ...
+
     def publish(
         self,
         result: StageResult,
         transcript: str,
         outcomes: tuple[str, ...],
     ) -> None: ...
+
+
+class BrowserCaptureFixture(Protocol):
+    """The bounded capture surface owned by one physical board run."""
+
+    def start(self) -> object: ...
+
+    def close(self) -> None: ...
+
+    def capture_payload(self) -> bytes | None: ...
+
+    def capture_summary(self) -> dict[str, object] | None: ...
+
+
+def _validated_browser_capture(
+    fixture: BrowserCaptureFixture,
+    transcript: str,
+    *,
+    expected_peer: str,
+) -> tuple[bytes, bytes]:
+    """Bind one bounded capture to its peer and exact serial marker."""
+
+    payload = fixture.capture_payload()
+    summary = fixture.capture_summary()
+    if payload is None or summary is None:
+        raise BoardRunFailure("browser-capture-missing")
+    if set(summary) != {"bytes", "path", "peer", "sha256"}:
+        raise BoardRunFailure("browser-capture-summary-invalid")
+    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_CAPTURE_BYTES:
+        raise BoardRunFailure("browser-capture-size-mismatch")
+    size = summary.get("bytes")
+    if isinstance(size, bool) or not isinstance(size, int) or size != len(payload):
+        raise BoardRunFailure("browser-capture-size-mismatch")
+    digest = summary.get("sha256")
+    if not isinstance(digest, str) or digest != hashlib.sha256(payload).hexdigest():
+        raise BoardRunFailure("browser-capture-hash-mismatch")
+    if summary.get("peer") != expected_peer:
+        raise BoardRunFailure("browser-capture-peer-mismatch")
+    if summary.get("path") != BROWSER_CAPTURE_PATH:
+        raise BoardRunFailure("browser-capture-path-mismatch")
+
+    encoded = transcript.encode("utf-8", errors="replace")
+    marker = f"{DESKTOP_M8_CAPTURE_PREFIX}{size} sha256={digest}".encode()
+    if (
+        encoded.splitlines().count(marker) != 1
+        or encoded.count(DESKTOP_M8_CAPTURE_PREFIX.encode()) != 1
+    ):
+        raise BoardRunFailure("browser-capture-marker-mismatch")
+    canonical = (
+        json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    return bytes(payload), canonical
 
 
 def _lock_serial(fd: int) -> None:
@@ -353,8 +444,15 @@ class RealBoardOperations:
         close_device: CloseDevice = os.close,
         session_factory: SessionFactory = BoardSession.from_fd,
         probe_trace_provider: ProbeTraceProvider | None = None,
+        browser_fixture: BrowserCaptureFixture | None = None,
         hardware_watchdog: bool = False,
     ) -> None:
+        quality = (
+            plan.schema_version == DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION
+            and plan.profile == DEBIAN_BROWSER_QUALITY_PROFILE
+        )
+        if quality != (browser_fixture is not None):
+            raise BoardRunFailure("browser-capture-fixture-mismatch")
         self._plan = plan
         self._device = device
         self._output_path = output_directory
@@ -368,11 +466,14 @@ class RealBoardOperations:
         self._close_device = close_device
         self._session_factory = session_factory
         self._probe_trace_provider = probe_trace_provider
+        self._browser_fixture = browser_fixture
         self._hardware_watchdog = hardware_watchdog
         self._output: PinnedOutputDirectory | None = None
         self._fd: int | None = None
         self._session: BoardSession | None = None
         self._log: TextIO = io.StringIO()
+        self._capture_payload: bytes | None = None
+        self._capture_summary: bytes | None = None
         self.last_transcript = ""
         self.last_outcomes: tuple[str, ...] = ()
 
@@ -386,12 +487,26 @@ class RealBoardOperations:
         self._output.invalidate("result.json", *self.evidence_names())
 
     def evidence_names(self) -> tuple[str, ...]:
+        names = self._base_evidence_names()
+        if self._browser_fixture is not None:
+            names += ("desktop-m8-capture.xwd.gz", "capture.json")
+        return names
+
+    def _base_evidence_names(self) -> tuple[str, ...]:
         names = ("serial.log", "transport.json")
         if self._probe_trace_provider is not None:
             names += ("probe-tcp-info.json",)
         return names
 
+    def publication_evidence_names(self) -> tuple[str, ...]:
+        names = self._base_evidence_names()
+        if self._capture_payload is not None and self._capture_summary is not None:
+            names += ("desktop-m8-capture.xwd.gz", "capture.json")
+        return names
+
     def open(self, timeout: float) -> None:
+        if self._browser_fixture is not None:
+            self._browser_fixture.start()
         fd = self._open_device(self._device)
         try:
             self._lock_device(fd)
@@ -551,6 +666,21 @@ class RealBoardOperations:
         self._session = None
         self._close_device(fd)
 
+    def finalize_result(
+        self,
+        result: StageResult,
+        transcript: str,
+    ) -> StageResult:
+        if self._browser_fixture is None:
+            return result
+        expected_peer = _planned_board_address(self._plan)
+        self._capture_payload, self._capture_summary = _validated_browser_capture(
+            self._browser_fixture,
+            transcript,
+            expected_peer=expected_peer,
+        )
+        return result
+
     def publish(
         self,
         result: StageResult,
@@ -588,16 +718,33 @@ class RealBoardOperations:
             ):
                 raise BoardRunFailure("probe-trace-plan-mismatch")
             self._output.atomic_write("probe-tcp-info.json", trace, mode=0o644)
-        if result.evidence != self.evidence_names():
+        if self._capture_payload is not None and self._capture_summary is not None:
+            self._output.atomic_write(
+                "desktop-m8-capture.xwd.gz",
+                self._capture_payload,
+                mode=0o600,
+            )
+            self._output.atomic_write(
+                "capture.json",
+                self._capture_summary,
+                mode=0o644,
+            )
+        if result.evidence != self.publication_evidence_names():
             raise BoardRunFailure("board-evidence-mismatch")
         self._output.atomic_write("result.json", result.canonical_bytes(), mode=0o644)
 
     def finish(self) -> None:
-        self.close()
-        self._log.close()
-        if self._output is not None:
-            self._output.close()
-            self._output = None
+        try:
+            try:
+                self.close()
+            finally:
+                if self._browser_fixture is not None:
+                    self._browser_fixture.close()
+        finally:
+            self._log.close()
+            if self._output is not None:
+                self._output.close()
+                self._output = None
 
 
 class _BoardSignalState:
@@ -640,6 +787,7 @@ def run_physical_board(
     *,
     timeout: float = 300.0,
     probe_trace_provider: ProbeTraceProvider | None = None,
+    browser_fixture: BrowserCaptureFixture | None = None,
     hardware_watchdog: bool = False,
 ) -> StageResult:
     """Run one board attempt without reset or persistent U-Boot writes."""
@@ -649,6 +797,7 @@ def run_physical_board(
         device,
         output_directory,
         probe_trace_provider=probe_trace_provider,
+        browser_fixture=browser_fixture,
         hardware_watchdog=hardware_watchdog,
     )
     try:
@@ -662,7 +811,7 @@ def run_physical_board(
                         plan,
                         passed=False,
                         reason=f"board-terminated-{error.signum}",
-                        evidence=operations.evidence_names(),
+                        evidence=operations.publication_evidence_names(),
                     ),
                     operations.last_transcript,
                     operations.last_outcomes,
@@ -890,6 +1039,7 @@ def run_board(
     opened = False
     result: StageResult | None = None
     pending_termination: BoardTermination | None = None
+    recovered_current_attempt = False
 
     try:
         operations.open(_remaining(deadline, clock, phase="transport-open"))
@@ -921,6 +1071,7 @@ def run_board(
                     _remaining(deadline, clock, phase="recovery-autoboot")
                 )
             if recovered:
+                recovered_current_attempt = True
                 terminal = tracker.terminal
                 assert terminal is not None
                 if terminal.passed:
@@ -995,18 +1146,59 @@ def run_board(
             reason="board-internal-error",
             evidence=evidence,
         )
+    transcript_text = "".join(transcript)
+    if recovered_current_attempt and tracker.complete:
+        try:
+            result = operations.finalize_result(result, transcript_text)
+            result.validate()
+        except BoardTermination as error:
+            pending_termination = error
+            result = _stage_result(
+                plan,
+                passed=False,
+                reason=f"board-terminated-{error.signum}",
+                evidence=evidence,
+            )
+        except BoardRunFailure as error:
+            result = _stage_result(
+                plan,
+                passed=False,
+                reason=str(error),
+                evidence=evidence,
+            )
+        except (OSError, RuntimeError) as error:
+            result = _stage_result(
+                plan,
+                passed=False,
+                reason=f"capture-runtime-{type(error).__name__}",
+                evidence=evidence,
+            )
     try:
-        operations.publish(result, "".join(transcript), outcomes)
+        publication_evidence = operations.publication_evidence_names()
+    except BoardTermination as error:
+        pending_termination = error
+        publication_evidence = operations.publication_evidence_names()
+        result = _stage_result(
+            plan,
+            passed=False,
+            reason=f"board-terminated-{error.signum}",
+            evidence=publication_evidence,
+        )
+    if result.evidence != publication_evidence:
+        result = replace(result, evidence=publication_evidence)
+        result.validate()
+    try:
+        operations.publish(result, transcript_text, outcomes)
     except BoardTermination as error:
         pending_termination = error
         result = _stage_result(
             plan,
             passed=False,
             reason=f"board-terminated-{error.signum}",
-            evidence=evidence,
+            evidence=publication_evidence,
         )
         try:
-            operations.publish(result, "".join(transcript), outcomes)
+            operations.publish(result, transcript_text, outcomes)
         except (OSError, RuntimeError) as publication_error:
             raise BoardRunFailure("board-publication-failed") from publication_error
     except (OSError, RuntimeError) as error:

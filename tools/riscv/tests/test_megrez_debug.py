@@ -37,6 +37,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m8_browser_quality_gate import (
     DESKTOP_M8_BROWSER_QUALITY_MILESTONES,
+    DESKTOP_M8_CAPTURE_PREFIX,
 )
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
@@ -1437,6 +1438,17 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         def evidence_names(self) -> tuple[str, ...]:
             return ("serial.log", "transport.json")
 
+        def publication_evidence_names(self) -> tuple[str, ...]:
+            return self.evidence_names()
+
+        def finalize_result(
+            self,
+            result: StageResult,
+            _transcript: str,
+        ) -> StageResult:
+            self.calls.append(("finalize", None))
+            return result
+
         def publish(
             self,
             result: StageResult,
@@ -1534,6 +1546,130 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
 
     def _browser_marker_block(self, markers: tuple[str, ...]) -> str:
         return "\n".join(self._concrete_browser_marker(marker) for marker in markers)
+
+    def _quality_marker_block(self, plan: DebugPlan, payload: bytes) -> str:
+        digest = hashlib.sha256(payload).hexdigest()
+        return "\n".join(
+            (
+                f"{marker}{len(payload)} sha256={digest}"
+                if marker == DESKTOP_M8_CAPTURE_PREFIX
+                else self._concrete_browser_marker(marker)
+            )
+            for marker in plan.markers
+        )
+
+    def test_schema_three_validates_capture_before_success_publication(self) -> None:
+        plan = self._browser_quality_plan()
+        payload = b"compressed-root-window"
+        transcript = self._quality_marker_block(plan, payload)
+
+        class CaptureOperations(self.Operations):
+            def finalize_result(
+                nested_self,
+                result: StageResult,
+                observed: str,
+            ) -> StageResult:
+                nested_self.calls.append(("finalize", None))
+                nested_self.capture = board_module._validated_browser_capture(
+                    SimpleNamespace(
+                        capture_payload=lambda: payload,
+                        capture_summary=lambda: {
+                            "bytes": len(payload),
+                            "path": "/browser-quality/capture.xwd.gz",
+                            "peer": "10.100.19.200",
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        },
+                    ),
+                    observed,
+                    expected_peer="10.100.19.200",
+                )
+                return result
+
+        operations = CaptureOperations([transcript + "\n", "U-Boot 2024.01\n=> "])
+
+        result = run_board(
+            plan,
+            BoardRunConfig(timeout=900.0),
+            operations,
+            clock=lambda: 10.0,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(operations.capture[0], payload)
+        self.assertEqual(
+            operations.calls[-3:],
+            [("close", None), ("finalize", None), ("publish", None)],
+        )
+
+    def test_schema_three_capture_failure_publishes_false_after_recovery(self) -> None:
+        plan = self._browser_quality_plan()
+        payload = b"compressed-root-window"
+
+        class MissingCaptureOperations(self.Operations):
+            def finalize_result(
+                nested_self,
+                result: StageResult,
+                observed: str,
+            ) -> StageResult:
+                nested_self.calls.append(("finalize", None))
+                board_module._validated_browser_capture(
+                    SimpleNamespace(
+                        capture_payload=lambda: None,
+                        capture_summary=lambda: None,
+                    ),
+                    observed,
+                    expected_peer="10.100.19.200",
+                )
+                return result
+
+        operations = MissingCaptureOperations(
+            [
+                self._quality_marker_block(plan, payload) + "\n",
+                "U-Boot 2024.01\n=> ",
+            ]
+        )
+
+        result = run_board(
+            plan,
+            BoardRunConfig(timeout=900.0),
+            operations,
+            clock=lambda: 10.0,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "browser-capture-missing")
+        self.assertEqual(operations.published, result)
+
+    def test_schema_three_never_finalizes_capture_before_fresh_recovery(self) -> None:
+        plan = self._browser_quality_plan()
+        payload = b"compressed-root-window"
+        complete = self._quality_marker_block(plan, payload) + "\n"
+        cases = (
+            ([complete], "recovery-not-observed"),
+            (
+                [
+                    self._quality_marker_block(plan, payload).rsplit("\n", 1)[0] + "\n",
+                    "U-Boot 2024.01\n=> ",
+                ],
+                "guest-reboot-before-terminal",
+            ),
+        )
+
+        for chunks, reason in cases:
+            with self.subTest(reason=reason):
+                operations = self.Operations(chunks)
+                result = run_board(
+                    plan,
+                    BoardRunConfig(timeout=900.0),
+                    operations,
+                    clock=lambda: 10.0,
+                )
+
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, reason)
+                self.assertFalse(
+                    any(call[0] == "finalize" for call in operations.calls)
+                )
 
     def test_pointer_missing_degradation_collects_browser_and_recovery(self) -> None:
         plan = self._browser_plan()
@@ -1648,7 +1784,10 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertEqual(result.plan_sha256, self.plan.plan_sha256)
         self.assertEqual(operations.booti_count, 1)
         self.assertEqual(operations.published, result)
-        self.assertEqual(operations.calls[-2:], [("close", None), ("publish", None)])
+        self.assertEqual(
+            operations.calls[-3:],
+            [("close", None), ("finalize", None), ("publish", None)],
+        )
         transport_budgets = [
             value
             for name, value in operations.calls
@@ -1848,6 +1987,38 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
         self.assertFalse(operations.published.passed)
         self.assertEqual(operations.published.reason, "board-terminated-15")
 
+    def test_termination_before_publication_still_publishes_false(self) -> None:
+        class TerminatingEvidence(self.Operations):
+            def __init__(self, chunks: list[str | BaseException]) -> None:
+                super().__init__(chunks)
+                self.evidence_calls = 0
+
+            def publication_evidence_names(self) -> tuple[str, ...]:
+                self.evidence_calls += 1
+                if self.evidence_calls == 1:
+                    raise BoardTermination(15)
+                return super().publication_evidence_names()
+
+        operations = TerminatingEvidence(
+            [
+                "Enter riscv_boot\nASTERINAS_GMAC_TCP_PROBE_READY\n",
+                "U-Boot recovered\n=> ",
+            ]
+        )
+
+        with self.assertRaisesRegex(BoardTermination, "15"):
+            run_board(
+                self.plan,
+                BoardRunConfig(timeout=300.0),
+                operations,
+                clock=lambda: 20.0,
+            )
+
+        self.assertEqual(operations.evidence_calls, 2)
+        assert operations.published is not None
+        self.assertFalse(operations.published.passed)
+        self.assertEqual(operations.published.reason, "board-terminated-15")
+
     def test_absolute_deadline_expires_without_starting_an_extra_read(self) -> None:
         operations = self.Operations(["unreachable"])
         times = iter((0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 301.0))
@@ -1955,6 +2126,166 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             str(self.recovery),
             *extra,
         )
+
+    def _use_quality_plan(self) -> None:
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = tuple(
+            ArtifactIdentity(
+                name=name,
+                path=str((self.directory / name).absolute()),
+                load_address=addresses.get(name, 0),
+                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                sha256=hashlib.sha256(name.encode()).hexdigest(),
+                crc32=f"{zlib.crc32(name.encode()):08x}",
+            )
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER
+        )
+        self.plan = DebugPlan(
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            artifacts=artifacts,
+            bootargs=physical_bootargs(600),
+            smp=4,
+            sv39=True,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+            reboot_after=600,
+        )
+        self.plan_path.write_bytes(self.plan.canonical_bytes())
+        self.simulation.write_bytes(
+            StageResult(
+                schema_version=1,
+                stage="desktop",
+                passed=True,
+                reason="desktop-pass",
+                plan_sha256=self.plan.plan_sha256,
+                evidence=("native/result.json",),
+            ).canonical_bytes()
+        )
+        kernel = next(item for item in artifacts if item.name == "kernel")
+        self.recovery.write_bytes(
+            RecoveryEvidence(
+                schema_version=1,
+                passed=True,
+                reason="recovery-pass",
+                plan_sha256=self.plan.plan_sha256,
+                kernel_sha256=kernel.sha256,
+                native_result_sha256="a" * 64,
+                serial_sha256="b" * 64,
+                second_firmware_epoch=True,
+                fresh_uboot_prompt=True,
+            ).canonical_bytes()
+        )
+
+    def test_schema_three_cli_binds_fixture_to_plan_before_serial(self) -> None:
+        from tools.riscv import megrez_debug
+
+        self._use_quality_plan()
+        expected = StageResult(
+            schema_version=1,
+            stage="board",
+            passed=True,
+            reason="board-pass",
+            plan_sha256=self.plan.plan_sha256,
+            evidence=(
+                "serial.log",
+                "transport.json",
+                "desktop-m8-capture.xwd.gz",
+                "capture.json",
+            ),
+        )
+
+        with (
+            mock.patch.object(megrez_debug, "_check_artifacts"),
+            mock.patch.object(
+                megrez_debug, "run_physical_board", return_value=expected
+            ) as run,
+        ):
+            status = megrez_debug.main(
+                self._arguments(
+                    "--output-directory",
+                    str(self.output),
+                    "--fixture-bind-address",
+                    "10.100.19.216",
+                    "--fixture-allow-peer",
+                    "10.100.19.200",
+                ),
+                probe_server_factory=nullcontext,
+            )
+
+        self.assertEqual(status, 0)
+        fixture = run.call_args.kwargs["browser_fixture"]
+        self.assertEqual(fixture.config.bind_address, "10.100.19.216")
+        self.assertEqual(fixture.config.allowed_peer, "10.100.19.200")
+        self.assertEqual(fixture.config.port, 17894)
+
+    def test_board_cli_rejects_unbound_fixture_options_before_serial(self) -> None:
+        from tools.riscv import megrez_debug
+
+        legacy_plan = self.plan
+        legacy_simulation = self.simulation.read_bytes()
+        legacy_recovery = self.recovery.read_bytes()
+        quality_cases = (
+            ("--fixture-allow-peer", "10.100.19.200"),
+            ("--fixture-bind-address", "10.100.19.216"),
+            (
+                "--fixture-bind-address",
+                "10.100.19.217",
+                "--fixture-allow-peer",
+                "10.100.19.200",
+            ),
+            (
+                "--fixture-bind-address",
+                "10.100.19.216",
+                "--fixture-allow-peer",
+                "10.100.19.201",
+            ),
+            (
+                "--fixture-bind-address",
+                "10.100.19.216",
+                "--fixture-allow-peer",
+                "10.100.19.200",
+                "--fixture-port",
+                "17895",
+            ),
+        )
+        self._use_quality_plan()
+        with mock.patch.object(megrez_debug, "run_physical_board") as run:
+            for case in quality_cases:
+                with self.subTest(case=case):
+                    status = megrez_debug.main(
+                        self._arguments(
+                            "--output-directory",
+                            str(self.output),
+                            *case,
+                        ),
+                        probe_server_factory=nullcontext,
+                    )
+                    self.assertEqual(status, 2)
+            run.assert_not_called()
+
+        self.plan = legacy_plan
+        self.plan_path.write_bytes(legacy_plan.canonical_bytes())
+        self.simulation.write_bytes(legacy_simulation)
+        self.recovery.write_bytes(legacy_recovery)
+        with mock.patch.object(megrez_debug, "run_physical_board") as run:
+            status = megrez_debug.main(
+                self._arguments(
+                    "--output-directory",
+                    str(self.output),
+                    "--fixture-bind-address",
+                    "10.100.19.216",
+                    "--fixture-allow-peer",
+                    "10.100.19.200",
+                ),
+                probe_server_factory=nullcontext,
+            )
+        self.assertEqual(status, 2)
+        run.assert_not_called()
 
     def test_board_cli_accepts_only_the_bounded_desktop_recovery_budget(self) -> None:
         from tools.riscv import megrez_debug
@@ -2087,6 +2418,289 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    class CaptureFixture:
+        def __init__(
+            self,
+            payload: bytes | None,
+            summary: dict[str, object] | None,
+        ) -> None:
+            self._payload = payload
+            self._summary = summary
+            self.started = 0
+            self.closed = 0
+
+        def start(self):
+            self.started += 1
+            return self
+
+        def close(self) -> None:
+            self.closed += 1
+
+        def capture_payload(self) -> bytes | None:
+            return self._payload
+
+        def capture_summary(self) -> dict[str, object] | None:
+            return None if self._summary is None else dict(self._summary)
+
+    @staticmethod
+    def _quality_plan(directory: Path) -> DebugPlan:
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = tuple(
+            ArtifactIdentity(
+                name=name,
+                path=str((directory / name).absolute()),
+                load_address=addresses.get(name, 0),
+                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                sha256=hashlib.sha256(name.encode()).hexdigest(),
+                crc32=f"{zlib.crc32(name.encode()):08x}",
+            )
+            for name in DEBIAN_BROWSER_ARTIFACT_ORDER
+        )
+        return DebugPlan(
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            artifacts=artifacts,
+            bootargs=physical_bootargs(600),
+            smp=4,
+            sv39=True,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+            reboot_after=600,
+        )
+
+    def test_capture_validation_rejects_every_unbound_identity(self) -> None:
+        payload = b"compressed-root-window"
+        digest = hashlib.sha256(payload).hexdigest()
+        marker = f"{DESKTOP_M8_CAPTURE_PREFIX}{len(payload)} sha256={digest}\n"
+        summary = {
+            "bytes": len(payload),
+            "path": "/browser-quality/capture.xwd.gz",
+            "peer": "10.100.19.200",
+            "sha256": digest,
+        }
+        fixtures = (
+            (self.CaptureFixture(None, None), marker, "capture-missing"),
+            (
+                self.CaptureFixture(payload, {**summary, "bytes": len(payload) + 1}),
+                marker,
+                "capture-size-mismatch",
+            ),
+            (
+                self.CaptureFixture(payload, {**summary, "sha256": "0" * 64}),
+                marker,
+                "capture-hash-mismatch",
+            ),
+            (
+                self.CaptureFixture(payload, {**summary, "peer": "10.100.19.201"}),
+                marker,
+                "capture-peer-mismatch",
+            ),
+            (
+                self.CaptureFixture(payload, {**summary, "path": "/wrong"}),
+                marker,
+                "capture-path-mismatch",
+            ),
+            (
+                self.CaptureFixture(payload, {**summary, "extra": "unbound"}),
+                marker,
+                "capture-summary-invalid",
+            ),
+            (self.CaptureFixture(payload, summary), "partial", "capture-marker"),
+            (
+                self.CaptureFixture(payload, summary),
+                "prefixed-" + marker,
+                "capture-marker",
+            ),
+            (
+                self.CaptureFixture(payload, summary),
+                marker + marker,
+                "capture-marker",
+            ),
+        )
+
+        for fixture, transcript, reason in fixtures:
+            with (
+                self.subTest(reason=reason),
+                self.assertRaisesRegex(BoardRunFailure, reason),
+            ):
+                board_module._validated_browser_capture(
+                    fixture,
+                    transcript,
+                    expected_peer="10.100.19.200",
+                )
+
+    def test_real_adapter_requires_fixture_exactly_for_schema_three(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            output = repository / "target/megrez-debug/board"
+            quality = self._quality_plan(repository)
+            legacy = replace(
+                quality,
+                schema_version=2,
+                profile="debian-browser",
+                markers=DEBIAN_BROWSER_MARKERS,
+            )
+            fixture = self.CaptureFixture(None, None)
+
+            with self.assertRaisesRegex(BoardRunFailure, "fixture-mismatch"):
+                RealBoardOperations(quality, "/dev/fake", output)
+            with self.assertRaisesRegex(BoardRunFailure, "fixture-mismatch"):
+                RealBoardOperations(
+                    legacy,
+                    "/dev/fake",
+                    output,
+                    browser_fixture=fixture,
+                )
+
+    def test_quality_adapter_publishes_capture_before_result_and_closes_fixture(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            output = repository / "target/megrez-debug/browser-quality"
+            output.mkdir(parents=True)
+            protected = repository / "protected"
+            protected.write_bytes(b"keep")
+            (output / "desktop-m8-capture.xwd.gz").symlink_to(protected)
+            plan = self._quality_plan(repository)
+            payload = b"compressed-root-window"
+            digest = hashlib.sha256(payload).hexdigest()
+            summary = {
+                "bytes": len(payload),
+                "path": "/browser-quality/capture.xwd.gz",
+                "peer": "10.100.19.200",
+                "sha256": digest,
+            }
+            fixture = self.CaptureFixture(payload, summary)
+
+            class Session:
+                def send(self, _command: str) -> None:
+                    pass
+
+                def wait_for_uboot_prompt(self, _timeout: float) -> str:
+                    return "U-Boot 2024.01\n=> "
+
+            operations = RealBoardOperations(
+                plan,
+                "/dev/fake",
+                output,
+                repository_root=repository,
+                open_device=lambda _device: 23,
+                lock_device=lambda _fd: None,
+                close_device=lambda _fd: None,
+                session_factory=lambda *_args, **_kwargs: Session(),
+                browser_fixture=fixture,
+            )
+            operations.invalidate()
+            operations.open(1.0)
+            operations.close()
+            transcript = f"{DESKTOP_M8_CAPTURE_PREFIX}{len(payload)} sha256={digest}\n"
+            result = StageResult(
+                schema_version=1,
+                stage="board",
+                passed=True,
+                reason="board-pass",
+                plan_sha256=plan.plan_sha256,
+                evidence=operations.evidence_names(),
+            )
+            finalized = operations.finalize_result(result, transcript)
+            pinned = operations._output
+            assert pinned is not None
+            writes: list[str] = []
+            atomic_write = pinned.atomic_write
+
+            def record(name: str, data: bytes, *, mode: int) -> None:
+                writes.append(name)
+                atomic_write(name, data, mode=mode)
+
+            with mock.patch.object(pinned, "atomic_write", side_effect=record):
+                operations.publish(finalized, transcript, ())
+            operations.finish()
+
+            self.assertEqual(fixture.started, 1)
+            self.assertEqual(fixture.closed, 1)
+            self.assertEqual(protected.read_bytes(), b"keep")
+            self.assertEqual(
+                (output / "desktop-m8-capture.xwd.gz").read_bytes(), payload
+            )
+            self.assertEqual(
+                json.loads((output / "capture.json").read_bytes()), summary
+            )
+            self.assertEqual(
+                writes[-3:],
+                [
+                    "desktop-m8-capture.xwd.gz",
+                    "capture.json",
+                    "result.json",
+                ],
+            )
+
+    def test_quality_fixture_closes_after_preboot_failure(self) -> None:
+        target = REPOSITORY_ROOT / "target/megrez-debug"
+        target.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as directory:
+            repository = Path(directory)
+            output = repository / "browser-quality"
+            plan = self._quality_plan(repository)
+            fixture = self.CaptureFixture(None, None)
+
+            def fail_open(operations: RealBoardOperations, _timeout: float) -> None:
+                assert operations._browser_fixture is fixture
+                fixture.start()
+                raise OSError("serial unavailable")
+
+            with mock.patch.object(RealBoardOperations, "open", fail_open):
+                result = board_module.run_physical_board(
+                    plan,
+                    "/dev/fake",
+                    output,
+                    browser_fixture=fixture,
+                )
+
+            self.assertFalse(result.passed)
+            self.assertEqual(result.reason, "uboot-runtime-OSError")
+            self.assertEqual((fixture.started, fixture.closed), (1, 1))
+            published = StageResult.from_bytes((output / "result.json").read_bytes())
+            self.assertFalse(published.passed)
+            self.assertEqual(published.evidence, ("serial.log", "transport.json"))
+            self.assertFalse((output / "desktop-m8-capture.xwd.gz").exists())
+            self.assertFalse((output / "capture.json").exists())
+
+    def test_quality_fixture_closes_after_preboot_termination(self) -> None:
+        target = REPOSITORY_ROOT / "target/megrez-debug"
+        target.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as directory:
+            repository = Path(directory)
+            output = repository / "browser-quality"
+            plan = self._quality_plan(repository)
+            fixture = self.CaptureFixture(None, None)
+
+            def terminate(operations: RealBoardOperations, _timeout: float) -> None:
+                assert operations._browser_fixture is fixture
+                fixture.start()
+                raise BoardTermination(15)
+
+            with (
+                mock.patch.object(RealBoardOperations, "open", terminate),
+                self.assertRaisesRegex(BoardTermination, "15"),
+            ):
+                board_module.run_physical_board(
+                    plan,
+                    "/dev/fake",
+                    output,
+                    browser_fixture=fixture,
+                )
+
+            self.assertEqual((fixture.started, fixture.closed), (1, 1))
+            published = StageResult.from_bytes((output / "result.json").read_bytes())
+            self.assertFalse(published.passed)
+            self.assertEqual(published.reason, "board-terminated-15")
+            self.assertEqual(published.evidence, ("serial.log", "transport.json"))
+
     def test_long_bootargs_are_staged_below_the_uboot_line_limit(self) -> None:
         bootargs = physical_bootargs(180).replace(
             " -- ",
