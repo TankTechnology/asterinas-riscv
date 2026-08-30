@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tools.riscv import megrez_debug as debug_module
+from tools.riscv import megrez_debug_board as board_module
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
@@ -1760,6 +1761,24 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    def test_long_bootargs_are_staged_below_the_uboot_line_limit(self) -> None:
+        bootargs = physical_bootargs(180).replace(
+            " -- ",
+            " systemd.setenv=ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS=60 -- ",
+        )
+
+        commands = board_module._uboot_bootargs_commands(bootargs)
+
+        self.assertTrue(all(len(command.encode()) <= 512 for command in commands))
+        staged = [
+            command.split('"', 2)[1]
+            for command in commands
+            if command.startswith("setenv asterinas_bootargs_") and '"' in command
+        ]
+        self.assertEqual(" ".join(staged), bootargs)
+        self.assertIn('fdt set /chosen bootargs "${bootargs}"', commands)
+        self.assertFalse(any("saveenv" in command for command in commands))
+
     def test_hardware_watchdog_refuses_unknown_component_without_arming(self) -> None:
         commands: list[str] = []
 
