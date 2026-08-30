@@ -72,7 +72,9 @@ def _board_timeout(value: str) -> float:
     except ValueError as error:
         raise argparse.ArgumentTypeError("timeout must be a number") from error
     if not 0 < timeout <= MAX_BOARD_TIMEOUT or not math.isfinite(timeout):
-        raise argparse.ArgumentTypeError("timeout must be finite and in (0, 660]")
+        raise argparse.ArgumentTypeError(
+            f"timeout must be finite and in (0, {MAX_BOARD_TIMEOUT:g}]"
+        )
     return timeout
 
 

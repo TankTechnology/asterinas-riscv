@@ -333,6 +333,13 @@ the browser path but deliberately does not claim mouse usability. Missing,
 reordered, duplicated, or differently attributed M4 failure evidence remains
 a hard failure.
 
+For a desktop plan with `asterinas.reboot_after=600`, invoke
+`tools.riscv.megrez_debug board` with `--timeout 900`. The timeout is measured
+by the host, while the recovery timer is measured by Asterinas; the guest clock
+can advance more slowly on Megrez. Shorter host budgets can therefore publish
+`recovery-not-observed` after the browser evidence even though the board later
+returns to U-Boot automatically.
+
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
 recovery, live GMAC failover, USB Ethernet, Wi-Fi, Firefox, and modern
