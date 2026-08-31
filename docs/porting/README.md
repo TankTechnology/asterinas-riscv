@@ -9,32 +9,36 @@
 | 项目 | 当前值 |
 |---|---|
 | 状态来源 | 本文件所在 Git commit |
-| 工作分支 | `codex/drm-r1-current-main` |
-| 最近真机候选 | `f3d9c73fc` |
-| 最近真机记录 | [Debian Desktop M4 应用](evidence/2026-08-26-debian-desktop-m4-apps.md) |
-| 当前目标 | 固化鼠标交互，再接入原生网络并逐步替换 framebuffer 路径 |
+| 工作分支 | `codex/megrez-dwmac-board-current` |
+| 最近真机候选 | `6b7ffa04c` |
+| 最近真机记录 | [Debian browser-quality rootfs 与验收](evidence/2026-08-31-megrez-debian-browser-quality.md) |
+| 当前目标 | 在不重复刷写 rootfs 的前提下完成物理鼠标 M8，再单独评估 Firefox |
 
 当前结论：Asterinas 的 compiled Sv39 内核已在 Megrez 上启动 4 个 hart，
-通过 MMC 与 Stage1 进入持久 Debian Trixie 根；systemd 257.13、udev、
-logind、Xorg fbdev、双 xHCI、USB 键盘和鼠标、Matchbox、PCManFM、NetSurf
-与 xterm 已在无自动重启的真机启动中到达完整 M4 READY。HDMI 桌面与串口
-调试可同时保留。这仍是集成与调试成果，**不代表 Asterinas 已正式支持
-Megrez**，也不代表原生 DRM 加速或网络已经可用。
+通过 MMC 与 Stage1 进入持久 Debian 13.6 riscv64 根；systemd 257.13、udev、
+logind、Xorg fbdev、双 xHCI、USB 键盘、PCManFM、Openbox、NetSurf 与 xterm
+已在真机达到桌面和浏览器 M7 边界。板载 RJ45 的 M5 网络闭环也已通过，
+QEMU 进一步通过了 M8 轻量浏览器质量门。物理 M8 仍因未连接鼠标而降级。
+这仍是集成与调试成果，**不代表 Asterinas 已正式支持 Megrez**，也不代表
+原生 DRM 加速、现代 JavaScript 或 Firefox 已可用。
 
 ## 最后真机边界
 
 - RockOS 只通过同交换机网络把哈希冻结的 Image、Stage1 和安装器放到
-  `/boot`；Asterinas 自己把签名 Desktop M4 1 GiB 镜像写入 eMMC 分区 2，
-  完成全分区 SHA-256 后由 Asterinas/SBI 重启。
+  `/boot`；Asterinas 自己把签名 browser-quality 1 GiB 镜像写入 eMMC 分区 2，
+  完成全分区 SHA-256 后由 Asterinas/SBI 重启。此次安装结果为
+  `DEBIAN_INSTALL_PASS`，没有绕过 Asterinas 使用 Linux 写入根分区。
 - 真机重新加载并核对 Image、Stage1 和 Megrez DTB，进入 Asterinas Sv39、
-  4 hart、MMC、Debian systemd 257.13 与 1920x1080 firmware framebuffer。
-- 两套 DWC3/xHCI 控制器分别登记物理鼠标和键盘；Xorg 通过 evdev 选择
-  两者，随后 Matchbox、PCManFM、NetSurf 和 xterm 到达完整 M4 READY。
-- 有界启动在 READY 后由 180 秒保护定时器回到新 U-Boot 周期；随后的长期
-  启动删除了该定时器，重复到达 READY，并把桌面留在运行状态。
+  4 hart、MMC、Debian 13.6 systemd 257.13 与 1920x1080 firmware framebuffer。
+- 两套 DWC3/xHCI 控制器登记物理键盘；Xorg、Matchbox、PCManFM、NetSurf
+  和 xterm 到达 M4/M7。板载 RJ45 的 M5 链路、固定代理 HTTPS、图片资源和
+  20 请求压力闭环也已通过。
+- 本轮未连接物理鼠标，Xorg 明确报告缺少 pointer device；因此物理 M8
+  点击、下载和长时间浏览门禁没有完成，结果保留为 `guest-timeout`，而不是
+  把缺失的 M8 标记误写成通过。
 
 完整身份、哈希、失败诊断和限制见
-[最新真机证据](evidence/2026-08-26-debian-desktop-m4-apps.md)。
+[最新真机证据](evidence/2026-08-31-megrez-debian-browser-quality.md)。
 
 ## 最近 QEMU 边界
 
@@ -42,6 +46,10 @@ Megrez**，也不代表原生 DRM 加速或网络已经可用。
   2 GiB、无网络条件下启动 PCManFM、NetSurf、xterm 与 Matchbox，门禁保存
   1280x1024 非空截图并返回 `passed: true`。见
   [Desktop M4 应用证据](evidence/2026-08-26-debian-desktop-m4-apps.md)。
+- Debian 13.6 browser-quality 根在 QEMU、compiled Sv39、4 hart 下通过了
+  M6/M7 网络浏览器门禁和 M8 轻量质量门：CJK/Latin、PNG、表单、滚动、前进
+  后退、256 KiB 下载、120 秒进程存活和 163995 字节截图均有 marker。见
+  [browser-quality 证据](evidence/2026-08-31-megrez-debian-browser-quality.md)。
 - current-main 的签名 Debian Desktop M3 已在 QEMU、compiled Sv39、4 hart、
   2 GiB、无网络环境通过非 root Xorg fbdev + evdev + Matchbox + xterm 门禁，
   并保存 1280x1024 非空截图。见
@@ -72,43 +80,44 @@ Image 的连续运行。
 
 ## 第一缺失边界
 
-基础桌面第一缺失边界已经推进到 **真机鼠标交互与网络**：鼠标已通过
-xHCI、HID、evdev 并被 Xorg 选中，但物理移动/点击仍需 HDMI 操作者确认；
-Asterinas 网络尚未接入这个 Debian 根，因此 NetSurf 目前只证明应用和窗口
-启动，不能外推为网页访问。显示仍使用 U-Boot 交接的 firmware framebuffer，
-不是原生 EIC7700 DRM 或加速渲染。
+当前第一缺失边界是 **真机指针交互与 Firefox**：板载 RJ45、键盘、桌面和
+NetSurf 百度访问已经通过，QEMU 的 M8 交互质量门也已通过；真机没有插鼠标，
+M8 的表单、链接、下载和长时间浏览点击无法完成。显示仍使用 U-Boot 交接的
+firmware framebuffer，不是原生 EIC7700 DRM 或加速渲染。
 
 ## 当前单变量假设
 
-下一轮只验证一个假设：**当前物理 USB boot mouse 的相对移动和按键事件能
-持续经过中断驱动 xHCI/HID worker、evdev 和 Xorg，到达 Matchbox 窗口。**
-QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光标移动和窗口点击，
-不在同一轮扩展网络、热插拔或 DRM。
+下一轮只验证一个假设：**当前物理 USB mouse 的相对移动和按键事件能持续
+经过 xHCI/HID worker、evdev 和 Xorg，到达 Matchbox/NetSurf 窗口。** QEMU
+已经验证精确移动、左键、窗口切换和 M8 内容操作；真机只补可观察的光标、
+表单、链接和下载行为，不在同一轮扩展热插拔或 DRM。
 
 ## 尚未解决的问题
 
 1. 真机光标移动和点击仍需操作者确认；USB 热插拔和任意 report-protocol
    HID 尚未验证。
-2. PCI/板载网络尚未纳入 Desktop M4 门禁，NetSurf 还不能访问网页。
+2. Firefox/Gecko 尚未启动门禁；当前 NetSurf 的 JavaScript 只达到
+   `limited-pass`，不能外推为现代网页兼容性。
 3. EIC7700 原生 DRM、cache/coherency、加速渲染与显示模式切换尚未实现；
    当前依赖 RAM-only 1920x1080 firmware framebuffer handoff。
 4. systemd 仍会报告缺少 kmod、部分 clone/syscall 与 cgroup 语义，但这些
    警告没有阻止本次 udev/logind/非 root 桌面 READY。
-5. NetSurf 是轻量浏览器且不代表现代 JavaScript 浏览器兼容性；音频也未测。
+5. 音频、视频、GPU 加速和更长时间的桌面性能尚未测量。
 
 不要把 DTB 中的 `snps,dw-apb-uart` 伪装成 `ns16550a`；错误的寄存器步长和
 访问宽度可能让轮询停在错误寄存器上。
 
 ## 下一次 QEMU 门禁
 
-不重复已经通过的 M4 应用启动和鼠标事件。只有网络或输入代码发生相关变化
-时，才在同一冻结根上跑对应的窄门禁。
+QEMU 的 M6/M7/M8 已通过；只有 Firefox、输入、网络或根文件系统发生相关
+变化时，才在同一冻结根上跑对应的窄门禁，避免反复重跑已冻结的结果。
 
 ## 下一次真机门禁
 
-当前 M4 应用真机门禁已经通过，不重复相同 `booti`。下一次只由操作者移动
-并点击已经连接的鼠标，确认 HDMI 光标/窗口行为；通过后转向网络。后续仍
-不得 `saveenv`，也不得从 Linux 绕过 Asterinas 修改 Debian 根分区。
+不重刷已经通过安装校验的 rootfs，也不重复 M5/M6/M7。下一次只在接入物理
+鼠标后，用同一冻结 plan 做有界真机 M8：确认光标、表单、链接、下载和进程
+存活；若无鼠标则保留当前 `guest-timeout` 证据。后续仍不得 `saveenv`，也
+不得从 Linux 绕过 Asterinas 修改 Debian 根分区。
 
 ## 简化调试记录
 
