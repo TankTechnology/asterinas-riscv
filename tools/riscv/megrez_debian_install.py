@@ -25,7 +25,13 @@ from tools.riscv.debian.rootfs.megrez_installer import (
     _canonical_root_url,
     build_network_archive,
 )
-from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan, StageResult
+from tools.riscv.megrez_debug_contract import (
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+    ArtifactIdentity,
+    DebugPlan,
+    StageResult,
+)
 from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
 from tools.riscv.megrez_preboard import (
     PreboardPermit,
@@ -419,8 +425,11 @@ def run_network_install(
         publication.invalidate()
         try:
             plan.validate()
-            if plan.schema_version != 2 or plan.profile != "debian-browser":
-                raise InstallError("install requires a Debian browser plan")
+            if (plan.schema_version, plan.profile) not in (
+                (2, "debian-browser"),
+                (DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION, DEBIAN_BROWSER_QUALITY_PROFILE),
+            ):
+                raise InstallError("install requires a supported Debian browser plan")
             if timeout is not None and (
                 not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
             ):

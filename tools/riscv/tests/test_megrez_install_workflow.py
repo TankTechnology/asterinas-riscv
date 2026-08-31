@@ -9,12 +9,16 @@ import tempfile
 import unittest
 import zlib
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
+    DEBIAN_BROWSER_QUALITY_MARKERS,
+    DEBIAN_BROWSER_QUALITY_PROFILE,
+    DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
     ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
@@ -91,7 +95,10 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.output = self.repository / "target/install"
 
     def _artifacts(self, plan: DebugPlan) -> dict[str, ArtifactIdentity]:
-        self.assertIs(plan, self.plan)
+        self.assertEqual(
+            plan.artifacts,
+            tuple(self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER),
+        )
         return self.identities
 
     def test_success_builds_exact_installer_and_requires_recovery(self) -> None:
@@ -308,6 +315,49 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.assertEqual(request.kernel_crc32, self.identities["kernel"].crc32)
         self.assertEqual(request.megrez_dtb_crc32, self.identities["megrez_dtb"].crc32)
         self.assertEqual(request.installer_base, self.base)
+
+    def test_quality_browser_plan_is_accepted_by_the_shared_installer(self) -> None:
+        quality_plan = replace(
+            self.plan,
+            schema_version=DEBIAN_BROWSER_QUALITY_SCHEMA_VERSION,
+            profile=DEBIAN_BROWSER_QUALITY_PROFILE,
+            markers=DEBIAN_BROWSER_QUALITY_MARKERS,
+        )
+        quality_permit = replace(
+            self.permit,
+            plan_sha256=quality_plan.plan_sha256,
+            bootargs=quality_plan.bootargs,
+        )
+        self.permit_path.write_bytes(quality_permit.canonical_bytes())
+        expected = StageResult(
+            1,
+            "install",
+            True,
+            "install-pass",
+            quality_plan.plan_sha256,
+            ("installer.serial.log",),
+        )
+
+        with mock.patch.object(
+            megrez_debian_install,
+            "_run_network_install_request",
+            return_value=expected,
+        ) as install:
+            result = run_network_install(
+                quality_plan,
+                self.permit_path,
+                "/dev/ttyUSB0",
+                self.output,
+                self.base,
+                self.tftp,
+                "http://10.100.19.216:8080/debian-root.ext2.gz",
+                artifact_validator=self._artifacts,
+                git_identity=lambda _repository: "c" * 40,
+                repository_root=self.repository,
+            )
+
+        self.assertEqual(result, expected)
+        install.assert_called_once()
 
     def test_request_rejects_missing_write_identity_and_raw_disk_target(self) -> None:
         request = NetworkInstallRequest(
