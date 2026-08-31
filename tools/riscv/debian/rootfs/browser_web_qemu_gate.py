@@ -74,9 +74,22 @@ WEB_EVIDENCE_PATHS = {
     "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
     "timeline.log": "/home/asterinas/browser-web-timeline.log",
 }
+WEB_DIAGNOSTIC_PATHS = {
+    name: WEB_EVIDENCE_PATHS[name]
+    for name in (
+        "curl.log",
+        "security.log",
+        "firefox-stderr.log",
+        "firefox-mozilla.log",
+        "MarionetteActivePort",
+        "timeline.log",
+    )
+}
 MAX_WEB_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_WEB_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_WEB_OPAQUE_LOG_BYTES = 16 * 1024 * 1024
+MAX_WEB_DIAGNOSTIC_BYTES = MAX_WEB_OPAQUE_LOG_BYTES
+MAX_WEB_DIAGNOSTIC_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_WEB_SCREENSHOT_PIXELS_BYTES = 64 * 1024 * 1024
 WEB_EVIDENCE_EXTRACT_TIMEOUT = 120.0
 WEB_EVIDENCE_FILE_TIMEOUT = 15.0
@@ -426,6 +439,47 @@ def _extract_web_evidence(root_fd: int, directory: Path) -> dict[str, bytes]:
     return extracted
 
 
+def _extract_web_diagnostics(root_fd: int, directory: Path) -> dict[str, bytes]:
+    """Best-effort extraction of a small, optional failure evidence set."""
+
+    extracted: dict[str, bytes] = {}
+    total = 0
+    image = f"/proc/self/fd/{root_fd}"
+    deadline = time.monotonic() + WEB_EVIDENCE_EXTRACT_TIMEOUT
+    for name, guest_path in WEB_DIAGNOSTIC_PATHS.items():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        destination = directory / name
+        try:
+            result = subprocess.run(
+                ["debugfs", "-R", f"dump -p {guest_path} {name}", image],
+                check=False,
+                capture_output=True,
+                pass_fds=(root_fd,),
+                cwd=directory,
+                timeout=min(WEB_EVIDENCE_FILE_TIMEOUT, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode != 0:
+            continue
+        try:
+            metadata = destination.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size > MAX_WEB_DIAGNOSTIC_BYTES
+            or total + metadata.st_size > MAX_WEB_DIAGNOSTIC_TOTAL_BYTES
+        ):
+            continue
+        contents = destination.read_bytes()
+        total += len(contents)
+        extracted[name] = contents
+    return extracted
+
+
 def browser_web_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Admit exactly one default slirp backend and one virtio-net transport."""
 
@@ -471,6 +525,71 @@ def classify_browser_web_qemu(
     )
 
 
+def classify_web_diagnostic_checkpoint(
+    diagnostics: Mapping[str, bytes], transcript: bytes
+) -> str:
+    """Report the furthest observed boundary without affecting gate success."""
+
+    if diagnostics.get("MarionetteActivePort", b"").strip() == b"2828":
+        return "marionette-ready"
+    if b"BROWSER_WEB_STARTUP_SAMPLE " in diagnostics.get(
+        "firefox-stderr.log", b""
+    ) or b"marker=BOOT_FIREFOX_EXEC " in diagnostics.get("timeline.log", b""):
+        return "firefox-starting"
+    if BROWSER_WEB_MILESTONES[0].encode() in transcript:
+        return "network-ready"
+    if diagnostics.get("timeline.log"):
+        return "systemd-starting"
+    return "none"
+
+
+def _publish_web_diagnostics(
+    output: Any,
+    diagnostics: Mapping[str, bytes],
+    transcript: bytes,
+    result: dict[str, object],
+) -> None:
+    files = {
+        name: {
+            "sha256": hashlib.sha256(contents).hexdigest(),
+            "size": len(contents),
+        }
+        for name, contents in sorted(diagnostics.items())
+    }
+    for name, contents in sorted(diagnostics.items()):
+        output.atomic_write(f"browser-web-diagnostic-{name}", contents)
+    result["web_diagnostics"] = {
+        "checkpoint": classify_web_diagnostic_checkpoint(diagnostics, transcript),
+        "files": files,
+    }
+
+
+def _collect_web_failure_diagnostics(
+    output: Any, transcript: bytes, result: dict[str, object]
+) -> None:
+    root_fd = -1
+    try:
+        root_fd = os.open(
+            "debian-root.run.ext2",
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=output._operation_fd,
+        )
+        if not stat.S_ISREG(os.fstat(root_fd).st_mode):
+            raise GateFailure("writable run root is not a regular file")
+        with tempfile.TemporaryDirectory(
+            prefix=".browser-web-diagnostics-",
+            dir=f"/proc/self/fd/{output._operation_fd}",
+        ) as temporary:
+            diagnostics = _extract_web_diagnostics(root_fd, Path(temporary))
+    except (GateFailure, OSError, subprocess.SubprocessError):
+        result["web_diagnostics"] = {"checkpoint": "unavailable", "files": {}}
+        return
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
+    _publish_web_diagnostics(output, diagnostics, transcript, result)
+
+
 class BrowserWebQemuOperations(DesktopM5QemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
@@ -497,6 +616,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         super().invalidate(config)
         self._require_output().invalidate(
             *(f"browser-web-{name}" for name in WEB_EVIDENCE_PATHS),
+            *(f"browser-web-diagnostic-{name}" for name in WEB_DIAGNOSTIC_PATHS),
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
         )
@@ -550,6 +670,8 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
             )
             result["web_evidence"] = index
+        else:
+            _collect_web_failure_diagnostics(output, transcript, result)
         super().publish(config, prepared, transcript, result)
 
 

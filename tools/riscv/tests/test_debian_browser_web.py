@@ -33,7 +33,12 @@ from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
     BROWSER_WEB_MILESTONES,
     BrowserWebQemuOperations,
     KERNEL_FATAL_MARKERS,
+    WEB_DIAGNOSTIC_PATHS,
     WEB_EVIDENCE_PATHS,
+    _collect_web_failure_diagnostics,
+    _extract_web_diagnostics,
+    _publish_web_diagnostics,
+    classify_web_diagnostic_checkpoint,
     _extract_web_evidence,
     browser_web_qemu_argv,
     classify_browser_web_qemu,
@@ -1081,6 +1086,142 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertEqual(argv[2].rsplit(" ", 1)[-1], "baidu-home.json")
         self.assertNotIn(directory, argv[2])
         self.assertEqual(run.call_args.kwargs["timeout"], 15.0)
+
+    def test_failure_diagnostic_checkpoint_reports_furthest_real_boundary(self) -> None:
+        cases = (
+            ({}, b"", "none"),
+            ({"timeline.log": b"systemd started\n"}, b"", "systemd-starting"),
+            (
+                {"curl.log": b"HTTPS requested=https://www.baidu.com/ status=200\n"},
+                (BROWSER_WEB_MILESTONES[0] + "\n").encode(),
+                "network-ready",
+            ),
+            (
+                {"firefox-stderr.log": b"BROWSER_WEB_STARTUP_SAMPLE pid=42\n"},
+                b"",
+                "firefox-starting",
+            ),
+            ({"MarionetteActivePort": b"2828\n"}, b"", "marionette-ready"),
+        )
+        for diagnostics, transcript, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    classify_web_diagnostic_checkpoint(diagnostics, transcript),
+                    expected,
+                )
+
+    def test_failure_diagnostics_publish_without_changing_gate_verdict(self) -> None:
+        output = mock.Mock()
+        diagnostics = {
+            "firefox-stderr.log": b"BROWSER_WEB_STARTUP_SAMPLE pid=42\n",
+            "timeline.log": b"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC pid=42\n",
+        }
+        result: dict[str, object] = {
+            "passed": False,
+            "reason": "protocol timeout",
+        }
+
+        _publish_web_diagnostics(output, diagnostics, b"serial\n", result)
+
+        self.assertIs(result["passed"], False)
+        self.assertEqual(result["reason"], "protocol timeout")
+        self.assertEqual(
+            result["web_diagnostics"]["checkpoint"],  # type: ignore[index]
+            "firefox-starting",
+        )
+        self.assertEqual(
+            set(result["web_diagnostics"]["files"]),  # type: ignore[index]
+            set(diagnostics),
+        )
+        output.atomic_write.assert_any_call(
+            "browser-web-diagnostic-firefox-stderr.log",
+            diagnostics["firefox-stderr.log"],
+        )
+        output.atomic_write.assert_any_call(
+            "browser-web-diagnostic-timeline.log", diagnostics["timeline.log"]
+        )
+
+    @mock.patch("tools.riscv.debian.rootfs.browser_web_qemu_gate.subprocess.run")
+    def test_failure_diagnostic_extraction_tolerates_missing_optional_files(
+        self, run: mock.Mock
+    ) -> None:
+        def extract(
+            arguments: list[str], **keywords: object
+        ) -> subprocess.CompletedProcess:
+            name = arguments[2].rsplit(" ", 1)[-1]
+            if name == "timeline.log":
+                Path(keywords["cwd"]).joinpath(name).write_bytes(b"timeline\n")
+                return subprocess.CompletedProcess(arguments, 0)
+            return subprocess.CompletedProcess(arguments, 1)
+
+        run.side_effect = extract
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "root.ext2"
+            image.write_bytes(b"root")
+            with image.open("rb") as stream:
+                diagnostics = _extract_web_diagnostics(stream.fileno(), Path(directory))
+
+        self.assertEqual(diagnostics, {"timeline.log": b"timeline\n"})
+        self.assertEqual(run.call_count, len(WEB_DIAGNOSTIC_PATHS))
+
+    @mock.patch(
+        "tools.riscv.debian.rootfs.browser_web_qemu_gate._extract_web_diagnostics"
+    )
+    def test_failure_diagnostic_collection_reads_the_pinned_run_image(
+        self, extract: mock.Mock
+    ) -> None:
+        extract.return_value = {
+            "firefox-stderr.log": b"BROWSER_WEB_STARTUP_SAMPLE pid=42\n"
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "debian-root.run.ext2").write_bytes(b"root")
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                output = mock.Mock(_operation_fd=directory_fd)
+                result: dict[str, object] = {
+                    "passed": False,
+                    "reason": "protocol timeout",
+                }
+                _collect_web_failure_diagnostics(output, b"serial\n", result)
+            finally:
+                os.close(directory_fd)
+
+        self.assertEqual(
+            result["web_diagnostics"]["checkpoint"],  # type: ignore[index]
+            "firefox-starting",
+        )
+        passed_fd = extract.call_args.args[0]
+        self.assertTrue(isinstance(passed_fd, int) and passed_fd >= 0)
+        output.atomic_write.assert_called_once_with(
+            "browser-web-diagnostic-firefox-stderr.log",
+            b"BROWSER_WEB_STARTUP_SAMPLE pid=42\n",
+        )
+
+    @mock.patch(
+        "tools.riscv.debian.rootfs.browser_web_qemu_gate.DesktopM5QemuOperations.publish"
+    )
+    @mock.patch(
+        "tools.riscv.debian.rootfs.browser_web_qemu_gate._collect_web_failure_diagnostics"
+    )
+    def test_failed_gate_collects_diagnostics_before_parent_publishes_result(
+        self, collect: mock.Mock, parent_publish: mock.Mock
+    ) -> None:
+        operations = BrowserWebQemuOperations.__new__(BrowserWebQemuOperations)
+        operations._output = mock.Mock()
+        operations._web_evidence = {}
+        operations._web_evidence_index = {}
+        result: dict[str, object] = {
+            "passed": False,
+            "reason": "protocol timeout",
+        }
+
+        operations.publish(mock.sentinel.config, None, b"serial\n", result)
+
+        collect.assert_called_once_with(operations._output, b"serial\n", result)
+        parent_publish.assert_called_once_with(
+            mock.sentinel.config, None, b"serial\n", result
+        )
 
     def test_baidu_home_and_search_require_live_dom_and_https_timing(self) -> None:
         home = snapshot("https://www.baidu.com/")
