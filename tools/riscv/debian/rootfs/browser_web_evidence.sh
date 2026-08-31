@@ -92,8 +92,13 @@ validate_dns_and_tls() {
     local hosts name ip line status effective verify interfaces
     grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
         fail dns-not-slirp-10.0.2.3
-    interfaces="$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo -printf '%f\n' 2>/dev/null |
-        tr '\n' ',' || true)"
+    interfaces=""
+    local path interface
+    for path in /sys/class/net/*; do
+        [[ -e "$path" ]] || continue
+        interface="${path##*/}"
+        [[ "$interface" == lo ]] || interfaces="$interfaces$interface,"
+    done
     [[ -n "$interfaces" ]] || fail nic-count
     emit "DEBIAN_BROWSER_WEB_INTERFACES names=$interfaces"
     ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' || fail nic-address

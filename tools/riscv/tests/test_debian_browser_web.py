@@ -460,6 +460,8 @@ class BrowserWebContractTests(unittest.TestCase):
         online_evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
         self.assertIn('DEBIAN_BROWSER_WEB_INTERFACES names=', online_evidence)
         self.assertNotIn('wc -l)" == 1', online_evidence)
+        self.assertIn('for path in /sys/class/net/*', online_evidence)
+        self.assertNotIn('-printf \'%f\\n\'', online_evidence)
         self.assertIn('chmod 0600 "$TIMELINE"', timeline)
         self.assertIn('browser-web-timeline.log', builder)
         self.assertIn('install -m 0600 -o 1000 -g 1000 /dev/null', builder)
