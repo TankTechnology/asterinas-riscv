@@ -249,7 +249,10 @@ class FixtureServer:
         try:
             request.wfile.write(body)
         finally:
-            if not is_browser_request:
+            # Desktop browser runs may probe the conventional favicon path;
+            # it is auxiliary UI traffic, not one of the fixed M5 stress
+            # payload requests used for the network gate.
+            if not is_browser_request and target.path != "/favicon.ico":
                 self._record(peer, request.path, status, len(body))
 
     def _browser_response(self, path: str, query: str) -> tuple[int, str, bytes]:

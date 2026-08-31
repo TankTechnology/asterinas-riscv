@@ -60,7 +60,7 @@ DESKTOP_M8_FIXED_MILESTONES = tuple(
 )
 DESKTOP_M8_CAPTURE_PATTERN = re.compile(
     rb"DEBIAN_BROWSER_M8_CAPTURE bytes=([1-9][0-9]{0,7}) "
-    rb"sha256=([0-9a-f]{64})(?:\r?\n|$)"
+    rb"sha256=([0-9a-f]{64})(?:\r*\n|$)"
 )
 DESKTOP_M8_BROWSER_QUALITY_MILESTONES = (
     DESKTOP_M8_FIXTURE_MARKER,

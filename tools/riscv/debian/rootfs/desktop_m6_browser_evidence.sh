@@ -28,16 +28,25 @@ fail() {
 [[ "$CAPTURE_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-capture-delay
 [[ "$POLL_DELAY_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-poll-delay
 
-process_output="$(
-    timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
-)" || fail process-search
-((${#process_output} <= 128)) || fail process-search-output-too-long
-mapfile -t processes <<<"$process_output"
-((${#processes[@]} == 1)) || fail ambiguous-process
-readonly process_id="${processes[0]}"
-[[ "$process_id" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
-readonly command_line_path="$PROC_ROOT/$process_id/cmdline"
-[[ -f "$command_line_path" && ! -L "$command_line_path" ]] || fail process-cmdline
+process_id=""
+command_line_path=""
+window_ambiguous=0
+
+find_single_process() {
+    local process_output
+    local -a processes=()
+    process_output="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" pgrep -u "$USER_ID" -x netsurf-gtk
+    )" || return 1
+    ((${#process_output} <= 128)) || fail process-search-output-too-long
+    mapfile -t processes <<<"$process_output"
+    ((${#processes[@]} == 1)) || return 2
+    [[ "${processes[0]}" =~ ^[1-9][0-9]*$ ]] || fail invalid-process
+    process_id="${processes[0]}"
+    command_line_path="$PROC_ROOT/$process_id/cmdline"
+    [[ -f "$command_line_path" && ! -L "$command_line_path" ]] ||
+        fail process-cmdline
+}
 
 window_matches_remote_page() {
     local candidate="$1"
@@ -54,32 +63,66 @@ window_matches_remote_page() {
         "$candidate_title" == *百度* ]]
 }
 
-window_output="$(
-    timeout "$COMMAND_TIMEOUT_SECONDS" \
-        xdotool search --classname '^netsurf-gtk$'
-)" || fail window-search
-((${#window_output} <= 4096)) || fail window-search-output-too-long
-mapfile -t window_candidates <<<"$window_output"
-process_windows=()
-remote_windows=()
-for candidate in "${window_candidates[@]}"; do
-    [[ "$candidate" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
-    if candidate_process_id="$(
-        timeout "$COMMAND_TIMEOUT_SECONDS" xdotool getwindowpid "$candidate" \
-            2>/dev/null
-    )" && [[ "$candidate_process_id" == "$process_id" ]]; then
-        process_windows+=("$candidate")
-        if window_matches_remote_page "$candidate"; then
-            remote_windows+=("$candidate")
+find_single_window() {
+    local window_output
+    local candidate
+    local candidate_process_id
+    local -a window_candidates=()
+    local -a process_windows=()
+    local -a remote_windows=()
+    window_output="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" \
+            xdotool search --classname '^netsurf-gtk$'
+    )" || return 1
+    ((${#window_output} <= 4096)) || fail window-search-output-too-long
+    mapfile -t window_candidates <<<"$window_output"
+    for candidate in "${window_candidates[@]}"; do
+        [[ "$candidate" =~ ^[1-9][0-9]*$ ]] || fail invalid-window
+        if candidate_process_id="$(
+            timeout "$COMMAND_TIMEOUT_SECONDS" xdotool getwindowpid "$candidate" \
+                2>/dev/null
+        )" && [[ "$candidate_process_id" == "$process_id" ]]; then
+            process_windows+=("$candidate")
+            if window_matches_remote_page "$candidate"; then
+                remote_windows+=("$candidate")
+            fi
         fi
+    done
+    if ((${#remote_windows[@]} == 1)); then
+        window_id="${remote_windows[0]}"
+    elif ((${#remote_windows[@]} == 0 && ${#process_windows[@]} == 1)); then
+        window_id="${process_windows[0]}"
+    else
+        window_ambiguous=1
+        return 2
     fi
-done
-if ((${#remote_windows[@]} == 1)); then
-    readonly window_id="${remote_windows[0]}"
-elif ((${#remote_windows[@]} == 0 && ${#process_windows[@]} == 1)); then
-    readonly window_id="${process_windows[0]}"
+}
+
+wait_for_browser_start() {
+    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    local status
+    while true; do
+        window_ambiguous=0
+        if find_single_process && find_single_window; then
+            return 0
+        else
+            status=$?
+        fi
+        ((window_ambiguous == 0)) || return 2
+        ((status != 2)) || return 2
+        ((SECONDS < deadline)) || return 1
+        sleep "$POLL_DELAY_SECONDS"
+    done
+}
+
+if wait_for_browser_start; then
+    :
 else
-    fail ambiguous-window
+    status=$?
+    if ((status == 2)); then
+        fail ambiguous-window
+    fi
+    fail browser-start-timeout
 fi
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool set_desktop_for_window "$window_id" 1 || fail workspace-move

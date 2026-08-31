@@ -174,6 +174,7 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             status, body, _ = self.request(server, f"{BROWSER_INDEX_PATH}?q=asterinas")
             self.assertEqual(status, 200)
             self.assertEqual(body, BROWSER_SEARCH)
+            self.assertEqual(self.request(server, "/favicon.ico")[0], 404)
             for invalid_query in ("?q=asterinas&q=again", "?other=asterinas", "?q="):
                 with self.subTest(query=invalid_query):
                     self.assertEqual(

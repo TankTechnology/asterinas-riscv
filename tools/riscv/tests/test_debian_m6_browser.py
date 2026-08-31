@@ -151,6 +151,7 @@ class DebianDesktopM6GuestEvidenceTests(unittest.TestCase):
         state = self.directory / f"state-{suffix}"
         typed = self.directory / f"typed-{suffix}"
         actions = self.directory / f"actions-{suffix}"
+        search_seen = self.directory / f"search-seen-{suffix}"
         console = self.directory / f"console-{suffix}"
         console.write_text("", encoding="utf-8")
         proc_root = self.directory / f"proc-{suffix}"
@@ -169,6 +170,11 @@ printf '%s\n' "$*" >>"$ASTERINAS_M6_ACTIONS"
 case "$1" in
   search)
     [ "$*" = 'search --classname ^netsurf-gtk$' ] || exit 10
+    if [ "$ASTERINAS_M6_XDOTOOL_MODE" = window-pending ] && \
+       [ ! -f "$ASTERINAS_M6_SEARCH_SEEN" ]; then
+      : >"$ASTERINAS_M6_SEARCH_SEEN"
+      exit 1
+    fi
     if [ "$ASTERINAS_M6_XDOTOOL_MODE" = duplicate ] || \
        [ "$ASTERINAS_M6_XDOTOOL_MODE" = nested ] || \
        [ "$ASTERINAS_M6_XDOTOOL_MODE" = auxiliary ]; then
@@ -228,8 +234,29 @@ esac
             ASTERINAS_M6_STATE=str(state),
             ASTERINAS_M6_TYPED=str(typed),
             ASTERINAS_M6_ACTIONS=str(actions),
+            ASTERINAS_M6_SEARCH_SEEN=str(search_seen),
         )
         return environment, console, typed
+
+    def test_guest_evidence_retries_until_browser_window_is_visible(self) -> None:
+        environment, console, _ = self._fake_environment(
+            javascript_result="pass",
+            xdotool_mode="window-pending",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+        )
 
     def test_guest_evidence_reports_limited_javascript_and_exact_local_url(
         self,

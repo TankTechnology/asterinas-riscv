@@ -121,6 +121,21 @@ require_single_browser() {
     [[ "${BASH_REMATCH[1]}" == "$process_id" ]] || fail window-process
 }
 
+require_tracked_browser() {
+    local window_process
+
+    [[ "$window_id" =~ ^[1-9][0-9]*$ ]] || fail browser-exit
+    window_process="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" \
+            xprop -id "$window_id" _NET_WM_PID
+    )" || fail browser-exit
+    [[ "$window_process" =~ ^_NET_WM_PID\(CARDINAL\)[[:space:]]*=[[:space:]]*([1-9][0-9]*)$ ]] ||
+        fail browser-exit
+    [[ "${BASH_REMATCH[1]}" == "$process_id" ]] || fail browser-exit
+    timeout "$COMMAND_TIMEOUT_SECONDS" \
+        xdotool getwindowname "$window_id" >/dev/null || fail browser-exit
+}
+
 wait_for_title() {
     local expected="$1"
 
@@ -186,13 +201,53 @@ wait_for_title "Second - Asterinas Browser Quality"
 emit "DEBIAN_BROWSER_M8_NAVIGATION second=loaded back=loaded forward=loaded"
 
 type_address "$DOWNLOAD_URL"
-save_output="$(
+download_prompt=""
+while [[ -z "$download_prompt" ]]; do
+    active_window="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" xdotool getactivewindow
+    )" || fail download-dialog
+    [[ "$active_window" =~ ^[1-9][0-9]*$ ]] || fail download-dialog
+    if [[ "$active_window" != "$window_id" ]]; then
+        download_prompt="$active_window"
+        break
+    fi
+    check_deadline download-dialog
+    sleep "$POLL_DELAY_SECONDS"
+done
+download_prompt_process="$(
     timeout "$COMMAND_TIMEOUT_SECONDS" \
-        xdotool search --onlyvisible --name '^Save File$'
+        xprop -id "$download_prompt" _NET_WM_PID
 )" || fail download-dialog
-mapfile -t save_windows <<<"$save_output"
-((${#save_windows[@]} == 1)) || fail download-dialog
-[[ "${save_windows[0]}" =~ ^[1-9][0-9]*$ ]] || fail download-dialog
+[[ "$download_prompt_process" =~ ^_NET_WM_PID\(CARDINAL\)[[:space:]]*=[[:space:]]*([1-9][0-9]*)$ ]] ||
+    fail download-dialog
+[[ "${BASH_REMATCH[1]}" == "$process_id" ]] || fail download-dialog
+# NetSurf first presents its own three-button "Download file?" window. Select
+# the rightmost "Save as" action before waiting for GTK's file chooser.
+timeout "$COMMAND_TIMEOUT_SECONDS" \
+    xdotool mousemove --window "$download_prompt" 390 95 click 1 ||
+    fail download-dialog
+save_windows=()
+while true; do
+    save_output=""
+    if save_output="$(
+        timeout "$COMMAND_TIMEOUT_SECONDS" \
+            # GTK themes/locales may append punctuation or a format hint to
+            # the chooser title. Restrict by the stable prefix, then verify
+            # the window's PID below before interacting with it.
+            xdotool search --onlyvisible --name '^Save file as'
+    )"; then
+        mapfile -t save_windows <<<"$save_output"
+        if ((${#save_windows[@]} > 1)); then
+            fail download-dialog
+        fi
+        if ((${#save_windows[@]} == 1)) &&
+            [[ "${save_windows[0]}" =~ ^[1-9][0-9]*$ ]]; then
+            break
+        fi
+    fi
+    check_deadline download-dialog
+    sleep "$POLL_DELAY_SECONDS"
+done
 timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool windowactivate --sync "${save_windows[0]}" || fail download-dialog
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key ctrl+a || fail download-path-focus
@@ -200,24 +255,47 @@ timeout "$COMMAND_TIMEOUT_SECONDS" \
     xdotool type --delay 0 -- "$DOWNLOAD" || fail download-path-type
 download_owned=1
 timeout "$COMMAND_TIMEOUT_SECONDS" xdotool key Return || fail download-accept
-while [[ ! -e "$DOWNLOAD" ]]; do
+download_last_size=""
+download_stable_since="$SECONDS"
+while true; do
+    if [[ ! -e "$DOWNLOAD" ]]; then
+        check_deadline download-timeout
+        sleep "$POLL_DELAY_SECONDS"
+        continue
+    fi
+    [[ -f "$DOWNLOAD" && ! -L "$DOWNLOAD" ]] || fail unsafe-download
+    download_size="$(stat -c %s -- "$DOWNLOAD")" || fail download-stat
+    if [[ "$download_size" == "$DOWNLOAD_SIZE" ]]; then
+        # Wait one stable poll before hashing so a producer that has just
+        # extended the file cannot be observed between its final write and
+        # close.
+        if [[ "$download_size" == "$download_last_size" ]]; then
+            download_sha256="$(sha256sum -- "$DOWNLOAD")" || fail download-hash
+            download_sha256="${download_sha256%% *}"
+            [[ "$download_sha256" == "$DOWNLOAD_SHA256" ]] || fail download-mismatch
+            break
+        fi
+    elif [[ "$download_size" -gt "$DOWNLOAD_SIZE" ]]; then
+        fail download-mismatch
+    fi
+    if [[ "$download_size" == "$download_last_size" ]]; then
+        ((SECONDS - download_stable_since >= 3)) && fail download-mismatch
+    else
+        download_last_size="$download_size"
+        download_stable_since="$SECONDS"
+    fi
     check_deadline download-timeout
     sleep "$POLL_DELAY_SECONDS"
 done
-[[ -f "$DOWNLOAD" && ! -L "$DOWNLOAD" ]] || fail unsafe-download
-download_size="$(stat -c %s -- "$DOWNLOAD")" || fail download-stat
-download_sha256="$(sha256sum -- "$DOWNLOAD")" || fail download-hash
-download_sha256="${download_sha256%% *}"
-if [[ "$download_size" != "$DOWNLOAD_SIZE" ||
-    "$download_sha256" != "$DOWNLOAD_SHA256" ]]; then
-    fail download-mismatch
-fi
 emit "DEBIAN_BROWSER_M8_DOWNLOAD bytes=$DOWNLOAD_SIZE sha256=$DOWNLOAD_SHA256"
 
 check_deadline soak-timeout
 remaining_seconds=$((DEADLINE - SECONDS))
 timeout "$remaining_seconds" sleep "$SOAK_SECONDS" || fail soak-timeout
-require_single_browser
+# NetSurf opens a separate Downloads manager after a successful save. Keep
+# validating the original page window without rejecting that legitimate
+# auxiliary window as an ambiguous browser process.
+require_tracked_browser
 emit "DEBIAN_BROWSER_M8_SOAK seconds=120 process=alive"
 
 capture_owned=1

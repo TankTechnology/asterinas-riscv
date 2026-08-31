@@ -97,6 +97,21 @@ class DebianDesktopM8BrowserQualityGateTests(unittest.TestCase):
         assert capture is not None
         self.assertEqual(int(capture.group(1)), len(b"gzip-xwd"))
 
+    def test_classifier_accepts_tty_extra_carriage_return(self) -> None:
+        capture_line = (
+            f"DEBIAN_BROWSER_M8_CAPTURE bytes=8 "
+            f"sha256={hashlib.sha256(b'gzip-xwd').hexdigest()}\n"
+        ).encode()
+        transcript = _m8_transcript().replace(
+            capture_line, capture_line[:-1] + b"\r\r\n"
+        )
+
+        result = classify_desktop_m8_browser_quality(
+            transcript, expected_debian_release="13.6"
+        )
+
+        self.assertTrue(result.passed, result.reason)
+
     def test_classifier_rejects_invalid_m8_evidence(self) -> None:
         valid = _m8_transcript()
         fixture = DESKTOP_M8_FIXED_MILESTONES[0] + b"\n"
@@ -396,6 +411,7 @@ class DebianDesktopM8BrowserQualityGuestTests(unittest.TestCase):
                 "download_source",
                 "gzip_log",
                 "soak_done",
+                "save_search_seen",
                 "state",
                 "typed",
                 "upload",
@@ -427,7 +443,7 @@ printf '777\n'
             "xprop",
             """#!/bin/bash
 set -eu
-[[ "$*" == '-id 42 _NET_WM_PID' ]] || exit 9
+[[ "$*" == '-id 42 _NET_WM_PID' || "$*" == '-id 73 _NET_WM_PID' ]] || exit 9
 printf '_NET_WM_PID(CARDINAL) = 777\n'
 """,
         )
@@ -442,16 +458,33 @@ case "$1" in
         if [[ "$*" == 'search --onlyvisible --classname ^netsurf-gtk$' ]]; then
             if [[ "$ASTERINAS_M8_MODE" == ambiguous-window ]]; then
                 printf '42\n43\n'
+            elif [[ "$ASTERINAS_M8_MODE" == download-manager-window &&
+                "$(cat "$ASTERINAS_M8_STATE")" == 5 ]]; then
+                printf '42\n85\n'
             else
                 printf '42\n'
             fi
-        elif [[ "$*" == 'search --onlyvisible --name ^Save File$' ]]; then
+        elif [[ "$*" == 'search --onlyvisible --name ^Save file as' ]]; then
+            if [[ "$ASTERINAS_M8_MODE" == save-pending &&
+                ! -e "$ASTERINAS_M8_SAVE_SEARCH_SEEN" ]]; then
+                : >"$ASTERINAS_M8_SAVE_SEARCH_SEEN"
+                exit 15
+            fi
+            [[ "$(cat "$ASTERINAS_M8_STATE")" == 5 ]] || exit 15
             printf '84\n'
         else
             exit 10
         fi
         ;;
+    getactivewindow)
+        [[ "$(cat "$ASTERINAS_M8_STATE")" == 4 ]] || exit 16
+        printf '73\n'
+        ;;
     getwindowname)
+        if [[ "$ASTERINAS_M8_MODE" == browser-exit &&
+            -e "$ASTERINAS_M8_SOAK_DONE" ]]; then
+            exit 1
+        fi
         phase="$(cat "$ASTERINAS_M8_STATE")"
         if [[ "$ASTERINAS_M8_MODE" == title-timeout && "$phase" == 1 ]]; then
             printf 'Loading - NetSurf\n'
@@ -479,6 +512,9 @@ case "$1" in
             'mousemove --window 42 90 284 click 1')
                 printf '3' >"$ASTERINAS_M8_STATE"
                 ;;
+            'mousemove --window 73 390 95 click 1')
+                printf '5' >"$ASTERINAS_M8_STATE"
+                ;;
             *) exit 11 ;;
         esac
         ;;
@@ -488,10 +524,16 @@ case "$1" in
                 value="$(cat "$ASTERINAS_M8_TYPED")"
                 case "$value" in
                     */browser-quality/index.html) printf '1' >"$ASTERINAS_M8_STATE" ;;
-                    */browser-quality/download.bin) : ;;
+                    */browser-quality/download.bin) printf '4' >"$ASTERINAS_M8_STATE" ;;
                     "$ASTERINAS_M8_DOWNLOAD")
                         if [[ "$ASTERINAS_M8_MODE" == download-mismatch ]]; then
                             printf 'wrong-download' >"$ASTERINAS_M8_DOWNLOAD"
+                        elif [[ "$ASTERINAS_M8_MODE" == download-pending ]]; then
+                            head -c 131072 "$ASTERINAS_M8_DOWNLOAD_SOURCE" >"$ASTERINAS_M8_DOWNLOAD"
+                            (
+                                sleep 1
+                                tail -c +131073 "$ASTERINAS_M8_DOWNLOAD_SOURCE" >>"$ASTERINAS_M8_DOWNLOAD"
+                            ) &
                         else
                             cp -- "$ASTERINAS_M8_DOWNLOAD_SOURCE" "$ASTERINAS_M8_DOWNLOAD"
                         fi
@@ -583,12 +625,40 @@ done
             ASTERINAS_M8_GZIP_LOG=str(paths["gzip_log"]),
             ASTERINAS_M8_MODE=mode,
             ASTERINAS_M8_SOAK_DONE=str(paths["soak_done"]),
+            ASTERINAS_M8_SAVE_SEARCH_SEEN=str(paths["save_search_seen"]),
             ASTERINAS_M8_STATE=str(paths["state"]),
             ASTERINAS_M8_TYPED=str(paths["typed"]),
             ASTERINAS_M8_UPLOAD=str(paths["upload"]),
             ASTERINAS_M8_XWD_LOG=str(paths["xwd_log"]),
         )
         return environment, paths
+
+    def test_guest_retries_until_save_file_window_is_visible(self) -> None:
+        result, paths = self._run("save-pending")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            paths["console"].read_text(encoding="utf-8").splitlines()[-1],
+            READY_MARKER,
+        )
+
+    def test_guest_waits_for_download_to_finish_before_hashing(self) -> None:
+        result, paths = self._run("download-pending")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            DOWNLOAD_MARKER,
+            paths["console"].read_text(encoding="utf-8").splitlines(),
+        )
+
+    def test_guest_allows_netsurf_download_manager_during_soak(self) -> None:
+        result, paths = self._run("download-manager-window")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            READY_MARKER,
+            paths["console"].read_text(encoding="utf-8").splitlines(),
+        )
 
     def _run(
         self, mode: str = "normal"
@@ -641,7 +711,9 @@ done
             "key ctrl+l",
             f"type --delay 0 -- {FIXTURE_BASE}/browser-quality/download.bin",
             "key Return",
-            "search --onlyvisible --name ^Save File$",
+            "getactivewindow",
+            "mousemove --window 73 390 95 click 1",
+            "search --onlyvisible --name ^Save file as",
             "windowactivate --sync 84",
             "key ctrl+a",
             f"type --delay 0 -- {paths['download']}",
@@ -660,7 +732,7 @@ done
         self.assertEqual(paths["gzip_log"].read_text().splitlines(), ["-n"])
         self.assertEqual(len(paths["curl_log"].read_text().splitlines()), 1)
         self.assertEqual(
-            actions.count("search --onlyvisible --classname ^netsurf-gtk$"), 7
+            actions.count("search --onlyvisible --classname ^netsurf-gtk$"), 6
         )
 
     def test_guest_reports_one_stable_failure_without_ready(self) -> None:
