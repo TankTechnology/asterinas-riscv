@@ -17,6 +17,7 @@ readonly TRUST_STATIC_LOG=/usr/share/asterinas/browser-web-trust-static.log
 readonly TIMELINE_LOG=/home/asterinas/browser-web-timeline.log
 readonly GATE_STDERR=/run/asterinas-browser-web-gate.stderr
 readonly USER_ID=1000
+readonly STARTUP_SAMPLE_INTERVAL_SECONDS=15
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_WEB_FAIL reason=$1"; exit 1; }
@@ -144,6 +145,19 @@ validate_dns_and_tls() {
     done
 }
 
+sample_firefox_startup() {
+    local pid="$1" status state threads wchan comm
+    [[ -r "$PROC_ROOT/$pid/status" ]] || return 0
+    status="$PROC_ROOT/$pid/status"
+    state="$(sed -n 's/^State:[[:space:]]*//p' "$status" 2>/dev/null | tr ' ' '_')"
+    threads="$(sed -n 's/^Threads:[[:space:]]*//p' "$status" 2>/dev/null)"
+    comm="$(cat "$PROC_ROOT/$pid/comm" 2>/dev/null || true)"
+    wchan="$(cat "$PROC_ROOT/$pid/wchan" 2>/dev/null || true)"
+    printf 'BROWSER_WEB_STARTUP_SAMPLE pid=%s comm=%s state=%s threads=%s wchan=%s\n' \
+        "$pid" "${comm:-unknown}" "${state:-unknown}" "${threads:-unknown}" \
+        "${wchan:-unknown}" >>"$FIREFOX_STDERR"
+}
+
 validate_firefox_logs() {
     local log
     for log in "$FIREFOX_STDERR" /home/asterinas/firefox-web-mozilla.log; do
@@ -170,8 +184,13 @@ emit "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verifi
 emit "DEBIAN_BROWSER_WEB_TRUST_STATIC xul_ckbi=audited ca_bundle=audited package_closure=verified"
 
 browser_pid=""
+next_startup_sample=$SECONDS
 while ((SECONDS < deadline)); do
     browser_pid="$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null || true)"
+    if [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] && ((SECONDS >= next_startup_sample)); then
+        sample_firefox_startup "$browser_pid"
+        next_startup_sample=$((SECONDS + STARTUP_SAMPLE_INTERVAL_SECONDS))
+    fi
     if [[ "$browser_pid" =~ ^[1-9][0-9]*$ ]] &&
         [[ "$(cat "$PROC_ROOT/$browser_pid/comm" 2>/dev/null)" == firefox-esr ]] &&
         [[ "$(cat "$PROFILE/MarionetteActivePort" 2>/dev/null)" == 2828 ]]; then

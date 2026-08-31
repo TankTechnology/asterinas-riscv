@@ -509,6 +509,15 @@ class BrowserWebContractTests(unittest.TestCase):
             with self.assertRaises(GateFailure):
                 validate_web_evidence({**evidence, "timeline.log": timeline})
 
+    def test_online_evidence_records_bounded_firefox_startup_state(self) -> None:
+        evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
+        self.assertIn("BROWSER_WEB_STARTUP_SAMPLE", evidence)
+        self.assertIn('"$PROC_ROOT/$pid/status"', evidence)
+        self.assertIn('"$PROC_ROOT/$pid/wchan"', evidence)
+        self.assertIn("Threads:", evidence)
+        self.assertIn("STARTUP_SAMPLE_INTERVAL_SECONDS", evidence)
+        self.assertNotIn("while :", evidence)
+
     def test_build_time_cache_checker_is_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         for command in (
