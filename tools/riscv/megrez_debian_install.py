@@ -275,7 +275,8 @@ def _board_command(
 ) -> list[str]:
     return [
         sys.executable,
-        str(repository / "tools/riscv/megrez_board_session.py"),
+        "-m",
+        "tools.riscv.megrez_board_session",
         device,
         "--booti",
         KERNEL_FILENAME,

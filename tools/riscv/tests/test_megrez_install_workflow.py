@@ -151,6 +151,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.assertEqual(events[1][0], "server-enter")
         self.assertEqual(events[1][-1], self.tftp)
         command = events[2][1]
+        self.assertEqual(command[1:3], ("-m", "tools.riscv.megrez_board_session"))
         self.assertIn("--require-recovery", command)
         self.assertEqual(command[command.index("--load-transport") + 1], "ymodem")
         self.assertIn("--ymodem-directory", command)
