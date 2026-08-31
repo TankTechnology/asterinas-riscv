@@ -2,8 +2,6 @@
 Description=Asterinas Debian online Firefox workload
 Requires=asterinas-desktop-m5.service asterinas-desktop-m5-network.service
 After=asterinas-desktop-m5.service asterinas-desktop-m5-network.service
-Requires=asterinas-browser-web-timeline-basic.service
-After=asterinas-browser-web-timeline-basic.service
 
 [Service]
 Type=simple

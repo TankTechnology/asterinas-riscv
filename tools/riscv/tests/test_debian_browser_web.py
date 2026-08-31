@@ -386,6 +386,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("CapabilityBoundingSet=\n", unit)
         self.assertIn("NoNewPrivileges=yes", unit)
         self.assertNotIn("PrivateNetwork", unit)
+        self.assertNotIn("Requires=asterinas-browser-web-timeline-basic.service", unit)
+        self.assertNotIn("After=asterinas-browser-web-timeline-basic.service", unit)
         self.assertNotIn("CAP_SYS_ADMIN", unit)
         self.assertNotIn("--offline", launcher)
         self.assertNotIn("--no-sandbox", launcher)
