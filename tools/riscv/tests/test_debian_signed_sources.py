@@ -45,12 +45,14 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(profile.root_label, "ASTER_BROWSERM5")
         self.assertLessEqual(len(profile.root_label.encode("ascii")), 16)
         self.assertIn("firefox-esr", profile.requested_packages)
+        self.assertIn("matchbox-window-manager", profile.requested_packages)
         self.assertIn("iproute2", profile.requested_packages)
         self.assertIn("iputils-ping", profile.requested_packages)
         self.assertIn("iproute2", profile.identity_packages)
         self.assertIn("iputils-ping", profile.identity_packages)
         self.assertIn("curl", profile.requested_packages)
         self.assertIn("curl", profile.identity_packages)
+        self.assertIn("matchbox-window-manager", profile.identity_packages)
         self.assertNotIn("netsurf-gtk", profile.requested_packages)
         self.assertNotIn("xdotool", profile.requested_packages)
 
@@ -394,6 +396,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(result.returncode, 0, result.stderr)
         packages = result.stdout.splitlines()
         self.assertIn("firefox-esr", packages)
+        self.assertIn("matchbox-window-manager", packages)
         self.assertIn("curl", packages)
         self.assertIn("iproute2", packages)
         self.assertIn("iputils-ping", packages)
@@ -486,6 +489,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 "etc/X11/xorg.conf.d",
                 "home",
                 "usr/bin",
+                "usr/lib/firefox-esr",
                 "var/lib/dbus",
                 "var/lib/dpkg",
                 "var/cache/apt/archives",
@@ -495,6 +499,24 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 "var/tmp",
             ):
                 (stage / relative).mkdir(parents=True, exist_ok=True)
+            (stage / "var/lib/dpkg/status").write_text(
+                "Package: firefox-esr\n"
+                "Status: install ok installed\n\n"
+            )
+            firefox_binary = stage / "usr/lib/firefox-esr/firefox-esr"
+            firefox_binary.write_bytes(b"synthetic RISC-V Firefox binary\n")
+            firefox_binary.chmod(0o755)
+            (stage / "usr/bin/firefox-esr").symlink_to(
+                "../lib/firefox-esr/firefox-esr"
+            )
+            fake_bin = work / "fake-bin"
+            fake_bin.mkdir()
+            fake_file = fake_bin / "file"
+            fake_file.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' 'ELF 64-bit LSB pie executable, RISC-V, version 1'\n"
+            )
+            fake_file.chmod(0o755)
             (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
             (stage / "etc/group").write_text("root:x:0:\n")
             (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
@@ -510,6 +532,10 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                     str(work),
                 ],
                 cwd=repository,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                },
                 check=False,
                 capture_output=True,
                 text=True,

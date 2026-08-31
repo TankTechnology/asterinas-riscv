@@ -269,6 +269,47 @@ Chinese text as missing-glyph boxes. These are user-space/browser and remote
 service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
 VirtIO input, Xorg, or framebuffer failure.
 
+### Firefox M5 rootfs and bounded startup probe
+
+Firefox is a separate schema-6 profile; it does not replace the installed
+NetSurf `desktop-m5-network` image. Build it only inside the pinned container:
+
+```bash
+docker run --rm --privileged --network=host \
+  -v /dev:/dev \
+  -v "$PWD:/root/asterinas" \
+  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  bash -lc 'cd /root/asterinas && tools/riscv/debian/rootfs/build_rootfs.sh --profile browser-m5'
+```
+
+The builder authenticates both Trixie and Trixie-security, excludes
+`netsurf-gtk`, and runs `browser_m5_rootfs_check.py` before image publication.
+The staged root must emit exactly
+`FIREFOX_M5_ROOTFS_PASS firefox=riscv64 sandbox=normal assets=local`.
+
+Before the full Marionette content gate, run the 600-second startup-only gate:
+
+```bash
+make test_riscv_debian_browser_m5_startup_probe \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/browser-m5/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/browser-m5/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/browser-m5/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/browser-m5/rootfs/source-metadata/package-checksums" \
+  DEBIAN_BROWSER_M5_STARTUP_PROBE_OUTPUT="$PWD/target/debian-riscv/browser-m5/startup-probe"
+```
+
+This probe waits only for Firefox's process, Xorg fbdev, evdev input,
+loopback Marionette, sandbox state, and a visible window. It publishes
+`browser-m5-startup.serial.log` and `result.json`, then exits QEMU; it never
+claims JavaScript or media success. Only when this result is `passed: true`
+should the longer `test_riscv_debian_browser_m5_qemu_gate` run the offline
+DOM/media gate. A timeout is a classified startup failure, not a reason to
+wait for a physical-board reset.
+
 ### Megrez static-RJ45 browser gate
 
 The physical browser milestone reuses the signed `desktop-m5-network` root

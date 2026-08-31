@@ -45,7 +45,14 @@ BROWSER_M5_MILESTONES = (
     "DEBIAN_BROWSER_M5_READY user=asterinas display=:0",
 )
 BROWSER_M5_QEMU_MILESTONES = (*DESKTOP_M5_QEMU_MILESTONES, *BROWSER_M5_MILESTONES)
-BROWSER_M5_QEMU_BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
+# The network helper's 120-second default is sufficient for Firefox startup;
+# keep the browser-specific kernel command line free of the desktop diagnostic
+# timeout override. The full browser gate has its own 7200-second host budget.
+BROWSER_M5_QEMU_BOOTARGS = " ".join(
+    token
+    for token in DESKTOP_M5_QEMU_BOOTARGS.split()
+    if not token.startswith("systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=")
+)
 _NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
 _NETNS_FAILURE = b"DEBIAN_BROWSER_M5_NETNS_FAIL reason="
 _BROWSER_FAILURE = b"DEBIAN_BROWSER_M5_FAIL reason="

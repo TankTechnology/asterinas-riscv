@@ -53,6 +53,7 @@ WORK_DIR=""
 PROFILE="minimal-m1"
 ROOT_LABEL="ASTER_DEBIANROOT"
 ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
+declare -a CHROOT_APT_ENV=()
 declare -a INSTALL_PACKAGES=(
     bash
     ca-certificates
@@ -491,26 +492,39 @@ install_rootfs_packages() {
     cp -L -- /etc/resolv.conf "$stage/etc/resolv.conf"
     mkdir -p -- "$stage/etc/ssl/certs"
     cp -L -- /etc/ssl/certs/ca-certificates.crt "$bootstrap_ca"
-    chroot "$stage" /usr/bin/env \
-        DEBIAN_FRONTEND=noninteractive \
-        SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-        apt-get -o \
+    chroot_apt_environment
+    chroot "$stage" /usr/bin/env "${CHROOT_APT_ENV[@]}" apt-get -o \
         Acquire::https::CaInfo=/etc/ssl/certs/asterinas-bootstrap-ca.crt update
 
     log "phase 5/8: installing explicit minbase additions"
-    chroot "$stage" /usr/bin/env \
-        DEBIAN_FRONTEND=noninteractive \
-        SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+    chroot "$stage" /usr/bin/env "${CHROOT_APT_ENV[@]}" \
         apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"
     rm -f -- "$bootstrap_ca"
-    chroot "$stage" /usr/bin/env \
-        DEBIAN_FRONTEND=noninteractive \
+    chroot "$stage" /usr/bin/env "${CHROOT_APT_ENV[@]}" \
         apt-get -y --reinstall --download-only install "${INSTALL_PACKAGES[@]}"
 
     find "$stage/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' \
         -exec cp -- {} "$WORK_DIR/debs/" \;
     compgen -G "$WORK_DIR/debs/*.deb" >/dev/null ||
         die "apt retained no downloaded package archives"
+}
+
+chroot_apt_environment() {
+    local variable
+
+    CHROOT_APT_ENV=(
+        DEBIAN_FRONTEND=noninteractive
+        SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"
+    )
+    # Keep proxy configuration ephemeral and scoped to the apt subprocess. The
+    # rootfs must not retain host credentials or network settings, but callers
+    # using a local Clash/mihomo proxy should not fall back to an unusably slow
+    # direct connection from inside the RISC-V chroot.
+    for variable in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+        if [[ -n "${!variable-}" ]]; then
+            CHROOT_APT_ENV+=("$variable=${!variable}")
+        fi
+    done
 }
 
 audit_packages() {
@@ -857,9 +871,11 @@ copy_into_content_cache() {
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
+    local repository_root
     local startup_cache_marker
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
@@ -903,6 +919,18 @@ EOF
         configure_desktop_m5_network "$stage" m5 false
     fi
     : >"$stage/etc/machine-id"
+    if [[ "$PROFILE" == browser-m5 ]]; then
+        local browser_static_result
+        browser_static_result="$(PYTHONPATH="$repository_root" python3 \
+            "$script_directory/browser_m5_rootfs_check.py" "$stage")" ||
+            die "Firefox M5 rootfs static checker failed"
+        [[ "$browser_static_result" == \
+            'FIREFOX_M5_ROOTFS_PASS firefox=riscv64 sandbox=normal assets=local' ]] ||
+            die "Firefox M5 rootfs static checker did not emit its exact PASS"
+        printf '%s\n' "$browser_static_result" \
+            >"$stage/usr/share/asterinas/browser-m5-rootfs-static.log"
+        chmod 0644 -- "$stage/usr/share/asterinas/browser-m5-rootfs-static.log"
+    fi
     if [[ "$PROFILE" == browser-web ]]; then
         printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
         python3 "$script_directory/browser_web_online_rootfs_check.py" "$stage" \
@@ -1312,6 +1340,8 @@ EOF
             "$stage/usr/lib/asterinas/browser-m5-window-observer"
         install -D -m 0755 -- "$script_directory/browser_m5_network_observer.sh" \
             "$stage/usr/lib/asterinas/browser-m5-network-observer"
+        install -D -m 0755 -- "$script_directory/browser_m5_startup_evidence.sh" \
+            "$stage/usr/lib/asterinas/browser-m5-startup-evidence"
         install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
         cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
@@ -1363,9 +1393,25 @@ RemainAfterExit=yes
 [Install]
 WantedBy=graphical.target
 EOF
+        cat >"$stage/etc/systemd/system/asterinas-browser-m5-startup.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M5 Firefox startup readiness probe
+Requires=asterinas-browser-m5.service
+After=asterinas-browser-m5.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/browser-m5-startup-evidence
+TimeoutStartSec=660s
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/asterinas-browser-m5.service" \
-            "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
+            "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service" \
+            "$stage/etc/systemd/system/asterinas-browser-m5-startup.service"
         fi
     fi
 
@@ -1421,7 +1467,7 @@ EOF
     local evidence_service_environment=""
     local evidence_service_timeout=""
     if [[ "$generation" == m5 && "$browser_mode" == offline ]]; then
-        evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
+        evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service asterinas-browser-m5-startup.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service asterinas-browser-m5-startup.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
         evidence_service_namespace='PrivateNetwork=yes'
         evidence_service_environment='Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=4500'
         evidence_service_timeout='TimeoutStartSec=4800s'
@@ -1460,6 +1506,8 @@ EOF
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5.service"
         ln -s -- ../asterinas-browser-m5-network-observer.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
+        ln -s -- ../asterinas-browser-m5-startup.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-startup.service"
     elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
