@@ -525,6 +525,10 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("minor_faults=%s major_faults=%s", evidence)
         self.assertIn("utime_ticks=%s stime_ticks=%s", evidence)
         self.assertIn("rss_kib=%s fds=%s", evidence)
+        startup_sampler = evidence.split("sample_firefox_startup()", 1)[1].split(
+            "validate_firefox_logs()", 1
+        )[0]
+        self.assertIn('emit "$line"', startup_sampler)
         self.assertIn("STARTUP_SAMPLE_INTERVAL_SECONDS", evidence)
         self.assertIn("/dev/tcp/127.0.0.1/2828", evidence)
         self.assertIn("marionette_listener=%s", evidence)

@@ -146,7 +146,7 @@ validate_dns_and_tls() {
 }
 
 sample_firefox_startup() {
-    local pid="$1" status state threads wchan comm metrics
+    local pid="$1" status state threads wchan comm metrics line
     local minor_faults major_faults utime_ticks stime_ticks rss_kib fds
     local marionette_listener=closed
     [[ -r "$PROC_ROOT/$pid/status" ]] || return 0
@@ -164,11 +164,13 @@ sample_firefox_startup() {
     elif timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2828' 2>/dev/null; then
         marionette_listener=listening
     fi
-    printf 'BROWSER_WEB_STARTUP_SAMPLE pid=%s comm=%s state=%s threads=%s wchan=%s minor_faults=%s major_faults=%s utime_ticks=%s stime_ticks=%s rss_kib=%s fds=%s marionette_listener=%s\n' \
+    printf -v line 'BROWSER_WEB_STARTUP_SAMPLE pid=%s comm=%s state=%s threads=%s wchan=%s minor_faults=%s major_faults=%s utime_ticks=%s stime_ticks=%s rss_kib=%s fds=%s marionette_listener=%s' \
         "$pid" "${comm:-unknown}" "${state:-unknown}" "${threads:-unknown}" \
         "${wchan:-unknown}" "${minor_faults:-unknown}" "${major_faults:-unknown}" \
         "${utime_ticks:-unknown}" "${stime_ticks:-unknown}" "${rss_kib:-unknown}" \
-        "${fds:-unknown}" "$marionette_listener" >>"$FIREFOX_STDERR"
+        "${fds:-unknown}" "$marionette_listener"
+    printf '%s\n' "$line" >>"$FIREFOX_STDERR"
+    emit "$line"
 }
 
 validate_firefox_logs() {
