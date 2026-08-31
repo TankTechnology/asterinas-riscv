@@ -178,8 +178,19 @@ impl TimerfdFile {
         let ticks = self.ticks.fetch_and(0, Ordering::Relaxed);
 
         if ticks == 0 {
+            // `Pollee` caches the result of `check_io_events`. A previous
+            // expiration may have cached `IN`; once the counter is observed
+            // empty, invalidate that cache or epoll will keep reporting a
+            // permanently-ready timerfd and userspace will spin on EAGAIN.
+            self.pollee.invalidate();
             return_errno_with_message!(Errno::EAGAIN, "the counter is zero");
         }
+
+        // Reading consumes the timerfd counter, so the cached readiness must
+        // be recomputed before the next poll. This is also safe if an expiry
+        // races with the read: invalidation is conservative and the next poll
+        // observes the current counter value.
+        self.pollee.invalidate();
 
         writer.write_fallible(&mut ticks.as_bytes().into())?;
 

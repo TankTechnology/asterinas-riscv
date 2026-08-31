@@ -4,7 +4,9 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include <time.h>
+#include <stdint.h>
 #include <unistd.h>
 
 FN_TEST(epoll_add_del)
@@ -51,6 +53,34 @@ FN_TEST(epoll_add_del)
 	TEST_SUCC(close(rfd));
 	TEST_SUCC(close(wfd));
 	TEST_SUCC(close(rfd2));
+}
+END_TEST()
+
+FN_TEST(timerfd_read_clears_epoll_readiness)
+{
+	int epfd, tfd;
+	struct epoll_event ev;
+	struct itimerspec timer = {
+		.it_value = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 },
+	};
+	uint64_t expirations;
+
+	tfd = TEST_SUCC(timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK));
+	epfd = TEST_SUCC(epoll_create1(0));
+	ev.events = EPOLLIN;
+	ev.data.fd = tfd;
+	TEST_SUCC(epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &ev));
+	TEST_RES(timerfd_settime(tfd, 0, &timer, NULL), _ret == 0);
+
+	TEST_RES(epoll_wait(epfd, &ev, 1, 1000), _ret == 1 &&
+						 ev.data.fd == tfd &&
+						 (ev.events & EPOLLIN));
+	TEST_RES(read(tfd, &expirations, sizeof(expirations)),
+			 _ret == sizeof(expirations) && expirations == 1);
+	TEST_RES(epoll_wait(epfd, &ev, 1, 0), _ret == 0);
+
+	TEST_SUCC(close(tfd));
+	TEST_SUCC(close(epfd));
 }
 END_TEST()
 
