@@ -846,6 +846,7 @@ generate_fontconfig_cache "$stage" "$3"
         for marker in (
             b"DEBIAN_BROWSER_WEB_FAIL reason=challenge",
             b"DEBIAN_NETWORK_M5_FAIL reason=qemu-https",
+            b"DEBIAN_ROOTFS_FAIL reason=root-discovery-timeout",
             *KERNEL_FATAL_MARKERS,
         ):
             with self.subTest(marker=marker):

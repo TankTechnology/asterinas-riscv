@@ -49,6 +49,7 @@ BROWSER_WEB_MILESTONES = (
 )
 _NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
+_ROOTFS_FAILURE = b"DEBIAN_ROOTFS_FAIL reason="
 KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
     b"Kernel panic - not syncing",
@@ -460,6 +461,8 @@ def classify_browser_web_qemu(
         return GateResult(False, "kernel fatal marker", None)
     if _NETWORK_FAILURE.lower() in clean:
         return GateResult(False, "network guest failure", None)
+    if _ROOTFS_FAILURE.lower() in clean:
+        return GateResult(False, "rootfs guest failure", None)
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
@@ -474,7 +477,11 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     ARTIFACT_PREFIX = "browser-web-qemu"
     MILESTONES = BROWSER_WEB_MILESTONES
     FAILURE_MARKER = _WEB_FAILURE
-    ADDITIONAL_FAILURE_MARKERS = (_NETWORK_FAILURE, *KERNEL_FATAL_MARKERS)
+    ADDITIONAL_FAILURE_MARKERS = (
+        _NETWORK_FAILURE,
+        _ROOTFS_FAILURE,
+        *KERNEL_FATAL_MARKERS,
+    )
     BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
 
     def __init__(self, config: GateConfig) -> None:

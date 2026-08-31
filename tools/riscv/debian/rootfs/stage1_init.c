@@ -75,6 +75,8 @@ static const unsigned char NETWORK_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM5";
 static const unsigned char BROWSER_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_BROWSERM5";
+static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_BROWSERWEB";
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -213,7 +215,8 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, APPLICATION_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL);
+           ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }
 
 static const char *discover_root(struct Stage1Ops *ops,
@@ -685,6 +688,15 @@ static int run_root_init_self_test(const char *case_name)
                                          ROOT_INIT_INTERACTIVE)) {
             return fail_self_test(case_name,
                                   "browser root label was not isolated");
+        }
+    } else if (strcmp(case_name, "systemd-browser-web-root-label") == 0) {
+        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
+        make_valid_superblock(superblock, BROWSER_WEB_ROOT_LABEL);
+        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
+            ext2_superblock_matches_mode(superblock,
+                                         ROOT_INIT_INTERACTIVE)) {
+            return fail_self_test(case_name,
+                                  "browser web root label was not isolated");
         }
     } else if (strcmp(case_name, "systemd-handoff-sequence") == 0) {
         struct MockContext context = {
