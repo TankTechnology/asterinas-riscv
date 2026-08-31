@@ -396,6 +396,8 @@ class BrowserWebContractTests(unittest.TestCase):
             "getent ahostsv4",
             "--proto '=https'",
             "--tlsv1.2",
+            "timeout 30 curl",
+            "for attempt in 1 2 3",
             "%{ssl_verify_result}",
             "Seccomp:[[:space:]]*",
             "NoNewPrivs:[[:space:]]+1",
@@ -460,7 +462,17 @@ class BrowserWebContractTests(unittest.TestCase):
         online_evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
         self.assertIn('DEBIAN_BROWSER_WEB_INTERFACES names=', online_evidence)
         self.assertNotIn('wc -l)" == 1', online_evidence)
-        self.assertIn('for path in /sys/class/net/*', online_evidence)
+        self.assertIn('ip -o link show', online_evidence)
+        self.assertIn('timeout 10 ip -o link show', online_evidence)
+        self.assertIn('while IFS= read -r line', online_evidence)
+        self.assertNotIn('/sys/class/net/*', online_evidence)
+        self.assertIn(
+            'ip -o -4 addr show dev "$primary_interface" scope global',
+            online_evidence,
+        )
+        self.assertIn('Asterinas does not currently implement RTM_GETROUTE', online_evidence)
+        self.assertNotIn('ip -4 route show', online_evidence)
+        self.assertNotIn('ip -4 address show |', online_evidence)
         self.assertNotIn('-printf \'%f\\n\'', online_evidence)
         self.assertIn('chmod 0600 "$TIMELINE"', timeline)
         self.assertIn('browser-web-timeline.log', builder)

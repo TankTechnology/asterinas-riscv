@@ -89,20 +89,31 @@ validate_child_security() {
 }
 
 validate_dns_and_tls() {
-    local hosts name ip line status effective verify interfaces
+    local hosts name ip line status effective verify interfaces link_output
+    local interface_count=0 primary_interface="" addresses
     grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
         fail dns-not-slirp-10.0.2.3
     interfaces=""
-    local path interface
-    for path in /sys/class/net/*; do
-        [[ -e "$path" ]] || continue
-        interface="${path##*/}"
-        [[ "$interface" == lo ]] || interfaces="$interfaces$interface,"
-    done
+    link_output="$(timeout 10 ip -o link show 2>/dev/null || true)"
+    local interface
+    while IFS= read -r line; do
+        interface="${line#*: }"
+        interface="${interface%%:*}"
+        [[ -n "$interface" ]] || continue
+        [[ "$interface" == lo ]] && continue
+        interface_count=$((interface_count + 1))
+        [[ -n "$primary_interface" ]] || primary_interface="$interface"
+        interfaces="$interfaces$interface,"
+    done <<<"$link_output"
     [[ -n "$interfaces" ]] || fail nic-count
     emit "DEBIAN_BROWSER_WEB_INTERFACES names=$interfaces"
-    ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' || fail nic-address
-    ip -4 route show default | grep -Eq '^default via 10\.0\.2\.2 dev ' || fail nic-default-route
+    [[ "$interface_count" == 1 ]] || fail nic-count
+    addresses="$(timeout 10 ip -o -4 addr show dev "$primary_interface" scope global 2>/dev/null || true)"
+    [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]10\.0\.2\.[0-9]+/ ]] ||
+        fail nic-address
+    # Asterinas does not currently implement RTM_GETROUTE. The DNS and HTTPS
+    # requests below are the route proof and avoid waiting on an unsupported
+    # netlink dump.
     for name in www.baidu.com www.bilibili.com; do
         hosts="$(getent ahostsv4 "$name")" || fail "dns-$name"
         ip="$(awk 'NR == 1 { print $1 }' <<<"$hosts")"
@@ -111,10 +122,18 @@ validate_dns_and_tls() {
         printf 'DNS host=%s address=%s\n' "$name" "$ip" >>"$CURL_LOG"
     done
     for name in https://www.baidu.com/ https://www.bilibili.com/; do
-        line="$(curl --proto '=https' --tlsv1.2 --fail --location --silent \
-            --show-error --max-time 120 --output /dev/null \
-            --write-out '%{http_code} %{url_effective} %{ssl_verify_result}' "$name")" ||
-            fail "curl-${name#https://}"
+        line=""
+        for attempt in 1 2 3; do
+            if line="$(timeout 30 curl --proto '=https' --tlsv1.2 --fail --location \
+                --silent --show-error --max-time 30 --output /dev/null \
+                --write-out '%{http_code} %{url_effective} %{ssl_verify_result}' \
+                "$name" 2>/run/asterinas-browser-web-curl.stderr)"; then
+                break
+            fi
+            line=""
+            ((attempt < 3)) && sleep 1
+        done
+        [[ -n "$line" ]] || fail "curl-${name#https://}"
         read -r status effective verify <<<"$line"
         [[ "$status" =~ ^(2|3)[0-9][0-9]$ && "$effective" == https://* && "$verify" == 0 ]] ||
             fail "curl-verification-${name#https://}"
