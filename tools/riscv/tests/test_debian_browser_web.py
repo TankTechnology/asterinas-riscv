@@ -329,7 +329,10 @@ class BrowserWebContractTests(unittest.TestCase):
             root = Path(directory)
             profile = get_profile("browser-web")
             names = sorted(set(profile.requested_packages + profile.identity_packages))
-            rows = [(name, "riscv64", "1") for name in names]
+            rows = [
+                (name, "all" if name == "ca-certificates" else "riscv64", "1")
+                for name in names
+            ]
             image = root / "image"
             image.write_bytes(b"image")
             package_lock = root / "packages.lock"

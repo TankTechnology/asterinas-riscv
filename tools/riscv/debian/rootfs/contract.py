@@ -35,6 +35,7 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _SUITE = "trixie"
 _DEBIAN_RELEASE_RE = re.compile(r"\A13\.(?:0|[1-9][0-9]*)\Z")
 _ARCHITECTURE = "riscv64"
+_ARCHITECTURE_INDEPENDENT = "all"
 _FILESYSTEM_TYPE = "ext2"
 _ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
 _FILESYSTEM_BLOCK_SIZE_BYTES = 4096
@@ -359,17 +360,8 @@ def validate_frozen_root(
 
     gate_versions = dict(manifest.gate_packages)
     for package_name in profile.identity_packages:
-        locked_versions = [
-            version
-            for name, architecture, version in rows
-            if name == package_name and architecture == _ARCHITECTURE
-        ]
-        if len(locked_versions) != 1:
-            raise ContractError(
-                f"gate package {package_name} must have exactly one "
-                f"{_ARCHITECTURE} lock row"
-            )
-        if gate_versions.get(package_name) != locked_versions[0]:
+        locked_version = _gate_package_version(rows, package_name)
+        if gate_versions.get(package_name) != locked_version:
             raise ContractError(
                 f"gate package {package_name} version does not match packages.lock"
             )
@@ -858,17 +850,27 @@ def _gate_versions(
 ) -> dict[str, str]:
     versions: dict[str, str] = {}
     for package_name in profile.identity_packages:
-        matches = [
-            version
-            for name, architecture, version in rows
-            if name == package_name and architecture == _ARCHITECTURE
-        ]
-        if len(matches) != 1:
-            raise ContractError(
-                f"gate package {package_name} must have exactly one {_ARCHITECTURE} lock row"
-            )
-        versions[package_name] = matches[0]
+        versions[package_name] = _gate_package_version(rows, package_name)
     return versions
+
+
+def _gate_package_version(
+    rows: Sequence[PackageLockRow], package_name: str
+) -> str:
+    """Return the unique gate version for a RISC-V or arch-independent package."""
+
+    matches = [
+        version
+        for name, architecture, version in rows
+        if name == package_name
+        and architecture in {_ARCHITECTURE, _ARCHITECTURE_INDEPENDENT}
+    ]
+    if len(matches) != 1:
+        raise ContractError(
+            f"gate package {package_name} must have exactly one "
+            f"{_ARCHITECTURE} or {_ARCHITECTURE_INDEPENDENT} lock row"
+        )
+    return matches[0]
 
 
 def _require_safe_output_path(path: Path) -> None:
