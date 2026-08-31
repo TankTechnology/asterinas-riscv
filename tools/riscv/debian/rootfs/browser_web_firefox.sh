@@ -15,9 +15,26 @@ readonly TIMELINE="$FIREFOX_HOME/browser-web-timeline.log"
 readonly TIMEOUT_SECONDS=30
 export DISPLAY XAUTHORITY
 
+guest_monotonic_ns() {
+    local uptime whole fraction
+    if IFS=' ' read -r uptime _ </proc/uptime 2>/dev/null &&
+        [[ "$uptime" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        whole="${uptime%%.*}"
+        if [[ "$uptime" == *.* ]]; then
+            fraction="${uptime#*.}"
+        else
+            fraction=0
+        fi
+        fraction="${fraction}000000000"
+        printf '%s%s' "$whole" "${fraction:0:9}"
+        return 0
+    fi
+    date +%s%N
+}
+
 marker() {
     local name="$1" line
-    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$$"
+    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(guest_monotonic_ns) firefox_pid=$$"
     printf '%s\n' "$line" >>"$TIMELINE"
     # Firefox runs as the unprivileged desktop user; serial mirroring is
     # optional and must not turn a successful launch into a service failure.

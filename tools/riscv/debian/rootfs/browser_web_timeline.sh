@@ -6,9 +6,29 @@ set -euo pipefail
 readonly TIMELINE=/home/asterinas/browser-web-timeline.log
 readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"
 
+guest_monotonic_ns() {
+    local uptime whole fraction
+    if IFS=' ' read -r uptime _ </proc/uptime 2>/dev/null &&
+        [[ "$uptime" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        whole="${uptime%%.*}"
+        if [[ "$uptime" == *.* ]]; then
+            fraction="${uptime#*.}"
+        else
+            fraction=0
+        fi
+        fraction="${fraction}000000000"
+        printf '%s%s' "$whole" "${fraction:0:9}"
+        return 0
+    fi
+    # Some Asterinas procfs configurations omit /proc/uptime.  GNU date's
+    # nanosecond clock is only a fallback; ordering is still checked by the
+    # host-side gate and this keeps diagnostics from blocking boot.
+    date +%s%N
+}
+
 marker() {
     local name="$1" pid="${2:-0}" page="${3:-}" line
-    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$pid"
+    line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(guest_monotonic_ns) firefox_pid=$pid"
     [[ -z "$page" ]] || line="$line page=$page"
     printf '%s\n' "$line" >>"$TIMELINE"
     # The timeline file is the authoritative evidence.  A non-root browser
