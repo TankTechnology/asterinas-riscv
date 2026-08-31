@@ -74,6 +74,8 @@ def _hash_fd(descriptor: int) -> str:
 
 
 class ConcreteOperations:
+    SERIAL_LIVE_LOG_NAME: str | None = None
+
     def __init__(self, config: GateConfig) -> None:
         self.config = config
         self._input_fds: dict[str, int] = {}
@@ -259,6 +261,8 @@ class ConcreteOperations:
         )
         os.chmod(directory, 0o700)
         master = slave = -1
+        mirror_fd = -1
+        serial = None
         process = None
         try:
             uboot = directory / "u-boot"
@@ -277,6 +281,8 @@ class ConcreteOperations:
             )
             self._attempted_argv.append(argv)
             master, slave = os.openpty()
+            if self.SERIAL_LIVE_LOG_NAME is not None:
+                mirror_fd = output.create_exclusive(self.SERIAL_LIVE_LOG_NAME)
             process = launch_process(
                 argv,
                 stdio_fd=slave,
@@ -285,8 +291,12 @@ class ConcreteOperations:
             os.close(slave)
             slave = -1
             serial = SerialConsole(
-                master, process=process, max_bytes=MAX_TRANSCRIPT_BYTES
+                master,
+                process=process,
+                max_bytes=MAX_TRANSCRIPT_BYTES,
+                mirror_fd=None if mirror_fd < 0 else mirror_fd,
             )
+            mirror_fd = -1
             monitor = HmpMonitor.connect(
                 monitor_path,
                 time.monotonic() + config.boot_timeout,
@@ -302,6 +312,10 @@ class ConcreteOperations:
                 "monitor": monitor,
             }
         except BaseException:
+            if serial is not None:
+                serial.close()
+            elif mirror_fd >= 0:
+                os.close(mirror_fd)
             if slave >= 0:
                 os.close(slave)
             if process is not None:
@@ -447,8 +461,11 @@ class ConcreteOperations:
                     raise GateFailure(result.reason)
             return redacted
         finally:
-            os.close(session["master_fd"])
-            shutil.rmtree(session["directory"], ignore_errors=True)
+            try:
+                serial.close()
+            finally:
+                os.close(session["master_fd"])
+                shutil.rmtree(session["directory"], ignore_errors=True)
 
 
 def _safe_output(path: Path) -> None:

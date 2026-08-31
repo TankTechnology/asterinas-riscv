@@ -594,6 +594,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
     ARTIFACT_PREFIX = "browser-web-qemu"
+    SERIAL_LIVE_LOG_NAME = "browser-web-qemu.serial.live.log"
     MILESTONES = BROWSER_WEB_MILESTONES
     FAILURE_MARKER = _WEB_FAILURE
     ADDITIONAL_FAILURE_MARKERS = (
@@ -617,6 +618,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         self._require_output().invalidate(
             *(f"browser-web-{name}" for name in WEB_EVIDENCE_PATHS),
             *(f"browser-web-diagnostic-{name}" for name in WEB_DIAGNOSTIC_PATHS),
+            self.SERIAL_LIVE_LOG_NAME,
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
         )

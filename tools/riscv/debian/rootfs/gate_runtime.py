@@ -107,6 +107,12 @@ class PinnedOutputDirectory:
                 continue
         os.fsync(self._operation_fd)
 
+    def create_exclusive(self, name: str, *, mode: int = 0o600) -> int:
+        """Create a pinned regular output file and return its owned descriptor."""
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        return os.open(_safe_name(name), flags, mode, dir_fd=self._operation_fd)
+
     def _temporary_name(self, destination: str) -> str:
         return f".gate-{destination}-{secrets.token_hex(8)}.tmp"
 
@@ -310,7 +316,7 @@ def launch_process(
 
 
 class SerialConsole:
-    """A capped serial transcript reader using caller-provided absolute deadlines."""
+    """A capped serial reader with an optional single-writer live transcript."""
 
     def __init__(
         self,
@@ -318,12 +324,16 @@ class SerialConsole:
         *,
         process: GateProcess | None = None,
         max_bytes: int,
+        mirror_fd: int | None = None,
     ) -> None:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
+        if mirror_fd is not None and not stat.S_ISREG(os.fstat(mirror_fd).st_mode):
+            raise ValueError("serial mirror must be a regular file")
         self.fd = fd
         self.process = process
         self.max_bytes = max_bytes
+        self._mirror_fd = -1 if mirror_fd is None else mirror_fd
         self._transcript = bytearray()
         os.set_blocking(fd, False)
 
@@ -368,6 +378,18 @@ class SerialConsole:
         if len(self._transcript) + len(chunk) > self.max_bytes:
             raise BufferError("serial transcript exceeds byte cap")
         self._transcript.extend(chunk)
+        if self._mirror_fd >= 0:
+            view = memoryview(chunk)
+            written = 0
+            while written < len(view):
+                written += os.write(self._mirror_fd, view[written:])
+
+    def close(self) -> None:
+        """Close the owned live transcript descriptor, if configured."""
+
+        if self._mirror_fd >= 0:
+            os.close(self._mirror_fd)
+            self._mirror_fd = -1
 
     def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
         if not marker:

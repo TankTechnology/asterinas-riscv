@@ -3825,6 +3825,26 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transcript.count(b"repeat-marker"), 2)
 
+    def test_serial_console_mirrors_each_read_without_a_second_reader(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        mirror = self.directory / "serial.live.log"
+        mirror_fd = os.open(
+            mirror,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        console = SerialConsole(reader, max_bytes=1024, mirror_fd=mirror_fd)
+        os.write(writer, b"boot\nphase-ready\n")
+
+        console.wait_for(b"phase-ready", time.monotonic() + 1.0)
+        console.close()
+
+        self.assertEqual(mirror.read_bytes(), console.transcript)
+        with self.assertRaises(OSError):
+            os.fstat(mirror_fd)
+
     def test_serial_console_wait_for_any_returns_the_first_observed_marker(
         self,
     ) -> None:

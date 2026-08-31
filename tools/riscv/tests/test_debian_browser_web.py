@@ -881,6 +881,10 @@ generate_fontconfig_cache "$stage" "$3"
             )
         self.assertEqual(BrowserWebQemuOperations.SCHEMA_VERSION, 7)
         self.assertEqual(BrowserWebQemuOperations.PROFILE_NAME, "browser-web")
+        self.assertEqual(
+            BrowserWebQemuOperations.SERIAL_LIVE_LOG_NAME,
+            "browser-web-qemu.serial.live.log",
+        )
         self.assertNotIn("-nic", argv)
         self.assertEqual(argv.count("user,id=net0"), 1)
         self.assertEqual(argv.count("virtio-net-device,netdev=net0"), 1)
