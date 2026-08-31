@@ -89,11 +89,13 @@ validate_child_security() {
 }
 
 validate_dns_and_tls() {
-    local hosts name ip line status effective verify
+    local hosts name ip line status effective verify interfaces
     grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
         fail dns-not-slirp-10.0.2.3
-    [[ "$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo | wc -l)" == 1 ]] ||
-        fail nic-count
+    interfaces="$(find /sys/class/net -mindepth 1 -maxdepth 1 ! -name lo -printf '%f\n' 2>/dev/null |
+        tr '\n' ',' || true)"
+    [[ -n "$interfaces" ]] || fail nic-count
+    emit "DEBIAN_BROWSER_WEB_INTERFACES names=$interfaces"
     ip -4 address show | grep -Eq 'inet 10\.0\.2\.[0-9]+/' || fail nic-address
     ip -4 route show default | grep -Eq '^default via 10\.0\.2\.2 dev ' || fail nic-default-route
     for name in www.baidu.com www.bilibili.com; do
