@@ -146,16 +146,21 @@ validate_dns_and_tls() {
 }
 
 sample_firefox_startup() {
-    local pid="$1" status state threads wchan comm
+    local pid="$1" status state threads wchan comm marionette_listener=closed
     [[ -r "$PROC_ROOT/$pid/status" ]] || return 0
     status="$PROC_ROOT/$pid/status"
     state="$(sed -n 's/^State:[[:space:]]*//p' "$status" 2>/dev/null | tr ' ' '_')"
     threads="$(sed -n 's/^Threads:[[:space:]]*//p' "$status" 2>/dev/null)"
     comm="$(cat "$PROC_ROOT/$pid/comm" 2>/dev/null || true)"
     wchan="$(cat "$PROC_ROOT/$pid/wchan" 2>/dev/null || true)"
-    printf 'BROWSER_WEB_STARTUP_SAMPLE pid=%s comm=%s state=%s threads=%s wchan=%s\n' \
+    if [[ "$(cat "$PROFILE/MarionetteActivePort" 2>/dev/null || true)" == 2828 ]]; then
+        marionette_listener=file-ready
+    elif timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2828' 2>/dev/null; then
+        marionette_listener=listening
+    fi
+    printf 'BROWSER_WEB_STARTUP_SAMPLE pid=%s comm=%s state=%s threads=%s wchan=%s marionette_listener=%s\n' \
         "$pid" "${comm:-unknown}" "${state:-unknown}" "${threads:-unknown}" \
-        "${wchan:-unknown}" >>"$FIREFOX_STDERR"
+        "${wchan:-unknown}" "$marionette_listener" >>"$FIREFOX_STDERR"
 }
 
 validate_firefox_logs() {

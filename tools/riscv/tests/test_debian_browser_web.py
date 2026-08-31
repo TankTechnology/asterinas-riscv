@@ -521,6 +521,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('"$PROC_ROOT/$pid/wchan"', evidence)
         self.assertIn("Threads:", evidence)
         self.assertIn("STARTUP_SAMPLE_INTERVAL_SECONDS", evidence)
+        self.assertIn("/dev/tcp/127.0.0.1/2828", evidence)
+        self.assertIn("marionette_listener=%s", evidence)
         self.assertNotIn("while :", evidence)
 
     def test_build_time_cache_checker_is_fail_closed(self) -> None:
