@@ -50,7 +50,13 @@ for ((sequence = 1; sequence <= SAMPLE_LIMIT; sequence++)); do
     if [[ "$navigator_emitted" == false ]]; then
         while IFS= read -r window_line; do
             lower_line="${window_line,,}"
-            [[ "$lower_line" == *'("firefox-esr"'* ]] || continue
+            # xwininfo prints the WM name and class in either order depending
+            # on which Firefox window has become the top-level navigator:
+            # e.g. ("firefox-esr" "Navigator") or
+            # ("Navigator" "firefox-esr").  Match the class token anywhere
+            # on the line, but keep the geometry threshold below so tiny
+            # compositor/probe windows cannot satisfy readiness.
+            [[ "$lower_line" == *'firefox-esr'* ]] || continue
             geometry_pattern=' ([0-9]+)x([0-9]+)[+-]'
             [[ "$window_line" =~ $geometry_pattern ]] || continue
             width="${BASH_REMATCH[1]}"

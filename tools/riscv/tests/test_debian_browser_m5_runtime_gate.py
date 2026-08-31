@@ -509,8 +509,8 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
                 "printf '%s\\n' \"$count\" >\"$ASTERINAS_M5_TEST_COUNTER\"\n"
                 "case $count in\n"
                 "  1) printf '%s\\n' '0x800001 \"Firefox\": (\"firefox-esr\" \"Firefox-esr\")  10x10+10+10' ;;\n"
-                "  2) printf '%s\\n' '0x800001 \"New Tab - Mozilla Firefox\": (\"firefox-esr\" \"Navigator\")  1280x1024+0+0' ;;\n"
-                "  *) printf '%s\\n' '0x800001 \"Asterinas Offline Browser M5 Probe - Mozilla Firefox\": (\"firefox-esr\" \"Navigator\")  1280x1024+0+0' ;;\n"
+                "  2) printf '%s\\n' '0x800001 \"New Tab - Mozilla Firefox\": (\"Navigator\" \"firefox-esr\")  1280x1024+0+0' ;;\n"
+                "  *) printf '%s\\n' '0x800001 \"Asterinas Offline Browser M5 Probe - Mozilla Firefox\": (\"Navigator\" \"firefox-esr\")  1280x1024+0+0' ;;\n"
                 "esac\n"
             )
             for executable in (fake_sleep, fake_sync, fake_xwininfo):
