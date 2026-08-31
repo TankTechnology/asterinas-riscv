@@ -432,10 +432,12 @@ class BrowserWebContractTests(unittest.TestCase):
         validate_web_evidence(evidence)
         self.assertEqual(evidence["timeline.log"].count(b"A_WEB_TIMELINE marker="), 14)
         unit = (ROOTFS / "browser_web.service").read_text()
+        launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
         builder = (ROOTFS / "build_rootfs.sh").read_text()
-        self.assertIn(
-            "ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit
-        )
+        # The service is allowed to activate in parallel with the desktop;
+        # the launcher owns the actual X readiness barrier.
+        self.assertIn("browser-web-timeline wait-x", launcher)
+        self.assertNotIn("ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit)
         self.assertIn("browser_web_timeline_begin.service", builder)
         self.assertIn("browser_web_timeline_basic.service", builder)
         self.assertIn(
