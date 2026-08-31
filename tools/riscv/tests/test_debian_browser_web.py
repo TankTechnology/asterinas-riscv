@@ -393,6 +393,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("--no-sandbox", launcher)
         self.assertNotIn("acceptInsecureCerts", launcher)
         self.assertIn("about:blank", launcher)
+        self.assertNotIn("nsHttp:3", launcher)
+        self.assertNotIn("nsHostResolver:3", launcher)
         for required in (
             "nameserver[[:space:]]+10\\.0\\.2\\.3",
             "getent ahostsv4",

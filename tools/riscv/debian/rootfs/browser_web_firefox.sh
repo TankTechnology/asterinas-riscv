@@ -50,7 +50,7 @@ while [[ ! -S /tmp/.X11-unix/X0 ]]; do
     /usr/bin/sleep 1
 done
 /usr/bin/mkdir -p -- "$PROFILE"
-export MOZ_LOG='timestamp,Widget:2,Marionette:2,nsHttp:3,nsHostResolver:3'
+export MOZ_LOG='timestamp,Widget:2,Marionette:2'
 export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
 export MOZ_AVOID_OPENGL_ALTOGETHER=1
