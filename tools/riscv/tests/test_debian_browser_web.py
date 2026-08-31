@@ -392,7 +392,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("--offline", launcher)
         self.assertNotIn("--no-sandbox", launcher)
         self.assertNotIn("acceptInsecureCerts", launcher)
-        self.assertIn("https://www.baidu.com/", launcher)
+        self.assertIn("about:blank", launcher)
         for required in (
             "nameserver[[:space:]]+10\\.0\\.2\\.3",
             "getent ahostsv4",

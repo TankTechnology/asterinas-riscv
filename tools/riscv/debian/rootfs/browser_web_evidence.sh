@@ -50,7 +50,9 @@ validate_parent_security() {
     environment="$(tr '\0' '\n' <"$PROC_ROOT/$pid/environ")"
     [[ "$cmdline" != *--offline* && "$cmdline" != *--no-sandbox* ]] ||
         fail security-parent-forbidden-cmdline
-    [[ "$cmdline" == *" --marionette "* && "$cmdline" == *" https://www.baidu.com/"* ]] ||
+    [[ "$cmdline" == *" --marionette "* &&
+        "$cmdline" == *" --profile $PROFILE "* &&
+        "$cmdline" == *" about:blank"* ]] ||
         fail security-parent-required-cmdline
     if grep -Eq '^(MOZ_DISABLE_(CONTENT|GMP|RDD|SOCKET)_SANDBOX|MOZ_FORCE_DISABLE_E10S)=([^0]|0*[1-9])' <<<"$environment"; then
         fail security-parent-disable-environment
