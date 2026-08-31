@@ -420,6 +420,30 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("systemctl is-active --quiet", evidence)
         self.assertIn("firefox-pid-changed-during-gate", evidence)
 
+    def test_online_launcher_preseeds_only_bounded_background_preferences(self) -> None:
+        launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
+        for preference in (
+            'user_pref("app.normandy.api_url", "");',
+            'user_pref("browser.newtabpage.enabled", false);',
+            'user_pref("browser.pagethumbnails.capturing_disabled", true);',
+            'user_pref("browser.region.network.url", "");',
+            'user_pref("browser.search.update", false);',
+            'user_pref("browser.topsites.contile.enabled", false);',
+            'user_pref("extensions.systemAddon.update.enabled", false);',
+            'user_pref("extensions.update.enabled", false);',
+            'user_pref("network.connectivity-service.enabled", false);',
+        ):
+            self.assertIn(preference, launcher)
+        for forbidden in (
+            "javascript.enabled",
+            "security.tls",
+            "security.ssl",
+            "security.sandbox",
+            "browser.safebrowsing",
+            "network.proxy",
+        ):
+            self.assertNotIn(forbidden, launcher)
+
     def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         offline_evidence = (ROOTFS / "desktop_m5_evidence.sh").read_text()

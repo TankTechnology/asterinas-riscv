@@ -50,6 +50,22 @@ while [[ ! -S /tmp/.X11-unix/X0 ]]; do
     /usr/bin/sleep 1
 done
 /usr/bin/mkdir -p -- "$PROFILE"
+# Marionette applies these upstream recommended preferences after application
+# startup.  Seed only the background-network subset before startup so a cold
+# RISC-V profile does not race update/discovery services.  Site JavaScript,
+# TLS, Safe Browsing, the content sandbox, and proxy behavior remain unchanged.
+umask 077
+cat >"$PROFILE/user.js" <<'EOF'
+user_pref("app.normandy.api_url", "");
+user_pref("browser.newtabpage.enabled", false);
+user_pref("browser.pagethumbnails.capturing_disabled", true);
+user_pref("browser.region.network.url", "");
+user_pref("browser.search.update", false);
+user_pref("browser.topsites.contile.enabled", false);
+user_pref("extensions.systemAddon.update.enabled", false);
+user_pref("extensions.update.enabled", false);
+user_pref("network.connectivity-service.enabled", false);
+EOF
 export MOZ_LOG='timestamp,Widget:2,Marionette:2'
 export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
