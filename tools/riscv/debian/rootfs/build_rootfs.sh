@@ -1238,6 +1238,13 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        # The early-boot timeline unit runs as root, while Firefox runs as
+        # uid 1000.  Pre-create the evidence file with its final owner so
+        # runtime startup does not depend on chown support in Asterinas.
+        install -m 0600 -o 1000 -g 1000 /dev/null \
+            "$stage/home/asterinas/browser-web-timeline.log"
+    fi
     if [[ "$generation" == m4 ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \

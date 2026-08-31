@@ -11,12 +11,19 @@ marker() {
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$pid"
     [[ -z "$page" ]] || line="$line page=$page"
     printf '%s\n' "$line" >>"$TIMELINE"
-    printf '%s\n' "$line" >>"$CONSOLE"
+    # The timeline file is the authoritative evidence.  A non-root browser
+    # service may not have permission to write /dev/console on Asterinas;
+    # never let that optional mirror prevent the phase from completing.
+    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
 }
 
 case "${1-}" in
     begin)
-        install -o 1000 -g 1000 -m 0600 /dev/null "$TIMELINE"
+        : >"$TIMELINE"
+        # The rootfs builder pre-creates this file as uid 1000.  Preserve
+        # that ownership while truncating it; Firefox can then append without
+        # relying on runtime chown support in Asterinas.
+        chmod 0600 "$TIMELINE"
         marker BOOT_SYSTEMD_BEGIN
         ;;
     basic)

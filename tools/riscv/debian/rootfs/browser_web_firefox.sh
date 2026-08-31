@@ -19,7 +19,9 @@ marker() {
     local name="$1" line
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$(awk '{printf \"%.0f\", $1 * 1000000000}' /proc/uptime) firefox_pid=$$"
     printf '%s\n' "$line" >>"$TIMELINE"
-    printf '%s\n' "$line" >>"$CONSOLE"
+    # Firefox runs as the unprivileged desktop user; serial mirroring is
+    # optional and must not turn a successful launch into a service failure.
+    printf '%s\n' "$line" >>"$CONSOLE" 2>/dev/null || true
 }
 
 exec >>"$STDERR_LOG" 2>&1

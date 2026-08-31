@@ -447,6 +447,15 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
         begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()
         basic_unit = (ROOTFS / "browser_web_timeline_basic.service").read_text()
+        self.assertNotIn("User=asterinas", begin_unit)
+        self.assertNotIn("User=asterinas", basic_unit)
+        timeline = (ROOTFS / "browser_web_timeline.sh").read_text()
+        firefox = (ROOTFS / "browser_web_firefox.sh").read_text()
+        self.assertIn('2>/dev/null || true', timeline)
+        self.assertIn('2>/dev/null || true', firefox)
+        self.assertIn('chmod 0600 "$TIMELINE"', timeline)
+        self.assertIn('browser-web-timeline.log', builder)
+        self.assertIn('install -m 0600 -o 1000 -g 1000 /dev/null', builder)
         self.assertIn("After=systemd-remount-fs.service", begin_unit)
         for boundary in (
             "systemd-sysusers.service",
