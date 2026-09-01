@@ -10,6 +10,7 @@ readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
+readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
@@ -159,7 +160,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -183,6 +184,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M9_SOFTWARE_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
@@ -895,6 +898,10 @@ EOF
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
+    elif [[ "$PROFILE" == desktop-m9-software ]]; then
+        configure_desktop "$stage" m4
+        configure_desktop_m5_network "$stage"
+        configure_desktop_m9_software "$stage"
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
@@ -935,7 +942,7 @@ EOF
         if [[ "$PROFILE" == browser-web ]]; then
             startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
         else
-            startup_cache_marker='DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+            startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
         fi
         python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
             --profile "$PROFILE" \
@@ -949,7 +956,7 @@ EOF
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | browser-web) return 0 ;;
+        desktop-m5-network | desktop-m9-software | browser-web) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1147,6 +1154,44 @@ EOF
         "../$quality_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$quality_service_name.service"
     fi
+}
+
+configure_desktop_m9_software() {
+    local stage="$1"
+    local script_directory
+    local service_name="asterinas-desktop-m9-software"
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    # M9 is an application smoke gate, not a second browser-quality run. Keep
+    # the M8 unit available for explicit quality profiles, but do not start it
+    # concurrently with FFmpeg on the constrained RISC-V guest.
+    rm -f -- \
+        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m8-browser-quality.service"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m9_software_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m9-software-evidence"
+    cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M9 desktop software evidence
+After=asterinas-desktop-m7-baidu.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_DESKTOP_M9_TIMEOUT_SECONDS=120
+Environment=ASTERINAS_DESKTOP_M9_COMMAND_TIMEOUT_SECONDS=120
+Environment=ASTERINAS_DESKTOP_M9_WORK_DIRECTORY=/var/tmp
+TimeoutStartSec=300
+ExecStart=/usr/lib/asterinas/desktop-m9-software-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/graphical.target.wants"
+    ln -s -- \
+        "../$service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 }
 
 configure_logind_namespace_compatibility() {
