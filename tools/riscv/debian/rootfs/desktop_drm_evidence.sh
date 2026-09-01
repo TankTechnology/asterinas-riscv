@@ -52,3 +52,7 @@ emit "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev"
 emit 'DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0'
 emit 'DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm'
 emit "DEBIAN_DESKTOP_DRM_READY user=$USER_NAME display=:0"
+
+# Record the acceleration setup in the serial transcript so that gate runs
+# are self-diagnosing (e.g. glamor falling back to software rendering).
+grep -E 'glamor|AIGLX|DRI3|Modeline' "$XORG_LOG" >>"$CONSOLE" 2>&1 || true

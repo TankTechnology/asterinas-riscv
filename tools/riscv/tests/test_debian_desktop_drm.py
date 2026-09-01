@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 from tools.riscv.debian.rootfs.desktop_drm_gate import (
+    DESKTOP_DRM_EXPECTED_HEIGHT,
+    DESKTOP_DRM_EXPECTED_WIDTH,
     DESKTOP_DRM_MILESTONES,
     classify_desktop_drm,
     desktop_drm_qemu_argv,
@@ -41,6 +43,12 @@ class DebianDesktopDRMTests(unittest.TestCase):
         self.assertNotIn("bochs-display", argv)
         self.assertIn("virtio-keyboard-device", argv)
         self.assertIn("virtio-tablet-device", argv)
+
+    def test_expected_geometry_matches_kernel_mode(self) -> None:
+        # The kernel's virtio-gpu DRM driver synthesizes a single 1280x800
+        # mode (kernel/src/device/drm/kms.rs), so the gate must accept that
+        # screendump geometry instead of the bochs-era 1280x1024 default.
+        self.assertEqual((DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT), (1280, 800))
 
     def test_classifier_requires_all_ordered_drm_markers(self) -> None:
         transcript = ("boot\n" + "\n".join(DESKTOP_DRM_MILESTONES) + "\n").encode()

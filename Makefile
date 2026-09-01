@@ -260,6 +260,9 @@ MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
+# TCG software rendering paints the full desktop tens of seconds after the
+# session reports READY, so the framebuffer capture needs a long retry window.
+DEBIAN_DESKTOP_COMMAND_TIMEOUT ?= 240
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
@@ -471,7 +474,8 @@ test_riscv_debian_desktop_drm_gate:
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_DRM_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)" \
+		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
 
 .PHONY: test_riscv_debian_browser_m5_qemu_gate
 test_riscv_debian_browser_m5_qemu_gate:

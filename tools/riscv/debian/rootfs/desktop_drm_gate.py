@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import sys
 import time
@@ -25,6 +26,28 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 
 
 DESKTOP_DRM_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
+
+# The kernel's virtio-gpu DRM driver synthesizes a single 1280x800 mode
+# (kernel/src/device/drm/kms.rs), so the Xorg modesetting driver always
+# drives the scanout at that geometry.
+DESKTOP_DRM_EXPECTED_WIDTH = 1280
+DESKTOP_DRM_EXPECTED_HEIGHT = 800
+
+# Seconds to wait after the READY marker before capturing the framebuffer.
+# The evidence script reports READY as soon as the session processes exist,
+# but under TCG the desktop clients (openbox decorations, lxpanel, pcmanfm
+# desktop) paint noticeably later; the strict content thresholds below make
+# the capture loop retry until the desktop has actually painted, so the
+# settle delay stays disabled by default and remains only a debugging knob.
+DESKTOP_DRM_SETTLE_ENV = "ASTERINAS_DESKTOP_DRM_SETTLE_DELAY_SECONDS"
+DESKTOP_DRM_SETTLE_DEFAULT_SECONDS = 0.0
+
+# A fully painted desktop (wallpaper, panel, window decorations, anti-aliased
+# text) is far richer than an xterm-only frame (2 sampled colors); these
+# thresholds keep the capture retrying until the real desktop is visible.
+DESKTOP_DRM_MIN_DISTINCT_COLORS = 8
+DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO = 0.05
+
 DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_UDEV state=active",
     "DEBIAN_DESKTOP_DRM_LOGIND state=active",
@@ -127,9 +150,19 @@ class DesktopDRMOperations(DesktopM3Operations):
         if completion.startswith(self.FAILURE_MARKER.split(b" reason=", 1)[0]):
             raise GateFailure("guest reported DRM desktop failure")
 
+        settle = float(os.environ.get(DESKTOP_DRM_SETTLE_ENV, DESKTOP_DRM_SETTLE_DEFAULT_SECONDS))
+        if settle > 0:
+            time.sleep(settle)
+
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
-            session["monitor"], screenshot, time.monotonic() + config.command_timeout
+            session["monitor"],
+            screenshot,
+            time.monotonic() + config.command_timeout,
+            expected_width=DESKTOP_DRM_EXPECTED_WIDTH,
+            expected_height=DESKTOP_DRM_EXPECTED_HEIGHT,
+            min_distinct_colors=DESKTOP_DRM_MIN_DISTINCT_COLORS,
+            min_non_background_ratio=DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO,
         )
 
 

@@ -125,7 +125,12 @@ def _ppm_token(contents: bytes, offset: int) -> tuple[bytes, int]:
 
 
 def inspect_ppm(
-    contents: bytes, *, expected_width: int = 1280, expected_height: int = 1024
+    contents: bytes,
+    *,
+    expected_width: int = 1280,
+    expected_height: int = 1024,
+    min_distinct_colors: int = 2,
+    min_non_background_ratio: float = 0.01,
 ) -> dict[str, int]:
     """Validate a bounded QEMU P6 screendump and reject a blank framebuffer."""
 
@@ -159,9 +164,9 @@ def inspect_ppm(
             non_background_pixels += 1
         if len(distinct) < 256:
             distinct.add(pixel)
-    if len(distinct) < 2:
+    if len(distinct) < min_distinct_colors:
         raise GateFailure("PPM framebuffer contains a single color")
-    if non_background_pixels < max(1, width * height // 100):
+    if non_background_pixels < max(1, int(width * height * min_non_background_ratio)):
         raise GateFailure("PPM framebuffer has insufficient rendered content")
     return {
         "width": width,
@@ -179,6 +184,8 @@ def capture_rendered_ppm(
     *,
     expected_width: int = 1280,
     expected_height: int = 1024,
+    min_distinct_colors: int = 2,
+    min_non_background_ratio: float = 0.01,
     retry_interval: float = 1.0,
 ) -> tuple[bytes, dict[str, int]]:
     """Capture until the first non-blank frame, within one total deadline."""
@@ -194,6 +201,8 @@ def capture_rendered_ppm(
                 contents,
                 expected_width=expected_width,
                 expected_height=expected_height,
+                min_distinct_colors=min_distinct_colors,
+                min_non_background_ratio=min_non_background_ratio,
             )
             return contents, metadata
         except GateFailure as error:
