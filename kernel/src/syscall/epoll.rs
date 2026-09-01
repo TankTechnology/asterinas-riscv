@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use ostd::mm::VmIo;
 
@@ -18,6 +21,47 @@ use crate::{
 
 // See: https://elixir.bootlin.com/linux/v6.11.5/source/fs/eventpoll.c#L2437
 const EP_MAX_EVENTS: usize = i32::MAX as usize / size_of::<c_epoll_event>();
+
+// Epoll is the dominant wall-time consumer in the bounded Firefox startup
+// probe. Keep this instrumentation opt-in and aggregate-only so the normal
+// syscall path remains unchanged.
+static EPOLL_PROFILE: AtomicBool = AtomicBool::new(false);
+static EPOLL_CALLS: AtomicU64 = AtomicU64::new(0);
+static EPOLL_NONE_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static EPOLL_ZERO_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static EPOLL_POSITIVE_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+static EPOLL_RET_ZERO: AtomicU64 = AtomicU64::new(0);
+static EPOLL_RET_NONZERO: AtomicU64 = AtomicU64::new(0);
+static EPOLL_RET_ETIME: AtomicU64 = AtomicU64::new(0);
+static EPOLL_RET_ERROR: AtomicU64 = AtomicU64::new(0);
+const EPOLL_PROFILE_LOG_INTERVAL: u64 = 8_192;
+
+aster_cmdline::define_flag_param_early!("asterinas.epoll_profile", EPOLL_PROFILE);
+
+fn epoll_profile_snapshot(
+    call: u64,
+    phase: &str,
+    epfd: RawFileDesc,
+    events_len: usize,
+    ctx: &Context,
+) {
+    ostd::early_println!(
+        "ASTERINAS_EPOLL_PROFILE calls={} phase={} pid={} tid={} epfd={} events_len={} none_timeout={} zero_timeout={} positive_timeout={} ret_zero={} ret_nonzero={} ret_etime={} ret_error={}",
+        call,
+        phase,
+        ctx.process.pid(),
+        ctx.posix_thread.tid(),
+        epfd,
+        events_len,
+        EPOLL_NONE_TIMEOUT.load(Ordering::Relaxed),
+        EPOLL_ZERO_TIMEOUT.load(Ordering::Relaxed),
+        EPOLL_POSITIVE_TIMEOUT.load(Ordering::Relaxed),
+        EPOLL_RET_ZERO.load(Ordering::Relaxed),
+        EPOLL_RET_NONZERO.load(Ordering::Relaxed),
+        EPOLL_RET_ETIME.load(Ordering::Relaxed),
+        EPOLL_RET_ERROR.load(Ordering::Relaxed),
+    );
+}
 
 pub fn sys_epoll_create(size: i32, ctx: &Context) -> Result<SyscallReturn> {
     if size <= 0 {
@@ -111,6 +155,31 @@ fn do_epoll_pwait2(
         max_events as usize
     };
 
+    let profile_call = if EPOLL_PROFILE.load(Ordering::Relaxed) {
+        let call = EPOLL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if timeout.is_none() {
+            EPOLL_NONE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+        } else if timeout.is_some_and(|duration| duration.is_zero()) {
+            EPOLL_ZERO_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            EPOLL_POSITIVE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+        }
+        if call <= 16 {
+            ostd::early_println!(
+                "ASTERINAS_EPOLL_PROFILE call={} pid={} tid={} epfd={} max_events={} timeout={:?}",
+                call,
+                ctx.process.pid(),
+                ctx.posix_thread.tid(),
+                epfd,
+                max_events,
+                timeout,
+            );
+        }
+        Some(call)
+    } else {
+        None
+    };
+
     if sigmask_addr != 0 {
         if sigmask_size != size_of::<SigMask>() {
             return_errno_with_message!(Errno::EINVAL, "invalid sigmask size");
@@ -133,11 +202,41 @@ fn do_epoll_pwait2(
     //
     // Manual: <https://www.man7.org/linux/man-pages/man2/epoll_wait.2.html>
     let epoll_events = match result {
-        Ok(events) => events,
+        Ok(events) => {
+            if profile_call.is_some() {
+                if events.is_empty() {
+                    EPOLL_RET_ZERO.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    EPOLL_RET_NONZERO.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if let Some(call) = profile_call
+                && (call <= 16 || call.is_multiple_of(EPOLL_PROFILE_LOG_INTERVAL))
+            {
+                epoll_profile_snapshot(call, "return", epfd, events.len(), ctx);
+            }
+            events
+        }
         Err(e) if e.error() == Errno::ETIME => {
+            if let Some(call) = profile_call
+                && (call <= 16 || call.is_multiple_of(EPOLL_PROFILE_LOG_INTERVAL))
+            {
+                EPOLL_RET_ETIME.fetch_add(1, Ordering::Relaxed);
+                epoll_profile_snapshot(call, "etime", epfd, 0, ctx);
+            } else if profile_call.is_some() {
+                EPOLL_RET_ETIME.fetch_add(1, Ordering::Relaxed);
+            }
             return Ok(0);
         }
         Err(e) => {
+            if let Some(call) = profile_call
+                && (call <= 16 || call.is_multiple_of(EPOLL_PROFILE_LOG_INTERVAL))
+            {
+                EPOLL_RET_ERROR.fetch_add(1, Ordering::Relaxed);
+                epoll_profile_snapshot(call, "error", epfd, 0, ctx);
+            } else if profile_call.is_some() {
+                EPOLL_RET_ERROR.fetch_add(1, Ordering::Relaxed);
+            }
             return Err(e);
         }
     };

@@ -153,3 +153,35 @@ fn futex_val_to_max_count(futex_val: u32) -> usize {
     // the max_count to 1 if it is 0 or negative.
     (futex_val as i32).max(1) as usize
 }
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::{futex_op_and_flags_from_u32, futex_val_to_max_count};
+    use crate::process::posix_thread::futex::{FutexFlags, FutexOp};
+
+    #[ktest]
+    fn futex_operation_parser_separates_operation_and_flags() {
+        let (op, flags) = futex_op_and_flags_from_u32(
+            FutexOp::FUTEX_WAIT_BITSET as u32
+                | FutexFlags::FUTEX_PRIVATE.bits()
+                | FutexFlags::FUTEX_CLOCK_REALTIME.bits(),
+        )
+        .unwrap();
+        assert_eq!(op, FutexOp::FUTEX_WAIT_BITSET);
+        assert!(flags.contains(FutexFlags::FUTEX_PRIVATE));
+        assert!(flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME));
+
+        assert!(futex_op_and_flags_from_u32(FutexOp::FUTEX_WAIT as u32 | 0x400).is_err());
+        assert!(futex_op_and_flags_from_u32(11).is_err());
+    }
+
+    #[ktest]
+    fn futex_wake_count_matches_linux_zero_and_negative_rule() {
+        assert_eq!(futex_val_to_max_count(0), 1);
+        assert_eq!(futex_val_to_max_count(u32::MAX), 1);
+        assert_eq!(futex_val_to_max_count(2), 2);
+        assert_eq!(futex_val_to_max_count(i32::MAX as u32), i32::MAX as usize);
+    }
+}
