@@ -35,8 +35,8 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _SUITE = "trixie"
 _DEBIAN_RELEASE_RE = re.compile(r"\A13\.(?:0|[1-9][0-9]*)\Z")
 _ARCHITECTURE = "riscv64"
+_GATE_ARCHITECTURES = frozenset({_ARCHITECTURE, "all"})
 _FILESYSTEM_TYPE = "ext2"
-_ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
 _FILESYSTEM_BLOCK_SIZE_BYTES = 4096
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 
@@ -305,7 +305,7 @@ def validate_frozen_root(
     _require_exact(filesystem.uuid, profile.root_uuid, "filesystem UUID")
     _require_exact(
         filesystem.size_bytes,
-        _ROOT_IMAGE_SIZE_BYTES,
+        profile.root_size_bytes,
         "filesystem size",
     )
     _require_exact(
@@ -362,12 +362,12 @@ def validate_frozen_root(
         locked_versions = [
             version
             for name, architecture, version in rows
-            if name == package_name and architecture == _ARCHITECTURE
+            if name == package_name and architecture in _GATE_ARCHITECTURES
         ]
         if len(locked_versions) != 1:
             raise ContractError(
                 f"gate package {package_name} must have exactly one "
-                f"{_ARCHITECTURE} lock row"
+                f"{_ARCHITECTURE} or all lock row"
             )
         if gate_versions.get(package_name) != locked_versions[0]:
             raise ContractError(
@@ -382,10 +382,10 @@ def validate_frozen_root(
 
     with image.open("rb") as image_file:
         actual_image_size_bytes = os.fstat(image_file.fileno()).st_size
-        if actual_image_size_bytes != _ROOT_IMAGE_SIZE_BYTES:
+        if actual_image_size_bytes != profile.root_size_bytes:
             raise ContractError(
                 f"image size is {actual_image_size_bytes}, expected "
-                f"{_ROOT_IMAGE_SIZE_BYTES}"
+                f"{profile.root_size_bytes}"
             )
         actual_image_sha256 = _sha256_stream(image_file)
     if not hmac.compare_digest(
@@ -464,7 +464,7 @@ def write_manifest(
         "filesystem": {
             "block_size_bytes": _FILESYSTEM_BLOCK_SIZE_BYTES,
             "label": profile.root_label,
-            "size_bytes": _ROOT_IMAGE_SIZE_BYTES,
+            "size_bytes": profile.root_size_bytes,
             "type": _FILESYSTEM_TYPE,
             "uuid": profile.root_uuid,
         },
@@ -861,11 +861,12 @@ def _gate_versions(
         matches = [
             version
             for name, architecture, version in rows
-            if name == package_name and architecture == _ARCHITECTURE
+            if name == package_name and architecture in _GATE_ARCHITECTURES
         ]
         if len(matches) != 1:
             raise ContractError(
-                f"gate package {package_name} must have exactly one {_ARCHITECTURE} lock row"
+                f"gate package {package_name} must have exactly one "
+                f"{_ARCHITECTURE} or all lock row"
             )
         versions[package_name] = matches[0]
     return versions

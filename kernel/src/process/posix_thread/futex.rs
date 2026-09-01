@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use int_to_c_enum::TryFromInt;
 use ostd::{
     cpu::num_cpus,
     sync::{PreemptDisabled, Waiter, Waker},
+    timer::Jiffies,
 };
 use spin::Once;
 
@@ -18,6 +21,17 @@ use crate::{
 type FutexBitSet = u32;
 
 const FUTEX_BITSET_MATCH_ANY: FutexBitSet = 0xFFFF_FFFF;
+
+static FUTEX_PROFILE: AtomicBool = AtomicBool::new(false);
+static FUTEX_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAIT_JIFFIES: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAIT_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+const FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES: u64 = 64;
+const FUTEX_WAIT_DETAIL_LOG_LIMIT: u64 = 128;
+
+aster_cmdline::define_flag_param!("asterinas.futex_profile", FUTEX_PROFILE);
 
 /// Specifies whether a futex is scoped to the current process or shared through
 /// its backing mapping.
@@ -116,13 +130,64 @@ pub fn futex_wait_bitset(
     // Release the lock.
     drop(futex_bucket);
 
+    let has_timeout = timeout.is_some();
+    let wait_start = FUTEX_PROFILE
+        .load(Ordering::Relaxed)
+        .then(|| Jiffies::elapsed().as_u64());
     let result = waiter.pause_timeout(&timeout.into());
+    let elapsed = wait_start.map(|start| Jiffies::elapsed().as_u64().saturating_sub(start));
+
+    // A large aggregate futex time can be either legitimate synchronization or
+    // repeated timeout/spurious-wakeup behavior.  Record the wait identity and
+    // outcome so the next bounded diagnostic run can distinguish those cases
+    // without tracing every syscall or perturbing normal boots.
+    let item = futex_bucket_ref.lock().remove_by_waker(&waiter.waker());
+    let was_woken = item.is_none();
+    if let (Some(elapsed), true) = (elapsed, FUTEX_PROFILE.load(Ordering::Relaxed)) {
+        if elapsed >= FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES {
+            let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+            if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
+                let outcome = if was_woken {
+                    "woken"
+                } else if result.is_err() {
+                    "timeout_or_error"
+                } else {
+                    "spurious"
+                };
+                ostd::early_println!(
+                    "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
+                    event,
+                    ctx.process.pid(),
+                    ctx.posix_thread.tid(),
+                    futex_addr,
+                    futex_val,
+                    bitset,
+                    has_timeout,
+                    elapsed,
+                    outcome,
+                );
+            }
+        }
+    }
+    if let Some(wait_start) = wait_start {
+        let count = FUTEX_WAIT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let elapsed =
+            elapsed.unwrap_or_else(|| Jiffies::elapsed().as_u64().saturating_sub(wait_start));
+        let total = FUTEX_WAIT_JIFFIES.fetch_add(elapsed, Ordering::Relaxed) + elapsed;
+        if count == 1 || count.is_multiple_of(64) {
+            ostd::info!(
+                "ASTERINAS_FUTEX_PROFILE waits={} wait_jiffies={} wakes={}",
+                count,
+                total,
+                FUTEX_WAKE_COUNT.load(Ordering::Relaxed)
+            );
+        }
+    }
 
     // If the futex wait operation was interrupted by a signal or timed out, the
     // `FutexItem` must be dequeued and dropped. Otherwise, malicious user programs
     // could repeatedly issue futex wait operations to exhaust kernel memory.
-    let item = futex_bucket_ref.lock().remove_by_waker(&waiter.waker());
-    if item.is_none() {
+    if was_woken {
         // The futex item will be removed asynchronously if and only if it has been woken up. In
         // that case, we should report success to the user.
         // FIXME: `pause_timeout` should return `Ok(())` in this case, but it currently may return
@@ -166,6 +231,9 @@ pub fn futex_wake_bitset(
     let (_, futex_bucket_ref) = get_futex_bucket(&futex_key);
     let mut futex_bucket = futex_bucket_ref.lock();
     let res = futex_bucket.remove_and_wake_items(&futex_key, max_count);
+    if FUTEX_PROFILE.load(Ordering::Relaxed) {
+        FUTEX_WAKE_COUNT.fetch_add(res as u64, Ordering::Relaxed);
+    }
 
     Ok(res)
 }

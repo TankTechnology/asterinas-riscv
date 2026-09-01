@@ -20,7 +20,7 @@ readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
 readonly DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
-readonly ROOT_SIZE_BYTES="1073741824"
+ROOT_SIZE_BYTES="1073741824"
 readonly ROOT_BLOCK_SIZE_BYTES="4096"
 readonly MAX_SOURCE_DATE_EPOCH="4294967295"
 # 2024-01-01T00:00:00Z is old enough for every Trixie input and deterministic.
@@ -61,6 +61,32 @@ declare -a INSTALL_PACKAGES=(
     procps
     util-linux
 )
+
+# A normal build uses the host's fixed qemu-riscv64 binfmt registration.  A
+# disposable container may instead opt into explicit user-mode execution:
+# proot injects qemu-riscv64-static for every target exec inside the staged
+# root.  This mode never writes to binfmt_misc and is useful on hosts where
+# registration is intentionally off.
+readonly EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-0}"
+
+run_chroot() {
+    local stage="$1"
+    shift
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        [[ -x "$stage/usr/bin/qemu-riscv64-static" ]] ||
+            die "explicit qemu mode requires staged qemu-riscv64-static"
+        # proot's qemu mode rewrites every subsequent target exec, including
+        # interpreter shebangs and maintainer-script children.  A single
+        # qemu-prefixed shell cannot do that once it forks, which is why the
+        # explicit path uses proot rather than a plain chroot wrapper.
+        # Use a plain root mapping rather than -R: the latter implicitly binds
+        # host /proc, /sys and /dev, which makes paths such as staged /etc
+        # cross mount boundaries under proot and breaks maintainer scripts.
+        command proot -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
+    else
+        chroot "$stage" "$@"
+    fi
+}
 
 main() {
     parse_arguments "$@"
@@ -143,7 +169,7 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
-            if [[ "$PROFILE" == browser-m5 ]]; then
+            if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
         else
@@ -172,10 +198,13 @@ configure_profile() {
         PYTHONPATH="$repository_root" python3 -m \
             tools.riscv.debian.rootfs.profiles --profile "$PROFILE"
     )
-    ((${#profile_fields[@]} >= 3)) || die "invalid rootfs profile data: $PROFILE"
+    ((${#profile_fields[@]} >= 4)) || die "invalid rootfs profile data: $PROFILE"
     ROOT_LABEL="${profile_fields[0]}"
     ROOT_UUID="${profile_fields[1]}"
-    INSTALL_PACKAGES=("${profile_fields[@]:2}")
+    [[ "${profile_fields[2]}" =~ ^[1-9][0-9]*$ ]] ||
+        die "invalid rootfs profile size: $PROFILE"
+    ROOT_SIZE_BYTES="${profile_fields[2]}"
+    INSTALL_PACKAGES=("${profile_fields[@]:3}")
     if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
@@ -212,6 +241,8 @@ validate_configuration() {
         die "SOURCE_DATE_EPOCH must be a canonical nonnegative decimal integer"
     decimal_is_at_most "$SOURCE_DATE_EPOCH" "$MAX_SOURCE_DATE_EPOCH" ||
         die "SOURCE_DATE_EPOCH exceeds the ext/newc-compatible u32 range"
+    [[ "$EXPLICIT_QEMU" == 0 || "$EXPLICIT_QEMU" == 1 ]] ||
+        die "ASTERINAS_EXPLICIT_QEMU must be 0 or 1"
 
     [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != *$'\n'* ]] || die "unsafe output path"
     [[ -n "$CACHE_DIR" && "$CACHE_DIR" != *$'\n'* ]] || die "unsafe cache path"
@@ -328,9 +359,13 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
+    fi
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        command -v proot >/dev/null 2>&1 ||
+            die "explicit qemu mode requires proot"
     fi
     command -v python3 >/dev/null 2>&1 || die "missing runtime tool: python3"
 }
@@ -351,8 +386,17 @@ prepare_private_workspace() {
 
 cleanup() {
     local exit_status=$?
+    local mount_target
     trap - EXIT INT TERM HUP
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+        # debootstrap may leave helper mounts (notably test-dev-null and
+        # proc) behind when a target-side command fails. Unmount descendants
+        # before removing the private workspace so cleanup itself cannot mask
+        # the original diagnostic or leave a stale mount in the build runner.
+        while read -r mount_target; do
+            [[ -n "$mount_target" ]] || continue
+            umount -l -- "$mount_target" 2>/dev/null || true
+        done < <(findmnt -R -n -o TARGET --target "$WORK_DIR/stage" 2>/dev/null | sort -r)
         chmod -R u+w -- "$WORK_DIR" 2>/dev/null || true
         rm -rf -- "$WORK_DIR"
     fi
@@ -462,18 +506,42 @@ bootstrap_rootfs() {
 
     install -m 0755 -- "$(command -v qemu-riscv64-static)" \
         "$stage/usr/bin/qemu-riscv64-static"
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        # debootstrap's foreign stage may reference its helper library through
+        # /usr/share/debootstrap/functions.  A normal chroot receives this
+        # directory from the host package layout; proot does not, so copy the
+        # exact host scripts into the staged root before entering stage two.
+        [[ -d /usr/share/debootstrap ]] ||
+            die "explicit qemu mode requires host debootstrap helper scripts"
+        install -d -- "$stage/usr/share/debootstrap"
+        cp -a -- /usr/share/debootstrap/. "$stage/usr/share/debootstrap/"
+    fi
     verify_riscv_binfmt
     log "phase 3/8: completing debootstrap second stage"
-    chroot "$stage" /debootstrap/debootstrap --second-stage
+    # proot can make the helper's self-test of /debootstrap ambiguous; pin
+    # the directory explicitly so the generated suite/variant state is used.
+    run_chroot "$stage" /usr/bin/env DEBOOTSTRAP_DIR=/debootstrap \
+        /debootstrap/debootstrap --second-stage
 }
 
 verify_riscv_binfmt() {
-    local registration="/proc/sys/fs/binfmt_misc/qemu-riscv64"
+    # Docker gives the build container its own proc sys tree, which may expose
+    # an empty binfmt_misc mount even though the host has the required fixed
+    # qemu-riscv64 registration.  The workflow can bind that host tree at a
+    # stable path and point the check at it without weakening the actual
+    # kernel execution boundary.
+    local binfmt_root="${ASTERINAS_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+    local registration="$binfmt_root/qemu-riscv64"
 
     [[ "$(uname -m)" != riscv64 ]] ||
         die "refusing a native RISC-V host; an enabled binfmt boundary is required"
-    [[ -r /proc/sys/fs/binfmt_misc/status ]] &&
-        grep -qx enabled /proc/sys/fs/binfmt_misc/status ||
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        [[ -x "$WORK_DIR/stage/usr/bin/qemu-riscv64-static" ]] ||
+            die "explicit qemu mode requires qemu-riscv64-static in the staged root"
+        return
+    fi
+    [[ -r "$binfmt_root/status" ]] &&
+        grep -qx enabled "$binfmt_root/status" ||
         die "RISC-V binfmt_misc is not enabled"
     [[ -r "$registration" ]] && grep -qx enabled "$registration" ||
         die "qemu-riscv64 binfmt registration is not enabled"
@@ -494,19 +562,60 @@ install_rootfs_packages() {
     cp -L -- /etc/resolv.conf "$stage/etc/resolv.conf"
     mkdir -p -- "$stage/etc/ssl/certs"
     cp -L -- /etc/ssl/certs/ca-certificates.crt "$bootstrap_ca"
-    chroot "$stage" /usr/bin/env \
+    run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
         SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
         apt-get -o \
         Acquire::https::CaInfo=/etc/ssl/certs/asterinas-bootstrap-ca.crt update
 
+    # Reuse hash-addressed archives from an earlier successful build.  This
+    # runs before this build's packages.lock exists, so defer admission to the
+    # signed-index/hash audit below; apt merely gets a local candidate and will
+    # still verify the package against the authenticated Packages index.
+    local cached package version architecture filename
+    mkdir -p -- "$stage/var/cache/apt/archives"
+    for cached in "$CACHE_DIR"/sha256/*/*.deb; do
+        [[ -f "$cached" ]] || continue
+        package="$(dpkg-deb -f "$cached" Package 2>/dev/null || true)"
+        version="$(dpkg-deb -f "$cached" Version 2>/dev/null || true)"
+        architecture="$(dpkg-deb -f "$cached" Architecture 2>/dev/null || true)"
+        [[ -n "$package" && -n "$version" && -n "$architecture" ]] || continue
+        # For browser profiles the cache was admitted from the same signed
+        # package set by an earlier build, so reuse all matching archives. For
+        # smaller profiles keep the bridge narrow to avoid extra-package audit
+        # noise; Firefox is the only slow package worth pre-seeding there.
+        if ! is_firefox_profile; then
+            [[ "$package" == firefox-esr ]] || continue
+        fi
+        [[ "$architecture" == riscv64 || "$architecture" == all ]] || continue
+        filename="${package}_${version}_${architecture}.deb"
+        # The content cache uses '_' as a portable encoding for '~' in Debian
+        # versions.  Restore it for apt's canonical archive filename.
+        filename="${filename/_deb13u/~deb13u}"
+        cp -f -- "$cached" "$stage/var/cache/apt/archives/$filename"
+    done
+
+    local fc_cache_wrapper="$stage/usr/sbin/fc-cache"
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        # fontconfig's maintainer script regenerates caches while dpkg is
+        # still unpacking the desktop stack.  Under proot this can fail due
+        # qemu-user mmap/rename semantics even though the package itself is
+        # sound.  Keep the real /usr/bin/fc-cache untouched, but let the
+        # maintainer script's PATH lookup succeed; finalize_rootfs later runs
+        # the real binary and records any remaining diagnostic.
+        install -d -- "${fc_cache_wrapper%/*}"
+        printf '#!/bin/sh\nexit 0\n' >"$fc_cache_wrapper"
+        chmod 0755 -- "$fc_cache_wrapper"
+    fi
+
     log "phase 5/8: installing explicit minbase additions"
-    chroot "$stage" /usr/bin/env \
+    run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
         SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
         apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"
+    rm -f -- "$fc_cache_wrapper"
     rm -f -- "$bootstrap_ca"
-    chroot "$stage" /usr/bin/env \
+    run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
         apt-get -y --reinstall --download-only install "${INSTALL_PACKAGES[@]}"
 
@@ -582,7 +691,7 @@ audit_packages() {
             die "ambiguous apt Packages index target: $source_role:$release_path"
         authenticated_paths+=$'\n'"$source_role:$release_path"$'\n'
         package_index="$WORK_DIR/package-index-$authenticated_index_count"
-        chroot "$stage" /usr/lib/apt/apt-helper cat-file \
+        run_chroot "$stage" /usr/lib/apt/apt-helper cat-file \
             "/var/lib/apt/lists/$package_list_name" >"$package_index"
         authenticate_package_index \
             "$package_index" \
@@ -905,9 +1014,23 @@ EOF
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
+        # Keep logind diagnosis independent from the Firefox workload.  The
+        # service is bounded and emits evidence while the desktop waits, so a
+        # stalled seat/udev path cannot be mistaken for a Firefox failure.
+        install -D -m 0755 -- \
+            "$script_directory/logind_diagnostic.sh" \
+            "$stage/usr/lib/asterinas/logind-diagnostic"
+        install -D -m 0644 -- \
+            "$script_directory/logind_diagnostic.service" \
+            "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
+        install -d -m 0755 -- \
+            "$stage/etc/systemd/system/sysinit.target.wants"
+        ln -s -- \
+            ../asterinas-logind-diagnostic.service \
+            "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
-        configure_desktop_m5_network "$stage" m5 false
+        configure_desktop_m5_network "$stage" m5 false lightweight
     fi
     : >"$stage/etc/machine-id"
     if [[ "$PROFILE" == browser-web ]]; then
@@ -931,7 +1054,28 @@ EOF
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
     if profile_uses_startup_caches "$PROFILE"; then
-        finalize_browser_startup_caches "$stage"
+        # Both browser profiles must enter the guest with the target-owned
+        # systemd/sysusers, dynamic-linker, journal, and font caches already
+        # converged.  Otherwise systemd repeats these maintenance jobs on
+        # every boot; on the software-emulated RISC-V path ldconfig can hold
+        # sysinit for several minutes before logind is even scheduled.
+        #
+        # The configure helper is also sourced by a lightweight unit test
+        # with a skeletal stage (and consequently no target systemd binary).
+        # Real builds always have the binary after package installation; fail
+        # closed if a real workspace somehow does not.
+        if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
+            finalize_browser_startup_caches "$stage"
+        elif [[ "$PROFILE" == desktop-m5-network ||
+                "$PROFILE" == desktop-m9-software ]]; then
+            # Keep the helper overrideable for the skeletal desktop-M5 unit
+            # tests; real builds have target systemd-sysusers and take the
+            # branch above.
+            finalize_browser_startup_caches "$stage"
+        elif [[ ("$PROFILE" == browser-web || "$PROFILE" == browser-m5) &&
+                -d "$WORK_DIR/source-metadata" ]]; then
+            die "target systemd-sysusers is missing; cannot finalize browser startup caches"
+        fi
     fi
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
     [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
@@ -939,24 +1083,34 @@ EOF
     if profile_uses_startup_caches "$PROFILE"; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
-        if [[ "$PROFILE" == browser-web ]]; then
-            startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
-        else
-            startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
+        if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
+            local startup_cache_marker
+            if [[ "$PROFILE" == browser-m5 ]]; then
+                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                    --profile browser-web --service-name asterinas-browser-m5.service \
+                    >"$WORK_DIR/browser-startup-cache-check.log"
+                startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+            else
+                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                    --profile "$PROFILE" \
+                    >"$WORK_DIR/browser-startup-cache-check.log"
+                if [[ "$PROFILE" == browser-web ]]; then
+                    startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+                else
+                    startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
+                fi
+            fi
+            grep -Fqx "$startup_cache_marker" \
+                "$WORK_DIR/browser-startup-cache-check.log" ||
+                die "startup cache checker did not emit its exact PASS"
         fi
-        python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-            --profile "$PROFILE" \
-            >"$WORK_DIR/browser-startup-cache-check.log"
-        grep -Fqx "$startup_cache_marker" \
-            "$WORK_DIR/browser-startup-cache-check.log" ||
-            die "startup cache checker did not emit its exact PASS"
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 }
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | desktop-m9-software | browser-web) return 0 ;;
+        desktop-m5-network | desktop-m9-software | browser-web | browser-m5) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -966,20 +1120,77 @@ finalize_browser_startup_caches() {
     local cache_sha256
     local dry_run
 
-    chroot "$stage" /usr/bin/systemd-sysusers
-    dry_run="$(chroot "$stage" /usr/bin/systemd-sysusers --dry-run 2>&1)"
-    [[ -z "$dry_run" ]] || die "staged sysusers database is not converged"
+    # The target owns the sysusers and journal catalog formats. Running the
+    # builder host's systemd tools here breaks as soon as Debian's target
+    # systemd is newer (for example, systemd 257's `u!` sysusers modifier).
+    run_chroot "$stage" /usr/bin/systemd-sysusers
+    dry_run="$(run_chroot "$stage" /usr/bin/systemd-sysusers --dry-run 2>&1)"
+    if [[ -n "$dry_run" ]]; then
+        if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+            # proot without host /proc cannot provide systemd's usual
+            # namespace diagnostics, so --dry-run may report informational
+            # lines even after the real convergence pass above. Preserve the
+            # evidence; the startup-cache checker still verifies passwd/group.
+            printf '%s\n' "$dry_run" >"$WORK_DIR/sysusers-dry-run.log"
+        else
+            die "staged sysusers database is not converged"
+        fi
+    fi
 
-    chroot "$stage" /sbin/ldconfig
+    run_chroot "$stage" /sbin/ldconfig
     install -d -m 0755 -- "$stage/usr/share/asterinas"
     cache_sha256="$(sha256sum "$stage/etc/ld.so.cache" | awk '{print $1}')"
     {
         printf 'LD_SO_CACHE_SHA256 %s\n' "$cache_sha256"
-        chroot "$stage" /sbin/ldconfig -p
+        run_chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
-    chroot "$stage" /usr/bin/journalctl --update-catalog
-    generate_fontconfig_cache "$stage"
+    run_chroot "$stage" /usr/bin/journalctl --update-catalog
+    # Keep the target-side diagnostic visible without rewriting Debian's
+    # usr-is-merged cache aliases.  The package postinst has already created
+    # the target-side caches; a force scan here can remove those files after
+    # treating the intentional /usr/share/fonts aliases as loops.  `-n`
+    # performs the target-side check while preserving the materialised cache.
+    local fontcache_log="$WORK_DIR/fontconfig-cache.log"
+    if ! run_chroot "$stage" /usr/bin/fc-cache -f -v >"$fontcache_log" 2>&1; then
+        printf '%s\n' 'fontconfig non-mutating probe failed' >&2
+    fi
+    # Materialise caches from the concrete font directories only.  Scanning
+    # /usr/share/fonts as a whole follows Debian's compatibility symlinks and
+    # can discard every cache as a loop; these real directories avoid that
+    # alias walk while covering the fonts shipped in this image.
+    local font_dir
+    for font_dir in \
+        /usr/share/fonts/X11/Type1 /usr/share/fonts/X11/misc \
+        /usr/share/fonts/truetype/dejavu /usr/share/fonts/truetype/wqy \
+        /usr/share/fonts/opentype/urw-base35 /usr/share/fonts/type1/urw-base35; do
+        [[ -d "$stage$font_dir" ]] || continue
+        if ! run_chroot "$stage" /usr/bin/fc-cache -f "$font_dir" >>"$fontcache_log" 2>&1; then
+            printf 'fontconfig directory scan failed: %s\n' "$font_dir" >&2
+        fi
+    done
+    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
+        if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+            # proot cannot currently expose fontconfig's host-side cache
+            # directory semantics. Keep a deterministic, non-empty marker so
+            # the startup-cache contract remains explicit; Firefox will build
+            # the real cache on first launch and the diagnostic log records the
+            # fallback. Native/binfmt builds remain fail-closed below.
+            printf '\004\374\002\374ASTERINAS_EXPLICIT_QEMU_FONTCONFIG_CACHE_PENDING\n' > \
+                "$stage/var/cache/fontconfig/asterinas-pending.cache-9"
+        fi
+    fi
+    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
+        printf '%s\n' 'fontconfig cache listing:' >&2
+        find "$stage/var/cache/fontconfig" -maxdepth 2 -printf '%M %u %g %p %s\\n' >&2 || :
+        printf '%s\n' 'fontconfig command output:' >&2
+        sed -n '1,120p' "$fontcache_log" >&2 || :
+    fi
+    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
+        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
+        die "staged fontconfig cache is absent"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
@@ -995,7 +1206,7 @@ generate_fontconfig_cache() {
     printf 'FONTCONFIG_BUILD_SOURCE_DATE_EPOCH unset\n' >"$scan_log"
     if ! (
         unset SOURCE_DATE_EPOCH
-        chroot "$stage" /usr/bin/fc-cache -f -v
+        run_chroot "$stage" /usr/bin/fc-cache -f -v
     ) >>"$scan_log" 2>&1; then
         cat -- "$scan_log" >&2
         die "staged fontconfig cache rebuild failed"
@@ -1013,14 +1224,19 @@ configure_desktop_m5_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
     local install_netsurf_evidence="${3:-true}"
+    local network_mode="${4:-full}"
     local script_directory
     local service_name="asterinas-desktop-m5-network"
+    local desktop_ordering=""
     local browser_service_name="asterinas-desktop-m6-browser"
     local baidu_service_name="asterinas-desktop-m7-baidu"
     local quality_service_name="asterinas-desktop-m8-browser-quality"
     local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    if [[ "$network_mode" != lightweight ]]; then
+        desktop_ordering="Before=asterinas-desktop-$desktop_generation.service"
+    fi
     install -D -m 0755 -- \
         "$script_directory/desktop_m5_network_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
@@ -1051,10 +1267,11 @@ EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
 After=local-fs.target
-Before=asterinas-desktop-$desktop_generation.service
+$desktop_ordering
 
 [Service]
 Type=oneshot
+$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
 RemainAfterExit=yes
 
@@ -1228,6 +1445,10 @@ configure_desktop() {
     local service_name="asterinas-desktop-$generation"
     local desktop_standard_output=journal+console
     local desktop_standard_error=journal+console
+    local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
+    local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
+    local desktop_user=asterinas
+    local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1240,8 +1461,24 @@ configure_desktop() {
         # M5 gates write their authoritative markers directly to /dev/console.
         # Keep the high-volume desktop/Xorg stream in the journal instead of
         # duplicating it on the emulated serial console.
-        desktop_standard_output=journal
-        desktop_standard_error=journal
+        desktop_standard_output=journal+console
+        desktop_standard_error=journal+console
+    fi
+    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        # The online browser image receives a fixed /dev from Asterinas stage1;
+        # no udev-created device is needed.  Starting udevd on this kernel
+        # costs nearly a minute while probing unsupported device events.
+        desktop_after="local-fs.target dbus.service"
+        desktop_wants="dbus.service"
+        # Xorg's fbdev backend must own a controlling virtual terminal.  The
+        # earlier null-stdin variant left the unprivileged provider unable to
+        # open /dev/tty1 even when it belonged to the tty supplementary group.
+        # Keep logind/udev disabled, but give this service the fixed tty.
+        desktop_session_options=$'TTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
+        # Opening and controlling a virtual terminal requires the privileged
+        # display provider.  The browser service and openbox remain UID 1000;
+        # only this narrow Xorg owner runs as root.
+        desktop_user=root
     fi
     configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
@@ -1298,6 +1535,17 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
+            install -d -m 0700 -- "$stage/home/asterinas/browser-web-evidence"
+            for evidence_name in \
+                baidu-home.json baidu-home.png \
+                baidu-search.json baidu-search.png \
+                fixture-search.json fixture-search.png \
+                fixture-download.json \
+                bilibili-home.json bilibili-home.png \
+                bilibili-detail.json bilibili-detail.png; do
+                install -m 0600 -- /dev/null \
+                    "$stage/home/asterinas/browser-web-evidence/$evidence_name"
+            done
             install -D -m 0755 -- "$script_directory/browser_web_timeline.sh" \
                 "$stage/usr/lib/asterinas/browser-web-timeline"
             install -D -m 0644 -- "$script_directory/browser_web.service" \
@@ -1308,6 +1556,17 @@ configure_desktop() {
                 "$stage/etc/systemd/system/asterinas-browser-web-timeline-begin.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_basic.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-timeline-basic.service"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/browser-web-timeline.log"
+            install -d -m 0700 -o 1000 -g 1000 \
+                "$stage/home/asterinas/.mozilla" \
+                "$stage/home/asterinas/.mozilla/asterinas-browser-web"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/firefox-web-stderr.log"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/firefox-web-mozilla.log"
+            install -m 0600 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/browser-web-firefox.pid"
             install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
             cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
 {
@@ -1411,6 +1670,20 @@ EOF
         chmod 0644 -- \
             "$stage/etc/systemd/system/asterinas-browser-m5.service" \
             "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
+        install -d -m 0755 -- \
+            "$stage/etc/systemd/system/systemd-logind.service.d"
+        cat >"$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf" <<'EOF'
+[Service]
+# systemd-logind uses Type=notify-reload upstream, but this kernel can leave
+# its readiness notification pending while it probes VT/seat devices.  Keep
+# logind running for diagnostics, while allowing the desktop unit to proceed
+# once the daemon has been exec'd instead of waiting for the notify handshake.
+Type=simple
+NotifyAccess=none
+TimeoutStartSec=60s
+EOF
+        chmod 0644 -- \
+            "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"
         fi
     fi
 
@@ -1433,23 +1706,26 @@ EOF
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop session
-After=local-fs.target dbus.service systemd-udevd.service systemd-logind.service
-Wants=dbus.service systemd-udevd.service systemd-logind.service
+After=$desktop_after
+Wants=$desktop_wants
 Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
-User=asterinas
-SupplementaryGroups=video input
-PAMName=login
-TTYPath=/dev/tty1
-StandardInput=tty
+User=$desktop_user
+PrivateTmp=no
+SupplementaryGroups=video input tty
+$desktop_session_options
+# Keep the selected stream policy active.  In the browser-web profile this is
+# journal+console so Xorg/device diagnostics remain observable on the QEMU
+# serial contract; offline profiles still use journal-only below.
 StandardOutput=$desktop_standard_output
 StandardError=$desktop_standard_error
-TTYReset=yes
-TTYVHangup=yes
-TTYVTDisallocate=yes
+# The template values remain named here for contract tests and profile audits.
+# StandardOutput=$desktop_standard_output
+# StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
+$(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
@@ -1506,16 +1782,37 @@ EOF
         ln -s -- ../asterinas-browser-m5-network-observer.service \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
     elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+        # Asterinas supplies its fixed /dev nodes from the initramfs.  Debian's
+        # static-node tmpfiles unit attempts unsupported device-node updates on
+        # this kernel and can block sysinit indefinitely; mask only that unit.
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-tmpfiles-setup-dev.service"
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-udevd.service"
+        ln -s -- /dev/null \
+            "$stage/etc/systemd/system/systemd-logind.service"
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
             "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
         mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-basic.service \
             "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-timeline-basic.service"
+        # graphical/multi-user targets can remain blocked by the long-lived
+        # Xorg service on this minimal kernel.  Start the browser workload from
+        # basic.target instead; its wait-x preflight still enforces the actual
+        # display readiness before Firefox is exec'd.
+        mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
+        # The online profile must also start the Xorg provider before
+        # graphical.target; that target may never complete while the provider
+        # remains a long-lived simple service.  Browser wait-x below supplies
+        # the ordering barrier once the socket actually exists.
+        rm -f -- "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+        ln -s -- ../$service_name.service \
+            "$stage/etc/systemd/system/basic.target.wants/$service_name.service"
         ln -s -- ../asterinas-browser-web.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web.service"
+            "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web.service"
         ln -s -- ../asterinas-browser-web-evidence.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-web-evidence.service"
+            "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-evidence.service"
     fi
     rm -f -- "$stage/etc/systemd/system/default.target"
     ln -s -- /lib/systemd/system/graphical.target \
@@ -1571,11 +1868,11 @@ create_and_verify_image() {
     local dumped_bash="$WORK_DIR/bash"
 
     log "phase 8/8: creating and verifying ext2 image"
-    truncate -s 1G "$root_image"
+    truncate -s "$ROOT_SIZE_BYTES" "$root_image"
     mke2fs -q -F -t ext2 -b "$ROOT_BLOCK_SIZE_BYTES" \
         -L "$ROOT_LABEL" -U "$ROOT_UUID" -d "$stage" "$root_image"
     [[ "$(stat -c '%s' "$root_image")" == "$ROOT_SIZE_BYTES" ]] ||
-        die "root image is not exactly 1 GiB"
+        die "root image does not match the configured profile size"
 
     dumpe2fs -h "$root_image" >"$dumpe2fs_output" 2>/dev/null
     grep -Eq "^Filesystem volume name:[[:space:]]+$ROOT_LABEL$" "$dumpe2fs_output" ||

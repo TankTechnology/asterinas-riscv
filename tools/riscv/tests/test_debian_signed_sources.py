@@ -533,6 +533,21 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 / "etc/systemd/system/systemd-logind.service.d"
                 / "asterinas-namespace-compat.conf"
             )
+            logind_timeout = (
+                stage
+                / "etc/systemd/system/systemd-logind.service.d"
+                / "asterinas-browser-m5-timeout.conf"
+            )
+            logind_diagnostic = stage / "usr/lib/asterinas/logind-diagnostic"
+            logind_diagnostic_unit = (
+                stage
+                / "etc/systemd/system/asterinas-logind-diagnostic.service"
+            )
+            logind_diagnostic_want = (
+                stage
+                / "etc/systemd/system/sysinit.target.wants"
+                / "asterinas-logind-diagnostic.service"
+            )
             network_evidence = (
                 stage / "usr/lib/asterinas/desktop-m5-network-evidence"
             )
@@ -573,7 +588,34 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             firefox_unit_text = firefox_unit.read_text()
             observer_unit_text = observer_unit.read_text()
             evidence_unit_text = evidence_unit.read_text()
+            self.assertEqual(logind_timeout.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(logind_diagnostic.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(logind_diagnostic_unit.stat().st_mode & 0o777, 0o644)
+            self.assertTrue(logind_diagnostic_want.is_symlink())
+            self.assertIn("DEBIAN_LOGIND_DIAGNOSTIC_ACTIVE", logind_diagnostic.read_text())
+            self.assertIn("DefaultDependencies=no", logind_diagnostic_unit.read_text())
+            self.assertIn("Before=", logind_diagnostic_unit.read_text())
+            self.assertIn("sysinit.target", logind_diagnostic_unit.read_text())
+            self.assertIn(
+                "Environment=ASTERINAS_LOGIND_DIAGNOSTIC_TIMEOUT_SECONDS=300",
+                logind_diagnostic_unit.read_text(),
+            )
+            self.assertIn("ExecStart=/bin/sh -c", logind_diagnostic_unit.read_text())
+            self.assertIn("KillMode=mixed", logind_diagnostic_unit.read_text())
+            self.assertIn("WantedBy=sysinit.target", logind_diagnostic_unit.read_text())
+            self.assertIn("TimeoutStartSec=330s", logind_diagnostic_unit.read_text())
             self.assertEqual(logind_compat.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(
+                logind_timeout.read_text(),
+                "[Service]\n"
+                "# systemd-logind uses Type=notify-reload upstream, but this kernel can leave\n"
+                "# its readiness notification pending while it probes VT/seat devices.  Keep\n"
+                "# logind running for diagnostics, while allowing the desktop unit to proceed\n"
+                "# once the daemon has been exec'd instead of waiting for the notify handshake.\n"
+                "Type=simple\n"
+                "NotifyAccess=none\n"
+                "TimeoutStartSec=60s\n",
+            )
             self.assertEqual(
                 logind_compat.read_text(),
                 "[Service]\n"

@@ -18,7 +18,7 @@
 use core::{
     cmp::min,
     ops::{Deref, Range},
-    sync::atomic::{AtomicIsize, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use align_ext::AlignExt;
@@ -26,17 +26,97 @@ use io_util::batch::IoBatch;
 use ostd::{
     mm::{HasPaddr, Paddr, io::util::HasVmReaderWriter},
     task::disable_preempt,
+    timer::Jiffies,
 };
 use xarray::{Cursor, LockedXArray, XArray};
 
 use crate::{
     prelude::*,
-    vm::page_cache::{CachePage, CachePageExt, PageCacheBackend},
+    process::posix_thread::AsPosixThread,
+    vm::page_cache::{CachePage, CachePageExt, LockedCachePage, PageCacheBackend},
 };
 
 mod options;
 
 pub use options::VmoOptions;
+
+static PAGECACHE_PROFILE: AtomicBool = AtomicBool::new(false);
+static PAGECACHE_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+static PAGECACHE_READ_JIFFIES: AtomicU64 = AtomicU64::new(0);
+const PAGECACHE_PROFILE_PID_SLOTS: usize = 256;
+const PAGECACHE_PROFILE_PID_LOG_INTERVAL: u64 = 256;
+static PAGECACHE_PROFILE_PID_KEYS: [AtomicU32; PAGECACHE_PROFILE_PID_SLOTS] =
+    [const { AtomicU32::new(0) }; PAGECACHE_PROFILE_PID_SLOTS];
+static PAGECACHE_PROFILE_PID_READS: [AtomicU64; PAGECACHE_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; PAGECACHE_PROFILE_PID_SLOTS];
+static PAGECACHE_PROFILE_PID_JIFFIES: [AtomicU64; PAGECACHE_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; PAGECACHE_PROFILE_PID_SLOTS];
+
+aster_cmdline::define_flag_param!("asterinas.vm_pagecache_profile", PAGECACHE_PROFILE);
+
+fn pagecache_profile_caller() -> (u32, u32) {
+    let pid = crate::process::Process::current()
+        .map(|process| process.pid())
+        .unwrap_or(0);
+    let tid = crate::thread::Thread::current()
+        .and_then(|thread| thread.as_posix_thread().map(|thread| thread.tid()))
+        .unwrap_or(0);
+    (pid, tid)
+}
+
+fn pagecache_profile_pid_slot(pid: u32) -> Option<usize> {
+    let slot = (pid as usize) % PAGECACHE_PROFILE_PID_SLOTS;
+    let key = &PAGECACHE_PROFILE_PID_KEYS[slot];
+    let observed = key.load(Ordering::Relaxed);
+    if observed == 0 {
+        let _ = key.compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed);
+    }
+    (key.load(Ordering::Relaxed) == pid).then_some(slot)
+}
+
+fn profile_backend_read(
+    backend: &dyn PageCacheBackend,
+    index: usize,
+    page: LockedCachePage,
+) -> Result<()> {
+    if !PAGECACHE_PROFILE.load(Ordering::Relaxed) {
+        return backend.read_page(index, page);
+    }
+
+    let start = Jiffies::elapsed().as_u64();
+    let result = backend.read_page(index, page);
+    let elapsed = Jiffies::elapsed().as_u64().saturating_sub(start);
+    let count = PAGECACHE_READ_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let total = PAGECACHE_READ_JIFFIES.fetch_add(elapsed, Ordering::Relaxed) + elapsed;
+    let (pid, tid) = pagecache_profile_caller();
+    let pid_read_count = pagecache_profile_pid_slot(pid).map(|slot| {
+        let pid_reads = PAGECACHE_PROFILE_PID_READS[slot].fetch_add(1, Ordering::Relaxed) + 1;
+        PAGECACHE_PROFILE_PID_JIFFIES[slot].fetch_add(elapsed, Ordering::Relaxed);
+        (slot, pid_reads)
+    });
+    if count == 1 || count.is_multiple_of(256) {
+        ostd::early_println!(
+            "ASTERINAS_PAGECACHE_PROFILE reads={} read_jiffies={} pid={} tid={} pid_reads={}",
+            count,
+            total,
+            pid,
+            tid,
+            pid_read_count.map(|(_, reads)| reads).unwrap_or(0),
+        );
+    } else if let Some((_, reads)) = pid_read_count
+        && reads.is_multiple_of(PAGECACHE_PROFILE_PID_LOG_INTERVAL)
+    {
+        let slot = pagecache_profile_pid_slot(pid).unwrap();
+        ostd::early_println!(
+            "ASTERINAS_PAGECACHE_PROFILE pid_snapshot pid={} tid={} pid_reads={} pid_read_jiffies={}",
+            pid,
+            tid,
+            reads,
+            PAGECACHE_PROFILE_PID_JIFFIES[slot].load(Ordering::Relaxed),
+        );
+    }
+    result
+}
 
 /// Page-indexed memory object used by the page cache and mapping code.
 ///
@@ -657,6 +737,15 @@ impl Vmo {
             match self.try_operate_on_range_internal(&current_range, &mut operate, commit_mode) {
                 Ok(()) => break 'retry,
                 Err(err) => {
+                    if matches!(&err, VmoCommitError::NeedIo { .. })
+                        && !PAGECACHE_PROFILE.load(Ordering::Relaxed)
+                    {
+                        let index = err.pending_index()?;
+                        let end_idx = current_range.end / PAGE_SIZE;
+                        let committed = self.commit_range(index, end_idx, commit_mode)?;
+                        pages.extend(committed);
+                        break 'retry;
+                    }
                     let (idx, page) = self.handle_commit_error(err, commit_mode)?;
                     pages.push((idx, page));
                     current_range.start = (idx + 1) * PAGE_SIZE;
@@ -668,6 +757,44 @@ impl Vmo {
         }
 
         Ok(())
+    }
+
+    /// Commits a contiguous range with one asynchronous I/O batch.
+    ///
+    /// The ordinary fault path used to recover only the first missing page and
+    /// synchronously wait for it before retrying.  That serialized every page
+    /// fault in a sequential executable mapping.  Keep diagnostic mode on the
+    /// old path (it needs per-read timing), while normal operation submits all
+    /// missing pages in the current collection window before waiting once.
+    fn commit_range(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+        commit_mode: CommitMode,
+    ) -> Result<Vec<(usize, CachePage)>> {
+        if PAGECACHE_PROFILE.load(Ordering::Relaxed) {
+            return Ok(vec![(
+                start_idx,
+                self.commit_on_internal(start_idx, commit_mode)?,
+            )]);
+        }
+        let Some(backed_vmo) = self.as_backed_vmo() else {
+            return Err(Error::with_message(
+                Errno::EINVAL,
+                "batched commit requires a backend VMO",
+            ));
+        };
+        backed_vmo.commit_range(start_idx, end_idx, commit_mode)
+    }
+
+    /// Commits a read-fault window, using the normal batching policy.
+    pub(crate) fn commit_range_for_fault(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> Result<()> {
+        self.commit_range(start_idx, end_idx, CommitMode::Read)
+            .map(|_| ())
     }
 
     /// Handles a commit error by performing the necessary I/O or initialization.
@@ -685,10 +812,8 @@ impl Vmo {
             }
             VmoCommitError::WaitUntilInit { index, page } => {
                 page.ensure_init(|locked_page| {
-                    self.as_backed_vmo()
-                        .unwrap()
-                        .backend
-                        .read_page(index, locked_page)
+                    let backend = &self.as_backed_vmo().unwrap().backend;
+                    profile_backend_read(backend.as_ref(), index, locked_page)
                 })?;
                 Ok((index, page))
             }
@@ -707,6 +832,48 @@ pub struct BackedVmo<'a> {
 }
 
 impl<'a> BackedVmo<'a> {
+    fn commit_range(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+        commit_mode: CommitMode,
+    ) -> Result<Vec<(usize, CachePage)>> {
+        let end_idx = end_idx.min(self.vmo.size().div_ceil(PAGE_SIZE));
+        if start_idx >= end_idx {
+            return Ok(Vec::new());
+        }
+
+        let mut pages = Vec::with_capacity(end_idx - start_idx);
+        {
+            let mut locked_pages = self.vmo.pages.lock();
+            for index in start_idx..end_idx {
+                let mut cursor = locked_pages.cursor_mut(index as u64);
+                let page = if let Some(page) = cursor.load() {
+                    page.clone()
+                } else {
+                    let page = CachePage::alloc_uninit()?;
+                    cursor.store(page.clone());
+                    page
+                };
+                pages.push((index, page));
+            }
+        }
+
+        if commit_mode.skips_backend_read() {
+            return Ok(pages);
+        }
+
+        let mut io_batch = IoBatch::with_capacity(pages.len());
+        for (index, page) in &pages {
+            let backend = &self.backend;
+            page.ensure_init(|locked_page| {
+                backend.read_page_async(*index, locked_page, &mut io_batch)
+            })?;
+        }
+        io_batch.wait_all()?;
+        Ok(pages)
+    }
+
     /// Writes back dirty pages in the specified byte range to the backend storage.
     pub(super) fn flush_dirty_pages(&self, range: &Range<usize>) -> Result<()> {
         let locked_pages = self.vmo.pages.lock();
@@ -784,7 +951,9 @@ impl<'a> BackedVmo<'a> {
             drop(locked_pages);
 
             if !commit_mode.skips_backend_read() {
-                page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+                page.ensure_init(|locked_page| {
+                    profile_backend_read(self.backend.as_ref(), page_idx, locked_page)
+                })?;
                 return Ok(page);
             }
 
@@ -801,7 +970,9 @@ impl<'a> BackedVmo<'a> {
             Ok(uninit_page)
         } else {
             // Read the page from the backend storage.
-            uninit_page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+            uninit_page.ensure_init(|locked_page| {
+                profile_backend_read(self.backend.as_ref(), page_idx, locked_page)
+            })?;
             Ok(uninit_page)
         }
     }

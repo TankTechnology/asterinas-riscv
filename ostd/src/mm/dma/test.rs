@@ -182,7 +182,11 @@ mod dma_window {
         assert_eq!(window.translate(0xbfff_f000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_0000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_1000..0xc000_3000), None);
-        assert_eq!(window.translate(0xc000_1000..0xc000_0800), None);
+        // Keep the endpoints derived from the window so Clippy does not reject
+        // this intentional runtime check as a compile-time empty range.
+        let reversed_start = window.cpu_start() + 0x1000;
+        let reversed_end = window.cpu_start() + 0x0800;
+        assert_eq!(window.translate(reversed_start..reversed_end), None);
     }
 }
 
