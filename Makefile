@@ -260,6 +260,9 @@ MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
+RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
+RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
 QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
@@ -270,6 +273,13 @@ RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUI
 MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_FAST_OUT_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/fast)
 MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_UBOOT_BUILD_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/uboot)
 MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_BOARD_OUT_DIR),$(CURDIR)/target/megrez-debug/board)
+
+.PHONY: build_riscv_rootfs_image
+build_riscv_rootfs_image:
+	@docker build --pull=false \
+		--build-arg BASE_IMAGE="$(RISCV_ROOTFS_BASE_IMAGE)" \
+		-f "$(RISCV_ROOTFS_DOCKERFILE)" \
+		-t "$(RISCV_ROOTFS_IMAGE)" .
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
@@ -288,6 +298,11 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu -v
+
+.PHONY: test_riscv_rootfs_builder_image_unit
+test_riscv_rootfs_builder_image_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_riscv_rootfs_builder_image -v
 
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
