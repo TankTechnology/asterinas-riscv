@@ -531,6 +531,33 @@ impl Path {
         Ok(())
     }
 
+    /// Clones this path's mount tree into a detached mount.
+    ///
+    /// This is the VFS operation behind Linux's `open_tree(...,
+    /// OPEN_TREE_CLONE)`. The detached mount can subsequently be attached
+    /// with `move_mount`.
+    pub fn clone_mount_tree_detached(&self, recursive: bool, ctx: &Context) -> Result<Arc<Mount>> {
+        let ns_proxy = ctx.thread_local.borrow_ns_proxy();
+        let current_mnt_ns = ns_proxy.unwrap().mnt_ns();
+        if !current_mnt_ns.owns(&self.mount) {
+            return_errno_with_message!(
+                Errno::EXDEV,
+                "the source path is not in the current mount namespace"
+            );
+        }
+
+        let topology_guard = MountTopology::write_lock();
+        let new_mount = self.mount.clone_mount_tree(
+            &self.dentry,
+            &Arc::downgrade(current_mnt_ns),
+            recursive,
+            MountNsFileCopying::Copy,
+            &topology_guard,
+        )?;
+        drop(topology_guard);
+        Ok(new_mount)
+    }
+
     /// Moves a mount tree from the current path to the destination path.
     ///
     /// # Errors

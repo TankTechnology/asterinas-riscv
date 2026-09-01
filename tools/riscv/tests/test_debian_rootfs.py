@@ -119,6 +119,12 @@ DESKTOP_PCMANFM_CONFIG = (
 DESKTOP_LXPANEL_CONFIG = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_lxpanel.conf"
 )
+LOGIND_DIAGNOSTIC_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/logind_diagnostic.sh"
+)
+LOGIND_DIAGNOSTIC_UNIT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/logind_diagnostic.service"
+)
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
@@ -1150,6 +1156,67 @@ WantedBy=multi-user.target
                         os.readlink(wants),
                         "../asterinas-debian-m2.service",
                     )
+
+    def test_configures_desktop_drm_logind_diagnostic_unit(self) -> None:
+        work_directory = self.directory / "configure-desktop-drm-logind"
+        stage = work_directory / "stage"
+        for relative in (
+            "etc/systemd/system",
+            "etc/X11/xorg.conf.d",
+            "home",
+            "usr/bin",
+            "var/lib/dbus",
+            "var/lib/dpkg",
+            "var/cache/apt/archives",
+            "var/lib/apt/lists",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ):
+            (stage / relative).mkdir(parents=True, exist_ok=True)
+        (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+        (stage / "etc/group").write_text("root:x:0:\n")
+        (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+        (stage / "etc/gshadow").write_text("root:!::\n")
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; PROFILE=desktop-drm; configure_profile 1; '
+                'WORK_DIR="$2"; finalize_browser_startup_caches() { :; }; '
+                'configure_and_normalize_rootfs',
+                "builder-logind-test",
+                str(BUILD_SCRIPT),
+                str(work_directory),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installed_script = stage / "usr/lib/asterinas/logind-diagnostic"
+        installed_unit = stage / (
+            "etc/systemd/system/asterinas-logind-diagnostic.service"
+        )
+        wants = stage / (
+            "etc/systemd/system/sysinit.target.wants/"
+            "asterinas-logind-diagnostic.service"
+        )
+        self.assertEqual(
+            installed_script.read_bytes(), LOGIND_DIAGNOSTIC_SCRIPT.read_bytes()
+        )
+        self.assertEqual(
+            installed_unit.read_bytes(), LOGIND_DIAGNOSTIC_UNIT.read_bytes()
+        )
+        self.assertEqual(stat.S_IMODE(installed_script.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(installed_unit.stat().st_mode), 0o644)
+        self.assertTrue(wants.is_symlink())
+        self.assertEqual(
+            os.readlink(wants), "../asterinas-logind-diagnostic.service"
+        )
 
     def test_configures_desktop_m3_non_root_pam_session(self) -> None:
         work_directory = self.directory / "configure-desktop-m3"

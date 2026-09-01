@@ -918,12 +918,14 @@ EOF
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-drm ]]; then
         configure_desktop "$stage" drm
+        configure_logind_diagnostic "$stage"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
+        configure_logind_diagnostic "$stage"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
@@ -949,7 +951,7 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
-    if [[ "$PROFILE" == browser-web ]]; then
+    if [[ "$PROFILE" == browser-web || "$PROFILE" == desktop-drm ]]; then
         finalize_browser_startup_caches "$stage"
     fi
     rm -f -- "$stage/usr/bin/qemu-riscv64-static"
@@ -965,6 +967,24 @@ EOF
             die "browser startup cache checker did not emit its exact PASS"
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+configure_logind_diagnostic() {
+    local stage="$1"
+    local script_directory
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    install -D -m 0755 -- \
+        "$script_directory/logind_diagnostic.sh" \
+        "$stage/usr/lib/asterinas/logind-diagnostic"
+    install -D -m 0644 -- \
+        "$script_directory/logind_diagnostic.service" \
+        "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
+    install -d -m 0755 -- \
+        "$stage/etc/systemd/system/sysinit.target.wants"
+    ln -s -- \
+        ../asterinas-logind-diagnostic.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
 }
 
 finalize_browser_startup_caches() {

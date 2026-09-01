@@ -28,7 +28,26 @@ const INIT_RLIMIT_MEMLOCK: u64 = 8 * 1024 * 1024;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/uapi/linux/mqueue.h#L26
 const INIT_RLIMIT_MSGQUEUE: u64 = 819200;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/fs/file.c#L90
+/// Initial and maximum supported value for `/proc/sys/fs/nr_open`.
 pub const SYSCTL_NR_OPEN: u64 = 1024 * 1024;
+const SYSCTL_NR_OPEN_MIN: u64 = 1024;
+const SYSCTL_NR_OPEN_MAX: u64 = i32::MAX as u64;
+
+static NR_OPEN: AtomicU64 = AtomicU64::new(SYSCTL_NR_OPEN);
+
+/// Returns the current global limit exposed through `/proc/sys/fs/nr_open`.
+pub fn sysctl_nr_open() -> u64 {
+    NR_OPEN.load(Ordering::Relaxed)
+}
+
+/// Updates `/proc/sys/fs/nr_open` after applying Linux's range constraints.
+pub fn set_sysctl_nr_open(value: u64) -> Result<()> {
+    if !(SYSCTL_NR_OPEN_MIN..=SYSCTL_NR_OPEN_MAX).contains(&value) {
+        return_errno_with_message!(Errno::EINVAL, "nr_open is outside the supported range");
+    }
+    NR_OPEN.store(value, Ordering::Relaxed);
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct ResourceLimits {

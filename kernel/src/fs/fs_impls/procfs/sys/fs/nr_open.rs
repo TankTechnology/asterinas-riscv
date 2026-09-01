@@ -5,11 +5,11 @@ use aster_util::printer::VmPrinter;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{ProcFile, ProcFileOps},
+        procfs::template::{ProcFile, ProcFileOps, read_u64_from},
         vfs::inode::Inode,
     },
     prelude::*,
-    process::rlimit::SYSCTL_NR_OPEN,
+    process::rlimit::{set_sysctl_nr_open, sysctl_nr_open},
 };
 
 /// Represents the inode at `/proc/sys/fs/nr_open`.
@@ -26,16 +26,14 @@ impl ProcFileOps for NrOpenFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 
-        writeln!(printer, "{}", SYSCTL_NR_OPEN)?;
+        writeln!(printer, "{}", sysctl_nr_open())?;
 
         Ok(printer.bytes_written())
     }
 
-    fn write_at(&self, _offset: usize, _reader: &mut VmReader) -> Result<usize> {
-        warn!("writing to `/proc/sys/fs/nr_open` is not supported");
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "writing to `/proc/sys/fs/nr_open` is not supported"
-        );
+    fn write_at(&self, _offset: usize, reader: &mut VmReader) -> Result<usize> {
+        let (value, read_bytes) = read_u64_from(reader)?;
+        set_sysctl_nr_open(value)?;
+        Ok(read_bytes)
     }
 }

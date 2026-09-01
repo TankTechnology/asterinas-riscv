@@ -70,6 +70,7 @@ macro_rules! import_generic_syscall_entries {
             getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
             inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
             ioctl::sys_ioctl,
+            kcmp::sys_kcmp,
             keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
             landlock::{
@@ -97,6 +98,7 @@ macro_rules! import_generic_syscall_entries {
             name_to_handle_at::{sys_name_to_handle_at, sys_open_by_handle_at},
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
+            open_tree::sys_open_tree,
             openat2::sys_openat2,
             personality::sys_personality,
             pidfd_getfd::sys_pidfd_getfd,
@@ -431,6 +433,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
+            SYS_KCMP = 272                   => sys_kcmp(args[..5]);
             SYS_SCHED_SETATTR = 274          => sys_sched_setattr(args[..3]);
             SYS_SCHED_GETATTR = 275          => sys_sched_getattr(args[..4]);
             SYS_RENAMEAT2 = 276              => sys_renameat2(args[..5]);
@@ -446,6 +449,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_STATX = 291                  => sys_statx(args[..5]);
             SYS_RSEQ = 293                   => sys_rseq(args[..4]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
+            SYS_OPEN_TREE = 428               => sys_open_tree(args[..3]);
             SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
             SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);
             SYS_FSCONFIG = 431               => sys_fsconfig(args[..5]);
