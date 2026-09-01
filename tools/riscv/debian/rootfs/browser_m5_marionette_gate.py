@@ -29,7 +29,10 @@ PENDING_MARKERS = (
     ("video-ended-result", "Local silent video completion pending"),
 )
 PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=private-loopback source=file direct_nonloopback_ip=unavailable"
-MAX_MESSAGE_BYTES = 1024 * 1024
+# A 1280x1024 PNG returned as base64 can legitimately exceed 1 MiB on a
+# graphics-heavy public page.  Keep the transport bounded, but size it for the
+# online screenshot contract instead of the tiny repository-owned HTML probe.
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 _EXPRESSION = r"""return JSON.stringify({
   url: location.href,
@@ -133,6 +136,20 @@ class Marionette:
         if kind != 1 or response_id != identifier:
             raise GateError("unexpected Marionette response identity")
         if error is not None:
+            # Keep the public failure contract stable, but expose the exact
+            # Marionette error when an investigator explicitly opts in.  This
+            # is essential for separating a missing browsing context from a
+            # JavaScript/runtime failure without making normal gate logs noisy.
+            if os.environ.get("ASTERINAS_MARIONETTE_DEBUG_ERRORS") == "1":
+                try:
+                    detail = json.dumps(error, sort_keys=True, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    detail = repr(error)
+                print(
+                    f"A_WEB_MARIONETTE_ERROR command={name} error={detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             raise GateError(f"Marionette command failed: {name}")
         return result
 

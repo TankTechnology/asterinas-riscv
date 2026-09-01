@@ -1,0 +1,12 @@
+[Unit]
+Description=Asterinas Debian browser-web network evidence (parallel diagnostic)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight
+ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

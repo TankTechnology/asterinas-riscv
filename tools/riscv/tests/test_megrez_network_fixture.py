@@ -11,7 +11,22 @@ import socket
 import unittest
 
 from tools.riscv.megrez_network_fixture import (
+    BROWSER_API,
+    BROWSER_API_PATH,
+    BROWSER_AUDIO,
+    BROWSER_AUDIO_PATH,
+    BROWSER_CAPTURE_PATH,
+    BROWSER_DOWNLOAD,
+    BROWSER_DOWNLOAD_PATH,
+    BROWSER_IMAGE,
+    BROWSER_IMAGE_PATH,
+    BROWSER_INDEX,
+    BROWSER_INDEX_PATH,
+    BROWSER_SEARCH,
+    BROWSER_SECOND,
+    BROWSER_SECOND_PATH,
     FIXTURE_PATH,
+    MAX_CAPTURE_BYTES,
     MAX_REQUEST_RECORDS,
     PAYLOAD,
     PAYLOAD_SHA256,
@@ -20,40 +35,6 @@ from tools.riscv.megrez_network_fixture import (
     FixtureServer,
     _parse_args,
     is_successful_summary,
-)
-
-
-BROWSER_INDEX_PATH = "/browser-quality/index.html"
-BROWSER_SECOND_PATH = "/browser-quality/second.html"
-BROWSER_IMAGE_PATH = "/browser-quality/pattern.png"
-BROWSER_DOWNLOAD_PATH = "/browser-quality/download.bin"
-BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
-MAX_CAPTURE_BYTES = 8 * 1024 * 1024
-BROWSER_DOWNLOAD = bytes(range(256)) * 1024
-BROWSER_IMAGE = bytes.fromhex(
-    "89504e470d0a1a0a0000000d4948445200000020000000200806000000737a7af4"
-    "000000414944415478da6310cf58f31f19a3035acb338c3a60c01d406f0bd1e547"
-    "1d30f00e18cd05a30e18cd05a30e18cd05a30e18cd05a30e18cd05a30e18cd0523"
-    "de0100a3694cb594617d3a0000000049454e44ae426082"
-)
-BROWSER_INDEX = b"""<!doctype html>
-<meta charset=utf-8><title>Asterinas Browser Quality</title>
-<style>body{font-family:sans-serif}.scroll{height:1600px}
-.second{position:absolute;left:40px;top:220px}
-.download{position:absolute;left:40px;top:260px}</style>
-<h1>Asterinas browser quality / \xe6\xb5\x8f\xe8\xa7\x88\xe5\x99\xa8\xe8\xb4\xa8\xe9\x87\x8f</h1>
-<form method=get><input name=q><button>Search</button></form>
-<img src=/browser-quality/pattern.png alt=pattern>
-<p class=second><a href=/browser-quality/second.html>Second page</a></p>
-<p class=download><a href=/browser-quality/download.bin>Download</a></p>
-<div class=scroll></div>"""
-BROWSER_SECOND = b"""<!doctype html>
-<meta charset=utf-8><title>Second - Asterinas Browser Quality</title>
-<h1>Second page / \xe7\xac\xac\xe4\xba\x8c\xe9\xa1\xb5</h1>
-<a href=/browser-quality/index.html>First page</a>"""
-BROWSER_SEARCH = BROWSER_INDEX.replace(
-    b"<title>Asterinas Browser Quality</title>",
-    b"<title>asterinas - Asterinas Browser Quality</title>",
 )
 
 
@@ -160,6 +141,8 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                 "application/octet-stream",
                 BROWSER_DOWNLOAD,
             ),
+            BROWSER_API_PATH: ("application/json", BROWSER_API),
+            BROWSER_AUDIO_PATH: ("audio/wav", BROWSER_AUDIO),
         }
         with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:
             for path, (content_type, expected_body) in expected.items():

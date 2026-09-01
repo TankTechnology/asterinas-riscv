@@ -145,6 +145,130 @@ The unit gate is local and does not launch QEMU or use the network:
 make test_riscv_debian_rootfs_unit
 ```
 
+## Short Firefox GDB probe
+
+For startup diagnosis, use the bounded qemu-user probe before attempting the
+full Asterinas web gate.  It requires an extracted, writable riscv64 rootfs
+and invokes an explicit `qemu-riscv64-static` inside a bwrap rootfs namespace
+with `-L /`; it never registers or changes a host `binfmt_misc` handler. This
+is important because `-L` alone changes loader lookup, not guest absolute
+paths:
+
+```bash
+tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
+  /path/to/extracted-rootfs \
+  "$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)" \
+  45
+```
+
+The output directory contains the exact GDB command file, register and
+backtrace evidence, QEMU stderr, and metadata including the binfmt read-only
+check. `riscv64-linux-gnu-gdb` is required because the target is RISC-V; the
+host-native `gdb` is not a substitute. The host also needs `bwrap` and an
+explicit `qemu-riscv64-static` binary (the latter can be supplied via
+`QEMU_RISCV64_STATIC`). This probe is intentionally limited
+to loader entry and `__libc_start_main@plt`; use the Asterinas QEMU `-S -gdb`
+workflow separately for kernel breakpoints.
+
+The kernel-side reset probe is also reusable and does not boot the guest past
+the first instruction:
+
+```bash
+tools/riscv/qemu_system_gdb_probe.sh \
+  target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
+  "$PWD/../backups/asterinas-system-gdb-$(date +%Y%m%d)" \
+  15
+```
+
+The raw `.Image` is used as the QEMU payload.  To add kernel symbols, point
+`ASTERINAS_KERNEL_SYMBOLS` at the matching unstripped ELF
+(`target/osdk/aster-kernel/aster-kernel-osdk-bin`) before running the command.
+The default remains a reset-only snapshot; set `ASTERINAS_KERNEL_CONTINUE=1`
+only when deliberately testing a boot handoff toward `_start`.
+
+For a live Firefox Web gate that is already known to reach the slow page
+phase, enable the system-emulation stub explicitly on a loopback port.  The
+normal gate does not contain a GDB argument, and this opt-in does not add
+`-S`, so the VM continues booting before a debugger connects:
+
+```bash
+ASTERINAS_QEMU_GDB_PORT=23456 \
+  python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+  ...the frozen browser-web gate arguments...
+
+tools/riscv/qemu_live_pc_sampler.sh 23456 \
+  "$PWD/../backups/firefox-live-pc-$(date +%Y%m%d)" 20 2
+```
+
+The sampler uses `riscv64-linux-gnu-gdb`, captures PC/RA/SP for every QEMU
+hart, and detaches after each sample.  It stops early after three consecutive
+connection failures, which normally means the gate has already terminated.
+Use a matching unstripped kernel ELF to symbolize kernel PCs.  User PCs must
+be interpreted with the sampled process's `/proc/<pid>/maps`; an address alone
+does not distinguish a shared library from JIT/anonymous executable memory.
+Neither command registers or modifies a host binfmt handler.
+
+## Firefox Web acceptance semantics
+
+The schema-seven `browser-web` gate separates deterministic browser
+functionality from third-party anti-automation policy.  It submits the real
+form in the host-served `/browser-quality/` fixture and requires the resulting
+URL, DOM, CJK/Latin text, PNG resource timing, and screenshot.  It also
+requires strict HTTPS/DOM/screenshots for the Baidu home page, Bilibili home
+page, and a live BV detail link selected from that page.  A Baidu search is
+recorded as either a validated result page or an exact
+`wappass.baidu.com/static/captcha/` challenge whose back URL contains the
+submitted query.  The latter is reported as `external-captcha`; it is
+observable public-site evidence, not a successful search result.
+
+The guest image precreates the ten JSON/PNG evidence inodes.  The gate
+overwrites them, performs a whole-filesystem `sync`, and only then emits
+`DEBIAN_BROWSER_WEB_READY`.  DNS and curl probes have explicit outer bounds,
+and shell/Python timeline producers share the `/proc/uptime` monotonic clock.
+The host validates the exact evidence set after QEMU stops, including PNG
+structure, trust hashes, process identity, phase pairs, and ordered timeline
+markers.
+
+Firefox ESR currently does not enable the Linux sandbox by default for
+RISC-V: Mozilla's `sandbox_default` supports Linux x86/x86_64/ARM/AArch64,
+and Debian's riscv64 package does not override it with `--enable-sandbox`.
+Consequently, a riscv64 content process with `Seccomp: 0` is recorded as
+`unavailable-firefox-riscv64-build`, never as `sandbox=normal`.  The gate
+still requires uid 1000, zero capabilities, `NoNewPrivileges=1`, stable
+service identity, and absence of sandbox-disable arguments/environment.  A
+future build that actually enables the sandbox must report `Seccomp: 2` and
+is recorded as `enabled`.
+
+The read-only toolchain helper provides a common preflight, evidence summary,
+and hash manifest:
+
+```bash
+python3 -m tools.riscv.firefox_debug_tool preflight
+BACKUP_DIR="$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)"
+python3 -m tools.riscv.firefox_debug_tool summarize \
+  --gdb "$BACKUP_DIR/gdb-entry.txt" \
+  --gdb "$BACKUP_DIR/gdb-libc-start.txt" \
+  --syscall-log "$BACKUP_DIR/qemu-user-strace.log" \
+  --output "$BACKUP_DIR/summary.json"
+python3 -m tools.riscv.firefox_debug_tool manifest \
+  "$BACKUP_DIR" \
+  --output "$BACKUP_DIR/manifest.json"
+```
+
+For a bounded guest startup profile, append the opt-in kernel parameters
+`asterinas.vm_profile=1 asterinas.vm_pagecache_profile=1
+asterinas.futex_profile=1 asterinas.syscall_profile=1
+asterinas.epoll_profile=1` before the `--`
+separator in the gate boot arguments.  The syscall profiler records entry,
+completion, and elapsed jiffies for `close`, `ppoll`, `futex`,
+`clock_gettime`, `sched_yield`, `clone`, and `execve`.  Entry counts are logged
+before the handler runs, so a blocked syscall remains visible even when the
+guest reaches the hard timeout.  Keep the profiler disabled for normal gates;
+it is diagnostic instrumentation only.  `asterinas.epoll_profile=1` adds
+bounded counts of timeout classes and return classes for epoll waits; the
+epoll-entry evidence hook is compiled disabled and is only useful in a
+purpose-built diagnostic image.
+
 Run the explicit two-boot gate as root in the development container:
 
 ```bash
@@ -159,6 +283,37 @@ make test_riscv_debian_rootfs_gate \
   DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/rootfs/source-metadata/package-checksums" \
   DEBIAN_GATE_OUTPUT="$PWD/target/debian-riscv/gate"
 ```
+
+For Firefox-only startup profiling, use the bounded one-boot sampler. It waits
+for `BOOT_BASIC_TARGET`, X socket readiness, Firefox `exec`, and Marionette,
+then exits without running the full web protocol. The sampler adds only
+`asterinas.vm_profile=1` and keeps the final transcript in the root-owned
+output directory:
+
+```bash
+python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
+  --kernel /path/to/kernel.Image \
+  --uboot /path/to/u-boot \
+  --dtb /path/to/qemu-virt.dtb \
+  --stage1-initramfs /path/to/initramfs.cpio \
+  --root-image /path/to/debian-root.ext2 \
+  --root-manifest /path/to/rootfs-manifest.json \
+  --packages-lock /path/to/packages.lock \
+  --package-checksums /path/to/package-checksums \
+  --output-directory /path/to/root-owned-profile \
+  --boot-timeout 360
+```
+
+追加 `--firefox-process-diagnostic` 可在 Firefox exec 后启用有界的 `ps` 和
+`/proc` 快照；它会增加少量串口扰动，只用于定位主进程/子进程状态。若要把
+高频 epoll 调用归因到具体 caller/fd，可再追加
+`--epoll-entry-diagnostic`；它启用 `asterinas.epoll_profile=1` 和
+`asterinas.epoll_entry_profile=1`，同样只用于短 probe。guest procfs 的
+`wchan` 等文件可能阻塞，因此进程快照不应作为唯一阻塞点证据。
+追加 `--timerfd-diagnostic` 可统计 timerfd 的 set/expire/read/EAGAIN 聚合，
+用于验证 epoll 伪就绪；追加 `--syscall-diagnostic` 可记录常见 syscall 的
+进入/完成次数、累计 jiffies 及 clone/exec 边界。两者都只影响诊断镜像的
+bootargs，默认关闭，不改变正常启动语义。
 
 For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
 one QEMU process alive across the guest's normal reboot, interrupts the second
