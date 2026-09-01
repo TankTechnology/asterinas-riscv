@@ -217,6 +217,7 @@ class DesktopM3Operations(ConcreteOperations):
     MILESTONES = DESKTOP_M3_MILESTONES
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
     ADDITIONAL_FAILURE_MARKERS: tuple[bytes, ...] = ()
+    CAPTURE_SCREENSHOT = True
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
     def __init__(self, config: GateConfig) -> None:
@@ -311,6 +312,9 @@ class DesktopM3Operations(ConcreteOperations):
             for marker in failure_markers
         ):
             raise GateFailure("guest reported desktop failure")
+
+        if not self.CAPTURE_SCREENSHOT:
+            return
 
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(

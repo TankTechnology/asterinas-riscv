@@ -696,6 +696,37 @@ transfer collapsing.
 OSTD now gives such streaming bounce storage the same checked uncached view as
 the descriptor ring: PBMT_NC when Svpbmt exists, the EIC7700 System Port alias
 otherwise, and allocation failure when no valid path exists. All CPU bounce
-copies and direct accesses use that view. This proves the software memory-type
-contract; a single later recovery-armed run is still required to determine
-whether it is the sole physical cause of the observed TCP loss.
+copies and direct accesses use that view. At that point this proved the
+software memory-type contract; the following separately authorized run tested
+whether it was the physical cause of the observed TCP loss.
+
+## Streaming-DMA physical closure
+
+That single run completed on 2026-08-29 at source commit `ed3a6508e`. The
+frozen kernel SHA-256 was
+`bab13e28443e984f893e2799be0d4b440ae846b32a8f908c481a584a5e0aee74`, and
+the physical plan SHA-256 was
+`06392e06d1a5a9e4327acab630f43e65ef39d856322fe16e4cfcccff485058a0`.
+Its QEMU preboard gates covered the exact generic Sv39/SMP4 TCP probe and a
+separate 60-second software-reboot cycle.
+
+On Megrez, all four payloads completed in order. The final marker was:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 status=200 sizes=16384,65536,1048576,16777216 completed_bytes=17907712 pattern=mod251
+```
+
+The 16-MiB transfer completed in 16,634,910 microseconds with zero
+retransmissions and zero lost packets in its host TCP trace. The guest RX count
+reached at least 8,194, proving repeated traversal of the 64-entry ring.
+Throughout the sampled run, `rx_buffer_unavailable`, MTL missed-packet, MTL
+FIFO-overflow, and descriptor-error counters remained zero. After PASS, the
+software reboot returned through a fresh firmware/OpenSBI/U-Boot epoch and
+stopped at the prompt without physical intervention.
+
+The runner published `passed=true`, `reason=board-pass` and sealed the evidence
+under
+`target/megrez-debug/dwmac-stream-ed3a6508e/board-run-20260829-stream/`.
+This closes the stale packet-buffer CPU-view diagnosis for the tested board;
+ring size, RBU recovery, PLIC ordering, and further read-only counters are no
+longer the next network change absent contradictory evidence.

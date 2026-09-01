@@ -272,7 +272,6 @@ dependencies = [
  "jhash",
  "keyable-arc",
  "lending-iterator",
- "libflate",
  "logo-ascii-art",
  "loongArch64",
  "lru",
@@ -297,6 +296,7 @@ dependencies = [
  "xarray",
  "xmas-elf",
  "zerocopy",
+ "zune-inflate",
 ]
 
 [[package]]

@@ -21,6 +21,20 @@ mod dma_coherent {
     }
 
     #[ktest]
+    fn megrez_sdma_allocates_inside_a_physical_dma_window() {
+        let segment = FrameAllocOptions::new()
+            .zeroed(false)
+            .alloc_segment(8)
+            .unwrap();
+        let available = segment.paddr()..segment.paddr() + segment.size();
+        drop(segment);
+
+        let dma = DmaCoherent::alloc_in(4, false, available.clone()).unwrap();
+        assert!(dma.paddr() >= available.start);
+        assert!(dma.paddr() + dma.size() <= available.end);
+    }
+
+    #[ktest]
     fn coherent_allocation_cannot_be_converted_to_uncached() {
         let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
 
@@ -168,13 +182,11 @@ mod dma_window {
         assert_eq!(window.translate(0xbfff_f000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_0000..0xc000_0000), None);
         assert_eq!(window.translate(0xc000_1000..0xc000_3000), None);
-        assert_eq!(
-            window.translate(core::ops::Range {
-                start: 0xc000_1000,
-                end: 0xc000_0800,
-            }),
-            None
-        );
+        // Keep the endpoints derived from the window so Clippy does not reject
+        // this intentional runtime check as a compile-time empty range.
+        let reversed_start = window.cpu_start() + 0x1000;
+        let reversed_end = window.cpu_start() + 0x0800;
+        assert_eq!(window.translate(reversed_start..reversed_end), None);
     }
 }
 

@@ -5,6 +5,7 @@
 use crate::regs::MtlRxLossSnapshot;
 
 const ETHERNET_HEADER_LEN: usize = 14;
+const ARP_HEADER_LEN: usize = 28;
 const ETHERNET_PROTOCOL_ARP: u16 = 0x0806;
 const ETHERNET_PROTOCOL_IPV4: u16 = 0x0800;
 const IPV4_MIN_HEADER_LEN: usize = 20;
@@ -40,6 +41,9 @@ pub(super) enum RxDescriptorDrop {
 pub(super) struct RxDiagnosticsReport {
     pub(super) observed: u64,
     pub(super) arp: u64,
+    pub(super) arp_requests: u64,
+    pub(super) arp_replies: u64,
+    pub(super) arp_replies_to_us: u64,
     pub(super) ipv4_other: u64,
     pub(super) tcp_syn: u64,
     pub(super) tcp_syn_ack: u64,
@@ -91,22 +95,56 @@ impl RxDiagnostics {
         self.0.observed < FRAME_SAMPLE_LIMIT
     }
 
-    pub(super) fn record_frame(&mut self, frame: &[u8]) {
+    pub(super) fn record_frame(&mut self, frame: &[u8], local_hardware: [u8; 6]) {
         if !self.can_sample_frame() {
             return;
         }
 
         self.0.observed = self.0.observed.saturating_add(1);
-        let counter = match classify_frame(frame) {
-            RxFrameClass::Arp => &mut self.0.arp,
-            RxFrameClass::Ipv4Other => &mut self.0.ipv4_other,
-            RxFrameClass::Malformed => &mut self.0.malformed,
-            RxFrameClass::Other => &mut self.0.other,
-            RxFrameClass::TcpOther => &mut self.0.tcp_other,
-            RxFrameClass::TcpSyn => &mut self.0.tcp_syn,
-            RxFrameClass::TcpSynAck => &mut self.0.tcp_syn_ack,
+        match classify_frame(frame) {
+            RxFrameClass::Arp => {
+                self.0.arp = self.0.arp.saturating_add(1);
+                self.record_arp(frame, local_hardware);
+            }
+            RxFrameClass::Ipv4Other => {
+                self.0.ipv4_other = self.0.ipv4_other.saturating_add(1);
+            }
+            RxFrameClass::Malformed => {
+                self.0.malformed = self.0.malformed.saturating_add(1);
+            }
+            RxFrameClass::Other => self.0.other = self.0.other.saturating_add(1),
+            RxFrameClass::TcpOther => {
+                self.0.tcp_other = self.0.tcp_other.saturating_add(1);
+            }
+            RxFrameClass::TcpSyn => self.0.tcp_syn = self.0.tcp_syn.saturating_add(1),
+            RxFrameClass::TcpSynAck => {
+                self.0.tcp_syn_ack = self.0.tcp_syn_ack.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_arp(&mut self, frame: &[u8], local_hardware: [u8; 6]) {
+        let Some(header) = frame.get(ETHERNET_HEADER_LEN..ETHERNET_HEADER_LEN + ARP_HEADER_LEN)
+        else {
+            return;
         };
-        *counter = counter.saturating_add(1);
+        if header[0..2] != 1u16.to_be_bytes()
+            || header[2..4] != ETHERNET_PROTOCOL_IPV4.to_be_bytes()
+            || header[4] != 6
+            || header[5] != 4
+        {
+            return;
+        }
+        match u16::from_be_bytes([header[6], header[7]]) {
+            1 => self.0.arp_requests = self.0.arp_requests.saturating_add(1),
+            2 => {
+                self.0.arp_replies = self.0.arp_replies.saturating_add(1);
+                if frame[..6] == local_hardware && header[18..24] == local_hardware {
+                    self.0.arp_replies_to_us = self.0.arp_replies_to_us.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn record_descriptor_drop(&mut self, drop: RxDescriptorDrop) {

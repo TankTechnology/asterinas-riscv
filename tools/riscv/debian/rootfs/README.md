@@ -10,6 +10,20 @@ Run all commands from the repository root. The validated development image is
 
 ## Proxy and container setup
 
+### binfmt safety boundary
+
+The rootfs builder needs a `qemu-riscv64` binfmt handler for the target-side
+`chroot` steps.  **Do not enable or register that handler on the host** with
+`update-binfmts`, `tonistiigi/binfmt`, or a write to
+`/proc/sys/fs/binfmt_misc/register`: Docker's privileged mount can propagate
+the registration back to the host and leave a persistent global interpreter.
+Before any build, inspect the host registration read-only and stop if it is
+missing or unexpected.  The supported build runner must provide an already
+audited, isolated binfmt boundary and pass its mounted tree through
+`ASTERINAS_BINFMT_ROOT`; the builder only verifies the tree and never mutates
+it.  If that boundary is unavailable, keep the rootfs build deferred and run
+the unit/contract tests instead of changing host binfmt state.
+
 Check Clash without changing Docker, apt, Cargo, or Git configuration:
 
 ```bash
@@ -21,7 +35,7 @@ curl --proxy "$ASTERINAS_PROXY" --fail --head \
 Pass the proxy only to this container invocation:
 
 ```bash
-docker run --rm -it --privileged --network=host -v /dev:/dev \
+docker run --rm -it --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -e http_proxy="$ASTERINAS_PROXY" -e https_proxy="$ASTERINAS_PROXY" \
   -e HTTP_PROXY="$ASTERINAS_PROXY" -e HTTPS_PROXY="$ASTERINAS_PROXY" \
@@ -38,7 +52,8 @@ apt-get install -y --no-install-recommends \
   gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
   linux-libc-dev-riscv64-cross cpio e2fsprogs curl gpgv device-tree-compiler \
   qemu-system-misc
-update-binfmts --enable qemu-riscv64
+# Historical host-mutating command; do not run:
+# update-binfmts --enable qemu-riscv64
 cat /proc/sys/fs/binfmt_misc/qemu-riscv64
 ```
 
@@ -130,6 +145,130 @@ The unit gate is local and does not launch QEMU or use the network:
 make test_riscv_debian_rootfs_unit
 ```
 
+## Short Firefox GDB probe
+
+For startup diagnosis, use the bounded qemu-user probe before attempting the
+full Asterinas web gate.  It requires an extracted, writable riscv64 rootfs
+and invokes an explicit `qemu-riscv64-static` inside a bwrap rootfs namespace
+with `-L /`; it never registers or changes a host `binfmt_misc` handler. This
+is important because `-L` alone changes loader lookup, not guest absolute
+paths:
+
+```bash
+tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
+  /path/to/extracted-rootfs \
+  "$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)" \
+  45
+```
+
+The output directory contains the exact GDB command file, register and
+backtrace evidence, QEMU stderr, and metadata including the binfmt read-only
+check. `riscv64-linux-gnu-gdb` is required because the target is RISC-V; the
+host-native `gdb` is not a substitute. The host also needs `bwrap` and an
+explicit `qemu-riscv64-static` binary (the latter can be supplied via
+`QEMU_RISCV64_STATIC`). This probe is intentionally limited
+to loader entry and `__libc_start_main@plt`; use the Asterinas QEMU `-S -gdb`
+workflow separately for kernel breakpoints.
+
+The kernel-side reset probe is also reusable and does not boot the guest past
+the first instruction:
+
+```bash
+tools/riscv/qemu_system_gdb_probe.sh \
+  target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
+  "$PWD/../backups/asterinas-system-gdb-$(date +%Y%m%d)" \
+  15
+```
+
+The raw `.Image` is used as the QEMU payload.  To add kernel symbols, point
+`ASTERINAS_KERNEL_SYMBOLS` at the matching unstripped ELF
+(`target/osdk/aster-kernel/aster-kernel-osdk-bin`) before running the command.
+The default remains a reset-only snapshot; set `ASTERINAS_KERNEL_CONTINUE=1`
+only when deliberately testing a boot handoff toward `_start`.
+
+For a live Firefox Web gate that is already known to reach the slow page
+phase, enable the system-emulation stub explicitly on a loopback port.  The
+normal gate does not contain a GDB argument, and this opt-in does not add
+`-S`, so the VM continues booting before a debugger connects:
+
+```bash
+ASTERINAS_QEMU_GDB_PORT=23456 \
+  python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+  ...the frozen browser-web gate arguments...
+
+tools/riscv/qemu_live_pc_sampler.sh 23456 \
+  "$PWD/../backups/firefox-live-pc-$(date +%Y%m%d)" 20 2
+```
+
+The sampler uses `riscv64-linux-gnu-gdb`, captures PC/RA/SP for every QEMU
+hart, and detaches after each sample.  It stops early after three consecutive
+connection failures, which normally means the gate has already terminated.
+Use a matching unstripped kernel ELF to symbolize kernel PCs.  User PCs must
+be interpreted with the sampled process's `/proc/<pid>/maps`; an address alone
+does not distinguish a shared library from JIT/anonymous executable memory.
+Neither command registers or modifies a host binfmt handler.
+
+## Firefox Web acceptance semantics
+
+The schema-seven `browser-web` gate separates deterministic browser
+functionality from third-party anti-automation policy.  It submits the real
+form in the host-served `/browser-quality/` fixture and requires the resulting
+URL, DOM, CJK/Latin text, PNG resource timing, and screenshot.  It also
+requires strict HTTPS/DOM/screenshots for the Baidu home page, Bilibili home
+page, and a live BV detail link selected from that page.  A Baidu search is
+recorded as either a validated result page or an exact
+`wappass.baidu.com/static/captcha/` challenge whose back URL contains the
+submitted query.  The latter is reported as `external-captcha`; it is
+observable public-site evidence, not a successful search result.
+
+The guest image precreates the ten JSON/PNG evidence inodes.  The gate
+overwrites them, performs a whole-filesystem `sync`, and only then emits
+`DEBIAN_BROWSER_WEB_READY`.  DNS and curl probes have explicit outer bounds,
+and shell/Python timeline producers share the `/proc/uptime` monotonic clock.
+The host validates the exact evidence set after QEMU stops, including PNG
+structure, trust hashes, process identity, phase pairs, and ordered timeline
+markers.
+
+Firefox ESR currently does not enable the Linux sandbox by default for
+RISC-V: Mozilla's `sandbox_default` supports Linux x86/x86_64/ARM/AArch64,
+and Debian's riscv64 package does not override it with `--enable-sandbox`.
+Consequently, a riscv64 content process with `Seccomp: 0` is recorded as
+`unavailable-firefox-riscv64-build`, never as `sandbox=normal`.  The gate
+still requires uid 1000, zero capabilities, `NoNewPrivileges=1`, stable
+service identity, and absence of sandbox-disable arguments/environment.  A
+future build that actually enables the sandbox must report `Seccomp: 2` and
+is recorded as `enabled`.
+
+The read-only toolchain helper provides a common preflight, evidence summary,
+and hash manifest:
+
+```bash
+python3 -m tools.riscv.firefox_debug_tool preflight
+BACKUP_DIR="$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)"
+python3 -m tools.riscv.firefox_debug_tool summarize \
+  --gdb "$BACKUP_DIR/gdb-entry.txt" \
+  --gdb "$BACKUP_DIR/gdb-libc-start.txt" \
+  --syscall-log "$BACKUP_DIR/qemu-user-strace.log" \
+  --output "$BACKUP_DIR/summary.json"
+python3 -m tools.riscv.firefox_debug_tool manifest \
+  "$BACKUP_DIR" \
+  --output "$BACKUP_DIR/manifest.json"
+```
+
+For a bounded guest startup profile, append the opt-in kernel parameters
+`asterinas.vm_profile=1 asterinas.vm_pagecache_profile=1
+asterinas.futex_profile=1 asterinas.syscall_profile=1
+asterinas.epoll_profile=1` before the `--`
+separator in the gate boot arguments.  The syscall profiler records entry,
+completion, and elapsed jiffies for `close`, `ppoll`, `futex`,
+`clock_gettime`, `sched_yield`, `clone`, and `execve`.  Entry counts are logged
+before the handler runs, so a blocked syscall remains visible even when the
+guest reaches the hard timeout.  Keep the profiler disabled for normal gates;
+it is diagnostic instrumentation only.  `asterinas.epoll_profile=1` adds
+bounded counts of timeout classes and return classes for epoll waits; the
+epoll-entry evidence hook is compiled disabled and is only useful in a
+purpose-built diagnostic image.
+
 Run the explicit two-boot gate as root in the development container:
 
 ```bash
@@ -144,6 +283,37 @@ make test_riscv_debian_rootfs_gate \
   DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/rootfs/source-metadata/package-checksums" \
   DEBIAN_GATE_OUTPUT="$PWD/target/debian-riscv/gate"
 ```
+
+For Firefox-only startup profiling, use the bounded one-boot sampler. It waits
+for `BOOT_BASIC_TARGET`, X socket readiness, Firefox `exec`, and Marionette,
+then exits without running the full web protocol. The sampler adds only
+`asterinas.vm_profile=1` and keeps the final transcript in the root-owned
+output directory:
+
+```bash
+python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
+  --kernel /path/to/kernel.Image \
+  --uboot /path/to/u-boot \
+  --dtb /path/to/qemu-virt.dtb \
+  --stage1-initramfs /path/to/initramfs.cpio \
+  --root-image /path/to/debian-root.ext2 \
+  --root-manifest /path/to/rootfs-manifest.json \
+  --packages-lock /path/to/packages.lock \
+  --package-checksums /path/to/package-checksums \
+  --output-directory /path/to/root-owned-profile \
+  --boot-timeout 360
+```
+
+追加 `--firefox-process-diagnostic` 可在 Firefox exec 后启用有界的 `ps` 和
+`/proc` 快照；它会增加少量串口扰动，只用于定位主进程/子进程状态。若要把
+高频 epoll 调用归因到具体 caller/fd，可再追加
+`--epoll-entry-diagnostic`；它启用 `asterinas.epoll_profile=1` 和
+`asterinas.epoll_entry_profile=1`，同样只用于短 probe。guest procfs 的
+`wchan` 等文件可能阻塞，因此进程快照不应作为唯一阻塞点证据。
+追加 `--timerfd-diagnostic` 可统计 timerfd 的 set/expire/read/EAGAIN 聚合，
+用于验证 epoll 伪就绪；追加 `--syscall-diagnostic` 可记录常见 syscall 的
+进入/完成次数、累计 jiffies 及 clone/exec 边界。两者都只影响诊断镜像的
+bootargs，默认关闭，不改变正常启动语义。
 
 For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
 one QEMU process alive across the guest's normal reboot, interrupts the second
@@ -307,12 +477,20 @@ primary DNS=10.2.0.5
 fallback DNS=10.2.0.6
 ```
 
+Prepare the host with the canonical
+[Megrez debugging tool list](../../README.md#host-side-megrez-debugging).
+Keep QEMU and cross-build dependencies in the pinned container;
+the host tools are only for serial, link, packet, throughput, and screenshot observations.
+
 Install a newly built ext2 image with
 `tools.riscv.debian.rootfs.megrez_installer`; Asterinas must write and read
 back eMMC partition 2. Linux may stage immutable boot files but is not an
-accepted runtime or installer kernel. Serve the current Image, frozen Megrez
-DTB, and Stage1 from a private TFTP root on `10.100.19.216`, then compute the
-two changing U-Boot CRC32 values and run the bounded gate:
+accepted runtime or installer kernel. On the currently verified firmware,
+U-Boot exposes only `ethernet@50400000`, while the live RJ45 path selected by
+Asterinas is the other GMAC. Its TFTP path therefore cannot be the default
+recovery transport. Stage the current Image, frozen Megrez DTB, and Stage1
+under their basenames on eMMC partition 1, verify the copied hashes, unmount
+the partition, and run the bounded gate with the read-only MMC loader:
 
 ```bash
 crc32_file() {
@@ -325,12 +503,10 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
   --dtb eic7700-milkv-megrez.dtb \
   --initrd debian-browser-stage1.cpio \
   --expected-crc32 "booti=$BOOTI_CRC32,dtb=4afcb20e,initrd=$STAGE1_CRC32" \
-  --host-interface enp12s0 --load-transport tftp \
-  --tftp-board-address 10.100.19.200 \
-  --tftp-server-address 10.100.19.216 \
-  --tftp-netmask 255.255.248.0 \
+  --host-interface enp12s0 --load-transport mmc \
+  --reboot-after 420 \
   --output-directory target/megrez-browser-network/gate \
-  --boot-timeout 300 --drain-timeout 5
+  --boot-timeout 360 --drain-timeout 5
 ```
 
 The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
@@ -341,6 +517,24 @@ The gate drains the full serial transcript before publishing `passed: true`.
 It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
 Asterinas network path does not provide the Linux ping-socket contract, and a
 ping result would not prove that browser traffic works.
+
+On a physical browser run, one exact input-capability degradation is collected
+rather than treated as a reason to release the serial port early. If M4 emits
+`DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device` followed by
+`DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout`, the collector continues to
+require every M6/M7 marker and the fresh automatic U-Boot recovery. A complete
+Baidu homepage and search sequence is then published as `passed: false` with
+`guest-failure-recovered:browser-pass-input-missing:pointer-device`; it proves
+the browser path but deliberately does not claim mouse usability. Missing,
+reordered, duplicated, or differently attributed M4 failure evidence remains
+a hard failure.
+
+For a desktop plan with `asterinas.reboot_after=600`, invoke
+`tools.riscv.megrez_debug board` with `--timeout 900`. The timeout is measured
+by the host, while the recovery timer is measured by Asterinas; the guest clock
+can advance more slowly on Megrez. Shorter host budgets can therefore publish
+`recovery-not-observed` after the browser evidence even though the board later
+returns to U-Boot automatically.
 
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
@@ -401,3 +595,68 @@ the second-boot probe; nonce plaintext is replaced by `<nonce-redacted>`.
 This evidence proves the generic QEMU Sv39/SMP=4 two-boot persistence
 contract. It does not claim physical Megrez operation, guest networking,
 systemd boot, display, USB, or desktop support.
+
+## Megrez persistent Debian shell
+
+Build two distinct current kernels. The generic QEMU artifact requires
+`FEATURES=riscv_sv39_mode`; the Megrez artifact is a separate default Sv48
+build. The frozen plan rejects swapping them and also records the exact
+signed root, Stage1, U-Boot, and four-hart DTBs.
+
+The board sequence is ` inventory ` before ` install-if-needed `. Inventory is
+read-only, and a matching result skips installation. Only a measured image
+hash mismatch may enter the Asterinas-only installer, which may write only
+`/dev/mmcblk0p2`. The operator must not boot Linux to install or validate this
+root. Do not arm the short EIC7700X watchdog while hashing the full device or
+installing; use the bounded Asterinas timer and require a fresh U-Boot recovery
+epoch. The `gate` command performs two bounded boots, and `handoff` is refused
+unless their physical result passes.
+
+Inventory, `gate`, and `handoff` transfer the compressed current kernel and
+Stage1 over serial YMODEM. They load `eic7700-milkv-megrez.dtb` read-only from
+eMMC partition 1 and reject a CRC mismatch. The current U-Boot GMAC probes
+`0x50400000`, which is not the RJ45 path selected by Asterinas; consequently
+these boot paths do not depend on TFTP. Only the Asterinas network installer
+uses the verified board RJ45 path after the kernel has started.
+
+```bash
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/qemu-sv39.booti
+make kernel TARGET_ARCH=riscv64 SMP=4
+cp target/osdk/aster-kernel/aster-kernel-osdk-bin.Image /absolute/run/megrez-sv48.booti
+
+RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
+python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+  "$RUN/plan.json" --output "$RUN/qemu"
+python3 -m tools.riscv.megrez_debian_shell permit \
+  "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
+  --output "$RUN/permit.json"
+sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --output "$RUN/inventory-before" --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
+if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
+  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+    "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+    --prior-inventory "$RUN/inventory-before/result.json" \
+    --install-result "$RUN/install/result.json" \
+    --output "$RUN/inventory-after" --yes
+  cp "$RUN/inventory-after/result.json" "$RUN/inventory-current.json"
+else
+  cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
+fi
+sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+  "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
+  --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
+  --host-interface enp12s0 --yes
+sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+  "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
+  --host-interface enp12s0 --yes
+picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
+```
+
+This stage proves an interactive persistent shell only. The next scope is
+systemd, network, and desktop; none is claimed by this milestone.

@@ -96,11 +96,12 @@ where
 
 /// A file entry in the CPIO.
 #[derive(Debug)]
-pub struct CpioEntry<'a, R> {
+pub struct CpioEntry<'a, R: Read> {
     metadata: FileMetadata,
     name: String,
     reader: &'a mut R,
-    data_padding_len: usize,
+    // File data and its 4-byte padding that have not been consumed yet.
+    unread_data: usize,
 }
 
 impl<'a, R> CpioEntry<'a, R>
@@ -108,7 +109,7 @@ where
     R: Read,
 {
     fn new(reader: &'a mut R) -> Result<Self> {
-        let (metadata, name, data_padding_len) = {
+        let (metadata, name) = {
             let header = Header::new(reader)?;
             let name = {
                 let name_size = read_hex_bytes_to_u32(&header.name_size)? as usize;
@@ -123,22 +124,20 @@ where
             } else {
                 FileMetadata::new(&header)?
             };
-            let data_padding_len = {
-                let header_padding_len = align_up_pad(header.len() + name.len() + 1, 4);
-                if header_padding_len > 0 {
-                    let mut pad_buf = vec![0u8; header_padding_len];
-                    reader.read_exact(&mut pad_buf)?;
-                }
-                align_up_pad(metadata.size() as usize, 4)
-            };
+            let header_padding_len = align_up_pad(header.len() + name.len() + 1, 4);
+            if header_padding_len > 0 {
+                let mut pad_buf = vec![0u8; header_padding_len];
+                reader.read_exact(&mut pad_buf)?;
+            }
 
-            (metadata, name, data_padding_len)
+            (metadata, name)
         };
+        let data_len = metadata.size() as usize;
         Ok(Self {
             metadata,
             name,
             reader,
-            data_padding_len,
+            unread_data: data_len + align_up_pad(data_len, 4),
         })
     }
 
@@ -167,18 +166,35 @@ where
         while send_len < data_len {
             let len = min(buffer.len(), data_len - send_len);
             self.reader.read_exact(&mut buffer[..len])?;
+            self.unread_data -= len;
             writer.write_all(&buffer[..len])?;
             send_len += len;
         }
-        if self.data_padding_len > 0 {
+        let data_padding_len = align_up_pad(data_len, 4);
+        if data_padding_len > 0 {
             self.reader
-                .read_exact(&mut buffer[..self.data_padding_len])?;
+                .read_exact(&mut buffer[..data_padding_len])?;
+            self.unread_data -= data_padding_len;
         }
         Ok(())
     }
 
     pub fn is_trailer(&self) -> bool {
         self.name == TRAILER_NAME
+    }
+}
+
+impl<R: Read> Drop for CpioEntry<'_, R> {
+    /// Keep the decoder aligned when callers intentionally skip an entry.
+    fn drop(&mut self) {
+        let mut buffer = [0u8; 512];
+        while self.unread_data > 0 {
+            let len = min(buffer.len(), self.unread_data);
+            if self.reader.read_exact(&mut buffer[..len]).is_err() {
+                break;
+            }
+            self.unread_data -= len;
+        }
     }
 }
 

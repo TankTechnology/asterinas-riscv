@@ -234,6 +234,14 @@ impl<M> CursorMut<'_, M>
 where
     Link<M>: AnyFrameMeta,
 {
+    /// Returns the physical address of the current frame.
+    pub fn current_paddr(&self) -> Option<Paddr> {
+        self.current.map(|current| {
+            let meta_ptr = current.as_ptr() as *mut MetaSlot;
+            mapping::meta_to_frame::<PagingConsts>(meta_ptr as Vaddr)
+        })
+    }
+
     /// Moves the cursor to the next frame towards the back.
     ///
     /// If the cursor is pointing to the "ghost" non-element then this will

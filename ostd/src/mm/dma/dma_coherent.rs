@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#[cfg(target_arch = "riscv64")]
-use core::ptr::NonNull;
-use core::{fmt::Debug, mem::ManuallyDrop};
+use core::{fmt::Debug, mem::ManuallyDrop, ops::Range, ptr::NonNull};
 
 use super::util::{
-    alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
+    alloc_kva, alloc_kva_in, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
 };
-#[cfg(target_arch = "riscv64")]
-use crate::mm::paddr_to_vaddr;
 use crate::{
     arch::irq,
     error::Error,
@@ -18,6 +14,7 @@ use crate::{
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
         io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
         kspace::kvirt_area::KVirtArea,
+        paddr_to_vaddr,
     },
 };
 
@@ -61,6 +58,17 @@ impl DmaCoherent {
         })
     }
 
+    /// Allocates coherent DMA memory inside a physical address range.
+    pub fn alloc_in(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Self, Error> {
+        Self::alloc_uninit_in(nframes, is_cache_coherent, paddr_range).inspect(|dma| {
+            dma.writer().fill_zeros(dma.size());
+        })
+    }
+
     /// Allocates a region of physical memory for coherent DMA access
     /// without initialization.
     ///
@@ -70,19 +78,42 @@ impl DmaCoherent {
     /// This method [requires](crate::mm::dma#usage-in-irqs) the caller to
     /// have IRQs enabled.
     pub fn alloc_uninit(nframes: usize, is_cache_coherent: bool) -> Result<Self, Error> {
+        Self::alloc_uninit_with_range(nframes, is_cache_coherent, None)
+    }
+
+    /// Allocates uninitialized coherent DMA memory inside a physical range.
+    pub fn alloc_uninit_in(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Self, Error> {
+        Self::alloc_uninit_with_range(nframes, is_cache_coherent, Some(paddr_range))
+    }
+
+    fn alloc_uninit_with_range(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Option<Range<Paddr>>,
+    ) -> Result<Self, Error> {
         debug_assert!(irq::is_local_enabled());
 
         let cvm = cvm_need_private_protection();
 
         let (inner, paddr_range) = if is_cache_coherent && !cvm {
-            let segment = FrameAllocOptions::new()
-                .zeroed(false)
-                .alloc_segment(nframes)?;
+            let mut options = FrameAllocOptions::new();
+            options.zeroed(false);
+            let segment = match paddr_range {
+                Some(range) => options.alloc_segment_in(nframes, range)?,
+                None => options.alloc_segment(nframes)?,
+            };
             let paddr_range = segment.paddr_range();
 
             (Inner::Segment(segment), paddr_range)
         } else {
-            let (kva, paddr) = alloc_kva(nframes, is_cache_coherent)?;
+            let (kva, paddr) = match paddr_range {
+                Some(range) => alloc_kva_in(nframes, is_cache_coherent, range)?,
+                None => alloc_kva(nframes, is_cache_coherent)?,
+            };
 
             (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
         };

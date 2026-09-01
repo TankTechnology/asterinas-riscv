@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::borrow::Cow;
+
 use cpio_decoder::{CpioDecoder, CpioEntry, FileMetadata, FileType};
 use device_id::{DeviceId, MajorId, MinorId};
 use lending_iterator::LendingIterator;
-use libflate::gzip::Decoder as GzipDecoder;
 use no_std_io2::io::{Cursor, Read};
 use ostd::boot::boot_info;
+use zune_inflate::{DeflateDecoder, DeflateOptions};
 
 use super::{
     file::{InodeMode, InodeType},
@@ -14,32 +16,40 @@ use super::{
 use crate::{fs::vfs::inode::MknodType, prelude::*};
 
 /// Unpack and prepare the rootfs from the initramfs CPIO buffer.
-///
-/// A gzip-compressed initramfs is decompressed **streamingly**: the CPIO parser
-/// reads directly from a [`GzipDecoder`], so we never materialize the whole
-/// decompressed archive as one contiguous allocation (Linux does the same).
-/// An uncompressed CPIO archive is parsed in place.
 pub fn init_in_first_kthread(path_resolver: &PathResolver) -> Result<()> {
     let initramfs_buf = boot_info()
         .initramfs
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "no initramfs found"))?;
 
-    // Gzip magic number: 0x1F 0x8B.
-    if initramfs_buf.starts_with(&[0x1F, 0x8B]) {
-        let reader = GzipDecoder::new(Cursor::new(initramfs_buf))
-            .map_err(|_| Error::with_message(Errno::EINVAL, "gzip decompression failed"))?;
-        unpack_to_rootfs(reader, path_resolver)
-    } else {
-        unpack_to_rootfs(Cursor::new(initramfs_buf), path_resolver)
-    }
-}
+    let (reader, suffix) = match &initramfs_buf[..4] {
+        // Gzip magic number: 0x1F 0x8B
+        &[0x1F, 0x8B, _, _] => {
+            // mkinitramfs images are frequently hundreds of MiB after
+            // decompression.  zune-inflate's default output limit is small
+            // enough to reject those images even when the gzip stream is
+            // valid.  Seed both the allocation hint and the safety limit from
+            // gzip's ISIZE footer (modulo 2^32), with a small alignment margin.
+            let options = match gzip_uncompressed_size(initramfs_buf) {
+                Some(size) => {
+                    let capacity = size.saturating_add(0x1000);
+                    DeflateOptions::default()
+                        .set_size_hint(capacity)
+                        .set_limit(capacity)
+                }
+                None => DeflateOptions::default(),
+            };
+            let decompressed = DeflateDecoder::new_with_options(initramfs_buf, options)
+                .decode_gzip()
+                .map_err(|_| Error::with_message(Errno::EINVAL, "gzip decompression failed"))?;
+            (Cow::Owned(decompressed), ".gz")
+        }
+        _ => (Cow::Borrowed(initramfs_buf), ""),
+    };
 
-/// Feeds `reader` (decompressed CPIO stream) into the CPIO decoder, appending
-/// each entry to the rootfs as it is read.
-fn unpack_to_rootfs<R: Read>(reader: R, path_resolver: &PathResolver) -> Result<()> {
-    println!("[kernel] unpacking initramfs.cpio to rootfs ...");
+    println!("[kernel] unpacking initramfs.cpio{} to rootfs ...", suffix);
 
-    let mut decoder = CpioDecoder::new(reader);
+    let mut decoder = CpioDecoder::new(Cursor::new(reader));
+
     while let Some(entry_result) = decoder.next() {
         let mut entry = entry_result?;
         if let Err(e) = try_append_entry_to_rootfs(&mut entry, path_resolver) {
@@ -49,6 +59,12 @@ fn unpack_to_rootfs<R: Read>(reader: R, path_resolver: &PathResolver) -> Result<
 
     println!("[kernel] rootfs is ready");
     Ok(())
+}
+
+/// Read gzip's ISIZE footer (uncompressed size modulo 2^32).
+fn gzip_uncompressed_size(buf: &[u8]) -> Option<usize> {
+    let bytes = buf.get(buf.len().checked_sub(4)?..)?;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?) as usize)
 }
 
 fn try_append_entry_to_rootfs<R: Read>(

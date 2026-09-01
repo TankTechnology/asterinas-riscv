@@ -281,7 +281,7 @@ fn concurrent_page_faults() {
     backend.set_persisted_page_bytes(0, &[0x6b; PAGE_SIZE]);
 
     let page_cache = new_backend_page_cache(&backend, 1);
-    let vmo = page_cache.as_vmo();
+    let vmo = page_cache.as_vmo().clone();
     // The first page-fault style probe should report that backend I/O is
     // needed because the page has not been committed yet.
     assert!(matches!(
@@ -340,6 +340,40 @@ fn concurrent_page_faults() {
     let mut writer = VmWriter::from(read_buffer.as_mut_slice()).to_fallible();
     vmo.read(0, &mut writer).unwrap();
     assert_eq!(read_buffer, vec![0x6b; PAGE_SIZE]);
+}
+
+/// Sequential cold-page reads should submit one I/O batch instead of waiting
+/// for each page before discovering the next one.
+#[ktest]
+fn sequential_page_faults_submit_a_batch() {
+    const NUM_PAGES: usize = 4;
+    let backend = MockPageCacheBackend::new(NUM_PAGES);
+    backend.set_completion(IoKind::Read, IoCompletion::Deferred);
+    let page_cache = new_backend_page_cache(&backend, NUM_PAGES);
+    let vmo = page_cache.as_vmo().clone();
+    let finished = Arc::new(Mutex::new(false));
+    let finished_thread = finished.clone();
+
+    let reader = ThreadOptions::new(move || {
+        let mut read_buffer = vec![0; NUM_PAGES * PAGE_SIZE];
+        vmo.read(0, &mut VmWriter::from(read_buffer.as_mut_slice()).to_fallible())
+            .unwrap();
+        *finished_thread.lock() = true;
+    })
+    .spawn();
+
+    // A batched collector queues all four reads before waiting.  This assertion
+    // intentionally distinguishes it from the former one-page-at-a-time path.
+    backend.wait_for_deferred_bios(IoKind::Read, NUM_PAGES);
+    assert_eq!(backend.read_count(0), 1);
+    assert_eq!(backend.read_count(1), 1);
+    assert_eq!(backend.read_count(2), 1);
+    assert_eq!(backend.read_count(3), 1);
+    for _ in 0..NUM_PAGES {
+        assert!(backend.complete_next_deferred_bio(IoKind::Read, true));
+    }
+    reader.join();
+    assert!(*finished.lock());
 }
 
 /// Keeps backend reads failing for one page and checks both the initial

@@ -17,14 +17,27 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_QEMU_MILESTONES,
     classify_desktop_m5_network,
     classify_desktop_m5_qemu,
+    classify_network_m5_qemu,
 )
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DESKTOP_M5_QEMU_BOOTARGS,
     DesktopM5QemuOperations,
+    NetworkM5QemuOperations,
+    QemuGateTarget,
+    _parse_target,
     desktop_m5_qemu_argv,
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
+from tools.riscv.debian.rootfs.rootfs_gate import GateConfig as RootfsGateConfig
+from tools.riscv.megrez_network_fixture import (
+    FIXTURE_PATH,
+    PAYLOAD,
+    PAYLOAD_SHA256,
+    PAYLOAD_SIZE,
+    FixtureConfig,
+    FixtureServer,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -33,15 +46,23 @@ MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
 )
+SAFE_REBOOT_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
 MEGREZ_TCP_PROBE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
 )
 EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_DNS resolver=10.2.0.5 fallback=10.2.0.6 host=www.baidu.com",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45",
+    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
+    f"sha256={PAYLOAD_SHA256} endpoint=10.100.19.216:17894",
+    "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
+)
+EXPECTED_QEMU_STRESS_MILESTONE = (
+    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
+    f"sha256={PAYLOAD_SHA256} endpoint=10.0.2.2:17894"
 )
 
 
@@ -89,6 +110,12 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 "MEGREZ_TCP_TIMING_SELF_TEST PASS "
                 "deadline_ms=45000 recovery_margin_ms=15000\n"
             ),
+        )
+
+    def test_guest_network_deadline_matches_the_qemu_contract(self) -> None:
+        self.assertIn(
+            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"',
+            EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
 
     def test_native_megrez_tcp_probe_validates_streamed_stress_response(self) -> None:
@@ -164,6 +191,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                         "fonts-wqy-microhei",
                         "iproute2",
                         "iputils-ping",
+                        "x11-apps",
                         "xdotool",
                     )
                 )
@@ -171,7 +199,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         )
         self.assertEqual(
             m5.identity_packages,
-            m4.identity_packages + ("curl", "iproute2", "iputils-ping", "xdotool"),
+            m4.identity_packages
+            + ("curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"),
         )
         self.assertIn("fonts-wqy-microhei", m5.requested_packages)
         self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
@@ -273,6 +302,13 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 PROFILE=desktop-m5-network
 configure_profile 1
 WORK_DIR="$2"
+finalize_browser_startup_caches() {
+    mkdir -p "$1/usr/share/asterinas"
+    printf 'called\n' >"$1/usr/share/asterinas/startup-cache-fixture"
+}
+python3() {
+    printf '%s\n' 'DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+}
 configure_and_normalize_rootfs
 """,
                 "builder-configure-m5-test",
@@ -286,10 +322,31 @@ configure_and_normalize_rootfs
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (stage / "usr/share/asterinas/startup-cache-fixture").read_text(),
+            "called\n",
+        )
+        self.assertTrue((stage / "etc/.updated").is_file())
+        self.assertTrue((stage / "var/.updated").is_file())
         self.assertTrue((stage / "usr/lib/asterinas/desktop-m4-session").is_file())
         installed = stage / "usr/lib/asterinas/desktop-m5-network-evidence"
         self.assertEqual(installed.read_bytes(), EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o755)
+        safe_reboot = stage / "usr/lib/asterinas/megrez-safe-reboot"
+        self.assertEqual(safe_reboot.read_bytes(), SAFE_REBOOT_SCRIPT.read_bytes())
+        self.assertEqual(stat.S_IMODE(safe_reboot.stat().st_mode), 0o755)
+        safe_reboot_unit = stage / "etc/systemd/system/asterinas-safe-reboot.service"
+        self.assertIn(
+            "ExecStart=/usr/lib/asterinas/megrez-safe-reboot",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
+        self.assertIn("Type=simple", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertNotIn("Type=oneshot", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertTrue(
+            (
+                stage / "etc/systemd/system/basic.target.wants" / safe_reboot_unit.name
+            ).is_symlink()
+        )
         self.assertTrue(
             (stage / "usr/lib/asterinas/desktop-m6-browser-evidence").is_file()
         )
@@ -337,8 +394,75 @@ configure_and_normalize_rootfs
         self.assertEqual(
             evidence_drop_in,
             "# SPDX-License-Identifier: MPL-2.0\n"
+            "[Unit]\n"
+            "Requires=asterinas-desktop-m5-network.service\n"
+            "After=asterinas-desktop-m5-network.service\n"
+            "\n"
             "[Service]\n"
             "Environment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
+        )
+
+    def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
+        fake_bin = self.directory / "safe-reboot-bin"
+        fake_bin.mkdir()
+        actions = self.directory / "safe-reboot-actions"
+        console = self.directory / "safe-reboot-console"
+        sleep_count = self.directory / "safe-reboot-sleep-count"
+        uptime = self.directory / "uptime"
+        uptime.write_text("100.25 80.00\n", encoding="utf-8")
+        sleep = fake_bin / "sleep"
+        sleep.write_text(
+            "#!/bin/sh\n"
+            "printf 'sleep:%s\\n' \"$*\" "
+            '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+            'if [ ! -e "$ASTERINAS_SAFE_REBOOT_SLEEP_COUNT" ]; then\n'
+            '    : >"$ASTERINAS_SAFE_REBOOT_SLEEP_COUNT"\n'
+            "else\n"
+            "    printf '130.00 100.00\\n' "
+            '>"$ASTERINAS_SAFE_REBOOT_UPTIME_FILE"\n'
+            "fi\n",
+            encoding="utf-8",
+        )
+        sleep.chmod(0o755)
+        for name in ("sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="130",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_SLEEP_COUNT=str(sleep_count),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            actions.read_text(encoding="utf-8").splitlines(),
+            ["sleep:5", "sleep:5", "sync:", "reboot:-f"],
+        )
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            [
+                "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=100 deadline=130",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC deadline=130",
+            ],
         )
 
     def _fake_network_tools(
@@ -392,6 +516,9 @@ exit 0
         )
         getent_log = directory / "getent.log"
         curl_log = directory / "curl.log"
+        date_log = directory / "date.log"
+        fixture_payload = directory / "fixture.bin"
+        fixture_payload.write_bytes(PAYLOAD)
         getent = fake_bin / "getent"
         getent.write_text(
             """#!/bin/sh
@@ -405,6 +532,34 @@ exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
             """#!/bin/sh
 printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
 case "$*" in
+    *asterinas-network-probe.bin*)
+        previous=
+        output_count=0
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then
+                output_count=$((output_count + 1))
+                if [ "${ASTERINAS_M5_FIXTURE_SHORT:-0}" = 1 ]; then
+                    head -c 65535 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >"$argument"
+                elif [ "${ASTERINAS_M5_FIXTURE_CORRUPT:-0}" = 1 ]; then
+                    printf X >"$argument"
+                    tail -c +2 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >>"$argument"
+                else
+                    cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                fi
+            fi
+            previous="$argument"
+        done
+        [ "$output_count" -gt 0 ] || exit 95
+        [ "${ASTERINAS_M5_FIXTURE_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_FIXTURE_STATUS"
+        ;;
+    *http://www.baidu.com/*)
+        [ "${ASTERINAS_M5_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_CLOCK_STATUS"
+        printf 'HTTP/1.1 200 OK\r\n'
+        if [ "${ASTERINAS_M5_CLOCK_DATE:-set}" != missing ]; then
+            printf 'Date: %s\r\n' "${ASTERINAS_M5_CLOCK_DATE:-Sat, 29 Aug 2026 02:02:25 GMT}"
+        fi
+        printf '\r\n'
+        ;;
     *result.png*)
         output=
         previous=
@@ -417,30 +572,62 @@ case "$*" in
         exit "${ASTERINAS_M5_ASSET_STATUS:-0}"
         ;;
     *)
-        [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_HTTPS_STATUS"
+        if [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" != 0 ]; then
+            printf '%s\n' "${ASTERINAS_M5_HTTPS_ERROR:-curl failed}" >&2
+            exit "$ASTERINAS_M5_HTTPS_STATUS"
+        fi
         printf '%s\t%s' "${ASTERINAS_M5_HTTP_CODE:-200}" "${ASTERINAS_M5_LOCAL_IP:-10.100.19.200}"
         ;;
 esac
 """,
             encoding="utf-8",
         )
+        date = fake_bin / "date"
+        date.write_text(
+            """#!/bin/sh
+printf '%s\n' "$*" >>"$ASTERINAS_M5_DATE_LOG"
+exit "${ASTERINAS_M5_DATE_STATUS:-0}"
+""",
+            encoding="utf-8",
+        )
         getent.chmod(0o755)
         curl.chmod(0o755)
+        date.chmod(0o755)
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
             ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
+            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="5",
             ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline_path),
             ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
             ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
             ASTERINAS_M5_PING_LOG=str(ping_log),
             ASTERINAS_M5_GETENT_LOG=str(getent_log),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
+            ASTERINAS_M5_DATE_LOG=str(date_log),
+            ASTERINAS_M5_FIXTURE_PAYLOAD=str(fixture_payload),
+            ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
+            ASTERINAS_DESKTOP_FIXTURE_URL=(f"http://10.100.19.216:17894{FIXTURE_PATH}"),
+            ASTERINAS_DESKTOP_FIXTURE_SIZE=str(PAYLOAD_SIZE),
+            ASTERINAS_DESKTOP_FIXTURE_SHA256=PAYLOAD_SHA256,
+            ASTERINAS_DESKTOP_FIXTURE_REQUESTS="20",
         )
         return environment, console, resolv_conf, url_file, ping_log, curl_log
 
-    def test_guest_evidence_requires_link_dns_https_without_ping(self) -> None:
+    def _qemu_fixture_environment(self, directory: Path) -> dict[str, str]:
+        payload = directory / "qemu-fixture.bin"
+        payload.write_bytes(PAYLOAD)
+        return {
+            "ASTERINAS_M5_FIXTURE_PAYLOAD": str(payload),
+            "ASTERINAS_DESKTOP_FIXTURE_URL": (f"http://10.0.2.2:17894{FIXTURE_PATH}"),
+            "ASTERINAS_DESKTOP_FIXTURE_SIZE": str(PAYLOAD_SIZE),
+            "ASTERINAS_DESKTOP_FIXTURE_SHA256": PAYLOAD_SHA256,
+            "ASTERINAS_DESKTOP_FIXTURE_REQUESTS": "20",
+        }
+
+    def test_guest_evidence_requires_link_and_proxied_https_without_dns(self) -> None:
         environment, console, resolv_conf, url_file, ping_log, curl_log = (
             self._physical_evidence_environment(
                 self.directory / "physical-success",
@@ -465,18 +652,29 @@ esac
             console.read_text().splitlines(), list(EXPECTED_MEGREZ_MILESTONES)
         )
         self.assertFalse(ping_log.exists())
-        self.assertEqual(
-            resolv_conf.read_text(), "nameserver 10.2.0.5\nnameserver 10.2.0.6\n"
-        )
+        self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
+        self.assertFalse((self.directory / "physical-success/getent.log").exists())
         self.assertEqual(
             url_file.read_text(),
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
         curl_calls = curl_log.read_text().splitlines()
-        self.assertEqual(len(curl_calls), 2)
-        self.assertIn("https://www.baidu.com/", curl_calls[0])
-        self.assertIn("result.png", curl_calls[1])
+        self.assertEqual(len(curl_calls), 4)
+        self.assertEqual(curl_calls[0].count(FIXTURE_PATH), 20)
+        self.assertEqual(curl_calls[0].count("--output"), 20)
+        self.assertNotIn("--proxy", curl_calls[0])
+        self.assertIn("--head", curl_calls[1])
+        self.assertIn("http://www.baidu.com/", curl_calls[1])
+        self.assertIn("https://www.baidu.com/", curl_calls[2])
+        self.assertIn("result.png", curl_calls[3])
+        self.assertTrue(
+            all("--proxy http://10.100.19.216:17893" in call for call in curl_calls[1:])
+        )
         self.assertNotIn(" -k", f" {' '.join(curl_calls)}")
+        self.assertEqual(
+            (self.directory / "physical-success/date.log").read_text(),
+            "--utc --set Sat, 29 Aug 2026 02:02:25 GMT\n",
+        )
 
     def test_guest_evidence_rejects_wrong_megrez_bootarg_before_network(self) -> None:
         environment, console, resolv_conf, url_file, ping_log, curl_log = (
@@ -507,10 +705,51 @@ esac
         self.assertFalse(ping_log.exists())
         self.assertFalse(curl_log.exists())
 
-    def test_guest_evidence_reports_dns_https_and_asset_failures(self) -> None:
+    def test_guest_evidence_reports_proxy_https_and_asset_failures(self) -> None:
         cases = (
-            ("dns", {"ASTERINAS_M5_GETENT_STATUS": "41"}, "megrez-dns"),
-            ("https", {"ASTERINAS_M5_HTTPS_STATUS": "42"}, "megrez-https"),
+            (
+                "proxy",
+                {"ASTERINAS_DESKTOP_PROXY_PORT": "17894"},
+                "megrez-proxy-config",
+            ),
+            (
+                "clock-date",
+                {"ASTERINAS_M5_CLOCK_DATE": "missing"},
+                "megrez-clock-date",
+            ),
+            (
+                "clock-set",
+                {"ASTERINAS_M5_DATE_STATUS": "1"},
+                "megrez-clock-set",
+            ),
+            (
+                "fixture-config",
+                {"ASTERINAS_DESKTOP_FIXTURE_REQUESTS": "19"},
+                "megrez-fixture-config",
+            ),
+            (
+                "fixture-download",
+                {"ASTERINAS_M5_FIXTURE_STATUS": "28"},
+                "megrez-fixture-download",
+            ),
+            (
+                "fixture-short",
+                {"ASTERINAS_M5_FIXTURE_SHORT": "1"},
+                "megrez-fixture-size",
+            ),
+            (
+                "fixture-corrupt",
+                {"ASTERINAS_M5_FIXTURE_CORRUPT": "1"},
+                "megrez-fixture-sha256",
+            ),
+            (
+                "https",
+                {
+                    "ASTERINAS_M5_HTTPS_STATUS": "42",
+                    "ASTERINAS_M5_HTTPS_ERROR": "curl: recv failure",
+                },
+                "megrez-https",
+            ),
             (
                 "http-status",
                 {"ASTERINAS_M5_HTTP_CODE": "503"},
@@ -548,18 +787,27 @@ esac
                     console.read_text().splitlines()[-1],
                     f"DEBIAN_NETWORK_M5_FAIL reason={expected_reason}",
                 )
+                if name == "https":
+                    self.assertEqual(
+                        console.read_text().splitlines()[-2],
+                        "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                        "phase=megrez-https attempt=3 status=42 "
+                        "stderr_hex=6375726c3a2072656376206661696c7572650a",
+                    )
                 self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
+                self.assertEqual(
+                    tuple((self.directory / name).glob("desktop-url.fixture.*")),
+                    (),
+                )
 
-    def test_guest_evidence_preserves_resolver_when_atomic_rename_fails(self) -> None:
+    def test_guest_evidence_preserves_url_when_proxy_config_is_missing(self) -> None:
         environment, console, resolv_conf, url_file, _, _ = (
             self._physical_evidence_environment(
                 self.directory / "resolver-rename",
                 cmdline=("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"),
             )
         )
-        fake_mv = Path(environment["PATH"].split(":", 1)[0]) / "mv"
-        fake_mv.write_text("#!/bin/sh\nexit 89\n", encoding="utf-8")
-        fake_mv.chmod(0o755)
+        environment.pop("ASTERINAS_DESKTOP_PROXY_URL")
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -572,7 +820,7 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(
             console.read_text().splitlines()[-1],
-            "DEBIAN_NETWORK_M5_FAIL reason=resolver-publish",
+            "DEBIAN_NETWORK_M5_FAIL reason=megrez-proxy-config",
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
         self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
@@ -593,6 +841,13 @@ esac
             ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
             ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
             ASTERINAS_M5_PING_LOG=str(ping_log),
+            ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
+            ASTERINAS_DESKTOP_FIXTURE_URL=(f"http://10.100.19.216:17894{FIXTURE_PATH}"),
+            ASTERINAS_DESKTOP_FIXTURE_SIZE=str(PAYLOAD_SIZE),
+            ASTERINAS_DESKTOP_FIXTURE_SHA256=PAYLOAD_SHA256,
+            ASTERINAS_DESKTOP_FIXTURE_REQUESTS="20",
         )
 
         result = subprocess.run(
@@ -625,7 +880,24 @@ esac
         curl_log = self.directory / "curl.log"
         for name, body in {
             "getent": "#!/bin/sh\nprintf '%s\\n' '110.242.68.66 STREAM www.baidu.com'\n",
-            "curl": "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$ASTERINAS_M5_CURL_LOG\"\nprintf '200\\t10.0.2.15'\n",
+            "curl": """#!/bin/sh
+printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+case "$*" in
+    *asterinas-network-probe.bin*)
+        previous=
+        output_count=0
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                output_count=$((output_count + 1))
+            fi
+            previous="$argument"
+        done
+        [ "$output_count" -gt 0 ] || exit 95
+        ;;
+    *) printf '200\t10.0.2.15' ;;
+esac
+""",
             "ip": "#!/bin/sh\nexit 97\n",
             "ping": "#!/bin/sh\nexit 98\n",
         }.items():
@@ -641,6 +913,7 @@ esac
             ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
         )
+        environment.update(self._qemu_fixture_environment(self.directory))
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -659,7 +932,11 @@ esac
             url_file.read_text(),
             "https://www.baidu.com/img/flexible/logo/pc/result.png\n",
         )
-        self.assertIn("https://www.baidu.com/", curl_log.read_text())
+        curl_calls = curl_log.read_text().splitlines()
+        self.assertEqual(len(curl_calls), 2)
+        self.assertEqual(curl_calls[0].count(FIXTURE_PATH), 20)
+        self.assertEqual(curl_calls[0].count("--output"), 20)
+        self.assertIn("https://www.baidu.com/", curl_calls[-1])
 
     def test_qemu_evidence_retries_a_transient_dns_failure(self) -> None:
         console = self.directory / "qemu-retry-console"
@@ -685,8 +962,19 @@ printf '%s\n' "$attempt" >"$ASTERINAS_M5_GETENT_LOG"
 printf '%s\n' '110.242.68.66 STREAM www.baidu.com'
 """,
             "curl": """#!/bin/sh
-printf '%s\n' "$*" >"$ASTERINAS_M5_CURL_LOG"
-printf '200\t10.0.2.15'
+printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+case "$*" in
+    *asterinas-network-probe.bin*)
+        previous=
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+            fi
+            previous="$argument"
+        done
+        ;;
+    *) printf '200\t10.0.2.15' ;;
+esac
 """,
             "sleep": "#!/bin/sh\nexit 0\n",
             "ip": "#!/bin/sh\nexit 97\n",
@@ -705,6 +993,7 @@ printf '200\t10.0.2.15'
             ASTERINAS_M5_GETENT_LOG=str(getent_log),
             ASTERINAS_M5_CURL_LOG=str(curl_log),
         )
+        environment.update(self._qemu_fixture_environment(self.directory))
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -740,6 +1029,18 @@ printf '200\t10.0.2.15'
             for tool, body in {
                 "getent": "#!/bin/sh\nprintf '%s\\n' '110.242.68.66 STREAM www.baidu.com'\n",
                 "curl": """#!/bin/sh
+case "$*" in
+    *asterinas-network-probe.bin*)
+        previous=
+        for argument in "$@"; do
+            if [ "$previous" = --output ]; then
+                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+            fi
+            previous="$argument"
+        done
+        exit 0
+        ;;
+esac
 count=0
 [ ! -f "$ASTERINAS_M5_CURL_COUNT" ] || count=$(cat "$ASTERINAS_M5_CURL_COUNT")
 count=$((count + 1))
@@ -765,6 +1066,7 @@ printf '200\t10.0.2.15'
                 ASTERINAS_M5_CURL_COUNT=str(curl_count),
                 ASTERINAS_M5_CURL_FAILURES=str(failures),
             )
+            environment.update(self._qemu_fixture_environment(directory))
             result = subprocess.run(
                 ["/bin/bash", str(EVIDENCE_SCRIPT)],
                 env=environment,
@@ -786,13 +1088,13 @@ printf '200\t10.0.2.15'
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual(failed_count.read_text(encoding="utf-8"), "3\n")
         failed_lines = failed_console.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(failed_lines[0], DESKTOP_M5_QEMU_MILESTONES[0])
+        self.assertEqual(failed_lines[:2], list(DESKTOP_M5_QEMU_MILESTONES[:2]))
         self.assertEqual(
-            failed_lines[1],
+            failed_lines[2],
             "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=qemu-https attempt=3 "
             f"stderr_hex={'45' * 2048}",
         )
-        self.assertEqual(failed_lines[2], "DEBIAN_NETWORK_M5_FAIL reason=qemu-https")
+        self.assertEqual(failed_lines[3], "DEBIAN_NETWORK_M5_FAIL reason=qemu-https")
 
     def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:
         transcript = (
@@ -810,8 +1112,55 @@ printf '200\t10.0.2.15'
         )
         self.assertEqual(reversed_result.reason, "desktop milestones out of order")
         self.assertIn("asterinas.debian_network=qemu-slirp", DESKTOP_M5_QEMU_BOOTARGS)
+        self.assertIn(EXPECTED_QEMU_STRESS_MILESTONE, DESKTOP_M5_QEMU_MILESTONES)
+        for variable, value in (
+            (
+                "ASTERINAS_DESKTOP_FIXTURE_URL",
+                f"http://10.0.2.2:17894{FIXTURE_PATH}",
+            ),
+            ("ASTERINAS_DESKTOP_FIXTURE_SIZE", str(PAYLOAD_SIZE)),
+            ("ASTERINAS_DESKTOP_FIXTURE_SHA256", PAYLOAD_SHA256),
+            ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", "20"),
+            ("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", "120"),
+        ):
+            self.assertIn(
+                f"systemd.setenv={variable}={value}",
+                DESKTOP_M5_QEMU_BOOTARGS.split(),
+            )
         self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
         self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
+
+    def test_qemu_network_target_ignores_desktop_readiness(self) -> None:
+        transcript = (
+            "\n".join(DESKTOP_M5_QEMU_MILESTONES)
+            + "\nDEBIAN_DESKTOP_M4_FAIL reason=netsurf-window-probe-timeout\n"
+        ).encode()
+
+        result = classify_network_m5_qemu(
+            transcript,
+            expected_debian_release="13.6",
+        )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(
+            classify_network_m5_qemu(
+                transcript + b"Kernel panic - not syncing\n",
+                expected_debian_release="13.6",
+            ).reason,
+            "kernel panic",
+        )
+        self.assertEqual(_parse_target([]), (QemuGateTarget.BROWSER, []))
+        self.assertEqual(
+            _parse_target(["--target", "network", "--smp", "4"]),
+            (QemuGateTarget.NETWORK, ["--smp", "4"]),
+        )
+        with self.assertRaises(SystemExit):
+            _parse_target(["--target", "invalid"])
+        self.assertFalse(NetworkM5QemuOperations.CAPTURE_SCREENSHOT)
+        self.assertEqual(
+            NetworkM5QemuOperations.MILESTONES,
+            DESKTOP_M5_QEMU_MILESTONES,
+        )
 
     def test_qemu_adapter_adds_only_one_slirp_virtio_net_device(self) -> None:
         for name in ("u-boot", "boot.ext4", "root.ext2"):
@@ -834,6 +1183,34 @@ printf '200\t10.0.2.15'
         ):
             self.assertIn(device, arguments)
 
+    def test_qemu_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
+        inputs = []
+        for index in range(8):
+            path = self.directory / f"input-{index}"
+            path.write_bytes(str(index).encode())
+            inputs.append(path)
+        output = self.directory / "qemu-fixture-evidence"
+        output.mkdir()
+        config = RootfsGateConfig(*inputs, output)
+        fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+        operations = DesktopM5QemuOperations(config, fixture=fixture)
+
+        with operations:
+            self.assertTrue(fixture.running)
+            operations.invalidate(config)
+            result: dict[str, object] = {"passed": False, "reason": "test"}
+            operations.publish(config, None, b"serial\n", result)
+            self.assertIn("network_fixture", result)
+        self.assertFalse(fixture.running)
+
+        summary = json.loads(
+            (output / "network-fixture.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["request_count"], 0)
+        published = json.loads((output / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(published["network_fixture"]["request_count"], 0)
+        self.assertEqual(published["target"], "browser")
+
     def test_qemu_make_gate_allows_the_cold_desktop_to_finish(self) -> None:
         target = (
             MAKEFILE.read_text(encoding="utf-8")
@@ -842,7 +1219,12 @@ printf '200\t10.0.2.15'
         )
 
         self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
+        self.assertIn('--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)"', target)
         self.assertIn("DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420", MAKEFILE.read_text())
+        self.assertIn(
+            "DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser",
+            MAKEFILE.read_text(),
+        )
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
         self.assertEqual(DESKTOP_M5_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)

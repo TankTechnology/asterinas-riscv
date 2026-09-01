@@ -386,7 +386,7 @@ pub trait PageCacheBackend: Sync + Send {
     ) -> Result<()>;
 }
 
-impl dyn PageCacheBackend {
+impl dyn PageCacheBackend + '_ {
     /// Reads a page from the backend synchronously.
     pub fn read_page(&self, idx: usize, page: LockedCachePage) -> Result<()> {
         let mut io_batch = IoBatch::with_capacity(1);

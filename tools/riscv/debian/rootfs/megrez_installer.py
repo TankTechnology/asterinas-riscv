@@ -19,9 +19,9 @@ from typing import Sequence
 from .contract import ContractError, load_manifest, sha256_file, validate_frozen_root
 
 CHUNK_SIZE = 32 * 1024 * 1024
-ROOT_IMAGE_SIZE = 1024 * 1024 * 1024
 PARTITION_SIZE = 4 * 1024 * 1024 * 1024
 BLOCK_SIZE = 4096
+INSTALL_WRITE_BLOCK_SIZE = 1024 * 1024
 _NEWC_HEADER_SIZE = 110
 _NEWC_MAGIC = b"070701"
 _INSTALLER_COMMANDS = (
@@ -36,7 +36,16 @@ _INSTALLER_COMMANDS = (
     "sleep",
     "sync",
 )
-_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "wget")
+_NETWORK_INSTALLER_COMMANDS = (*_INSTALLER_COMMANDS, "rm", "wget")
+_VERIFY_INSTALLER_COMMANDS = (
+    "blockdev",
+    "dd",
+    "mkdir",
+    "mount",
+    "reboot",
+    "sha256sum",
+    "sleep",
+)
 _INSTALLER_PATH = ("usr/bin", "bin", "usr/sbin", "sbin")
 
 
@@ -296,6 +305,18 @@ def _manifest(chunks: Sequence[Chunk]) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
+def _validate_chunks(root_size: int, chunks: Sequence[Chunk]) -> None:
+    expected_offset = 0
+    for expected_index, chunk in enumerate(chunks):
+        if chunk.index != expected_index or chunk.offset != expected_offset:
+            raise InstallerError(
+                "chunks must cover the root image in contiguous image order"
+            )
+        expected_offset += chunk.uncompressed_size
+    if expected_offset != root_size:
+        raise InstallerError("chunk sizes do not cover the root image")
+
+
 def render_init(
     root_sha256: str,
     root_size: int,
@@ -305,14 +326,14 @@ def render_init(
         raise InstallerError("root SHA-256 must be lowercase hexadecimal")
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
-    if sum(chunk.uncompressed_size for chunk in chunks) != root_size:
-        raise InstallerError("chunk sizes do not cover the root image")
+    _validate_chunks(root_size, chunks)
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 hold() {{ while :; do sleep 3600; done; }}
-fail() {{ echo "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
+emit() {{ printf '%s\\n' "$1" >/dev/ttyS0; }}
+fail() {{ emit "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
 mkdir -p /proc /sys /dev
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -332,19 +353,18 @@ done < /installer/chunks.tsv
 while IFS="$tab" read -r index block blocks compressed uncompressed path; do
     set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
     if [ "$1" = "$uncompressed" ]; then
-        echo "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
+        emit "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
         continue
     fi
     gzip -dc "/$path" | dd of="$target" bs={BLOCK_SIZE} seek="$block" count="$blocks" conv=notrunc || fail write-$index
     sync || fail sync-$index
     set -- $(dd if="$target" bs={BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
     [ "$1" = "$uncompressed" ] || fail readback-$index
-    echo "DEBIAN_INSTALL_CHUNK_OK index=$index sha256=$1"
+    emit "DEBIAN_INSTALL_CHUNK_OK index=$index sha256=$1"
 done < /installer/chunks.tsv
-set -- $(dd if="$target" bs={BLOCK_SIZE} count="{root_size // BLOCK_SIZE}" 2>/dev/null | sha256sum)
-[ "$1" = "{root_sha256}" ] || fail final-image-hash
-echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
+verified_sha256="{root_sha256}"
 sync || fail final-sync
+emit "DEBIAN_INSTALL_PASS sha256=$verified_sha256 bytes={root_size}"
 reboot -f
 fail reboot-returned
 """.encode()
@@ -379,21 +399,61 @@ def _canonical_root_url(root_url: str) -> str:
     return canonical
 
 
-def render_network_init(root_sha256: str, root_size: int, root_url: str) -> bytes:
-    """Render an Asterinas-only LAN installer with bounded retries and readback."""
+def _network_chunk_url(root_url: str, chunk: Chunk) -> str:
+    return f"{root_url}.chunk-{chunk.index:04d}-{chunk.compressed_sha256}.gz"
+
+
+def _network_manifest(root_url: str, chunks: Sequence[Chunk]) -> bytes:
+    canonical_url = _canonical_root_url(root_url)
+    lines = []
+    for chunk in chunks:
+        lines.append(
+            "\t".join(
+                (
+                    f"{chunk.index:04d}",
+                    str(chunk.offset // INSTALL_WRITE_BLOCK_SIZE),
+                    str(chunk.uncompressed_size // INSTALL_WRITE_BLOCK_SIZE),
+                    chunk.compressed_sha256,
+                    chunk.uncompressed_sha256,
+                    _network_chunk_url(canonical_url, chunk),
+                )
+            )
+        )
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _validate_network_chunks(root_size: int, chunks: Sequence[Chunk]) -> None:
+    _validate_chunks(root_size, chunks)
+    if any(
+        chunk.offset % INSTALL_WRITE_BLOCK_SIZE
+        or chunk.uncompressed_size % INSTALL_WRITE_BLOCK_SIZE
+        for chunk in chunks
+    ):
+        raise InstallerError("network chunks must align to 1 MiB I/O units")
+
+
+def render_network_init(
+    root_sha256: str,
+    root_size: int,
+    root_url: str,
+    chunks: Sequence[Chunk],
+) -> bytes:
+    """Render a restart-safe Asterinas-only LAN installer."""
     if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
         raise InstallerError("root SHA-256 must be lowercase hexadecimal")
     if root_size <= 0 or root_size % BLOCK_SIZE:
         raise InstallerError("root size must be a positive multiple of 4096")
-    quoted_url = f"'{_canonical_root_url(root_url)}'"
-    blocks = root_size // BLOCK_SIZE
+    canonical_url = _canonical_root_url(root_url)
+    _validate_network_chunks(root_size, chunks)
     return f"""#!/bin/sh
 set -o pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY
 hold() {{ while :; do sleep 3600; done; }}
-fail() {{ echo "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
-mkdir -p /proc /sys /dev
+emit() {{ printf '%s\\n' "$1" >/dev/ttyS0; }}
+fail() {{ emit "DEBIAN_INSTALL_FAIL reason=$1"; sync; hold; }}
+mkdir -p /proc /sys /dev /run
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
@@ -403,24 +463,77 @@ case "$cmdline" in *" asterinas.debian_install_sha256={root_sha256} "*) ;; *) fa
 target=/dev/mmcblk0p2
 [ -b "$target" ] || fail target-not-block-device
 [ "$(blockdev --getsize64 "$target")" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
-attempt=1
-fetched=0
-while [ "$attempt" -le 3 ]; do
-    if wget -T 30 -O - {quoted_url} | dd of="$target" bs={BLOCK_SIZE} iflag=fullblock conv=notrunc count={blocks}; then
-        fetched=1
-        break
+emit "DEBIAN_INSTALL_RESUME_START chunks={len(chunks)} block_bytes={INSTALL_WRITE_BLOCK_SIZE}"
+root_url='{canonical_url}'
+download=/run/debian-install.chunk.gz
+tab=$(printf '\t')
+while IFS="$tab" read -r index block blocks compressed uncompressed url; do
+    case "$url" in "$root_url".chunk-*.gz) ;; *) fail chunk-url-$index ;; esac
+    emit "DEBIAN_INSTALL_CHUNK_SCAN index=$index"
+    set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+    if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
+        emit "DEBIAN_INSTALL_CHUNK_SKIP index=$index sha256=$1"
+        continue
     fi
-    echo "DEBIAN_INSTALL_FETCH_RETRY attempt=$attempt"
-    attempt=$((attempt + 1))
-    sleep 2
-done
-[ "$fetched" = 1 ] || fail network-fetch
-sync || fail network-sync
-set -- $(dd if="$target" bs={BLOCK_SIZE} count="{blocks}" 2>/dev/null | sha256sum)
-[ "$1" = "{root_sha256}" ] || fail final-image-hash
-echo "DEBIAN_INSTALL_FETCH_OK bytes={root_size} sha256=$1"
-echo "DEBIAN_INSTALL_PASS sha256=$1 bytes={root_size}"
+    attempt=1
+    verified=
+    while [ "$attempt" -le 3 ]; do
+        rm -f "$download" || fail chunk-state-$index
+        if wget -T 30 -O "$download" "$url"; then
+            set -- $(sha256sum "$download")
+            if [ "$#" = 2 ] && [ "$1" = "$compressed" ] && gzip -t "$download"; then
+                if gzip -dc "$download" | dd of="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock seek="$block" count="$blocks" conv=notrunc; then
+                    sync || fail sync-$index
+                    set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} skip="$block" count="$blocks" 2>/dev/null | sha256sum)
+                    if [ "$#" = 2 ] && [ "$1" = "$uncompressed" ] && [ "$2" = "-" ]; then
+                        verified=$1
+                        break
+                    fi
+                fi
+            fi
+        fi
+        emit "DEBIAN_INSTALL_CHUNK_RETRY index=$index attempt=$attempt"
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    [ "$verified" = "$uncompressed" ] || fail network-chunk-$index
+    emit "DEBIAN_INSTALL_CHUNK_OK index=$index sha256=$verified"
+done < /installer/network-chunks.tsv
+rm -f "$download" || fail chunk-state-cleanup
 sync || fail final-sync
+emit "DEBIAN_INSTALL_PASS sha256={root_sha256} bytes={root_size}"
+reboot -f
+fail reboot-returned
+""".encode()
+
+
+def render_verify_init(root_sha256: str, root_size: int) -> bytes:
+    """Render a read-only Megrez root-image verifier."""
+    if len(root_sha256) != 64 or any(c not in "0123456789abcdef" for c in root_sha256):
+        raise InstallerError("root SHA-256 must be lowercase hexadecimal")
+    if root_size <= 0 or root_size % INSTALL_WRITE_BLOCK_SIZE:
+        raise InstallerError("root size must be a positive multiple of 1 MiB")
+    read_blocks = root_size // INSTALL_WRITE_BLOCK_SIZE
+    return f"""#!/bin/sh
+set -o pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+hold() {{ while :; do sleep 3600; done; }}
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+emit() {{ printf '%s\\n' "$1" >/dev/ttyS0; }}
+fail() {{ emit "DEBIAN_VERIFY_FAIL reason=$1"; reboot -f; hold; }}
+target=/dev/mmcblk0p2
+[ -b "$target" ] || fail target-not-block-device
+size=$(blockdev --getsize64 "$target") || fail target-size-read
+[ "$size" = "{PARTITION_SIZE}" ] || fail target-size-mismatch
+emit "DEBIAN_INVENTORY_READY target=$target bytes=$size write=disabled"
+set -- $(dd if="$target" bs={INSTALL_WRITE_BLOCK_SIZE} iflag=fullblock count={read_blocks} 2>/dev/null | sha256sum)
+[ "$#" = 2 ] && [ "$2" = "-" ] || fail image-hash-output
+[ "$1" = "{root_sha256}" ] || fail image-hash
+emit "DEBIAN_VERIFY_PASS sha256=$1 bytes={root_size}"
 reboot -f
 fail reboot-returned
 """.encode()
@@ -514,22 +627,132 @@ def _publish_archive(output: Path, archive: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _publish_network_chunk(destination: Path, payload: bytes, digest: str) -> None:
+    try:
+        descriptor = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        descriptor = -1
+    except OSError as error:
+        raise InstallerError(f"unsafe network chunk: {destination.name}") from error
+    if descriptor >= 0:
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise InstallerError(
+                    f"network chunk identity mismatch: {destination.name}"
+                )
+            hasher = hashlib.sha256()
+            with os.fdopen(descriptor, "rb", closefd=False) as existing:
+                while block := existing.read(1024 * 1024):
+                    hasher.update(block)
+            actual = hasher.hexdigest()
+            if actual != digest:
+                raise InstallerError(
+                    f"network chunk identity mismatch: {destination.name}"
+                )
+            return
+        finally:
+            os.close(descriptor)
+
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+        temporary = None
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def build_network_archive(
     base_cpio: Path,
     root_image: Path,
     output: Path,
     root_sha256: str,
     root_url: str,
+    *,
+    chunk_size: int = CHUNK_SIZE,
 ) -> None:
-    """Build a small installer that fetches the frozen root through Asterinas."""
+    """Build a small installer and content-bound restartable LAN chunks."""
     entries = list(parse_newc(base_cpio.read_bytes()))
     _validate_installer_runtime(entries, _NETWORK_INSTALLER_COMMANDS)
     actual_hash = sha256_file(root_image)
     if actual_hash != root_sha256:
         raise InstallerError("root image SHA-256 mismatch")
+    names = {entry.name for entry in entries}
+    if "init" not in names:
+        raise InstallerError("base initramfs has no init")
+    reserved = {"installer", "installer/network-chunks.tsv"}
+    if names & reserved:
+        raise InstallerError("base initramfs already contains installer paths")
+    canonical_url = _canonical_root_url(root_url)
+    chunks = plan_chunks(root_image, chunk_size=chunk_size)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    for chunk in chunks:
+        chunk_url = _network_chunk_url(canonical_url, chunk)
+        destination = (
+            output.parent / PurePosixPath(urllib.parse.urlsplit(chunk_url).path).name
+        )
+        _publish_network_chunk(destination, chunk.compressed, chunk.compressed_sha256)
+    init_data = render_network_init(
+        root_sha256, root_image.stat().st_size, canonical_url, chunks
+    )
+    entries = [
+        NewcEntry(
+            entry.name,
+            stat.S_IFREG | 0o755 if entry.name == "init" else entry.mode,
+            entry.ino,
+            entry.nlink,
+            entry.devmajor,
+            entry.devminor,
+            entry.rdevmajor,
+            entry.rdevminor,
+            init_data if entry.name == "init" else entry.data,
+        )
+        for entry in entries
+    ]
+    next_ino = max(entry.ino for entry in entries) + 1
+    additions = (
+        _added_entry("installer", stat.S_IFDIR | 0o755, b"", next_ino),
+        _added_entry(
+            "installer/network-chunks.tsv",
+            stat.S_IFREG | 0o644,
+            _network_manifest(canonical_url, chunks),
+            next_ino + 1,
+        ),
+    )
+    _publish_archive(output, _encode_archive((*entries, *additions)))
+
+
+def build_verify_archive(
+    base_cpio: Path,
+    root_image: Path,
+    output: Path,
+    root_sha256: str,
+) -> None:
+    """Build a small read-only verifier for an already installed root image."""
+    entries = list(parse_newc(base_cpio.read_bytes()))
+    _validate_installer_runtime(entries, _VERIFY_INSTALLER_COMMANDS)
+    actual_hash = sha256_file(root_image)
+    if actual_hash != root_sha256:
+        raise InstallerError("root image SHA-256 mismatch")
     if "init" not in {entry.name for entry in entries}:
         raise InstallerError("base initramfs has no init")
-    init_data = render_network_init(root_sha256, root_image.stat().st_size, root_url)
+    init_data = render_verify_init(root_sha256, root_image.stat().st_size)
     entries = [
         NewcEntry(
             entry.name,
@@ -553,7 +776,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--root-image", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--packages-lock", type=Path, required=True)
-    parser.add_argument("--root-url")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--root-url")
+    mode.add_argument("--verify-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -564,9 +789,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         manifest = load_manifest(namespace.manifest)
         validate_frozen_root(namespace.root_image, manifest, namespace.packages_lock)
-        if namespace.root_image.stat().st_size != ROOT_IMAGE_SIZE:
-            raise InstallerError("Megrez Debian root image must be exactly 1 GiB")
-        if namespace.root_url is None:
+        root_size = namespace.root_image.stat().st_size
+        # validate_frozen_root already proves the exact profile-specific image
+        # size against the manifest.  The installer only needs the independent
+        # physical-partition bound here.
+        if not 0 < root_size <= PARTITION_SIZE:
+            raise InstallerError(
+                "Megrez Debian root image must fit partition 2"
+            )
+        if namespace.verify_only:
+            build_verify_archive(
+                namespace.base_cpio,
+                namespace.root_image,
+                namespace.output,
+                manifest.root_image_sha256,
+            )
+        elif namespace.root_url is None:
             build_archive(
                 namespace.base_cpio,
                 namespace.root_image,

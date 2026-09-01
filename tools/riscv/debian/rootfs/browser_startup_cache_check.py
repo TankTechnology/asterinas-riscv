@@ -91,16 +91,20 @@ EXPECTED_GROUPS = {
 EXPECTED_OWNER_UID = 0
 MAINTENANCE_UNITS = {
     "systemd-sysusers.service": (
-        "ConditionNeedsUpdate=|/etc", "ExecStart=systemd-sysusers",
+        "ConditionNeedsUpdate=|/etc",
+        "ExecStart=systemd-sysusers",
     ),
     "ldconfig.service": (
-        "ConditionNeedsUpdate=|/etc", "ExecStart=/sbin/ldconfig -X",
+        "ConditionNeedsUpdate=|/etc",
+        "ExecStart=/sbin/ldconfig -X",
     ),
     "systemd-journal-catalog-update.service": (
-        "ConditionNeedsUpdate=/var", "ExecStart=journalctl --update-catalog",
+        "ConditionNeedsUpdate=/var",
+        "ExecStart=journalctl --update-catalog",
     ),
     "systemd-hwdb-update.service": (
-        "ConditionNeedsUpdate=/etc", "ExecStart=systemd-hwdb update",
+        "ConditionNeedsUpdate=/etc",
+        "ExecStart=systemd-hwdb update",
     ),
 }
 
@@ -116,7 +120,10 @@ def _regular(path: Path, *, nonempty: bool = False) -> Path:
 
 
 def _account_rows(path: Path, fields: int) -> list[list[str]]:
-    rows = [line.split(":") for line in _regular(path, nonempty=True).read_text().splitlines()]
+    rows = [
+        line.split(":")
+        for line in _regular(path, nonempty=True).read_text().splitlines()
+    ]
     if any(len(row) != fields for row in rows):
         raise CacheCheckError(f"malformed account database: {path}")
     return rows
@@ -133,9 +140,7 @@ def _unique_named_ids(
         if len(matches) != 1:
             raise CacheCheckError(f"required static identity is not exact-one: {name}")
         actual = (
-            (int(matches[0][2]), int(matches[0][3]))
-            if user
-            else int(matches[0][2])
+            (int(matches[0][2]), int(matches[0][3])) if user else int(matches[0][2])
         )
         if actual != identity:
             raise CacheCheckError(f"static identity changed: {name}")
@@ -152,18 +157,33 @@ def _validate_maintenance_units(root: Path) -> None:
         lines = vendor.read_text(encoding="utf-8").splitlines()
         for required in required_lines:
             if lines.count(required) != 1:
-                raise CacheCheckError(f"maintenance unit contract changed: {unit}: {required}")
+                raise CacheCheckError(
+                    f"maintenance unit contract changed: {unit}: {required}"
+                )
         for override_root in ("etc/systemd/system", "run/systemd/system"):
             override = root / override_root / unit
             dropins = root / override_root / f"{unit}.d"
             if os.path.lexists(override) or os.path.lexists(dropins):
-                raise CacheCheckError(f"maintenance unit is masked or overridden: {unit}")
+                raise CacheCheckError(
+                    f"maintenance unit is masked or overridden: {unit}"
+                )
         vendor_dropins = root / "usr/lib/systemd/system" / f"{unit}.d"
         if os.path.lexists(vendor_dropins):
-            raise CacheCheckError(f"maintenance unit has unchecked vendor drop-ins: {unit}")
+            raise CacheCheckError(
+                f"maintenance unit has unchecked vendor drop-ins: {unit}"
+            )
 
 
-def check_cache_profile(root: Path) -> str:
+def check_cache_profile(
+    root: Path,
+    *,
+    profile: str = "browser-web",
+    service_name: str | None = None,
+) -> str:
+    if profile not in ("browser-web", "desktop-m5-network"):
+        raise CacheCheckError(f"unsupported startup-cache profile: {profile}")
+    if service_name is not None and profile != "browser-web":
+        raise CacheCheckError("service-name is only valid for the browser-web profile")
     root = root.resolve()
     passwd = _account_rows(root / "etc/passwd", 7)
     groups = _account_rows(root / "etc/group", 4)
@@ -179,18 +199,39 @@ def check_cache_profile(root: Path) -> str:
         raise CacheCheckError("dynamic linker cache has unknown format")
     if cache.stat().st_mtime_ns < usr_mtime:
         raise CacheCheckError("dynamic linker cache is older than /usr")
-    cache_listing_lines = _regular(
-        root / "usr/share/asterinas/browser-startup-ldconfig.log", nonempty=True
-    ).read_text(encoding="utf-8").splitlines()
-    expected_digest = "LD_SO_CACHE_SHA256 " + hashlib.sha256(cache.read_bytes()).hexdigest()
-    if cache_listing_lines.count(expected_digest) != 1 or not cache_listing_lines \
-            or cache_listing_lines[0] != expected_digest:
-        raise CacheCheckError("dynamic linker cache listing is not hash-bound to the cache")
+    cache_listing_lines = (
+        _regular(
+            root / "usr/share/asterinas/browser-startup-ldconfig.log", nonempty=True
+        )
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    expected_digest = (
+        "LD_SO_CACHE_SHA256 " + hashlib.sha256(cache.read_bytes()).hexdigest()
+    )
+    if (
+        cache_listing_lines.count(expected_digest) != 1
+        or not cache_listing_lines
+        or cache_listing_lines[0] != expected_digest
+    ):
+        raise CacheCheckError(
+            "dynamic linker cache listing is not hash-bound to the cache"
+        )
     cache_listing = "\n".join(cache_listing_lines[1:])
-    if any(token in cache_listing for token in (
-        "/home/", "/tmp/", "/usr/local/", "x86_64", "aarch64", "i386-linux",
-        "arm-linux", "s390x", "powerpc",
-    )):
+    if any(
+        token in cache_listing
+        for token in (
+            "/home/",
+            "/tmp/",
+            "/usr/local/",
+            "x86_64",
+            "aarch64",
+            "i386-linux",
+            "arm-linux",
+            "s390x",
+            "powerpc",
+        )
+    ):
         raise CacheCheckError("dynamic linker cache contains host paths")
     if "libc.so.6" not in cache_listing or not re.search(
         r"=> /(?:usr/)?lib/riscv64-linux-gnu/", cache_listing
@@ -204,7 +245,11 @@ def check_cache_profile(root: Path) -> str:
         raise CacheCheckError("local udev hwdb would be suppressed by /etc/.updated")
     local_hwdb = root / "etc/udev/hwdb.d"
     if os.path.lexists(local_hwdb):
-        if local_hwdb.is_symlink() or not local_hwdb.is_dir() or any(local_hwdb.iterdir()):
+        if (
+            local_hwdb.is_symlink()
+            or not local_hwdb.is_dir()
+            or any(local_hwdb.iterdir())
+        ):
             raise CacheCheckError(
                 "local udev hwdb snippets would be suppressed by /etc/.updated"
             )
@@ -214,15 +259,16 @@ def check_cache_profile(root: Path) -> str:
     font_root = root / "var/cache/fontconfig"
     font_candidates = (
         [path for path in font_root.iterdir() if path.name != "CACHEDIR.TAG"]
-        if font_root.is_dir() else []
+        if font_root.is_dir()
+        else []
     )
     font_caches = []
     for path in font_candidates:
         try:
             candidate = _regular(path, nonempty=True)
-            if candidate.name.endswith(".cache-9") and candidate.read_bytes().startswith(
-                b"\x04\xfc\x02\xfc"
-            ):
+            if candidate.name.endswith(
+                ".cache-9"
+            ) and candidate.read_bytes().startswith(b"\x04\xfc\x02\xfc"):
                 font_caches.append(candidate)
         except CacheCheckError:
             continue
@@ -232,18 +278,30 @@ def check_cache_profile(root: Path) -> str:
     for relative in ("etc/.updated", "var/.updated"):
         marker = _regular(root / relative)
         if marker.stat().st_mtime_ns < usr_mtime:
-            raise CacheCheckError(f"ConditionNeedsUpdate stamp is older than /usr: {relative}")
+            raise CacheCheckError(
+                f"ConditionNeedsUpdate stamp is older than /usr: {relative}"
+            )
 
-    unit = _regular(
-        root / "etc/systemd/system/asterinas-browser-web.service", nonempty=True
-    ).read_text(encoding="utf-8")
-    for line in (
-        "User=asterinas", "AmbientCapabilities=", "CapabilityBoundingSet=",
-        "NoNewPrivileges=yes",
-    ):
-        if unit.splitlines().count(line) != 1:
-            raise CacheCheckError(f"browser security unit contract changed: {line}")
+    if profile == "browser-web":
+        browser_unit = service_name or "asterinas-browser-web.service"
+        unit = _regular(
+            root / "etc/systemd/system" / browser_unit, nonempty=True
+        ).read_text(encoding="utf-8")
+        for line in (
+            "User=asterinas",
+            "AmbientCapabilities=",
+            "CapabilityBoundingSet=",
+            "NoNewPrivileges=yes",
+        ):
+            if unit.splitlines().count(line) != 1:
+                raise CacheCheckError(f"browser security unit contract changed: {line}")
     _validate_maintenance_units(root)
+    if profile == "desktop-m5-network":
+        return (
+            "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
+            "sysusers=static ldconfig=riscv64 journal=catalog "
+            "fontconfig=cached stamps=current"
+        )
     return (
         "BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 "
         "journal=catalog fontconfig=cached stamps=current"
@@ -253,9 +311,25 @@ def check_cache_profile(root: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
+    parser.add_argument(
+        "--profile",
+        choices=("browser-web", "desktop-m5-network"),
+        default="browser-web",
+    )
+    parser.add_argument(
+        "--service-name",
+        default=None,
+        help="browser systemd unit to validate (default: profile unit)",
+    )
     values = parser.parse_args()
     try:
-        print(check_cache_profile(values.root))
+        print(
+            check_cache_profile(
+                values.root,
+                profile=values.profile,
+                service_name=values.service_name,
+            )
+        )
     except (CacheCheckError, OSError, ValueError) as error:
         parser.error(str(error))
     return 0

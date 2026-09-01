@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{Interval, RssDelta, Vmar};
+use super::{Interval, RssDelta, Vmar, VmMapping};
 use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
     pub fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
-        let inner = self.inner.read();
-
         let address = page_fault_info.address;
-        if let Some(vm_mapping) = inner.vm_mappings.find_one(&address) {
+        // Do not hold the VMAR lock while servicing the fault.  VMO-backed
+        // faults may submit I/O and yield; keeping the preemption-disabled
+        // read guard alive across that path trips `might_sleep` (and can
+        // deadlock a concurrent unmap).  Duplicate the mapping capability
+        // while protected, then let the guard drop before any fault work.
+        let vm_mapping = {
+            let inner = self.inner.read();
+            inner.vm_mappings.find_one(&address).map(VmMapping::new_fork)
+        };
+
+        if let Some(vm_mapping) = vm_mapping {
             debug_assert!(vm_mapping.range().contains(&address));
 
             let mut rss_delta = RssDelta::new(self);

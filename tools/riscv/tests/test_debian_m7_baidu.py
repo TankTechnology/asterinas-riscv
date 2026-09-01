@@ -65,6 +65,10 @@ class DebianDesktopM7BaiduContractTests(unittest.TestCase):
             DESKTOP_M7_SEARCH_MARKER,
             "DEBIAN_BROWSER_M7_SEARCH query=asterinas result=loaded",
         )
+        self.assertEqual(
+            DESKTOP_M7_READY_MARKER,
+            "DEBIAN_BROWSER_M7_READY page=baidu capture=pending",
+        )
 
     def test_classifier_rejects_missing_duplicate_reordered_and_failure(self) -> None:
         valid = _m7_transcript()
@@ -127,7 +131,10 @@ class DebianDesktopM7BaiduGuestTests(unittest.TestCase):
 set -eu
 printf '%s\n' "$*" >>"$ASTERINAS_M7_ACTIONS"
 case "$1" in
-  search) printf '42\n' ;;
+  search)
+    [ "$*" = 'search --onlyvisible --classname ^netsurf-gtk$' ] || exit 10
+    printf '42\n'
+    ;;
   getwindowname)
     phase="$(cat "$ASTERINAS_M7_STATE")"
     if [ "$ASTERINAS_M7_MODE" = home-timeout ] && [ "$phase" = 1 ]; then
@@ -149,6 +156,9 @@ case "$1" in
     elif [ "${2-}" = Return ]; then
       phase="$(cat "$ASTERINAS_M7_STATE")"
       printf '%s' "$((phase + 1))" >"$ASTERINAS_M7_STATE"
+      if [ "$ASTERINAS_M7_MODE" = search-exit ]; then
+        printf 'closed' >"$ASTERINAS_M7_BROWSER_STATE"
+      fi
     fi
     ;;
   *) exit 8 ;;
@@ -156,7 +166,21 @@ esac
 """,
             encoding="utf-8",
         )
-        for command in ("pgrep", "runuser", "xdotool"):
+        (fake_bin / "sleep").write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'if [ -n "${ASTERINAS_M7_PRE_HOME_DELAY-}" ] && [ "$1" != 0 ]; then\n'
+            '  [ "$1" = "$ASTERINAS_M7_PRE_HOME_DELAY" ] || exit 91\n'
+            '  if grep -Fq -- "$ASTERINAS_M7_HOME_MARKER" '
+            '"$ASTERINAS_BROWSER_M7_CONSOLE"; then\n'
+            "    exit 90\n"
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
+            'exec /usr/bin/sleep "$@"\n',
+            encoding="utf-8",
+        )
+        for command in ("pgrep", "runuser", "sleep", "xdotool"):
             (fake_bin / command).chmod(0o755)
 
         environment = os.environ.copy()
@@ -174,6 +198,8 @@ esac
             ASTERINAS_M7_BROWSER_STATE=str(browser_state),
             ASTERINAS_M7_STATE=str(state),
             ASTERINAS_M7_MODE=mode,
+            ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
+            ASTERINAS_DESKTOP_PROXY_PORT="17893",
         )
         return environment, console, actions
 
@@ -198,12 +224,15 @@ esac
             ],
         )
         action_lines = actions.read_text(encoding="utf-8").splitlines()
-        self.assertIn("search --onlyvisible --class Netsurf-gtk", action_lines)
+        self.assertIn("search --onlyvisible --classname ^netsurf-gtk$", action_lines)
         self.assertIn("key ctrl+q", action_lines)
         runuser_action = next(
             action for action in action_lines if action.startswith("runuser ")
         )
         self.assertIn("--enable_javascript=0", runuser_action)
+        self.assertIn("--http_proxy=1", runuser_action)
+        self.assertIn("--http_proxy_host=10.100.19.216", runuser_action)
+        self.assertIn("--http_proxy_port=17893", runuser_action)
         self.assertTrue(runuser_action.endswith(" https://m.baidu.com/"))
         self.assertLess(
             action_lines.index("windowactivate --sync 42"),
@@ -211,25 +240,84 @@ esac
         )
         self.assertLess(
             action_lines.index("windowfocus --sync 42"),
-            action_lines.index("mousemove --sync 500 42"),
+            action_lines.index("key ctrl+l"),
         )
-        search_focus = action_lines.index("mousemove --sync 500 42")
+        search_focus = action_lines.index("key ctrl+l")
         self.assertEqual(
-            action_lines[search_focus : search_focus + 4],
+            action_lines[search_focus : search_focus + 3],
             [
-                "mousemove --sync 500 42",
-                "click 1",
-                "key ctrl+a",
-                "type --delay 0 -- https://m.baidu.com/s?word=asterinas",
+                "key ctrl+l",
+                "type --delay 0 -- https://m.baidu.com/s?word=asterinas&from=1020539d",
+                "key Return",
             ],
         )
-        self.assertNotIn("mousemove --sync 560 310", action_lines)
+        self.assertFalse(any(line.startswith("mousemove ") for line in action_lines))
+        self.assertNotIn("click 1", action_lines)
         self.assertEqual(action_lines.count("key Return"), 1)
 
-    def test_guest_reports_bounded_home_and_search_title_failures(self) -> None:
+    def test_guest_reuses_the_serial_browser_console_when_m7_is_unset(self) -> None:
+        environment, m7_console, _ = self._environment()
+        shared_console = self.directory / "shared-browser-console"
+        shared_console.write_text("", encoding="utf-8")
+        environment.pop("ASTERINAS_BROWSER_M7_CONSOLE")
+        environment["ASTERINAS_BROWSER_M6_CONSOLE"] = str(shared_console)
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(m7_console.read_text(encoding="utf-8"), "")
+        self.assertIn(
+            DESKTOP_M7_READY_MARKER, shared_console.read_text(encoding="utf-8")
+        )
+
+    def test_guest_rejects_incomplete_physical_proxy_configuration(self) -> None:
+        environment, console, actions = self._environment()
+        del environment["ASTERINAS_DESKTOP_PROXY_PORT"]
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            ["DEBIAN_BROWSER_M7_FAIL reason=invalid-proxy"],
+        )
+        self.assertFalse(actions.exists())
+
+    def test_guest_waits_for_home_render_before_announcing_home(self) -> None:
+        environment, _, _ = self._environment()
+        environment.pop("ASTERINAS_BROWSER_M7_CAPTURE_DELAY_SECONDS")
+        environment.update(
+            ASTERINAS_M7_PRE_HOME_DELAY="30",
+            ASTERINAS_M7_HOME_MARKER=DESKTOP_M7_HOME_MARKER,
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_guest_reports_bounded_home_and_search_process_failures(self) -> None:
         for mode, reason in (
             ("home-timeout", "home-title-timeout"),
             ("search-timeout", "search-title-timeout"),
+            ("search-exit", "search-process"),
         ):
             with self.subTest(mode=mode):
                 environment, console, _ = self._environment(mode=mode)
@@ -243,12 +331,15 @@ esac
 
                 self.assertNotEqual(result.returncode, 0)
                 lines = console.read_text(encoding="utf-8").splitlines()
-                self.assertEqual(
-                    lines[-3],
-                    "DEBIAN_BROWSER_M7_NETSURF_LOG "
-                    "tail_hex=6e6574737572662d6c6f672d72656164790a",
-                )
-                self.assertTrue(lines[-2].startswith("DEBIAN_BROWSER_M7_DIAGNOSTIC"))
+                if mode in ("home-timeout", "search-timeout"):
+                    self.assertEqual(
+                        lines[-3],
+                        "DEBIAN_BROWSER_M7_NETSURF_LOG "
+                        "tail_hex=6e6574737572662d6c6f672d72656164790a",
+                    )
+                    self.assertTrue(
+                        lines[-2].startswith("DEBIAN_BROWSER_M7_DIAGNOSTIC")
+                    )
                 self.assertEqual(lines[-1], f"DEBIAN_BROWSER_M7_FAIL reason={reason}")
 
     def test_builder_installs_m7_service_after_m6(self) -> None:
@@ -326,12 +417,20 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
                 "capture_rendered_ppm",
                 side_effect=captures,
             ) as capture,
+            mock.patch.object(
+                DesktopM7BaiduOperations,
+                "_settle_search_render",
+                autospec=True,
+                side_effect=lambda *_: events.append("search-settle"),
+            ) as settle,
         ):
             operations.run_protocol(session, config)
 
         self.assertEqual(events[0], "m6")
         self.assertEqual(operations._home_screenshot, b"home-ppm")
         self.assertEqual(operations._search_screenshot, b"search-ppm")
+        settle.assert_called_once_with(operations)
+        self.assertEqual(events[-1], "search-settle")
         self.assertEqual(
             [call.args[1].name for call in capture.call_args_list],
             ["desktop-m7-baidu-home.ppm", "desktop-m7-baidu-search.ppm"],
