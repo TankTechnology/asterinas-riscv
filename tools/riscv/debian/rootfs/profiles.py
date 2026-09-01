@@ -224,6 +224,27 @@ _PROFILES["browser-m5"] = RootfsProfile(
     + ("firefox-esr", "python3-minimal"),
 )
 
+_PROFILES["desktop-m9-software"] = RootfsProfile(
+    name="desktop-m9-software",
+    # M9 adds runtime software evidence while retaining the signed metadata
+    # manifest format used by the stable M5 desktop profile.
+    schema_version=5,
+    root_label="ASTER_DEBIANM9",
+    root_uuid="6f7af5d0-3f2f-5a32-9f7e-c0aa3c8c2e91",
+    requested_packages=tuple(
+        sorted(
+            _PROFILES["desktop-m5-network"].requested_packages
+            + ("ffmpeg", "vim")
+        )
+    ),
+    identity_packages=tuple(
+        sorted(
+            _PROFILES["desktop-m5-network"].identity_packages
+            + ("ffmpeg", "vim")
+        )
+    ),
+)
+
 _PROFILES["browser-web"] = RootfsProfile(
     name="browser-web",
     schema_version=7,

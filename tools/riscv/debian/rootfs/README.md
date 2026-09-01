@@ -269,6 +269,62 @@ Chinese text as missing-glyph boxes. These are user-space/browser and remote
 service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
 VirtIO input, Xorg, or framebuffer failure.
 
+### QEMU M9 desktop software smoke gate
+
+The M9 profile is a separate signed rootfs derived from the M5 desktop
+package set. It uses Debian's official `riscv64` `netsurf-gtk`, adds `vim` and
+`ffmpeg`, and does not list `ffprobe` separately: Debian ships `/usr/bin/ffprobe`
+from the `ffmpeg` package. The manifest deliberately keeps schema version 5
+for compatibility with existing readers while binding the new profile name,
+label, UUID, and package identity.
+
+Build and verify the image once, then reuse it for both QEMU and the bounded
+Megrez run:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m9-software
+python3 -m tools.riscv.debian.rootfs.contract verify \
+  --image target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/desktop-m9-software/rootfs/packages.lock
+```
+
+Run the complete four-hart QEMU contract with finite timeouts. This single
+gate reuses the M5 slirp/DNS/HTTPS, M4 desktop, and M7 NetSurf/Baidu evidence,
+then executes the M9 software service. The M8 quality gate remains an
+independent optional run because its title assertion is intentionally not a
+prerequisite for application smoke evidence:
+
+```bash
+make test_riscv_debian_desktop_m9_software_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m9-software/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m9-software/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m9-software/m9-qemu-gate" \
+  DEBIAN_DESKTOP_BOOT_TIMEOUT=900
+```
+
+The software service is intentionally small and fail-closed. It saves a
+marker line with non-interactive Vim, generates a deterministic 16x16 RGB
+frame with single-threaded FFmpeg on the ext2-backed `/var/tmp`, and checks
+its dimensions with ffprobe. Each command has a 120-second timeout and the
+service has a 300-second systemd budget, so a missing package or a hung
+process produces `DEBIAN_DESKTOP_M9_FAIL reason=...` instead of leaving a
+QEMU or board session running indefinitely. The QEMU result retains the
+serial transcript, screenshot, network fixture summary, and immutable
+manifest identity.
+
+For an unreliable Chinese-network path, first use the proxy preflight above;
+if TUNA cannot provide a complete signed closure, retry the build explicitly
+with USTC and then `deb.debian.org`. Do not change the mirror in the guest or
+run an unbounded `apt` command on Megrez. The verified `.deb` closure and its
+`package-checksums` are the offline installation input for the physical test.
+
 ### Megrez static-RJ45 browser gate
 
 The physical browser milestone reuses the signed `desktop-m5-network` root

@@ -563,6 +563,7 @@ class DebianStage1Tests(unittest.TestCase):
             "systemd-application-desktop-root-label",
             "systemd-network-desktop-root-label",
             "systemd-browser-root-label",
+            "systemd-software-desktop-root-label",
             "systemd-handoff-sequence",
             "systemd-exec",
         )

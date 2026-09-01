@@ -175,7 +175,7 @@ def _validate_maintenance_units(root: Path) -> None:
 
 
 def check_cache_profile(root: Path, *, profile: str = "browser-web") -> str:
-    if profile not in ("browser-web", "desktop-m5-network"):
+    if profile not in ("browser-web", "desktop-m5-network", "desktop-m9-software"):
         raise CacheCheckError(f"unsupported startup-cache profile: {profile}")
     root = root.resolve()
     passwd = _account_rows(root / "etc/passwd", 7)
@@ -288,9 +288,9 @@ def check_cache_profile(root: Path, *, profile: str = "browser-web") -> str:
             if unit.splitlines().count(line) != 1:
                 raise CacheCheckError(f"browser security unit contract changed: {line}")
     _validate_maintenance_units(root)
-    if profile == "desktop-m5-network":
+    if profile in ("desktop-m5-network", "desktop-m9-software"):
         return (
-            "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
+            f"DESKTOP_STARTUP_CACHE_PASS profile={profile} "
             "sysusers=static ldconfig=riscv64 journal=catalog "
             "fontconfig=cached stamps=current"
         )
@@ -305,7 +305,7 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument(
         "--profile",
-        choices=("browser-web", "desktop-m5-network"),
+        choices=("browser-web", "desktop-m5-network", "desktop-m9-software"),
         default="browser-web",
     )
     values = parser.parse_args()
