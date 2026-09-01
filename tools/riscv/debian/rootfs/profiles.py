@@ -20,6 +20,7 @@ class RootfsProfile:
     root_uuid: str
     requested_packages: tuple[str, ...]
     identity_packages: tuple[str, ...]
+    root_size_bytes: int = 1024 * 1024 * 1024
 
 
 _M1_IDENTITY_PACKAGES = (
@@ -252,6 +253,12 @@ _PROFILES["browser-web"] = RootfsProfile(
     root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
     requested_packages=_PROFILES["browser-m5"].requested_packages,
     identity_packages=_PROFILES["browser-m5"].identity_packages + ("ca-certificates",),
+    # Firefox's installed files consume most of a 1 GiB image.  A persistent
+    # profile and even a small controlled download then hit ENOSPC during the
+    # normal bookmark/places maintenance path.  Keep the smaller milestone
+    # images unchanged, but give the long-lived online browser a real working
+    # margin.
+    root_size_bytes=2 * 1024 * 1024 * 1024,
 )
 
 
@@ -276,6 +283,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     print(profile.root_label)
     print(profile.root_uuid)
+    print(profile.root_size_bytes)
     print(*profile.requested_packages, sep="\n")
     return 0
 

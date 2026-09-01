@@ -8,6 +8,25 @@ export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-m5-session.log"
 
+guest_monotonic_ns() {
+    local raw="${EPOCHREALTIME-}"
+    if [[ "$raw" =~ ^[0-9]+\.[0-9]{6}$ ]]; then
+        raw="${raw/./}"
+        printf '%s000' "$raw"
+    else
+        printf '%s000000000' "${EPOCHSECONDS:-0}"
+    fi
+}
+
+emit_stage() {
+    local stage="$1" pid="${2:-0}" detail="${3:-}" now line
+    now="$(guest_monotonic_ns)"
+    line="BROWSER_WEB_DESKTOP_STAGE=$stage guest_monotonic_ns=$now pid=$pid"
+    [[ -z "$detail" ]] || line="$line $detail"
+    printf '%s\n' "$line" >&2
+    printf '%s\n' "$line" >>/dev/console 2>/dev/null || true
+}
+
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # The online browser image does not need xinit's nested session, xterm, or
     # matchbox helper. Start Xorg directly and keep one lightweight WM so
@@ -15,8 +34,7 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Keep the marker on stderr as well as the console: systemd captures the
     # service stderr in the journal, while some Asterinas console devices do
     # not support direct writes from an unprivileged session process.
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-start' >&2
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-start' >>/dev/console 2>/dev/null || true
+    emit_stage xorg-start
     # Mirror the online provider's Xorg logfile into the service stream.  Xorg
     # expects a regular logfile (using /dev/stderr makes it exit immediately
     # on this guest), while a failed gate may not persist the writable root.
@@ -38,18 +56,17 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
         fi
         if ! kill -0 "$xorg_pid" 2>/dev/null; then
             kill "$xorg_log_tailer_pid" 2>/dev/null || true
-            printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-failed reason=process-exited' >&2
+            emit_stage xorg-failed "$xorg_pid" reason=process-exited
             exit 1
         fi
         /usr/bin/sleep 1
     done
     if [[ ! -S /tmp/.X11-unix/X0 ]]; then
         kill "$xorg_log_tailer_pid" 2>/dev/null || true
-        printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xorg-failed reason=socket-timeout' >&2
+        emit_stage xorg-failed "$xorg_pid" reason=socket-timeout
         exit 1
     fi
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=x-socket-ready' >&2
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=x-socket-ready' >>/dev/console 2>/dev/null || true
+    emit_stage x-socket-ready "$xorg_pid"
     # Xorg owns the VT as the privileged display provider; keep the window
     # manager unprivileged so the desktop surface cannot grant Firefox extra
     # capabilities through the session process.

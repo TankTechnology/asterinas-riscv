@@ -4,11 +4,14 @@ After=basic.target
 Wants=asterinas-desktop-m5.service
 Requires=asterinas-browser-web.service
 After=asterinas-browser-web.service
+Requires=asterinas-desktop-m5-network.service
+After=asterinas-desktop-m5-network.service
 
 [Service]
 Type=oneshot
-Environment=ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS=5400
-TimeoutStartSec=5700s
+Environment=ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS=540
+Environment=ASTERINAS_BROWSER_WEB_FORMAL_TIMEOUT_SECONDS=480
+TimeoutStartSec=570s
 ExecStart=/usr/lib/asterinas/browser-web-evidence
 RemainAfterExit=yes
 

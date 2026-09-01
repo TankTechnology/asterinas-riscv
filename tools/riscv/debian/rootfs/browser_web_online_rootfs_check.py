@@ -57,13 +57,32 @@ def check_root(root: Path, trust_checker: Path) -> str:
     status = regular(root, "var/lib/dpkg/status").read_text(encoding="utf-8")
     for package in ("firefox-esr", "ca-certificates", "curl"):
         require(package_installed(status, package), f"{package} not installed")
-    for relative in ("usr/bin/getent", "usr/bin/curl", "usr/lib/firefox-esr/firefox-esr"):
+    overlay = root / "usr/share/asterinas/firefox-riscv-jit-overlay.json"
+    firefox_relative = (
+        "usr/lib/firefox/firefox"
+        if overlay.is_file() and not overlay.is_symlink()
+        else "usr/lib/firefox-esr/firefox-esr"
+    )
+    for relative in ("usr/bin/getent", "usr/bin/curl", firefox_relative):
         riscv_elf(regular(root, relative, executable=True))
-    launcher = root / "usr/bin/firefox-esr"
-    require(launcher.is_symlink(), "usr/bin/firefox-esr must be the packaged symlink")
+    launcher_relative = (
+        "usr/bin/firefox"
+        if firefox_relative.startswith("usr/lib/firefox/")
+        else "usr/bin/firefox-esr"
+    )
+    launcher = root / launcher_relative
+    expected_launcher = (
+        "../lib/firefox/firefox"
+        if launcher_relative == "usr/bin/firefox"
+        else "../lib/firefox-esr/firefox-esr"
+    )
     require(
-        os.readlink(launcher) == "../lib/firefox-esr/firefox-esr",
-        "unexpected firefox-esr symlink target",
+        launcher.is_symlink(),
+        f"{launcher_relative} must be the packaged symlink",
+    )
+    require(
+        os.readlink(launcher) == expected_launcher,
+        "unexpected Firefox symlink target",
     )
     nsswitch = regular(root, "etc/nsswitch.conf").read_text(encoding="utf-8")
     hosts = re.search(r"(?m)^hosts:\s+(.+)$", nsswitch)
@@ -81,7 +100,7 @@ def check_root(root: Path, trust_checker: Path) -> str:
         f"resolver is not the frozen slirp DNS contract: {resolver_lines}",
     )
     checker = trust_checker.resolve()
-    require(checker.is_file() and os.access(checker, os.X_OK), "trust checker unavailable")
+    require(checker.is_file(), "trust checker unavailable")
     trust = subprocess.run(
         [sys.executable, str(checker), str(root)],
         check=False,
@@ -89,10 +108,15 @@ def check_root(root: Path, trust_checker: Path) -> str:
         text=True,
     )
     require(trust.returncode == 0, f"Firefox trust preflight failed: {trust.stderr.strip()}")
+    expected_trust = (
+        "mode=system-nss-jit-overlay"
+        if launcher_relative == "usr/bin/firefox"
+        else "mode=embedded-xul"
+    )
     require(
         trust.stdout.count("FIREFOX_TRUST_PASS ") == 1
-        and "mode=embedded-xul" in trust.stdout,
-        "trust checker did not emit exactly one embedded-XUL PASS",
+        and expected_trust in trust.stdout,
+        "trust checker did not emit exactly one expected PASS",
     )
     return (
         "FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns "
