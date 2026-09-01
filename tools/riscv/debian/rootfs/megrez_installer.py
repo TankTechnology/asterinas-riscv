@@ -19,7 +19,6 @@ from typing import Sequence
 from .contract import ContractError, load_manifest, sha256_file, validate_frozen_root
 
 CHUNK_SIZE = 32 * 1024 * 1024
-ROOT_IMAGE_SIZE = 1024 * 1024 * 1024
 PARTITION_SIZE = 4 * 1024 * 1024 * 1024
 BLOCK_SIZE = 4096
 INSTALL_WRITE_BLOCK_SIZE = 1024 * 1024
@@ -790,8 +789,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         manifest = load_manifest(namespace.manifest)
         validate_frozen_root(namespace.root_image, manifest, namespace.packages_lock)
-        if namespace.root_image.stat().st_size != ROOT_IMAGE_SIZE:
-            raise InstallerError("Megrez Debian root image must be exactly 1 GiB")
+        root_size = namespace.root_image.stat().st_size
+        # validate_frozen_root already proves the exact profile-specific image
+        # size against the manifest.  The installer only needs the independent
+        # physical-partition bound here.
+        if not 0 < root_size <= PARTITION_SIZE:
+            raise InstallerError(
+                "Megrez Debian root image must fit partition 2"
+            )
         if namespace.verify_only:
             build_verify_archive(
                 namespace.base_cpio,

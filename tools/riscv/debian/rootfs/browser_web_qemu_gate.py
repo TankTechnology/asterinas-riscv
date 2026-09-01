@@ -23,8 +23,9 @@ import zlib
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     select_bilibili_video,
     validate_baidu_home,
-    validate_baidu_search,
+    validate_baidu_search_outcome,
     validate_bilibili_detail,
+    validate_fixture_search,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
@@ -40,15 +41,16 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 
 
 BROWSER_WEB_MILESTONES = (
-    "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified",
     "DEBIAN_BROWSER_WEB_TRUST_STATIC xul_ckbi=audited ca_bundle=audited package_closure=verified",
-    "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_seccomp=2 sandbox=normal",
-    "DEBIAN_BROWSER_WEB_CONTENT baidu_home=pass baidu_search=pass bilibili_home=pass bilibili_detail=pass bv=BV",
+    "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified",
+    "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited",
+    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV",
     "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent",
     "DEBIAN_BROWSER_WEB_READY user=asterinas display=:0",
 )
 _NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
+_EXTERNAL_BLOCK = b"DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
     b"Kernel panic - not syncing",
@@ -58,6 +60,11 @@ WEB_EVIDENCE_PATHS = {
     "baidu-home.png": "/home/asterinas/browser-web-evidence/baidu-home.png",
     "baidu-search.json": "/home/asterinas/browser-web-evidence/baidu-search.json",
     "baidu-search.png": "/home/asterinas/browser-web-evidence/baidu-search.png",
+    "fixture-search.json": "/home/asterinas/browser-web-evidence/fixture-search.json",
+    "fixture-search.png": "/home/asterinas/browser-web-evidence/fixture-search.png",
+    "fixture-download.json": (
+        "/home/asterinas/browser-web-evidence/fixture-download.json"
+    ),
     "bilibili-home.json": "/home/asterinas/browser-web-evidence/bilibili-home.json",
     "bilibili-home.png": "/home/asterinas/browser-web-evidence/bilibili-home.png",
     "bilibili-detail.json": "/home/asterinas/browser-web-evidence/bilibili-detail.json",
@@ -81,13 +88,21 @@ WEB_EVIDENCE_EXTRACT_TIMEOUT = 120.0
 WEB_EVIDENCE_FILE_TIMEOUT = 15.0
 MAX_TIMELINE_PHASE_DELTA_NS = 7200 * 1_000_000_000
 _TRUST_LINE = re.compile(
-    r"FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) "
+    r"FIREFOX_TRUST_PASS mode=(embedded-xul|system-nss-jit-overlay) "
+    r"ca_certificates=([1-9][0-9]{2,}) "
     r"firefox=installed ca_package=installed riscv_elf=1 nss_loader=1"
 )
 _DNS_LINE = re.compile(r"DNS host=(www\.(?:baidu|bilibili)\.com) address=([0-9.]+)")
 _HTTPS_LINE = re.compile(
     r"HTTPS requested=(https://www\.(?:baidu|bilibili)\.com/) "
     r"status=([23][0-9]{2}) effective=(https://\S+) verify=0"
+)
+_HTTPS_TIMING_LINE = re.compile(
+    r"HTTPS_TIMING requested=(https://www\.(?:baidu|bilibili)\.com/) "
+    r"namelookup=(unknown|[0-9]+\.[0-9]+) "
+    r"connect=(unknown|[0-9]+\.[0-9]+) "
+    r"appconnect=(unknown|[0-9]+\.[0-9]+) "
+    r"starttransfer=(unknown|[0-9]+\.[0-9]+)"
 )
 _PARENT_SECURITY_LINE = re.compile(
     r"BROWSER_WEB_SECURITY parent_pid=([1-9][0-9]*) uid=1000 caps=zero "
@@ -107,6 +122,18 @@ _HASH_SECURITY_LINE = re.compile(
 _TIMELINE_LINE = re.compile(
     rb"A_WEB_TIMELINE marker=(BOOT_[A-Z_]+) guest_monotonic_ns=([0-9]+) "
     rb"firefox_pid=([0-9]+)(?: page=([a-z-]+))?"
+)
+_TIMELINE_PHASE_LINE = re.compile(
+    rb"A_WEB_PHASE phase=([a-z0-9-]+) state=(start|done) "
+    rb"firefox_pid=([1-9][0-9]*)"
+)
+_TIMELINE_SELECTED_BV_LINE = re.compile(
+    rb"A_WEB_SELECTED_BV url=https://www\.bilibili\.com/video/"
+    rb"(BV[0-9A-Za-z]{10})/?(?:[?#]\S*)?"
+)
+_TIMELINE_PLATFORM_LINE = re.compile(
+    rb"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
+    rb"bilibili_detail=pass bv=(BV[0-9A-Za-z]{10}) tls=verified"
 )
 
 
@@ -188,10 +215,9 @@ def _validate_png(contents: bytes, name: str) -> None:
 
 def _validate_curl_log(contents: bytes) -> None:
     lines = _text_lines(contents, "curl.log")
-    if len(lines) != 4:
-        raise GateFailure("curl evidence does not have the exact record set")
     dns: dict[str, str] = {}
     https: dict[str, tuple[str, str]] = {}
+    timings: dict[str, tuple[str, str, str, str]] = {}
     for line in lines:
         if match := _DNS_LINE.fullmatch(line):
             host, address = match.groups()
@@ -212,6 +238,11 @@ def _validate_curl_log(contents: bytes) -> None:
             ):
                 raise GateFailure("curl HTTPS redirect leaves the requested site")
             https[requested] = (status, effective)
+        elif match := _HTTPS_TIMING_LINE.fullmatch(line):
+            requested, lookup, connect, appconnect, starttransfer = match.groups()
+            if requested in timings:
+                raise GateFailure("curl HTTPS timing evidence is duplicated")
+            timings[requested] = (lookup, connect, appconnect, starttransfer)
         else:
             raise GateFailure("curl evidence contains an unstructured record")
     if set(dns) != {"www.baidu.com", "www.bilibili.com"} or set(https) != {
@@ -219,16 +250,18 @@ def _validate_curl_log(contents: bytes) -> None:
         "https://www.bilibili.com/",
     }:
         raise GateFailure("curl evidence is missing a required endpoint")
+    if set(timings) - set(https):
+        raise GateFailure("curl HTTPS timing evidence has no matching HTTPS record")
 
 
 def _validate_security_log(
     contents: bytes,
-) -> tuple[dict[str, tuple[str, str]], int]:
+) -> tuple[dict[str, tuple[str, str]], int, str]:
     lines = _text_lines(contents, "security.log")
     parent_pid: str | None = None
     service_pid: str | None = None
     child_pids: set[str] = set()
-    content_seen = False
+    content_seccomp_modes: set[str] = set()
     hashes: dict[str, tuple[str, str]] = {}
     for line in lines:
         if match := _HASH_SECURITY_LINE.fullmatch(line):
@@ -250,9 +283,9 @@ def _validate_security_log(
                 raise GateFailure("browser security child evidence is duplicated")
             child_pids.add(pid)
             if role == "content":
-                content_seen = True
-                if seccomp != "2":
-                    raise GateFailure("browser content process is not seccomp filtered")
+                if seccomp == "1":
+                    raise GateFailure("browser content process has invalid strict seccomp")
+                content_seccomp_modes.add(seccomp)
         else:
             raise GateFailure("browser security evidence contains an unstructured record")
     expected_paths = {
@@ -265,11 +298,19 @@ def _validate_security_log(
         or parent_pid is None
         or service_pid != parent_pid
         or not child_pids
-        or not content_seen
+        or not content_seccomp_modes
     ):
         raise GateFailure("browser security evidence is incomplete")
+    if len(content_seccomp_modes) != 1:
+        raise GateFailure("browser content processes have mixed seccomp modes")
+    content_seccomp = next(iter(content_seccomp_modes))
+    sandbox_outcome = (
+        "enabled"
+        if content_seccomp == "2"
+        else "unavailable-firefox-riscv64-build"
+    )
     assert parent_pid is not None
-    return hashes, int(parent_pid)
+    return hashes, int(parent_pid), sandbox_outcome
 
 
 def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
@@ -283,7 +324,7 @@ def _validate_firefox_logs(stderr: bytes, mozilla: bytes) -> None:
             raise GateFailure("Firefox log records SCM_RIGHTS permission failure")
 
 
-def _validate_timeline(contents: bytes) -> int:
+def _validate_timeline(contents: bytes) -> tuple[int, str]:
     required = (
         (b"BOOT_SYSTEMD_BEGIN", None),
         (b"BOOT_BASIC_TARGET", None),
@@ -296,29 +337,68 @@ def _validate_timeline(contents: bytes) -> int:
         (b"BOOT_NEW_SESSION_DONE", None),
         (b"BOOT_FIRST_WINDOW_READY", None),
         (b"BOOT_DOM_READY", b"baidu-home"),
-        (b"BOOT_DOM_READY", b"baidu-search"),
+        (b"BOOT_DOM_READY", b"fixture-search"),
         (b"BOOT_DOM_READY", b"bilibili-home"),
         (b"BOOT_DOM_READY", b"bilibili-detail"),
+        (b"BOOT_DOM_READY", b"baidu-search"),
     )
     observed: list[tuple[bytes, bytes | None]] = []
+    phase_pids: set[int] = set()
+    pending_phase: bytes | None = None
+    phase_pairs = 0
+    selected_bv: bytes | None = None
+    platform_bv: bytes | None = None
     previous_ns = -1
+    legacy_clock_reset = False
     browser_pid: int | None = None
-    lines = contents.splitlines()
-    if len(lines) != len(required):
-        raise GateFailure("browser startup timeline is not exact-one per phase")
-    for index, line in enumerate(lines):
+    for line in contents.splitlines():
         match = _TIMELINE_LINE.fullmatch(line)
         if match is None:
+            if phase_match := _TIMELINE_PHASE_LINE.fullmatch(line):
+                phase_name, state, phase_pid = phase_match.groups()
+                phase_pids.add(int(phase_pid))
+                if state == b"start":
+                    if pending_phase is not None:
+                        raise GateFailure("browser phase diagnostics overlap")
+                    pending_phase = phase_name
+                elif pending_phase != phase_name:
+                    raise GateFailure("browser phase diagnostics are not paired")
+                else:
+                    pending_phase = None
+                    phase_pairs += 1
+                continue
+            if selected_match := _TIMELINE_SELECTED_BV_LINE.fullmatch(line):
+                if selected_bv is not None:
+                    raise GateFailure("browser selected BV evidence is duplicated")
+                selected_bv = selected_match.group(1)
+                continue
+            if platform_match := _TIMELINE_PLATFORM_LINE.fullmatch(line):
+                if platform_bv is not None:
+                    raise GateFailure("browser platform evidence is duplicated")
+                platform_bv = platform_match.group(1)
+                continue
             raise GateFailure("browser startup timeline contains an invalid record")
         marker, monotonic, pid_text, page = match.groups()
         current_ns = int(monotonic)
         if current_ns < previous_ns:
-            raise GateFailure("browser startup timeline is not monotonic")
+            # Images built before the uptime-clock fix used wall time for the
+            # shell markers and CLOCK_MONOTONIC for the Python markers.  Admit
+            # exactly that one known transition, at the fixed producer
+            # boundary, while keeping every value within each domain ordered.
+            if not (
+                not legacy_clock_reset
+                and len(observed) == 7
+                and previous_ns >= 1_000_000_000_000_000
+                and current_ns < 1_000_000_000_000_000
+                and marker == b"BOOT_MARIONETTE_CONNECTED"
+            ):
+                raise GateFailure("browser startup timeline is not monotonic")
+            legacy_clock_reset = True
         if previous_ns >= 0 and current_ns - previous_ns > MAX_TIMELINE_PHASE_DELTA_NS:
             raise GateFailure("browser startup timeline phase delta is unbounded")
         previous_ns = current_ns
         pid = int(pid_text)
-        if index < 4:
+        if len(observed) < 4:
             if pid != 0:
                 raise GateFailure("system startup timeline unexpectedly has a Firefox PID")
         elif browser_pid is None:
@@ -328,10 +408,22 @@ def _validate_timeline(contents: bytes) -> int:
         elif pid != browser_pid:
             raise GateFailure("browser startup timeline changed Firefox PID")
         observed.append((marker, page))
+    if len(observed) != len(required):
+        raise GateFailure("browser startup timeline is not exact-one per phase")
     if tuple(observed) != required:
         raise GateFailure("browser startup timeline is incomplete or out of order")
     assert browser_pid is not None
-    return browser_pid
+    if (
+        pending_phase is not None
+        or phase_pairs == 0
+        or phase_pids != {browser_pid}
+        or selected_bv is None
+        or platform_bv != selected_bv
+    ):
+        raise GateFailure("browser phase diagnostics are incomplete or inconsistent")
+    return browser_pid, (
+        "legacy-split-realtime-monotonic" if legacy_clock_reset else "monotonic"
+    )
 
 
 def validate_web_evidence(
@@ -352,22 +444,51 @@ def validate_web_evidence(
     _validate_firefox_logs(
         evidence["firefox-stderr.log"], evidence["firefox-mozilla.log"]
     )
-    timeline_pid = _validate_timeline(evidence["timeline.log"])
+    timeline_pid, timeline_clock = _validate_timeline(evidence["timeline.log"])
 
     snapshots = {
         name: _decode_json(evidence[f"{name}.json"], f"{name}.json")
-        for name in ("baidu-home", "baidu-search", "bilibili-home", "bilibili-detail")
+        for name in (
+            "baidu-home",
+            "baidu-search",
+            "fixture-search",
+            "bilibili-home",
+            "bilibili-detail",
+        )
     }
     validate_baidu_home(snapshots["baidu-home"])
-    validate_baidu_search(snapshots["baidu-search"])
+    validate_baidu_search_outcome(snapshots["baidu-search"])
+    validate_fixture_search(
+        snapshots["fixture-search"],
+        "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas",
+    )
+    fixture_download = _decode_json(
+        evidence["fixture-download.json"], "fixture-download.json"
+    )
+    if fixture_download != {
+        "bytes": 256 * 1024,
+        "filename": "asterinas-browser-quality.bin",
+        "sha256": (
+            "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
+        ),
+    }:
+        raise GateFailure("controlled Firefox download evidence is malformed")
     selected = select_bilibili_video(snapshots["bilibili-home"])
     validate_bilibili_detail(snapshots["bilibili-detail"], selected)
 
-    for name in ("baidu-home", "baidu-search", "bilibili-home", "bilibili-detail"):
+    for name in (
+        "baidu-home",
+        "baidu-search",
+        "fixture-search",
+        "bilibili-home",
+        "bilibili-detail",
+    ):
         _validate_png(evidence[f"{name}.png"], name)
 
     _validate_curl_log(evidence["curl.log"])
-    security_hashes, security_pid = _validate_security_log(evidence["security.log"])
+    security_hashes, security_pid, sandbox_outcome = _validate_security_log(
+        evidence["security.log"]
+    )
     if timeline_pid != security_pid:
         raise GateFailure("browser startup timeline PID does not match security evidence")
     if evidence["MarionetteActivePort"].strip() != b"2828":
@@ -384,13 +505,19 @@ def validate_web_evidence(
     ).hexdigest():
         raise GateFailure("system CA evidence hash does not match")
 
-    return {
+    index = {
         name: {
             "sha256": hashlib.sha256(contents).hexdigest(),
             "size": len(contents),
         }
         for name, contents in sorted(evidence.items())
     }
+    index["security.log"]["sandbox_outcome"] = sandbox_outcome
+    index["trust-static.log"]["trust_mode"] = _TRUST_LINE.fullmatch(
+        trust_lines[0]
+    ).group(1)
+    index["timeline.log"]["clock_outcome"] = timeline_clock
+    return index
 
 
 def _extract_web_evidence(root_fd: int, directory: Path) -> dict[str, bytes]:
@@ -425,8 +552,31 @@ def _extract_web_evidence(root_fd: int, directory: Path) -> dict[str, bytes]:
     return extracted
 
 
-def browser_web_qemu_argv(**arguments: Any) -> tuple[str, ...]:
-    """Admit exactly one default slirp backend and one virtio-net transport."""
+def _diagnostic_gdb_port() -> int | None:
+    """Return the explicitly requested loopback-only QEMU GDB port."""
+
+    raw = os.environ.get("ASTERINAS_QEMU_GDB_PORT")
+    if raw is None:
+        return None
+    if not raw.isascii() or not raw.isdecimal():
+        raise ValueError("ASTERINAS_QEMU_GDB_PORT must be a decimal TCP port")
+    port = int(raw)
+    if not 1024 <= port <= 65535:
+        raise ValueError("ASTERINAS_QEMU_GDB_PORT must be between 1024 and 65535")
+    return port
+
+
+def browser_web_qemu_argv(
+    *, gdb_port: int | None = None, **arguments: Any
+) -> tuple[str, ...]:
+    """Admit one slirp NIC and an optional loopback diagnostic GDB stub."""
+
+    if gdb_port is not None and (
+        isinstance(gdb_port, bool)
+        or not isinstance(gdb_port, int)
+        or not 1024 <= gdb_port <= 65535
+    ):
+        raise ValueError("diagnostic QEMU GDB port must be between 1024 and 65535")
 
     argv = desktop_m5_qemu_argv(**arguments)
     root_drives = [
@@ -449,6 +599,10 @@ def browser_web_qemu_argv(**arguments: Any) -> tuple[str, ...]:
         raise ValueError("online web runner requires exactly one virtio NIC")
     if "-nic" in argv:
         raise ValueError("online web runner contains a conflicting NIC contract")
+    if gdb_port is not None:
+        if "-gdb" in argv or "-s" in argv or "-S" in argv:
+            raise ValueError("online web runner contains a conflicting GDB contract")
+        argv = (*argv, "-gdb", f"tcp:127.0.0.1:{gdb_port}")
     return argv
 
 
@@ -484,7 +638,9 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
 
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
-        return browser_web_qemu_argv(**arguments)
+        return browser_web_qemu_argv(
+            gdb_port=_diagnostic_gdb_port(), **arguments
+        )
 
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
@@ -537,6 +693,9 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 "selected_bv_url": json.loads(
                     self._web_evidence["bilibili-detail.json"]
                 )["url"],
+                "baidu_search_outcome": validate_baidu_search_outcome(
+                    json.loads(self._web_evidence["baidu-search.json"])
+                ),
             }
             output.atomic_write(
                 "browser-web-evidence-index.json",

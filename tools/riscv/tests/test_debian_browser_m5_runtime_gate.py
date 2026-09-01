@@ -204,6 +204,31 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             gate.Marionette("127.0.0.1", 2828, 5)
         self.assertTrue(bad.closed)
 
+    def test_protocol_can_emit_opt_in_raw_command_errors(self) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+            + _frame([
+                1,
+                1,
+                {"error": "no such window", "message": "Browsing context discarded"},
+                None,
+            ])
+        )
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(gate.socket, "create_connection", return_value=transport),
+            mock.patch.dict(os.environ, {"ASTERINAS_MARIONETTE_DEBUG_ERRORS": "1"}),
+            redirect_stderr(stderr),
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 5)
+            with self.assertRaisesRegex(gate.GateError, "WebDriver:ExecuteScript"):
+                client.command("WebDriver:ExecuteScript")
+            client.close()
+        diagnostic = stderr.getvalue()
+        self.assertIn("A_WEB_MARIONETTE_ERROR", diagnostic)
+        self.assertIn("no such window", diagnostic)
+        self.assertIn("Browsing context discarded", diagnostic)
+
     def test_protocol_rejects_non_loopback_and_timeout(self) -> None:
         with self.assertRaisesRegex(gate.GateError, "loopback"):
             gate.Marionette("192.0.2.1", 2828, 5)
@@ -214,6 +239,16 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         ):
             gate.Marionette("127.0.0.1", 2828, 0.1)
         self.assertTrue(timed_out.closed)
+
+    def test_protocol_frame_limit_allows_online_screenshots_but_stays_bounded(self) -> None:
+        self.assertEqual(gate.MAX_MESSAGE_BYTES, 16 * 1024 * 1024)
+        oversized = _Socket(f"{gate.MAX_MESSAGE_BYTES + 1}:".encode())
+        with (
+            mock.patch.object(gate.socket, "create_connection", return_value=oversized),
+            self.assertRaisesRegex(gate.GateError, "oversized Marionette message"),
+        ):
+            gate.Marionette("127.0.0.1", 2828, 5)
+        self.assertTrue(oversized.closed)
 
     @mock.patch.object(gate, "Marionette", _Client)
     def test_runner_reads_real_content_context_and_closes_session(self) -> None:

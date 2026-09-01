@@ -22,6 +22,13 @@
 #  - RISCV_QEMU_CPU: RISC-V QEMU CPU model and extensions;
 #  - ATTACH_XFSTESTS_IMAGES: "true" or "false", whether to attach xfstests images (xfstests_test.img and xfstests_scratch.img) to the VM. Defaults to auto-detection from ENABLE_CONFORMANCE_TEST + CONFORMANCE_TEST_SUITE.
 
+# OSDK runs QEMU from an ephemeral bundle directory.  Resolve repository
+# artifacts here so drive and log paths do not depend on that working directory.
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd -P )
+REPO_ROOT=$( cd -- "${SCRIPT_DIR}/.." && pwd -P )
+TEST_BUILD_DIR=${ASTERINAS_TEST_BUILD_DIR:-${REPO_ROOT}/test/initramfs/build}
+QEMU_LOG_DIR=${ASTERINAS_QEMU_LOG_DIR:-${REPO_ROOT}}
+
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
@@ -66,7 +73,7 @@ fi
 
 if [ "$CONSOLE" = "hvc0" ]; then
     # Kernel logs are printed to all consoles. Redirect serial output to a file to avoid duplicate logs.
-    CONSOLE_ARGS="-device virtconsole,chardev=mux -serial file:qemu-serial.log"
+    CONSOLE_ARGS="-device virtconsole,chardev=mux -serial file:${QEMU_LOG_DIR}/qemu-serial.log"
 else
     CONSOLE_ARGS="-serial chardev:mux"
 fi
@@ -86,10 +93,10 @@ if [ "$1" = "riscv" ]; then
         -nographic \
         -display none \
         -monitor chardev:mux \
-        -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
-        -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-        -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-        -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
+        -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
+        -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+        -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+        -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-device,drive=x2 \
         -device virtio-blk-device,drive=x1 \
         -device virtio-blk-device,drive=x0 \
@@ -115,9 +122,9 @@ if [ "$1" = "tdx" ]; then
         -cpu host,-kvm-steal-time,pmu=off \
         -machine q35,kernel-irqchip=split,confidential-guest-support=tdx0 \
         -object '$TDX_OBJECT' \
-        -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-        -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-        -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
+        -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+        -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+        -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
         -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
         -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=x2,serial=vltpdev,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
@@ -125,7 +132,7 @@ if [ "$1" = "tdx" ]; then
         -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
         $NETDEV_ARGS \
         $QEMU_OPT_ARG_DUMP_PACKETS \
-        -chardev stdio,id=mux,mux=on,logfile=qemu.log \
+        -chardev stdio,id=mux,mux=on,logfile=${QEMU_LOG_DIR}/qemu.log \
         -device virtio-serial,romfile= \
         $CONSOLE_ARGS \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -144,20 +151,20 @@ COMMON_QEMU_ARGS="\
     -nographic \
     -display vnc=0.0.0.0:${VNC_PORT:-42} \
     -monitor chardev:mux \
-    -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
+        -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
     $NETDEV_ARGS \
     $QEMU_OPT_ARG_DUMP_PACKETS \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-    -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-    -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
+    -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+    -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+    -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
 "
 
 # Add xfstests drives when the selected conformance suite is `xfstests`.
 if [ "$ATTACH_XFSTESTS_IMAGES" = "true" ]; then
     COMMON_QEMU_ARGS="$COMMON_QEMU_ARGS \
-    -drive if=none,format=raw,id=x3,file=./test/initramfs/build/xfstests_test.img \
-    -drive if=none,format=raw,id=x4,file=./test/initramfs/build/xfstests_scratch.img \
+    -drive if=none,format=raw,id=x3,file=${TEST_BUILD_DIR}/xfstests_test.img \
+    -drive if=none,format=raw,id=x4,file=${TEST_BUILD_DIR}/xfstests_scratch.img \
 "
 fi
 
@@ -199,7 +206,7 @@ else
         -device virtio-rng-pci,bus=pcie.0,addr=0x9,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
         -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
-        -drive if=none,format=raw,id=nvme0n1,file=./test/initramfs/build/nvme0n1.img \
+        -drive if=none,format=raw,id=nvme0n1,file=${TEST_BUILD_DIR}/nvme0n1.img \
         -device nvme,drive=nvme0n1,serial=nvme0n1 \
         $CONSOLE_ARGS \
         $IOMMU_EXTRA_ARGS \
