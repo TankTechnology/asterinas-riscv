@@ -7,7 +7,7 @@ use device_id::{DeviceId, MajorId, MinorId};
 use lending_iterator::LendingIterator;
 use no_std_io2::io::{Cursor, Read};
 use ostd::boot::boot_info;
-use zune_inflate::DeflateDecoder;
+use zune_inflate::{DeflateDecoder, DeflateOptions};
 
 use super::{
     file::{InodeMode, InodeType},
@@ -24,7 +24,21 @@ pub fn init_in_first_kthread(path_resolver: &PathResolver) -> Result<()> {
     let (reader, suffix) = match &initramfs_buf[..4] {
         // Gzip magic number: 0x1F 0x8B
         &[0x1F, 0x8B, _, _] => {
-            let decompressed = DeflateDecoder::new(initramfs_buf)
+            // mkinitramfs images are frequently hundreds of MiB after
+            // decompression.  zune-inflate's default output limit is small
+            // enough to reject those images even when the gzip stream is
+            // valid.  Seed both the allocation hint and the safety limit from
+            // gzip's ISIZE footer (modulo 2^32), with a small alignment margin.
+            let options = match gzip_uncompressed_size(initramfs_buf) {
+                Some(size) => {
+                    let capacity = size.saturating_add(0x1000);
+                    DeflateOptions::default()
+                        .set_size_hint(capacity)
+                        .set_limit(capacity)
+                }
+                None => DeflateOptions::default(),
+            };
+            let decompressed = DeflateDecoder::new_with_options(initramfs_buf, options)
                 .decode_gzip()
                 .map_err(|_| Error::with_message(Errno::EINVAL, "gzip decompression failed"))?;
             (Cow::Owned(decompressed), ".gz")
@@ -45,6 +59,12 @@ pub fn init_in_first_kthread(path_resolver: &PathResolver) -> Result<()> {
 
     println!("[kernel] rootfs is ready");
     Ok(())
+}
+
+/// Read gzip's ISIZE footer (uncompressed size modulo 2^32).
+fn gzip_uncompressed_size(buf: &[u8]) -> Option<usize> {
+    let bytes = buf.get(buf.len().checked_sub(4)?..)?;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?) as usize)
 }
 
 fn try_append_entry_to_rootfs<R: Read>(

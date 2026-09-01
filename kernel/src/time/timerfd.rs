@@ -2,7 +2,7 @@
 
 use core::{
     fmt::Display,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -16,13 +16,63 @@ use crate::{
         pseudofs::AnonInodeFs,
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable, Pollee},
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{PollHandle, Pollable, Pollee},
+    },
     syscall::create_timer,
     time::{
         Timer,
         timer::{Timeout, TimerGuard},
     },
 };
+
+// Timerfd is one of the concrete always-ready objects observed by the opt-in
+// epoll-entry probe. Keep this diagnostic aggregate-only and disabled by
+// default so normal timerfd behavior and boot cost remain unchanged.
+static TIMERFD_PROFILE: AtomicBool = AtomicBool::new(false);
+static TIMERFD_READS: AtomicU64 = AtomicU64::new(0);
+static TIMERFD_READ_EAGAIN: AtomicU64 = AtomicU64::new(0);
+static TIMERFD_SETS: AtomicU64 = AtomicU64::new(0);
+static TIMERFD_EXPIRES: AtomicU64 = AtomicU64::new(0);
+const TIMERFD_PROFILE_LOG_INTERVAL: u64 = 8_192;
+
+aster_cmdline::define_flag_param_early!("asterinas.timerfd_profile", TIMERFD_PROFILE);
+
+#[inline]
+fn timerfd_io_events(ticks: u64) -> IoEvents {
+    if ticks == 0 {
+        IoEvents::empty()
+    } else {
+        IoEvents::IN
+    }
+}
+
+fn timerfd_profile_caller() -> (u32, u32) {
+    let pid = crate::process::Process::current()
+        .map(|process| process.pid())
+        .unwrap_or(0);
+    let tid = crate::thread::Thread::current()
+        .and_then(|thread| thread.as_posix_thread().map(|thread| thread.tid()))
+        .unwrap_or(0);
+    (pid, tid)
+}
+
+fn timerfd_profile_log(op: &str, count: u64, pid: u32, tid: u32) {
+    if count == 1 || count.is_multiple_of(TIMERFD_PROFILE_LOG_INTERVAL) {
+        ostd::early_println!(
+            "ASTERINAS_TIMERFD_PROFILE op={} count={} pid={} tid={} reads={} eagain={} sets={} expires={}",
+            op,
+            count,
+            pid,
+            tid,
+            TIMERFD_READS.load(Ordering::Relaxed),
+            TIMERFD_READ_EAGAIN.load(Ordering::Relaxed),
+            TIMERFD_SETS.load(Ordering::Relaxed),
+            TIMERFD_EXPIRES.load(Ordering::Relaxed),
+        );
+    }
+}
 
 /// A file-like object representing a timer that can be used with file descriptors.
 pub struct TimerfdFile {
@@ -101,6 +151,12 @@ impl TimerfdFile {
 
             let expired_fn = move |_guard: TimerGuard| {
                 ticks.fetch_add(1, Ordering::Relaxed);
+                if TIMERFD_PROFILE.load(Ordering::Relaxed) {
+                    let expires = TIMERFD_EXPIRES.fetch_add(1, Ordering::Relaxed) + 1;
+                    if expires == 1 || expires.is_multiple_of(TIMERFD_PROFILE_LOG_INTERVAL) {
+                        timerfd_profile_log("expire", expires, 0, 0);
+                    }
+                }
                 pollee.notify(IoEvents::IN);
             };
             create_timer(clockid, expired_fn, ctx)
@@ -133,6 +189,11 @@ impl TimerfdFile {
         interval: Duration,
         flags: TFDSetTimeFlags,
     ) -> (Duration, Duration) {
+        if TIMERFD_PROFILE.load(Ordering::Relaxed) {
+            let count = TIMERFD_SETS.fetch_add(1, Ordering::Relaxed) + 1;
+            let (pid, tid) = timerfd_profile_caller();
+            timerfd_profile_log("set", count, pid, tid);
+        }
         let mut timer_guard = self.timer.lock();
 
         let (old_interval, remain) = (timer_guard.interval(), timer_guard.remain());
@@ -178,7 +239,29 @@ impl TimerfdFile {
         let ticks = self.ticks.fetch_and(0, Ordering::Relaxed);
 
         if ticks == 0 {
+            // `Pollee` caches the result of `check_io_events`. A previous
+            // expiration may have cached `IN`; once the counter is observed
+            // empty, invalidate that cache or epoll will keep reporting a
+            // permanently-ready timerfd and userspace will spin on EAGAIN.
+            self.pollee.invalidate();
+            if TIMERFD_PROFILE.load(Ordering::Relaxed) {
+                let count = TIMERFD_READ_EAGAIN.fetch_add(1, Ordering::Relaxed) + 1;
+                let (pid, tid) = timerfd_profile_caller();
+                timerfd_profile_log("eagain", count, pid, tid);
+            }
             return_errno_with_message!(Errno::EAGAIN, "the counter is zero");
+        }
+
+        // Reading consumes the timerfd counter, so the cached readiness must
+        // be recomputed before the next poll. This is also safe if an expiry
+        // races with the read: invalidation is conservative and the next poll
+        // observes the current counter value.
+        self.pollee.invalidate();
+
+        if TIMERFD_PROFILE.load(Ordering::Relaxed) {
+            let count = TIMERFD_READS.fetch_add(1, Ordering::Relaxed) + 1;
+            let (pid, tid) = timerfd_profile_caller();
+            timerfd_profile_log("read", count, pid, tid);
         }
 
         writer.write_fallible(&mut ticks.as_bytes().into())?;
@@ -187,13 +270,22 @@ impl TimerfdFile {
     }
 
     fn check_io_events(&self) -> IoEvents {
-        let mut events = IoEvents::empty();
+        timerfd_io_events(self.ticks.load(Ordering::Relaxed))
+    }
+}
 
-        if self.ticks.load(Ordering::Relaxed) != 0 {
-            events |= IoEvents::IN;
-        }
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
 
-        events
+    use super::timerfd_io_events;
+    use crate::events::IoEvents;
+
+    #[ktest]
+    fn readiness_requires_pending_ticks() {
+        assert_eq!(timerfd_io_events(0), IoEvents::empty());
+        assert_eq!(timerfd_io_events(1), IoEvents::IN);
+        assert_eq!(timerfd_io_events(u64::MAX), IoEvents::IN);
     }
 }
 

@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::{
     fmt::Display,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use keyable_arc::{KeyableArc, KeyableWeak};
@@ -18,6 +18,21 @@ use crate::{
     fs::file::{FileLike, file_table::FileDesc},
     process::signal::{PollHandle, Pollee},
 };
+
+// Temporary bounded evidence for the epoll busy-wakeup investigation. It is
+// disabled in normal builds and only enabled in a dedicated probe image.
+static EPOLL_ENTRY_PROFILE: AtomicBool = AtomicBool::new(false);
+static EPOLL_ENTRY_POLLS: AtomicU64 = AtomicU64::new(0);
+
+aster_cmdline::define_flag_param_early!(
+    "asterinas.epoll_entry_profile",
+    EPOLL_ENTRY_PROFILE
+);
+
+#[inline]
+fn should_keep_ready(has_event: bool, flags: EpollFlags) -> bool {
+    has_event && !flags.intersects(EpollFlags::EDGE_TRIGGER | EpollFlags::ONE_SHOT)
+}
 
 /// An epoll entry that is contained in an epoll file.
 ///
@@ -135,10 +150,31 @@ impl Entry {
 
         // If there are events and the epoll entry is neither edge-triggered nor one-shot, we need
         // to keep the entry in the ready list.
-        let is_still_ready = ep_event.is_some()
-            && !inner
-                .flags
-                .intersects(EpollFlags::EDGE_TRIGGER | EpollFlags::ONE_SHOT);
+        let is_still_ready = should_keep_ready(ep_event.is_some(), inner.flags);
+
+        if EPOLL_ENTRY_PROFILE.load(Ordering::Relaxed) {
+            let poll = EPOLL_ENTRY_POLLS.fetch_add(1, Ordering::Relaxed) + 1;
+            if poll <= 32 || poll.is_multiple_of(4096) {
+                let inode_type = file.path().type_();
+                let path_name = file.path().name();
+                let is_socket = file.as_socket().is_some();
+                let pid = crate::process::Process::current()
+                    .map(|process| process.pid())
+                    .unwrap_or(0);
+                ostd::early_println!(
+                    "ASTERINAS_EPOLL_ENTRY poll={} pid={} fd={} inode_type={:?} path={} socket={} requested=0x{:x} observed=0x{:x} still_ready={}",
+                    poll,
+                    pid,
+                    self.fd(),
+                    inode_type,
+                    path_name,
+                    is_socket,
+                    inner.event.events.bits(),
+                    io_events.bits(),
+                    is_still_ready,
+                );
+            }
+        }
 
         // If there are events and the epoll entry is one-shot, we need to disable the entry until
         // the user enables it again via `EpollCtl::Mod`.
@@ -193,6 +229,25 @@ impl Entry {
     /// Gets the file associated with this epoll entry.
     pub(super) fn file_weak(&self) -> &KeyableWeak<dyn FileLike> {
         &self.key.file
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::{EpollFlags, should_keep_ready};
+
+    #[ktest]
+    fn ready_list_policy_matches_epoll_trigger_modes() {
+        assert!(!should_keep_ready(false, EpollFlags::empty()));
+        assert!(should_keep_ready(true, EpollFlags::empty()));
+        assert!(!should_keep_ready(true, EpollFlags::EDGE_TRIGGER));
+        assert!(!should_keep_ready(true, EpollFlags::ONE_SHOT));
+        assert!(!should_keep_ready(
+            true,
+            EpollFlags::EDGE_TRIGGER | EpollFlags::ONE_SHOT,
+        ));
     }
 }
 

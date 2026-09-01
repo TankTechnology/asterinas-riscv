@@ -3,12 +3,13 @@
 use alloc::{borrow::Cow, format};
 use core::{
     cmp::{max, min},
+    fmt::Write,
     num::NonZeroUsize,
     ops::Range,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use align_ext::AlignExt;
-use aster_util::printer::VmPrinter;
 use ostd::{
     io::IoMem,
     mm::{
@@ -19,6 +20,7 @@ use ostd::{
         vm_space::{CursorMut, VmQueriedItem},
     },
     task::disable_preempt,
+    timer::Jiffies,
 };
 
 use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
@@ -28,13 +30,38 @@ use crate::{
         path::{Path, PathResolver},
     },
     prelude::*,
-    process::LockedHeap,
+    process::{LockedHeap, posix_thread::AsPosixThread},
     vm::{
         page_cache::{CachePage, Vmo, VmoCommitError},
         perms::VmPerms,
         vmar::PageFaultInfo,
     },
 };
+
+static VM_PROFILE: AtomicBool = AtomicBool::new(false);
+static VM_LOCAL_ICACHE: AtomicBool = AtomicBool::new(false);
+static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static PAGE_FAULT_JIFFIES: AtomicU64 = AtomicU64::new(0);
+static READ_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static WRITE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static EXEC_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static EXEC_FAULT_JIFFIES: AtomicU64 = AtomicU64::new(0);
+static EXEC_ICACHE_FENCE_COUNT: AtomicU64 = AtomicU64::new(0);
+const VM_PROFILE_LOG_INTERVAL: u64 = 8_192;
+const VM_PROFILE_PID_SLOTS: usize = 256;
+static VM_PROFILE_PIDS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
+static VM_PROFILE_PID_FAULTS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
+static VM_PROFILE_PID_JIFFIES: [AtomicU64; VM_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
+static VM_PROFILE_PID_EXEC_FAULTS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
+static VM_PROFILE_PID_EXEC_JIFFIES: [AtomicU64; VM_PROFILE_PID_SLOTS] =
+    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
+
+aster_cmdline::define_flag_param!("asterinas.vm_profile", VM_PROFILE);
+aster_cmdline::define_flag_param!("asterinas.vm_local_icache", VM_LOCAL_ICACHE);
 
 /// A memory mapping for a range of virtual addresses in a [`Vmar`].
 ///
@@ -238,9 +265,9 @@ impl VmMapping {
     /// Prints the mapping information in the format of `/proc/[pid]/maps`.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/task_mmu.c#L304-L359>
-    pub fn print_to_maps(
+    pub fn print_to_maps<W: Write>(
         &self,
-        printer: &mut VmPrinter,
+        printer: &mut W,
         parent_vmar: &Vmar,
         parent_heap_guard: &LockedHeap,
         path_resolver: &PathResolver,
@@ -333,9 +360,11 @@ impl VmMapping {
         let name = name();
 
         if let Some(name) = name {
-            writeln!(printer, "{:<72} {}", line, name)?;
+            writeln!(printer, "{:<72} {}", line, name)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "failed to format proc maps"))?;
         } else {
-            writeln!(printer, "{}", line)?;
+            writeln!(printer, "{}", line)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "failed to format proc maps"))?;
         }
 
         Ok(())
@@ -359,9 +388,13 @@ impl VmMapping {
         page_fault_info: &PageFaultInfo,
         rss_delta: &mut RssDelta,
     ) -> Result<()> {
+        let profile_start = VM_PROFILE.load(Ordering::Relaxed).then(Jiffies::elapsed);
         let result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
         if result.is_ok() {
             sync_instruction_cache_after_fault(page_fault_info.required_perms);
+        }
+        if let Some(start) = profile_start {
+            record_page_fault_profile(start, page_fault_info.required_perms);
         }
         result
     }
@@ -668,7 +701,8 @@ impl VmMapping {
                 Err(err) => {
                     let index = err.pending_index()?;
                     drop(preempt_guard);
-                    vmo.commit_on(index)?;
+                    let end_idx = vmo.offset() + end_offset.div_ceil(PAGE_SIZE);
+                    vmo.vmo().commit_range_for_fault(index, end_idx)?;
                     start_addr = (index * PAGE_SIZE - vmo.offset()) + self.map_to_addr;
                     continue 'retry;
                 }
@@ -681,14 +715,104 @@ fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
     #[cfg(target_arch = "riscv64")]
     if must_sync_instruction_cache(required_perms) {
         // RISC-V instruction caches are not required to observe bytes written
-        // through the data side.  Executable file pages can be populated by a
-        // different hart before this PTE is installed, so synchronize all
-        // harts before returning to user mode.
-        ostd::arch::flush_icache(false);
+        // through the data side.  Keep the mainline all-hart RFENCE behavior
+        // by default; the local-only variant is an explicit diagnostic mode
+        // selected with `asterinas.vm_local_icache=1` so its performance and
+        // correctness can be measured without changing normal boot semantics.
+        let local_only = VM_LOCAL_ICACHE.load(Ordering::Relaxed);
+        ostd::arch::flush_icache(local_only);
+        if VM_PROFILE.load(Ordering::Relaxed) {
+            EXEC_ICACHE_FENCE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[cfg(not(target_arch = "riscv64"))]
     let _ = required_perms;
+}
+
+fn record_page_fault_profile(start: Jiffies, required_perms: VmPerms) {
+    let count = PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let elapsed = Jiffies::elapsed().as_u64().saturating_sub(start.as_u64());
+    let pid = crate::process::Process::current()
+        .map(|process| process.pid())
+        .unwrap_or(0) as u64;
+    let slot = if pid == 0 {
+        None
+    } else {
+        let mut selected = None;
+        for (index, key) in VM_PROFILE_PIDS.iter().enumerate() {
+            let observed = key.load(Ordering::Relaxed);
+            if observed == pid {
+                selected = Some(index);
+                break;
+            }
+            if observed == 0
+                && key
+                    .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                selected = Some(index);
+                break;
+            }
+        }
+        selected
+    };
+    if let Some(index) = slot {
+        VM_PROFILE_PID_FAULTS[index].fetch_add(1, Ordering::Relaxed);
+        VM_PROFILE_PID_JIFFIES[index].fetch_add(elapsed, Ordering::Relaxed);
+        if required_perms.contains(VmPerms::EXEC) {
+            VM_PROFILE_PID_EXEC_FAULTS[index].fetch_add(1, Ordering::Relaxed);
+            VM_PROFILE_PID_EXEC_JIFFIES[index].fetch_add(elapsed, Ordering::Relaxed);
+        }
+    }
+    let total = PAGE_FAULT_JIFFIES.fetch_add(elapsed, Ordering::Relaxed) + elapsed;
+    if required_perms.contains(VmPerms::EXEC) {
+        EXEC_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+        EXEC_FAULT_JIFFIES.fetch_add(elapsed, Ordering::Relaxed);
+    } else if required_perms.contains(VmPerms::WRITE) {
+        WRITE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        READ_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    if count == 1 || count.is_multiple_of(VM_PROFILE_LOG_INTERVAL) {
+        let pid = crate::process::Process::current()
+            .map(|process| process.pid())
+            .unwrap_or(0);
+        let tid = crate::thread::Thread::current()
+            .and_then(|thread| thread.as_posix_thread().map(|posix| posix.tid()))
+            .unwrap_or(0);
+        let mut by_pid = String::new();
+        for index in 0..VM_PROFILE_PID_SLOTS {
+            let observed = VM_PROFILE_PIDS[index].load(Ordering::Relaxed);
+            // Keep the bootstrap daemons and likely application PIDs visible
+            // without emitting a multi-kilobyte line for every helper.
+            if observed != 0 && (observed <= 32 || observed >= 64) {
+                let _ = write!(
+                    by_pid,
+                    " {}:{}/{}/{}/{}",
+                    observed,
+                    VM_PROFILE_PID_FAULTS[index].load(Ordering::Relaxed),
+                    VM_PROFILE_PID_JIFFIES[index].load(Ordering::Relaxed),
+                    VM_PROFILE_PID_EXEC_FAULTS[index].load(Ordering::Relaxed),
+                    VM_PROFILE_PID_EXEC_JIFFIES[index].load(Ordering::Relaxed),
+                );
+            }
+        }
+        let fences = EXEC_ICACHE_FENCE_COUNT.load(Ordering::Relaxed);
+        ostd::early_println!(
+            "ASTERINAS_VM_PROFILE faults={} pid={} tid={} fault_jiffies={} read_faults={} write_faults={} exec_faults={} exec_jiffies={} icache_fences={} by_pid(pid:faults/jiffies/exec_faults/exec_jiffies)={}",
+            count,
+            pid,
+            tid,
+            total,
+            READ_FAULT_COUNT.load(Ordering::Relaxed),
+            WRITE_FAULT_COUNT.load(Ordering::Relaxed),
+            EXEC_FAULT_COUNT.load(Ordering::Relaxed),
+            EXEC_FAULT_JIFFIES.load(Ordering::Relaxed),
+            fences,
+            by_pid,
+        );
+    }
 }
 
 #[cfg(any(target_arch = "riscv64", ktest))]
