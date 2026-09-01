@@ -5,8 +5,11 @@ Description=Asterinas Debian online Firefox workload
 # parallel and let wait-x provide the real readiness barrier; tying browser
 # activation to the desktop unit otherwise causes an unbounded dependency
 # wait and Firefox never starts.
-Requires=asterinas-desktop-m5-network.service
-After=asterinas-desktop-m5-network.service
+# Network evidence is a parallel prerequisite for the formal evidence service,
+# not for launching Firefox about:blank.  Keeping it as Wants lets Xorg and the
+# browser start while the bounded fixture batch runs; browser_web_evidence.service
+# still Requires/After-orders the strict DNS/TLS/content checks on completion.
+Wants=asterinas-desktop-m5-network.service
 Requires=asterinas-browser-web-timeline-basic.service
 After=asterinas-browser-web-timeline-basic.service
 
