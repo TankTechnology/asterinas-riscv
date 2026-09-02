@@ -12,7 +12,10 @@ import time
 import unittest
 from pathlib import Path
 
-from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_CORE_MILESTONES,
+    DESKTOP_M4_MILESTONES,
+)
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_NETWORK_MILESTONES,
     DESKTOP_M5_QEMU_MILESTONES,
@@ -46,6 +49,12 @@ BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
+)
+DESKTOP_M4_SESSION_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_session.sh"
+)
+DESKTOP_M4_EVIDENCE_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
 )
 SAFE_REBOOT_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
 MEGREZ_TCP_PROBE_SOURCE = (
@@ -123,6 +132,106 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"',
             EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
+
+    def test_desktop_core_contract_excludes_browser(self) -> None:
+        self.assertEqual(
+            DESKTOP_M4_CORE_MILESTONES,
+            (
+                "DEBIAN_DESKTOP_M4_UDEV state=active",
+                "DEBIAN_DESKTOP_M4_LOGIND state=active",
+                "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+                "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+                "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
+                "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas "
+                "desktop=pcmanfm panel=lxpanel launchers=3",
+                "DEBIAN_DESKTOP_M4_CORE_CLIENTS window-manager=openbox "
+                "file-manager=pcmanfm panel=lxpanel terminal=xterm",
+                "DEBIAN_DESKTOP_M4_CORE_READY user=asterinas display=:0",
+            ),
+        )
+        self.assertNotIn("browser", " ".join(DESKTOP_M4_CORE_MILESTONES).lower())
+        self.assertNotIn("netsurf", " ".join(DESKTOP_M4_CORE_MILESTONES).lower())
+
+    def test_desktop_session_validates_browser_mode_before_launch(self) -> None:
+        session = DESKTOP_M4_SESSION_SCRIPT.read_text(encoding="utf-8")
+
+        validation = (
+            '[[ "$BROWSER_ENABLED" == 0 || "$BROWSER_ENABLED" == 1 ]] || {\n'
+            "    printf '%s\\n' 'invalid ASTERINAS_DESKTOP_BROWSER_ENABLED' >&2\n"
+            "    exit 64\n"
+            "}"
+        )
+        self.assertIn(validation, session)
+        self.assertLess(
+            session.index(validation), session.index('if [[ "${1-}" == --xsession ]]')
+        )
+
+    def test_desktop_core_evidence_does_not_probe_netsurf(self) -> None:
+        fake_bin = self.directory / "desktop-core-bin"
+        fake_bin.mkdir()
+        actions = self.directory / "desktop-core-actions"
+        console = self.directory / "desktop-core-console"
+        input_directory = self.directory / "input"
+        input_directory.mkdir()
+        (input_directory / "event0").touch()
+        (input_directory / "event1").touch()
+        xorg_log = self.directory / "Xorg.0.log"
+        xorg_log.write_text(
+            "FBDEV(0)\n"
+            "Adding extended input device Asterinas keyboard\n"
+            "Adding extended input device Asterinas pointer\n",
+            encoding="utf-8",
+        )
+        session_log = self.directory / "desktop-m4-session.log"
+        session_log.touch()
+
+        commands = {
+            "systemctl": "exit 0\n",
+            "loginctl": "printf '1 1000 asterinas seat0 tty1\\n'\n",
+            "pgrep": (
+                'printf \'pgrep:%s\\n\' "$*" >>"$ASTERINAS_TEST_ACTIONS"\n'
+                'case "$*" in *netsurf*) exit 23;; esac\n'
+                "exit 0\n"
+            ),
+            "xdotool": (
+                'printf \'xdotool:%s\\n\' "$*" >>"$ASTERINAS_TEST_ACTIONS"\n'
+                "printf '42\\n'\n"
+            ),
+            "xwininfo": (
+                'printf \'xwininfo:%s\\n\' "$*" >>"$ASTERINAS_TEST_ACTIONS"\n'
+                'printf \'"Asterinas Terminal" ("xterm" "XTerm")\\n\'\n'
+            ),
+        }
+        for name, body in commands.items():
+            command = fake_bin / name
+            command.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+            command.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", str(DESKTOP_M4_EVIDENCE_SCRIPT)],
+            env={
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "ASTERINAS_TEST_ACTIONS": str(actions),
+                "ASTERINAS_DESKTOP_BROWSER_ENABLED": "0",
+                "ASTERINAS_DESKTOP_M4_CONSOLE": str(console),
+                "ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY": str(input_directory),
+                "ASTERINAS_DESKTOP_M4_XORG_LOG": str(xorg_log),
+                "ASTERINAS_DESKTOP_M4_SESSION_LOG": str(session_log),
+                "ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS": "1",
+                "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS": "1",
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-2:],
+            list(DESKTOP_M4_CORE_MILESTONES[-2:]),
+        )
+        self.assertNotIn("netsurf", actions.read_text(encoding="utf-8").lower())
 
     def test_native_megrez_tcp_probe_validates_streamed_stress_response(self) -> None:
         executable = self.directory / "megrez-tcp-stress-self-test"
@@ -335,6 +444,24 @@ configure_and_normalize_rootfs
         self.assertTrue((stage / "etc/.updated").is_file())
         self.assertTrue((stage / "var/.updated").is_file())
         self.assertTrue((stage / "usr/lib/asterinas/desktop-m4-session").is_file())
+        core_evidence_unit = (
+            stage / "etc/systemd/system/asterinas-desktop-core-evidence.service"
+        )
+        self.assertIn(
+            "ConditionEnvironment=ASTERINAS_DESKTOP_BROWSER_ENABLED=0",
+            core_evidence_unit.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "ExecStart=/usr/lib/asterinas/desktop-m4-evidence",
+            core_evidence_unit.read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/graphical.target.wants"
+                / core_evidence_unit.name
+            ).is_symlink()
+        )
         installed = stage / "usr/lib/asterinas/desktop-m5-network-evidence"
         self.assertEqual(installed.read_bytes(), EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o755)
@@ -866,13 +993,17 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
 
         self.assertNotEqual(result.returncode, 0)
         lines = console.read_text().splitlines()
-        self.assertEqual(lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout")
+        self.assertEqual(
+            lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout"
+        )
         self.assertEqual(len(lines), 3)
         self.assertIn("field=link status=0 value_hex=", lines[0])
         self.assertIn("field=address status=0 value_hex=", lines[1])
         self.assertFalse(ping_log.exists())
 
-    def test_guest_evidence_keeps_link_diagnostics_bounded_to_cached_probes(self) -> None:
+    def test_guest_evidence_keeps_link_diagnostics_bounded_to_cached_probes(
+        self,
+    ) -> None:
         source = EVIDENCE_SCRIPT.read_text(encoding="utf-8")
         service_source = (
             REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
