@@ -1774,6 +1774,14 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0644 -- \
+            "$script_directory/desktop_m4_core_evidence.service" \
+            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service"
+        ln -s -- \
+            ../asterinas-desktop-core-evidence.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+    fi
     if [[ "$browser_mode" == offline ]]; then
         ln -s -- \
             ../$service_name-evidence.service \

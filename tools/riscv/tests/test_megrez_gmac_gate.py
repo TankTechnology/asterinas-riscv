@@ -14,7 +14,10 @@ import unittest
 from collections.abc import Iterable
 from pathlib import Path
 
-from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_CORE_MILESTONES,
+    DESKTOP_M4_MILESTONES,
+)
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
 )
@@ -29,6 +32,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
 )
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
+    PHYSICAL_DESKTOP_MILESTONES,
     PHYSICAL_MILESTONES,
     PHYSICAL_M7_MILESTONES,
     _parse_args,
@@ -38,6 +42,7 @@ from tools.riscv.megrez_gmac_gate import (
     GateTermination,
     PhysicalGateOperations,
     check_address_unused,
+    classify_physical_desktop_transcript,
     classify_physical_network_transcript,
     classify_physical_transcript,
     physical_bootargs,
@@ -79,6 +84,10 @@ def complete_browser_evidence(status: str = "limited-pass") -> bytes:
 
 def complete_network_evidence() -> bytes:
     return b"\n".join(EXPECTED_PHYSICAL_NETWORK_MILESTONES) + b"\n"
+
+
+def complete_desktop_evidence() -> bytes:
+    return b"\n".join(marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES) + b"\n"
 
 
 class FakeOperations:
@@ -208,6 +217,35 @@ class MegrezGmacGateTests(unittest.TestCase):
             1024,
         )
 
+        desktop_bootargs = physical_bootargs(180, target=GateTarget.DESKTOP)
+        self.assertIn("asterinas.mmc_write_partition2", desktop_bootargs.split())
+        self.assertIn("asterinas.reboot_after=180", desktop_bootargs.split())
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+            desktop_bootargs.split(),
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_BROWSER_ENABLED=0",
+            desktop_bootargs.split(),
+        )
+        for service in (
+            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-m4-evidence.service",
+            "asterinas-desktop-m6-browser.service",
+            "asterinas-desktop-m7-baidu.service",
+            "asterinas-desktop-m8-browser-quality.service",
+        ):
+            self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
+        for excluded in (
+            "asterinas.net=",
+            "asterinas.neighbor=",
+            "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_BROWSER_M6_CONSOLE",
+            "ASTERINAS_DESKTOP_PROXY_",
+            "ASTERINAS_DESKTOP_FIXTURE_",
+        ):
+            self.assertNotIn(excluded, desktop_bootargs)
+
     def test_physical_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "evidence"
@@ -277,8 +315,8 @@ class MegrezGmacGateTests(unittest.TestCase):
 
         network = _parse_args(required[:-2] + ["--target", "network"])
         self.assertEqual(network.target, GateTarget.NETWORK)
-        with self.assertRaises(SystemExit):
-            _parse_args(required[:-2] + ["--target", "desktop"])
+        desktop = _parse_args(required[:-2] + ["--target", "desktop"])
+        self.assertEqual(desktop.target, GateTarget.DESKTOP)
 
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
@@ -315,6 +353,30 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn(DESKTOP_M4_MILESTONES[-1].encode(), operations.published[0])
         self.assertNotIn(DESKTOP_M6_REMOTE_MARKER.encode(), operations.published[0])
         self.assertIn(b"late harmless log", operations.published[0])
+
+    def test_desktop_target_passes_without_network_or_browser_evidence(self) -> None:
+        evidence = complete_desktop_evidence()
+        operations = FakeOperations(
+            chunks=(evidence[11:], b"late harmless log\n"),
+            boot=evidence[:11],
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.DESKTOP,
+            ),
+            operations,
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["target"], "desktop")
+        self.assertNotIn("javascript_status", result)
+        self.assertEqual(PHYSICAL_DESKTOP_MILESTONES[-1], evidence.splitlines()[-1])
+        self.assertNotIn("address-check", operations.events)
+        self.assertIn(b"late harmless log", operations.published[0])
+        self.assertTrue(classify_physical_desktop_transcript(evidence).passed)
 
     def test_network_classifier_rejects_bad_or_fatal_evidence(self) -> None:
         complete = complete_network_evidence()

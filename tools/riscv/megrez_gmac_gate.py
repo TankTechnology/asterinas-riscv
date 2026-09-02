@@ -21,7 +21,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
-from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
+from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_CORE_MILESTONES,
+    DESKTOP_M4_MILESTONES,
+)
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
 )
@@ -81,6 +84,16 @@ SERIAL_EVIDENCE_VARIABLES = (
     "ASTERINAS_DESKTOP_M5_CONSOLE",
     "ASTERINAS_BROWSER_M6_CONSOLE",
 )
+DESKTOP_MASK_BOOTARGS = " ".join(
+    f"systemd.mask={service}"
+    for service in (
+        "asterinas-desktop-m5-network.service",
+        "asterinas-desktop-m4-evidence.service",
+        "asterinas-desktop-m6-browser.service",
+        "asterinas-desktop-m7-baidu.service",
+        "asterinas-desktop-m8-browser-quality.service",
+    )
+)
 MAX_UBOOT_COMMAND_BYTES = 1024
 DESKTOP_PROXY_BOOTARGS = " ".join(
     f"systemd.setenv={name}={value}"
@@ -110,6 +123,9 @@ PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
+PHYSICAL_DESKTOP_MILESTONES = tuple(
+    marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES
+)
 PHYSICAL_M7_MILESTONES = (
     DESKTOP_M7_HOME_MARKER.encode(),
     DESKTOP_M7_SEARCH_MARKER.encode(),
@@ -123,6 +139,7 @@ _BROWSER_READY_RE = re.compile(
 )
 PHYSICAL_READY_MARKERS = (DESKTOP_M7_READY_MARKER.encode(),)
 PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
+PHYSICAL_DESKTOP_READY_MARKERS = (PHYSICAL_DESKTOP_MILESTONES[-1],)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
@@ -146,6 +163,7 @@ class GateTarget(str, Enum):
     """The last guest milestone required by one physical gate run."""
 
     NETWORK = "network"
+    DESKTOP = "desktop"
     BROWSER = "browser"
 
     def __str__(self) -> str:
@@ -235,6 +253,20 @@ def physical_bootargs(
     restart = ""
     if reboot_after is not None:
         restart = f" asterinas.reboot_after={reboot_after}"
+    if target is GateTarget.DESKTOP:
+        bootargs = (
+            "console=ttyS0 console=tty0 loglevel=info "
+            f"init=/init {ROOTFS_WRITE_BOOTARG}{restart} "
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0 "
+            "systemd.setenv=ASTERINAS_DESKTOP_BROWSER_ENABLED=0 "
+            f"{DESKTOP_MASK_BOOTARGS} "
+            "-- --root-init=systemd"
+        )
+        command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
+        if command_bytes >= MAX_UBOOT_COMMAND_BYTES:
+            raise GateFailure("U-Boot bootargs command exceeds 1023 bytes")
+        return bootargs
+
     evidence_variables = (
         ("ASTERINAS_DESKTOP_M5_CONSOLE",)
         if target is GateTarget.NETWORK
@@ -333,6 +365,30 @@ def classify_physical_network_transcript(transcript: bytes) -> GateResult:
     return GateResult(True, "pass", None)
 
 
+def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
+    """Classify the browser-free desktop milestones in strict order."""
+
+    if not isinstance(transcript, bytes):
+        return GateResult(False, "physical transcript must be bytes", None)
+    if len(transcript) > MAX_TRANSCRIPT_BYTES:
+        return GateResult(False, "physical transcript exceeds 8 MiB", None)
+    fatal_reason = _fatal_transcript_reason(transcript)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
+
+    positions: list[int] = []
+    for marker in PHYSICAL_DESKTOP_MILESTONES:
+        count = transcript.count(marker)
+        if count == 0:
+            return GateResult(False, "missing physical desktop milestone", None)
+        if count != 1:
+            return GateResult(False, "duplicate physical desktop milestone", None)
+        positions.append(transcript.find(marker))
+    if positions != sorted(positions):
+        return GateResult(False, "physical desktop milestones out of order", None)
+    return GateResult(True, "pass", None)
+
+
 def _fatal_transcript_reason(transcript: bytes) -> str | None:
     lowered = transcript.lower()
     for marker, reason in _FATAL_MARKERS:
@@ -404,12 +460,16 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
     if config.target is GateTarget.NETWORK:
         ready_markers = PHYSICAL_NETWORK_READY_MARKERS
         classifier = classify_physical_network_transcript
+    elif config.target is GateTarget.DESKTOP:
+        ready_markers = PHYSICAL_DESKTOP_READY_MARKERS
+        classifier = classify_physical_desktop_transcript
     else:
         ready_markers = PHYSICAL_READY_MARKERS
         classifier = classify_physical_transcript
     operations.invalidate()
     try:
-        operations.ensure_address_unused()
+        if config.target is not GateTarget.DESKTOP:
+            operations.ensure_address_unused()
         operations.open_board()
         opened = True
         _append_transcript(transcript, operations.boot())
@@ -499,9 +559,16 @@ class PhysicalGateOperations:
             )
         )
 
+    def _uses_network(self) -> bool:
+        return (
+            getattr(self.arguments, "target", GateTarget.BROWSER)
+            is not GateTarget.DESKTOP
+        )
+
     def __enter__(self) -> PhysicalGateOperations:
         try:
-            self.fixture.start()
+            if self._uses_network():
+                self.fixture.start()
             return self
         except BaseException:
             self.output.close()
@@ -513,7 +580,8 @@ class PhysicalGateOperations:
             self.close_board()
         finally:
             try:
-                self.fixture.close()
+                if self._uses_network():
+                    self.fixture.close()
             finally:
                 self.output.close()
 
@@ -583,18 +651,19 @@ class PhysicalGateOperations:
         os.close(session.fd)
 
     def publish(self, transcript: bytes, result: dict[str, object]) -> None:
-        summary = self.fixture.summary()
-        result["network_fixture"] = summary
-        if result.get("passed") is True and not is_successful_summary(
-            summary, expected_requests=FIXTURE_REQUESTS
-        ):
-            result["passed"] = False
-            result["reason"] = "network fixture evidence mismatch"
         self.output.atomic_write("megrez-gmac.serial.log", transcript)
-        fixture_payload = (
-            json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
-        ).encode()
-        self.output.atomic_write("network-fixture.json", fixture_payload)
+        if self._uses_network():
+            summary = self.fixture.summary()
+            result["network_fixture"] = summary
+            if result.get("passed") is True and not is_successful_summary(
+                summary, expected_requests=FIXTURE_REQUESTS
+            ):
+                result["passed"] = False
+                result["reason"] = "network fixture evidence mismatch"
+            fixture_payload = (
+                json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode()
+            self.output.atomic_write("network-fixture.json", fixture_payload)
         payload = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
         self.output.atomic_write("result.json", payload)
 
