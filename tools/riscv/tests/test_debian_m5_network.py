@@ -60,6 +60,11 @@ EXPECTED_MEGREZ_MILESTONES = (
     "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
     "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
 )
+EXPECTED_MEGREZ_CONSOLE = (
+    EXPECTED_MEGREZ_MILESTONES[:2]
+    + ("DEBIAN_NETWORK_M5_STRESS_START requests=20 endpoint=10.100.19.216:17894",)
+    + EXPECTED_MEGREZ_MILESTONES[2:]
+)
 EXPECTED_QEMU_STRESS_MILESTONE = (
     "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
     f"sha256={PAYLOAD_SHA256} endpoint=10.0.2.2:17894"
@@ -649,7 +654,7 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            console.read_text().splitlines(), list(EXPECTED_MEGREZ_MILESTONES)
+            console.read_text().splitlines(), list(EXPECTED_MEGREZ_CONSOLE)
         )
         self.assertFalse(ping_log.exists())
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
