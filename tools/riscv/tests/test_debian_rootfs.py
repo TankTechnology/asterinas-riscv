@@ -1271,6 +1271,17 @@ WantedBy=multi-user.target
         self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
         self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
         self.assertIn("chown asterinas:input", device_access.read_text())
+        self.assertIn(
+            'if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then',
+            device_access.read_text(),
+        )
+        self.assertIn(
+            "while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]",
+            device_access.read_text(),
+        )
+        self.assertIn(
+            "failed: desktop input devices did not appear", device_access.read_text()
+        )
         self.assertFalse((getty_wants / "getty@tty1.service").exists())
         evidence_unit = (
             stage / "etc/systemd/system/asterinas-desktop-m3-evidence.service"
