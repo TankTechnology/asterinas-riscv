@@ -18,6 +18,13 @@ make test_riscv_uboot_booti_unit
 
 These tests validate immutable profile definitions, address ranges, generated commands, DTB policy, milestone accounting, result classification, cleanup, and artifact identity checks.
 
+> [!WARNING]
+> Do not run `cargo clean` at the repository root: it deletes `target/`
+> wholesale, including the U-Boot build cache (`target/qemu-uboot/cache/`),
+> the prepared boot disks, and the signed Debian rootfs images
+> (`target/debian-riscv/`).  Clean only the Cargo artifact directories
+> (`target/debug`, `target/osdk`, `target/<triple>`) instead.
+
 ## Linux Test Project syscall gate
 
 The isolated LTP gate cross-builds the pinned LTP `20260529` syscall suite,
