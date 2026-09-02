@@ -1010,7 +1010,7 @@ pub(super) fn lookup_syncobjs(handle: &DriHandle, handles: &[u32]) -> Result<Vec
             .syncobjs
             .get(id)
             .cloned()
-            .ok_or_else(|| Error::with_message(Errno::ENOENT, "unknown syncobj handle"))?;
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown syncobj handle"))?;
         syncobjs.push(syncobj);
     }
     Ok(syncobjs)

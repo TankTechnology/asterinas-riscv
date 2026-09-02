@@ -1221,11 +1221,19 @@ impl DriHandle {
             )
         })?;
         let init_user_ns = UserNamespace::get_init_singleton();
+        // Linux returns EACCES for DRM master permission failures; map the
+        // capability LSM's EPERM to match userspace expectations.
         lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
             init_user_ns.as_ref(),
             posix_thread,
             CapSet::SYS_ADMIN,
         ))
+        .map_err(|_| {
+            Error::with_message(
+                Errno::EACCES,
+                "the caller does not have DRM master permission",
+            )
+        })
     }
 
     fn check_authenticated(&self) -> Result<()> {
