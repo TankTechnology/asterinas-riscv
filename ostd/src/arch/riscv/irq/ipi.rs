@@ -70,3 +70,50 @@ pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) {
         );
     }
 }
+
+/// Flushes the instruction cache on the given harts via the SBI RFENCE
+/// extension.
+///
+/// SBI implementations reject hart masks that name nonexistent harts
+/// (OpenSBI returns `SBI_ERR_INVALID_PARAM`), so the mask is constructed from
+/// the actual hardware CPU IDs instead of using an all-ones broadcast mask.
+pub(crate) fn remote_fence_i_all(hw_cpu_ids: &[HwCpuId]) {
+    const XLEN: usize = usize::BITS as usize;
+    const XLEN_MASK: usize = XLEN - 1;
+
+    let mut hart_mask = 0usize;
+    let mut fits_first_word = true;
+    for hw_cpu_id in hw_cpu_ids {
+        let hart_id = hw_cpu_id.0 as usize;
+        if hart_id >= XLEN {
+            fits_first_word = false;
+            break;
+        }
+        hart_mask |= 1 << hart_id;
+    }
+
+    if fits_first_word {
+        let ret = sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(hart_mask, 0));
+        if ret.error != 0 {
+            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+        }
+        return;
+    }
+
+    // Platforms with hart IDs beyond the first machine word are rare; fence
+    // each hart individually there.
+    for hw_cpu_id in hw_cpu_ids {
+        let hart_id = hw_cpu_id.0 as usize;
+        let hart_mask_base = hart_id & !XLEN_MASK;
+        let hart_mask = 1 << (hart_id & XLEN_MASK);
+        let ret =
+            sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(hart_mask, hart_mask_base));
+        if ret.error != 0 {
+            crate::warn!(
+                "SBI remote fence.i to hart {} failed: error code {}",
+                hart_id,
+                ret.error
+            );
+        }
+    }
+}

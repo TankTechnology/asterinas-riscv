@@ -114,12 +114,10 @@ pub fn flush_icache(local_only: bool) {
     unsafe { core::arch::asm!("fence.i", options(nostack)) };
 
     if !local_only {
-        // An all-ones mask with base 0 covers every hart with hart ID smaller
-        // than the machine word width; QEMU virt and SiFive platforms number
-        // their harts from 0, so this covers all of them.
-        let ret = sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(!0, 0));
-        if ret.error != 0 {
-            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+        // Before SMP initialization no other hart runs code, so the local
+        // `fence.i` above is sufficient.
+        if let Some(hw_cpu_ids) = crate::smp::hw_cpu_id_mapping() {
+            irq::remote_fence_i_all(hw_cpu_ids);
         }
     }
 }
