@@ -580,13 +580,10 @@ install_rootfs_packages() {
         version="$(dpkg-deb -f "$cached" Version 2>/dev/null || true)"
         architecture="$(dpkg-deb -f "$cached" Architecture 2>/dev/null || true)"
         [[ -n "$package" && -n "$version" && -n "$architecture" ]] || continue
-        # For browser profiles the cache was admitted from the same signed
-        # package set by an earlier build, so reuse all matching archives. For
-        # smaller profiles keep the bridge narrow to avoid extra-package audit
-        # noise; Firefox is the only slow package worth pre-seeding there.
-        if ! is_firefox_profile; then
-            [[ "$package" == firefox-esr ]] || continue
-        fi
+        # Only browser profiles may reuse the browser cache.  Non-browser
+        # profiles must not seed an unrequested Firefox archive: the later
+        # package-lock audit would (correctly) reject that extra package.
+        is_firefox_profile || continue
         [[ "$architecture" == riscv64 || "$architecture" == all ]] || continue
         filename="${package}_${version}_${architecture}.deb"
         # The content cache uses '_' as a portable encoding for '~' in Debian
