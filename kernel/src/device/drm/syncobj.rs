@@ -49,7 +49,6 @@ pub(super) const DRM_SYNCOBJ_WAIT_DEADLINE: u32 = 1 << 3;
 pub(super) const DRM_SYNCOBJ_QUERY_LAST_SUBMITTED: u32 = 1 << 0;
 
 pub(super) const DRM_SYNCOBJ_FD_IMPORT_SYNC_FILE: u32 = 1 << 0;
-pub(super) const DRM_SYNCOBJ_FD_TIMELINE: u32 = 1 << 1;
 pub(super) const DRM_SYNCOBJ_FD_EXPORT_SYNC_FILE: u32 = 1 << 0;
 
 /// Prevents untrusted userspace from forcing unbounded ioctl allocations.
@@ -85,7 +84,6 @@ pub(super) struct DrmSyncobjHandle {
     pub flags: u32,
     pub fd: i32,
     pub pad: u32,
-    pub point: u64,
 }
 
 #[repr(C)]
@@ -1231,24 +1229,15 @@ pub(super) fn handle_to_fd(
 ) -> Option<Result<i32>> {
     Some((|| -> Result<i32> {
         let mut req = cmd.read()?;
-        let valid = DRM_SYNCOBJ_FD_EXPORT_SYNC_FILE | DRM_SYNCOBJ_FD_TIMELINE;
-        if req.pad != 0 || req.flags & !valid != 0 {
+        if req.pad != 0 || req.flags & !DRM_SYNCOBJ_FD_EXPORT_SYNC_FILE != 0 {
             return_errno_with_message!(Errno::EINVAL, "invalid syncobj export request");
         }
         let syncobj = lookup_syncobjs(handle, &[req.handle])?.remove(0);
         let file: Arc<dyn FileLike> = if req.flags & DRM_SYNCOBJ_FD_EXPORT_SYNC_FILE != 0 {
-            let point = if req.flags & DRM_SYNCOBJ_FD_TIMELINE != 0 {
-                req.point
-            } else {
-                0
-            };
             Arc::new(super::fence::FenceFile::new(
-                syncobj.wait_for_fence(point, SubmissionWait::Immediate)?,
+                syncobj.wait_for_fence(0, SubmissionWait::Immediate)?,
             ))
         } else {
-            if req.point != 0 {
-                return_errno_with_message!(Errno::EINVAL, "syncobj fd export has a timeline point");
-            }
             Arc::new(SyncObjectFile::new(syncobj))
         };
         let fd = file_table
@@ -1272,8 +1261,7 @@ pub(super) fn fd_to_handle(
 ) -> Option<Result<i32>> {
     Some((|| -> Result<i32> {
         let mut req = cmd.read()?;
-        let valid = DRM_SYNCOBJ_FD_IMPORT_SYNC_FILE | DRM_SYNCOBJ_FD_TIMELINE;
-        if req.pad != 0 || req.flags & !valid != 0 {
+        if req.pad != 0 || req.flags & !DRM_SYNCOBJ_FD_IMPORT_SYNC_FILE != 0 {
             return_errno_with_message!(Errno::EINVAL, "invalid syncobj import request");
         }
         let fd = FileDesc::try_from(req.fd).map_err(|_| Error::new(Errno::EBADF))?;
@@ -1287,23 +1275,11 @@ pub(super) fn fd_to_handle(
                 .ok_or_else(|| Error::with_message(Errno::EINVAL, "fd is not a sync file"))?
                 .fence();
             let syncobj = lookup_syncobjs(handle, &[req.handle])?.remove(0);
-            let point = if req.flags & DRM_SYNCOBJ_FD_TIMELINE != 0 {
-                req.point
-            } else {
-                0
-            };
-            if point == 0 {
-                syncobj.replace_fence(Some(fence))?;
-            } else {
-                syncobj.add_point(point, fence)?;
-            }
+            syncobj.replace_fence(Some(fence))?;
             cmd.write(&req)?;
             return Ok(0);
         }
 
-        if req.point != 0 {
-            return_errno_with_message!(Errno::EINVAL, "syncobj fd import has a timeline point");
-        }
         let syncobj = file
             .downcast_ref::<SyncObjectFile>()
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "fd is not a syncobj file"))?
