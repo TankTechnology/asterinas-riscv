@@ -8,6 +8,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -864,11 +865,47 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            console.read_text().splitlines(),
-            ["DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout"],
-        )
+        lines = console.read_text().splitlines()
+        self.assertEqual(lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout")
+        self.assertEqual(len(lines), 3)
+        self.assertIn("field=link status=0 value_hex=", lines[0])
+        self.assertIn("field=address status=0 value_hex=", lines[1])
         self.assertFalse(ping_log.exists())
+
+    def test_guest_evidence_bounds_hanging_link_probe_and_records_diagnostics(self) -> None:
+        environment, console, _, _, _, _ = self._physical_evidence_environment(
+            self.directory / "hanging-link",
+            cmdline=(
+                "console=tty0 init=/init "
+                "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"
+            ),
+        )
+        hanging_ip = self.directory / "hanging-link" / "bin" / "ip"
+        hanging_ip.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+        hanging_ip.chmod(0o755)
+        environment.update(
+            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="1",
+            ASTERINAS_DESKTOP_M5_LINK_PROBE_TIMEOUT_SECONDS="1",
+        )
+
+        started = time.monotonic()
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 4)
+        lines = console.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout")
+        diagnostics = [line for line in lines if "M5_DIAGNOSTIC" in line]
+        self.assertGreaterEqual(len(diagnostics), 2)
+        self.assertTrue(all("status=124" in line for line in diagnostics))
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"
