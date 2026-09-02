@@ -1269,6 +1269,12 @@ $desktop_ordering
 [Service]
 Type=oneshot
 $(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
+# Asterinas' iproute2 netlink path is known to complete on the board, but a
+# broken userspace probe must never hold graphical.target forever.  Bound the
+# unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
+# changes the process/signal path and has regressed on Asterinas before.
+TimeoutStartSec=180s
+TimeoutStopSec=5s
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
 RemainAfterExit=yes
 
