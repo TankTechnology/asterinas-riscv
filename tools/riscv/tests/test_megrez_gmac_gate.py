@@ -357,8 +357,12 @@ class MegrezGmacGateTests(unittest.TestCase):
     def test_desktop_target_passes_without_network_or_browser_evidence(self) -> None:
         evidence = complete_desktop_evidence()
         operations = FakeOperations(
-            chunks=(evidence[11:], b"late harmless log\n"),
-            boot=evidence[:11],
+            chunks=(
+                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n",
+                b"DEBIAN_BROWSER_M6_FAIL reason=browser-start-timeout\n"
+                + evidence,
+                b"late harmless log\n",
+            ),
         )
 
         result = run_gate(
@@ -377,6 +381,12 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("address-check", operations.events)
         self.assertIn(b"late harmless log", operations.published[0])
         self.assertTrue(classify_physical_desktop_transcript(evidence).passed)
+        self.assertTrue(
+            classify_physical_desktop_transcript(
+                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n"
+                b"DEBIAN_BROWSER_M7_FAIL reason=process-search\n" + evidence
+            ).passed
+        )
 
     def test_network_classifier_rejects_bad_or_fatal_evidence(self) -> None:
         complete = complete_network_evidence()

@@ -372,7 +372,7 @@ def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
         return GateResult(False, "physical transcript must be bytes", None)
     if len(transcript) > MAX_TRANSCRIPT_BYTES:
         return GateResult(False, "physical transcript exceeds 8 MiB", None)
-    fatal_reason = _fatal_transcript_reason(transcript)
+    fatal_reason = _fatal_transcript_reason(transcript, target=GateTarget.DESKTOP)
     if fatal_reason is not None:
         return GateResult(False, fatal_reason, None)
 
@@ -389,9 +389,17 @@ def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
     return GateResult(True, "pass", None)
 
 
-def _fatal_transcript_reason(transcript: bytes) -> str | None:
+def _fatal_transcript_reason(
+    transcript: bytes, *, target: GateTarget = GateTarget.BROWSER
+) -> str | None:
     lowered = transcript.lower()
     for marker, reason in _FATAL_MARKERS:
+        if target is GateTarget.DESKTOP and reason in (
+            "guest network failure",
+            "browser guest failure",
+            "Baidu page guest failure",
+        ):
+            continue
         if marker in lowered:
             return f"fatal transcript marker: {reason}"
     return None
@@ -473,7 +481,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         operations.open_board()
         opened = True
         _append_transcript(transcript, operations.boot())
-        if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
+        if fatal_reason := _fatal_transcript_reason(
+            bytes(transcript), target=config.target
+        ):
             raise GateFailure(fatal_reason)
         deadline = time.monotonic() + config.boot_timeout
         while not any(marker in transcript for marker in ready_markers):
@@ -483,7 +493,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             if not chunk:
                 continue
             _append_transcript(transcript, chunk)
-            if fatal_reason := _fatal_transcript_reason(bytes(transcript)):
+            if fatal_reason := _fatal_transcript_reason(
+                bytes(transcript), target=config.target
+            ):
                 raise GateFailure(fatal_reason)
         classification = classifier(bytes(transcript))
         if not classification.passed:
