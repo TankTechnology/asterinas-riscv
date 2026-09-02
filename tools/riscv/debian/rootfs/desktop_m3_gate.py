@@ -195,7 +195,12 @@ def capture_rendered_ppm(
         if time.monotonic() >= deadline:
             raise GateFailure("PPM framebuffer contains a single color")
         monitor.command(f'screendump "{quoted}"', deadline)
-        contents = screenshot.read_bytes()
+        try:
+            contents = screenshot.read_bytes()
+        except FileNotFoundError:
+            # GL-backed consoles can complete the screendump after the HMP
+            # reply; treat a missing file like a blank frame and retry.
+            contents = b""
         try:
             metadata = inspect_ppm(
                 contents,
@@ -206,7 +211,7 @@ def capture_rendered_ppm(
             )
             return contents, metadata
         except GateFailure as error:
-            if error.reason not in (
+            if contents and error.reason not in (
                 "PPM framebuffer contains a single color",
                 "PPM framebuffer has insufficient rendered content",
             ):

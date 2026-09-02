@@ -8,6 +8,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import re
 import secrets
 import select
 import signal
@@ -17,6 +18,8 @@ import time
 from pathlib import Path
 from types import TracebackType
 from typing import Callable, Mapping, Protocol, Sequence
+
+_HMP_ANSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class GateTermination(RuntimeError):
@@ -524,7 +527,19 @@ class HmpMonitor:
                 raise MonitorError("HMP command deadline expired") from error
             if writable:
                 sent += self._connection.send(payload[sent:])
-        return self._read_prompt(deadline)
+        reply = self._read_prompt(deadline)
+        # HMP reports failures only as text before the next prompt (for
+        # example `Error: Could not create ...` from a failed screendump);
+        # surface them instead of letting callers discover a missing artifact
+        # with no explanation.
+        cleaned = _HMP_ANSI_RE.sub(b"", reply)
+        for line in cleaned.replace(b"\r", b"").split(b"\n"):
+            stripped = line.strip()
+            if stripped.startswith(b"Error") or stripped.startswith(b"unknown command"):
+                raise MonitorError(
+                    f"HMP {command!r} failed: {stripped.decode(errors='replace')}"
+                )
+        return reply
 
 
 class TerminationSignalState:
