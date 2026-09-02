@@ -92,6 +92,12 @@ impl Pollable for DmaBufFile {
 }
 
 impl FileLike for DmaBufFile {
+    /// A dma-buf file retains only the GEM buffer identity and the pool VMO;
+    /// no ownership chain starting from it reaches another file description.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn access_mode(&self) -> AccessMode {
         self.access_mode
     }

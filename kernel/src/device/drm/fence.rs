@@ -742,6 +742,12 @@ impl Pollable for FenceFile {
 }
 
 impl FileLike for FenceFile {
+    /// A fence file retains only the kernel-side `Fence`; no ownership chain
+    /// starting from it reaches another file description.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn access_mode(&self) -> AccessMode {
         AccessMode::O_RDWR
     }

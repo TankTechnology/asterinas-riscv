@@ -175,6 +175,19 @@ pub trait FileLike: Pollable + Send + Sync + Any {
         None
     }
 
+    /// Returns whether this file is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// The default must remain conservative: a `FileLike` implementation may
+    /// strongly retain arbitrary file descriptions even when its shape looks
+    /// harmless.  Override this only after proving that every ownership chain
+    /// starting from this file terminates at a leaf, so no SCM_RIGHTS cycle
+    /// can involve it.  Note that per-open device objects should instead opt
+    /// in through [`crate::fs::file::inode_handle::PerOpenFileOps`], which the
+    /// SCM_RIGHTS classifier checks for `InodeHandle`-backed files.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        false
+    }
+
     /// Returns the common state shared by file-like objects.
     fn common(&self) -> &FileCommon;
 

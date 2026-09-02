@@ -1670,6 +1670,17 @@ impl FileOps for DriHandle {
 }
 
 impl PerOpenFileOps for DriHandle {
+    /// A DRM handle never participates in an SCM_RIGHTS ownership cycle:
+    /// its GEM handles, framebuffers, and events are numeric IDs or kernel
+    /// objects, and PRIME/sync-file exports install freshly created files
+    /// into the recipient's table without being retained here.  The only
+    /// transitively retained file descriptions are eventfds bound by
+    /// `SYNCOBJ_EVENTFD`, and an eventfd retains nothing, so the chain always
+    /// terminates at a leaf.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn check_seekable(&self) -> Result<()> {
         Ok(())
     }

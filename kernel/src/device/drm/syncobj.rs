@@ -924,6 +924,12 @@ impl Pollable for SyncObjectFile {
 }
 
 impl FileLike for SyncObjectFile {
+    /// The retained syncobj can hold eventfd watchers, and an eventfd retains
+    /// nothing, so every ownership chain from this file terminates at a leaf.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn access_mode(&self) -> AccessMode {
         AccessMode::O_RDWR
     }
