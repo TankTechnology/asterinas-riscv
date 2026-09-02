@@ -6,6 +6,7 @@ set -euo pipefail
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
+readonly LINK_PROBE_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_LINK_PROBE_TIMEOUT_SECONDS:-2}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
@@ -45,7 +46,7 @@ link_and_address_ready() {
     local flags
     local link
 
-    link="$(ip -o link show dev "$INTERFACE" 2>/dev/null)" || return 1
+    link="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip -o link show dev "$INTERFACE" 2>/dev/null)" || return 1
     [[ "$link" == *"<"*">"* ]] || return 1
     flags="${link#*<}"
     flags="${flags%%>*}"
@@ -57,9 +58,25 @@ link_and_address_ready() {
         *,LOWER_UP,*) ;;
         *) return 1 ;;
     esac
-    addresses="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
+    addresses="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
         return 1
     [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
+}
+
+emit_link_diagnostic() {
+    local field="$1"
+    shift
+    local output
+    local status
+    local value_hex
+
+    if output="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip "$@" 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
+    value_hex="$(printf '%s' "$output" | od -An -v -tx1 | tr -d '[:space:]')"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=link-check field=$field status=$status value_hex=${value_hex:-none}"
 }
 
 publish_remote_url() {
@@ -366,7 +383,11 @@ megrez_network_evidence() {
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
-        ((SECONDS < deadline)) || fail link-or-address-timeout
+        if ((SECONDS >= deadline)); then
+            emit_link_diagnostic link "-o" link show dev "$INTERFACE"
+            emit_link_diagnostic address "-o" -4 addr show dev "$INTERFACE" scope global
+            fail link-or-address-timeout
+        fi
         sleep 1
     done
 
@@ -411,6 +432,7 @@ megrez_network_evidence() {
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
+[[ "$LINK_PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-link-probe-timeout
 if grep -Eq '(^|[[:space:]])asterinas\.debian_network=qemu-slirp([[:space:]]|$)' \
     "$CMDLINE_PATH"; then
     qemu_network_evidence
