@@ -328,6 +328,8 @@ class DebugPlan:
                 raise DebugContractError(
                     "Debian plan requires complete physical browser bootargs"
                 )
+            if bootarg_tokens[-2:] != ["--", "--root-init=systemd"]:
+                raise DebugContractError("Debian plan requires stage1 systemd selector")
 
     def to_dict(self) -> dict[str, object]:
         self.validate()

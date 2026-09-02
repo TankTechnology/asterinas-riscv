@@ -641,6 +641,15 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
                     plan, bootargs=plan.bootargs.replace(f"{token} ", "")
                 ).validate()
 
+    def test_schema_two_requires_stage1_systemd_selector(self) -> None:
+        plan = self._plan()
+        bootargs = plan.bootargs.replace(" -- --root-init=systemd", "")
+
+        with self.assertRaisesRegex(
+            DebugContractError, "stage1 systemd selector"
+        ):
+            replace(plan, bootargs=bootargs).validate()
+
     def test_schema_two_rejects_stale_bare_megrez_argument(self) -> None:
         plan = self._plan()
         stale_bootargs = plan.bootargs.replace(
