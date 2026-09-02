@@ -6,7 +6,6 @@ set -euo pipefail
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
-readonly LINK_PROBE_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_LINK_PROBE_TIMEOUT_SECONDS:-2}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
@@ -31,6 +30,8 @@ readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
 readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL='https://www.baidu.com/'
 readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
+LAST_LINK_OUTPUT=''
+LAST_ADDRESS_OUTPUT=''
 
 emit() {
     printf '%s\n' "$1" >>"$CONSOLE"
@@ -42,13 +43,15 @@ fail() {
 }
 
 link_and_address_ready() {
-    local addresses
     local flags
-    local link
 
-    link="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip -o link show dev "$INTERFACE" 2>/dev/null)" || return 1
-    [[ "$link" == *"<"*">"* ]] || return 1
-    flags="${link#*<}"
+    if LAST_LINK_OUTPUT="$(ip -o link show dev "$INTERFACE" 2>/dev/null)"; then
+        :
+    else
+        return 1
+    fi
+    [[ "$LAST_LINK_OUTPUT" == *"<"*">"* ]] || return 1
+    flags="${LAST_LINK_OUTPUT#*<}"
     flags="${flags%%>*}"
     case ",$flags," in
         *,UP,*) ;;
@@ -58,25 +61,26 @@ link_and_address_ready() {
         *,LOWER_UP,*) ;;
         *) return 1 ;;
     esac
-    addresses="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
+    if LAST_ADDRESS_OUTPUT="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)"; then
+        :
+    else
         return 1
-    [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
+    fi
+    [[ "$LAST_ADDRESS_OUTPUT" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
 }
 
 emit_link_diagnostic() {
     local field="$1"
-    shift
     local output
-    local status
     local value_hex
 
-    if output="$(timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip "$@" 2>&1)"; then
-        status=0
-    else
-        status=$?
-    fi
+    case "$field" in
+        link) output="$LAST_LINK_OUTPUT" ;;
+        address) output="$LAST_ADDRESS_OUTPUT" ;;
+        *) output='' ;;
+    esac
     value_hex="$(printf '%s' "$output" | od -An -v -tx1 | tr -d '[:space:]')"
-    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=link-check field=$field status=$status value_hex=${value_hex:-none}"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=link-check field=$field status=0 value_hex=${value_hex:-none}"
 }
 
 publish_remote_url() {
@@ -384,8 +388,8 @@ megrez_network_evidence() {
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
         if ((SECONDS >= deadline)); then
-            emit_link_diagnostic link "-o" link show dev "$INTERFACE"
-            emit_link_diagnostic address "-o" -4 addr show dev "$INTERFACE" scope global
+            emit_link_diagnostic link
+            emit_link_diagnostic address
             fail link-or-address-timeout
         fi
         sleep 1
@@ -432,7 +436,6 @@ megrez_network_evidence() {
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
-[[ "$LINK_PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-link-probe-timeout
 if grep -Eq '(^|[[:space:]])asterinas\.debian_network=qemu-slirp([[:space:]]|$)' \
     "$CMDLINE_PATH"; then
     qemu_network_evidence
