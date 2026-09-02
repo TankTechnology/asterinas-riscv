@@ -372,6 +372,7 @@ megrez_network_evidence() {
 
     emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
     emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
+    emit "DEBIAN_NETWORK_M5_STRESS_START requests=$FIXTURE_REQUESTS endpoint=$PROXY_HOST:17894"
     stress_fixture "$deadline" '10.100.19.216:17894' megrez
     synchronize_megrez_clock
 
