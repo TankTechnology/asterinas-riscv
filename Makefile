@@ -266,6 +266,9 @@ DEBIAN_DESKTOP_COMMAND_TIMEOUT ?= 240
 # virgl guests additionally probe the GL renderer from the evidence script,
 # which needs more time under TCG than the base desktop profile.
 DEBIAN_DESKTOP_VIRGL_BOOT_TIMEOUT ?= 600
+# The IGT subset includes vblank-paced KMS tests; under TCG the whole run
+# takes far longer than a desktop boot.
+DEBIAN_DRM_IGT_BOOT_TIMEOUT ?= 1800
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
@@ -498,6 +501,26 @@ test_riscv_debian_desktop_drm_virgl_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_DRM_VIRGL_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_VIRGL_BOOT_TIMEOUT)" \
+		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
+
+.PHONY: test_riscv_debian_desktop_drm_igt_gate
+test_riscv_debian_desktop_drm_igt_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT)" || { echo "DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_igt_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DRM_IGT_BOOT_TIMEOUT)" \
 		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
 
 .PHONY: test_riscv_debian_browser_m5_qemu_gate

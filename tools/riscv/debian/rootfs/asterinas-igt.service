@@ -1,0 +1,14 @@
+[Unit]
+Description=Asterinas Debian DRM IGT gate
+# Runs on the asterinas-igt boot target, which replaces the desktop session:
+# KMS tests need the DRM master, so Xorg must not start.
+After=multi-user.target
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/igt-run
+RemainAfterExit=yes
+
+[Install]
+WantedBy=asterinas-igt.target
