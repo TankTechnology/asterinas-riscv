@@ -34,7 +34,15 @@ fi
     fi
 } >>"$SESSION_LOG" 2>&1
 
-exec /usr/bin/xinit "$0" --xsession -- \
-    /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
+# GLX stays enabled: on the virgl device glamor provides real 3D, and on the
+# 2D device AIGLX still offers llvmpipe; only MIT-SHM is disabled.
+# Diagnostic images carry the M19 ioctl logger at /usr/lib/asterinas/ so the
+# X server's own DRM ioctls land in the session log.
+xorg_env=()
+if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
+    xorg_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
+fi
+exec env "${xorg_env[@]}" /usr/bin/xinit "$0" --xsession -- \
+    /usr/bin/Xorg :0 -noreset -nolisten tcp \
     -extension MIT-SHM -logfile "$HOME/Xorg.0.log" vt1 \
     >>"$SESSION_LOG" 2>&1

@@ -48,6 +48,10 @@ DESKTOP_DRM_SETTLE_DEFAULT_SECONDS = 0.0
 DESKTOP_DRM_MIN_DISTINCT_COLORS = 8
 DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO = 0.05
 
+# The virgl variant additionally requires the guest to prove that Mesa talks
+# to the host virglrenderer instead of falling back to llvmpipe.
+DESKTOP_DRM_VIRGL_MILESTONE = "DEBIAN_DESKTOP_DRM_GL renderer=virgl"
+
 DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_UDEV state=active",
     "DEBIAN_DESKTOP_DRM_LOGIND state=active",
@@ -58,6 +62,8 @@ DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
 )
 
+DESKTOP_DRM_VIRGL_MILESTONES = DESKTOP_DRM_MILESTONES + (DESKTOP_DRM_VIRGL_MILESTONE,)
+
 
 def desktop_drm_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Return the graphical QEMU contract with virtio-gpu instead of bochs."""
@@ -66,6 +72,17 @@ def desktop_drm_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     arguments.setdefault("dtb_enabled_cpu_count", 4)
     arguments["graphical"] = True
     arguments["graphics_device"] = "virtio-gpu-device"
+    return qemu_argv(**arguments)
+
+
+def desktop_drm_virgl_qemu_argv(**arguments: Any) -> tuple[str, ...]:
+    """Return the graphical QEMU contract with the virgl (3D) virtio-gpu."""
+
+    arguments.setdefault("smp", 4)
+    arguments.setdefault("dtb_enabled_cpu_count", 4)
+    arguments["graphical"] = True
+    arguments["graphics_device"] = "virtio-gpu-gl-device"
+    arguments["display"] = "egl-headless,gl=on"
     return qemu_argv(**arguments)
 
 
@@ -123,8 +140,15 @@ class DesktopDRMOperations(DesktopM3Operations):
             "fdt resize 0x1000",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{self.BOOTARGS}"',
+            f'setenv bootargs "{self._bootargs()}"',
         )
+
+    @classmethod
+    def _bootargs(cls) -> str:
+        # Debugging knob: ASTERINAS_DESKTOP_DRM_BOOTARGS replaces the kernel
+        # command line, e.g. to raise the log level and turn on
+        # asterinas.trace_syscall_errors for ioctl-level diagnosis.
+        return os.environ.get("ASTERINAS_DESKTOP_DRM_BOOTARGS", cls.BOOTARGS)
 
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         serial = session["serial"]
@@ -154,6 +178,9 @@ class DesktopDRMOperations(DesktopM3Operations):
         if settle > 0:
             time.sleep(settle)
 
+        if not self.CAPTURE_SCREENSHOT:
+            return
+
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],
@@ -167,9 +194,12 @@ class DesktopDRMOperations(DesktopM3Operations):
 
 
 def orchestrate_desktop_drm_gate(
-    config: GateConfig, operations: DesktopDRMOperations
+    config: GateConfig,
+    operations: DesktopDRMOperations,
+    *,
+    classifier: Any = classify_desktop_drm,
 ) -> dict[str, object]:
-    return orchestrate_systemd_m2_gate(config, operations, classifier=classify_desktop_drm)
+    return orchestrate_systemd_m2_gate(config, operations, classifier=classifier)
 
 
 def main(arguments: list[str] | None = None) -> int:
