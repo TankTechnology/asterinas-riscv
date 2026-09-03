@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "profile": "browser-web",
+  "files": [
+    {
+      "source": "desktop_m5_network_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-network-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "megrez_safe_reboot.sh",
+      "destination": "/usr/lib/asterinas/megrez-safe-reboot",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_marionette_gate.py",
+      "destination": "/usr/lib/asterinas/browser-web-marionette-gate",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_m5_marionette_gate.py",
+      "destination": "/usr/lib/asterinas/browser_m5_marionette_gate.py",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_firefox.sh",
+      "destination": "/usr/lib/asterinas/browser-web-firefox",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_evidence.sh",
+      "destination": "/usr/lib/asterinas/browser-web-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_timeline.sh",
+      "destination": "/usr/lib/asterinas/browser-web-timeline",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_trust_check.py",
+      "destination": "/usr/share/asterinas/browser-web-trust-check.py",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_online_rootfs_check.py",
+      "destination": "/usr/share/asterinas/browser-web-online-rootfs-check.py",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_m5_session.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-session",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_m3_device_access.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-device-access",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_evidence.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-evidence.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_timeline_begin.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-timeline-begin.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_timeline_basic.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-timeline-basic.service",
+      "mode": "0644"
+    }
+  ]
+}
