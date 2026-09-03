@@ -9,7 +9,12 @@ use ostd::{
 };
 
 use super::SyscallReturn;
-use crate::{prelude::*, process::pid_table, thread::Tid};
+use crate::{
+    prelude::*,
+    process::{credentials::capabilities::CapSet, pid_table, posix_thread::AsPosixThread},
+    security::lsm::hooks as lsm_hooks,
+    thread::{Thread, Tid},
+};
 
 pub fn sys_sched_getaffinity(
     tid: Tid,
@@ -45,6 +50,7 @@ pub fn sys_sched_setaffinity(
         })?),
     };
     let thread = target_thread.as_deref().unwrap_or(ctx.thread);
+    check_sched_setaffinity_permission(thread, ctx)?;
     thread
         .atomic_cpu_affinity()
         .store(&user_cpu_set, Ordering::Relaxed);
@@ -52,11 +58,42 @@ pub fn sys_sched_setaffinity(
     // TODO: A running remote target also needs to be kicked and migrated immediately. A target
     // that is sleeping will observe the new affinity when it is next enqueued.
     if core::ptr::eq(thread, ctx.thread) && !user_cpu_set.contains(CpuId::current_racy()) {
-        crate::thread::Thread::migrate_current();
+        Thread::migrate_current();
         debug_assert!(user_cpu_set.contains(CpuId::current_racy()));
     }
 
     Ok(SyscallReturn::Return(0))
+}
+
+fn check_sched_setaffinity_permission(thread: &Thread, ctx: &Context) -> Result<()> {
+    if core::ptr::eq(thread, ctx.thread) {
+        return Ok(());
+    }
+
+    let target_posix_thread = thread
+        .as_posix_thread()
+        .expect("a thread in the PID table must be a POSIX thread");
+    let caller_euid = ctx.posix_thread.credentials().euid();
+    let target_credentials = target_posix_thread.credentials();
+    if caller_euid == target_credentials.ruid() || caller_euid == target_credentials.suid() {
+        return Ok(());
+    }
+
+    let target_process = target_posix_thread.process();
+    if lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        target_process.user_ns().lock().as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_NICE,
+    ))
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    return_errno_with_message!(
+        Errno::EPERM,
+        "the caller cannot change the target thread's CPU affinity"
+    );
 }
 
 // Linux uses `DECLARE_BITMAP` for `cpu_set_t`, inside which each part is a
