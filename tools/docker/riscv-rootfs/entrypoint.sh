@@ -65,7 +65,8 @@ verify_tools() {
     local command_name
     for command_name in \
         debootstrap proot qemu-riscv64-static gpgv dpkg-query mke2fs dumpe2fs \
-        debugfs sha256sum curl qemu-system-riscv64; do
+        debugfs sha256sum curl fc-cache journalctl systemd-sysusers \
+        qemu-system-riscv64; do
         require_command "$command_name"
     done
 }
