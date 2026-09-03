@@ -952,7 +952,7 @@ def _wait_for_probe(
             print("A_WEB_PROBE_COMMAND state=done", file=sys.stderr, flush=True)
             return probe, validator(probe)
         except GateError as error:
-            # Preserve the browser-side capability failure in serial evidence
+            # Preserve the browser-side capability progress in serial evidence
             # instead of reducing a long-running readiness timeout to a vague
             # protocol error.  This remains diagnostic-only: validators stay
             # fail-closed and the marker is emitted at most once per wait.
@@ -960,13 +960,14 @@ def _wait_for_probe(
             if (
                 not capability_reported
                 and isinstance(capabilities, dict)
-                and capabilities.get("state") == "error"
+                and capabilities.get("state") in {"running", "error"}
             ):
                 capability_reported = True
                 checks = capabilities.get("checks")
                 checks_text = json.dumps(checks, sort_keys=True, separators=(",", ":"))
                 print(
-                    "A_WEB_PROBE_CAPABILITIES state=error "
+                    "A_WEB_PROBE_CAPABILITIES "
+                    f"state={capabilities.get('state')} "
                     f"error={json.dumps(str(capabilities.get('error')), ensure_ascii=True)} "
                     f"checks={checks_text}",
                     file=sys.stderr,

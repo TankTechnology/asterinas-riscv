@@ -65,7 +65,22 @@ configure_network_profile() {
     /usr/bin/mkdir -p -- "$PROFILE"
     temporary="$(/usr/bin/mktemp "$PROFILE/user.js.tmp.XXXXXX")"
     if ! {
+        # Preseed the non-update subset of Firefox ESR 140's automation
+        # preferences before the cold RISC-V launch.  This prevents bounded
+        # discovery/new-tab traffic from competing with the requested page,
+        # while retaining system-add-on, extension, Safe Browsing, TLS, and
+        # application update defaults.  The captive-portal service is a
+        # separate enabled-by-default requester in ESR 140 and is included
+        # explicitly.  Sources (Debian package: Firefox ESR 140.14.0):
+        # https://searchfox.org/mozilla-esr140/source/remote/shared/RecommendedPreferences.sys.mjs
+        # https://searchfox.org/mozilla-esr140/source/browser/app/profile/firefox.js
         printf '%s\n' \
+            'user_pref("browser.newtabpage.enabled", false);' \
+            'user_pref("browser.pagethumbnails.capturing_disabled", true);' \
+            'user_pref("browser.region.network.url", "");' \
+            'user_pref("browser.topsites.contile.enabled", false);' \
+            'user_pref("network.captive-portal-service.enabled", false);' \
+            'user_pref("network.connectivity-service.enabled", false);' \
             'user_pref("browser.download.folderList", 2);' \
             'user_pref("browser.download.dir", "/home/asterinas/Downloads");' \
             'user_pref("browser.download.useDownloadDir", true);' \
@@ -78,7 +93,7 @@ configure_network_profile() {
                 "user_pref(\"network.proxy.http_port\", $PROXY_PORT);" \
                 "user_pref(\"network.proxy.ssl\", \"$PROXY_HOST\");" \
                 "user_pref(\"network.proxy.ssl_port\", $PROXY_PORT);" \
-                'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");' \
+                "user_pref(\"network.proxy.no_proxies_on\", \"localhost, 127.0.0.1, $PROXY_HOST\");" \
                 >>"$temporary"
         else
             printf '%s\n' 'user_pref("network.proxy.type", 0);' >>"$temporary"

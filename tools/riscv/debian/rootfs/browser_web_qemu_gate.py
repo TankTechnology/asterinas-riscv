@@ -338,7 +338,7 @@ def _validate_firefox_network_profile(
             'user_pref("network.proxy.http_port", 17893);',
             'user_pref("network.proxy.ssl", "10.0.2.2");',
             'user_pref("network.proxy.ssl_port", 17893);',
-            'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");',
+            'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1, 10.0.2.2");',
         }
     if set(proxy_lines) != expected or len(proxy_lines) != len(expected):
         raise GateFailure("Firefox network profile does not match selected mode")
@@ -715,6 +715,19 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         return browser_web_qemu_argv(
             gdb_port=_diagnostic_gdb_port(), **arguments
         )
+
+    def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
+        try:
+            super().run_protocol(session, config)
+        except GateFailure:
+            serial = session["serial"]
+            if any(marker in serial.transcript for marker in KERNEL_FATAL_MARKERS):
+                # The generic desktop gate returns as soon as it sees the panic
+                # prefix.  Give the kernel logger one bounded cleanup interval
+                # to print the backtrace before HMP terminates QEMU; otherwise
+                # the most valuable diagnostic is consistently truncated.
+                serial.drain(time.monotonic() + config.cleanup_timeout)
+            raise
 
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
