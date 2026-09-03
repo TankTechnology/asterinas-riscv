@@ -261,6 +261,8 @@ MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
+DEBIAN_WEB_NETWORK_MODE ?=
+DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
 RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
 RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
@@ -460,6 +462,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
+		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -470,6 +473,18 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
+.PHONY: test_riscv_debian_web_network_proxy_qemu
+test_riscv_debian_web_network_proxy_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=proxy
+
+.PHONY: test_riscv_debian_web_network_direct_qemu
+test_riscv_debian_web_network_direct_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=direct
 
 .PHONY: test_riscv_debian_browser_m5_qemu_gate
 test_riscv_debian_browser_m5_qemu_gate:

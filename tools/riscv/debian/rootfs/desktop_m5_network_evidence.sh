@@ -28,8 +28,8 @@ readonly FIXTURE_SIZE="${ASTERINAS_DESKTOP_FIXTURE_SIZE:-}"
 readonly FIXTURE_SHA256="${ASTERINAS_DESKTOP_FIXTURE_SHA256:-}"
 readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
 readonly CLOCK_URL='http://www.baidu.com/'
-readonly BAIDU_URL='https://www.baidu.com/'
-readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
+readonly BAIDU_URL="${ASTERINAS_WEB_NETWORK_HTTPS_URL:-https://www.baidu.com/}"
+readonly BAIDU_ASSET="${ASTERINAS_WEB_NETWORK_ASSET_URL:-https://www.baidu.com/img/flexible/logo/pc/result.png}"
 readonly WEB_NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
 readonly WEB_NETWORK_ADDRESS="${ASTERINAS_WEB_NETWORK_ADDRESS:-10.100.19.200/21}"
 readonly WEB_NETWORK_GATEWAY="${ASTERINAS_WEB_NETWORK_GATEWAY:-10.100.16.1}"
@@ -124,6 +124,7 @@ web_network_evidence() {
     local header
     local headers
     local http_file
+    local http_headers
     local https_status
     local limit
     local link_output
@@ -215,9 +216,11 @@ web_network_evidence() {
     web_emit_layer dns
 
     http_file="$WEB_TEMPORARY_DIRECTORY/http"
+    http_headers="$WEB_TEMPORARY_DIRECTORY/http-headers"
     limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
-        --max-time "$limit" --noproxy '*' --output "$http_file" "$FIXTURE_URL"; then
+        --max-time "$limit" --noproxy '*' --dump-header "$http_headers" \
+        --output "$http_file" "$FIXTURE_URL"; then
         :
     else
         curl_status=$?
@@ -228,14 +231,7 @@ web_network_evidence() {
     [[ "$(sha256sum -- "$http_file" | awk '{print $1}')" == "$FIXTURE_SHA256" ]] ||
         web_fail http content
 
-    limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
-    if headers="$(timeout "$limit" curl --fail --head --ipv4 --silent \
-        --show-error --max-time "$limit" "${external_curl[@]}" "$CLOCK_URL")"; then
-        :
-    else
-        curl_status=$?
-        web_fail http "$(web_curl_reason "$curl_status")"
-    fi
+    headers="$(<"$http_headers")" || web_fail http date-header
     while IFS= read -r header; do
         header="${header%$'\r'}"
         if [[ "${header,,}" == date:* ]]; then
