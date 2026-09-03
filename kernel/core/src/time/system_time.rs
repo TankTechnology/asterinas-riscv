@@ -76,6 +76,10 @@ impl SystemTime {
         let adjust = time.0 - raw.0;
         WALL_CLOCK_ADJUST_NANOS.store(adjust.whole_nanoseconds() as i64, Ordering::Release);
 
+        // Keep syscall and vDSO coarse clocks on the same post-adjustment
+        // snapshot instead of waiting for the next timer tick.
+        crate::time::clocks::update_coarse_clock();
+
         // Refresh the vDSO data page immediately so that vDSO-accelerated
         // `clock_gettime(CLOCK_REALTIME)` sees the new wall clock at once.
         crate::vdso::on_wall_clock_change();
