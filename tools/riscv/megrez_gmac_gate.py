@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
@@ -27,6 +28,9 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
+    NETWORK_LAYERS,
+    NetworkMode,
+    classify_web_network,
 )
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_REMOTE_MARKER,
@@ -49,6 +53,7 @@ from tools.riscv.megrez_board_session import (
     safe_artifact_name,
     safe_ipv4,
     safe_ipv4_netmask,
+    validate_recovery_epoch,
 )
 from tools.riscv.megrez_network_fixture import (
     FIXTURE_PATH,
@@ -57,6 +62,10 @@ from tools.riscv.megrez_network_fixture import (
     FixtureConfig,
     FixtureServer,
     is_successful_summary,
+)
+from tools.riscv.megrez_proxy_bridge import (
+    ProxyBridge,
+    ProxyBridgeConfig,
 )
 
 
@@ -165,6 +174,7 @@ class GateTarget(str, Enum):
     NETWORK = "network"
     DESKTOP = "desktop"
     BROWSER = "browser"
+    FIREFOX = "firefox"
 
     def __str__(self) -> str:
         return self.value
@@ -212,12 +222,15 @@ class GateConfig:
 
     boot_timeout: float = 300.0
     drain_timeout: float = 2.0
+    recovery_timeout: float = 360.0
     target: GateTarget = GateTarget.BROWSER
+    network_mode: NetworkMode | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
             ("boot timeout", self.boot_timeout),
             ("drain timeout", self.drain_timeout),
+            ("recovery timeout", self.recovery_timeout),
         ):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{name} must be a finite positive number")
@@ -225,6 +238,11 @@ class GateConfig:
                 raise ValueError(f"{name} must be a finite positive number")
         if not isinstance(self.target, GateTarget):
             raise ValueError("target must be a GateTarget")
+        if self.target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+            if not isinstance(self.network_mode, NetworkMode):
+                raise ValueError("network or firefox target requires a NetworkMode")
+        elif self.network_mode is not None:
+            raise ValueError("network mode requires network or firefox target")
 
 
 class GateOperations(Protocol):
@@ -236,6 +254,7 @@ class GateOperations(Protocol):
     def boot(self) -> bytes: ...
     def read(self, deadline: float) -> bytes: ...
     def drain(self, deadline: float) -> bytes: ...
+    def wait_for_recovery(self, deadline: float) -> bytes: ...
     def close_board(self) -> None: ...
     def publish(self, transcript: bytes, result: dict[str, object]) -> None: ...
 
@@ -244,11 +263,29 @@ def physical_bootargs(
     reboot_after: int | None = None,
     *,
     target: GateTarget = GateTarget.BROWSER,
+    network_mode: NetworkMode | None = None,
+    resolver_address: str | None = None,
 ) -> str:
     """Return one target-specific, volatile Asterinas command line."""
 
     if not isinstance(target, GateTarget):
         raise ValueError("target must be a GateTarget")
+    if target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+        if not isinstance(network_mode, NetworkMode):
+            raise ValueError("network or firefox target requires a NetworkMode")
+    elif network_mode is not None:
+        raise ValueError("network mode requires network or firefox target")
+    if network_mode is NetworkMode.DIRECT:
+        if resolver_address is None:
+            raise ValueError("direct network mode requires a resolver address")
+        try:
+            parsed_resolver = ipaddress.ip_address(resolver_address)
+        except ValueError as error:
+            raise ValueError("resolver address must be a canonical IPv4 address") from error
+        if parsed_resolver.version != 4 or str(parsed_resolver) != resolver_address:
+            raise ValueError("resolver address must be a canonical IPv4 address")
+    elif resolver_address is not None:
+        raise ValueError("resolver address requires direct network mode")
 
     restart = ""
     if reboot_after is not None:
@@ -260,6 +297,36 @@ def physical_bootargs(
             "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0 "
             "systemd.setenv=ASTERINAS_DESKTOP_BROWSER_ENABLED=0 "
             f"{DESKTOP_MASK_BOOTARGS} "
+            "-- --root-init=systemd"
+        )
+        command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
+        if command_bytes >= MAX_UBOOT_COMMAND_BYTES:
+            raise GateFailure("U-Boot bootargs command exceeds 1023 bytes")
+        return bootargs
+
+    if target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+        evidence_variables = ["ASTERINAS_DESKTOP_M5_CONSOLE"]
+        if target is GateTarget.FIREFOX:
+            evidence_variables.append("ASTERINAS_BROWSER_WEB_CONSOLE")
+        evidence = " ".join(
+            f"systemd.setenv={name}=/dev/ttyS0" for name in evidence_variables
+        )
+        mode_arguments = (
+            f"systemd.setenv=ASTERINAS_WEB_NETWORK_MODE={network_mode.value}"
+        )
+        if network_mode is NetworkMode.DIRECT:
+            mode_arguments += (
+                " systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER="
+                f"{resolver_address}"
+            )
+            proxy_arguments = ""
+        else:
+            proxy_arguments = f" {DESKTOP_PROXY_BOOTARGS}"
+        bootargs = (
+            "console=ttyS0 console=tty0 loglevel=info "
+            f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
+            f"{NEIGHBOR_BOOTARGS}{restart} {evidence} {mode_arguments}"
+            f"{proxy_arguments} {DESKTOP_FIXTURE_BOOTARGS} "
             "-- --root-init=systemd"
         )
         command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
@@ -365,6 +432,55 @@ def classify_physical_network_transcript(transcript: bytes) -> GateResult:
     return GateResult(True, "pass", None)
 
 
+def classify_physical_web_network_transcript(
+    transcript: bytes, *, mode: NetworkMode
+) -> GateResult:
+    """Classify one selected physical GMAC and exactly one web-network mode."""
+
+    if not isinstance(transcript, bytes):
+        return GateResult(False, "physical transcript must be bytes", None)
+    if len(transcript) > MAX_TRANSCRIPT_BYTES:
+        return GateResult(False, "physical transcript exceeds 8 MiB", None)
+    fatal_reason = _fatal_transcript_reason(transcript)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
+    selected = b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 "
+    if transcript.count(selected) != 1:
+        return GateResult(False, "missing or duplicate selected GMAC", None)
+    network = classify_web_network(transcript, mode=mode)
+    if not network.passed:
+        return network
+    first_layer = (
+        f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
+        f"layer={NETWORK_LAYERS[0]} status=pass"
+    ).encode()
+    if transcript.find(selected) > transcript.find(first_layer):
+        return GateResult(False, "selected GMAC appears after network evidence", None)
+    return GateResult(True, "pass", None)
+
+
+def classify_physical_firefox_transcript(
+    transcript: bytes, *, mode: NetworkMode
+) -> GateResult:
+    """Require the matching physical network path before Firefox readiness."""
+
+    network = classify_physical_web_network_transcript(transcript, mode=mode)
+    if not network.passed:
+        return network
+    ready = (
+        f"DEBIAN_FIREFOX_BAIDU_READY mode={mode.value} home=pass logo=pass "
+        "search=pass input=pass stable=pass screenshot=baidu-search.png"
+    ).encode()
+    if transcript.count(ready) != 1:
+        return GateResult(False, "missing or duplicate Firefox Baidu ready", None)
+    network_ready = (
+        f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10"
+    ).encode()
+    if transcript.find(network_ready) > transcript.find(ready):
+        return GateResult(False, "Firefox ready appears before network ready", None)
+    return GateResult(True, "pass", None)
+
+
 def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
     """Classify the browser-free desktop milestones in strict order."""
 
@@ -463,11 +579,27 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
     opened = False
     drained = False
     cleanup_termination: GateTermination | None = None
+    recovery_observed = False
     result: dict[str, object]
     target = config.target.value
     if config.target is GateTarget.NETWORK:
-        ready_markers = PHYSICAL_NETWORK_READY_MARKERS
-        classifier = classify_physical_network_transcript
+        assert config.network_mode is not None
+        ready_markers = (
+            f"DEBIAN_WEB_NETWORK_READY mode={config.network_mode.value} layers=10".encode(),
+        )
+        classifier = partial(
+            classify_physical_web_network_transcript,
+            mode=config.network_mode,
+        )
+    elif config.target is GateTarget.FIREFOX:
+        assert config.network_mode is not None
+        ready_markers = (
+            f"DEBIAN_FIREFOX_BAIDU_READY mode={config.network_mode.value} ".encode(),
+        )
+        classifier = partial(
+            classify_physical_firefox_transcript,
+            mode=config.network_mode,
+        )
     elif config.target is GateTarget.DESKTOP:
         ready_markers = PHYSICAL_DESKTOP_READY_MARKERS
         classifier = classify_physical_desktop_transcript
@@ -508,6 +640,19 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         classification = classifier(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
+        if config.target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+            try:
+                recovery = operations.wait_for_recovery(
+                    time.monotonic() + config.recovery_timeout
+                )
+                _append_transcript(transcript, recovery)
+                validate_recovery_epoch(recovery.decode(errors="replace"))
+            except (RuntimeError, TimeoutError) as error:
+                raise GateFailure("automatic recovery not observed") from error
+            recovery_observed = True
+            classification = classifier(bytes(transcript))
+            if not classification.passed:
+                raise GateFailure(classification.reason)
         result = {
             "passed": True,
             "reason": "pass",
@@ -515,6 +660,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             "board_address": BOARD_ADDRESS,
             "host_address": HOST_ADDRESS,
         }
+        if config.network_mode is not None:
+            result["network_mode"] = config.network_mode.value
+            result["recovery_observed"] = recovery_observed
         if config.target is GateTarget.BROWSER:
             result["javascript_status"] = _browser_javascript_status(bytes(transcript))
     except Exception as error:
@@ -523,6 +671,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             "reason": _failure_reason(error),
             "target": target,
         }
+        if config.network_mode is not None:
+            result["network_mode"] = config.network_mode.value
+            result["recovery_observed"] = recovery_observed
     finally:
         if opened:
             if not drained:
@@ -559,6 +710,7 @@ class PhysicalGateOperations:
         arguments: argparse.Namespace,
         *,
         fixture: FixtureServer | None = None,
+        proxy_bridge: ProxyBridge | None = None,
     ) -> None:
         self.arguments = arguments
         self.output = PinnedOutputDirectory(arguments.output_directory)
@@ -570,6 +722,9 @@ class PhysicalGateOperations:
                 allowed_peer=BOARD_ADDRESS,
             )
         )
+        self.proxy_bridge = proxy_bridge
+        if self._uses_proxy() and self.proxy_bridge is None:
+            self.proxy_bridge = ProxyBridge(ProxyBridgeConfig())
 
     def _uses_network(self) -> bool:
         return (
@@ -577,13 +732,33 @@ class PhysicalGateOperations:
             is not GateTarget.DESKTOP
         )
 
+    def _uses_proxy(self) -> bool:
+        return (
+            getattr(self.arguments, "network_mode", None) is NetworkMode.PROXY
+            and getattr(self.arguments, "target", None)
+            in (GateTarget.NETWORK, GateTarget.FIREFOX)
+        )
+
     def __enter__(self) -> PhysicalGateOperations:
+        fixture_started = False
         try:
             if self._uses_network():
                 self.fixture.start()
+                fixture_started = True
+            if self._uses_proxy():
+                assert self.proxy_bridge is not None
+                self.proxy_bridge.start()
             return self
         except BaseException:
-            self.output.close()
+            try:
+                if self.proxy_bridge is not None:
+                    self.proxy_bridge.close()
+            finally:
+                try:
+                    if fixture_started:
+                        self.fixture.close()
+                finally:
+                    self.output.close()
             raise
 
     def __exit__(self, *exc_info: object) -> None:
@@ -592,15 +767,20 @@ class PhysicalGateOperations:
             self.close_board()
         finally:
             try:
-                if self._uses_network():
-                    self.fixture.close()
+                if self.proxy_bridge is not None:
+                    self.proxy_bridge.close()
             finally:
-                self.output.close()
+                try:
+                    if self._uses_network():
+                        self.fixture.close()
+                finally:
+                    self.output.close()
 
     def invalidate(self) -> None:
         self.output.invalidate(
             "megrez-gmac.serial.log",
             "network-fixture.json",
+            "proxy-bridge.json",
             "result.json",
         )
 
@@ -632,6 +812,8 @@ class PhysicalGateOperations:
             bootargs=physical_bootargs(
                 self.arguments.reboot_after,
                 target=self.arguments.target,
+                network_mode=getattr(self.arguments, "network_mode", None),
+                resolver_address=getattr(self.arguments, "resolver_address", None),
             ),
             load_transport=self.arguments.load_transport,
             tftp_board_address=self.arguments.tftp_board_address,
@@ -654,6 +836,14 @@ class PhysicalGateOperations:
         remaining = max(0.0, deadline - time.monotonic())
         return read_available(self._session().fd, remaining).encode(errors="replace")
 
+    def wait_for_recovery(self, deadline: float) -> bytes:
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("automatic recovery deadline expired")
+        return self._session().wait_for_uboot_prompt(timeout=remaining).encode(
+            errors="replace"
+        )
+
     def close_board(self) -> None:
         if self.session is None:
             return
@@ -664,6 +854,19 @@ class PhysicalGateOperations:
 
     def publish(self, transcript: bytes, result: dict[str, object]) -> None:
         self.output.atomic_write("megrez-gmac.serial.log", transcript)
+        expected_crc32 = getattr(self.arguments, "expected_crc32", None)
+        if expected_crc32 is not None:
+            result["artifact_crc32"] = dict(expected_crc32)
+        if self._uses_proxy():
+            assert self.proxy_bridge is not None
+            self.proxy_bridge.close()
+            proxy_summary = self.proxy_bridge.summary()
+            result["proxy_bridge"] = proxy_summary
+            proxy_payload = (
+                json.dumps(proxy_summary, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode()
+            self.output.atomic_write("proxy-bridge.json", proxy_payload)
         if self._uses_network():
             summary = self.fixture.summary()
             result["network_fixture"] = summary
@@ -691,6 +894,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--load-transport", choices=("mmc", "tftp", "ymodem"), default="mmc"
     )
+    parser.add_argument("--network-mode", choices=tuple(NetworkMode), type=NetworkMode)
+    parser.add_argument("--resolver-address", type=safe_ipv4)
     parser.add_argument("--tftp-board-address", type=safe_ipv4, default=BOARD_ADDRESS)
     parser.add_argument("--tftp-server-address", type=safe_ipv4, default=HOST_ADDRESS)
     parser.add_argument(
@@ -710,6 +915,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--boot-timeout", type=positive_finite_seconds, default=300.0)
     parser.add_argument("--drain-timeout", type=positive_finite_seconds, default=2.0)
+    parser.add_argument(
+        "--recovery-timeout", type=positive_finite_seconds, default=360.0
+    )
     return parser
 
 
@@ -732,6 +940,18 @@ def _parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         value is not None for value in ymodem_contract
     ):
         parser.error("YMODEM options require --load-transport ymodem")
+    if values.target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+        if values.network_mode is None:
+            parser.error("network or firefox target requires --network-mode")
+        if values.reboot_after is None:
+            parser.error("network or firefox target requires --reboot-after")
+    elif values.network_mode is not None:
+        parser.error("--network-mode requires --target network or firefox")
+    if values.network_mode is NetworkMode.DIRECT:
+        if values.resolver_address is None:
+            parser.error("direct network mode requires --resolver-address")
+    elif values.resolver_address is not None:
+        parser.error("--resolver-address requires --network-mode direct")
     return values
 
 
@@ -740,7 +960,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     config = GateConfig(
         boot_timeout=values.boot_timeout,
         drain_timeout=values.drain_timeout,
+        recovery_timeout=values.recovery_timeout,
         target=values.target,
+        network_mode=values.network_mode,
     )
     try:
         with TerminationSignals():
