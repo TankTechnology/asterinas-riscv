@@ -126,4 +126,3 @@ Megrez run both prove:
 - NetSurf is neither running nor required;
 - no Asterinas network boot argument was supplied;
 - the board remains recoverable without a physical reset.
-

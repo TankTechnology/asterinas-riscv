@@ -39,4 +39,3 @@
 - [ ] Start only the bounded host proxy/fixture and the serial runner.
 - [ ] Issue one `booti`; classify success, bounded guest failure, or recovery without persistent U-Boot writes.
 - [ ] If M5 still fails, use its diagnostic records to select the next code change instead of repeating the same boot.
-
