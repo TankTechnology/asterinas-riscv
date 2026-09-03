@@ -128,6 +128,9 @@ else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+else ifeq ($(AUTO_TEST), sched_policy)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 ifneq ($(TARGET_ARCH), riscv64)
 $(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
@@ -812,6 +815,10 @@ ifeq ($(AUTO_TEST), conformance)
 else ifeq ($(AUTO_TEST), regression)
 	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
 		|| (echo "Regression test failed" && exit 1)
+else ifeq ($(AUTO_TEST), sched_policy)
+	@tail --lines 100 qemu.log | tr -d '\r' | \
+		grep -Fxq "Scheduler policy regression passed." \
+		|| (echo "Scheduler policy regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 	@tail --lines 100 qemu.log | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
