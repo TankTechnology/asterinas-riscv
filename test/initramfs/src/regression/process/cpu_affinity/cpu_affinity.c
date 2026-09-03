@@ -5,15 +5,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <pthread.h>
 
 int main()
 {
 	pid_t pid = getpid();
-	cpu_set_t mask;
+	cpu_set_t mask, original_mask;
 
 	// Get current affinity mask
-	if (sched_getaffinity(pid, sizeof(cpu_set_t), &mask) == -1) {
+	if (sched_getaffinity(pid, sizeof(original_mask), &original_mask) ==
+	    -1) {
 		perror("sched_getaffinity");
 		exit(EXIT_FAILURE);
 	}
@@ -21,7 +21,7 @@ int main()
 	printf("Current CPU affinity:");
 	int cur_cpu_count = 0;
 	for (int i = 0; i < CPU_SETSIZE; i++) {
-		if (CPU_ISSET(i, &mask)) {
+		if (CPU_ISSET(i, &original_mask)) {
 			printf(" %d", i);
 			cur_cpu_count++;
 		}
@@ -32,36 +32,27 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 
-	// Set the process to run on CPU 0 only
-	CPU_ZERO(&mask);
-	CPU_SET(0, &mask);
-	if (sched_setaffinity(pid, sizeof(cpu_set_t), &mask) == -1) {
-		perror("sched_setaffinity");
-		exit(EXIT_FAILURE);
-	}
-	printf("Set CPU affinity to CPU 0\n");
+	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+		if (!CPU_ISSET(cpu, &original_mask))
+			continue;
 
-	// Verify the new CPU affinity
-	if (sched_getaffinity(pid, sizeof(cpu_set_t), &mask) == -1) {
-		perror("sched_getaffinity");
-		exit(EXIT_FAILURE);
-	}
-
-	printf("New CPU affinity:");
-	cur_cpu_count = 0;
-	for (int i = 0; i < CPU_SETSIZE; i++) {
-		if (CPU_ISSET(i, &mask)) {
-			printf(" %d", i);
-			cur_cpu_count++;
-			if (i != 0) {
-				printf("Error: CPU affinity not set to CPU 0\n");
-				exit(EXIT_FAILURE);
-			}
+		CPU_ZERO(&mask);
+		CPU_SET(cpu, &mask);
+		if (sched_setaffinity(pid, sizeof(mask), &mask) == -1) {
+			perror("sched_setaffinity");
+			exit(EXIT_FAILURE);
 		}
+		if (sched_getcpu() != cpu) {
+			fprintf(stderr,
+				"Error: task did not migrate to CPU %d\n", cpu);
+			exit(EXIT_FAILURE);
+		}
+		printf("Migrated to CPU %d\n", cpu);
 	}
-	printf("\n");
-	if (cur_cpu_count != 1) {
-		printf("Error: CPU affinity not set to CPU 0\n");
+
+	if (sched_setaffinity(pid, sizeof(original_mask), &original_mask) ==
+	    -1) {
+		perror("sched_setaffinity restore");
 		exit(EXIT_FAILURE);
 	}
 
