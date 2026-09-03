@@ -63,4 +63,3 @@
 - [ ] Return to U-Boot and launch Asterinas with the desktop target, SMP=4, no network bootargs, and a bounded software reboot.
 - [ ] Capture the serial transcript through the core ready marker and retain a framebuffer/HDMI observation if available.
 - [ ] Report PASS only if the ordered serial contract proves Xorg, evdev input, Openbox, PCManFM, LXPanel, and xterm without NetSurf.
-
