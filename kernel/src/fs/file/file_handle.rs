@@ -116,7 +116,7 @@ pub trait FileLike: Pollable + Send + Sync + Any {
     /// Obtains the mappable object to map this file into the user address space.
     ///
     /// If this file has a corresponding mappable object of [`Mappable`],
-    /// then it can be either an inode or an MMIO region.
+    /// then it can be an inode, an MMIO region, or anonymous memory.
     fn mappable(&self) -> Result<Mappable> {
         // `ENODEV` means that "The underlying filesystem of the specified file does not support
         // memory mapping".
@@ -434,4 +434,9 @@ pub enum Mappable {
     Vmo(Arc<Vmo>),
     /// An MMIO region.
     IoMem(IoMem),
+    /// Anonymous zero-filled memory.
+    ///
+    /// Private mappings use normal anonymous copy-on-write memory. Each shared
+    /// mapping receives its own VMO, which remains shared across `fork`.
+    Anonymous,
 }
