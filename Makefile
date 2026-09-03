@@ -19,6 +19,9 @@ SMP ?= 1
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
 DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
+DEBIAN_BROWSER_WEB_BASE_ROOTFS ?= $(CURDIR)/target/debian-riscv/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= $(CURDIR)/target/dev-overlays/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC ?= $(CURDIR)/tools/riscv/debian/rootfs/browser_web_dev_overlay.json
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -298,12 +301,20 @@ test_riscv_ltp_unit:
 .PHONY: test_riscv_debian_rootfs_unit
 test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
 		tools.riscv.tests.test_debian_m8_browser_quality \
 		tools.riscv.tests.test_debian_m9_software -v
+
+.PHONY: build_riscv_debian_browser_web_dev_overlay
+build_riscv_debian_browser_web_dev_overlay:
+	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
+		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
+		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:

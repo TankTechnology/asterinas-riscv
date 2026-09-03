@@ -90,6 +90,53 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
 
+## Fast browser-web development overlay
+
+Do not rerun debootstrap or apt for changes limited to the browser-web guest
+scripts and systemd units. Build the signed `browser-web` rootfs once, keep it
+immutable, and materialize a copy-on-write development derivative:
+
+```bash
+make build_riscv_debian_browser_web_dev_overlay
+```
+
+The default input is
+`target/debian-riscv/browser-web/rootfs/`; the disposable output is
+`target/dev-overlays/browser-web/rootfs/`. The separate output tree remains
+writable even when a privileged rootfs builder created `target/debian-riscv`.
+Override both paths without changing
+the repository or host configuration:
+
+```bash
+make build_riscv_debian_browser_web_dev_overlay \
+  DEBIAN_BROWSER_WEB_BASE_ROOTFS=/absolute/path/to/frozen/rootfs \
+  DEBIAN_BROWSER_WEB_DEV_ROOTFS=/absolute/path/to/development/rootfs
+```
+
+The command has no network or package-install phase. It verifies the frozen
+base manifest and package checksums, reflink-copies the ext2 image when the
+filesystem supports it, replaces only the pre-existing regular files listed
+in `browser_web_dev_overlay.json`, and reads every replacement back through
+`debugfs`. A missing destination, symlinked source, unsafe path, byte mismatch,
+or mode mismatch fails closed without replacing the previous development
+output.
+
+The output directory is a drop-in gate input containing
+`debian-root.ext2`, `rootfs-manifest.json`, `packages.lock`, and
+`source-metadata/`. Point the existing QEMU gate variables at those files. The
+additional `dev-overlay-manifest.json` records the frozen base image and
+manifest hashes, overlay specification hash, per-file source hash and mode,
+and final derived image hash. The compatibility rootfs manifest also records
+the derivation digest as `tool_versions.asterinas-dev-overlay`; it must never
+be confused with a newly signed package build.
+
+Use this fast path only for listed scripts and service configuration. Run the
+full `build_rootfs.sh --profile browser-web` workflow whenever package names or
+versions, signed apt metadata, filesystem size/layout, users/groups, generated
+caches, directories, symlinks, or device nodes change. QEMU run disks and
+physical-board installation artifacts remain separate from both the frozen
+base and this disposable derivative.
+
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
 cannot alias the interactive root:
