@@ -36,7 +36,7 @@ Expected: exit status 0.
 ### Task 2: Repair the stale Megrez installer test fixture
 
 **Files:**
-- Modify: `tools/riscv/tests/test_megrez_install_workflow.py:63-67`
+- Modify: `tools/riscv/tests/test_megrez_install_workflow.py:12-70`
 
 - [ ] **Step 1: Reproduce the existing contract error**
 
@@ -44,16 +44,13 @@ Run: `python3 -W error::ResourceWarning -m unittest tools.riscv.tests.test_megre
 
 Expected: ten errors ending in `DebugContractError: stale Megrez argument reaches init argv`.
 
-- [ ] **Step 2: Remove only the obsolete boot argument from the schema-two fixture**
+- [ ] **Step 2: Reuse the canonical physical bootargs builder in the schema-two fixture**
 
-Change the fixture bootargs to:
+Import `physical_bootargs` from `tools.riscv.megrez_gmac_gate` and change the
+fixture bootargs to:
 
 ```python
-(
-    "console=tty0 console=ttyS0 loglevel=info "
-    "init=/init asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-    "asterinas.reboot_after=600 -- --root-init=systemd"
-)
+physical_bootargs(600)
 ```
 
 - [ ] **Step 3: Verify the focused and aggregate installer suites**
@@ -203,4 +200,3 @@ Review `origin/main...HEAD` through maintainability, development, security, hard
 - [ ] **Step 4: Stop before external integration if any focused check fails**
 
 Do not merge remote PRs or push `main` until failures are either fixed with a focused regression or documented as pre-existing and demonstrably unrelated.
-
