@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -209,6 +210,16 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 unknown_layer, mode=mode
             ).reason,
             "web network failure has unknown layer",
+        )
+        config_failure = (
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=config "
+            b"reason=proxy-present\n"
+        )
+        self.assertEqual(
+            network_gate.classify_web_network(
+                config_failure, mode=mode
+            ).reason,
+            "web network config failure: proxy-present",
         )
         wrong_mode = (
             b"DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=https reason=broken\n"
@@ -879,6 +890,263 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
             ASTERINAS_DESKTOP_FIXTURE_REQUESTS="20",
         )
         return environment, console, resolv_conf, url_file, ping_log, curl_log
+
+    def _web_network_environment(
+        self,
+        directory: Path,
+        *,
+        mode: str,
+        fail_stage: str = "",
+    ) -> tuple[dict[str, str], Path, Path, Path]:
+        directory.mkdir(parents=True)
+        fake_bin = directory / "bin"
+        fake_bin.mkdir()
+        console = directory / "console"
+        console.write_text("", encoding="utf-8")
+        resolv_conf = directory / "resolv.conf"
+        resolv_conf.write_text("nameserver 192.0.2.53\n", encoding="utf-8")
+        command_log = directory / "commands.log"
+        fixture_payload = directory / "fixture.bin"
+        fixture_payload.write_bytes(PAYLOAD)
+        medium_payload = directory / "medium.bin"
+        medium_payload.write_bytes(PAYLOAD * 4)
+        fixture_count = directory / "fixture-count"
+
+        tools = {
+            "ip": r'''#!/bin/sh
+printf 'ip %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
+case "$*" in
+    "-o link show dev eth0")
+        [ "$ASTERINAS_WEB_FAIL_STAGE" = link ] && exit 1
+        printf '%s\n' '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP'
+        ;;
+    "-o -4 addr show dev eth0 scope global")
+        [ "$ASTERINAS_WEB_FAIL_STAGE" = address ] && exit 1
+        printf '%s\n' '2: eth0 inet 10.100.19.200/21 brd 10.100.23.255 scope global eth0'
+        ;;
+    neigh*)
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor ]; then
+            printf '%s\n' '10.100.16.1 dev eth0 INCOMPLETE'
+        else
+            printf '%s\n' "$4 dev eth0 lladdr 4c:d6:29:18:93:43 REACHABLE"
+        fi
+        ;;
+    *) exit 2 ;;
+esac
+''',
+            "ping": r'''#!/bin/sh
+printf 'ping %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
+[ "$ASTERINAS_WEB_FAIL_STAGE" = reachability ] && exit 1
+exit 0
+''',
+            "getent": r'''#!/bin/sh
+printf 'getent %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
+[ "$ASTERINAS_WEB_FAIL_STAGE" = dns ] && exit 2
+printf '%s\n' '110.242.68.3 STREAM www.baidu.com'
+''',
+            "date": r'''#!/bin/sh
+printf 'date %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
+exit 0
+''',
+            "curl": r'''#!/bin/sh
+printf 'curl %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
+output=
+previous=
+for argument in "$@"; do
+    if [ "$previous" = --output ]; then output="$argument"; fi
+    previous="$argument"
+done
+case "$*" in
+    *http://www.baidu.com/*)
+        [ "$ASTERINAS_WEB_FAIL_STAGE" = http ] && exit 7
+        printf 'HTTP/1.1 200 OK\r\nDate: Sat, 29 Aug 2026 02:02:25 GMT\r\n\r\n'
+        ;;
+    *result.png*)
+        [ "$ASTERINAS_WEB_FAIL_STAGE" = baidu-asset-curl ] && exit 22
+        [ -n "$output" ] || exit 96
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = baidu-asset ]; then
+            printf 'not-png' >"$output"
+        else
+            printf '\211PNG\r\n\032\nfixture' >"$output"
+        fi
+        ;;
+    *https://www.baidu.com/*)
+        case "$ASTERINAS_WEB_FAIL_STAGE" in
+            https-connect) exit 7 ;;
+            https-tls) exit 60 ;;
+        esac
+        printf '200\t10.100.19.200\t0.010\t0.020'
+        ;;
+    *medium.bin*)
+        [ -n "$output" ] || exit 97
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = medium ]; then
+            head -c 262143 "$ASTERINAS_WEB_MEDIUM_PAYLOAD" >"$output"
+        else
+            cp "$ASTERINAS_WEB_MEDIUM_PAYLOAD" "$output"
+        fi
+        ;;
+    *asterinas-network-probe.bin*)
+        [ -n "$output" ] || exit 98
+        count=0
+        [ ! -f "$ASTERINAS_WEB_FIXTURE_COUNT" ] || count="$(cat "$ASTERINAS_WEB_FIXTURE_COUNT")"
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$ASTERINAS_WEB_FIXTURE_COUNT"
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = http ] && [ "$count" = 1 ]; then
+            exit 7
+        elif [ "$ASTERINAS_WEB_FAIL_STAGE" = repeat ] && [ "$count" -gt 1 ]; then
+            head -c 65535 "$ASTERINAS_WEB_FIXTURE_PAYLOAD" >"$output"
+        else
+            cp "$ASTERINAS_WEB_FIXTURE_PAYLOAD" "$output"
+        fi
+        ;;
+    *) exit 99 ;;
+esac
+''',
+        }
+        for name, source in tools.items():
+            executable = fake_bin / name
+            executable.write_text(source, encoding="utf-8")
+            executable.chmod(0o755)
+
+        proxy = {
+            "ASTERINAS_DESKTOP_PROXY_URL": "http://10.100.19.216:17893",
+            "ASTERINAS_DESKTOP_PROXY_HOST": "10.100.19.216",
+            "ASTERINAS_DESKTOP_PROXY_PORT": "17893",
+        }
+        environment = {
+            **os.environ,
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
+            "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "5",
+            "ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS": "2",
+            "ASTERINAS_DESKTOP_M5_RESOLV_CONF": str(resolv_conf),
+            "ASTERINAS_DESKTOP_M5_URL_FILE": str(directory / "desktop-url"),
+            "ASTERINAS_WEB_NETWORK_MODE": mode,
+            "ASTERINAS_WEB_NETWORK_ADDRESS": "10.100.19.200/21",
+            "ASTERINAS_WEB_NETWORK_GATEWAY": "10.100.16.1",
+            "ASTERINAS_WEB_NETWORK_RESOLVER": "10.100.16.1",
+            "ASTERINAS_DESKTOP_FIXTURE_URL": (
+                f"http://10.100.19.216:17894{FIXTURE_PATH}"
+            ),
+            "ASTERINAS_DESKTOP_FIXTURE_SIZE": str(PAYLOAD_SIZE),
+            "ASTERINAS_DESKTOP_FIXTURE_SHA256": PAYLOAD_SHA256,
+            "ASTERINAS_DESKTOP_FIXTURE_REQUESTS": "20",
+            "ASTERINAS_WEB_NETWORK_MEDIUM_URL": (
+                "http://10.100.19.216:17894/medium.bin"
+            ),
+            "ASTERINAS_WEB_NETWORK_MEDIUM_SIZE": str(len(PAYLOAD) * 4),
+            "ASTERINAS_WEB_NETWORK_MEDIUM_SHA256": hashlib.sha256(
+                PAYLOAD * 4
+            ).hexdigest(),
+            "ASTERINAS_WEB_COMMAND_LOG": str(command_log),
+            "ASTERINAS_WEB_FIXTURE_PAYLOAD": str(fixture_payload),
+            "ASTERINAS_WEB_MEDIUM_PAYLOAD": str(medium_payload),
+            "ASTERINAS_WEB_FIXTURE_COUNT": str(fixture_count),
+            "ASTERINAS_WEB_FAIL_STAGE": fail_stage,
+        }
+        if mode == "proxy":
+            environment.update(proxy)
+        return environment, console, resolv_conf, command_log
+
+    def test_proxy_web_network_evidence(self) -> None:
+        environment, console, resolv_conf, command_log = (
+            self._web_network_environment(
+                self.directory / "web-proxy", mode="proxy"
+            )
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            [
+                *(
+                    f"DEBIAN_WEB_NETWORK_LAYER mode=proxy layer={layer} status=pass"
+                    for layer in network_gate.NETWORK_LAYERS
+                ),
+                "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
+            ],
+        )
+        commands = command_log.read_text(encoding="utf-8").splitlines()
+        external = [
+            line
+            for line in commands
+            if "www.baidu.com" in line or "result.png" in line
+        ]
+        self.assertTrue(external)
+        self.assertTrue(
+            all("--proxy http://10.100.19.216:17893" in line for line in external)
+        )
+        self.assertFalse(any(line.startswith("getent ") for line in commands))
+        self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
+
+    def test_direct_web_network_has_no_proxy_configuration(self) -> None:
+        environment, console, resolv_conf, command_log = (
+            self._web_network_environment(
+                self.directory / "web-direct", mode="direct"
+            )
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_READY mode=direct layers=10",
+        )
+        commands = command_log.read_text(encoding="utf-8")
+        self.assertNotIn("--proxy", commands)
+        self.assertIn("getent ahostsv4 www.baidu.com", commands)
+        self.assertEqual(resolv_conf.read_text(), "nameserver 10.100.16.1\n")
+
+    def test_web_network_failure_taxonomy(self) -> None:
+        cases = {
+            "link": ("link", "carrier"),
+            "address": ("address", "static-address"),
+            "neighbor": ("neighbor", "neighbor-unusable"),
+            "reachability": ("reachability", "icmp-timeout"),
+            "dns": ("dns", "resolve"),
+            "http": ("http", "tcp-connect"),
+            "https-connect": ("https", "tcp-connect"),
+            "https-tls": ("https", "tls"),
+            "baidu-asset": ("baidu-asset", "content"),
+            "repeat": ("repeat", "length"),
+            "medium": ("medium", "length"),
+        }
+        for fail_stage, (layer, reason) in cases.items():
+            with self.subTest(fail_stage=fail_stage):
+                environment, console, _, _ = self._web_network_environment(
+                    self.directory / f"web-fail-{fail_stage}",
+                    mode="direct",
+                    fail_stage=fail_stage,
+                )
+                result = subprocess.run(
+                    ["/bin/bash", str(EVIDENCE_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(
+                    console.read_text(encoding="utf-8").splitlines()[-1],
+                    f"DEBIAN_WEB_NETWORK_FAIL mode=direct "
+                    f"layer={layer} reason={reason}",
+                )
 
     def _qemu_fixture_environment(self, directory: Path) -> dict[str, str]:
         payload = directory / "qemu-fixture.bin"
