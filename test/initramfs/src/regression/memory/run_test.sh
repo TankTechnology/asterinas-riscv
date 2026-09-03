@@ -15,3 +15,7 @@ set -e
 ./mmap/mmap_vmrss
 ./mmap/rev_map_ext2
 ./mmap/rev_map_tmpfs
+
+if [ "$(uname -m)" = "riscv64" ]; then
+    ./riscv_icache/cross_hart
+fi
