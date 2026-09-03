@@ -1142,11 +1142,13 @@ finalize_browser_startup_caches() {
         run_chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
-    # udev's package post-install hook can run before every directory needed
-    # by systemd-hwdb exists under emulation.  Rebuild the target-owned binary
-    # database after package installation is complete instead of accepting a
-    # rootfs whose first boot must repair it.
-    run_chroot "$stage" /usr/bin/systemd-hwdb update --usr
+    # Under qemu-user, systemd's O_TMPFILE publication fallback needs /proc to
+    # link the anonymous file.  This build intentionally leaves host /proc out
+    # of the chroot, so run the target binary outside the chroot and give it an
+    # explicit staged root.  The database format is still owned by the target
+    # systemd, while the host's /proc makes publication atomic.
+    qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
+        --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     # Keep the target-side diagnostic visible without rewriting Debian's
     # usr-is-merged cache aliases.  The package postinst has already created
