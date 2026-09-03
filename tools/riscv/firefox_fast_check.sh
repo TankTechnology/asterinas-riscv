@@ -18,6 +18,7 @@ python3 -m unittest \
 
 python3 -m py_compile \
   tools/riscv/firefox_debug_tool.py \
+  tools/riscv/debian/rootfs/browser_web_contract.py \
   tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
   tools/riscv/debian/rootfs/browser_web_trust_check.py \
@@ -29,6 +30,8 @@ bash -n \
   tools/riscv/qemu_system_gdb_probe.sh \
   tools/riscv/firefox_kernel_static_check.sh \
   tools/riscv/kernel_ktest.sh \
+  tools/riscv/debian/rootfs/browser_web_evidence.sh \
+  tools/riscv/debian/rootfs/browser_web_firefox.sh \
   tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
   tools/riscv/debian/rootfs/browser_web_timeline.sh
 

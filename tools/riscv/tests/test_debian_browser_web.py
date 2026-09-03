@@ -71,7 +71,10 @@ from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
     _diagnostic_gdb_port,
     _EXTERNAL_BLOCK,
     browser_web_qemu_argv,
+    browser_web_milestones,
     classify_browser_web_qemu,
+    firefox_ready_marker,
+    validate_uploaded_baidu_screenshot,
     validate_web_evidence,
 )
 from tools.riscv.debian.rootfs import browser_startup_cache_check as cache_check
@@ -83,6 +86,7 @@ from tools.riscv.debian.rootfs.contract import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DESKTOP_M5_QEMU_BOOTARGS
 from tools.riscv.debian.rootfs.profiles import get_profile
 
@@ -120,6 +124,7 @@ def snapshot(url: str, *, tls: float = 3) -> dict[str, object]:
         "jsComplete": True,
         "browserCapabilities": None,
         "dom": {
+            "baiduLogo": False,
             "baiduKeyword": False,
             "baiduSubmit": False,
             "baiduResults": 0,
@@ -220,6 +225,7 @@ def web_evidence() -> dict[str, bytes]:
     baidu_home = snapshot("https://www.baidu.com/")
     baidu_home["dom"]["baiduKeyword"] = True
     baidu_home["dom"]["baiduSubmit"] = True
+    baidu_home["dom"]["baiduLogo"] = True
     baidu_search = snapshot("https://www.baidu.com/s?wd=Asterinas", tls=0)
     baidu_search["dom"]["baiduResults"] = 2
     fixture_url = (
@@ -285,6 +291,7 @@ def web_evidence() -> dict[str, bytes]:
             f"SYSTEM_CA_SHA256 sha256={system_ca_hash} path=/etc/ssl/certs/ca-certificates.crt\n"
             f"TRUST_STATIC_SHA256 sha256={trust_hash} path=/usr/share/asterinas/browser-web-trust-static.log\n"
             "BROWSER_WEB_SECURITY parent_pid=100 uid=1000 caps=zero nnp=1 sandbox_disable=absent\n"
+            "BROWSER_WEB_NETWORK_ENV parent_pid=100 mode=direct\n"
             "BROWSER_WEB_SECURITY service_pid=100 nrestarts=0 stable=1 active=1\n"
             "BROWSER_WEB_SECURITY child_pid=101 role=content caps=zero nnp=1 seccomp=2\n"
             "BROWSER_WEB_SECURITY child_pid=102 role=socket caps=zero nnp=1 seccomp=2\n"
@@ -316,6 +323,10 @@ def web_evidence() -> dict[str, bytes]:
             "DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
             "bilibili_detail=pass bv=BV1Ab411c7De tls=verified\n"
         ).encode(),
+        "firefox-user.js": (
+            'user_pref("browser.download.folderList", 2);\n'
+            'user_pref("network.proxy.type", 0);\n'
+        ).encode(),
     }
     for name in (
         "baidu-home",
@@ -327,6 +338,31 @@ def web_evidence() -> dict[str, bytes]:
         values[f"{name}.png"] = png()
     assert set(values) == set(WEB_EVIDENCE_PATHS)
     return values
+
+
+def proxy_web_evidence() -> dict[str, bytes]:
+    evidence = web_evidence()
+    evidence["curl.log"] = (
+        "DNS_DELEGATED mode=proxy host=www.baidu.com proxy=http://10.0.2.2:17893\n"
+        "DNS_DELEGATED mode=proxy host=www.bilibili.com proxy=http://10.0.2.2:17893\n"
+        "HTTPS requested=https://www.baidu.com/ status=200 "
+        "effective=https://www.baidu.com/ verify=0\n"
+        "HTTPS requested=https://www.bilibili.com/ status=302 "
+        "effective=https://www.bilibili.com/ verify=0\n"
+    ).encode()
+    evidence["security.log"] = evidence["security.log"].replace(
+        b"mode=direct", b"mode=proxy"
+    )
+    evidence["firefox-user.js"] = (
+        'user_pref("browser.download.folderList", 2);\n'
+        'user_pref("network.proxy.type", 1);\n'
+        'user_pref("network.proxy.http", "10.0.2.2");\n'
+        'user_pref("network.proxy.http_port", 17893);\n'
+        'user_pref("network.proxy.ssl", "10.0.2.2");\n'
+        'user_pref("network.proxy.ssl_port", 17893);\n'
+        'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
+    ).encode()
+    return evidence
 
 
 class BrowserWebContractTests(unittest.TestCase):
@@ -438,6 +474,78 @@ class BrowserWebContractTests(unittest.TestCase):
                         profile,
                     )
 
+    def test_baidu_home_requires_logo(self) -> None:
+        home = snapshot("https://www.baidu.com/")
+        home["dom"]["baiduKeyword"] = True
+        home["dom"]["baiduSubmit"] = True
+        home["dom"]["baiduLogo"] = True
+        validate_baidu_home(home)
+
+        home["dom"]["baiduLogo"] = False
+        with self.assertRaisesRegex(GateError, "logo"):
+            validate_baidu_home(home)
+
+    def test_baidu_search_contains_fixed_query(self) -> None:
+        search = snapshot("https://www.baidu.com/s?wd=Asterinas", tls=0)
+        search["dom"]["baiduResults"] = 1
+        search["title"] = "Asterinas_百度搜索"
+        validate_baidu_search(search)
+
+        wrong_path = copy.deepcopy(search)
+        wrong_path["url"] = "https://www.baidu.com/other?wd=Asterinas"
+        with self.assertRaisesRegex(GateError, "search URL"):
+            validate_baidu_search(wrong_path)
+
+        missing_query_content = copy.deepcopy(search)
+        missing_query_content["title"] = "百度搜索"
+        missing_query_content["bodyText"] = (
+            "这是足够长的百度搜索结果正文，但其中刻意不包含固定的英文查询关键词。"
+        )
+        with self.assertRaisesRegex(GateError, "query content"):
+            validate_baidu_search(missing_query_content)
+
+    def test_mode_qualified_firefox_ready_marker(self) -> None:
+        direct = ("\n".join(BROWSER_WEB_MILESTONES) + "\n").encode()
+        self.assertIn(firefox_ready_marker(NetworkMode.DIRECT), BROWSER_WEB_MILESTONES)
+        self.assertTrue(
+            classify_browser_web_qemu(
+                direct,
+                expected_debian_release="13.6",
+                network_mode=NetworkMode.DIRECT,
+            ).passed
+        )
+        proxy = ("\n".join(browser_web_milestones(NetworkMode.PROXY)) + "\n").encode()
+        self.assertTrue(
+            classify_browser_web_qemu(
+                proxy,
+                expected_debian_release="13.6",
+                network_mode=NetworkMode.PROXY,
+            ).passed
+        )
+        self.assertFalse(
+            classify_browser_web_qemu(
+                proxy.replace(
+                    b"DEBIAN_WEB_NETWORK_READY mode=proxy layers=10\n", b""
+                ),
+                expected_debian_release="13.6",
+                network_mode=NetworkMode.PROXY,
+            ).passed
+        )
+        self.assertFalse(
+            classify_browser_web_qemu(
+                proxy,
+                expected_debian_release="13.6",
+                network_mode=NetworkMode.DIRECT,
+            ).passed
+        )
+        self.assertFalse(
+            classify_browser_web_qemu(
+                proxy + firefox_ready_marker(NetworkMode.DIRECT).encode(),
+                expected_debian_release="13.6",
+                network_mode=NetworkMode.PROXY,
+            ).passed
+        )
+
     def test_fixture_capabilities_are_validated_on_explicit_page(self) -> None:
         url = "http://10.0.2.2:17894/browser-quality/index.html?capabilities=1"
         source = snapshot(url)
@@ -453,6 +561,7 @@ class BrowserWebContractTests(unittest.TestCase):
         source = snapshot("https://www.baidu.com/")
         source["dom"]["baiduKeyword"] = True
         source["dom"]["baiduSubmit"] = True
+        source["dom"]["baiduLogo"] = True
         probe = {name: source[name] for name in (
             "url", "title", "readyState", "bodyText", "jsComplete",
             "browserCapabilities", "dom",
@@ -650,7 +759,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('ASTERINAS_FIREFOX_WEB_TARGET_URL', launcher)
         self.assertIn('Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/', unit)
         for required in (
-            "nameserver[[:space:]]+10\\.0\\.2\\.3",
+            'readonly NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"',
+            'grep -Fqx "nameserver $NETWORK_RESOLVER"',
             "getent ahostsv4",
             "--proto '=https'",
             "--tlsv1.2",
@@ -674,7 +784,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("sync /home/asterinas/browser-web-evidence", evidence)
         self.assertLess(
             evidence.rindex("/usr/bin/timeout 20 /usr/bin/sync"),
-            evidence.index('emit "DEBIAN_BROWSER_WEB_READY'),
+            evidence.index('emit "DEBIAN_FIREFOX_BAIDU_READY'),
         )
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn(
@@ -718,7 +828,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("systemd.log_level=debug", DESKTOP_M5_QEMU_BOOTARGS)
         for marker in (
             "DEBIAN_BROWSER_M5_READY",
-            "DEBIAN_BROWSER_WEB_READY",
+            "DEBIAN_FIREFOX_BAIDU_READY",
         ):
             with self.subTest(marker=marker):
                 evidence = offline_evidence if "_M5_" in marker else online_evidence
@@ -1222,7 +1332,7 @@ generate_fontconfig_cache "$stage" "$3"
                 "DEBIAN_BROWSER_WEB_TRUST_STATIC xul_ckbi=audited ca_bundle=audited package_closure=verified"
             ),
             BROWSER_WEB_MILESTONES.index(
-                "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
+                "DEBIAN_BROWSER_WEB_NETWORK mode=direct nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
             ),
         )
         for marker in (
@@ -1466,6 +1576,7 @@ generate_fontconfig_cache "$stage" "$3"
         ready = snapshot("https://www.baidu.com/")
         ready["dom"]["baiduKeyword"] = True
         ready["dom"]["baiduSubmit"] = True
+        ready["dom"]["baiduLogo"] = True
         ready = {
             key: value
             for key, value in ready.items()
@@ -1568,6 +1679,7 @@ generate_fontconfig_cache "$stage" "$3"
         probe = snapshot("https://www.baidu.com/")
         probe["dom"]["baiduKeyword"] = True
         probe["dom"]["baiduSubmit"] = True
+        probe["dom"]["baiduLogo"] = True
         probe = {
             key: value
             for key, value in probe.items()
@@ -1733,7 +1845,49 @@ generate_fontconfig_cache "$stage" "$3"
                     }
                 )
 
-    def test_post_stop_evidence_accepts_only_an_exact_external_captcha(self) -> None:
+    def test_post_stop_evidence_binds_selected_network_mode_and_profile(self) -> None:
+        direct = web_evidence()
+        proxy = proxy_web_evidence()
+        validate_web_evidence(direct, network_mode=NetworkMode.DIRECT)
+        validate_web_evidence(proxy, network_mode=NetworkMode.PROXY)
+        for evidence, wrong_mode in (
+            (direct, NetworkMode.PROXY),
+            (proxy, NetworkMode.DIRECT),
+        ):
+            with self.subTest(mode=wrong_mode), self.assertRaises(GateFailure):
+                validate_web_evidence(evidence, network_mode=wrong_mode)
+
+        forged = dict(proxy)
+        forged["firefox-user.js"] += (
+            'user_pref("network.proxy.socks", "10.0.2.2");\n'
+        ).encode()
+        with self.assertRaisesRegex(GateFailure, "network profile"):
+            validate_web_evidence(forged, network_mode=NetworkMode.PROXY)
+
+    def test_uploaded_baidu_screenshot_is_bound_to_fixture_digest(self) -> None:
+        payload = png()
+        summary = {
+            "bytes": len(payload),
+            "path": "/browser-quality/capture.png",
+            "peer": "127.0.0.1",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        self.assertEqual(
+            validate_uploaded_baidu_screenshot(
+                summary, payload, expected_payload=payload
+            ),
+            summary,
+        )
+        with self.assertRaisesRegex(GateFailure, "upload evidence"):
+            validate_uploaded_baidu_screenshot(
+                {**summary, "sha256": "0" * 64}, payload
+            )
+        with self.assertRaisesRegex(GateFailure, "upload evidence"):
+            validate_uploaded_baidu_screenshot(
+                summary, payload, expected_payload=png(width=3)
+            )
+
+    def test_post_stop_evidence_rejects_external_captcha(self) -> None:
         evidence = web_evidence()
         challenge = snapshot(
             "https://wappass.baidu.com/static/captcha/tuxing_v2.html?"
@@ -1743,9 +1897,8 @@ generate_fontconfig_cache "$stage" "$3"
             **evidence,
             "baidu-search.json": (json.dumps(challenge) + "\n").encode(),
         }
-        self.assertEqual(
-            set(validate_web_evidence(challenge_evidence)), set(WEB_EVIDENCE_PATHS)
-        )
+        with self.assertRaisesRegex(GateFailure, "did not produce a result"):
+            validate_web_evidence(challenge_evidence)
         challenge["url"] = challenge["url"].replace("Asterinas", "forged")
         with self.assertRaisesRegex(GateError, "back URL"):
             validate_web_evidence(
@@ -1963,6 +2116,7 @@ generate_fontconfig_cache "$stage" "$3"
         home = snapshot("https://www.baidu.com/")
         home["dom"]["baiduKeyword"] = True
         home["dom"]["baiduSubmit"] = True
+        home["dom"]["baiduLogo"] = True
         validate_baidu_home(home)
         no_tls = copy.deepcopy(home)
         no_tls["navigation"]["secureConnectionStart"] = 0

@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import tempfile
 import subprocess
 import signal
 import unittest
+from unittest import mock
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -51,7 +53,15 @@ from tools.riscv.megrez_gmac_gate import (
     physical_bootargs,
     run_gate,
 )
-from tools.riscv.megrez_network_fixture import FixtureConfig, FixtureServer
+from tools.riscv.megrez_network_fixture import (
+    BROWSER_IMAGE,
+    BROWSER_PNG_CAPTURE_PATH,
+    FIXTURE_PATH,
+    PAYLOAD_SHA256,
+    PAYLOAD_SIZE,
+    FixtureConfig,
+    FixtureServer,
+)
 from tools.riscv import megrez_gmac_gate as gmac_gate
 
 
@@ -480,6 +490,61 @@ class MegrezGmacGateTests(unittest.TestCase):
             self.assertEqual(summary["payload_size"], 65536)
             published = json.loads((output / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(published["network_fixture"]["request_count"], 0)
+
+    def test_firefox_publish_requires_and_retains_valid_png_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "evidence"
+            output.mkdir()
+            fixture = mock.Mock()
+            fixture.summary.return_value = {
+                "schema_version": 1,
+                "payload_path": FIXTURE_PATH,
+                "payload_sha256": PAYLOAD_SHA256,
+                "payload_size": PAYLOAD_SIZE,
+                "request_count": 20,
+                "records_truncated": False,
+                "requests": [
+                    {
+                        "body_bytes": PAYLOAD_SIZE,
+                        "path": FIXTURE_PATH,
+                        "status": 200,
+                    }
+                    for _ in range(20)
+                ],
+            }
+            fixture.capture_payload.return_value = BROWSER_IMAGE
+            fixture.capture_summary.return_value = {
+                "bytes": len(BROWSER_IMAGE),
+                "path": BROWSER_PNG_CAPTURE_PATH,
+                "peer": BOARD_ADDRESS,
+                "sha256": hashlib.sha256(BROWSER_IMAGE).hexdigest(),
+            }
+            arguments = argparse.Namespace(
+                output_directory=output,
+                target=GateTarget.FIREFOX,
+                network_mode=NetworkMode.DIRECT,
+                expected_crc32=None,
+            )
+            operations = PhysicalGateOperations(arguments, fixture=fixture)
+            try:
+                operations.invalidate()
+                result: dict[str, object] = {
+                    "passed": True,
+                    "reason": "pass",
+                    "target": "firefox",
+                }
+                operations.publish(b"serial\n", result)
+            finally:
+                operations.output.close()
+
+            self.assertTrue(result["passed"])
+            self.assertEqual((output / "baidu-search.png").read_bytes(), BROWSER_IMAGE)
+            self.assertEqual(
+                result["baidu_screenshot"]["path"], BROWSER_PNG_CAPTURE_PATH
+            )
+            self.assertEqual(
+                result["baidu_screenshot"]["artifact"], "baidu-search.png"
+            )
 
     def test_proxy_mode_owns_bridge_and_publishes_its_summary(self) -> None:
         self.assertIn(

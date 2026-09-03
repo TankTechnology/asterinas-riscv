@@ -25,6 +25,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_repo_root))
 
 from tools.riscv.debian.rootfs.browser_web_qemu_gate import BrowserWebQemuOperations
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.desktop_m3_gate import _BOCHS_BAR_RE
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
@@ -180,11 +181,11 @@ def run(
         diagnostic_args += " asterinas.read_detail_profile=1"
     if futex_diagnostic:
         diagnostic_args += " asterinas.futex_profile=1"
-    BrowserWebQemuOperations.BOOTARGS = BrowserWebQemuOperations.BOOTARGS.replace(
+    operations = BrowserWebQemuOperations(config, network_mode=NetworkMode.DIRECT)
+    operations.BOOTARGS = operations.BOOTARGS.replace(
         " -- --root-init=systemd",
         f" asterinas.vm_profile=1{diagnostic_args} -- --root-init=systemd",
     )
-    operations = BrowserWebQemuOperations(config)
     operations.__enter__()
     session = None
     started = time.monotonic()

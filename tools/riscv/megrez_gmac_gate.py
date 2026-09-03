@@ -40,8 +40,13 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
+from tools.riscv.debian.rootfs.browser_web_contract import (
+    firefox_ready_marker,
+    validate_uploaded_baidu_screenshot,
+)
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
+from tools.riscv.debian.rootfs.rootfs_gate import GateFailure as RootfsGateFailure
 from tools.riscv.megrez_board_session import (
     BoardSession,
     boot_loaded_artifacts,
@@ -467,10 +472,7 @@ def classify_physical_firefox_transcript(
     network = classify_physical_web_network_transcript(transcript, mode=mode)
     if not network.passed:
         return network
-    ready = (
-        f"DEBIAN_FIREFOX_BAIDU_READY mode={mode.value} home=pass logo=pass "
-        "search=pass input=pass stable=pass screenshot=baidu-search.png"
-    ).encode()
+    ready = firefox_ready_marker(mode).encode()
     if transcript.count(ready) != 1:
         return GateResult(False, "missing or duplicate Firefox Baidu ready", None)
     network_ready = (
@@ -593,9 +595,7 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         )
     elif config.target is GateTarget.FIREFOX:
         assert config.network_mode is not None
-        ready_markers = (
-            f"DEBIAN_FIREFOX_BAIDU_READY mode={config.network_mode.value} ".encode(),
-        )
+        ready_markers = (firefox_ready_marker(config.network_mode).encode(),)
         classifier = partial(
             classify_physical_firefox_transcript,
             mode=config.network_mode,
@@ -781,6 +781,7 @@ class PhysicalGateOperations:
             "megrez-gmac.serial.log",
             "network-fixture.json",
             "proxy-bridge.json",
+            "baidu-search.png",
             "result.json",
         )
 
@@ -879,6 +880,24 @@ class PhysicalGateOperations:
                 json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
             ).encode()
             self.output.atomic_write("network-fixture.json", fixture_payload)
+        if getattr(self.arguments, "target", None) is GateTarget.FIREFOX:
+            if result.get("passed") is True:
+                try:
+                    capture_summary = validate_uploaded_baidu_screenshot(
+                        self.fixture.capture_summary(),
+                        self.fixture.capture_payload(),
+                    )
+                except RootfsGateFailure as error:
+                    result["passed"] = False
+                    result["reason"] = error.reason
+                else:
+                    capture_payload = self.fixture.capture_payload()
+                    assert capture_payload is not None
+                    self.output.atomic_write("baidu-search.png", capture_payload)
+                    result["baidu_screenshot"] = {
+                        **capture_summary,
+                        "artifact": "baidu-search.png",
+                    }
         payload = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
         self.output.atomic_write("result.json", payload)
 

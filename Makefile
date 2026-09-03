@@ -18,6 +18,7 @@ SCHEME ?= ""
 SMP ?= 1
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
+DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -530,6 +531,7 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
