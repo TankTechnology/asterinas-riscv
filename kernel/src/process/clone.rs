@@ -11,29 +11,31 @@ use ostd::{
 };
 
 use super::{
-    pid_table,
+    Credentials, Pid, Process, pid_table,
     posix_thread::{AsPosixThread, PosixThreadBuilder},
     rlimit::ResourceLimits,
     signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
-    Credentials, Pid, Process,
 };
 use crate::{
     context::current_userspace,
     cpu::LinuxAbi,
     fs::{
-        cgroupfs::{cgroup_node_from_fd, CgroupMembership, CgroupSysNode},
+        cgroupfs::{CgroupMembership, CgroupSysNode, cgroup_node_from_fd},
         file::file_table::{FdFlags, FileTable, RawFileDesc},
+        pseudofs::NsCommonOps,
         thread_info::ThreadFsInfo,
     },
     prelude::*,
     process::{
-        credentials::capabilities::CapSet,
-        pid_file::PidFile,
-        posix_thread::{allocate_posix_tid, PosixThread, ThreadLocal},
-        stats::PROCESS_CREATION_COUNTER,
         NsProxy, PidNamespace, UserNamespace,
+        credentials::capabilities::CapSet,
+        namespace::pid_ns::PidNsReservation,
+        pid_file::PidFile,
+        posix_thread::{PosixThread, ThreadLocal, reserve_posix_tid},
+        stats::PROCESS_CREATION_COUNTER,
     },
     sched::Nice,
+    security::lsm::hooks as lsm_hooks,
     thread::{AsThread, Tid},
     vm::vmar::{Vmar, VmarHandle},
 };
@@ -103,7 +105,7 @@ bitflags! {
 ///     ---             set_tid_size
 ///     ---             cgroup          See CLONE_INTO_CGROUP
 /// ```
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CloneArgs {
     pub flags: CloneFlags,
     pub pidfd: Option<Vaddr>,
@@ -113,8 +115,7 @@ pub struct CloneArgs {
     pub stack: Option<NonZeroU64>,
     pub stack_size: Option<NonZeroU64>,
     pub tls: u64,
-    pub _set_tid: Option<u64>,
-    pub _set_tid_size: Option<u64>,
+    pub set_tid: Box<[u32]>,
     pub cgroup: Option<u64>,
 }
 
@@ -257,7 +258,107 @@ impl CloneArgs {
             );
         }
 
+        self.check_set_tid(ctx)?;
+
         Ok(())
+    }
+
+    fn check_set_tid(&self, ctx: &Context) -> Result<()> {
+        if self.set_tid.is_empty() {
+            return Ok(());
+        }
+
+        let ns_proxy = ctx.thread_local.borrow_ns_proxy();
+        let mut pid_ns = ns_proxy.unwrap().pid_ns_for_children().clone();
+        let existing_levels = {
+            let mut levels = 1;
+            let mut current = &pid_ns;
+            while let Some(parent) = current.parent_ns() {
+                levels += 1;
+                current = parent;
+            }
+            levels
+        };
+        let creates_pid_ns = self.flags.contains(CloneFlags::CLONE_NEWPID);
+        if self.set_tid.len() > existing_levels + usize::from(creates_pid_ns) {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "set_tid has more entries than the child PID namespace depth"
+            );
+        }
+
+        let mut index = 0;
+        if creates_pid_ns {
+            // A new PID namespace has no reaper yet, so its first process can
+            // only request PID 1. Its owner is either the simultaneously
+            // created user namespace (whose creator is authorized by
+            // ownership) or the caller's current user namespace.
+            if self.set_tid[0] != 1 {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "the first process in a PID namespace must have PID 1"
+                );
+            }
+            if !self.flags.contains(CloneFlags::CLONE_NEWUSER) {
+                let user_ns = ctx.thread_local.borrow_user_ns();
+                require_checkpoint_restore_capability(user_ns.as_ref(), ctx)?;
+            }
+            index = 1;
+        }
+
+        while index < self.set_tid.len() {
+            let requested_pid = self.set_tid[index];
+            if requested_pid >= super::posix_thread::PID_MAX {
+                return_errno_with_message!(Errno::EINVAL, "requested PID is out of range");
+            }
+            if requested_pid != 1 && pid_ns.process_of_vpid(1).is_none() {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "cannot allocate a non-init PID before namespace init exists"
+                );
+            }
+
+            require_checkpoint_restore_capability(pid_ns.owner_user_ns().unwrap().as_ref(), ctx)?;
+            index += 1;
+            if index < self.set_tid.len() {
+                pid_ns = pid_ns.parent_ns().unwrap().clone();
+            }
+        }
+
+        if self.flags.contains(CloneFlags::CLONE_THREAD) {
+            // Asterinas does not yet register non-main thread IDs in PID
+            // namespaces, so it cannot publish a requested thread ID there.
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "clone3 set_tid is not supported with CLONE_THREAD"
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn require_checkpoint_restore_capability(user_ns: &UserNamespace, ctx: &Context) -> Result<()> {
+    let has_sys_admin = lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        user_ns,
+        ctx.posix_thread,
+        CapSet::SYS_ADMIN,
+    ))
+    .is_ok();
+    let has_checkpoint_restore = lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        user_ns,
+        ctx.posix_thread,
+        CapSet::CHECKPOINT_RESTORE,
+    ))
+    .is_ok();
+
+    if has_sys_admin || has_checkpoint_restore {
+        Ok(())
+    } else {
+        return_errno_with_message!(
+            Errno::EPERM,
+            "clone3 set_tid requires SYS_ADMIN or CHECKPOINT_RESTORE"
+        )
     }
 }
 
@@ -305,8 +406,9 @@ pub fn clone_child(
     clone_args: CloneArgs,
 ) -> Result<Tid> {
     clone_args.check(ctx)?;
+    let clone_flags = clone_args.flags;
 
-    if clone_args.flags.contains(CloneFlags::CLONE_THREAD) {
+    if clone_flags.contains(CloneFlags::CLONE_THREAD) {
         let child_task = clone_child_task(ctx, parent_context, clone_args)?;
         let child_thread = child_task.as_thread().unwrap();
         child_thread.run();
@@ -357,7 +459,7 @@ pub fn clone_child(
         }
         drop(cgroup_read_guard);
 
-        if clone_args.flags.contains(CloneFlags::CLONE_VFORK) {
+        if clone_flags.contains(CloneFlags::CLONE_VFORK) {
             child_process.status().set_vfork_child(true);
         }
 
@@ -463,7 +565,8 @@ fn clone_child_task(
     // Inherit the thread name.
     let thread_name = posix_thread.thread_name().lock().clone();
 
-    let child_tid = allocate_posix_tid();
+    let child_tid_reservation = reserve_posix_tid(None)?;
+    let child_tid = child_tid_reservation.tid();
     let child_task = {
         let credentials = {
             let credentials = ctx.posix_thread.credentials();
@@ -519,6 +622,7 @@ fn clone_child_task(
 
     let child_thread = child_task.as_thread().unwrap();
     pid_table::pid_table_mut().insert_thread(child_tid, child_thread);
+    child_tid_reservation.commit();
 
     Ok(child_task)
 }
@@ -615,7 +719,10 @@ fn clone_child_process(
         snapshot
     };
 
-    let child_tid = allocate_posix_tid();
+    let requested_global_pid = requested_global_pid(&child_pid_ns, &clone_args.set_tid);
+    let child_tid_reservation = reserve_posix_tid(requested_global_pid)?;
+    let child_tid = child_tid_reservation.tid();
+    let pid_ns_reservation = child_pid_ns.reserve_process_ids(child_tid, &clone_args.set_tid)?;
 
     let child = {
         let child_vmar_arc = child_vmar.clone_arc();
@@ -678,11 +785,15 @@ fn clone_child_process(
             child_sig_dispositions,
             child_user_ns,
             child_pid_ns,
+            pid_ns_reservation,
             child_thread_builder,
         )
     };
 
-    clone_pidfd(ctx, &child, clone_flags, clone_args.pidfd)?;
+    if let Err(error) = clone_pidfd(ctx, &child, clone_flags, clone_args.pidfd) {
+        child.remove_from_pid_namespaces();
+        return Err(error);
+    }
 
     if let Some(sig) = clone_args.exit_signal {
         child.set_exit_signal(sig);
@@ -690,8 +801,20 @@ fn clone_child_process(
 
     // Sets parent process and group for child process.
     set_parent_and_group(clone_flags, process, &child);
+    child_tid_reservation.commit();
 
     Ok(child)
+}
+
+fn requested_global_pid(pid_ns: &Arc<PidNamespace>, set_tid: &[u32]) -> Option<Tid> {
+    let mut current = pid_ns;
+    for &requested_pid in set_tid {
+        if current.is_init() {
+            return Some(requested_pid);
+        }
+        current = current.parent_ns().unwrap();
+    }
+    None
 }
 
 fn clone_child_cleartid(
@@ -907,6 +1030,7 @@ fn create_child_process(
     sig_dispositions: Arc<Mutex<SigDispositions>>,
     user_ns: Arc<UserNamespace>,
     pid_ns: Arc<PidNamespace>,
+    pid_ns_reservation: PidNsReservation,
     thread_builder: PosixThreadBuilder,
 ) -> Arc<Process> {
     let child_proc = Process::new(
@@ -918,6 +1042,7 @@ fn create_child_process(
         sig_dispositions,
         user_ns,
         pid_ns,
+        pid_ns_reservation,
     );
 
     let child_task = thread_builder.process(Arc::downgrade(&child_proc)).build();

@@ -2,7 +2,7 @@
 
 use core::num::NonZeroU64;
 
-use ostd::arch::cpu::context::UserContext;
+use ostd::{arch::cpu::context::UserContext, mm::VmIo};
 
 use super::SyscallReturn;
 use crate::{
@@ -69,13 +69,48 @@ pub fn sys_clone3(
             .user_space()
             .read_val_compat::<Clone3Args>(clong_args_addr, size)?;
         debug!("clone3 args = {:x?}", args);
-        CloneArgs::try_from(args)?
+        let set_tid = read_set_tid(&args, ctx)?;
+        CloneArgs::try_from((args, set_tid))?
     };
     debug!("clone args = {:x?}", clone_args);
 
     let child_pid = clone_child(ctx, parent_context, clone_args)?;
     debug!("child pid = {}", child_pid);
     Ok(SyscallReturn::Return(child_pid as _))
+}
+
+fn read_set_tid(args: &Clone3Args, ctx: &Context) -> Result<Box<[u32]>> {
+    // Linux bounds the array by the maximum supported PID namespace depth.
+    const MAX_PID_NS_LEVEL: usize = 32;
+
+    let set_tid_size = usize::try_from(args.set_tid_size)
+        .map_err(|_| Error::with_message(Errno::EINVAL, "invalid set_tid array size"))?;
+    if set_tid_size > MAX_PID_NS_LEVEL {
+        return_errno_with_message!(Errno::EINVAL, "set_tid array is too large");
+    }
+    if (args.set_tid == 0) != (set_tid_size == 0) {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "set_tid and set_tid_size must be specified together"
+        );
+    }
+
+    let mut set_tid = Vec::with_capacity(set_tid_size);
+    for index in 0..set_tid_size {
+        let offset = index
+            .checked_mul(size_of::<i32>())
+            .and_then(|offset| args.set_tid.checked_add(offset as u64))
+            .ok_or_else(|| Error::with_message(Errno::EFAULT, "set_tid address overflows"))?;
+        let pid = ctx.user_space().read_val::<i32>(offset as Vaddr)?;
+        let pid = u32::try_from(pid)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "set_tid contains an invalid PID"))?;
+        if pid == 0 {
+            return_errno_with_message!(Errno::EINVAL, "set_tid contains PID zero");
+        }
+        set_tid.push(pid);
+    }
+
+    Ok(set_tid.into_boxed_slice())
 }
 
 #[repr(C)]
@@ -105,15 +140,10 @@ struct Clone3Args {
     cgroup: u64,
 }
 
-impl TryFrom<Clone3Args> for CloneArgs {
+impl TryFrom<(Clone3Args, Box<[u32]>)> for CloneArgs {
     type Error = Error;
 
-    fn try_from(value: Clone3Args) -> Result<Self> {
-        // TODO: Deal with set_tid, set_tid_size
-        if value.set_tid != 0 || value.set_tid_size != 0 {
-            warn!("set_tid is not supported");
-        }
-
+    fn try_from((value, set_tid): (Clone3Args, Box<[u32]>)) -> Result<Self> {
         // This checks arguments only for the `clone3()` system call.
         // Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/kernel/fork.c#L2843-L2869>.
 
@@ -168,8 +198,7 @@ impl TryFrom<Clone3Args> for CloneArgs {
             stack,
             stack_size,
             tls: value.tls,
-            _set_tid: Some(value.set_tid),
-            _set_tid_size: Some(value.set_tid_size),
+            set_tid,
             // `cgroup == 0` means "no CLONE_INTO_CGROUP"; store `None` in that case.
             cgroup: (value.cgroup != 0).then_some(value.cgroup),
         })
