@@ -4,9 +4,12 @@
 set -euo pipefail
 
 readonly DISPLAY=:0
-readonly FIREFOX_HOME=/home/asterinas
+readonly FIREFOX_HOME="${HOME:-/home/asterinas}"
 readonly XAUTHORITY="$FIREFOX_HOME/.Xauthority"
 readonly PROFILE="$FIREFOX_HOME/.mozilla/asterinas-browser-web"
+readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 # Let Firefox finish its parent/child, window, and Marionette bootstrap before
 # the web gate performs real HTTPS navigation.  The target is fixed in the
 # unit environment and is validated by browser_web_evidence.sh; it is not an
@@ -29,6 +32,75 @@ else
 fi
 export DISPLAY XAUTHORITY
 export ASTERINAS_FIREFOX_WEB_TARGET_URL="$TARGET_URL"
+export ASTERINAS_FIREFOX_WEB_NETWORK_MODE="$NETWORK_MODE"
+
+validate_network_profile() {
+    local octet
+    local -a octets
+
+    case "$NETWORK_MODE" in
+        direct)
+            [[ -z "$PROXY_HOST" && -z "$PROXY_PORT" ]] || return 1
+            ;;
+        proxy)
+            [[ "$PROXY_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+            IFS=. read -r -a octets <<<"$PROXY_HOST"
+            for octet in "${octets[@]}"; do
+                ((10#$octet <= 255)) || return 1
+            done
+            [[ "$PROXY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+            ((PROXY_PORT <= 65535)) || return 1
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+configure_network_profile() {
+    local temporary
+
+    validate_network_profile || {
+        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile\n' >&2
+        return 1
+    }
+    /usr/bin/mkdir -p -- "$PROFILE"
+    temporary="$(/usr/bin/mktemp "$PROFILE/user.js.tmp.XXXXXX")"
+    if ! {
+        printf '%s\n' \
+            'user_pref("browser.download.folderList", 2);' \
+            'user_pref("browser.download.dir", "/home/asterinas/Downloads");' \
+            'user_pref("browser.download.useDownloadDir", true);' \
+            'user_pref("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream");' \
+            >"$temporary"
+        if [[ "$NETWORK_MODE" == proxy ]]; then
+            printf '%s\n' \
+                'user_pref("network.proxy.type", 1);' \
+                "user_pref(\"network.proxy.http\", \"$PROXY_HOST\");" \
+                "user_pref(\"network.proxy.http_port\", $PROXY_PORT);" \
+                "user_pref(\"network.proxy.ssl\", \"$PROXY_HOST\");" \
+                "user_pref(\"network.proxy.ssl_port\", $PROXY_PORT);" \
+                'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");' \
+                >>"$temporary"
+        else
+            printf '%s\n' 'user_pref("network.proxy.type", 0);' >>"$temporary"
+        fi
+        /usr/bin/chmod 0600 -- "$temporary"
+        /usr/bin/mv -T -- "$temporary" "$PROFILE/user.js"
+    }; then
+        /usr/bin/rm -f -- "$temporary"
+        return 1
+    fi
+}
+
+if [[ "${1:-}" == --prepare-profile && $# == 1 ]]; then
+    configure_network_profile
+    exit
+fi
+[[ $# == 0 ]] || {
+    printf 'usage: %s [--prepare-profile]\n' "$0" >&2
+    exit 2
+}
+configure_network_profile
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 printf '%s\n' "$$" >"$PID_FILE"
 
 # Provisioned files are created in the immutable image so Firefox does not
@@ -67,21 +139,13 @@ printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
 # desktop provider never publishes a usable endpoint.
 /usr/lib/asterinas/browser-web-timeline wait-x
 marker BOOT_FIREFOX_WRAPPER_START
-/usr/bin/mkdir -p -- "$PROFILE"
 # Firefox's POSIX profiler signal path writes its diagnostic capture into the
 # user's download directory.  Provisioning the normal per-user directory here
 # is harmless for production and avoids a root-owned late mkdir in the
 # evidence service when a diagnostic run requests a profile dump.
 /usr/bin/mkdir -p -- "$FIREFOX_HOME/Downloads"
-# This is a dedicated acceptance profile.  Make same-origin fixture downloads
-# deterministic while keeping the normal Firefox security model and public
-# HTTPS certificate validation untouched.
-printf '%s\n' \
-    'user_pref("browser.download.folderList", 2);' \
-    'user_pref("browser.download.dir", "/home/asterinas/Downloads");' \
-    'user_pref("browser.download.useDownloadDir", true);' \
-    'user_pref("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream");' \
-    >"$PROFILE/user.js"
+# The dedicated profile was written atomically before any Firefox process was
+# started, so a mode switch cannot inherit stale proxy preferences.
 # Keep the normal startup path at the same logging cost as the proven M5
 # Firefox launcher.  Network-category tracing can generate a large amount of
 # synchronous ext2/virtio I/O on this guest; enable it only for an explicit

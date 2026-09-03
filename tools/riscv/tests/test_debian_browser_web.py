@@ -330,6 +330,114 @@ def web_evidence() -> dict[str, bytes]:
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    def _prepare_firefox_profile(
+        self,
+        home: Path,
+        *,
+        mode: str,
+        proxy_host: str = "",
+        proxy_port: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "ASTERINAS_WEB_NETWORK_MODE": mode,
+            "ASTERINAS_DESKTOP_PROXY_HOST": proxy_host,
+            "ASTERINAS_DESKTOP_PROXY_PORT": proxy_port,
+        }
+        return subprocess.run(
+            ["/bin/bash", str(ROOTFS / "browser_web_firefox.sh"), "--prepare-profile"],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_firefox_proxy_profile_is_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            result = self._prepare_firefox_profile(
+                home,
+                mode="proxy",
+                proxy_host="10.100.19.216",
+                proxy_port="17893",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = (
+                home / ".mozilla/asterinas-browser-web/user.js"
+            ).read_text(encoding="utf-8")
+            for preference in (
+                'user_pref("network.proxy.type", 1);',
+                'user_pref("network.proxy.http", "10.100.19.216");',
+                'user_pref("network.proxy.http_port", 17893);',
+                'user_pref("network.proxy.ssl", "10.100.19.216");',
+                'user_pref("network.proxy.ssl_port", 17893);',
+                'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");',
+            ):
+                self.assertIn(preference, profile)
+            self.assertEqual(
+                oct((home / ".mozilla/asterinas-browser-web/user.js").stat().st_mode & 0o777),
+                "0o600",
+            )
+            self.assertEqual(
+                list((home / ".mozilla/asterinas-browser-web").glob("user.js.tmp.*")),
+                [],
+            )
+            launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
+            self.assertIn(
+                "export ASTERINAS_FIREFOX_WEB_NETWORK_MODE=\"$NETWORK_MODE\"",
+                launcher,
+            )
+            self.assertIn(
+                "unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY",
+                launcher,
+            )
+
+    def test_firefox_direct_profile_removes_proxy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            proxy = self._prepare_firefox_profile(
+                home,
+                mode="proxy",
+                proxy_host="10.100.19.216",
+                proxy_port="17893",
+            )
+            self.assertEqual(proxy.returncode, 0, proxy.stderr)
+
+            direct = self._prepare_firefox_profile(home, mode="direct")
+
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            profile = (
+                home / ".mozilla/asterinas-browser-web/user.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn('user_pref("network.proxy.type", 0);', profile)
+            self.assertNotIn("network.proxy.http", profile)
+            self.assertNotIn("network.proxy.ssl", profile)
+            self.assertNotIn("network.proxy.no_proxies_on", profile)
+
+            for mode, host, port in (
+                ("", "", ""),
+                ("invalid", "", ""),
+                ("proxy", "", "17893"),
+                ("proxy", "10.100.19.216", "abc"),
+                ("proxy", "10.100.19.216", "65536"),
+            ):
+                with self.subTest(mode=mode, host=host, port=port):
+                    invalid = self._prepare_firefox_profile(
+                        home,
+                        mode=mode,
+                        proxy_host=host,
+                        proxy_port=port,
+                    )
+                    self.assertNotEqual(invalid.returncode, 0)
+                    self.assertEqual(
+                        (
+                            home / ".mozilla/asterinas-browser-web/user.js"
+                        ).read_text(encoding="utf-8"),
+                        profile,
+                    )
+
     def test_fixture_capabilities_are_validated_on_explicit_page(self) -> None:
         url = "http://10.0.2.2:17894/browser-quality/index.html?capabilities=1"
         source = snapshot(url)
