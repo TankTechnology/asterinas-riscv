@@ -91,6 +91,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn('strcmp(argv[1], "--require-smp4")', guest)
         self.assertIn("cpu_count != 4", guest)
         self.assertIn("remote_index < cpu_count", guest)
+        self.assertIn("wait_for_cpu(context->cpu)", guest)
+        self.assertIn("wait_for_cpu(cpus[0])", guest)
         self.assertIn("RISCV_ICACHE_REQUIRE_SMP4=1", runner)
         self.assertIn("formal SMP4 cross-hart I-cache regression", top_level_runner)
         self.assertIn(
