@@ -239,15 +239,17 @@ class DesktopM3Operations(ConcreteOperations):
             "result.json",
         )
 
+    @classmethod
+    def _accepted_profile_identities(cls) -> tuple[tuple[int, str], ...]:
+        return ((cls.SCHEMA_VERSION, cls.PROFILE_NAME),)
+
     def validate_inputs(
         self, config: GateConfig, snapshots: Mapping[str, str]
     ) -> Mapping[str, object]:
         identity = dict(super().validate_inputs(config, snapshots))
         manifest = load_manifest(self.input_paths["manifest"])
-        if (
-            manifest.schema_version != self.SCHEMA_VERSION
-            or manifest.profile != self.PROFILE_NAME
-        ):
+        manifest_identity = (manifest.schema_version, manifest.profile)
+        if manifest_identity not in self._accepted_profile_identities():
             raise GateFailure(f"rootfs manifest is not the {self.PROFILE_NAME} profile")
         identity["profile"] = manifest.profile
         return identity

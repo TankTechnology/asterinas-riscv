@@ -412,6 +412,13 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
     CAPTURE_SCREENSHOT = False
     TARGET = QemuGateTarget.NETWORK
 
+    @classmethod
+    def _accepted_profile_identities(cls) -> tuple[tuple[int, str], ...]:
+        return (
+            (cls.SCHEMA_VERSION, cls.PROFILE_NAME),
+            (7, "browser-web"),
+        )
+
     def __init__(
         self,
         config: GateConfig,
