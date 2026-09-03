@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>

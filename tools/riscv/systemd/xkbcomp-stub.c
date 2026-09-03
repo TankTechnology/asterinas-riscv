@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 /* xkbcomp-stub: replaces xkbcomp, outputs a pre-compiled keymap.
  *
  * Xorg invokes xkbcomp as:
