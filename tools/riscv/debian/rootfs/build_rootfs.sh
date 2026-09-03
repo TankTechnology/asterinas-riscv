@@ -1146,7 +1146,7 @@ finalize_browser_startup_caches() {
     # by systemd-hwdb exists under emulation.  Rebuild the target-owned binary
     # database after package installation is complete instead of accepting a
     # rootfs whose first boot must repair it.
-    run_chroot "$stage" /usr/bin/systemd-hwdb update
+    run_chroot "$stage" /usr/bin/systemd-hwdb update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     # Keep the target-side diagnostic visible without rewriting Debian's
     # usr-is-merged cache aliases.  The package postinst has already created

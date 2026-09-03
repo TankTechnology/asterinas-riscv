@@ -1042,7 +1042,7 @@ class BrowserWebContractTests(unittest.TestCase):
         for command in (
             'chroot "$stage" /usr/bin/systemd-sysusers',
             'chroot "$stage" /sbin/ldconfig',
-            'chroot "$stage" /usr/bin/systemd-hwdb update',
+            'chroot "$stage" /usr/bin/systemd-hwdb update --usr',
             'chroot "$stage" /usr/bin/journalctl --update-catalog',
             'chroot "$stage" /usr/bin/fc-cache -f',
             ': >"$stage/etc/.updated"',
