@@ -2,6 +2,7 @@
 
 SUBDIRS := \
 	alarm \
+	clock_settime \
 	clock_nanosleep \
 	gettimeofday \
 	itimer \

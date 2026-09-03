@@ -8,9 +8,7 @@ use ostd::{cpu::PinCurrentCpu, cpu_local, sync::SpinLock, task::disable_preempt,
 use paste::paste;
 use spin::Once;
 
-use crate::time::{
-    self, Clock, SystemTime, system_time::START_TIME_AS_DURATION, timer::TimerManager,
-};
+use crate::time::{self, timer::TimerManager, Clock, SystemTime};
 
 /// The Clock that reads the jiffies, and turn the counter into `Duration`.
 pub struct JiffiesClock {
@@ -88,14 +86,19 @@ impl RealTimeCoarseClock {
 
 /// `MonotonicCoarseClock` is a coarse-grained version of the monotonic clock.
 ///
-/// This clock is based on [`RealTimeCoarseClock`].
-///
 /// Usually it will not be used to create a timer.
 pub struct MonotonicCoarseClock {
     _private: (),
 }
 
 impl MonotonicCoarseClock {
+    /// Returns a reference to the most recent monotonic sample.
+    fn current_ref() -> &'static Once<SpinLock<Duration>> {
+        static CURRENT: Once<SpinLock<Duration>> = Once::new();
+
+        &CURRENT
+    }
+
     /// Get the singleton of this clock.
     pub fn get() -> &'static Arc<MonotonicCoarseClock> {
         CLOCK_MONOTONIC_COARSE_INSTANCE.get().unwrap()
@@ -171,7 +174,7 @@ impl Clock for RealTimeCoarseClock {
 
 impl Clock for MonotonicCoarseClock {
     fn read_time(&self) -> Duration {
-        RealTimeCoarseClock::get().read_time() - *START_TIME_AS_DURATION.get().unwrap()
+        *Self::current_ref().get().unwrap().disable_irq().lock()
     }
 }
 
@@ -284,13 +287,18 @@ fn init_jiffies_clock_manager() {
 
 fn update_coarse_clock() {
     let real_time = RealTimeClock::get().read_time();
-    let current = RealTimeCoarseClock::current_ref().get().unwrap();
-    *current.disable_irq().lock() = real_time;
+    let monotonic_time = read_monotonic_time();
+    let real_time_current = RealTimeCoarseClock::current_ref().get().unwrap();
+    let monotonic_current = MonotonicCoarseClock::current_ref().get().unwrap();
+    *real_time_current.disable_irq().lock() = real_time;
+    *monotonic_current.disable_irq().lock() = monotonic_time;
 }
 
 fn init_coarse_clock() {
     let real_time = RealTimeClock::get().read_time();
+    let monotonic_time = read_monotonic_time();
     RealTimeCoarseClock::current_ref().call_once(|| SpinLock::new(real_time));
+    MonotonicCoarseClock::current_ref().call_once(|| SpinLock::new(monotonic_time));
     time::softirq::register_callback(update_coarse_clock);
 }
 
@@ -316,6 +324,7 @@ pub fn init_for_ktest() {
     }
     CLOCK_REALTIME_COARSE_INSTANCE.call_once(|| Arc::new(RealTimeCoarseClock { _private: () }));
     RealTimeCoarseClock::current_ref().call_once(|| SpinLock::new(Duration::from_secs(0)));
+    MonotonicCoarseClock::current_ref().call_once(|| SpinLock::new(Duration::from_secs(0)));
     JIFFIES_TIMER_MANAGER.call_once(|| {
         let clock = JiffiesClock { _private: () };
         TimerManager::new(Arc::new(clock))

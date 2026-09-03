@@ -16,7 +16,6 @@ use crate::prelude::*;
 pub struct SystemTime(PrimitiveDateTime);
 
 pub static START_TIME: Once<SystemTime> = Once::new();
-pub(super) static START_TIME_AS_DURATION: Once<Duration> = Once::new();
 
 /// The wall-clock adjustment in nanoseconds, applied on top of
 /// `START_TIME + monotonic time`. It is changed by `clock_settime` and is
@@ -25,8 +24,6 @@ static WALL_CLOCK_ADJUST_NANOS: AtomicI64 = AtomicI64::new(0);
 
 pub(super) fn init() {
     let start_time = convert_system_time(read_start_time()).unwrap();
-    START_TIME_AS_DURATION
-        .call_once(|| start_time.duration_since(&SystemTime::UNIX_EPOCH).unwrap());
     START_TIME.call_once(|| start_time);
 }
 

@@ -6,6 +6,8 @@ set -e
 
 ./clock_nanosleep/nanosleep_err
 
+./clock_settime/monotonic_coarse
+
 ./gettimeofday/gettimeofday
 
 ./itimer/setitimer
