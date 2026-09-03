@@ -77,15 +77,16 @@ git commit -m "test(riscv): refresh Megrez installer bootargs"
 - Create: `test/initramfs/src/regression/io/file_io/fcntl_dupfd.c`
 - Modify: `test/initramfs/src/regression/io/run_test.sh`
 
-- [ ] **Step 1: Review commit `73514169d424` against the current branch**
-
-Run the Asterinas review pipeline in diff mode after applying the commit, with `origin/main` as the review base, and reject the integration on any confirmed P0/P1 defect.
-
-- [ ] **Step 2: Cherry-pick the exact PR commit**
+- [ ] **Step 1: Cherry-pick the exact PR commit**
 
 Run: `git cherry-pick 73514169d4245b75eb940a372395d8dff709e1e7`
 
 Expected: no conflict with the desktop/rootfs files.
+
+- [ ] **Step 2: Review the applied commit in isolation**
+
+Run the Asterinas review pipeline in diff mode with `HEAD^` as the base.
+Reject the integration on any confirmed critical or major defect.
 
 - [ ] **Step 3: Verify source formatting and RISC-V kernel compilation**
 
@@ -97,7 +98,7 @@ Run inside the project container: `make kernel TARGET_ARCH=riscv64`
 
 Expected: exit status 0.
 
-### Task 4: Integrate PR #100 for remote instruction-cache coherence
+### Task 4: Review PR #100 for remote instruction-cache coherence
 
 **Files:**
 - Modify: `ostd/src/arch/riscv/irq/ipi.rs`
@@ -105,7 +106,7 @@ Expected: exit status 0.
 - Modify: `ostd/src/arch/riscv/mod.rs`
 - Modify: `ostd/src/smp.rs`
 
-- [ ] **Step 1: Cherry-pick the exact PR commit**
+- [ ] **Step 1: Cherry-pick the exact PR commit on the review branch**
 
 Run: `git cherry-pick cde206963973d5e4b8b0842f58ccae9760568199`
 
@@ -121,7 +122,24 @@ RUSTFLAGS="--cfg ktest" cargo check -p ostd --target riscv64imac-unknown-none-el
 
 Expected: exit status 0.
 
-- [ ] **Step 3: Verify the RISC-V kernel**
+- [ ] **Step 3: Review all SBI failure paths before promotion**
+
+If any RFENCE error can be reduced to a warning while
+`sys_riscv_flush_icache()` returns success, comment on the PR and exclude it
+from the final integration branch until it gains a synchronous fallback or
+another complete failure contract.
+
+- [ ] **Step 4: Execute the new RISC-V kernel tests after the PR is repaired**
+
+Run inside the project container:
+
+```bash
+TARGET_ARCH=riscv64 SMP=4 make ktest
+```
+
+Expected: the new sparse and high hart-ID assertions execute and pass.
+
+- [ ] **Step 5: Restore and verify the normal RISC-V kernel artifact**
 
 Run inside the project container: `make kernel TARGET_ARCH=riscv64`
 
