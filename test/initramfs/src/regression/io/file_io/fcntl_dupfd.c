@@ -13,6 +13,7 @@ FN_SETUP(open_source)
 }
 END_SETUP()
 
+// Regression test for issue #97: the lower bound may equal the source FD.
 FN_TEST(dupfd_accepts_source_fd_as_minimum)
 {
 	int duplicated_fd = TEST_RES(fcntl(fd, F_DUPFD, fd), _ret > fd);
