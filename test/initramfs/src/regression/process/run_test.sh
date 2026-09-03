@@ -17,6 +17,10 @@ fi
 
 ./cpu_affinity/cpu_affinity
 
+if [ "$(uname -m)" = "riscv64" ]; then
+    ./riscv_flush_icache/riscv_flush_icache
+fi
+
 ./execve/execve
 ./execve/execve_comm
 ./execve/execve_err
