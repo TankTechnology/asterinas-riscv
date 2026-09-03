@@ -8,9 +8,15 @@ use super::{
 };
 use crate::{
     prelude::*,
-    process::pid_table,
+    process::{
+        ResourceType::{RLIMIT_NICE, RLIMIT_RTPRIO},
+        credentials::capabilities::CapSet,
+        pid_table,
+        posix_thread::{AsPosixThread, PosixThread},
+    },
     sched::{LinuxSchedPolicy, Nice, RealTimePolicy, SchedAttr, SchedPolicy},
-    thread::Tid,
+    security::lsm::hooks as lsm_hooks,
+    thread::{AsThread, Thread, Tid},
     util::CopyCompat,
 };
 
@@ -199,18 +205,132 @@ pub(super) fn access_sched_attr_with<T>(
     ctx: &Context,
     f: impl FnOnce(&SchedAttr) -> Result<T>,
 ) -> Result<T> {
+    let thread = find_sched_target(tid, ctx)?;
+    f(thread.sched_attr())
+}
+
+pub(super) fn update_sched_attr_with(
+    tid: Tid,
+    ctx: &Context,
+    reset_on_fork: Option<bool>,
+    update_policy: impl FnOnce(SchedPolicy) -> Result<SchedPolicy>,
+) -> Result<()> {
+    let thread = find_sched_target(tid, ctx)?;
+    let attr = thread.sched_attr();
+    let old_policy = attr.policy();
+    let new_policy = update_policy(old_policy)?;
+
+    check_sched_update_permission(
+        thread
+            .as_posix_thread()
+            .expect("a scheduling syscall target must be a POSIX thread"),
+        attr,
+        old_policy,
+        new_policy,
+        reset_on_fork,
+        ctx,
+    )?;
+
+    attr.set_policy(new_policy);
+    if let Some(reset_on_fork) = reset_on_fork {
+        attr.set_reset_on_fork(reset_on_fork);
+    }
+    Ok(())
+}
+
+fn find_sched_target(tid: Tid, ctx: &Context) -> Result<Arc<Thread>> {
     if tid.cast_signed() < 0 {
         return_errno_with_message!(Errno::EINVAL, "all negative TIDs are not valid");
     }
 
     if tid == 0 {
-        return f(ctx.thread.sched_attr());
+        return Ok(ctx
+            .task
+            .as_thread()
+            .expect("a scheduling syscall caller must be a thread")
+            .clone());
     }
 
     let Some(thread) = pid_table::pid_table_mut().get_thread(tid) else {
         return_errno_with_message!(Errno::ESRCH, "the target thread does not exist");
     };
-    f(thread.sched_attr())
+    Ok(thread)
+}
+
+// Reference: <https://github.com/torvalds/linux/blob/v6.18/kernel/sched/syscalls.c#L405-L457>.
+fn check_sched_update_permission(
+    target: &PosixThread,
+    attr: &SchedAttr,
+    old_policy: SchedPolicy,
+    new_policy: SchedPolicy,
+    reset_on_fork: Option<bool>,
+    ctx: &Context,
+) -> Result<()> {
+    let caller_euid = ctx.posix_thread.credentials().euid();
+    let target_credentials = target.credentials();
+    let same_owner =
+        caller_euid == target_credentials.euid() || caller_euid == target_credentials.ruid();
+    drop(target_credentials);
+
+    let target_process = target.process();
+    let limits = target_process.resource_limits();
+    let requires_privilege = !same_owner
+        || policy_update_requires_privilege(old_policy, new_policy, limits)
+        || (attr.reset_on_fork() && reset_on_fork == Some(false));
+    if !requires_privilege {
+        return Ok(());
+    }
+
+    // Drop the process's namespace lock before entering LSM: the capability
+    // module reads the caller's namespace and the caller may be the target.
+    let target_user_ns = target_process.user_ns().lock().clone();
+    if lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        target_user_ns.as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_NICE,
+    ))
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    return_errno_with_message!(
+        Errno::EPERM,
+        "the caller cannot change the target thread's scheduling attributes"
+    )
+}
+
+fn policy_update_requires_privilege(
+    old_policy: SchedPolicy,
+    new_policy: SchedPolicy,
+    limits: &crate::process::rlimit::ResourceLimits,
+) -> bool {
+    match new_policy {
+        SchedPolicy::RealTime {
+            rt_prio: new_priority,
+            rt_policy: new_rt_policy,
+        } => {
+            let rlimit = limits.get_rlimit(RLIMIT_RTPRIO).get_cur();
+            let (same_policy, old_priority) = match old_policy {
+                SchedPolicy::RealTime { rt_prio, rt_policy } => {
+                    (rt_policy == new_rt_policy, u64::from(rt_to_static(rt_prio)))
+                }
+                _ => (false, 0),
+            };
+            let new_priority = u64::from(rt_to_static(new_priority));
+            (!same_policy && rlimit == 0) || (new_priority > old_priority && new_priority > rlimit)
+        }
+        SchedPolicy::Fair(new_nice) => {
+            let old_nice = match old_policy {
+                SchedPolicy::Fair(nice) => nice,
+                _ => Nice::default(),
+            };
+            let nice_rlimit = u64::try_from(20 - i32::from(new_nice.value().get()))
+                .expect("a valid nice value always maps to a positive rlimit");
+            new_nice < old_nice && nice_rlimit > limits.get_rlimit(RLIMIT_NICE).get_cur()
+        }
+        SchedPolicy::Stop | SchedPolicy::Idle => true,
+    }
 }
 
 pub fn sys_sched_getattr(

@@ -4,7 +4,7 @@ use ostd::mm::VmIo;
 
 use super::{
     SyscallReturn,
-    sched_getattr::{LinuxSchedAttr, access_sched_attr_with},
+    sched_getattr::{LinuxSchedAttr, update_sched_attr_with},
 };
 use crate::{prelude::*, thread::Tid};
 
@@ -33,11 +33,7 @@ pub fn sys_sched_setscheduler(
     };
 
     let policy = attr.try_into()?;
-    access_sched_attr_with(tid, ctx, |attr| {
-        attr.set_policy(policy);
-        attr.set_reset_on_fork(reset_on_fork);
-        Ok(())
-    })?;
+    update_sched_attr_with(tid, ctx, Some(reset_on_fork), |_| Ok(policy))?;
 
     Ok(SyscallReturn::Return(0))
 }
