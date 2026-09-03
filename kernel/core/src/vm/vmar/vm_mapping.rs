@@ -379,7 +379,7 @@ impl VmMapping {
     ) -> Result<()> {
         let result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
         if result.is_ok() {
-            sync_instruction_cache_after_fault(page_fault_info.required_perms);
+            result = sync_instruction_cache_after_fault(page_fault_info.required_perms);
         }
         result
     }
@@ -733,18 +733,25 @@ impl VmMapping {
     }
 }
 
-fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
+fn sync_instruction_cache_after_fault(required_perms: VmPerms) -> Result<()> {
     #[cfg(target_arch = "riscv64")]
     if must_sync_instruction_cache(required_perms) {
         // RISC-V instruction caches are not required to observe bytes written
-        // through the data side.  Executable file pages can be populated by a
-        // different hart before this PTE is installed, so synchronize all
-        // harts before returning to user mode.
-        ostd::arch::flush_icache(false);
+        // through the data side.  Keep the mainline all-hart RFENCE behavior
+        // by default; the local-only variant is an explicit diagnostic mode
+        // selected with `asterinas.vm_local_icache=1` so its performance and
+        // correctness can be measured without changing normal boot semantics.
+        let local_only = VM_LOCAL_ICACHE.load(Ordering::Relaxed);
+        ostd::arch::flush_icache(local_only)?;
+        if VM_PROFILE.load(Ordering::Relaxed) {
+            EXEC_ICACHE_FENCE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[cfg(not(target_arch = "riscv64"))]
     let _ = required_perms;
+
+    Ok(())
 }
 
 #[cfg(any(target_arch = "riscv64", ktest))]
