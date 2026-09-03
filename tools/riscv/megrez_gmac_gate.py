@@ -316,7 +316,12 @@ def physical_bootargs(
 
     restart = ""
     if reboot_after is not None:
-        restart = f" asterinas.reboot_after={reboot_after}"
+        userspace_deadline = max(1, reboot_after - 30)
+        restart = (
+            f" asterinas.reboot_after={reboot_after}"
+            f" ASTERINAS_SAFE_REBOOT_AFTER={userspace_deadline}"
+            " ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0"
+        )
     if target is GateTarget.DESKTOP:
         bootargs = (
             "console=ttyS0 console=tty0 loglevel=info "

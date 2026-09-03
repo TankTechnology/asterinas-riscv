@@ -410,8 +410,17 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("reboot_after", bootargs)
         recovery_bootargs = physical_bootargs(180)
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
-        self.assertNotIn("ASTERINAS_SAFE_REBOOT_AFTER", recovery_bootargs)
-        self.assertNotIn("ASTERINAS_SAFE_REBOOT_CONSOLE", recovery_bootargs)
+        self.assertIn(
+            "ASTERINAS_SAFE_REBOOT_AFTER=150",
+            recovery_bootargs.split(),
+        )
+        self.assertIn(
+            "ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0",
+            recovery_bootargs.split(),
+        )
+        kernel_arguments, init_arguments = recovery_bootargs.split(" -- ", 1)
+        self.assertIn("ASTERINAS_SAFE_REBOOT_AFTER=150", kernel_arguments)
+        self.assertEqual(init_arguments, "--root-init=systemd")
         self.assertNotIn("saveenv", recovery_bootargs)
         self.assertLess(
             len(f'setenv bootargs "{recovery_bootargs}"'.encode()),
