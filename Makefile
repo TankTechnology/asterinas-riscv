@@ -810,24 +810,28 @@ run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), conformance)
-	@tail --lines 100 qemu.log | grep -q "^All conformance tests passed." \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
+		grep -q "^All conformance tests passed." \
 		|| (echo "Conformance test failed" && exit 1)
 else ifeq ($(AUTO_TEST), regression)
-	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
+		grep -q "^All regression tests passed." \
 		|| (echo "Regression test failed" && exit 1)
 else ifeq ($(AUTO_TEST), sched_policy)
-	@tail --lines 100 qemu.log | tr -d '\r' | \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Scheduler policy regression passed." \
 		|| (echo "Scheduler policy regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
-	@tail --lines 100 qemu.log | tr -d '\r' | \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
 		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), boot)
-	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
+		grep -q "^Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
 else ifeq ($(AUTO_TEST), vsock)
-	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
+		grep -q "^Vsock test passed." \
 		|| (echo "Vsock test failed" && exit 1)
 endif
 
