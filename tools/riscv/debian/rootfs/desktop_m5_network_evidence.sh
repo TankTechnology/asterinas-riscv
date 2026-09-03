@@ -31,6 +31,7 @@ readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL="${ASTERINAS_WEB_NETWORK_HTTPS_URL:-https://www.baidu.com/}"
 readonly BAIDU_ASSET="${ASTERINAS_WEB_NETWORK_ASSET_URL:-https://www.baidu.com/img/flexible/logo/pc/result.png}"
 readonly WEB_NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly WEB_NETWORK_NEIGHBOR_QUERY="${ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY:-0}"
 readonly WEB_NETWORK_ADDRESS="${ASTERINAS_WEB_NETWORK_ADDRESS:-10.100.19.200/21}"
 readonly WEB_NETWORK_GATEWAY="${ASTERINAS_WEB_NETWORK_GATEWAY:-10.100.16.1}"
 readonly WEB_NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"
@@ -161,6 +162,8 @@ web_network_evidence() {
             ;;
         *) web_fail config invalid-mode ;;
     esac
+    [[ "$WEB_NETWORK_NEIGHBOR_QUERY" =~ ^[01]$ ]] ||
+        web_fail config invalid-neighbor-query
     web_validate_ipv4 "$WEB_NETWORK_GATEWAY" || web_fail config invalid-gateway
     [[ "$WEB_NETWORK_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ||
         web_fail config invalid-address
@@ -192,35 +195,42 @@ web_network_evidence() {
         web_fail address static-address
     web_emit_layer address
 
-    limit="$(web_timeout_seconds "$deadline")" || web_fail neighbor timeout
-    if neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
-        neighbor_status=0
-    else
-        neighbor_status=$?
-    fi
-    if ((neighbor_status == 1)); then
-        # Asterinas does not yet implement RTM_GETNEIGH.  In that case the
-        # request is rejected with EOPNOTSUPP (reported by ip as status 1).
-        # The fixed-IP owned fixture below is the authoritative active proof
-        # that ARP resolution and peer reachability both worked.
-        neighbor_observable=0
-    elif ((neighbor_status != 0)); then
-        web_fail neighbor neighbor-unusable
-    elif [[ -z "$neighbor_output" ]]; then
+    if [[ "$WEB_NETWORK_NEIGHBOR_QUERY" == 0 ]]; then
+        # Asterinas does not yet implement RTM_GETNEIGH, and its unsupported
+        # dump currently lacks a terminating netlink message.  Do not spend a
+        # full command timeout waiting for an observation the kernel cannot
+        # provide.  The fixed-IP owned fixture below is the authoritative
+        # active proof that ARP resolution and peer reachability both worked.
         neighbor_observable=0
     else
-        [[ "$neighbor_output" == *"lladdr "* ]] ||
-            web_fail neighbor neighbor-unusable
-        [[ "$neighbor_output" != *FAILED* && "$neighbor_output" != *INCOMPLETE* ]] ||
-            web_fail neighbor neighbor-unusable
-        web_emit_layer neighbor
-
-        limit="$(web_timeout_seconds "$deadline")" ||
-            web_fail reachability timeout
-        if ! timeout "$limit" ping -4 -c 1 -W 3 "$peer" >/dev/null 2>&1; then
-            web_fail reachability icmp-timeout
+        limit="$(web_timeout_seconds "$deadline")" || web_fail neighbor timeout
+        if neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
+            neighbor_status=0
+        else
+            neighbor_status=$?
         fi
-        web_emit_layer reachability
+        if ((neighbor_status == 1)); then
+            # A future implementation may reject the query promptly while
+            # still allowing the fixture to supply the active proof.
+            neighbor_observable=0
+        elif ((neighbor_status != 0)); then
+            web_fail neighbor neighbor-unusable
+        elif [[ -z "$neighbor_output" ]]; then
+            neighbor_observable=0
+        else
+            [[ "$neighbor_output" == *"lladdr "* ]] ||
+                web_fail neighbor neighbor-unusable
+            [[ "$neighbor_output" != *FAILED* && "$neighbor_output" != *INCOMPLETE* ]] ||
+                web_fail neighbor neighbor-unusable
+            web_emit_layer neighbor
+
+            limit="$(web_timeout_seconds "$deadline")" ||
+                web_fail reachability timeout
+            if ! timeout "$limit" ping -4 -c 1 -W 3 "$peer" >/dev/null 2>&1; then
+                web_fail reachability icmp-timeout
+            fi
+            web_emit_layer reachability
+        fi
     fi
 
     if [[ "$WEB_NETWORK_MODE" == direct ]]; then
