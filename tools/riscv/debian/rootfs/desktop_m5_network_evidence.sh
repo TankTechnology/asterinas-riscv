@@ -279,7 +279,9 @@ web_network_evidence() {
     [[ "$signature" == 89504e470d0a1a0a ]] || web_fail baidu-asset content
     web_emit_layer baidu-asset
 
-    for ((attempt = 1; attempt <= FIXTURE_REQUESTS; attempt++)); do
+    # The HTTP layer already verified the first deterministic fixture response.
+    # Download 19 more so the complete mode contract records exactly 20.
+    for ((attempt = 1; attempt < FIXTURE_REQUESTS; attempt++)); do
         temporary_repeat="$WEB_TEMPORARY_DIRECTORY/repeat-$attempt"
         limit="$(web_timeout_seconds "$deadline")" || web_fail repeat timeout
         if timeout "$limit" curl --fail --ipv4 --silent --show-error \

@@ -1075,6 +1075,10 @@ esac
             ],
         )
         commands = command_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            sum(FIXTURE_PATH in line for line in commands),
+            20,
+        )
         external = [
             line
             for line in commands
