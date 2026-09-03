@@ -13,3 +13,7 @@ set -e
 ./mmap/mmap_readahead
 ./mmap/mmap_shared_filebacked
 ./mmap/mmap_vmrss
+
+if [ "$(uname -m)" = "riscv64" ]; then
+    ./riscv_icache/cross_hart
+fi
