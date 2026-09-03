@@ -114,12 +114,21 @@ pub fn flush_icache(local_only: bool) {
     unsafe { core::arch::asm!("fence.i", options(nostack)) };
 
     if !local_only {
-        // An all-ones mask with base 0 covers every hart with hart ID smaller
-        // than the machine word width; QEMU virt and SiFive platforms number
-        // their harts from 0, so this covers all of them.
-        let ret = sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(!0, 0));
-        if ret.error != 0 {
-            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+        // Before SMP initialization, no other hart runs kernel or userspace
+        // code, so the local `fence.i` above is sufficient.
+        if let Some(hw_cpu_ids) = crate::smp::hw_cpu_id_mapping() {
+            // The writing hart must order earlier stores before requesting
+            // remote `fence.i` execution. This follows the RISC-V Zifencei
+            // contract and Linux's RISC-V cache-flush sequence.
+            //
+            // References:
+            // - <https://docs.riscv.org/reference/isa/unpriv/zifencei.html>
+            // - <https://github.com/torvalds/linux/blob/master/arch/riscv/mm/cacheflush.c>
+            //
+            // SAFETY: A `fence` only constrains the calling hart's memory and
+            // device-I/O ordering.
+            unsafe { core::arch::asm!("fence w, o", options(nostack)) };
+            irq::remote_fence_i_all_online_harts(hw_cpu_ids);
         }
     }
 }
