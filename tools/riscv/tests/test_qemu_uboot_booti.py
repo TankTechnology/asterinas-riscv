@@ -7312,18 +7312,26 @@ class PreparationContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         for tool in (
+            "bc",
+            "bison",
             "dtc",
             "fdtget",
             "fdtput",
+            "flex",
             "git",
             "make",
             "mkfs.ext4",
             "qemu-system-riscv64",
             "riscv64-linux-gnu-gcc",
+            "swig",
         ):
             self.assertIn(f"missing tool: {tool}", result.stderr)
         self.assertIn("missing Python module: setuptools", result.stderr)
         self.assertIn("missing Python development headers", result.stderr)
+        self.assertIn(
+            "missing OpenSSL development headers",
+            PREPARE_SCRIPT.read_text(),
+        )
 
     def test_preparation_delegates_profile_matched_dtb_before_artifacts(self) -> None:
         script = PREPARE_SCRIPT.read_text()
