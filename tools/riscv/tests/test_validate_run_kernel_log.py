@@ -79,6 +79,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         runner = (
             REPOSITORY_ROOT / "test/initramfs/src/regression/process/run_test.sh"
         ).read_text()
+        top_level_runner = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_regression_test.sh"
+        ).read_text()
 
         self.assertIn("test_id: 'regression-debug-smp4'", workflow)
         self.assertIn("riscv_icache_require_smp4: '1'", workflow)
@@ -88,6 +92,15 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("cpu_count != 4", guest)
         self.assertIn("remote_index < cpu_count", guest)
         self.assertIn("RISCV_ICACHE_REQUIRE_SMP4=1", runner)
+        self.assertIn("formal SMP4 cross-hart I-cache regression", top_level_runner)
+        self.assertIn(
+            '"${SCRIPT_DIR}/process/riscv_flush_icache/riscv_flush_icache" --require-smp4',
+            top_level_runner,
+        )
+        self.assertLess(
+            top_level_runner.index("RISCV_ICACHE_REQUIRE_SMP4=1"),
+            top_level_runner.index("for dir in"),
+        )
 
 
 if __name__ == "__main__":
