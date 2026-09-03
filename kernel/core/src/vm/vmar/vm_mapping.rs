@@ -458,7 +458,10 @@ impl VmMapping {
             }
         }
 
-        if !perms.contains(page_fault_info.required_perms) {
+        if !perms
+            .effective_access_perms()
+            .contains(page_fault_info.required_perms)
+        {
             return_errno_with_message!(
                 Errno::EACCES,
                 "the mapping does not have the required permissions"
@@ -564,16 +567,13 @@ impl VmMapping {
                         }
                     };
 
-                    let vm_perms = {
-                        let mut perms = self.perms;
-                        if is_readonly {
-                            // COW pages are forced to be read-only.
-                            perms -= VmPerms::WRITE;
-                        }
-                        perms
-                    };
-
-                    let mut page_flags = PageFlags::from(vm_perms);
+                    let mut page_flags = PageFlags::from(self.perms);
+                    if is_readonly {
+                        // COW pages are forced to be read-only. Convert the
+                        // logical VMA permissions first so a write-only VMA
+                        // retains its architecture-implied read access.
+                        page_flags.remove(PageFlags::W);
+                    }
                     page_flags.record_access(access);
                     let map_prop = PageProperty::new_user(page_flags, CachePolicy::Writeback);
 
@@ -692,7 +692,7 @@ impl VmMapping {
                             // We regard all the surrounding pages as accessed, no matter
                             // if it is really so. Then the hardware won't bother to update
                             // the accessed bit of the page table on following accesses.
-                            let mut page_flags = PageFlags::from(vm_perms);
+                            let mut page_flags = page_flags;
                             page_flags.record_access(PageAccess::Read);
                             let page_prop =
                                 PageProperty::new_user(page_flags, CachePolicy::Writeback);
