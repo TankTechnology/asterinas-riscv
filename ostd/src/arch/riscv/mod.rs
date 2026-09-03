@@ -51,6 +51,8 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // performed.
     unsafe { irq::ipi::init_on_bsp() };
 
+    init_instruction_cache_coherence();
+
     // SAFETY: This function is called once and at most once at a proper timing
     // in the boot context of the BSP, with no timer-related operations having
     // been performed.
@@ -108,20 +110,52 @@ pub fn tsc_freq() -> u64 {
 /// flushed; otherwise all harts are flushed (via the SBI RFENCE extension).
 /// Note that flushing all harts is a safe superset of Linux's semantics,
 /// which only flush the harts the current address space has run on.
-pub fn flush_icache(local_only: bool) {
+///
+/// Returns an error if the firmware cannot complete a requested remote fence.
+pub fn flush_icache(local_only: bool) -> Result<(), crate::Error> {
     // SAFETY: Executing `fence.i` is always safe; it only synchronizes the
     // instruction stream with data memory on the current hart.
     unsafe { core::arch::asm!("fence.i", options(nostack)) };
 
     if !local_only {
-        // An all-ones mask with base 0 covers every hart with hart ID smaller
-        // than the machine word width; QEMU virt and SiFive platforms number
-        // their harts from 0, so this covers all of them.
-        let ret = sbi_rt::remote_fence_i(sbi_rt::HartMask::from_mask_base(!0, 0));
-        if ret.error != 0 {
-            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+        // Before SMP initialization, no other hart runs kernel or userspace
+        // code, so the local `fence.i` above is sufficient.
+        if let Some(hw_cpu_ids) = crate::smp::hw_cpu_id_mapping() {
+            // The writing hart must order earlier stores before requesting
+            // remote `fence.i` execution. This follows the RISC-V Zifencei
+            // contract and Linux's RISC-V cache-flush sequence.
+            //
+            // References:
+            // - <https://docs.riscv.org/reference/isa/unpriv/zifencei.html>
+            // - <https://github.com/torvalds/linux/blob/master/arch/riscv/mm/cacheflush.c>
+            //
+            // SAFETY: A `fence` only constrains the calling hart's memory and
+            // device-I/O ordering.
+            unsafe { core::arch::asm!("fence w, o", options(nostack)) };
+            irq::remote_fence_i_all_online_harts(hw_cpu_ids)?;
         }
     }
+
+    Ok(())
+}
+
+fn init_instruction_cache_coherence() {
+    let num_cpus = crate::cpu::num_cpus();
+    if num_cpus == 1 {
+        crate::info!("RISC-V icache coherence: harts=1, mode=local-fence-i");
+        return;
+    }
+
+    let rfence_available = sbi_rt::probe_extension(sbi_rt::Fence).is_available();
+    crate::info!(
+        "RISC-V icache coherence: harts={}, sbi_rfence={}",
+        num_cpus,
+        rfence_available
+    );
+    assert!(
+        rfence_available,
+        "SBI RFENCE is required for instruction-cache coherence on SMP RISC-V systems"
+    );
 }
 
 /// Reads the current value of the processor's time-stamp counter (TSC).
