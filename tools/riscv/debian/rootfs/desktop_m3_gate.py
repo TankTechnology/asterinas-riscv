@@ -44,12 +44,53 @@ DESKTOP_M3_MILESTONES = (
 MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 _BOCHS_BAR_RE = re.compile(rb"^\s*0\s+(0x[0-9a-fA-F]+)\s+", re.MULTILINE)
+_UBOOT_COMMAND_SAFE_LIMIT = 700
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"(ee) no screens found", "Xorg has no screens"),
     (b"fatal server error", "Xorg fatal server error"),
     (b"segmentation fault", "userspace segmentation fault"),
 )
+
+
+def _bounded_uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
+    """Encode bootargs without overflowing U-Boot's console line buffer."""
+
+    bootargs = " ".join(bootargs.split())
+    if not bootargs:
+        raise GateFailure("bootargs must not be empty")
+    direct = f'setenv bootargs "{bootargs}"'
+    if len(direct.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT:
+        return (direct,)
+
+    chunks: list[str] = []
+    current: list[str] = []
+    for token in bootargs.split():
+        candidate = " ".join((*current, token))
+        assignment = f'setenv ast_bootargs_{len(chunks)} "{candidate}"'
+        if len(assignment.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT:
+            current.append(token)
+            continue
+        if not current:
+            raise GateFailure("one bootarg exceeds U-Boot command safety limit")
+        chunks.append(" ".join(current))
+        current = [token]
+        assignment = f'setenv ast_bootargs_{len(chunks)} "{token}"'
+        if len(assignment.encode()) > _UBOOT_COMMAND_SAFE_LIMIT:
+            raise GateFailure("one bootarg exceeds U-Boot command safety limit")
+    chunks.append(" ".join(current))
+
+    assignments = tuple(
+        f'setenv ast_bootargs_{index} "{chunk}"'
+        for index, chunk in enumerate(chunks)
+    )
+    expansion = " ".join(
+        f"${{ast_bootargs_{index}}}" for index in range(len(chunks))
+    )
+    join = f'setenv bootargs "{expansion}"'
+    if len(join.encode()) > _UBOOT_COMMAND_SAFE_LIMIT:
+        raise GateFailure("bootarg expansion exceeds U-Boot command safety limit")
+    return (*assignments, join)
 
 
 def desktop_m3_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -275,7 +316,7 @@ class DesktopM3Operations(ConcreteOperations):
             f'fdt set /{node} status "okay"',
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{self.BOOTARGS}"',
+            *_bounded_uboot_bootargs_commands(self.BOOTARGS),
         )
 
     def _completion_is_failure(

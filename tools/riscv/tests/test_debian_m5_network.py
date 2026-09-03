@@ -15,6 +15,7 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
     DESKTOP_M4_MILESTONES,
 )
+from tools.riscv.debian.rootfs.desktop_m3_gate import _UBOOT_COMMAND_SAFE_LIMIT
 from tools.riscv.debian.rootfs import desktop_m5_network_gate as network_gate
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_NETWORK_MILESTONES,
@@ -1839,6 +1840,39 @@ printf '200\t10.0.2.15'
             )[0]
             self.assertIn("test_riscv_debian_desktop_m5_qemu_gate", block)
             self.assertIn("DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network", block)
+
+    def test_qemu_web_bootargs_are_split_below_uboot_console_limit(self) -> None:
+        operations = object.__new__(NetworkM5QemuOperations)
+        operations.BOOTARGS = qemu_web_network_bootargs(
+            network_gate.NetworkMode.PROXY
+        )
+        commands = operations._boot_commands(0x40000000)
+        bootarg_commands = tuple(
+            command
+            for command in commands
+            if command.startswith("setenv ast_bootargs_")
+            or command.startswith("setenv bootargs ")
+        )
+
+        self.assertGreaterEqual(len(bootarg_commands), 3)
+        self.assertTrue(
+            all(
+                len(command.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT
+                for command in commands
+            )
+        )
+        chunks = tuple(
+            command.split('"', 2)[1]
+            for command in bootarg_commands[:-1]
+        )
+        self.assertEqual(" ".join(chunks), operations.BOOTARGS)
+        expansion = " ".join(
+            f"${{ast_bootargs_{index}}}" for index in range(len(chunks))
+        )
+        self.assertEqual(
+            bootarg_commands[-1],
+            f'setenv bootargs "{expansion}"',
+        )
 
     def test_qemu_web_network_negative_cases(self) -> None:
         cases = (
