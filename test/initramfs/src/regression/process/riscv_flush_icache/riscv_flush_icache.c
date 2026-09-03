@@ -50,6 +50,32 @@ static int pin_current_thread(int cpu)
 	return sched_setaffinity(0, sizeof(mask), &mask);
 }
 
+static int wait_for_cpu(int cpu)
+{
+	struct timespec start;
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &start) < 0)
+		return -1;
+
+	for (;;) {
+		int current_cpu = sched_getcpu();
+
+		if (current_cpu < 0)
+			return -1;
+		if (current_cpu == cpu)
+			return 0;
+		if (sched_yield() < 0)
+			return -1;
+		if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+			return -1;
+		if (now.tv_sec - start.tv_sec >= WAIT_TIMEOUT_SECONDS) {
+			errno = ETIMEDOUT;
+			return -1;
+		}
+	}
+}
+
 static int wait_for_generation(const atomic_uint *generation,
 			       unsigned int expected,
 			       const atomic_bool *stop)
@@ -100,8 +126,8 @@ static void *execute_on_remote_hart(void *argument)
 
 	if (pin_current_thread(context->cpu) < 0)
 		atomic_store(&context->error, errno);
-	else if (sched_getcpu() != context->cpu)
-		atomic_store(&context->error, EXDEV);
+	else if (wait_for_cpu(context->cpu) < 0)
+		atomic_store(&context->error, errno);
 	else if (execute_code(context->code) != context->initial_result)
 		atomic_store(&context->error, EILSEQ);
 
@@ -304,8 +330,7 @@ int main(int argc, char **argv)
 		perror("pin local-hart thread");
 		return EXIT_FAILURE;
 	}
-	if (sched_getcpu() != cpus[0]) {
-		errno = EXDEV;
+	if (wait_for_cpu(cpus[0]) < 0) {
 		perror("verify local-hart placement");
 		return EXIT_FAILURE;
 	}
