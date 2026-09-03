@@ -30,6 +30,7 @@ STAGE="${REPO_ROOT}/target/ltp/stage"
 BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
 SCHED_VARIANT_PATCH="${SRC_DIR}/sched_setscheduler04-variant-getters.patch"
+CLONE_RAW_PATCH="${SRC_DIR}/cloner-riscv-raw-clone.patch"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -108,16 +109,20 @@ if [[ ! -x "${BUSYBOX}" ]]; then
 fi
 
 if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
-    # Musl's legacy scheduler wrappers are ENOSYS stubs. Keep LTP's syscall
-    # variant on raw syscalls for both the operation and its verification.
-    if git -C "${LTP_SRC}" apply --unidiff-zero --check "${SCHED_VARIANT_PATCH}"; then
-        git -C "${LTP_SRC}" apply --unidiff-zero "${SCHED_VARIANT_PATCH}"
-    elif git -C "${LTP_SRC}" apply --unidiff-zero --reverse --check "${SCHED_VARIANT_PATCH}"; then
-        echo "LTP scheduler variant patch already applied"
-    else
-        echo "LTP scheduler variant patch does not apply cleanly" >&2
-        exit 2
-    fi
+    # Musl's legacy scheduler wrappers are ENOSYS stubs, and its public
+    # clone() rejects thread-management flags before entering the kernel.
+    # Keep these LTP cases on raw syscalls so they test Asterinas itself.
+    for patch in "${SCHED_VARIANT_PATCH}" "${CLONE_RAW_PATCH}"; do
+        patch_name="$(basename "${patch}")"
+        if git -C "${LTP_SRC}" apply --unidiff-zero --check "${patch}"; then
+            git -C "${LTP_SRC}" apply --unidiff-zero "${patch}"
+        elif git -C "${LTP_SRC}" apply --unidiff-zero --reverse --check "${patch}"; then
+            echo "LTP patch already applied: ${patch_name}"
+        else
+            echo "LTP patch does not apply cleanly: ${patch_name}" >&2
+            exit 2
+        fi
+    done
 
     echo "=== configure LTP for riscv64 (musl, dynamic, cross) ==="
     cd "${LTP_SRC}"

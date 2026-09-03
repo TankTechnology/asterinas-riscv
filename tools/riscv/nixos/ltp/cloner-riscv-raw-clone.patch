@@ -1,0 +1,62 @@
+diff --git a/lib/cloner.c b/lib/cloner.c
+index 00cbb89..545dd1a 100644
+--- a/lib/cloner.c
++++ b/lib/cloner.c
+@@ -50,6 +50,42 @@ extern int __clone2(int (*fn) (void *arg), void *child_stack_base,
+                     pid_t *parent_tid, void *tls, pid_t *child_tid);
+ #endif
+ 
++#if defined(__riscv)
++/*
++ * musl 1.2.6 rejects CLONE_THREAD, CLONE_SETTLS, and
++ * CLONE_CHILD_CLEARTID in its public clone() wrapper. LTP needs the raw
++ * operation to verify those kernel interfaces, so provide the same small
++ * child trampoline as musl's internal RISC-V __clone implementation.
++ */
++extern int ltp_riscv_raw_clone(int (*fn)(void *), void *stack,
++                              unsigned long flags, void *arg, pid_t *ptid,
++                              void *tls, pid_t *ctid);
++
++__asm__(
++".text\n"
++".global ltp_riscv_raw_clone\n"
++".type ltp_riscv_raw_clone, %function\n"
++"ltp_riscv_raw_clone:\n"
++"andi a1, a1, -16\n"
++"addi a1, a1, -16\n"
++"sd a0, 0(a1)\n"
++"sd a3, 8(a1)\n"
++"mv a0, a2\n"
++"mv a2, a4\n"
++"mv a3, a5\n"
++"mv a4, a6\n"
++"li a7, 220\n"
++"ecall\n"
++"bnez a0, 1f\n"
++"ld t0, 0(sp)\n"
++"ld a0, 8(sp)\n"
++"jalr t0\n"
++"li a7, 93\n"
++"ecall\n"
++"1: ret\n"
++".size ltp_riscv_raw_clone, .-ltp_riscv_raw_clone\n");
++#endif
++
+ /*
+  * ltp_clone: wrapper for clone to hide the architecture dependencies.
+  *   1. hppa takes bottom of stack and no stacksize (stack grows up)
+@@ -64,6 +100,14 @@ ltp_clone_(unsigned long flags, int (*fn)(void *arg), void *arg,
+ 
+ #if defined(__ia64__)
+ 	ret = __clone2(fn, stack, stack_size, flags, arg, ptid, tls, ctid);
++#elif defined(__riscv)
++	ret = ltp_riscv_raw_clone(fn, stack + stack_size, flags, arg,
++	                          ptid, tls, ctid);
++	if (ret < 0) {
++		errno = -ret;
++		ret = -1;
++	}
++	return ret;
+ #else
+ # if defined(__hppa__) || defined(__metag__)
+ 	/*
