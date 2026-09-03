@@ -131,6 +131,7 @@ web_network_evidence() {
     local local_address
     local neighbor_observable=1
     local neighbor_output
+    local neighbor_status=0
     local peer
     local signature
     local temporary_asset
@@ -192,13 +193,20 @@ web_network_evidence() {
     web_emit_layer address
 
     limit="$(web_timeout_seconds "$deadline")" || web_fail neighbor timeout
-    if ! neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
-        web_fail neighbor neighbor-unusable
+    if neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
+        neighbor_status=0
+    else
+        neighbor_status=$?
     fi
-    if [[ -z "$neighbor_output" ]]; then
+    if ((neighbor_status == 1)); then
         # Asterinas does not yet implement RTM_GETNEIGH.  In that case the
-        # fixed-IP owned fixture below is the authoritative active proof that
-        # ARP resolution and peer reachability both worked.
+        # request is rejected with EOPNOTSUPP (reported by ip as status 1).
+        # The fixed-IP owned fixture below is the authoritative active proof
+        # that ARP resolution and peer reachability both worked.
+        neighbor_observable=0
+    elif ((neighbor_status != 0)); then
+        web_fail neighbor neighbor-unusable
+    elif [[ -z "$neighbor_output" ]]; then
         neighbor_observable=0
     else
         [[ "$neighbor_output" == *"lladdr "* ]] ||
