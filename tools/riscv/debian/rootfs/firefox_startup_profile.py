@@ -25,7 +25,12 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_repo_root))
 
 from tools.riscv.debian.rootfs.browser_web_qemu_gate import BrowserWebQemuOperations
-from tools.riscv.debian.rootfs.desktop_m3_gate import _BOCHS_BAR_RE
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_m3_gate import (
+    _BOCHS_BAR_RE,
+    _UBOOT_COMMAND_SAFE_LIMIT,
+    _bounded_uboot_bootargs_commands,
+)
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 
@@ -37,39 +42,20 @@ _MARKERS = (
     ("marionette", b"BOOT_MARIONETTE_PORT_READY"),
 )
 
-# U-Boot's console command buffer is smaller than the bootargs accepted by the
-# kernel.  Keep each command comfortably below the observed 1 KiB boundary;
-# long diagnostic combinations are written through two environment variables.
-_UBOOT_COMMAND_SAFE_LIMIT = 700
-
-
 def _profile_boot_commands(operations: BrowserWebQemuOperations,
                            framebuffer_address: int) -> tuple[str, ...]:
     """Return framebuffer boot commands without overflowing U-Boot input."""
 
     commands = list(operations._boot_commands(framebuffer_address))
-    if not commands or len(commands[-1]) <= _UBOOT_COMMAND_SAFE_LIMIT:
+    if not commands or all(
+        len(command.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT
+        for command in commands
+    ):
         return tuple(commands)
-    bootargs = operations.BOOTARGS
-    chunks: list[str] = []
-    offset = 0
-    while offset < len(bootargs):
-        # Leave room for the setenv syntax and a closing quote.  The index is
-        # deliberately short so this remains well below U-Boot's parser limit.
-        prefix_len = len(f'setenv ast_bootargs_{len(chunks)} ""')
-        payload_len = _UBOOT_COMMAND_SAFE_LIMIT - prefix_len
-        if payload_len <= 0:
-            raise GateFailure("invalid U-Boot command safety limit")
-        chunks.append(bootargs[offset : offset + payload_len])
-        offset += payload_len
-    assignments = [
-        f'setenv ast_bootargs_{index} "{chunk}"'
-        for index, chunk in enumerate(chunks)
-    ]
-    expansion = "".join(f"${{ast_bootargs_{index}}}" for index in range(len(chunks)))
-    commands[-1:] = [*assignments, f'setenv bootargs "{expansion}"']
-    if any(len(command) > _UBOOT_COMMAND_SAFE_LIMIT for command in commands):
-        raise GateFailure("diagnostic bootargs still exceed U-Boot command buffer")
+    direct = f'setenv bootargs "{operations.BOOTARGS}"'
+    if commands[-1] != direct:
+        raise GateFailure("unexpected unbounded U-Boot command")
+    commands[-1:] = _bounded_uboot_bootargs_commands(operations.BOOTARGS)
     return tuple(commands)
 
 
@@ -180,11 +166,11 @@ def run(
         diagnostic_args += " asterinas.read_detail_profile=1"
     if futex_diagnostic:
         diagnostic_args += " asterinas.futex_profile=1"
-    BrowserWebQemuOperations.BOOTARGS = BrowserWebQemuOperations.BOOTARGS.replace(
+    operations = BrowserWebQemuOperations(config, network_mode=NetworkMode.DIRECT)
+    operations.BOOTARGS = operations.BOOTARGS.replace(
         " -- --root-init=systemd",
         f" asterinas.vm_profile=1{diagnostic_args} -- --root-init=systemd",
     )
-    operations = BrowserWebQemuOperations(config)
     operations.__enter__()
     session = None
     started = time.monotonic()

@@ -13,10 +13,10 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=device-access-start' \
         >>/run/browser-web-device-stage.log
 fi
-# Asterinas creates the framebuffer after systemd has begun activating the
-# graphical target.  The display is the hard prerequisite for Xorg; evdev is
-# optional for Marionette-driven browser gates and must not keep the display
-# server in an unbounded restart loop when the kernel exposes no input nodes.
+# Asterinas creates the framebuffer and evdev nodes after systemd has begun
+# activating the graphical target.  Marionette-driven browser gates do not
+# need local input, but an interactive desktop must not start Xorg before both
+# configured evdev nodes exist: AutoAddDevices is disabled in xorg.conf.
 readonly device_deadline=$((SECONDS + 120))
 while [[ ! -c /dev/fb0 ]]; do
     if ((SECONDS >= device_deadline)); then
@@ -29,6 +29,17 @@ while [[ ! -c /dev/fb0 ]]; do
     fi
     /usr/bin/sleep 1
 done
+if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then
+    while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]; do
+        if ((SECONDS >= device_deadline)); then
+            printf '%s\n' \
+                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+                >&2
+            exit 1
+        fi
+        /usr/bin/sleep 1
+    done
+fi
 input_devices=(/dev/input/event*)
 
 if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then

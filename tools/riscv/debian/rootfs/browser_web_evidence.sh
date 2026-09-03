@@ -24,6 +24,15 @@ readonly HOT_MAPS_DIAGNOSTIC_MARKER=/run/asterinas-browser-web-hot-maps-captured
 readonly HOT_MAP_MAX_LINES=128
 readonly NETWORK_ERROR_LOG=/run/asterinas-browser-web-network-error
 readonly USER_ID=1000
+readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"
+readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
+readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
+readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+readonly FIXTURE_URL="${ASTERINAS_DESKTOP_FIXTURE_URL:-}"
+readonly XORG_LOG=/home/asterinas/Xorg.0.log
+readonly SCREENSHOT=/home/asterinas/browser-web-evidence/baidu-search.png
+readonly STABILITY_SECONDS=60
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_WEB_FAIL reason=$1"; exit 1; }
@@ -46,8 +55,35 @@ marker() {
     emit "$line"
 }
 
+is_canonical_ipv4() {
+    local address="$1" octet
+    local -a octets
+    [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS=. read -r -a octets <<<"$address"
+    for octet in "${octets[@]}"; do
+        ((10#$octet <= 255)) || return 1
+        [[ "$octet" == 0 || "$octet" != 0* ]] || return 1
+    done
+}
+
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-timeout
 [[ "$FORMAL_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-formal-timeout
+case "$NETWORK_MODE" in
+    direct)
+        [[ -z "$PROXY_URL" && -z "$PROXY_HOST" && -z "$PROXY_PORT" ]] ||
+            fail network-mode-proxy-present
+        is_canonical_ipv4 "$NETWORK_RESOLVER" || fail network-resolver-invalid
+        ;;
+    proxy)
+        [[ -z "$NETWORK_RESOLVER" ]] || fail network-mode-resolver-present
+        is_canonical_ipv4 "$PROXY_HOST" || fail network-proxy-host-invalid
+        [[ "$PROXY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] &&
+            ((PROXY_PORT <= 65535)) || fail network-proxy-port-invalid
+        [[ "$PROXY_URL" == "http://$PROXY_HOST:$PROXY_PORT" ]] ||
+            fail network-mode-proxy-invalid
+        ;;
+    *) fail network-mode-invalid ;;
+esac
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 
 validate_zero_caps() {
@@ -59,7 +95,7 @@ validate_zero_caps() {
 }
 
 validate_parent_security() {
-    local pid="$1" cmdline environment uid target_url
+    local pid="$1" cmdline environment uid target_url child_network_mode
     validate_zero_caps "$pid" parent
     uid="$(sed -n 's/^Uid:[[:space:]]*\([0-9]*\).*/\1/p' "$PROC_ROOT/$pid/status")"
     [[ "$uid" == "$USER_ID" ]] || fail security-parent-uid
@@ -74,6 +110,9 @@ validate_parent_security() {
     target_url="$(printf '%s\n' "$environment" | sed -n 's/^ASTERINAS_FIREFOX_WEB_TARGET_URL=//p')"
     [[ "$target_url" == "https://www.baidu.com/" ]] ||
         fail security-parent-target-url
+    child_network_mode="$(printf '%s\n' "$environment" | sed -n 's/^ASTERINAS_FIREFOX_WEB_NETWORK_MODE=//p')"
+    [[ "$child_network_mode" == "$NETWORK_MODE" ]] ||
+        fail security-parent-network-mode
     if grep -Eq '^(MOZ_DISABLE_(CONTENT|GMP|RDD|SOCKET)_SANDBOX|MOZ_FORCE_DISABLE_E10S)=([^0]|0*[1-9])' <<<"$environment"; then
         fail security-parent-disable-environment
     fi
@@ -82,6 +121,8 @@ validate_parent_security() {
     [[ ! -s "$PROFILE/cert_override.txt" ]] || fail certificate-override-present
     printf 'BROWSER_WEB_SECURITY parent_pid=%s uid=1000 caps=zero nnp=1 sandbox_disable=absent\n' \
         "$pid" >>"$SECURITY_LOG"
+    printf 'BROWSER_WEB_NETWORK_ENV parent_pid=%s mode=%s\n' \
+        "$pid" "$NETWORK_MODE" >>"$SECURITY_LOG"
 }
 
 validate_child_security() {
@@ -130,11 +171,80 @@ find_firefox_process() {
     printf '%s\n' "$pid"
 }
 
+validate_firefox_network_profile() {
+    local profile_file="$PROFILE/user.js"
+    [[ -f "$profile_file" && ! -L "$profile_file" ]] ||
+        fail firefox-network-profile-unsafe
+    if [[ "$NETWORK_MODE" == proxy ]]; then
+        grep -Fxq 'user_pref("network.proxy.type", 1);' "$profile_file" ||
+            fail firefox-proxy-type
+        grep -Fxq "user_pref(\"network.proxy.http\", \"$PROXY_HOST\");" "$profile_file" ||
+            fail firefox-proxy-http
+        grep -Fxq "user_pref(\"network.proxy.http_port\", $PROXY_PORT);" "$profile_file" ||
+            fail firefox-proxy-http-port
+        grep -Fxq "user_pref(\"network.proxy.ssl\", \"$PROXY_HOST\");" "$profile_file" ||
+            fail firefox-proxy-ssl
+        grep -Fxq "user_pref(\"network.proxy.ssl_port\", $PROXY_PORT);" "$profile_file" ||
+            fail firefox-proxy-ssl-port
+        grep -Fxq "user_pref(\"network.proxy.no_proxies_on\", \"localhost, 127.0.0.1, $PROXY_HOST\");" "$profile_file" ||
+            fail firefox-proxy-no-proxies
+        [[ "$(grep -c 'network\.proxy\.' "$profile_file")" == 6 ]] ||
+            fail firefox-proxy-profile-extra
+    else
+        grep -Fxq 'user_pref("network.proxy.type", 0);' "$profile_file" ||
+            fail firefox-direct-proxy-type
+        [[ "$(grep -c 'network\.proxy\.' "$profile_file")" == 1 ]] ||
+            fail firefox-direct-proxy-leak
+    fi
+}
+
+validate_desktop_input() {
+    [[ -c /dev/input/event0 ]] || fail keyboard-event-absent
+    [[ -c /dev/input/event1 ]] || fail pointer-event-absent
+    grep -q 'Adding extended input device.*Asterinas keyboard' "$XORG_LOG" ||
+        fail keyboard-xorg-absent
+    grep -q 'Adding extended input device.*Asterinas pointer' "$XORG_LOG" ||
+        fail pointer-xorg-absent
+}
+
+observe_firefox_stability() {
+    local observed_pid end=$((SECONDS + STABILITY_SECONDS))
+    while ((SECONDS < end)); do
+        kill -0 "$browser_pid" 2>/dev/null || fail firefox-exited-during-stability
+        observed_pid="$(find_firefox_process || true)"
+        [[ "$observed_pid" == "$browser_pid" ]] ||
+            fail firefox-pid-changed-during-stability
+        /usr/bin/timeout 6 /usr/bin/sleep 5 ||
+            fail firefox-stability-sleep
+    done
+}
+
+upload_baidu_screenshot() {
+    local capture_url signature status
+    [[ -f "$SCREENSHOT" && ! -L "$SCREENSHOT" ]] ||
+        fail baidu-screenshot-unsafe
+    signature="$(head -c 8 -- "$SCREENSHOT" | od -An -v -tx1 | tr -d '[:space:]')"
+    [[ "$signature" == 89504e470d0a1a0a ]] || fail baidu-screenshot-png
+    [[ "$FIXTURE_URL" == */asterinas-network-probe.bin ]] ||
+        fail screenshot-fixture-url
+    capture_url="${FIXTURE_URL%/asterinas-network-probe.bin}/browser-quality/capture.png"
+    status="$(/usr/bin/timeout 30 curl --fail --silent --show-error \
+        --noproxy '*' --max-time 25 --output /dev/null --write-out '%{http_code}' \
+        --data-binary "@$SCREENSHOT" "$capture_url")" ||
+        fail baidu-screenshot-upload
+    [[ "$status" == 201 ]] || fail baidu-screenshot-upload-status
+}
+
 validate_dns_and_tls() {
     local hosts name ip line status effective verify lookup connect tls first_byte
     local command_status stderr_hex
-    grep -Eq '^nameserver[[:space:]]+10\.0\.2\.3([[:space:]]|$)' /etc/resolv.conf ||
-        fail dns-not-slirp-10.0.2.3
+    local -a curl_network=()
+    if [[ "$NETWORK_MODE" == direct ]]; then
+        grep -Fqx "nameserver $NETWORK_RESOLVER" /etc/resolv.conf ||
+            fail dns-resolver-mismatch
+    else
+        curl_network=(--proxy "$PROXY_URL")
+    fi
     # Asterinas may expose additional virtual links (for example a host-side
     # helper interface).  The security-relevant contract is that at least one
     # non-loopback link exists and that the verified address/route below use
@@ -158,6 +268,12 @@ validate_dns_and_tls() {
     fi
     for name in www.baidu.com www.bilibili.com; do
         emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=start"
+        if [[ "$NETWORK_MODE" == proxy ]]; then
+            printf 'DNS_DELEGATED mode=proxy host=%s proxy=%s\n' \
+                "$name" "$PROXY_URL" >>"$CURL_LOG"
+            emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=done delegation=proxy"
+            continue
+        fi
         if hosts="$(/usr/bin/timeout 30 getent ahostsv4 "$name")"; then
             :
         else
@@ -176,6 +292,7 @@ validate_dns_and_tls() {
         emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=https host=${name#https://} state=start"
         if line="$(/usr/bin/timeout 135 curl --proto '=https' --tlsv1.2 --fail --location --silent \
             --show-error --connect-timeout 20 --max-time 120 --output /dev/null \
+            "${curl_network[@]}" \
             --write-out '%{http_code} %{url_effective} %{ssl_verify_result} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer}' \
             "$name" 2>"$NETWORK_ERROR_LOG")"; then
             :
@@ -276,11 +393,16 @@ marker BOOT_MARIONETTE_PORT_READY
 # can transiently stall a systemctl D-Bus round trip while Firefox is CPU-bound;
 # the strict NRestarts=0 service check still runs after content evidence exists.
 validate_parent_security "$browser_pid"
+validate_firefox_network_profile
 # Resolve network/DNS/TLS only after Firefox is demonstrably alive.  This
 # preserves the strict online checks while ensuring a slow curl cannot hide a
 # Firefox startup failure or suppress its bounded diagnostics.
 validate_dns_and_tls
-emit "DEBIAN_BROWSER_WEB_NETWORK nic=virtio-slirp dns=10.0.2.3 https=curl-verified"
+if [[ "$NETWORK_MODE" == proxy ]]; then
+    emit "DEBIAN_BROWSER_WEB_NETWORK mode=proxy nic=virtio-slirp dns=proxy-delegated https=curl-verified"
+else
+    emit "DEBIAN_BROWSER_WEB_NETWORK mode=direct nic=virtio-slirp dns=$NETWORK_RESOLVER https=curl-verified"
+fi
 remaining=$((deadline - SECONDS))
 ((remaining > 0)) || fail firefox-timeout
 ((remaining <= FORMAL_TIMEOUT_SECONDS)) || remaining="$FORMAL_TIMEOUT_SECONDS"
@@ -434,10 +556,14 @@ if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
     if grep -Fq 'challenge host observed' "$GATE_STDERR"; then
         emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
     fi
-    # A fail-closed external challenge must not discard the already completed
-    # Baidu-home and Bilibili platform evidence when QEMU terminates the guest.
+    # Publish the terminal failure before sync.  Asterinas can leave sync in an
+    # uninterruptible wait after a browser failure; the host must still be able
+    # to classify the result and reclaim QEMU without waiting for the global
+    # boot timeout.  The subsequent sync is best-effort preservation of partial
+    # page evidence and cannot weaken the serial failure verdict.
+    emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"
     /usr/bin/timeout 20 /usr/bin/sync || true
-    fail browser-content
+    exit 1
 fi
 stop_gate_sampler
 cat "$GATE_STDERR" >>"$TIMELINE_LOG"
@@ -447,6 +573,9 @@ cat "$GATE_STDERR" >>"$TIMELINE_LOG"
 if [[ "$content" == *" baidu_outcome=external-captcha" ]]; then
     emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 fi
+[[ "$content" == *" baidu_outcome=pass "* ]] || fail baidu-search-not-pass
+validate_desktop_input
+observe_firefox_stability
 systemctl_bounded is-active --quiet asterinas-browser-web.service || fail firefox-not-active-after-gate
 [[ "$(systemctl_bounded show --property MainPID --value asterinas-browser-web.service 2>/dev/null)" == "$browser_pid" ]] ||
     fail firefox-pid-changed-during-gate
@@ -456,6 +585,7 @@ validate_firefox_logs
 printf 'BROWSER_WEB_SECURITY service_pid=%s nrestarts=0 stable=1 active=1\n' \
     "$browser_pid" >>"$SECURITY_LOG"
 validate_child_security "$browser_pid"
+upload_baidu_screenshot
 emit "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited"
 case "$CONTENT_SECCOMP_MODE" in
     0)
@@ -473,4 +603,4 @@ esac
 emit "$content"
 emit "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent"
 /usr/bin/timeout 20 /usr/bin/sync || fail evidence-sync
-emit "DEBIAN_BROWSER_WEB_READY user=asterinas display=:0"
+emit "DEBIAN_FIREFOX_BAIDU_READY mode=$NETWORK_MODE home=pass logo=pass search=pass input=pass stable=pass screenshot=baidu-search.png"

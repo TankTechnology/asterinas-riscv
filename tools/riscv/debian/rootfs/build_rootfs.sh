@@ -1142,6 +1142,13 @@ finalize_browser_startup_caches() {
         run_chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
+    # Under qemu-user, systemd's O_TMPFILE publication fallback needs /proc to
+    # link the anonymous file.  This build intentionally leaves host /proc out
+    # of the chroot, so run the target binary outside the chroot and give it an
+    # explicit staged root.  The database format is still owned by the target
+    # systemd, while the host's /proc makes publication atomic.
+    qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
+        --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     # Keep the target-side diagnostic visible without rewriting Debian's
     # usr-is-merged cache aliases.  The package postinst has already created
@@ -1269,6 +1276,12 @@ $desktop_ordering
 [Service]
 Type=oneshot
 $(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
+# Asterinas' iproute2 netlink path is known to complete on the board, but a
+# broken userspace probe must never hold graphical.target forever.  Bound the
+# unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
+# changes the process/signal path and has regressed on Asterinas before.
+TimeoutStartSec=180s
+TimeoutStopSec=5s
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
 RemainAfterExit=yes
 
@@ -1768,6 +1781,14 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0644 -- \
+            "$script_directory/desktop_m4_core_evidence.service" \
+            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service"
+        ln -s -- \
+            ../asterinas-desktop-core-evidence.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+    fi
     if [[ "$browser_mode" == offline ]]; then
         ln -s -- \
             ../$service_name-evidence.service \
@@ -1920,6 +1941,8 @@ write_rootfs_manifest() {
     local debootstrap_version
     local mke2fs_version
     local qemu_version
+    local browser_web_runtime_version=""
+    local -a browser_web_tool_version=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1927,6 +1950,13 @@ write_rootfs_manifest() {
     debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
     mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
     qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
+
+    if [[ "$PROFILE" == browser-web ]]; then
+        browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
+        browser_web_tool_version=(
+            --tool-version "browser-web-runtime=$browser_web_runtime_version"
+        )
+    fi
 
     local -a signed_source_arguments=()
     if is_firefox_profile; then
@@ -1950,7 +1980,34 @@ write_rootfs_manifest() {
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
-        --tool-version "qemu-riscv64-static=$qemu_version"
+        --tool-version "qemu-riscv64-static=$qemu_version" \
+        "${browser_web_tool_version[@]}"
+}
+
+browser_web_runtime_digest() {
+    local source_directory="$1"
+    local input
+    local -a inputs=(
+        desktop_m5_network_evidence.sh
+        desktop_m5_network_gate.py
+        browser_web_firefox.sh
+        browser_web_marionette_gate.py
+        browser_m5_marionette_gate.py
+        browser_web_evidence.sh
+        browser_web.service
+        browser_web_evidence.service
+    )
+
+    for input in "${inputs[@]}"; do
+        [[ -f "$source_directory/$input" ]] ||
+            die "missing browser-web runtime input: $input"
+    done
+    {
+        for input in "${inputs[@]}"; do
+            printf '%s\n' "$input"
+            sha256sum -- "$source_directory/$input" | cut -d' ' -f1
+        done
+    } | sha256sum | cut -d' ' -f1
 }
 
 publish_artifacts() {

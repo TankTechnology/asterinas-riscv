@@ -28,8 +28,19 @@ readonly FIXTURE_SIZE="${ASTERINAS_DESKTOP_FIXTURE_SIZE:-}"
 readonly FIXTURE_SHA256="${ASTERINAS_DESKTOP_FIXTURE_SHA256:-}"
 readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
 readonly CLOCK_URL='http://www.baidu.com/'
-readonly BAIDU_URL='https://www.baidu.com/'
-readonly BAIDU_ASSET='https://www.baidu.com/img/flexible/logo/pc/result.png'
+readonly BAIDU_URL="${ASTERINAS_WEB_NETWORK_HTTPS_URL:-https://www.baidu.com/}"
+readonly BAIDU_ASSET="${ASTERINAS_WEB_NETWORK_ASSET_URL:-https://www.baidu.com/img/flexible/logo/pc/result.png}"
+readonly WEB_NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly WEB_NETWORK_NEIGHBOR_QUERY="${ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY:-0}"
+readonly WEB_NETWORK_ADDRESS="${ASTERINAS_WEB_NETWORK_ADDRESS:-10.100.19.200/21}"
+readonly WEB_NETWORK_GATEWAY="${ASTERINAS_WEB_NETWORK_GATEWAY:-10.100.16.1}"
+readonly WEB_NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"
+readonly WEB_NETWORK_MEDIUM_URL="${ASTERINAS_WEB_NETWORK_MEDIUM_URL:-${FIXTURE_URL%/*}/browser-quality/download.bin}"
+readonly WEB_NETWORK_MEDIUM_SIZE="${ASTERINAS_WEB_NETWORK_MEDIUM_SIZE:-262144}"
+readonly WEB_NETWORK_MEDIUM_SHA256="${ASTERINAS_WEB_NETWORK_MEDIUM_SHA256:-2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9}"
+LAST_LINK_OUTPUT=''
+LAST_ADDRESS_OUTPUT=''
+WEB_TEMPORARY_DIRECTORY=''
 
 emit() {
     printf '%s\n' "$1" >>"$CONSOLE"
@@ -40,14 +51,313 @@ fail() {
     exit 1
 }
 
-link_and_address_ready() {
-    local addresses
-    local flags
-    local link
+web_fail() {
+    local layer="$1"
+    local reason="$2"
 
-    link="$(ip -o link show dev "$INTERFACE" 2>/dev/null)" || return 1
-    [[ "$link" == *"<"*">"* ]] || return 1
-    flags="${link#*<}"
+    emit "DEBIAN_WEB_NETWORK_FAIL mode=${WEB_NETWORK_MODE:-invalid} layer=$layer reason=$reason"
+    exit 1
+}
+
+web_emit_layer() {
+    emit "DEBIAN_WEB_NETWORK_LAYER mode=$WEB_NETWORK_MODE layer=$1 status=pass"
+}
+
+web_cleanup() {
+    if [[ -n "$WEB_TEMPORARY_DIRECTORY" && -d "$WEB_TEMPORARY_DIRECTORY" ]]; then
+        find "$WEB_TEMPORARY_DIRECTORY" -mindepth 1 -maxdepth 1 -type f \
+            -delete 2>/dev/null || true
+        rmdir -- "$WEB_TEMPORARY_DIRECTORY" 2>/dev/null || true
+    fi
+}
+
+web_timeout_seconds() {
+    local deadline="$1"
+    local remaining=$((deadline - SECONDS))
+
+    ((remaining > 0)) || return 1
+    if ((remaining < COMMAND_TIMEOUT_SECONDS)); then
+        printf '%s\n' "$remaining"
+    else
+        printf '%s\n' "$COMMAND_TIMEOUT_SECONDS"
+    fi
+}
+
+web_curl_reason() {
+    local status="$1"
+
+    case "$status" in
+        5 | 6) printf '%s\n' dns ;;
+        7)
+            if [[ "$WEB_NETWORK_MODE" == proxy ]]; then
+                printf '%s\n' proxy-unavailable
+            else
+                printf '%s\n' tcp-connect
+            fi
+            ;;
+        22) printf '%s\n' http-status ;;
+        28) printf '%s\n' timeout ;;
+        35 | 51 | 58 | 59 | 60 | 77 | 80 | 82 | 83 | 90 | 91)
+            printf '%s\n' tls
+            ;;
+        *) printf '%s\n' transport ;;
+    esac
+}
+
+web_validate_ipv4() {
+    local address="$1"
+    local octet
+    local -a octets
+
+    [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS=. read -r -a octets <<<"$address"
+    for octet in "${octets[@]}"; do
+        ((10#$octet <= 255)) || return 1
+    done
+}
+
+web_network_evidence() {
+    local address_output
+    local clock_date=''
+    local curl_result
+    local curl_status
+    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    local header
+    local headers
+    local http_file
+    local http_headers
+    local https_status
+    local limit
+    local link_output
+    local local_address
+    local neighbor_observable=1
+    local neighbor_output
+    local neighbor_status=0
+    local peer
+    local signature
+    local temporary_asset
+    local temporary_medium
+    local temporary_repeat
+    local -a external_curl=()
+
+    case "$WEB_NETWORK_MODE" in
+        proxy)
+            [[ -n "$PROXY_URL" && -n "$PROXY_HOST" && -n "$PROXY_PORT" ]] ||
+                web_fail config missing-proxy
+            web_validate_ipv4 "$PROXY_HOST" || web_fail config invalid-proxy
+            [[ "$PROXY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] ||
+                web_fail config invalid-proxy
+            ((PROXY_PORT <= 65535)) || web_fail config invalid-proxy
+            [[ "$PROXY_URL" == "http://$PROXY_HOST:$PROXY_PORT" ]] ||
+                web_fail config invalid-proxy
+            peer="$PROXY_HOST"
+            external_curl=(--proxy "$PROXY_URL")
+            ;;
+        direct)
+            [[ -z "$PROXY_URL" && -z "$PROXY_HOST" && -z "$PROXY_PORT" ]] ||
+                web_fail config proxy-present
+            web_validate_ipv4 "$WEB_NETWORK_RESOLVER" ||
+                web_fail config invalid-resolver
+            peer="$WEB_NETWORK_GATEWAY"
+            ;;
+        *) web_fail config invalid-mode ;;
+    esac
+    [[ "$WEB_NETWORK_NEIGHBOR_QUERY" =~ ^[01]$ ]] ||
+        web_fail config invalid-neighbor-query
+    web_validate_ipv4 "$WEB_NETWORK_GATEWAY" || web_fail config invalid-gateway
+    [[ "$WEB_NETWORK_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ||
+        web_fail config invalid-address
+    [[ -n "$FIXTURE_URL" && "$FIXTURE_SIZE" =~ ^[1-9][0-9]*$ ]] ||
+        web_fail config invalid-fixture
+    [[ "$FIXTURE_SHA256" =~ ^[0-9a-f]{64}$ && "$FIXTURE_REQUESTS" == 20 ]] ||
+        web_fail config invalid-fixture
+    [[ -n "$WEB_NETWORK_MEDIUM_URL" && "$WEB_NETWORK_MEDIUM_SIZE" =~ ^[1-9][0-9]*$ ]] ||
+        web_fail config invalid-medium
+    [[ "$WEB_NETWORK_MEDIUM_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+        web_fail config invalid-medium
+
+    WEB_TEMPORARY_DIRECTORY="$(mktemp -d "${URL_FILE}.web.XXXXXX")" ||
+        web_fail config temporary-directory
+    trap web_cleanup EXIT
+
+    limit="$(web_timeout_seconds "$deadline")" || web_fail link timeout
+    if ! link_output="$(timeout "$limit" ip -o link show dev "$INTERFACE" 2>/dev/null)"; then
+        web_fail link carrier
+    fi
+    [[ "$link_output" == *"<"*UP*LOWER_UP*">"* ]] || web_fail link carrier
+    web_emit_layer link
+
+    limit="$(web_timeout_seconds "$deadline")" || web_fail address timeout
+    if ! address_output="$(timeout "$limit" ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)"; then
+        web_fail address static-address
+    fi
+    [[ "$address_output" =~ (^|[[:space:]])inet[[:space:]]$WEB_NETWORK_ADDRESS([[:space:]]|$) ]] ||
+        web_fail address static-address
+    web_emit_layer address
+
+    if [[ "$WEB_NETWORK_NEIGHBOR_QUERY" == 0 ]]; then
+        # Asterinas does not yet implement RTM_GETNEIGH, and its unsupported
+        # dump currently lacks a terminating netlink message.  Do not spend a
+        # full command timeout waiting for an observation the kernel cannot
+        # provide.  The fixed-IP owned fixture below is the authoritative
+        # active proof that ARP resolution and peer reachability both worked.
+        neighbor_observable=0
+    else
+        limit="$(web_timeout_seconds "$deadline")" || web_fail neighbor timeout
+        if neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
+            neighbor_status=0
+        else
+            neighbor_status=$?
+        fi
+        if ((neighbor_status == 1)); then
+            # A future implementation may reject the query promptly while
+            # still allowing the fixture to supply the active proof.
+            neighbor_observable=0
+        elif ((neighbor_status != 0)); then
+            web_fail neighbor neighbor-unusable
+        elif [[ -z "$neighbor_output" ]]; then
+            neighbor_observable=0
+        else
+            [[ "$neighbor_output" == *"lladdr "* ]] ||
+                web_fail neighbor neighbor-unusable
+            [[ "$neighbor_output" != *FAILED* && "$neighbor_output" != *INCOMPLETE* ]] ||
+                web_fail neighbor neighbor-unusable
+            web_emit_layer neighbor
+
+            limit="$(web_timeout_seconds "$deadline")" ||
+                web_fail reachability timeout
+            if ! timeout "$limit" ping -4 -c 1 -W 3 "$peer" >/dev/null 2>&1; then
+                web_fail reachability icmp-timeout
+            fi
+            web_emit_layer reachability
+        fi
+    fi
+
+    if [[ "$WEB_NETWORK_MODE" == direct ]]; then
+        printf 'nameserver %s\n' "$WEB_NETWORK_RESOLVER" >"$RESOLV_CONF" ||
+            web_fail dns resolver-write
+        limit="$(web_timeout_seconds "$deadline")" || web_fail dns timeout
+        if ! timeout "$limit" getent ahostsv4 www.baidu.com >/dev/null 2>&1; then
+            web_fail dns resolve
+        fi
+    fi
+
+    http_file="$WEB_TEMPORARY_DIRECTORY/http"
+    http_headers="$WEB_TEMPORARY_DIRECTORY/http-headers"
+    limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
+    if timeout "$limit" curl --fail --ipv4 --silent --show-error \
+        --max-time "$limit" --noproxy '*' --dump-header "$http_headers" \
+        --output "$http_file" "$FIXTURE_URL"; then
+        :
+    else
+        curl_status=$?
+        web_fail http "$(web_curl_reason "$curl_status")"
+    fi
+    [[ "$(stat -c '%s' -- "$http_file")" == "$FIXTURE_SIZE" ]] ||
+        web_fail http content
+    [[ "$(sha256sum -- "$http_file" | awk '{print $1}')" == "$FIXTURE_SHA256" ]] ||
+        web_fail http content
+
+    headers="$(<"$http_headers")" || web_fail http date-header
+    while IFS= read -r header; do
+        header="${header%$'\r'}"
+        if [[ "${header,,}" == date:* ]]; then
+            clock_date="${header#*:}"
+            clock_date="${clock_date#${clock_date%%[![:space:]]*}}"
+            break
+        fi
+    done <<<"$headers"
+    [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
+        web_fail http date-header
+    date --utc --set "$clock_date" >/dev/null || web_fail http clock-set
+    if ((neighbor_observable == 0)); then
+        emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE neighbor=unobservable proof=owned-fixture-http"
+        web_emit_layer neighbor
+        web_emit_layer reachability
+    fi
+    web_emit_layer dns
+    web_emit_layer http
+
+    limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout
+    if curl_result="$(timeout "$limit" curl --fail --ipv4 --location --silent \
+        --show-error --max-time "$limit" "${external_curl[@]}" \
+        --output /dev/null --write-out $'%{http_code}\t%{local_ip}\t%{time_connect}\t%{time_appconnect}' \
+        "$BAIDU_URL")"; then
+        :
+    else
+        curl_status=$?
+        web_fail https "$(web_curl_reason "$curl_status")"
+    fi
+    IFS=$'\t' read -r https_status local_address _ _ <<<"$curl_result"
+    [[ "$https_status" =~ ^(2|3)[0-9][0-9]$ ]] || web_fail https http-status
+    [[ "$local_address" == "${WEB_NETWORK_ADDRESS%/*}" ]] ||
+        web_fail https local-address
+    web_emit_layer https
+
+    temporary_asset="$WEB_TEMPORARY_DIRECTORY/baidu-logo.png"
+    limit="$(web_timeout_seconds "$deadline")" || web_fail baidu-asset timeout
+    if timeout "$limit" curl --fail --ipv4 --location --silent --show-error \
+        --max-time "$limit" "${external_curl[@]}" --output "$temporary_asset" \
+        "$BAIDU_ASSET"; then
+        :
+    else
+        curl_status=$?
+        web_fail baidu-asset "$(web_curl_reason "$curl_status")"
+    fi
+    signature="$(od -An -N8 -tx1 "$temporary_asset" | tr -d '[:space:]')"
+    [[ "$signature" == 89504e470d0a1a0a ]] || web_fail baidu-asset content
+    web_emit_layer baidu-asset
+
+    # The HTTP layer already verified the first deterministic fixture response.
+    # Download 19 more so the complete mode contract records exactly 20.
+    for ((attempt = 1; attempt < FIXTURE_REQUESTS; attempt++)); do
+        temporary_repeat="$WEB_TEMPORARY_DIRECTORY/repeat-$attempt"
+        limit="$(web_timeout_seconds "$deadline")" || web_fail repeat timeout
+        if timeout "$limit" curl --fail --ipv4 --silent --show-error \
+            --max-time "$limit" --noproxy '*' --output "$temporary_repeat" \
+            "$FIXTURE_URL"; then
+            :
+        else
+            curl_status=$?
+            web_fail repeat "$(web_curl_reason "$curl_status")"
+        fi
+        [[ "$(stat -c '%s' -- "$temporary_repeat")" == "$FIXTURE_SIZE" ]] ||
+            web_fail repeat length
+        [[ "$(sha256sum -- "$temporary_repeat" | awk '{print $1}')" == "$FIXTURE_SHA256" ]] ||
+            web_fail repeat digest
+    done
+    web_emit_layer repeat
+
+    temporary_medium="$WEB_TEMPORARY_DIRECTORY/medium"
+    limit="$(web_timeout_seconds "$deadline")" || web_fail medium timeout
+    if timeout "$limit" curl --fail --ipv4 --silent --show-error \
+        --max-time "$limit" --noproxy '*' --output "$temporary_medium" \
+        "$WEB_NETWORK_MEDIUM_URL"; then
+        :
+    else
+        curl_status=$?
+        web_fail medium "$(web_curl_reason "$curl_status")"
+    fi
+    [[ "$(stat -c '%s' -- "$temporary_medium")" == "$WEB_NETWORK_MEDIUM_SIZE" ]] ||
+        web_fail medium length
+    [[ "$(sha256sum -- "$temporary_medium" | awk '{print $1}')" == "$WEB_NETWORK_MEDIUM_SHA256" ]] ||
+        web_fail medium digest
+    web_emit_layer medium
+
+    publish_remote_url
+    emit "DEBIAN_WEB_NETWORK_READY mode=$WEB_NETWORK_MODE layers=10"
+}
+
+link_and_address_ready() {
+    local flags
+
+    if LAST_LINK_OUTPUT="$(ip -o link show dev "$INTERFACE" 2>/dev/null)"; then
+        :
+    else
+        return 1
+    fi
+    [[ "$LAST_LINK_OUTPUT" == *"<"*">"* ]] || return 1
+    flags="${LAST_LINK_OUTPUT#*<}"
     flags="${flags%%>*}"
     case ",$flags," in
         *,UP,*) ;;
@@ -57,9 +367,26 @@ link_and_address_ready() {
         *,LOWER_UP,*) ;;
         *) return 1 ;;
     esac
-    addresses="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)" ||
+    if LAST_ADDRESS_OUTPUT="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)"; then
+        :
+    else
         return 1
-    [[ "$addresses" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
+    fi
+    [[ "$LAST_ADDRESS_OUTPUT" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
+}
+
+emit_link_diagnostic() {
+    local field="$1"
+    local output
+    local value_hex
+
+    case "$field" in
+        link) output="$LAST_LINK_OUTPUT" ;;
+        address) output="$LAST_ADDRESS_OUTPUT" ;;
+        *) output='' ;;
+    esac
+    value_hex="$(printf '%s' "$output" | od -An -v -tx1 | tr -d '[:space:]')"
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=link-check field=$field status=0 value_hex=${value_hex:-none}"
 }
 
 publish_remote_url() {
@@ -366,7 +693,11 @@ megrez_network_evidence() {
 
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     while ! link_and_address_ready; do
-        ((SECONDS < deadline)) || fail link-or-address-timeout
+        if ((SECONDS >= deadline)); then
+            emit_link_diagnostic link
+            emit_link_diagnostic address
+            fail link-or-address-timeout
+        fi
         sleep 1
     done
 
@@ -411,6 +742,10 @@ megrez_network_evidence() {
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
+if [[ -n "$WEB_NETWORK_MODE" ]]; then
+    web_network_evidence
+    exit 0
+fi
 if grep -Eq '(^|[[:space:]])asterinas\.debian_network=qemu-slirp([[:space:]]|$)' \
     "$CMDLINE_PATH"; then
     qemu_network_evidence

@@ -251,8 +251,9 @@ _PROFILES["browser-web"] = RootfsProfile(
     schema_version=7,
     root_label="ASTER_BROWSERWEB",
     root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
-    requested_packages=_PROFILES["browser-m5"].requested_packages,
-    identity_packages=_PROFILES["browser-m5"].identity_packages + ("ca-certificates",),
+    requested_packages=_PROFILES["browser-m5"].requested_packages + ("xdotool",),
+    identity_packages=_PROFILES["browser-m5"].identity_packages
+    + ("ca-certificates", "xdotool"),
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
     # normal bookmark/places maintenance path.  Keep the smaller milestone

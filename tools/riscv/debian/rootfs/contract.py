@@ -187,6 +187,7 @@ def load_manifest(path: Path) -> RootfsManifest:
         manifest["tool_versions"],
         "tool_versions",
     )
+    _validate_profile_tool_versions(profile, tool_versions)
 
     gate_packages = _mapping(manifest["gate_packages"], "gate_packages")
     _exact_keys(
@@ -284,6 +285,7 @@ def validate_frozen_root(
 
     _require_integer(manifest.schema_version, "schema_version")
     profile = _profile_for_manifest(manifest.schema_version, manifest.profile)
+    _validate_profile_tool_versions(profile, manifest.tool_versions)
     _require_exact(manifest.suite, _SUITE, "suite")
     if _DEBIAN_RELEASE_RE.fullmatch(manifest.debian_release) is None:
         raise ContractError(
@@ -445,6 +447,7 @@ def write_manifest(
         package_checksums, schema_version=profile.schema_version
     )
     parsed_tool_versions = _parse_tool_versions(tool_versions)
+    _validate_profile_tool_versions(profile, tuple(parsed_tool_versions.items()))
     gate_versions = _gate_versions(lock_rows, profile)
 
     manifest = {
@@ -850,6 +853,23 @@ def _parse_tool_versions(values: Sequence[str]) -> dict[str, str]:
             raise ContractError(f"duplicate tool version: {name}")
         versions[name] = version
     return dict(sorted(versions.items()))
+
+
+def _validate_profile_tool_versions(
+    profile: RootfsProfile,
+    tool_versions: Sequence[tuple[str, str]],
+) -> None:
+    if profile.name != "browser-web":
+        return
+    versions = dict(tool_versions)
+    if "browser-web-runtime" not in versions:
+        raise ContractError(
+            "tool_versions.browser-web-runtime is required for browser-web"
+        )
+    _sha256(
+        versions["browser-web-runtime"],
+        "tool_versions.browser-web-runtime",
+    )
 
 
 def _gate_versions(

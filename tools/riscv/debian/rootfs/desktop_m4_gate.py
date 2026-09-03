@@ -39,6 +39,17 @@ DESKTOP_M4_MILESTONES = (
     "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
 )
 
+DESKTOP_M4_CORE_MILESTONES = (
+    "DEBIAN_DESKTOP_M4_UDEV state=active",
+    "DEBIAN_DESKTOP_M4_LOGIND state=active",
+    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
+    "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+    "DEBIAN_DESKTOP_M4_CORE_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm",
+    "DEBIAN_DESKTOP_M4_CORE_READY user=asterinas display=:0",
+)
+
 
 def desktop_m4_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Return the same frozen graphical QEMU device contract used by M3."""

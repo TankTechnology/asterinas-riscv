@@ -10,6 +10,7 @@ readonly SESSION_LOG="${ASTERINAS_DESKTOP_M4_SESSION_LOG:-/home/asterinas/deskto
 readonly NETSURF_LOG="${ASTERINAS_DESKTOP_M4_NETSURF_LOG:-/home/asterinas/netsurf-m7.log}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS:-240}"
 readonly PROBE_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30}"
+readonly BROWSER_ENABLED="${ASTERINAS_DESKTOP_BROWSER_ENABLED:-1}"
 readonly USER_NAME="asterinas"
 readonly USER_ID="1000"
 not_ready_reason="not-evaluated"
@@ -58,7 +59,7 @@ fail() {
         printf '%s\n' '--- desktop session log ---' >>"$CONSOLE"
         cat -- "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
     fi
-    if [[ -f "$NETSURF_LOG" && ! -L "$NETSURF_LOG" ]]; then
+    if [[ "$BROWSER_ENABLED" == 1 && -f "$NETSURF_LOG" && ! -L "$NETSURF_LOG" ]]; then
         printf '%s\n' '--- NetSurf log tail ---' >>"$CONSOLE"
         tail -c 8192 -- "$NETSURF_LOG" >>"$CONSOLE" 2>&1 || true
     fi
@@ -98,6 +99,8 @@ move_single_window_to_overview_workspace() {
 
 [[ "$PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-probe-timeout
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
+[[ "$BROWSER_ENABLED" == 0 || "$BROWSER_ENABLED" == 1 ]] || \
+    fail invalid-browser-enabled
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 
 ready() {
@@ -142,12 +145,14 @@ ready() {
         >/dev/null || return 1
     probe lxpanel pgrep -u "$USER_ID" -f \
         '(^|/)lxpanel([[:space:]]|$)' >/dev/null || return 1
-    probe netsurf pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null || return 1
     probe xterm pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
-    probe netsurf-window env DISPLAY=:0 \
-        XAUTHORITY=/home/asterinas/.Xauthority \
-        xdotool search --onlyvisible --classname '^netsurf-gtk$' \
-        >/dev/null || return 1
+    if [[ "$BROWSER_ENABLED" == 1 ]]; then
+        probe netsurf pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null || return 1
+        probe netsurf-window env DISPLAY=:0 \
+            XAUTHORITY=/home/asterinas/.Xauthority \
+            xdotool search --onlyvisible --classname '^netsurf-gtk$' \
+            >/dev/null || return 1
+    fi
     probe xterm-window env DISPLAY=:0 \
         XAUTHORITY=/home/asterinas/.Xauthority \
         xdotool search --onlyvisible --classname '^xterm$' \
@@ -162,10 +167,12 @@ ready() {
         return 1
     fi
     window_tree_lower="${window_tree,,}"
-    [[ "$window_tree_lower" == *netsurf* ]] || {
-        not_ready_reason="netsurf-tree"
-        return 1
-    }
+    if [[ "$BROWSER_ENABLED" == 1 ]]; then
+        [[ "$window_tree_lower" == *netsurf* ]] || {
+            not_ready_reason="netsurf-tree"
+            return 1
+        }
+    fi
     [[ "$window_tree_lower" == *"asterinas terminal"* ]] || {
         not_ready_reason="terminal-tree"
         return 1
@@ -181,7 +188,9 @@ while ! ready; do
 done
 
 if [[ "${ASTERINAS_DESKTOP_SHOW_OVERVIEW:-0}" == 1 ]]; then
-    move_single_window_to_overview_workspace netsurf-gtk overview-browser
+    if [[ "$BROWSER_ENABLED" == 1 ]]; then
+        move_single_window_to_overview_workspace netsurf-gtk overview-browser
+    fi
     move_single_window_to_overview_workspace xterm overview-terminal
     sleep 1
 fi
@@ -192,5 +201,10 @@ emit "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1"
 emit "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev"
 emit "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0"
 emit "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3"
-emit "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm browser=netsurf terminal=xterm"
-emit "DEBIAN_DESKTOP_M4_READY user=$USER_NAME display=:0"
+if [[ "$BROWSER_ENABLED" == 1 ]]; then
+    emit "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm browser=netsurf terminal=xterm"
+    emit "DEBIAN_DESKTOP_M4_READY user=$USER_NAME display=:0"
+else
+    emit "DEBIAN_DESKTOP_M4_CORE_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm"
+    emit "DEBIAN_DESKTOP_M4_CORE_READY user=$USER_NAME display=:0"
+fi
