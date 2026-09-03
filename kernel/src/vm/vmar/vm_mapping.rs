@@ -389,9 +389,9 @@ impl VmMapping {
         rss_delta: &mut RssDelta,
     ) -> Result<()> {
         let profile_start = VM_PROFILE.load(Ordering::Relaxed).then(Jiffies::elapsed);
-        let result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
+        let mut result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
         if result.is_ok() {
-            sync_instruction_cache_after_fault(page_fault_info.required_perms);
+            result = sync_instruction_cache_after_fault(page_fault_info.required_perms);
         }
         if let Some(start) = profile_start {
             record_page_fault_profile(start, page_fault_info.required_perms);
@@ -711,7 +711,7 @@ impl VmMapping {
     }
 }
 
-fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
+fn sync_instruction_cache_after_fault(required_perms: VmPerms) -> Result<()> {
     #[cfg(target_arch = "riscv64")]
     if must_sync_instruction_cache(required_perms) {
         // RISC-V instruction caches are not required to observe bytes written
@@ -720,7 +720,7 @@ fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
         // selected with `asterinas.vm_local_icache=1` so its performance and
         // correctness can be measured without changing normal boot semantics.
         let local_only = VM_LOCAL_ICACHE.load(Ordering::Relaxed);
-        ostd::arch::flush_icache(local_only);
+        ostd::arch::flush_icache(local_only)?;
         if VM_PROFILE.load(Ordering::Relaxed) {
             EXEC_ICACHE_FENCE_COUNT.fetch_add(1, Ordering::Relaxed);
         }
@@ -728,6 +728,8 @@ fn sync_instruction_cache_after_fault(required_perms: VmPerms) {
 
     #[cfg(not(target_arch = "riscv64"))]
     let _ = required_perms;
+
+    Ok(())
 }
 
 fn record_page_fault_profile(start: Jiffies, required_perms: VmPerms) {

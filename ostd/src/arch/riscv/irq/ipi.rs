@@ -75,27 +75,38 @@ pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) {
 ///
 /// Reference:
 /// <https://github.com/riscv-non-isa/riscv-sbi-doc/blob/v3.0/src/binary-encoding.adoc#hart-list-parameter>.
-pub(crate) fn remote_fence_i_all_online_harts(hw_cpu_ids: &[HwCpuId]) {
+pub(crate) fn remote_fence_i_all_online_harts(hw_cpu_ids: &[HwCpuId]) -> Result<(), crate::Error> {
+    remote_fence_i_all_online_harts_with(hw_cpu_ids, sbi_rt::remote_fence_i)
+}
+
+fn remote_fence_i_all_online_harts_with(
+    hw_cpu_ids: &[HwCpuId],
+    mut remote_fence_i: impl FnMut(sbi_rt::HartMask) -> sbi_rt::SbiRet,
+) -> Result<(), crate::Error> {
     if let Some(hart_mask) = first_word_hart_mask(hw_cpu_ids) {
-        let ret = sbi_rt::remote_fence_i(hart_mask);
+        let ret = remote_fence_i(hart_mask);
         if ret.error != 0 {
-            crate::warn!("SBI remote fence.i failed: error code {}", ret.error);
+            crate::error!("SBI remote fence.i failed: error code {}", ret.error);
+            return Err(crate::Error::IoError);
         }
-        return;
+        return Ok(());
     }
 
     // A hart mask covers at most `XLEN` consecutive IDs. Platforms with IDs
     // beyond the first word are uncommon, so use one SBI call per hart there.
     for &hw_cpu_id in hw_cpu_ids {
-        let ret = sbi_rt::remote_fence_i(single_hart_mask(hw_cpu_id));
+        let ret = remote_fence_i(single_hart_mask(hw_cpu_id));
         if ret.error != 0 {
-            crate::warn!(
+            crate::error!(
                 "SBI remote fence.i to hart {} failed: error code {}",
                 hw_cpu_id.0,
                 ret.error
             );
+            return Err(crate::Error::IoError);
         }
     }
+
+    Ok(())
 }
 
 fn single_hart_mask(hw_cpu_id: HwCpuId) -> sbi_rt::HartMask {
@@ -119,8 +130,10 @@ fn first_word_hart_mask(hw_cpu_ids: &[HwCpuId]) -> Option<sbi_rt::HartMask> {
 
 #[cfg(ktest)]
 mod tests {
-    use super::{HwCpuId, first_word_hart_mask, single_hart_mask};
-    use crate::prelude::ktest;
+    use super::{
+        HwCpuId, XLEN, first_word_hart_mask, remote_fence_i_all_online_harts_with, single_hart_mask,
+    };
+    use crate::{Error, prelude::ktest};
 
     #[ktest]
     fn combines_sparse_harts_in_first_mask_word() {
@@ -136,5 +149,37 @@ mod tests {
     #[ktest]
     fn locates_single_hart_in_its_mask_word() {
         assert_eq!(single_hart_mask(HwCpuId(130)).into_inner(), (1 << 2, 128));
+    }
+
+    #[ktest]
+    fn propagates_combined_remote_fence_failure() {
+        let mut calls = 0;
+        // Regression for #100: an SBI RFENCE failure must not be reported as
+        // successful instruction-cache synchronization.
+        let result = remote_fence_i_all_online_harts_with(&[HwCpuId(0), HwCpuId(2)], |hart_mask| {
+            calls += 1;
+            assert_eq!(hart_mask.into_inner(), ((1 << 0) | (1 << 2), 0));
+            sbi_rt::SbiRet::not_supported()
+        });
+
+        assert_eq!(result, Err(Error::IoError));
+        assert_eq!(calls, 1);
+    }
+
+    #[ktest]
+    fn stops_per_hart_remote_fence_after_failure() {
+        let mut calls = 0;
+        let result =
+            remote_fence_i_all_online_harts_with(&[HwCpuId(0), HwCpuId(XLEN as u32)], |_| {
+                calls += 1;
+                if calls == 1 {
+                    sbi_rt::SbiRet::success(0)
+                } else {
+                    sbi_rt::SbiRet::failed()
+                }
+            });
+
+        assert_eq!(result, Err(Error::IoError));
+        assert_eq!(calls, 2);
     }
 }
