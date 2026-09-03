@@ -9,10 +9,11 @@
 # and a shared libltp.so so the whole suite fits in a ~16 MiB initramfs. Static
 # linking (glibc or musl) either blows past the kernel's large-initramfs unpack
 # limit or needs a second block device, both blocked kernel bugs — see
-# FOUNDATION-M2-report.md. The musl sysroot lacks the Linux UAPI headers, so we
-# -isystem the glibc cross sysroot's include dir (musl's own headers win). Only
-# the tests enabled by the selected closed suite are packed, crossed against
-# LTP's runtest/syscalls manifest.
+# FOUNDATION-M2-report.md. The musl sysroot lacks the Linux UAPI headers, so the
+# GNU cross include directory is searched with `-idirafter`: musl must provide
+# libc headers such as stdio.h and the GNU tree is only a fallback for Linux
+# UAPI namespaces absent from musl. Only the tests enabled by the selected
+# closed suite are packed, crossed against LTP's runtest/syscalls manifest.
 #
 # Options:
 #   --skip-compile   reuse already-built LTP binaries (fast re-pack)
@@ -77,7 +78,11 @@ EXPECTED_UNAVAILABLE="${SUITE_FIELDS[2]}"
 
 rm -f "${PACKAGE_IDENTITY}"
 
-for tool in "${CC}" "${STRIP}" aclocal autoconf automake; do
+required_tools=("${CC}" "${STRIP}")
+if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
+    required_tools+=(aclocal autoconf automake)
+fi
+for tool in "${required_tools[@]}"; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
         echo "missing ${tool}" >&2
         exit 2
@@ -109,7 +114,7 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     # CC/libc/flag switch does not leave a mixed build.
     [ -f Makefile ] && make clean >/dev/null 2>&1 || true
     CC="${CC}" DEBUG_CFLAGS="" \
-        CFLAGS="-O2 -fno-stack-protector -fPIC -isystem ${GNU_UAPI_ROOT}" \
+        CFLAGS="-O2 -fno-stack-protector -fPIC -idirafter ${GNU_UAPI_ROOT}" \
         LDFLAGS="" \
         ./configure --host=riscv64-linux-gnu --prefix=/opt/ltp \
         >/dev/null 2>&1 || { echo "configure failed" >&2; exit 2; }
@@ -165,7 +170,7 @@ python3 "${REPO_ROOT}/tools/riscv/ltp_manifest.py" select \
     --unavailable-output "${UNAVAILABLE}" \
     --expected-count "${EXPECTED_SELECTED}"
 
-ACTUAL_UNAVAILABLE="$(grep -c '"name"' "${UNAVAILABLE}")"
+ACTUAL_UNAVAILABLE="$(grep -c '"name"' "${UNAVAILABLE}" || true)"
 if [[ "${ACTUAL_UNAVAILABLE}" -ne "${EXPECTED_UNAVAILABLE}" ]]; then
     echo "expected ${EXPECTED_UNAVAILABLE} unavailable tests, got ${ACTUAL_UNAVAILABLE}" >&2
     exit 2

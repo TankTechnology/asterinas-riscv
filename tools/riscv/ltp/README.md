@@ -4,8 +4,8 @@ These gates run reviewed Linux Test Project syscall suites on the current
 Asterinas RISC-V kernel through U-Boot and QEMU.
 The LTP source is pinned to tag `20260529`.
 The `syscalls` suite requests 779 names and packages exactly 767 tests.
-The focused `arch-riscv64` suite requests 139 names, packages exactly 138
-tests, and records `rt_sigtimedwait01` as unavailable.
+The focused `arch-riscv64` suite requests and packages exactly 139 tests.
+The current musl/GNU-UAPI cross build has no unavailable test in this suite.
 Every suite reports omissions in `target/ltp/unavailable-tests.json`.
 
 The gate owns `target/ltp/qemu/` and `target/ltp/results/`.
