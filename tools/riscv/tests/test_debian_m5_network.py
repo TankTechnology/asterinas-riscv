@@ -2015,6 +2015,7 @@ printf '200\t10.0.2.15'
         )
         expected = operations.MILESTONES[-1].encode()
         generic_failure = b"DEBIAN_WEB_NETWORK_FAIL mode="
+        self.assertEqual(operations.FAILURE_MARKER, expected)
         self.assertFalse(
             operations._completion_is_failure(expected, (generic_failure,))
         )
