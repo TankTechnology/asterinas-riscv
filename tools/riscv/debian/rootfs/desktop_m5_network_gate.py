@@ -35,6 +35,7 @@ NETWORK_LAYERS = (
     "repeat",
     "medium",
 )
+_WEB_NETWORK_FAILURE_LAYERS = ("config", *NETWORK_LAYERS)
 _WEB_NETWORK_FAILURE_RE = re.compile(
     rb"DEBIAN_WEB_NETWORK_FAIL mode=([a-z]+) layer=([a-z-]+) "
     rb"reason=([^\r\n ]+)"
@@ -56,7 +57,7 @@ def classify_web_network(transcript: bytes, *, mode: NetworkMode) -> GateResult:
         reason = failure.group(3).decode("ascii")
         if failure_mode != mode.value:
             return GateResult(False, "mixed web network modes", None)
-        if layer not in NETWORK_LAYERS:
+        if layer not in _WEB_NETWORK_FAILURE_LAYERS:
             return GateResult(False, "web network failure has unknown layer", None)
         return GateResult(
             False,
