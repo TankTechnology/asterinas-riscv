@@ -1,5 +1,10 @@
 # BROWSER M5 — default-browser experience + render-quality matrix
 
+> **Historical milestone with a superseded diagnosis.** Later low-load runs
+> showed that the reported raw-CPIO "hang" could advance through several boot
+> phases. Treat the M5 outcome as a timed-out/incomplete run, not proof of an
+> initramfs-unpack deadlock.
+
 **Status:** config/launcher landed & committed; live render matrix blocked by a
 kernel-side initramfs-unpack hang under heavy host contention (see §3.2).
 **Date:** 2026-08-15

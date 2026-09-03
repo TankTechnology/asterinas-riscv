@@ -516,7 +516,7 @@ bootstrap_rootfs() {
         install -d -- "$stage/usr/share/debootstrap"
         cp -a -- /usr/share/debootstrap/. "$stage/usr/share/debootstrap/"
     fi
-    verify_riscv_binfmt
+    verify_riscv_execution_boundary
     log "phase 3/8: completing debootstrap second stage"
     # proot can make the helper's self-test of /debootstrap ambiguous; pin
     # the directory explicitly so the generated suite/variant state is used.
@@ -524,7 +524,7 @@ bootstrap_rootfs() {
         /debootstrap/debootstrap --second-stage
 }
 
-verify_riscv_binfmt() {
+verify_riscv_execution_boundary() {
     # Docker gives the build container its own proc sys tree, which may expose
     # an empty binfmt_misc mount even though the host has the required fixed
     # qemu-riscv64 registration.  The workflow can bind that host tree at a
@@ -534,7 +534,7 @@ verify_riscv_binfmt() {
     local registration="$binfmt_root/qemu-riscv64"
 
     [[ "$(uname -m)" != riscv64 ]] ||
-        die "refusing a native RISC-V host; an enabled binfmt boundary is required"
+        die "refusing a native RISC-V host; this builder requires an emulated execution boundary"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         [[ -x "$WORK_DIR/stage/usr/bin/qemu-riscv64-static" ]] ||
             die "explicit qemu mode requires qemu-riscv64-static in the staged root"

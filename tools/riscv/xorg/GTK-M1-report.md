@@ -1,5 +1,9 @@
 # GTK M1 — GTK2 renders on the Asterinas RISC-V Xorg desktop
 
+> **Historical milestone.** The SMP4 process-spawn conclusion in §6 was
+> superseded by later four-hart boot and regression results. Do not use its
+> SMP1 fallback as a current admission criterion.
+
 **Status:** milestone reached + desktop-stack evaluation
 **Date:** 2026-08-14
 **Scope:** cross-compile glib → GTK2 for `riscv64`, render a GTK2 app on Xorg in QEMU, then evaluate LXDE vs Matchbox and pick the lighter desktop to push forward.

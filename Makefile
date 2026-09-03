@@ -16,6 +16,7 @@ RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
 SCHEME ?= ""
 SMP ?= 1
+RISCV_ICACHE_REQUIRE_SMP4 ?= 0
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
@@ -123,6 +124,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
+ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
+endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
@@ -261,7 +265,7 @@ MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
-RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
 RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
 
@@ -311,6 +315,11 @@ test_riscv_megrez_debian_shell:
 test_riscv_rootfs_builder_image_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_riscv_rootfs_builder_image -v
+
+.PHONY: test_riscv_run_kernel_log_unit
+test_riscv_run_kernel_log_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_validate_run_kernel_log -v
 
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
@@ -765,19 +774,10 @@ kernel: initramfs $(CARGO_OSDK)
 .PHONY: run_kernel
 run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
-# Check the running status of auto tests from the QEMU log
-ifeq ($(AUTO_TEST), conformance)
-	@tail --lines 100 qemu.log | grep -q "^All conformance tests passed." \
-		|| (echo "Conformance test failed" && exit 1)
-else ifeq ($(AUTO_TEST), regression)
-	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
-		|| (echo "Regression test failed" && exit 1)
-else ifeq ($(AUTO_TEST), boot)
-	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
-		|| (echo "Boot test failed" && exit 1)
-else ifeq ($(AUTO_TEST), vsock)
-	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
-		|| (echo "Vsock test failed" && exit 1)
+# Validate the complete QEMU transcript, including fatal output after success.
+ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
+	@python3 tools/riscv/validate_run_kernel_log.py --log qemu.log \
+		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
 endif
 
 # Build the Asterinas NixOS ISO installer image

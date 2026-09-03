@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
-ARG BASE_IMAGE=asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+ARG BASE_IMAGE=asterinas/asterinas:0.18.0-20260702
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -13,7 +13,6 @@ ARG DEBIAN_ARCHIVE_KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805
 # specific to building a Debian riscv64 rootfs from an x86_64 host.
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends \
-        binfmt-support \
         ca-certificates \
         cpio \
         curl \
@@ -26,6 +25,7 @@ RUN apt-get update && \
         jq \
         libc6-dev-riscv64-cross \
         linux-libc-dev-riscv64-cross \
+        proot \
         qemu-system-misc \
         qemu-user-static \
         util-linux && \
