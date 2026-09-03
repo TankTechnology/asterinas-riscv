@@ -8,7 +8,6 @@ import os
 import stat
 import subprocess
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
     DESKTOP_M4_MILESTONES,
 )
+from tools.riscv.debian.rootfs import desktop_m5_network_gate as network_gate
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_NETWORK_MILESTONES,
     DESKTOP_M5_QEMU_MILESTONES,
@@ -86,6 +86,137 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
+
+    def _web_network_transcript(self, mode: object) -> bytes:
+        layers = getattr(network_gate, "NETWORK_LAYERS", ())
+        records = [
+            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
+            f"layer={layer} status=pass"
+            for layer in layers
+        ]
+        records.append(
+            f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers={len(layers)}"
+        )
+        return ("\n".join(records) + "\n").encode()
+
+    def test_web_network_modes_are_isolated(self) -> None:
+        self.assertTrue(hasattr(network_gate, "NetworkMode"))
+        self.assertTrue(hasattr(network_gate, "classify_web_network"))
+        proxy = network_gate.NetworkMode.PROXY
+        direct = network_gate.NetworkMode.DIRECT
+        proxy_transcript = self._web_network_transcript(proxy)
+        direct_transcript = self._web_network_transcript(direct)
+
+        self.assertTrue(
+            network_gate.classify_web_network(
+                proxy_transcript, mode=proxy
+            ).passed
+        )
+        self.assertTrue(
+            network_gate.classify_web_network(
+                direct_transcript, mode=direct
+            ).passed
+        )
+        self.assertFalse(
+            network_gate.classify_web_network(
+                proxy_transcript, mode=direct
+            ).passed
+        )
+        self.assertFalse(
+            network_gate.classify_web_network(
+                direct_transcript, mode=proxy
+            ).passed
+        )
+
+        mixed = proxy_transcript + (
+            "DEBIAN_WEB_NETWORK_READY mode=direct layers=10\n"
+        ).encode()
+        self.assertEqual(
+            network_gate.classify_web_network(mixed, mode=proxy).reason,
+            "mixed web network modes",
+        )
+
+    def test_web_network_layers_are_unique_and_ordered(self) -> None:
+        self.assertTrue(hasattr(network_gate, "NetworkMode"))
+        self.assertTrue(hasattr(network_gate, "NETWORK_LAYERS"))
+        mode = network_gate.NetworkMode.PROXY
+        transcript = self._web_network_transcript(mode)
+        layers = network_gate.NETWORK_LAYERS
+        self.assertEqual(
+            layers,
+            (
+                "link",
+                "address",
+                "neighbor",
+                "reachability",
+                "dns",
+                "http",
+                "https",
+                "baidu-asset",
+                "repeat",
+                "medium",
+            ),
+        )
+
+        marker = (
+            "DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=neighbor status=pass"
+        ).encode()
+        self.assertEqual(
+            network_gate.classify_web_network(
+                transcript.replace(marker, b""), mode=mode
+            ).reason,
+            "missing or duplicate neighbor layer",
+        )
+        self.assertEqual(
+            network_gate.classify_web_network(
+                transcript + marker + b"\n", mode=mode
+            ).reason,
+            "missing or duplicate neighbor layer",
+        )
+        first = (
+            "DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=link status=pass"
+        ).encode()
+        second = (
+            "DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=address status=pass"
+        ).encode()
+        reordered = transcript.replace(first, b"__FIRST__").replace(
+            second, first
+        ).replace(b"__FIRST__", second)
+        self.assertEqual(
+            network_gate.classify_web_network(reordered, mode=mode).reason,
+            "web network layers out of order",
+        )
+
+    def test_web_network_failure_is_layer_qualified(self) -> None:
+        self.assertTrue(hasattr(network_gate, "NetworkMode"))
+        mode = network_gate.NetworkMode.DIRECT
+        transcript = (
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=https "
+            b"reason=certificate-verify\n"
+        )
+        result = network_gate.classify_web_network(transcript, mode=mode)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "web network https failure: certificate-verify",
+        )
+
+        unknown_layer = (
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=magic reason=broken\n"
+        )
+        self.assertEqual(
+            network_gate.classify_web_network(
+                unknown_layer, mode=mode
+            ).reason,
+            "web network failure has unknown layer",
+        )
+        wrong_mode = (
+            b"DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=https reason=broken\n"
+        )
+        self.assertEqual(
+            network_gate.classify_web_network(wrong_mode, mode=mode).reason,
+            "mixed web network modes",
+        )
 
     def test_native_megrez_tcp_probe_validates_exact_http_response(self) -> None:
         executable = self.directory / "megrez-tcp-probe-self-test"
