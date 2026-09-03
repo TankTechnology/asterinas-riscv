@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import tempfile
 import subprocess
@@ -20,6 +21,8 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
+    NETWORK_LAYERS,
+    NetworkMode,
 )
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
     DESKTOP_M6_JAVASCRIPT_STATUSES,
@@ -49,6 +52,7 @@ from tools.riscv.megrez_gmac_gate import (
     run_gate,
 )
 from tools.riscv.megrez_network_fixture import FixtureConfig, FixtureServer
+from tools.riscv import megrez_gmac_gate as gmac_gate
 
 
 EXPECTED_PHYSICAL_MILESTONES = (
@@ -90,6 +94,21 @@ def complete_desktop_evidence() -> bytes:
     return b"\n".join(marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES) + b"\n"
 
 
+def complete_web_network_evidence(mode: NetworkMode) -> bytes:
+    records = [b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 port=0"]
+    records.extend(
+        (
+            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
+            f"layer={layer} status=pass"
+        ).encode()
+        for layer in NETWORK_LAYERS
+    )
+    records.append(
+        f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10".encode()
+    )
+    return b"\n".join(records) + b"\n"
+
+
 class FakeOperations:
     def __init__(
         self,
@@ -97,11 +116,13 @@ class FakeOperations:
         *,
         boot: bytes = b"",
         conflict: bool = False,
+        recovery: bytes = b"OpenSBI v1.7\nU-Boot 2025.01\n=> ",
     ) -> None:
         self.events: list[str] = []
         self.chunks = iter(chunks)
         self.boot_output = boot
         self.conflict = conflict
+        self.recovery = recovery
         self.published: tuple[bytes, dict[str, object]] | None = None
 
     def invalidate(self) -> None:
@@ -132,6 +153,11 @@ class FakeOperations:
         self.events.append("drain")
         return next(self.chunks, b"")
 
+    def wait_for_recovery(self, deadline: float) -> bytes:
+        del deadline
+        self.events.append("recovery")
+        return self.recovery
+
     def close_board(self) -> None:
         self.events.append("close")
 
@@ -140,7 +166,182 @@ class FakeOperations:
         self.published = transcript, result
 
 
+class FakeProxyBridge:
+    def __init__(self, *, fail_start: bool = False) -> None:
+        self.fail_start = fail_start
+        self.events: list[str] = []
+        self.running = False
+        self.closed = False
+
+    def start(self) -> "FakeProxyBridge":
+        self.events.append("start")
+        if self.fail_start:
+            raise RuntimeError("bridge start failed")
+        self.running = True
+        return self
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.events.append("close")
+        self.running = False
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "listen": "10.100.19.216:17893",
+            "upstream": "127.0.0.1:17892",
+            "pid": 42,
+            "ready": self.running,
+            "exit_status": None if self.running else 0,
+            "stderr_hex": "",
+        }
+
+
 class MegrezGmacGateTests(unittest.TestCase):
+    def test_web_targets_require_explicit_network_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires a NetworkMode"):
+            GateConfig(target=GateTarget.NETWORK)
+        with self.assertRaisesRegex(ValueError, "requires a NetworkMode"):
+            GateConfig(target=GateTarget.FIREFOX)
+        with self.assertRaisesRegex(ValueError, "requires network or firefox"):
+            GateConfig(target=GateTarget.DESKTOP, network_mode=NetworkMode.PROXY)
+
+        proxy = GateConfig(
+            target=GateTarget.NETWORK,
+            network_mode=NetworkMode.PROXY,
+        )
+        direct = GateConfig(
+            target=GateTarget.FIREFOX,
+            network_mode=NetworkMode.DIRECT,
+        )
+        self.assertEqual(proxy.network_mode, NetworkMode.PROXY)
+        self.assertEqual(direct.network_mode, NetworkMode.DIRECT)
+
+    def test_web_bootargs_are_mode_specific_and_fit_uboot(self) -> None:
+        self.assertIn("network_mode", inspect.signature(physical_bootargs).parameters)
+        proxy = physical_bootargs(
+            600,
+            target=GateTarget.FIREFOX,
+            network_mode=NetworkMode.PROXY,
+        )
+        direct = physical_bootargs(
+            600,
+            target=GateTarget.FIREFOX,
+            network_mode=NetworkMode.DIRECT,
+            resolver_address="10.100.16.1",
+        )
+
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
+            proxy.split(),
+        )
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_URL=", proxy)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_BROWSER_WEB_CONSOLE=/dev/ttyS0",
+            proxy.split(),
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct",
+            direct.split(),
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER=10.100.16.1",
+            direct.split(),
+        )
+        self.assertNotIn("ASTERINAS_DESKTOP_PROXY_", direct)
+        for bootargs in (proxy, direct):
+            self.assertLess(len(f'setenv bootargs "{bootargs}"'.encode()), 1024)
+            self.assertNotIn("saveenv", bootargs)
+
+    def test_physical_web_network_classifier_isolates_modes(self) -> None:
+        self.assertTrue(
+            hasattr(gmac_gate, "classify_physical_web_network_transcript")
+        )
+        proxy = complete_web_network_evidence(NetworkMode.PROXY)
+        direct = complete_web_network_evidence(NetworkMode.DIRECT)
+        self.assertTrue(
+            gmac_gate.classify_physical_web_network_transcript(
+                proxy, mode=NetworkMode.PROXY
+            ).passed
+        )
+        self.assertTrue(
+            gmac_gate.classify_physical_web_network_transcript(
+                direct, mode=NetworkMode.DIRECT
+            ).passed
+        )
+        self.assertFalse(
+            gmac_gate.classify_physical_web_network_transcript(
+                proxy, mode=NetworkMode.DIRECT
+            ).passed
+        )
+
+    def test_web_network_gate_publishes_requested_mode(self) -> None:
+        self.assertIn("network_mode", inspect.signature(GateConfig).parameters)
+        evidence = complete_web_network_evidence(NetworkMode.PROXY)
+        operations = FakeOperations(chunks=(evidence, b"late harmless log\n"))
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
+            ),
+            operations,
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["target"], "network")
+        self.assertEqual(result["network_mode"], "proxy")
+        self.assertTrue(result["recovery_observed"])
+        self.assertIn(b"late harmless log", operations.published[0])
+        self.assertIn(b"OpenSBI v1.7", operations.published[0])
+
+    def test_web_gate_rejects_ready_marker_without_automatic_recovery(self) -> None:
+        evidence = complete_web_network_evidence(NetworkMode.PROXY)
+        operations = FakeOperations(boot=evidence, recovery=b"")
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                recovery_timeout=1,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
+            ),
+            operations,
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "automatic recovery not observed")
+        self.assertFalse(result["recovery_observed"])
+
+    def test_web_gate_rejects_fatal_marker_before_recovery_epoch(self) -> None:
+        evidence = complete_web_network_evidence(NetworkMode.PROXY)
+        operations = FakeOperations(
+            boot=evidence,
+            recovery=(
+                b"Kernel panic - not syncing\n"
+                b"OpenSBI v1.7\nU-Boot 2025.01\n=> "
+            ),
+        )
+
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                recovery_timeout=1,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
+            ),
+            operations,
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "fatal transcript marker: kernel panic")
+
     def test_bootargs_bind_static_profile_without_persistent_uboot_writes(self) -> None:
         bootargs = physical_bootargs()
 
@@ -201,7 +402,11 @@ class MegrezGmacGateTests(unittest.TestCase):
             1024,
         )
 
-        network_bootargs = physical_bootargs(180, target=GateTarget.NETWORK)
+        network_bootargs = physical_bootargs(
+            180,
+            target=GateTarget.NETWORK,
+            network_mode=NetworkMode.PROXY,
+        )
         self.assertIn(
             "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
             network_bootargs.split(),
@@ -276,6 +481,93 @@ class MegrezGmacGateTests(unittest.TestCase):
             published = json.loads((output / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(published["network_fixture"]["request_count"], 0)
 
+    def test_proxy_mode_owns_bridge_and_publishes_its_summary(self) -> None:
+        self.assertIn(
+            "proxy_bridge",
+            inspect.signature(PhysicalGateOperations).parameters,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "evidence"
+            output.mkdir()
+            fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+            proxy = FakeProxyBridge()
+            arguments = argparse.Namespace(
+                output_directory=output,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
+                expected_crc32={
+                    "booti": "12345678",
+                    "dtb": "90abcdef",
+                    "initrd": "deadbeef",
+                },
+            )
+            operations = PhysicalGateOperations(
+                arguments,
+                fixture=fixture,
+                proxy_bridge=proxy,
+            )
+
+            with operations:
+                self.assertTrue(fixture.running)
+                self.assertTrue(proxy.running)
+                operations.invalidate()
+                result: dict[str, object] = {
+                    "passed": False,
+                    "reason": "test",
+                    "target": "network",
+                    "network_mode": "proxy",
+                }
+                operations.publish(b"serial\n", result)
+
+            self.assertFalse(fixture.running)
+            self.assertFalse(proxy.running)
+            self.assertEqual(proxy.events, ["start", "close"])
+            published = json.loads((output / "result.json").read_text())
+            self.assertEqual(
+                published["proxy_bridge"]["upstream"],
+                "127.0.0.1:17892",
+            )
+            self.assertEqual(
+                published["artifact_crc32"],
+                {
+                    "booti": "12345678",
+                    "dtb": "90abcdef",
+                    "initrd": "deadbeef",
+                },
+            )
+            self.assertEqual(
+                json.loads((output / "proxy-bridge.json").read_text())["listen"],
+                "10.100.19.216:17893",
+            )
+
+    def test_proxy_bridge_start_failure_closes_started_fixture(self) -> None:
+        self.assertIn(
+            "proxy_bridge",
+            inspect.signature(PhysicalGateOperations).parameters,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "evidence"
+            output.mkdir()
+            fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+            proxy = FakeProxyBridge(fail_start=True)
+            arguments = argparse.Namespace(
+                output_directory=output,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
+            )
+            operations = PhysicalGateOperations(
+                arguments,
+                fixture=fixture,
+                proxy_bridge=proxy,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "bridge start failed"):
+                with operations:
+                    self.fail("unreachable")
+
+            self.assertFalse(fixture.running)
+            self.assertEqual(proxy.events, ["start", "close"])
+
     def test_physical_gate_accepts_only_complete_ymodem_contract(self) -> None:
         required = [
             "/dev/ttyUSB0",
@@ -313,8 +605,19 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(parsed.booti_uncompressed_size, 14530072)
         self.assertEqual(parsed.target, GateTarget.BROWSER)
 
-        network = _parse_args(required[:-2] + ["--target", "network"])
+        network = _parse_args(
+            required[:-2]
+            + [
+                "--target",
+                "network",
+                "--network-mode",
+                "proxy",
+                "--reboot-after",
+                "300",
+            ]
+        )
         self.assertEqual(network.target, GateTarget.NETWORK)
+        self.assertEqual(network.network_mode, NetworkMode.PROXY)
         desktop = _parse_args(required[:-2] + ["--target", "desktop"])
         self.assertEqual(desktop.target, GateTarget.DESKTOP)
 
@@ -332,7 +635,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(result["target"], "browser")
 
     def test_network_target_passes_without_desktop_or_browser_evidence(self) -> None:
-        evidence = complete_network_evidence()
+        evidence = complete_web_network_evidence(NetworkMode.PROXY)
         operations = FakeOperations(
             chunks=(evidence[13:-17], evidence[-17:], b"late harmless log\n"),
             boot=evidence[:13],
@@ -343,6 +646,7 @@ class MegrezGmacGateTests(unittest.TestCase):
                 boot_timeout=1,
                 drain_timeout=1,
                 target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
             ),
             operations,
         )
@@ -426,6 +730,7 @@ class MegrezGmacGateTests(unittest.TestCase):
                 boot_timeout=1,
                 drain_timeout=1,
                 target=GateTarget.NETWORK,
+                network_mode=NetworkMode.PROXY,
             ),
             operations,
         )
