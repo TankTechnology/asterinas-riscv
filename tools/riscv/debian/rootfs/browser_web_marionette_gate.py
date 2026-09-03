@@ -94,6 +94,12 @@ return JSON.stringify({
     try { return JSON.parse(output.textContent); } catch (_) { return {state: 'malformed'}; }
   })(),
   dom: {
+    baiduLogo: (() => {
+      const candidates = Array.from(document.querySelectorAll(
+        '#lg img, img[src*="baidu" i], img[alt*="Baidu" i], img[alt*="百度"], img[aria-label*="Baidu" i], img[aria-label*="百度"], img[title*="Baidu" i], img[title*="百度"]'
+      )).slice(0, 16);
+      return candidates.some((image) => image.complete && image.naturalWidth > 0);
+    })(),
     baiduKeyword: document.querySelector('#kw') !== null,
     baiduSubmit: document.querySelector('#su') !== null,
     // A presence check avoids enumerating hundreds of dynamic result nodes;
@@ -123,6 +129,12 @@ return JSON.stringify({
     try { return JSON.parse(output.textContent); } catch (_) { return {state: 'malformed'}; }
   })(),
   dom: {
+    baiduLogo: (() => {
+      const candidates = Array.from(document.querySelectorAll(
+        '#lg img, img[src*="baidu" i], img[alt*="Baidu" i], img[alt*="百度"], img[aria-label*="Baidu" i], img[aria-label*="百度"], img[title*="Baidu" i], img[title*="百度"]'
+      )).slice(0, 16);
+      return candidates.some((image) => image.complete && image.naturalWidth > 0);
+    })(),
     baiduKeyword: document.querySelector('#kw') !== null,
     baiduSubmit: document.querySelector('#su') !== null,
     baiduResults: document.querySelectorAll('#content_left .result, #content_left .c-container').length,
@@ -209,6 +221,7 @@ setTimeout(() => link.click(), 0);
 return 'fixture-download-scheduled';"""
 
 _DOM_FIELDS = {
+    "baiduLogo",
     "baiduKeyword",
     "baiduSubmit",
     "baiduResults",
@@ -294,8 +307,12 @@ def probe_baidu_home(probe: object) -> None:
     result = _validate_probe_common(probe, host="www.baidu.com")
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if dom["baiduKeyword"] is not True or dom["baiduSubmit"] is not True:
-        raise GateError("Baidu home search controls are not ready")
+    if (
+        dom["baiduKeyword"] is not True
+        or dom["baiduSubmit"] is not True
+        or dom["baiduLogo"] is not True
+    ):
+        raise GateError("Baidu home search controls or logo are not ready")
 
 
 def probe_baidu_search(probe: object) -> None:
@@ -396,15 +413,24 @@ def validate_baidu_home(snapshot: object) -> None:
     result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=True)
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if dom["baiduKeyword"] is not True or dom["baiduSubmit"] is not True:
-        raise GateError("Baidu home search controls are absent")
+    if (
+        dom["baiduKeyword"] is not True
+        or dom["baiduSubmit"] is not True
+        or dom["baiduLogo"] is not True
+    ):
+        raise GateError("Baidu home search controls or logo are absent")
 
 
 def validate_baidu_search(snapshot: object) -> None:
     result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=False)
     parsed = urlparse(str(result["url"]))
-    if parse_qs(parsed.query).get("wd") != ["Asterinas"]:
+    if parsed.path != "/s" or parse_qs(parsed.query).get("wd") != ["Asterinas"]:
         raise GateError("Baidu search URL does not contain the exact query")
+    title = result["title"]
+    body = result["bodyText"]
+    assert isinstance(title, str) and isinstance(body, str)
+    if "asterinas" not in f"{title}\n{body}".casefold():
+        raise GateError("Baidu search query content is absent")
     dom = result["dom"]
     assert isinstance(dom, dict)
     count = dom["baiduResults"]
@@ -926,7 +952,7 @@ def _wait_for_probe(
             print("A_WEB_PROBE_COMMAND state=done", file=sys.stderr, flush=True)
             return probe, validator(probe)
         except GateError as error:
-            # Preserve the browser-side capability failure in serial evidence
+            # Preserve the browser-side capability progress in serial evidence
             # instead of reducing a long-running readiness timeout to a vague
             # protocol error.  This remains diagnostic-only: validators stay
             # fail-closed and the marker is emitted at most once per wait.
@@ -934,13 +960,14 @@ def _wait_for_probe(
             if (
                 not capability_reported
                 and isinstance(capabilities, dict)
-                and capabilities.get("state") == "error"
+                and capabilities.get("state") in {"running", "error"}
             ):
                 capability_reported = True
                 checks = capabilities.get("checks")
                 checks_text = json.dumps(checks, sort_keys=True, separators=(",", ":"))
                 print(
-                    "A_WEB_PROBE_CAPABILITIES state=error "
+                    "A_WEB_PROBE_CAPABILITIES "
+                    f"state={capabilities.get('state')} "
                     f"error={json.dumps(str(capabilities.get('error')), ensure_ascii=True)} "
                     f"checks={checks_text}",
                     file=sys.stderr,

@@ -5,9 +5,94 @@
 
 from __future__ import annotations
 
+from enum import Enum
+import re
+
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
+
+
+class NetworkMode(str, Enum):
+    """The externally distinguishable web-network path under test."""
+
+    PROXY = "proxy"
+    DIRECT = "direct"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+NETWORK_LAYERS = (
+    "link",
+    "address",
+    "neighbor",
+    "reachability",
+    "dns",
+    "http",
+    "https",
+    "baidu-asset",
+    "repeat",
+    "medium",
+)
+_WEB_NETWORK_FAILURE_LAYERS = ("config", *NETWORK_LAYERS)
+_WEB_NETWORK_FAILURE_RE = re.compile(
+    rb"DEBIAN_WEB_NETWORK_FAIL mode=([a-z]+) layer=([a-z-]+) "
+    rb"reason=([^\r\n ]+)"
+)
+
+
+def classify_web_network(transcript: bytes, *, mode: NetworkMode) -> GateResult:
+    """Require one ordered ten-layer transcript for exactly one network mode."""
+
+    if not isinstance(transcript, bytes):
+        return GateResult(False, "web network transcript must be bytes", None)
+    if not isinstance(mode, NetworkMode):
+        return GateResult(False, "web network mode must be a NetworkMode", None)
+
+    failure = _WEB_NETWORK_FAILURE_RE.search(transcript)
+    if failure is not None:
+        failure_mode = failure.group(1).decode("ascii")
+        layer = failure.group(2).decode("ascii")
+        reason = failure.group(3).decode("ascii")
+        if failure_mode != mode.value:
+            return GateResult(False, "mixed web network modes", None)
+        if layer not in _WEB_NETWORK_FAILURE_LAYERS:
+            return GateResult(False, "web network failure has unknown layer", None)
+        return GateResult(
+            False,
+            f"web network {layer} failure: {reason}",
+            None,
+        )
+
+    positions: list[int] = []
+    for layer in NETWORK_LAYERS:
+        marker = (
+            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
+            f"layer={layer} status=pass"
+        ).encode()
+        if transcript.count(marker) != 1:
+            return GateResult(
+                False,
+                f"missing or duplicate {layer} layer",
+                None,
+            )
+        positions.append(transcript.find(marker))
+
+    ready = (
+        f"DEBIAN_WEB_NETWORK_READY mode={mode.value} "
+        f"layers={len(NETWORK_LAYERS)}"
+    ).encode()
+    if transcript.count(ready) != 1:
+        return GateResult(False, "missing or duplicate mode-qualified ready", None)
+    positions.append(transcript.find(ready))
+
+    foreign = NetworkMode.DIRECT if mode is NetworkMode.PROXY else NetworkMode.PROXY
+    if f"DEBIAN_WEB_NETWORK_READY mode={foreign.value} ".encode() in transcript:
+        return GateResult(False, "mixed web network modes", None)
+    if positions != sorted(positions):
+        return GateResult(False, "web network layers out of order", None)
+    return GateResult(True, "pass", None)
 
 
 DESKTOP_M5_MEGREZ_MILESTONES = (

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MPL-2.0
+[Unit]
+Description=Asterinas Debian browser-free desktop evidence
+After=basic.target
+Wants=asterinas-desktop-m4.service
+ConditionEnvironment=ASTERINAS_DESKTOP_BROWSER_ENABLED=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/desktop-m4-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
