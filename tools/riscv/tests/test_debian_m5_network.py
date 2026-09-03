@@ -935,7 +935,10 @@ case "$*" in
         if [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor ]; then
             printf '%s\n' '10.100.16.1 dev eth0 INCOMPLETE'
         elif [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor-unobservable ]; then
-            :
+            printf '%s\n' 'RTNETLINK answers: Operation not supported' >&2
+            exit 1
+        elif [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor-command ]; then
+            exit 2
         else
             printf '%s\n' "$4 dev eth0 lladdr 4c:d6:29:18:93:43 REACHABLE"
         fi
@@ -1193,6 +1196,7 @@ esac
             "link": ("link", "carrier"),
             "address": ("address", "static-address"),
             "neighbor": ("neighbor", "neighbor-unusable"),
+            "neighbor-command": ("neighbor", "neighbor-unusable"),
             "reachability": ("reachability", "icmp-timeout"),
             "dns": ("dns", "resolve"),
             "http": ("http", "tcp-connect"),
