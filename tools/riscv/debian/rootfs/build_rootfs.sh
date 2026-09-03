@@ -1142,6 +1142,11 @@ finalize_browser_startup_caches() {
         run_chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
+    # udev's package post-install hook can run before every directory needed
+    # by systemd-hwdb exists under emulation.  Rebuild the target-owned binary
+    # database after package installation is complete instead of accepting a
+    # rootfs whose first boot must repair it.
+    run_chroot "$stage" /usr/bin/systemd-hwdb update
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     # Keep the target-side diagnostic visible without rewriting Debian's
     # usr-is-merged cache aliases.  The package postinst has already created
