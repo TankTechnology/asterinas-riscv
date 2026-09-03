@@ -18,7 +18,11 @@ fi
 ./cpu_affinity/cpu_affinity
 
 if [ "$(uname -m)" = "riscv64" ]; then
-    ./riscv_flush_icache/riscv_flush_icache
+    if grep -qw 'RISCV_ICACHE_REQUIRE_SMP4=1' /proc/cmdline; then
+        ./riscv_flush_icache/riscv_flush_icache --require-smp4
+    else
+        ./riscv_flush_icache/riscv_flush_icache
+    fi
 fi
 
 ./execve/execve
