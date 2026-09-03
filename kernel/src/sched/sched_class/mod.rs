@@ -169,7 +169,7 @@ impl SchedAttr {
                 real_time::RealTimeAttr::new(prio, policy)
             },
             fair: fair::FairAttr::new(match policy {
-                SchedPolicy::Fair(nice) => nice,
+                SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => nice,
                 _ => Nice::default(),
             }),
             reset_on_fork: AtomicBool::new(false),
@@ -218,7 +218,7 @@ impl SchedAttr {
             SchedPolicy::RealTime { rt_prio, rt_policy } => {
                 self.real_time.update(rt_prio.get(), rt_policy);
             }
-            SchedPolicy::Fair(nice) => self.fair.update(nice),
+            SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => self.fair.update(nice),
             _ => {}
         });
     }
@@ -259,7 +259,10 @@ impl Scheduler for ClassScheduler {
             .current
             .as_ref()
             .is_none_or(|((_, rq_current_thread), _)| {
-                thread.sched_attr().policy() < rq_current_thread.sched_attr().policy()
+                thread
+                    .sched_attr()
+                    .policy()
+                    .outranks(&rq_current_thread.sched_attr().policy())
             });
 
         thread.sched_attr().set_last_cpu(cpu);
