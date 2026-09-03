@@ -360,12 +360,27 @@ def proxy_web_evidence() -> dict[str, bytes]:
         'user_pref("network.proxy.http_port", 17893);\n'
         'user_pref("network.proxy.ssl", "10.0.2.2");\n'
         'user_pref("network.proxy.ssl_port", 17893);\n'
-        'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
+        'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1, 10.0.2.2");\n'
     ).encode()
     return evidence
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    _BACKGROUND_STARTUP_PREFERENCES = {
+        'user_pref("browser.newtabpage.enabled", false);',
+        'user_pref("browser.pagethumbnails.capturing_disabled", true);',
+        'user_pref("browser.region.network.url", "");',
+        'user_pref("browser.topsites.contile.enabled", false);',
+        'user_pref("network.captive-portal-service.enabled", false);',
+        'user_pref("network.connectivity-service.enabled", false);',
+    }
+    _DOWNLOAD_PREFERENCES = {
+        'user_pref("browser.download.folderList", 2);',
+        'user_pref("browser.download.dir", "/home/asterinas/Downloads");',
+        'user_pref("browser.download.useDownloadDir", true);',
+        'user_pref("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream");',
+    }
+
     def _prepare_firefox_profile(
         self,
         home: Path,
@@ -403,15 +418,20 @@ class BrowserWebContractTests(unittest.TestCase):
             profile = (
                 home / ".mozilla/asterinas-browser-web/user.js"
             ).read_text(encoding="utf-8")
-            for preference in (
+            proxy_preferences = {
                 'user_pref("network.proxy.type", 1);',
                 'user_pref("network.proxy.http", "10.100.19.216");',
                 'user_pref("network.proxy.http_port", 17893);',
                 'user_pref("network.proxy.ssl", "10.100.19.216");',
                 'user_pref("network.proxy.ssl_port", 17893);',
-                'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");',
-            ):
-                self.assertIn(preference, profile)
+                'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1, 10.100.19.216");',
+            }
+            self.assertEqual(
+                set(profile.splitlines()),
+                self._BACKGROUND_STARTUP_PREFERENCES
+                | self._DOWNLOAD_PREFERENCES
+                | proxy_preferences,
+            )
             self.assertEqual(
                 oct((home / ".mozilla/asterinas-browser-web/user.js").stat().st_mode & 0o777),
                 "0o600",
@@ -447,7 +467,12 @@ class BrowserWebContractTests(unittest.TestCase):
             profile = (
                 home / ".mozilla/asterinas-browser-web/user.js"
             ).read_text(encoding="utf-8")
-            self.assertIn('user_pref("network.proxy.type", 0);', profile)
+            self.assertEqual(
+                set(profile.splitlines()),
+                self._BACKGROUND_STARTUP_PREFERENCES
+                | self._DOWNLOAD_PREFERENCES
+                | {'user_pref("network.proxy.type", 0);'},
+            )
             self.assertNotIn("network.proxy.http", profile)
             self.assertNotIn("network.proxy.ssl", profile)
             self.assertNotIn("network.proxy.no_proxies_on", profile)
@@ -861,6 +886,11 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('/usr/bin/tee -a "$GATE_STDERR" >>"$CONSOLE"', evidence)
         self.assertIn("DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha", evidence)
         self.assertIn("unavailable-firefox-riscv64-build", evidence)
+        self.assertIn('emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"', evidence)
+        self.assertLess(
+            evidence.index('emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"'),
+            evidence.index('/usr/bin/timeout 20 /usr/bin/sync || true'),
+        )
         self.assertIn("/usr/bin/timeout 20 /usr/bin/sync || fail evidence-sync", evidence)
         self.assertNotIn("sync /home/asterinas/browser-web-evidence", evidence)
         self.assertLess(
@@ -1473,6 +1503,25 @@ generate_fontconfig_cache "$stage" "$3"
             with self.assertRaisesRegex(GateFailure, "guest reported desktop failure"):
                 operations.run_protocol(session, mock.sentinel.config)
 
+    def test_kernel_fatal_drains_a_bounded_serial_tail(self) -> None:
+        operations = object.__new__(BrowserWebQemuOperations)
+        serial = mock.Mock(transcript=b"prefix\n" + KERNEL_FATAL_MARKERS[0])
+        session = {"serial": serial}
+        config = mock.Mock(cleanup_timeout=3.0)
+        with (
+            mock.patch(
+                "tools.riscv.debian.rootfs.desktop_m3_gate.DesktopM3Operations.run_protocol",
+                side_effect=GateFailure("guest reported desktop failure"),
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_qemu_gate.time.monotonic",
+                return_value=100.0,
+            ),
+        ):
+            with self.assertRaisesRegex(GateFailure, "guest reported desktop failure"):
+                operations.run_protocol(session, config)
+        serial.drain.assert_called_once_with(103.0)
+
     def test_baidu_search_is_submitted_from_live_homepage(self) -> None:
         client = mock.Mock()
         client.command.return_value = {"value": "search-click-scheduled"}
@@ -1682,6 +1731,52 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertEqual(observed, ready)
         self.assertIsNone(result)
         self.assertEqual(client.command.call_count, 2)
+
+    def test_marionette_reports_running_fixture_capabilities_once(self) -> None:
+        url = "http://10.0.2.2:17894/browser-quality/index.html"
+        running = snapshot(url, tls=0)
+        running["title"] = "Asterinas Browser Quality"
+        running["bodyText"] = "Asterinas browser quality / 浏览器质量"
+        for field in ("fixtureQuery", "fixtureImage", "fixtureSecond"):
+            running["dom"][field] = True
+        running["browserCapabilities"] = {
+            "version": 1,
+            "phase": "home",
+            "state": "running",
+            "checks": {"localStorage": True, "canvas": True},
+            "error": None,
+        }
+        complete = copy.deepcopy(running)
+        complete["browserCapabilities"] = fixture_capabilities("home")
+        fields = {
+            "url", "title", "readyState", "bodyText", "jsComplete",
+            "browserCapabilities", "dom",
+        }
+        client = mock.Mock()
+        client.command.side_effect = [
+            {"value": json.dumps({key: running[key] for key in fields})},
+            {"value": json.dumps({key: complete[key] for key in fields})},
+        ]
+        with (
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate.time.sleep"
+            ),
+            mock.patch("builtins.print") as printed,
+        ):
+            observed, result = _wait_for_probe(
+                client, lambda probe: probe_fixture_home(probe, url),
+                time.monotonic() + 5,
+            )
+        self.assertEqual(observed["browserCapabilities"]["state"], "complete")
+        self.assertIsNone(result)
+        capability_lines = [
+            call.args[0]
+            for call in printed.call_args_list
+            if call.args and str(call.args[0]).startswith("A_WEB_PROBE_CAPABILITIES")
+        ]
+        self.assertEqual(len(capability_lines), 1)
+        self.assertIn("state=running", capability_lines[0])
+        self.assertIn('checks={"canvas":true,"localStorage":true}', capability_lines[0])
 
     def test_marionette_search_follows_a_new_window(self) -> None:
         old = snapshot("about:blank")

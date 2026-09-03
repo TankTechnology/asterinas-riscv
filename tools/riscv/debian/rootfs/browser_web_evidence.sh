@@ -186,7 +186,7 @@ validate_firefox_network_profile() {
             fail firefox-proxy-ssl
         grep -Fxq "user_pref(\"network.proxy.ssl_port\", $PROXY_PORT);" "$profile_file" ||
             fail firefox-proxy-ssl-port
-        grep -Fxq 'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");' "$profile_file" ||
+        grep -Fxq "user_pref(\"network.proxy.no_proxies_on\", \"localhost, 127.0.0.1, $PROXY_HOST\");" "$profile_file" ||
             fail firefox-proxy-no-proxies
         [[ "$(grep -c 'network\.proxy\.' "$profile_file")" == 6 ]] ||
             fail firefox-proxy-profile-extra
@@ -556,10 +556,14 @@ if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
     if grep -Fq 'challenge host observed' "$GATE_STDERR"; then
         emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
     fi
-    # A fail-closed external challenge must not discard the already completed
-    # Baidu-home and Bilibili platform evidence when QEMU terminates the guest.
+    # Publish the terminal failure before sync.  Asterinas can leave sync in an
+    # uninterruptible wait after a browser failure; the host must still be able
+    # to classify the result and reclaim QEMU without waiting for the global
+    # boot timeout.  The subsequent sync is best-effort preservation of partial
+    # page evidence and cannot weaken the serial failure verdict.
+    emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"
     /usr/bin/timeout 20 /usr/bin/sync || true
-    fail browser-content
+    exit 1
 fi
 stop_gate_sampler
 cat "$GATE_STDERR" >>"$TIMELINE_LOG"
