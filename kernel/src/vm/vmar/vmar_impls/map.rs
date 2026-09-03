@@ -10,7 +10,10 @@ use crate::{
         vfs::path::Path,
     },
     prelude::*,
-    vm::{page_cache::Vmo, perms::VmPerms},
+    vm::{
+        page_cache::{Vmo, VmoOptions},
+        perms::VmPerms,
+    },
 };
 
 impl Vmar {
@@ -286,6 +289,23 @@ impl<'a> VmarMapOptions<'a> {
             handle_page_faults_around,
         } = self;
 
+        // Linux treats private `/dev/zero` mappings as anonymous mappings and
+        // gives each shared mapping a fresh shmem object. Allocate that object
+        // here because only the mapping builder knows the requested size and
+        // whether the mapping is shared. File offsets do not affect `/dev/zero`.
+        // Reference: <https://github.com/torvalds/linux/blob/master/drivers/char/mem.c>.
+        let (mappable, path, vmo_offset) = match mappable {
+            Some(Mappable::Anonymous) => {
+                let mappable = if is_shared {
+                    Some(Mappable::Vmo(VmoOptions::new(map_size).alloc()?))
+                } else {
+                    None
+                };
+                (mappable, None, 0)
+            }
+            mappable => (mappable, path, vmo_offset),
+        };
+
         let mut inner = parent.inner.write();
 
         inner
@@ -374,6 +394,7 @@ impl<'a> VmarMapOptions<'a> {
                 (mapped_mem, None)
             }
             Some(Mappable::IoMem(io_mem)) => (MappedMemory::Device, Some(io_mem)),
+            Some(Mappable::Anonymous) => unreachable!("anonymous mappable was normalized above"),
             None => (MappedMemory::Anonymous, None),
         };
 
