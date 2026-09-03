@@ -7298,6 +7298,12 @@ class PreparationContractTests(unittest.TestCase):
             "ece349ade2973e220f524ce59e59711cc919263f\n",
         )
 
+    def test_cached_uboot_uses_only_command_scoped_safe_directory(self) -> None:
+        script = PREPARE_SCRIPT.read_text()
+
+        self.assertIn('git -c "safe.directory=${source_dir}"', script)
+        self.assertNotIn("git config --global", script)
+
     def test_check_tools_reports_every_missing_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as empty_path:
             python = Path(empty_path) / "python3"
