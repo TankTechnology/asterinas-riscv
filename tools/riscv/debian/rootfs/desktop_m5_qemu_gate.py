@@ -64,11 +64,11 @@ QEMU_PROXY_URL = "http://10.0.2.2:17893"
 DESKTOP_M5_QEMU_BOOTARGS = (
     "console=ttyS0 loglevel=4 init=/init "
     "asterinas.debian_network=qemu-slirp "
-    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL} "
-    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE} "
-    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256} "
-    f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS} "
-    f"systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS={QEMU_NETWORK_TIMEOUT_SECONDS} "
+    f"ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL} "
+    f"ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE} "
+    f"ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256} "
+    f"ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS} "
+    f"ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS={QEMU_NETWORK_TIMEOUT_SECONDS} "
     "-- --root-init=systemd"
 )
 
@@ -213,34 +213,34 @@ def qemu_web_network_bootargs(
         raise ValueError("expected failure must be a QemuExpectedFailure")
     resolver = "192.0.2.1" if expected_failure is QemuExpectedFailure.DNS else "10.0.2.3"
     mode_arguments = (
-        f"systemd.setenv=ASTERINAS_WEB_NETWORK_MODE={mode.value} "
-        "systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 "
-        "systemd.setenv=ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 "
+        f"ASTERINAS_WEB_NETWORK_MODE={mode.value} "
+        "ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 "
+        "ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 "
     )
     if mode is NetworkMode.PROXY:
         mode_arguments += (
-            f"systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL={QEMU_PROXY_URL} "
-            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.0.2.2 "
-            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893 "
+            f"ASTERINAS_DESKTOP_PROXY_URL={QEMU_PROXY_URL} "
+            "ASTERINAS_DESKTOP_PROXY_HOST=10.0.2.2 "
+            "ASTERINAS_DESKTOP_PROXY_PORT=17893 "
         )
     else:
         mode_arguments += (
-            f"systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER={resolver} "
+            f"ASTERINAS_WEB_NETWORK_RESOLVER={resolver} "
         )
     if expected_failure is QemuExpectedFailure.TLS:
         mode_arguments += (
-            "systemd.setenv=ASTERINAS_WEB_NETWORK_HTTPS_URL="
+            "ASTERINAS_WEB_NETWORK_HTTPS_URL="
             "https://10.0.2.2:8446/ "
         )
     return (
         "console=ttyS0 loglevel=4 init=/init "
         "asterinas.debian_network=qemu-slirp "
         f"{mode_arguments}"
-        f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL} "
-        f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE} "
-        f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256} "
-        f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS} "
-        f"systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS={QEMU_NETWORK_TIMEOUT_SECONDS} "
+        f"ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL} "
+        f"ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE} "
+        f"ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256} "
+        f"ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS} "
+        f"ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS={QEMU_NETWORK_TIMEOUT_SECONDS} "
         "-- --root-init=systemd"
     )
 

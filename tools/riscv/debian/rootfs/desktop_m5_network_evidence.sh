@@ -134,6 +134,7 @@ web_network_evidence() {
     local neighbor_output
     local neighbor_status=0
     local peer
+    local remaining_budget
     local signature
     local temporary_asset
     local temporary_medium
@@ -269,7 +270,12 @@ web_network_evidence() {
     done <<<"$headers"
     [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
         web_fail http date-header
+    remaining_budget=$((deadline - SECONDS))
+    ((remaining_budget > 0)) || web_fail http timeout
     date --utc --set "$clock_date" >/dev/null || web_fail http clock-set
+    # Bash's SECONDS follows the wall clock on this platform.  Rebase the
+    # deadline after deliberately correcting a dummy-RTC boot from 1970.
+    deadline=$((SECONDS + remaining_budget))
     if ((neighbor_observable == 0)); then
         emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE neighbor=unobservable proof=owned-fixture-http"
         web_emit_layer neighbor

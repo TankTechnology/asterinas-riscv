@@ -625,11 +625,11 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         plan = self._plan()
         required_tokens = (
             "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
-            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
-            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
-            "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
-            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
-            "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.100.19.216:17894/asterinas-network-probe.bin",
+            "ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
+            "ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            "ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+            "ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
+            "ASTERINAS_DESKTOP_FIXTURE_URL=http://10.100.19.216:17894/asterinas-network-probe.bin",
         )
 
         for token in required_tokens:

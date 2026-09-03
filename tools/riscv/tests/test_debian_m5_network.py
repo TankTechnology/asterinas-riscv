@@ -1138,6 +1138,36 @@ esac
         self.assertFalse(any(line.startswith("getent ") for line in commands))
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
 
+    def test_web_network_deadline_survives_wall_clock_correction(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-clock-correction", mode="proxy"
+        )
+        bash_environment = self.directory / "web-clock-correction.bashenv"
+        bash_environment.write_text(
+            "date() {\n"
+            "    SECONDS=$((SECONDS + 3600))\n"
+            "    command date \"$@\"\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        environment["BASH_ENV"] = str(bash_environment)
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, console.read_text())
+        commands = command_log.read_text(encoding="utf-8")
+        self.assertIn("https://www.baidu.com/", commands)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
+        )
+
     def test_direct_web_network_has_no_proxy_configuration(self) -> None:
         environment, console, resolv_conf, command_log = (
             self._web_network_environment(
@@ -1805,9 +1835,10 @@ printf '200\t10.0.2.15'
             ("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", "120"),
         ):
             self.assertIn(
-                f"systemd.setenv={variable}={value}",
+                f"{variable}={value}",
                 DESKTOP_M5_QEMU_BOOTARGS.split(),
             )
+        self.assertNotIn("systemd.setenv=", DESKTOP_M5_QEMU_BOOTARGS)
         self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
         self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
 
@@ -1881,6 +1912,11 @@ printf '200\t10.0.2.15'
         self.assertIn("ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3", direct)
         self.assertNotIn("PROXY", direct)
         self.assertNotIn("--proxy", direct)
+        for bootargs in (proxy, direct):
+            kernel_arguments, init_arguments = bootargs.split(" -- ", 1)
+            self.assertIn("ASTERINAS_WEB_NETWORK_MODE=", kernel_arguments)
+            self.assertNotIn("systemd.setenv=", bootargs)
+            self.assertEqual(init_arguments, "--root-init=systemd")
         tls = qemu_web_network_bootargs(
             network_gate.NetworkMode.DIRECT,
             expected_failure=QemuExpectedFailure.TLS,
@@ -1918,25 +1954,31 @@ printf '200\t10.0.2.15'
             or command.startswith("setenv bootargs ")
         )
 
-        self.assertGreaterEqual(len(bootarg_commands), 3)
+        self.assertGreaterEqual(len(bootarg_commands), 1)
         self.assertTrue(
             all(
                 len(command.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT
                 for command in commands
             )
         )
-        chunks = tuple(
-            command.split('"', 2)[1]
-            for command in bootarg_commands[:-1]
-        )
-        self.assertEqual(" ".join(chunks), operations.BOOTARGS)
-        expansion = " ".join(
-            f"${{ast_bootargs_{index}}}" for index in range(len(chunks))
-        )
-        self.assertEqual(
-            bootarg_commands[-1],
-            f'setenv bootargs "{expansion}"',
-        )
+        if len(bootarg_commands) == 1:
+            self.assertEqual(
+                bootarg_commands[0],
+                f'setenv bootargs "{operations.BOOTARGS}"',
+            )
+        else:
+            chunks = tuple(
+                command.split('"', 2)[1]
+                for command in bootarg_commands[:-1]
+            )
+            self.assertEqual(" ".join(chunks), operations.BOOTARGS)
+            expansion = " ".join(
+                f"${{ast_bootargs_{index}}}" for index in range(len(chunks))
+            )
+            self.assertEqual(
+                bootarg_commands[-1],
+                f'setenv bootargs "{expansion}"',
+            )
 
     def test_qemu_web_network_negative_cases(self) -> None:
         cases = (

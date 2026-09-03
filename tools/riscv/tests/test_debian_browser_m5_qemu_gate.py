@@ -116,9 +116,13 @@ class DebianBrowserM5QemuGateTests(unittest.TestCase):
         self.assertIn("asterinas.debian_network=qemu-slirp", BROWSER_M5_QEMU_BOOTARGS)
         self.assertNotIn("systemd.log_level", BROWSER_M5_QEMU_BOOTARGS)
         self.assertIn(
-            "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=120",
+            "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=120",
             BROWSER_M5_QEMU_BOOTARGS,
         )
+        kernel_arguments, init_arguments = BROWSER_M5_QEMU_BOOTARGS.split(" -- ", 1)
+        self.assertIn("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=120", kernel_arguments)
+        self.assertNotIn("systemd.setenv=", BROWSER_M5_QEMU_BOOTARGS)
+        self.assertEqual(init_arguments, "--root-init=systemd")
 
     def test_make_target_is_explicit_and_only_extends_host_budget(self) -> None:
         target = (

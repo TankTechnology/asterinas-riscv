@@ -110,7 +110,7 @@ DESKTOP_MASK_BOOTARGS = " ".join(
 )
 MAX_UBOOT_COMMAND_BYTES = 1024
 DESKTOP_PROXY_BOOTARGS = " ".join(
-    f"systemd.setenv={name}={value}"
+    f"{name}={value}"
     for name, value in (
         ("ASTERINAS_DESKTOP_PROXY_URL", PROXY_URL),
         ("ASTERINAS_DESKTOP_PROXY_HOST", HOST_ADDRESS),
@@ -118,7 +118,7 @@ DESKTOP_PROXY_BOOTARGS = " ".join(
     )
 )
 DESKTOP_FIXTURE_BOOTARGS = " ".join(
-    f"systemd.setenv={name}={value}"
+    f"{name}={value}"
     for name, value in (
         ("ASTERINAS_DESKTOP_FIXTURE_URL", FIXTURE_URL),
         ("ASTERINAS_DESKTOP_FIXTURE_SIZE", str(PAYLOAD_SIZE)),
@@ -154,17 +154,6 @@ _BROWSER_READY_RE = re.compile(
 PHYSICAL_READY_MARKERS = (DESKTOP_M7_READY_MARKER.encode(),)
 PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
 PHYSICAL_DESKTOP_READY_MARKERS = (PHYSICAL_DESKTOP_MILESTONES[-1],)
-_FATAL_MARKERS = (
-    (b"kernel panic", "kernel panic"),
-    (b"oops:", "kernel oops"),
-    (b"debian_rootfs_fail reason=", "Stage1 rootfs failure"),
-    (b"debian_network_m5_fail reason=", "guest network failure"),
-    (b"debian_browser_m6_fail reason=", "browser guest failure"),
-    (b"debian_browser_m7_fail reason=", "Baidu page guest failure"),
-    (b"fatal bus error", "GMAC fatal bus error"),
-)
-
-
 class GateFailure(RuntimeError):
     """One stable physical-gate contract failure."""
 
@@ -183,6 +172,39 @@ class GateTarget(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+_FATAL_MARKERS = (
+    (b"kernel panic", "kernel panic", frozenset(GateTarget)),
+    (b"oops:", "kernel oops", frozenset(GateTarget)),
+    (b"debian_rootfs_fail reason=", "Stage1 rootfs failure", frozenset(GateTarget)),
+    (
+        b"debian_network_m5_fail reason=",
+        "guest network failure",
+        frozenset((GateTarget.BROWSER, GateTarget.NETWORK, GateTarget.FIREFOX)),
+    ),
+    (
+        b"debian_web_network_fail mode=",
+        "web network failure",
+        frozenset((GateTarget.NETWORK, GateTarget.FIREFOX)),
+    ),
+    (
+        b"debian_browser_m6_fail reason=",
+        "browser guest failure",
+        frozenset((GateTarget.BROWSER,)),
+    ),
+    (
+        b"debian_browser_m7_fail reason=",
+        "Baidu page guest failure",
+        frozenset((GateTarget.BROWSER,)),
+    ),
+    (
+        b"debian_browser_web_fail reason=",
+        "Firefox guest failure",
+        frozenset((GateTarget.FIREFOX,)),
+    ),
+    (b"fatal bus error", "GMAC fatal bus error", frozenset(GateTarget)),
+)
 
 
 class GateTermination(BaseException):
@@ -299,9 +321,9 @@ def physical_bootargs(
         bootargs = (
             "console=ttyS0 console=tty0 loglevel=info "
             f"init=/init {ROOTFS_WRITE_BOOTARG}{restart} "
-            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0 "
-            "systemd.setenv=ASTERINAS_DESKTOP_BROWSER_ENABLED=0 "
             f"{DESKTOP_MASK_BOOTARGS} "
+            "ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0 "
+            "ASTERINAS_DESKTOP_BROWSER_ENABLED=0 "
             "-- --root-init=systemd"
         )
         command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
@@ -314,14 +336,14 @@ def physical_bootargs(
         if target is GateTarget.FIREFOX:
             evidence_variables.append("ASTERINAS_BROWSER_WEB_CONSOLE")
         evidence = " ".join(
-            f"systemd.setenv={name}=/dev/ttyS0" for name in evidence_variables
+            f"{name}=/dev/ttyS0" for name in evidence_variables
         )
         mode_arguments = (
-            f"systemd.setenv=ASTERINAS_WEB_NETWORK_MODE={network_mode.value}"
+            f"ASTERINAS_WEB_NETWORK_MODE={network_mode.value}"
         )
         if network_mode is NetworkMode.DIRECT:
             mode_arguments += (
-                " systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER="
+                " ASTERINAS_WEB_NETWORK_RESOLVER="
                 f"{resolver_address}"
             )
             proxy_arguments = ""
@@ -345,7 +367,7 @@ def physical_bootargs(
         else SERIAL_EVIDENCE_VARIABLES
     )
     evidence = " ".join(
-        f"systemd.setenv={name}=/dev/ttyS0" for name in evidence_variables
+        f"{name}=/dev/ttyS0" for name in evidence_variables
     )
     bootargs = (
         "console=ttyS0 console=tty0 loglevel=info "
@@ -469,6 +491,9 @@ def classify_physical_firefox_transcript(
 ) -> GateResult:
     """Require the matching physical network path before Firefox readiness."""
 
+    fatal_reason = _fatal_transcript_reason(transcript, target=GateTarget.FIREFOX)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
     network = classify_physical_web_network_transcript(transcript, mode=mode)
     if not network.passed:
         return network
@@ -511,14 +536,8 @@ def _fatal_transcript_reason(
     transcript: bytes, *, target: GateTarget = GateTarget.BROWSER
 ) -> str | None:
     lowered = transcript.lower()
-    for marker, reason in _FATAL_MARKERS:
-        if target is GateTarget.DESKTOP and reason in (
-            "guest network failure",
-            "browser guest failure",
-            "Baidu page guest failure",
-        ):
-            continue
-        if marker in lowered:
+    for marker, reason, targets in _FATAL_MARKERS:
+        if target in targets and marker in lowered:
             return f"fatal transcript marker: {reason}"
     return None
 
@@ -546,12 +565,27 @@ def check_address_unused(
         raise GateFailure("invalid board IPv4 address") from error
     if parsed.version != 4:
         raise GateFailure("invalid board IPv4 address")
-    argv = ("arping", "-D", "-c", "2", "-w", "3", "-I", interface, address)
-    completed = run(argv, capture_output=True, check=False)
+    argv = ("arping", "-c", "2", "-w", "3", "-I", interface, address)
+    completed = run(
+        argv,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
     if completed.returncode == 0:
-        return
-    if completed.returncode == 1:
         raise GateFailure("board IPv4 address is already in use")
+    no_reply_markers = (
+        b"0 packets received",
+        b"Received 0 response",
+        b"100% unanswered",
+        b"100% packet loss",
+    )
+    if (
+        completed.returncode == 1
+        and not completed.stderr.strip()
+        and any(marker in completed.stdout for marker in no_reply_markers)
+    ):
+        return
     raise GateFailure(
         f"duplicate-address probe failed with status {completed.returncode}"
     )

@@ -145,31 +145,34 @@ def run(
     futex_diagnostic: bool = False,
 ) -> int:
     _safe_output(config.output_directory)
-    diagnostic_args = (
+    systemd_diagnostic_args = (
         " systemd.setenv=ASTERINAS_FIREFOX_PS_DIAGNOSTIC=1"
         " systemd.setenv=ASTERINAS_FIREFOX_PROC_DIAGNOSTIC=1"
         if process_diagnostic
         else ""
     )
+    kernel_diagnostic_args = " asterinas.vm_profile=1"
     if epoll_entry_diagnostic:
-        diagnostic_args += (
+        kernel_diagnostic_args += (
             " asterinas.epoll_profile=1"
             " asterinas.epoll_entry_profile=1"
         )
     if timerfd_diagnostic:
-        diagnostic_args += " asterinas.timerfd_profile=1"
+        kernel_diagnostic_args += " asterinas.timerfd_profile=1"
     if syscall_diagnostic:
-        diagnostic_args += " asterinas.syscall_profile=1"
+        kernel_diagnostic_args += " asterinas.syscall_profile=1"
     if pagecache_diagnostic:
-        diagnostic_args += " asterinas.vm_pagecache_profile=1"
+        kernel_diagnostic_args += " asterinas.vm_pagecache_profile=1"
     if read_detail_diagnostic:
-        diagnostic_args += " asterinas.read_detail_profile=1"
+        kernel_diagnostic_args += " asterinas.read_detail_profile=1"
     if futex_diagnostic:
-        diagnostic_args += " asterinas.futex_profile=1"
+        kernel_diagnostic_args += " asterinas.futex_profile=1"
     operations = BrowserWebQemuOperations(config, network_mode=NetworkMode.DIRECT)
-    operations.BOOTARGS = operations.BOOTARGS.replace(
-        " -- --root-init=systemd",
-        f" asterinas.vm_profile=1{diagnostic_args} -- --root-init=systemd",
+    kernel_arguments, init_arguments = operations.BOOTARGS.split(" -- ", 1)
+    operations.BOOTARGS = (
+        f"{kernel_arguments}{kernel_diagnostic_args} -- "
+        f"{systemd_diagnostic_args.lstrip()}"
+        f"{' ' if systemd_diagnostic_args else ''}{init_arguments}"
     )
     operations.__enter__()
     session = None

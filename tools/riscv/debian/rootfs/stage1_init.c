@@ -54,6 +54,8 @@ enum {
     VIRTIO_CANDIDATE_COUNT = 26,
     ROOT_DEVICE_CANDIDATE_COUNT = VIRTIO_CANDIDATE_COUNT + 3,
     ROOT_DISCOVERY_TIMEOUT_SECONDS = 30,
+    MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS = 32,
+    MAX_SYSTEMD_ENVIRONMENT_ARGUMENT_SIZE = 512,
 };
 
 /*
@@ -90,18 +92,21 @@ enum RootInitMode {
 
 struct ProductionContext {
     enum RootInitMode root_init_mode;
+    size_t systemd_argument_count;
+    char *systemd_arguments[MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS + 2];
+    char systemd_environment_storage[MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS]
+                                    [MAX_SYSTEMD_ENVIRONMENT_ARGUMENT_SIZE];
 };
 
 static char *const INTERACTIVE_ROOT_INIT_ARGV[] = {
     "/bin/bash", "--noprofile", "--rcfile",
     "/etc/asterinas-rootfs.bashrc", "-i", NULL,
 };
-static char *const SYSTEMD_ROOT_INIT_ARGV[] = { "/sbin/init", NULL };
-
-static char *const *root_init_arguments(enum RootInitMode mode)
+static char *const *root_init_arguments(const struct ProductionContext *context)
 {
-    return mode == ROOT_INIT_SYSTEMD ? SYSTEMD_ROOT_INIT_ARGV
-                                     : INTERACTIVE_ROOT_INIT_ARGV;
+    return context->root_init_mode == ROOT_INIT_SYSTEMD
+               ? context->systemd_arguments
+               : INTERACTIVE_ROOT_INIT_ARGV;
 }
 
 enum ProbeResult {
@@ -173,9 +178,49 @@ static int compare_timespec(const struct timespec *left,
     return 0;
 }
 
-static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
+static int asterinas_environment_assignment_is_valid(const char *assignment)
 {
-    *mode = ROOT_INIT_INTERACTIVE;
+    static const char prefix[] = "ASTERINAS_";
+    if (strncmp(assignment, prefix, sizeof(prefix) - 1) != 0) {
+        return 0;
+    }
+
+    const char *name = assignment + sizeof(prefix) - 1;
+    const char *separator = strchr(name, '=');
+    if (separator == NULL || separator == name) {
+        return 0;
+    }
+    for (const char *cursor = name; cursor < separator; ++cursor) {
+        if ((*cursor < 'A' || *cursor > 'Z') &&
+            (*cursor < '0' || *cursor > '9') && *cursor != '_') {
+            return 0;
+        }
+    }
+    for (const unsigned char *cursor = (const unsigned char *)assignment;
+         *cursor != '\0'; ++cursor) {
+        if (*cursor < 0x21 || *cursor > 0x7e) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int systemd_environment_argument_is_valid(const char *argument)
+{
+    static const char prefix[] = "systemd.setenv=";
+    if (strncmp(argument, prefix, sizeof(prefix) - 1) != 0) {
+        return 0;
+    }
+    return asterinas_environment_assignment_is_valid(
+        argument + sizeof(prefix) - 1);
+}
+
+static int parse_root_init(int argc, char **argv,
+                           struct ProductionContext *context)
+{
+    context->root_init_mode = ROOT_INIT_INTERACTIVE;
+    context->systemd_arguments[0] = "/sbin/init";
+    context->systemd_argument_count = 1;
     int selector_seen = 0;
     for (int index = 1; index < argc; ++index) {
         enum RootInitMode selected_mode;
@@ -183,6 +228,14 @@ static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
             selected_mode = ROOT_INIT_INTERACTIVE;
         } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
             selected_mode = ROOT_INIT_SYSTEMD;
+        } else if (systemd_environment_argument_is_valid(argv[index])) {
+            if (context->systemd_argument_count >
+                MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS) {
+                return -1;
+            }
+            context->systemd_arguments[context->systemd_argument_count++] =
+                argv[index];
+            continue;
         } else {
             return -1;
         }
@@ -190,8 +243,47 @@ static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
             return -1;
         }
         selector_seen = 1;
-        *mode = selected_mode;
+        context->root_init_mode = selected_mode;
     }
+    if (context->systemd_argument_count > 1 &&
+        context->root_init_mode != ROOT_INIT_SYSTEMD) {
+        return -1;
+    }
+    context->systemd_arguments[context->systemd_argument_count] = NULL;
+    return 0;
+}
+
+static int append_systemd_environment(struct ProductionContext *context,
+                                      char *const environment[])
+{
+    if (context->root_init_mode != ROOT_INIT_SYSTEMD) {
+        return 0;
+    }
+
+    size_t storage_index = 0;
+    for (size_t index = 0; environment[index] != NULL; ++index) {
+        const char *assignment = environment[index];
+        if (strncmp(assignment, "ASTERINAS_", sizeof("ASTERINAS_") - 1) !=
+            0) {
+            continue;
+        }
+        if (!asterinas_environment_assignment_is_valid(assignment) ||
+            context->systemd_argument_count >
+                MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS ||
+            storage_index >= MAX_SYSTEMD_ENVIRONMENT_ARGUMENTS) {
+            return -1;
+        }
+        int length = snprintf(
+            context->systemd_environment_storage[storage_index],
+            MAX_SYSTEMD_ENVIRONMENT_ARGUMENT_SIZE, "systemd.setenv=%s",
+            assignment);
+        if (length < 0 || length >= MAX_SYSTEMD_ENVIRONMENT_ARGUMENT_SIZE) {
+            return -1;
+        }
+        context->systemd_arguments[context->systemd_argument_count++] =
+            context->systemd_environment_storage[storage_index++];
+    }
+    context->systemd_arguments[context->systemd_argument_count] = NULL;
     return 0;
 }
 
@@ -315,6 +407,7 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
         { HANDOFF_MOUNT_ROOT, "root-mount" },
         { HANDOFF_BIND_DEV, "dev-bind" },
         { HANDOFF_PREPARE_API_DIRS, "api-directories" },
+        { HANDOFF_MOUNT_PROC, "proc-mount" },
         { HANDOFF_MOUNT_RUN, "run-mount" },
         { HANDOFF_MOUNT_TMP, "tmp-mount" },
         { HANDOFF_CHROOT, "chroot" },
@@ -614,10 +707,25 @@ static int run_handoff_self_test(const char *case_name,
 
 static int run_root_init_self_test(const char *case_name)
 {
-    enum RootInitMode mode = ROOT_INIT_INTERACTIVE;
+    struct ProductionContext context;
     char *default_argv[] = { "init", NULL };
     char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *systemd_setenv_argv[] = {
+        "init", "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct",
+        "--root-init=systemd", NULL,
+    };
+    char *foreign_setenv_argv[] = {
+        "init", "systemd.setenv=LD_PRELOAD=/tmp/inject.so",
+        "--root-init=systemd", NULL,
+    };
+    char *interactive_setenv_argv[] = {
+        "init", "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct",
+        "--root-init=interactive", NULL,
+    };
+    char *asterinas_environment[] = {
+        "HOME=/", "ASTERINAS_WEB_NETWORK_MODE=direct", NULL,
+    };
     char *duplicate_argv[] = {
         "init", "--root-init=interactive", "--root-init=systemd", NULL,
     };
@@ -625,31 +733,59 @@ static int run_root_init_self_test(const char *case_name)
     char *control_argv[] = { "init", "--root-init=systemd\n", NULL };
 
     if (strcmp(case_name, "root-init-default-interactive") == 0) {
-        if (parse_root_init(1, default_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(1, default_argv, &context) != 0 ||
+            context.root_init_mode != ROOT_INIT_INTERACTIVE) {
             return fail_self_test(case_name, "default mode was not interactive");
         }
     } else if (strcmp(case_name, "root-init-explicit-interactive") == 0) {
-        if (parse_root_init(2, interactive_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(2, interactive_argv, &context) != 0 ||
+            context.root_init_mode != ROOT_INIT_INTERACTIVE) {
             return fail_self_test(case_name,
                                   "explicit interactive mode was rejected");
         }
     } else if (strcmp(case_name, "root-init-systemd") == 0) {
-        if (parse_root_init(2, systemd_argv, &mode) != 0 ||
-            mode != ROOT_INIT_SYSTEMD) {
+        if (parse_root_init(2, systemd_argv, &context) != 0 ||
+            context.root_init_mode != ROOT_INIT_SYSTEMD) {
             return fail_self_test(case_name, "systemd mode was rejected");
         }
+    } else if (strcmp(case_name, "root-init-systemd-setenv") == 0) {
+        if (parse_root_init(3, systemd_setenv_argv, &context) != 0 ||
+            context.root_init_mode != ROOT_INIT_SYSTEMD ||
+            strcmp(context.systemd_arguments[1],
+                   systemd_setenv_argv[1]) != 0 ||
+            context.systemd_arguments[2] != NULL) {
+            return fail_self_test(case_name,
+                                  "Asterinas systemd environment was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-foreign-setenv") == 0) {
+        if (parse_root_init(3, foreign_setenv_argv, &context) == 0) {
+            return fail_self_test(case_name,
+                                  "foreign systemd environment was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-interactive-setenv") == 0) {
+        if (parse_root_init(3, interactive_setenv_argv, &context) == 0) {
+            return fail_self_test(case_name,
+                                  "interactive environment was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-systemd-environment") == 0) {
+        if (parse_root_init(2, systemd_argv, &context) != 0 ||
+            append_systemd_environment(&context, asterinas_environment) != 0 ||
+            strcmp(context.systemd_arguments[1],
+                   "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct") != 0 ||
+            context.systemd_arguments[2] != NULL) {
+            return fail_self_test(case_name,
+                                  "Asterinas init environment was not bridged");
+        }
     } else if (strcmp(case_name, "root-init-duplicate") == 0) {
-        if (parse_root_init(3, duplicate_argv, &mode) == 0) {
+        if (parse_root_init(3, duplicate_argv, &context) == 0) {
             return fail_self_test(case_name, "duplicate selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-unknown") == 0) {
-        if (parse_root_init(2, unknown_argv, &mode) == 0) {
+        if (parse_root_init(2, unknown_argv, &context) == 0) {
             return fail_self_test(case_name, "unknown selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-control-character") == 0) {
-        if (parse_root_init(2, control_argv, &mode) == 0) {
+        if (parse_root_init(2, control_argv, &context) == 0) {
             return fail_self_test(case_name,
                                   "control character was accepted");
         }
@@ -715,7 +851,7 @@ static int run_root_init_self_test(const char *case_name)
         };
         static const enum HandoffStep expected[] = {
             HANDOFF_MOUNT_ROOT, HANDOFF_BIND_DEV,
-            HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_RUN,
+            HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_PROC, HANDOFF_MOUNT_RUN,
             HANDOFF_MOUNT_TMP, HANDOFF_CHROOT, HANDOFF_CHDIR, HANDOFF_EXEC,
         };
         const char *reason =
@@ -727,7 +863,10 @@ static int run_root_init_self_test(const char *case_name)
                                   "systemd handoff sequence was incorrect");
         }
     } else if (strcmp(case_name, "systemd-exec") == 0) {
-        char *const *arguments = root_init_arguments(ROOT_INIT_SYSTEMD);
+        if (parse_root_init(2, systemd_argv, &context) != 0) {
+            return fail_self_test(case_name, "systemd mode was rejected");
+        }
+        char *const *arguments = root_init_arguments(&context);
         if (strcmp(arguments[0], "/sbin/init") != 0 ||
             arguments[1] != NULL) {
             return fail_self_test(case_name, "systemd argv was not exact");
@@ -959,8 +1098,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         result = chdir("/");
         break;
     case HANDOFF_EXEC: {
-        char *const *arguments =
-            root_init_arguments(production_context->root_init_mode);
+        char *const *arguments = root_init_arguments(production_context);
         return execv(arguments[0], arguments);
     }
     }
@@ -1021,8 +1159,12 @@ static int configure_console(void)
 
 int main(int argc, char **argv)
 {
+    extern char **environ;
     struct ProductionContext context;
-    int root_init_result = parse_root_init(argc, argv, &context.root_init_mode);
+    int root_init_result = parse_root_init(argc, argv, &context);
+    if (root_init_result == 0) {
+        root_init_result = append_systemd_environment(&context, environ);
+    }
     if (configure_console() != 0) {
         fail_and_hold("console-open");
     }
@@ -1032,6 +1174,12 @@ int main(int argc, char **argv)
     report_progress("start", "mode",
                     context.root_init_mode == ROOT_INIT_SYSTEMD ? "systemd"
                                                                 : "interactive");
+    if (context.root_init_mode == ROOT_INIT_SYSTEMD) {
+        char argument_count[sizeof("4294967295")];
+        (void)snprintf(argument_count, sizeof(argument_count), "%zu",
+                       context.systemd_argument_count - 1);
+        report_progress("systemd-arguments", "count", argument_count);
+    }
 
     struct Stage1Ops ops = {
         .context = &context,
