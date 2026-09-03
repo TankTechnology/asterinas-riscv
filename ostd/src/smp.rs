@@ -261,4 +261,5 @@ mod test {
 
         assert_eq!(IPI_CALL_COUNT.load(Ordering::Relaxed) - before, 2);
     }
+||||||| parent of 6c0ec845c (Fix RISC-V `flush_icache` hart targeting)
 }
