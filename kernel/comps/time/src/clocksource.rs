@@ -173,9 +173,9 @@ impl ClockSource {
 
     /// Gets the instant to update the internal instant in the `ClockSource`.
     pub(crate) fn update(&self) {
-        // Timer callbacks run on every CPU. Keep the read/compute/write sequence
-        // under one exclusive lock so that an older concurrent sample cannot
-        // overwrite a newer record and make the clock move backwards.
+        // Keep the read/compute/write sequence under one exclusive lock so
+        // concurrent refresh callers cannot let an older sample overwrite a
+        // newer record and make the clock move backwards.
         let mut last_record = self.last_record.write();
         let (last_instant, last_cycles) = *last_record;
         let instant_cycles = self.read_cycles();
