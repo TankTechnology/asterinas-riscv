@@ -104,7 +104,7 @@ No additional security or hardware-contract finding survived verification.
 > #[cfg(ktest)]
 > mod tests {
 >     use super::{HwCpuId, first_word_hart_mask, single_hart_mask};
-> 
+>
 >     #[ktest]
 >     fn combines_sparse_harts_in_first_mask_word() {
 > ```
@@ -131,7 +131,7 @@ No additional security or hardware-contract finding survived verification.
 
 > ```diff
 > > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> 
+>
 > **Architecture:** Keep the immutable Debian browser rootfs and its fast development overlay unchanged. Integrate independent kernel fixes as separate commits, repair only confirmed baseline-test drift, and verify each affected subsystem locally before any remote merge or push. Older stacked browser/input PRs are classified against the current implementation instead of being merged wholesale.
 > ```
 
@@ -143,9 +143,9 @@ No additional security or hardware-contract finding survived verification.
 
 > ```diff
 > - [ ] **Step 1: Review commit `73514169d424` against the current branch**
-> 
+>
 > Run the Asterinas review pipeline in diff mode after applying the commit, with `origin/main` as the review base, and reject the integration on any confirmed P0/P1 defect.
-> 
+>
 > - [ ] **Step 2: Cherry-pick the exact PR commit**
 > ```
 
@@ -157,11 +157,11 @@ Incorrect procedure (major): Task `3`, Step `1` requires reviewing commit `73514
 
 > ```diff
 > - [ ] **Step 2: Verify the RISC-V OSTD ktest configuration**
-> 
+>
 > ```bash
 > RUSTFLAGS="--cfg ktest" cargo check -p ostd --target riscv64imac-unknown-none-elf
 > ```
-> 
+>
 > Expected: exit status 0.
 > ```
 
