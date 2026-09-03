@@ -324,7 +324,7 @@ impl SchedClassRq for FairClassRq {
         flags: UpdateFlags,
     ) -> bool {
         match flags {
-            UpdateFlags::Tick | UpdateFlags::Yield | UpdateFlags::Wait => {
+            UpdateFlags::Tick | UpdateFlags::Yield | UpdateFlags::Wait | UpdateFlags::Migrate => {
                 let (_old_weight, weight) = attr.fair.fetch_weight();
                 let vruntime = attr.fair.update_vruntime(rt.delta, weight);
                 let leftmost = self.entities.peek();
@@ -336,7 +336,7 @@ impl SchedClassRq for FairClassRq {
                     return false;
                 }
 
-                matches!(flags, UpdateFlags::Wait)
+                matches!(flags, UpdateFlags::Wait | UpdateFlags::Migrate)
                     || rt.period_delta > self.time_slice(weight)
                     || vruntime > self.min_vruntime + self.vtime_slice()
             }

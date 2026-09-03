@@ -114,6 +114,15 @@ impl Task {
         scheduler::yield_now()
     }
 
+    /// Moves the current task to another CPU selected by the scheduler.
+    ///
+    /// The scheduler-specific CPU selection policy is responsible for choosing
+    /// a valid destination for the task.
+    #[track_caller]
+    pub fn migrate_current() {
+        scheduler::migrate_current()
+    }
+
     /// Kicks the task scheduler to run the task.
     ///
     /// BUG: This method highly depends on the current scheduling policy.

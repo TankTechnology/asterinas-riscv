@@ -312,12 +312,13 @@ impl ClassScheduler {
     }
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
-    fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
-        if let Some(last_cpu) = thread.sched_attr().last_cpu() {
+    fn select_cpu(&self, thread: &Thread, _flags: EnqueueFlags) -> CpuId {
+        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+        if let Some(last_cpu) = thread.sched_attr().last_cpu()
+            && affinity.contains(last_cpu)
+        {
             return last_cpu;
         }
-        debug_assert!(flags == EnqueueFlags::Spawn);
-
         let guard = disable_local();
 
         let mut selected = guard.current_cpu();
@@ -334,7 +335,6 @@ impl ClassScheduler {
             }
         };
 
-        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         match self.last_chosen_cpu.get() {
             Some(cpu) => {
                 // Perform a round-robin selection starting after the last chosen CPU.
@@ -426,7 +426,10 @@ impl LocalRunQueue for PerCpuClassRqSet {
             (false, 4)
         };
 
-        if matches!(flags, UpdateFlags::Wait | UpdateFlags::Exit) {
+        if matches!(
+            flags,
+            UpdateFlags::Wait | UpdateFlags::Exit | UpdateFlags::Migrate
+        ) {
             lookahead = 4;
         }
 

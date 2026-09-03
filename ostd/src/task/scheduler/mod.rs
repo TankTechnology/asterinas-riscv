@@ -420,6 +420,8 @@ pub enum UpdateFlags {
     Yield,
     /// Task exiting.
     Exit,
+    /// Task migrating to another CPU.
+    Migrate,
 }
 
 /// Preempts the current task.
@@ -557,6 +559,51 @@ pub(super) fn yield_now() {
             ReschedAction::DoNothing
         }
     })
+}
+
+/// Migrates the current task to a CPU selected by the scheduler.
+///
+/// The current task is first removed from the local runqueue and then
+/// re-enqueued globally. Re-enqueuing happens only after releasing the local
+/// runqueue lock, so simultaneous migrations on different CPUs cannot deadlock
+/// by taking two runqueue locks in opposite orders.
+#[track_caller]
+pub(super) fn migrate_current() {
+    let mut current = None;
+    let mut is_first_try = true;
+
+    let next_task = loop {
+        let mut action = ReschedAction::DoNothing;
+        scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
+            let next_task_opt = if is_first_try {
+                is_first_try = false;
+                let should_pick_next = local_rq.update_current(UpdateFlags::Migrate);
+                current = local_rq.dequeue_current();
+                should_pick_next.then(|| local_rq.pick_next())
+            } else {
+                local_rq.try_pick_next()
+            };
+
+            action = match next_task_opt {
+                Some(next_task) => ReschedAction::SwitchTo(next_task.clone()),
+                None => ReschedAction::Retry,
+            };
+        });
+
+        match action {
+            ReschedAction::SwitchTo(next_task) => break next_task,
+            ReschedAction::Retry => continue,
+            ReschedAction::DoNothing => unreachable!(),
+        }
+    };
+
+    let current = current.expect("cannot migrate without a current task");
+    let preempt_cpu = scheduler_singleton().enqueue(current, EnqueueFlags::Wake);
+    if let Some(preempt_cpu_id) = preempt_cpu {
+        set_need_preempt(preempt_cpu_id);
+    }
+
+    processor::switch_to_task(next_task);
 }
 
 /// Do rescheduling by acting on the scheduling decision (`ReschedAction`) made by a
