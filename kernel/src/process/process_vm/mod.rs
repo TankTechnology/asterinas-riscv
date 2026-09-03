@@ -12,9 +12,12 @@
 mod heap;
 mod init_stack;
 
-use core::ops::Range;
 #[cfg(target_arch = "riscv64")]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use ostd::task::disable_preempt;
 
@@ -77,6 +80,10 @@ pub struct ProcessVm {
     data_range: SpinLock<Range<Vaddr>>,
     /// The executable file.
     executable_file: Path,
+    /// Successful `membarrier(2)` registration commands for this address
+    /// space. This state belongs to the VM rather than a POSIX thread group
+    /// because processes created with `CLONE_VM` share Linux's `mm_struct`.
+    membarrier_registrations: AtomicU32,
     /// The base address for vDSO segment
     #[cfg(target_arch = "riscv64")]
     vdso_base: AtomicUsize,
@@ -91,6 +98,7 @@ impl ProcessVm {
             code_range: SpinLock::new(0..0),
             data_range: SpinLock::new(0..0),
             executable_file,
+            membarrier_registrations: AtomicU32::new(0),
             #[cfg(target_arch = "riscv64")]
             vdso_base: AtomicUsize::new(0),
         }
@@ -104,6 +112,10 @@ impl ProcessVm {
             code_range: SpinLock::new(process_vm.code_range.lock().clone()),
             data_range: SpinLock::new(process_vm.data_range.lock().clone()),
             executable_file: process_vm.executable_file.clone(),
+            // Linux inherits membarrier registrations across fork. `CLONE_VM`
+            // shares the original `ProcessVm`, while an ordinary fork takes
+            // this snapshot into its newly copied address space.
+            membarrier_registrations: AtomicU32::new(process_vm.membarrier_registrations()),
             #[cfg(target_arch = "riscv64")]
             vdso_base: AtomicUsize::new(process_vm.vdso_base.load(Ordering::Relaxed)),
         }
@@ -132,6 +144,17 @@ impl ProcessVm {
     /// Returns a reference to the executable `Path`.
     pub fn executable_file(&self) -> &Path {
         &self.executable_file
+    }
+
+    /// Records a successful `membarrier(2)` registration command.
+    pub fn register_membarrier(&self, command: u32) {
+        self.membarrier_registrations
+            .fetch_or(command, Ordering::Release);
+    }
+
+    /// Returns all successful `membarrier(2)` registration commands.
+    pub fn membarrier_registrations(&self) -> u32 {
+        self.membarrier_registrations.load(Ordering::Acquire)
     }
 
     /// Maps and writes the initial portion of the main stack of a process.
