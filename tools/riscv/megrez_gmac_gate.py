@@ -70,7 +70,7 @@ from tools.riscv.megrez_network_fixture import (
 )
 from tools.riscv.megrez_proxy_bridge import (
     ProxyBridge,
-    ProxyBridgeConfig,
+    proxy_bridge_config_from_environment,
 )
 
 
@@ -724,7 +724,7 @@ class PhysicalGateOperations:
         )
         self.proxy_bridge = proxy_bridge
         if self._uses_proxy() and self.proxy_bridge is None:
-            self.proxy_bridge = ProxyBridge(ProxyBridgeConfig())
+            self.proxy_bridge = ProxyBridge(proxy_bridge_config_from_environment())
 
     def _uses_network(self) -> bool:
         return (
