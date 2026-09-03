@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
@@ -36,6 +35,9 @@ from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig as RootfsGateConfig
 from tools.riscv.megrez_network_fixture import (
+    BROWSER_DOWNLOAD,
+    BROWSER_DOWNLOAD_PATH,
+    BROWSER_DOWNLOAD_SHA256,
     FIXTURE_PATH,
     PAYLOAD,
     PAYLOAD_SHA256,
@@ -897,6 +899,7 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         *,
         mode: str,
         fail_stage: str = "",
+        explicit_medium: bool = True,
     ) -> tuple[dict[str, str], Path, Path, Path]:
         directory.mkdir(parents=True)
         fake_bin = directory / "bin"
@@ -909,7 +912,7 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         fixture_payload = directory / "fixture.bin"
         fixture_payload.write_bytes(PAYLOAD)
         medium_payload = directory / "medium.bin"
-        medium_payload.write_bytes(PAYLOAD * 4)
+        medium_payload.write_bytes(BROWSER_DOWNLOAD)
         fixture_count = directory / "fixture-count"
 
         tools = {
@@ -977,7 +980,7 @@ case "$*" in
         esac
         printf '200\t10.100.19.200\t0.010\t0.020'
         ;;
-    *medium.bin*)
+    *medium.bin*|*browser-quality/download.bin*)
         [ -n "$output" ] || exit 97
         if [ "$ASTERINAS_WEB_FAIL_STAGE" = medium ]; then
             head -c 262143 "$ASTERINAS_WEB_MEDIUM_PAYLOAD" >"$output"
@@ -1034,10 +1037,8 @@ esac
             "ASTERINAS_WEB_NETWORK_MEDIUM_URL": (
                 "http://10.100.19.216:17894/medium.bin"
             ),
-            "ASTERINAS_WEB_NETWORK_MEDIUM_SIZE": str(len(PAYLOAD) * 4),
-            "ASTERINAS_WEB_NETWORK_MEDIUM_SHA256": hashlib.sha256(
-                PAYLOAD * 4
-            ).hexdigest(),
+            "ASTERINAS_WEB_NETWORK_MEDIUM_SIZE": str(len(BROWSER_DOWNLOAD)),
+            "ASTERINAS_WEB_NETWORK_MEDIUM_SHA256": BROWSER_DOWNLOAD_SHA256,
             "ASTERINAS_WEB_COMMAND_LOG": str(command_log),
             "ASTERINAS_WEB_FIXTURE_PAYLOAD": str(fixture_payload),
             "ASTERINAS_WEB_MEDIUM_PAYLOAD": str(medium_payload),
@@ -1046,7 +1047,37 @@ esac
         }
         if mode == "proxy":
             environment.update(proxy)
+        if not explicit_medium:
+            for name in (
+                "ASTERINAS_WEB_NETWORK_MEDIUM_URL",
+                "ASTERINAS_WEB_NETWORK_MEDIUM_SIZE",
+                "ASTERINAS_WEB_NETWORK_MEDIUM_SHA256",
+            ):
+                environment.pop(name)
         return environment, console, resolv_conf, command_log
+
+    def test_web_network_derives_medium_fixture_from_probe_url(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-derived-medium",
+            mode="proxy",
+            explicit_medium=False,
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, console.read_text())
+        commands = command_log.read_text(encoding="utf-8")
+        self.assertIn(BROWSER_DOWNLOAD_PATH, commands)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
+        )
 
     def test_proxy_web_network_evidence(self) -> None:
         environment, console, resolv_conf, command_log = (
