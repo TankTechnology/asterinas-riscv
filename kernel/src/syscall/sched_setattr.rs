@@ -2,7 +2,7 @@
 
 use super::{
     SyscallReturn,
-    sched_getattr::{access_sched_attr_with, read_linux_sched_attr_from_user},
+    sched_getattr::{read_linux_sched_attr_from_user, update_sched_attr_with},
 };
 use crate::{prelude::*, sched::SchedPolicy, thread::Tid};
 
@@ -29,11 +29,7 @@ pub fn sys_sched_setattr(
     let reset_on_fork = (attr.sched_flags & SCHED_FLAG_RESET_ON_FORK) != 0;
 
     let policy = SchedPolicy::try_from(attr)?;
-    access_sched_attr_with(tid, ctx, |attr| {
-        attr.set_policy(policy);
-        attr.set_reset_on_fork(reset_on_fork);
-        Ok(())
-    })?;
+    update_sched_attr_with(tid, ctx, Some(reset_on_fork), |_| Ok(policy))?;
 
     Ok(SyscallReturn::Return(0))
 }
