@@ -324,7 +324,7 @@ impl SchedClassRq for FairClassRq {
         flags: UpdateFlags,
     ) -> bool {
         match flags {
-            UpdateFlags::Tick | UpdateFlags::Yield | UpdateFlags::Wait => {
+            UpdateFlags::Tick | UpdateFlags::Yield | UpdateFlags::Wait | UpdateFlags::Migrate => {
                 let (_old_weight, weight) = attr.fair.fetch_weight();
                 let vruntime = attr.fair.update_vruntime(rt.delta, weight);
                 let leftmost = self.entities.peek();
@@ -339,7 +339,10 @@ impl SchedClassRq for FairClassRq {
                 // An explicit yield gives a queued peer a turn even when the
                 // current task has not exhausted its slice. Keep the runtime
                 // accounting above: yielding does not erase CPU time used.
-                matches!(flags, UpdateFlags::Yield | UpdateFlags::Wait)
+                matches!(
+                    flags,
+                    UpdateFlags::Yield | UpdateFlags::Wait | UpdateFlags::Migrate
+                )
                     || rt.period_delta > self.time_slice(weight)
                     || vruntime > self.min_vruntime + self.vtime_slice()
             }
