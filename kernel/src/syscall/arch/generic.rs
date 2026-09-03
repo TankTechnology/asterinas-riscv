@@ -134,6 +134,7 @@ macro_rules! import_generic_syscall_entries {
             sched_getattr::sys_sched_getattr,
             sched_getparam::sys_sched_getparam,
             sched_getscheduler::sys_sched_getscheduler,
+            sched_rr_get_interval::sys_sched_rr_get_interval,
             sched_setattr::sys_sched_setattr,
             sched_setparam::sys_sched_setparam,
             sched_setscheduler::sys_sched_setscheduler,
@@ -335,6 +336,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SCHED_YIELD = 124            => sys_sched_yield(args[..0]);
             SYS_SCHED_GET_PRIORITY_MAX = 125 => sys_sched_get_priority_max(args[..1]);
             SYS_SCHED_GET_PRIORITY_MIN = 126 => sys_sched_get_priority_min(args[..1]);
+            SYS_SCHED_RR_GET_INTERVAL = 127  => sys_sched_rr_get_interval(args[..2]);
             SYS_KILL = 129                   => sys_kill(args[..2]);
             SYS_TKILL = 130                  => sys_tkill(args[..2]);
             SYS_TGKILL = 131                 => sys_tgkill(args[..3]);
