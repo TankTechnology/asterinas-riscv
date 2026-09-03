@@ -110,3 +110,9 @@ pub(super) fn init() {
         IpiSender { hw_cpu_ids }
     });
 }
+
+/// Returns the hardware CPU ID mapping used for inter-processor calls.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn hw_cpu_id_mapping() -> Option<&'static [HwCpuId]> {
+    IPI_SENDER.get().map(|sender| &*sender.hw_cpu_ids)
+}
