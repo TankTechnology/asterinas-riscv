@@ -150,6 +150,12 @@ impl Thread {
         Task::yield_now()
     }
 
+    /// Re-enqueues the current thread so that it can move to another CPU.
+    #[track_caller]
+    pub fn migrate_current() {
+        Task::migrate_current()
+    }
+
     /// Joins the execution of the thread.
     ///
     /// This method will return after the thread exits.

@@ -30,10 +30,6 @@ pub fn sys_sched_getaffinity(
     Ok(SyscallReturn::Return(bytes_written as isize))
 }
 
-// TODO: The manual page of `sched_setaffinity` says that if the thread is not
-// running on the CPU specified in the affinity mask, it would be migrated to
-// one of the CPUs specified in the mask. We currently do not support this
-// feature as the scheduler is not ready for migration yet.
 pub fn sys_sched_setaffinity(
     tid: Tid,
     cpuset_size: usize,
@@ -42,19 +38,22 @@ pub fn sys_sched_setaffinity(
 ) -> Result<SyscallReturn> {
     let user_cpu_set = read_cpu_set_from(ctx.user_space(), cpuset_size, cpu_set_ptr)?;
 
-    match tid {
-        0 => ctx
-            .thread
-            .atomic_cpu_affinity()
-            .store(&user_cpu_set, Ordering::Relaxed),
-        _ => match pid_table::pid_table_mut().get_thread(tid) {
-            Some(thread) => {
-                thread
-                    .atomic_cpu_affinity()
-                    .store(&user_cpu_set, Ordering::Relaxed);
-            }
-            None => return_errno_with_message!(Errno::ESRCH, "the target thread does not exist"),
-        },
+    let target_thread = match tid {
+        0 => None,
+        _ => Some(pid_table::pid_table_mut().get_thread(tid).ok_or_else(|| {
+            Error::with_message(Errno::ESRCH, "the target thread does not exist")
+        })?),
+    };
+    let thread = target_thread.as_deref().unwrap_or(ctx.thread);
+    thread
+        .atomic_cpu_affinity()
+        .store(&user_cpu_set, Ordering::Relaxed);
+
+    // TODO: A running remote target also needs to be kicked and migrated immediately. A target
+    // that is sleeping will observe the new affinity when it is next enqueued.
+    if core::ptr::eq(thread, ctx.thread) && !user_cpu_set.contains(CpuId::current_racy()) {
+        crate::thread::Thread::migrate_current();
+        debug_assert!(user_cpu_set.contains(CpuId::current_racy()));
     }
 
     Ok(SyscallReturn::Return(0))
