@@ -99,7 +99,9 @@ impl<T: CommonSchedInfo> LocalRunQueue<T> for FifoRunQueue<T> {
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
         match flags {
             UpdateFlags::Tick => false,
-            UpdateFlags::Wait | UpdateFlags::Yield | UpdateFlags::Exit => !self.queue.is_empty(),
+            UpdateFlags::Wait | UpdateFlags::Yield | UpdateFlags::Exit | UpdateFlags::Migrate => {
+                !self.queue.is_empty()
+            }
         }
     }
 

@@ -420,6 +420,8 @@ pub enum UpdateFlags {
     Yield,
     /// Task exiting.
     Exit,
+    /// Task migrating to another CPU.
+    Migrate,
 }
 
 /// Preempts the current task.
@@ -565,32 +567,41 @@ pub(super) fn yield_now() {
 /// scheduling constraints have changed.
 #[track_caller]
 pub(super) fn migrate_current() {
-    // Keep scheduling atomic after removing the current task from its local runqueue. Otherwise,
-    // a timer interrupt could try to schedule while the task is between runqueues.
-    let irq_guard = processor::prepare_task_switch();
-    let mut current_task = None;
-    let mut next_task = None;
+    let mut current = None;
+    let mut is_first_try = true;
 
-    scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
-        let should_pick_next = local_rq.update_current(UpdateFlags::Wait);
-        assert!(
-            should_pick_next,
-            "cannot migrate the current task without a local replacement"
-        );
+    let next_task = loop {
+        let mut action = ReschedAction::DoNothing;
+        scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
+            let next_task_opt = if is_first_try {
+                is_first_try = false;
+                let should_pick_next = local_rq.update_current(UpdateFlags::Migrate);
+                current = local_rq.dequeue_current();
+                should_pick_next.then(|| local_rq.pick_next())
+            } else {
+                local_rq.try_pick_next()
+            };
 
-        current_task = local_rq.dequeue_current();
-        next_task = Some(local_rq.pick_next().clone());
-    });
+            action = match next_task_opt {
+                Some(next_task) => ReschedAction::SwitchTo(next_task.clone()),
+                None => ReschedAction::Retry,
+            };
+        });
 
-    let current_task =
-        current_task.expect("the current task must be present in the local runqueue");
-    let next_task = next_task.unwrap();
-    let preempt_cpu = scheduler_singleton().enqueue(current_task, EnqueueFlags::Wake);
+        match action {
+            ReschedAction::SwitchTo(next_task) => break next_task,
+            ReschedAction::Retry => continue,
+            ReschedAction::DoNothing => unreachable!(),
+        }
+    };
+
+    let current = current.expect("cannot migrate without a current task");
+    let preempt_cpu = scheduler_singleton().enqueue(current, EnqueueFlags::Wake);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
     }
 
-    processor::switch_to_task_with_local_irqs_disabled(next_task, irq_guard);
+    processor::switch_to_task(next_task);
 }
 
 /// Do rescheduling by acting on the scheduling decision (`ReschedAction`) made by a

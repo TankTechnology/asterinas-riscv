@@ -4,16 +4,17 @@
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <unistd.h>
+
+#define MIGRATION_ROUNDS 32
 
 int main()
 {
 	pid_t pid = getpid();
-	cpu_set_t mask, original_mask;
+	cpu_set_t mask;
 
-	// Get current affinity mask
-	if (sched_getaffinity(pid, sizeof(original_mask), &original_mask) ==
-	    -1) {
+	if (sched_getaffinity(pid, sizeof(cpu_set_t), &mask) == -1) {
 		perror("sched_getaffinity");
 		exit(EXIT_FAILURE);
 	}
@@ -21,7 +22,7 @@ int main()
 	printf("Current CPU affinity:");
 	int cur_cpu_count = 0;
 	for (int i = 0; i < CPU_SETSIZE; i++) {
-		if (CPU_ISSET(i, &original_mask)) {
+		if (CPU_ISSET(i, &mask)) {
 			printf(" %d", i);
 			cur_cpu_count++;
 		}
@@ -32,29 +33,36 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 
-	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-		if (!CPU_ISSET(cpu, &original_mask))
-			continue;
-
-		CPU_ZERO(&mask);
-		CPU_SET(cpu, &mask);
-		if (sched_setaffinity(pid, sizeof(mask), &mask) == -1) {
-			perror("sched_setaffinity");
-			exit(EXIT_FAILURE);
-		}
-		if (sched_getcpu() != cpu) {
-			fprintf(stderr,
-				"Error: task did not migrate to CPU %d\n", cpu);
-			exit(EXIT_FAILURE);
-		}
-		printf("Migrated to CPU %d\n", cpu);
-	}
-
-	if (sched_setaffinity(pid, sizeof(original_mask), &original_mask) ==
-	    -1) {
-		perror("sched_setaffinity restore");
+	CPU_ZERO(&mask);
+	CPU_SET(0, &mask);
+	if (sched_setaffinity(pid, sizeof(cpu_set_t), &mask) == -1) {
+		perror("sched_setaffinity");
 		exit(EXIT_FAILURE);
 	}
+	if (sched_getcpu() != 0) {
+		printf("Error: thread did not migrate to CPU 0\n");
+		exit(EXIT_FAILURE);
+	}
+
+	long online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	for (int round = 0; round < MIGRATION_ROUNDS; round++) {
+		for (int cpu = 0; cpu < online_cpus; cpu++) {
+			CPU_ZERO(&mask);
+			CPU_SET(cpu, &mask);
+			if (sched_setaffinity(0, sizeof(cpu_set_t), &mask) == -1) {
+				perror("sched_setaffinity migration");
+				exit(EXIT_FAILURE);
+			}
+			if (sched_getcpu() != cpu) {
+				printf("Error: expected CPU %d, running on CPU %d\n",
+				       cpu, sched_getcpu());
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+	printf("Observed affinity migration across %ld CPU(s) for %d rounds\n",
+	       online_cpus, MIGRATION_ROUNDS);
+	printf("RISC-V SMP4 affinity migration regression passed.\n");
 
 	return 0;
 }
