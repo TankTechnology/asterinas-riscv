@@ -20,6 +20,7 @@ RUN apt-get update && \
         device-tree-compiler \
         e2fsprogs \
         file \
+        fontconfig \
         gcc-riscv64-linux-gnu \
         gpgv \
         jq \
@@ -28,6 +29,7 @@ RUN apt-get update && \
         proot \
         qemu-system-misc \
         qemu-user-static \
+        systemd \
         util-linux && \
     keyring_deb="$(mktemp)" && \
     curl --fail --location --proto '=https' --tlsv1.2 \

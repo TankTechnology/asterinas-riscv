@@ -48,6 +48,8 @@ The image installs the build-time contract:
   and `gpgv` for signed Debian metadata;
 - `e2fsprogs`, `cpio`, `curl`, `file`, and `jq` for image construction and
   evidence checks;
+- `systemd-sysusers`, `journalctl`, and `fc-cache` for target-root setup and
+  inspection;
 - the RISC-V cross compiler and libc headers;
 - device-tree tools and `qemu-system-riscv64` for the boot gates.
 

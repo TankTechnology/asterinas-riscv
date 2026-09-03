@@ -44,6 +44,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             "debootstrap",
             "device-tree-compiler",
             "e2fsprogs",
+            "fontconfig",
             "gcc-riscv64-linux-gnu",
             "gpgv",
             "libc6-dev-riscv64-cross",
@@ -51,6 +52,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             "proot",
             "qemu-system-misc",
             "qemu-user-static",
+            "systemd",
             "util-linux",
         ):
             with self.subTest(package=package):
@@ -70,6 +72,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             "explicit-proot",
             "host_binfmt=unchanged",
             "debootstrap proot qemu-riscv64-static",
+            "fc-cache journalctl systemd-sysusers",
             "grep -q '^flags:.*F'",
             "qemu-riscv64-static",
             "/usr/share/keyrings/debian-archive-keyring.gpg",
