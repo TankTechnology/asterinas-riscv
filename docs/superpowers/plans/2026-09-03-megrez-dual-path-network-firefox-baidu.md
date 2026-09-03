@@ -572,7 +572,7 @@ In `browser_web_evidence.sh`, after Marionette succeeds:
 - require systemd `NRestarts=0` and active service state;
 - observe the same parent PID for 60 seconds with five-second bounded polls;
 - require `baidu-search.png` is a regular non-symlink file and begins with the PNG signature;
-- upload `baidu-search.png` with a bounded `curl --noproxy '*' --data-binary` request to the fixture's existing `/browser-quality/capture` endpoint;
+- upload `baidu-search.png` with a bounded `curl --noproxy '*' --data-binary` request to the fixture's dedicated `/browser-quality/capture.png` endpoint (kept separate from the existing XWD capture endpoint);
 - emit the one mode-qualified ready marker only after all checks pass.
 
 Keep the existing security, TLS, fixture, and Bilibili evidence as additional coverage; they do not replace the Baidu acceptance marker.

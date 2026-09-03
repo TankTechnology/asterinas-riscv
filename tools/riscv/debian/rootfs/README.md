@@ -194,6 +194,7 @@ normal gate does not contain a GDB argument, and this opt-in does not add
 ```bash
 ASTERINAS_QEMU_GDB_PORT=23456 \
   python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+  --network-mode direct \
   ...the frozen browser-web gate arguments...
 
 tools/riscv/qemu_live_pc_sampler.sh 23456 \
@@ -219,11 +220,13 @@ page, and a live BV detail link selected from that page.  A Baidu search is
 recorded as either a validated result page or an exact
 `wappass.baidu.com/static/captcha/` challenge whose back URL contains the
 submitted query.  The latter is reported as `external-captcha`; it is
-observable public-site evidence, not a successful search result.
+observable public-site evidence, not a successful search result, and the
+Firefox/Baidu acceptance gate therefore fails closed.
 
 The guest image precreates the ten JSON/PNG evidence inodes.  The gate
-overwrites them, performs a whole-filesystem `sync`, and only then emits
-`DEBIAN_BROWSER_WEB_READY`.  DNS and curl probes have explicit outer bounds,
+overwrites them, performs a whole-filesystem `sync`, uploads the final Baidu
+PNG to the owned fixture, and only then emits the mode-qualified
+`DEBIAN_FIREFOX_BAIDU_READY`. DNS and curl probes have explicit outer bounds,
 and shell/Python timeline producers share the `/proc/uptime` monotonic clock.
 The host validates the exact evidence set after QEMU stops, including PNG
 structure, trust hashes, process identity, phase pairs, and ordered timeline
