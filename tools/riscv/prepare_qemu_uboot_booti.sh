@@ -9,10 +9,13 @@ readonly BOOT_DISK_SIZE=64M
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 readonly -a REQUIRED_TOOLS=(
+    bc
+    bison
     debugfs
     dtc
     fdtget
     fdtput
+    flex
     flock
     git
     make
@@ -22,6 +25,7 @@ readonly -a REQUIRED_TOOLS=(
     realpath
     riscv64-linux-gnu-gcc
     sha256sum
+    swig
     truncate
 )
 readonly -a PAYLOAD_NAMES=(asterinas.booti initramfs.cpio.gz qemu-virt.dtb)
@@ -88,6 +92,10 @@ if [[ "${1:-}" == "--check-tools" ]]; then
         && ! python3 -c 'import pathlib, sysconfig; raise SystemExit(not (pathlib.Path(sysconfig.get_path("include")) / "Python.h").is_file())' \
             >/dev/null 2>&1; then
         printf '%s\n' 'missing Python development headers' >&2
+        missing=1
+    fi
+    if [[ ! -f /usr/include/openssl/evp.h ]]; then
+        printf '%s\n' 'missing OpenSSL development headers' >&2
         missing=1
     fi
     exit "${missing}"
