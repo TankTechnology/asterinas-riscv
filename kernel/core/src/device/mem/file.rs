@@ -3,7 +3,7 @@
 use crate::{
     events::IoEvents,
     fs::{
-        file::{PerOpenFileOps, StatusFlags},
+        file::{Mappable, PerOpenFileOps, StatusFlags},
         vfs::inode::FileOps,
     },
     prelude::*,
@@ -143,5 +143,12 @@ impl PerOpenFileOps for MemFile {
 
     fn is_offset_aware(&self) -> bool {
         false
+    }
+
+    fn mappable(&self) -> Result<Mappable> {
+        match self {
+            MemFile::Zero => Ok(Mappable::Anonymous),
+            _ => return_errno_with_message!(Errno::EINVAL, "the file is not mappable"),
+        }
     }
 }
