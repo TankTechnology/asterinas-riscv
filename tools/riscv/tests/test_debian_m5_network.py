@@ -27,9 +27,12 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DESKTOP_M5_QEMU_BOOTARGS,
     DesktopM5QemuOperations,
     NetworkM5QemuOperations,
+    QemuExpectedFailure,
     QemuGateTarget,
     _parse_target,
+    classify_qemu_web_network,
     desktop_m5_qemu_argv,
+    qemu_web_network_bootargs,
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
@@ -954,11 +957,14 @@ exit 0
             "curl": r'''#!/bin/sh
 printf 'curl %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 output=
+headers=
 previous=
 for argument in "$@"; do
     if [ "$previous" = --output ]; then output="$argument"; fi
+    if [ "$previous" = --dump-header ]; then headers="$argument"; fi
     previous="$argument"
 done
+[ -z "$headers" ] || printf 'HTTP/1.1 200 OK\r\nDate: Sat, 29 Aug 2026 02:02:25 GMT\r\n\r\n' >"$headers"
 case "$*" in
     *http://www.baidu.com/*)
         [ "$ASTERINAS_WEB_FAIL_STAGE" = http ] && exit 7
@@ -973,7 +979,7 @@ case "$*" in
             printf '\211PNG\r\n\032\nfixture' >"$output"
         fi
         ;;
-    *https://www.baidu.com/*)
+    *https://www.baidu.com/*|*https://10.0.2.2:8446/*)
         case "$ASTERINAS_WEB_FAIL_STAGE" in
             https-connect) exit 7 ;;
             https-tls) exit 60 ;;
@@ -1119,6 +1125,9 @@ esac
         self.assertTrue(
             all("--proxy http://10.100.19.216:17893" in line for line in external)
         )
+        self.assertFalse(any("http://www.baidu.com/" in line for line in commands))
+        fixture_http = [line for line in commands if FIXTURE_PATH in line][0]
+        self.assertIn("--dump-header", fixture_http)
         self.assertFalse(any(line.startswith("getent ") for line in commands))
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
 
@@ -1182,6 +1191,31 @@ esac
                     f"DEBIAN_WEB_NETWORK_FAIL mode=direct "
                     f"layer={layer} reason={reason}",
                 )
+
+    def test_web_network_tls_override_remains_strict(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-local-tls",
+            mode="direct",
+            fail_stage="https-tls",
+        )
+        environment["ASTERINAS_WEB_NETWORK_HTTPS_URL"] = (
+            "https://10.0.2.2:8446/"
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_FAIL mode=direct layer=https reason=tls",
+        )
+        self.assertIn("https://10.0.2.2:8446/", command_log.read_text())
 
     def _qemu_fixture_environment(self, directory: Path) -> dict[str, str]:
         payload = directory / "qemu-fixture.bin"
@@ -1731,17 +1765,240 @@ printf '200\t10.0.2.15'
             ).reason,
             "kernel panic",
         )
-        self.assertEqual(_parse_target([]), (QemuGateTarget.BROWSER, []))
-        self.assertEqual(
-            _parse_target(["--target", "network", "--smp", "4"]),
-            (QemuGateTarget.NETWORK, ["--smp", "4"]),
+        selection, remaining = _parse_target([])
+        self.assertEqual(selection.target, QemuGateTarget.BROWSER)
+        self.assertIsNone(selection.network_mode)
+        self.assertEqual(selection.expected_failure, QemuExpectedFailure.NONE)
+        self.assertEqual(remaining, [])
+        selection, remaining = _parse_target(
+            [
+                "--target",
+                "network",
+                "--network-mode",
+                "proxy",
+                "--expect-failure",
+                "none",
+                "--smp",
+                "4",
+            ]
         )
+        self.assertEqual(
+            selection.target,
+            QemuGateTarget.NETWORK,
+        )
+        self.assertEqual(selection.network_mode, network_gate.NetworkMode.PROXY)
+        self.assertEqual(remaining, ["--smp", "4"])
         with self.assertRaises(SystemExit):
             _parse_target(["--target", "invalid"])
+        with self.assertRaises(SystemExit):
+            _parse_target(["--target", "network"])
         self.assertFalse(NetworkM5QemuOperations.CAPTURE_SCREENSHOT)
         self.assertEqual(
             NetworkM5QemuOperations.MILESTONES,
             DESKTOP_M5_QEMU_MILESTONES,
+        )
+
+    def test_qemu_web_network_mode_argv(self) -> None:
+        proxy = qemu_web_network_bootargs(network_gate.NetworkMode.PROXY)
+        direct = qemu_web_network_bootargs(network_gate.NetworkMode.DIRECT)
+
+        self.assertIn("ASTERINAS_WEB_NETWORK_MODE=proxy", proxy)
+        self.assertIn("ASTERINAS_DESKTOP_PROXY_URL=http://10.0.2.2:17893", proxy)
+        self.assertIn("ASTERINAS_WEB_NETWORK_MODE=direct", direct)
+        self.assertIn("ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3", direct)
+        self.assertNotIn("PROXY", direct)
+        self.assertNotIn("--proxy", direct)
+        tls = qemu_web_network_bootargs(
+            network_gate.NetworkMode.DIRECT,
+            expected_failure=QemuExpectedFailure.TLS,
+        )
+        self.assertIn(
+            "ASTERINAS_WEB_NETWORK_HTTPS_URL=https://10.0.2.2:8446/",
+            tls,
+        )
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+        underlying = makefile.split(
+            ".PHONY: test_riscv_debian_desktop_m5_qemu_gate", 1
+        )[1].split(".PHONY:", 1)[0]
+        self.assertIn("--smp 4", underlying)
+        self.assertIn('--network-mode "$(DEBIAN_WEB_NETWORK_MODE)"', underlying)
+        for target in (
+            "test_riscv_debian_web_network_proxy_qemu",
+            "test_riscv_debian_web_network_direct_qemu",
+        ):
+            block = makefile.split(f".PHONY: {target}", 1)[1].split(
+                ".PHONY:", 1
+            )[0]
+            self.assertIn("test_riscv_debian_desktop_m5_qemu_gate", block)
+            self.assertIn("DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network", block)
+
+    def test_qemu_web_network_negative_cases(self) -> None:
+        cases = (
+            (
+                network_gate.NetworkMode.PROXY,
+                QemuExpectedFailure.PROXY_UNAVAILABLE,
+                b"DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=https "
+                b"reason=proxy-unavailable\n",
+            ),
+            (
+                network_gate.NetworkMode.DIRECT,
+                QemuExpectedFailure.DNS,
+                b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=dns reason=resolve\n",
+            ),
+            (
+                network_gate.NetworkMode.DIRECT,
+                QemuExpectedFailure.TLS,
+                b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=https reason=tls\n",
+            ),
+        )
+        for mode, expected_failure, transcript in cases:
+            with self.subTest(expected_failure=expected_failure):
+                result = classify_qemu_web_network(
+                    transcript,
+                    mode=mode,
+                    expected_failure=expected_failure,
+                )
+                self.assertTrue(result.passed, result.reason)
+                self.assertFalse(
+                    classify_qemu_web_network(
+                        transcript
+                        + f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10\n".encode(),
+                        mode=mode,
+                        expected_failure=expected_failure,
+                    ).passed
+                )
+                self.assertFalse(
+                    classify_qemu_web_network(
+                        transcript,
+                        mode=mode,
+                        expected_failure=QemuExpectedFailure.NONE,
+                    ).passed
+                )
+
+    def test_qemu_tls_negative_owns_repository_fixture_lifecycle(self) -> None:
+        class FakeTlsFixture:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def start(self) -> None:
+                self.events.append("start")
+
+            def close(self) -> None:
+                if not self.events or self.events[-1] != "close":
+                    self.events.append("close")
+
+            def summary(self) -> dict[str, object]:
+                return {"endpoint": "https://10.0.2.2:8446/", "ready": True}
+
+        inputs = []
+        for index in range(8):
+            path = self.directory / f"tls-input-{index}"
+            path.write_bytes(str(index).encode())
+            inputs.append(path)
+        output = self.directory / "qemu-tls-evidence"
+        output.mkdir()
+        config = RootfsGateConfig(*inputs, output)
+        fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+        tls_fixture = FakeTlsFixture()
+        operations = NetworkM5QemuOperations(
+            config,
+            network_mode=network_gate.NetworkMode.DIRECT,
+            expected_failure=QemuExpectedFailure.TLS,
+            fixture=fixture,
+            tls_fixture=tls_fixture,
+        )
+        expected = operations.MILESTONES[-1].encode()
+        generic_failure = b"DEBIAN_WEB_NETWORK_FAIL mode="
+        self.assertFalse(
+            operations._completion_is_failure(expected, (generic_failure,))
+        )
+        self.assertTrue(
+            operations._completion_is_failure(
+                b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=dns reason=resolve",
+                (generic_failure,),
+            )
+        )
+
+        with operations:
+            self.assertTrue(fixture.running)
+            self.assertEqual(tls_fixture.events, ["start"])
+        self.assertFalse(fixture.running)
+        self.assertEqual(tls_fixture.events, ["start", "close"])
+
+    def test_qemu_proxy_lifecycle_skips_bridge_only_for_expected_outage(self) -> None:
+        class FakeProxy:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def start(self) -> None:
+                self.events.append("start")
+
+            def close(self) -> None:
+                if not self.events or self.events[-1] != "close":
+                    self.events.append("close")
+
+            def summary(self) -> dict[str, object]:
+                return {"listen": "0.0.0.0:17893", "ready": True}
+
+        inputs = []
+        for index in range(8):
+            path = self.directory / f"proxy-input-{index}"
+            path.write_bytes(str(index).encode())
+            inputs.append(path)
+        config = RootfsGateConfig(
+            *inputs,
+            self.directory / "qemu-proxy-evidence",
+        )
+        config.output_directory.mkdir()
+
+        for expected_failure, expected_events in (
+            (QemuExpectedFailure.NONE, ["start", "close"]),
+            (QemuExpectedFailure.PROXY_UNAVAILABLE, ["close"]),
+        ):
+            with self.subTest(expected_failure=expected_failure):
+                fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+                proxy = FakeProxy()
+                operations = NetworkM5QemuOperations(
+                    config,
+                    network_mode=network_gate.NetworkMode.PROXY,
+                    expected_failure=expected_failure,
+                    fixture=fixture,
+                    proxy_bridge=proxy,
+                )
+                with operations:
+                    self.assertTrue(fixture.running)
+                self.assertEqual(proxy.events, expected_events)
+
+    def test_qemu_expected_dns_failure_does_not_require_fixture_requests(self) -> None:
+        inputs = []
+        for index in range(8):
+            path = self.directory / f"dns-input-{index}"
+            path.write_bytes(str(index).encode())
+            inputs.append(path)
+        output = self.directory / "qemu-dns-evidence"
+        output.mkdir()
+        config = RootfsGateConfig(*inputs, output)
+        fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
+        operations = NetworkM5QemuOperations(
+            config,
+            network_mode=network_gate.NetworkMode.DIRECT,
+            expected_failure=QemuExpectedFailure.DNS,
+            fixture=fixture,
+        )
+        transcript = (
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=dns reason=resolve\n"
+        )
+
+        with operations:
+            operations.invalidate(config)
+            result: dict[str, object] = {"passed": True, "reason": "pass"}
+            operations.publish(config, None, transcript, result)
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["network_fixture"]["request_count"], 0)
+        self.assertEqual(
+            result["classified_guest_failure"],
+            {"mode": "direct", "layer": "dns", "reason": "resolve"},
         )
 
     def test_qemu_adapter_adds_only_one_slirp_virtio_net_device(self) -> None:

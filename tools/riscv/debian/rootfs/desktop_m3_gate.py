@@ -276,6 +276,14 @@ class DesktopM3Operations(ConcreteOperations):
             f'setenv bootargs "{self.BOOTARGS}"',
         )
 
+    def _completion_is_failure(
+        self, completion: bytes, failure_markers: tuple[bytes, ...]
+    ) -> bool:
+        return any(
+            completion.startswith(marker.split(b" reason=", 1)[0])
+            for marker in failure_markers
+        )
+
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         serial = session["serial"]
         deadline = time.monotonic() + config.boot_timeout
@@ -307,10 +315,7 @@ class DesktopM3Operations(ConcreteOperations):
             (self.MILESTONES[-1].encode(), *failure_markers),
             time.monotonic() + config.boot_timeout,
         )
-        if any(
-            completion.startswith(marker.split(b" reason=", 1)[0])
-            for marker in failure_markers
-        ):
+        if self._completion_is_failure(completion, failure_markers):
             raise GateFailure("guest reported desktop failure")
 
         if not self.CAPTURE_SCREENSHOT:
