@@ -598,16 +598,17 @@ git commit -m "test(riscv): share Firefox Baidu acceptance across modes"
 
 **Files:**
 - Modify: `tools/riscv/debian/rootfs/build_rootfs.sh`
+- Modify: `tools/riscv/debian/rootfs/contract.py`
 - Modify: `tools/riscv/debian/rootfs/profiles.py`
 - Modify: `tools/riscv/debian/rootfs/browser_web_evidence.service`
 - Modify: `tools/riscv/tests/test_debian_rootfs.py`
 - Modify: `tools/riscv/tests/test_debian_browser_web.py`
 
-- [ ] **Step 1: Write RED image-manifest tests**
+- [x] **Step 1: Write RED image-manifest tests**
 
-Require the `browser-web` profile to install executable network/Firefox scripts, Python classifiers, the evidence service, Firefox, CA bundle, curl, iproute2, iputils-ping, and xdotool. Require the manifest gate version to change when any installed script changes. Require the service to start after both `network-online.target` and `asterinas-desktop-m4-core-evidence.service`, with no hard dependency added to the desktop-only target.
+Require the `browser-web` profile to install its executable network/Firefox gates, the evidence service, Firefox, CA bundle, curl, iproute2, iputils-ping, and xdotool. Bind the host-only network classifier and every installed mode-aware gate input into one manifest runtime digest. Require the evidence service to start after both `network-online.target` and the online `asterinas-desktop-m5.service` provider, with no hard dependency added to the desktop-only target. The older plan name `asterinas-desktop-m4-core-evidence.service` does not exist, and its actual browser-free M4 evidence payload is not valid for this online M5 image.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 python3 -m unittest \
@@ -617,11 +618,11 @@ python3 -m unittest \
 
 Expected: image contract failure for the new classifier/version inputs.
 
-- [ ] **Step 3: Install and version all mode-aware inputs**
+- [x] **Step 3: Install and version all mode-aware inputs**
 
-Install `desktop_m5_network_gate.py` beside the other `/usr/lib/asterinas` Python gates, ensure `desktop_m5_network_evidence.sh`, Firefox wrapper, Marionette gate, and browser evidence are included in the rootfs digest set, and add only missing runtime packages. Set service environment defaults to finite values; do not set a default network mode or proxy endpoint in the image.
+Keep `desktop_m5_network_gate.py` on the host, where its QEMU orchestration dependency closure exists, and bind it into `browser-web-runtime` together with `desktop_m5_network_evidence.sh`, the Firefox wrapper, Marionette gates, browser evidence, and their units. Require that SHA-256 in schema 7 manifests and add only the missing runtime package. Keep finite service timeouts without setting a default network mode or proxy endpoint in the image.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 python3 -W error::ResourceWarning -m unittest \
@@ -629,6 +630,7 @@ python3 -W error::ResourceWarning -m unittest \
   tools.riscv.tests.test_debian_browser_web -v
 bash -n tools/riscv/debian/rootfs/build_rootfs.sh
 git add tools/riscv/debian/rootfs/build_rootfs.sh \
+  tools/riscv/debian/rootfs/contract.py \
   tools/riscv/debian/rootfs/profiles.py \
   tools/riscv/debian/rootfs/browser_web_evidence.service \
   tools/riscv/tests/test_debian_rootfs.py \
