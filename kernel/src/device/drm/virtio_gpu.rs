@@ -154,17 +154,16 @@ pub(super) fn virtgpu_getparam(
     >,
 ) -> Result<i32> {
     let req = cmd.read()?;
+    let gpu = handle.gpu_manager.gpu()?;
     let value: u64 = match req.param {
-        VIRTGPU_PARAM_3D_FEATURES => u64::from(handle.gpu_manager.gpu.supports_virgl()),
+        VIRTGPU_PARAM_3D_FEATURES => u64::from(gpu.supports_virgl()),
         VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1, // GET_CAPS handles non-zero versions
         VIRTGPU_PARAM_RESOURCE_BLOB => 0,    // no blob resources
         VIRTGPU_PARAM_HOST_VISIBLE => 0,     // no host-visible resources
         VIRTGPU_PARAM_CROSS_DEVICE => 0,     // no cross-device sharing
         VIRTGPU_PARAM_CONTEXT_INIT => 0,     // no context init extension
         // Bitmask of supported capsets: bit 1 = virgl, bit 2 = virgl2.
-        VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => handle
-            .gpu_manager
-            .gpu
+        VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => gpu
             .supported_capset_ids()
             .map_err(|_| Error::with_message(Errno::EIO, "cannot enumerate virgl capsets"))?,
         VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME => 0, // no debug name support
@@ -239,9 +238,8 @@ pub(super) fn virtgpu_get_caps(
     }
     let cap_set_id = req.cap_set_id;
 
-    let capset_info = handle
-        .gpu_manager
-        .gpu
+    let gpu = handle.gpu_manager.gpu()?;
+    let capset_info = gpu
         .get_capset_info(cap_set_id)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
     // If the host reports a zero-sized capset, it doesn't actually support
@@ -253,9 +251,7 @@ pub(super) fn virtgpu_get_caps(
     if req.cap_set_ver > capset_info.capset_max_version {
         return_errno_with_message!(Errno::EINVAL, "unsupported capset version");
     }
-    let capset_data = handle
-        .gpu_manager
-        .gpu
+    let capset_data = gpu
         .get_capset(cap_set_id, req.cap_set_ver)
         .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 
@@ -312,7 +308,7 @@ pub(super) fn virtgpu_transfer_to_host(
 
     handle
         .gpu_manager
-        .gpu
+        .gpu()?
         .transfer_to_host_3d(
             ctx_id,
             resource_id,
@@ -359,7 +355,7 @@ pub(super) fn virtgpu_transfer_from_host(
 
     handle
         .gpu_manager
-        .gpu
+        .gpu()?
         .transfer_from_host_3d(
             ctx_id,
             resource_id,

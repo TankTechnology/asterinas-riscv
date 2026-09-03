@@ -232,7 +232,7 @@ impl PreparedExecbuffer {
         let fence = response.fence().clone();
         let ticket = handle
             .gpu_manager
-            .gpu
+            .gpu()?
             .submit_3d_fenced_async(context_id, request.size, &command, fence_id, fence.clone())
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu error"))?;
 

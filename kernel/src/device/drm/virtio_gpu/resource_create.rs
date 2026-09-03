@@ -235,10 +235,11 @@ impl<'a> PreparedResourceCreate<'a> {
             return_errno_with_message!(Errno::EBUSY, "GEM object already has a 3D resource");
         }
 
-        let resource_id =
-            handle.gpu_manager.gpu.allocate_resource_id().map_err(|_| {
-                Error::with_message(Errno::ENOSPC, "virtio-gpu resource ids exhausted")
-            })?;
+        let resource_id = handle
+            .gpu_manager
+            .gpu()?
+            .allocate_resource_id()
+            .map_err(|_| Error::with_message(Errno::ENOSPC, "virtio-gpu resource ids exhausted"))?;
         let mut create = self.create;
         create.resource_id = resource_id;
         let mut transaction = ResourceCreateTransaction {
@@ -282,7 +283,7 @@ impl ResourceCreateTransaction<'_> {
     fn create_resource(&mut self) -> Result<()> {
         self.handle
             .gpu_manager
-            .gpu
+            .gpu()?
             .resource_create_3d(self.create)
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu resource creation failed"))?;
         self.state = ResourceCreateState::Created;
@@ -292,7 +293,7 @@ impl ResourceCreateTransaction<'_> {
     fn attach_backing(&self) -> Result<()> {
         self.handle
             .gpu_manager
-            .gpu
+            .gpu()?
             .attach_backing(
                 self.create.resource_id,
                 self.backing.device_addr,
@@ -372,8 +373,8 @@ impl Drop for ResourceCreateTransaction<'_> {
             .handle
             .gpu_manager
             .gpu
-            .resource_unref(self.create.resource_id)
-            .is_err()
+            .as_ref()
+            .is_none_or(|gpu| gpu.resource_unref(self.create.resource_id).is_err())
         {
             self.handle.gpu_manager.insert_gem_resource(
                 self.backing.object_id(),

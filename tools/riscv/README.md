@@ -288,16 +288,14 @@ classifier reported pass.
 
 ## Megrez firmware framebuffer handoff
 
-`megrez_board_session.py` can add the physically established 1920x1080
-scanout at `0xfd800000` to the live DTB before `booti`. The change is RAM-only:
-the tool never runs `saveenv`, and the default serial-only path remains
-unchanged unless `--firmware-framebuffer` is present.
+`megrez_board_session.py` can add the physically established 1920x1080 scanout at `0xfd800000` to the live DTB before `booti`.
+The change is RAM-only:
+the tool never runs `saveenv`, and the default serial-only path remains unchanged unless `--firmware-framebuffer` is present.
 
 Asterinas currently selects only the first `console=` value for `/dev/console`.
-The framebuffer gate therefore requires `console=tty0` to be first. The closed
-`firmware-framebuffer` final profile returns success when the serial log has
-observed the kernel register the handoff; Debian/systemd output after that is
-expected on HDMI rather than on the serial console.
+The framebuffer gate therefore requires `console=tty0` to be first.
+The closed `firmware-framebuffer` final profile returns success when the serial log has observed the kernel register the handoff;
+Debian/systemd output after that is expected on HDMI rather than on the serial console.
 
 ```bash
 PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
@@ -312,8 +310,47 @@ PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 
   --log /absolute/path/to/megrez-framebuffer.serial.log
 ```
 
-This proves the current-main firmware framebuffer registration boundary. It
-does not by itself prove Xorg, a desktop session, or native EIC7700 DRM.
+This proves the current-main firmware framebuffer registration boundary.
+It does not by itself prove Xorg, a desktop session, or native EIC7700 DRM.
+
+### Firmware DRM pre-board gate
+
+The firmware DRM gate is the next, stronger boundary.
+It builds a static RISC-V `/init` that requires the `simpledrm` primary node, no render node, dumb-buffer and shadow-buffer capabilities, zero cursor dimensions, and the fixed 1920x1080 preferred mode.
+It then creates and maps two XRGB8888 dumb buffers and performs `ADDFB2`, `SETCRTC`, `PAGE_FLIP`, and `DIRTYFB`.
+The physical probe pauses after patterns A and B so HDMI should show the distinct A, B, and C patterns in order; C remains as the final image.
+
+Run the offline source, ABI, initramfs, and Megrez command-contract checks in the project container before copying any artifact to the board boot medium:
+
+```bash
+make test_riscv_drm_firmware_preboard
+sha256sum target/drm-firmware/initramfs.cpio.gz
+```
+
+After recording CRC32 values for the exact kernel, DTB, and generated initramfs, the physical attempt uses the existing RAM-only handoff.
+The probe writes every result to `ttyS0` explicitly even though `tty0` remains the primary console.
+Keep the recovery timer and require the fresh U-Boot epoch:
+
+```bash
+PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd DRM_FIRMWARE_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 console=ttyS0 loglevel=info init=/init asterinas.reboot_after=120" \
+  --firmware-framebuffer \
+  --final-profile firmware-drm \
+  --require-recovery \
+  --milestone-timeout 180 \
+  --yes \
+  --log /absolute/path/to/megrez-firmware-drm.serial.log
+```
+
+The closed serial success marker is `ASTERINAS_DRM_FIRMWARE_R1_READY`.
+Any `DRM_FIRMWARE_FAIL` line or a missing recovery epoch is a failure.
+The serial markers prove that each ioctl returned success;
+they do not prove its visible effect, so retain an HDMI video or operator record that shows patterns A, B, and C in order.
+Passing the offline target is build and migration-contract evidence only; it is not HDMI runtime evidence.
 
 ## Generic U-Boot `booti`
 

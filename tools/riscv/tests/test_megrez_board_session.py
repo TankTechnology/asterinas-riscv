@@ -108,6 +108,17 @@ class MilestoneDetectionTests(unittest.TestCase):
         )
         self.assertEqual(tuple(session.milestones), tuple(board.MILESTONES))
 
+    def test_firmware_drm_profile_uses_the_completed_probe_marker(self):
+        session = _make_session()
+        session._markers["userspace"] = board.FINAL_MILESTONE_MARKERS["firmware-drm"]
+        session.note_milestone(
+            "Enter riscv_boot\n"
+            "Presented by the Asterinas developers\n"
+            "DRM_FIRMWARE_PRESENT setcrtc=pass dirtyfb=pass page-flip=pass\n"
+            "ASTERINAS_DRM_FIRMWARE_R1_READY\n"
+        )
+        self.assertEqual(tuple(session.milestones), tuple(board.MILESTONES))
+
     def test_specific_profile_does_not_require_the_optional_banner(self):
         session = board.BoardSession.from_fd(
             -1,
@@ -305,6 +316,24 @@ class ArgumentContractTests(unittest.TestCase):
             _required_args() + crc_args + ["--final-profile", "firmware-framebuffer"]
         )
         self.assertEqual(args.final_profile, "firmware-framebuffer")
+        firmware_drm = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--final-profile",
+                "firmware-drm",
+                "--firmware-framebuffer",
+                "--require-recovery",
+                "--bootargs",
+                "console=tty0 console=ttyS0 init=/init asterinas.reboot_after=120",
+                "--milestone-timeout",
+                "180",
+            ]
+        )
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS[firmware_drm.final_profile],
+            "ASTERINAS_DRM_FIRMWARE_R1_READY",
+        )
         installer = board.parse_args(
             _required_args() + crc_args + ["--final-profile", "installer"]
         )
@@ -356,6 +385,74 @@ class ArgumentContractTests(unittest.TestCase):
             ]
         )
         self.assertTrue(args.firmware_framebuffer)
+
+    def test_firmware_drm_profile_requires_the_framebuffer_handoff(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        with mock.patch.object(
+            board, "open_serial", side_effect=AssertionError("serial opened")
+        ) as open_serial:
+            _parse_fails(
+                _required_args()
+                + crc_args
+                + [
+                    "--final-profile",
+                    "firmware-drm",
+                    "--require-recovery",
+                    "--bootargs",
+                    "console=tty0 console=ttyS0 init=/init asterinas.reboot_after=120",
+                    "--milestone-timeout",
+                    "180",
+                ]
+            )
+        open_serial.assert_not_called()
+
+    def test_firmware_drm_profile_requires_recovery(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        with mock.patch.object(
+            board, "open_serial", side_effect=AssertionError("serial opened")
+        ) as open_serial:
+            _parse_fails(
+                _required_args()
+                + crc_args
+                + [
+                    "--final-profile",
+                    "firmware-drm",
+                    "--firmware-framebuffer",
+                    "--bootargs",
+                    "console=tty0 console=ttyS0 init=/init asterinas.reboot_after=120",
+                    "--milestone-timeout",
+                    "180",
+                ]
+            )
+        open_serial.assert_not_called()
+
+    def test_firmware_drm_recovery_timeout_exceeds_the_reboot_timer(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        common = (
+            _required_args()
+            + crc_args
+            + [
+                "--final-profile",
+                "firmware-drm",
+                "--firmware-framebuffer",
+                "--require-recovery",
+                "--bootargs",
+                "console=tty0 console=ttyS0 init=/init asterinas.reboot_after=120",
+            ]
+        )
+        _parse_fails(common)
+        args = board.parse_args(common + ["--milestone-timeout", "180"])
+        self.assertEqual(args.milestone_timeout, 180)
+        self.assertTrue(args.require_recovery)
 
 
 class FirmwareFramebufferContractTests(unittest.TestCase):
@@ -1130,6 +1227,54 @@ class BootTransactionTests(unittest.TestCase):
             )
 
         self.assertEqual(result, board.INCOMPLETE_RECOVERED_EXIT)
+
+    def test_completed_probe_accepts_recovery_buffered_with_final_marker(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.milestones = {}
+        physical_session.log = mock.Mock()
+        physical_session.fd = -1
+
+        def record(text: str) -> None:
+            if "Enter riscv_boot" in text:
+                physical_session.milestones["kernel_enter"] = 1.0
+            if board.FINAL_MILESTONE_MARKERS["firmware-drm"] in text:
+                physical_session.milestones["userspace"] = 2.0
+
+        physical_session.note_milestone.side_effect = record
+        completed_and_recovered = (
+            "ASTERINAS_DRM_FIRMWARE_R1_READY\n"
+            "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value="Enter riscv_boot\n"
+            ),
+            mock.patch.object(
+                board, "read_available", return_value=completed_and_recovered
+            ),
+            mock.patch.object(board.time, "monotonic", return_value=0),
+            mock.patch.object(board.os, "close"),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "firmware-drm",
+                    "--firmware-framebuffer",
+                    "--require-recovery",
+                    "--bootargs",
+                    "console=tty0 console=ttyS0 init=/init asterinas.reboot_after=120",
+                    "--milestone-timeout",
+                    "180",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        physical_session.wait_for_uboot_prompt.assert_called_once_with(timeout=60.0)
 
     def test_framebuffer_handoff_is_complete_before_booti(self):
         events: list[str] = []

@@ -148,6 +148,16 @@ DRM primary-node clients can obtain an authentication token with `DRM_IOCTL_GET_
 The current DRM master can consume that token with `DRM_IOCTL_AUTH_MAGIC`, after which the client may use authentication-gated GEM operations such as `DRM_IOCTL_GEM_FLINK` and `DRM_IOCTL_GEM_OPEN`.
 Render nodes do not use this legacy authentication flow.
 
+When virtio-gpu is available, DRM exposes the `virtio_gpu` primary and render nodes.
+Without virtio-gpu, a compatible firmware framebuffer exposes a `simpledrm` primary node only.
+The firmware backend reports `DRM_CAP_DUMB_PREFER_SHADOW`, zero cursor dimensions, and a single fixed mode.
+It implements legacy modesetting, dirty-framebuffer updates, and page flips by copying `XRGB8888` or `ARGB8888` dumb-buffer rows into the BGR-reserved scanout left active by firmware;
+the high byte is reserved by the scanout and alpha is not blended.
+`DRM_IOCTL_MODE_DIRTYFB` accepts `flags == 0` and at most 4096 nonempty, in-bounds clip rectangles.
+Zero clips request a full redraw.
+Damage whose aggregate area reaches one frame is collapsed to a single full redraw.
+Firmware remains responsible for the display mode and link; native display programming and GPU acceleration are not provided by this backend.
+
 `DRM_IOCTL_VIRTGPU_EXECBUFFER` supports both
 `VIRTGPU_EXECBUF_FENCE_FD_IN` and `VIRTGPU_EXECBUF_FENCE_FD_OUT`.
 The input fd gates submission until its sync fence signals;
@@ -155,9 +165,9 @@ the output is a close-on-exec, pollable asynchronous fence fd.
 Input and output syncobj arrays support binary payloads and timeline points;
 input descriptors may request reset after a successful submission.
 Alternate rings are not supported.
-One command stream is limited to 16 MiB, and at most 64 MiB of command streams
-may be retained by concurrent submissions system-wide; exceeding those limits
-returns `EINVAL` and `ENOSPC`, respectively.
+One command stream is limited to 16 MiB,
+and at most 64 MiB of command streams may be retained by concurrent submissions system-wide;
+exceeding those limits returns `EINVAL` and `ENOSPC`, respectively.
 At most 262,144 GEM-object/fence associations may be retained system-wide;
 new submissions return `ENOSPC` after that boundary.
 `DRM_IOCTL_VIRTGPU_WAIT` supports blocking waits and `VIRTGPU_WAIT_NOWAIT`; the latter returns `EBUSY` while tracked resource work is pending.

@@ -671,6 +671,19 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
 
+.PHONY: test_riscv_drm_firmware_unit
+test_riscv_drm_firmware_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_firmware_gate -v
+
+.PHONY: test_riscv_drm_firmware_preboard
+test_riscv_drm_firmware_preboard: test_riscv_drm_firmware_unit
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_board_session -v
+	@bash tools/riscv/drm/build_firmware_gate.sh \
+		target/drm-firmware/initramfs.cpio.gz
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \

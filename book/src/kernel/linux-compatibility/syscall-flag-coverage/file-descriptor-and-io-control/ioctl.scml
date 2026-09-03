@@ -56,11 +56,14 @@ drm_kms_query_ops = DRM_IOCTL_GET_CAP | DRM_IOCTL_MODE_GETRESOURCES |
                     DRM_IOCTL_MODE_GETPROPBLOB | DRM_IOCTL_CRTC_GET_SEQUENCE;
 drm_vblank_ops = DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_CRTC_QUEUE_SEQUENCE;
 drm_kms_update_ops = DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_PAGE_FLIP |
+                     DRM_IOCTL_MODE_DIRTYFB |
                      DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 |
                      DRM_IOCTL_MODE_ADDFB | DRM_IOCTL_MODE_ADDFB2 |
                      DRM_IOCTL_MODE_RMFB | DRM_IOCTL_MODE_ATOMIC |
                      DRM_IOCTL_MODE_CREATEPROPBLOB |
                      DRM_IOCTL_MODE_DESTROYPROPBLOB;
+
+// MODE_DIRTYFB accepts flags = 0 and at most 4096 nonempty, in-bounds clips.
 
 // Authenticate a DRM primary-node client through the current DRM master
 ioctl(fd, op = <drm_auth_ops>, ..);

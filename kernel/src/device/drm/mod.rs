@@ -2,19 +2,20 @@
 
 //! DRM (Direct Rendering Manager) character device support.
 //!
-//! Provides two device nodes backed by the first discovered virtio-gpu device:
+//! Provides a primary KMS node backed by either virtio-gpu or the framebuffer left active by firmware:
 //!
 //! - `/dev/dri/card0` (major=226, minor=0) — primary node with full KMS +
 //!   dumb-buffer + GEM ioctls.
 //! - `/dev/dri/renderD128` (major=226, minor=128) — render node with GEM,
 //!   PRIME, virgl 3D, transfer, execution, and fence ioctls (no KMS).
+//!   This node exists only when virtio-gpu is present.
 //!
-//! Dumb buffers are carved out of a single physically-contiguous [`Vmo`] pool
-//! so that (a) `mmap` can map any buffer via the standard `Mappable::Vmo` path
-//! and (b) each buffer is backed by one contiguous guest-physical span that
-//! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
+//! Dumb buffers are carved out of one [`Vmo`] pool so `mmap` can map any buffer via the standard `Mappable::Vmo` path.
+//! The virtio backend requests a physically contiguous pool for `RESOURCE_ATTACH_BACKING`.
+//! The firmware backend can use ordinary pages because it copies pixels into fixed scanout.
 
 mod atomic;
+mod backend;
 mod cursor;
 mod dumb;
 mod fdinfo;
@@ -43,9 +44,10 @@ use core::{
     time::Duration,
 };
 
+use aster_framebuffer::framebuffer;
 use aster_virtio::device::{
     VirtioDeviceError,
-    gpu::{device::GpuDevice, first_device},
+    gpu::{self, device::GpuDevice},
 };
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{Paddr, VmIo};
@@ -53,7 +55,7 @@ use ostd::mm::{Paddr, VmIo};
 #[cfg(ktest)]
 use self::resource_tracking::VirglContextCounts;
 use self::{
-    cursor::{CURSOR_SIZE, CursorState, DrmModeCursor, DrmModeCursor2},
+    cursor::{CursorState, DrmModeCursor, DrmModeCursor2},
     queue::{AtomicCommitQueue, DrmEventQueue, VblankCompletionQueue},
     resource_tracking::{DrmResourceSnapshot, VirglContextTracker},
     uapi::*,
@@ -84,12 +86,34 @@ use crate::{
 /// Linux DRM character-device major number.
 const DRM_MAJOR: u16 = 226;
 
-/// Kernel driver name reported by `DRM_IOCTL_VERSION`. Must match Mesa's
-/// DRI driver file name (`virtio_gpu_dri.so`), which Mesa's loader derives
-/// from this string.
-const DRIVER_NAME: &str = "virtio_gpu";
-const DRIVER_DATE: &str = "20260818";
-const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D/3D driver";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DrmBackendKind {
+    Virtio,
+    Firmware,
+}
+
+/// Identity reported by `DRM_IOCTL_VERSION` and fdinfo.
+///
+/// The virtio name must match Mesa's `virtio_gpu_dri.so`. The firmware-only
+/// backend uses Linux's conventional `simpledrm` identity and has no render
+/// node or hardware DRI driver.
+struct DriverInfo {
+    name: &'static str,
+    date: &'static str,
+    description: &'static str,
+}
+
+const VIRTIO_DRIVER: DriverInfo = DriverInfo {
+    name: "virtio_gpu",
+    date: "20260818",
+    description: "Asterinas virtio-gpu 2D/3D driver",
+};
+
+const FIRMWARE_DRIVER: DriverInfo = DriverInfo {
+    name: "simpledrm",
+    date: "20260903",
+    description: "Asterinas firmware framebuffer DRM driver",
+};
 
 /// Refresh rate advertised by the single synthesized virtio-gpu mode.
 const DEFAULT_REFRESH_HZ: u32 = 60;
@@ -254,8 +278,15 @@ const MAX_RESOLUTION: u32 = 8192;
 /// The dumb-buffer pool and GEM object table live here so that GEM_FLINK
 /// names are global and render-node opens share the same `GpuDevice`.
 struct GpuManager {
-    gpu: Arc<GpuDevice>,
-    /// The contiguous pool all dumb buffers are carved out of.
+    /// Optional render backend. Firmware-only devices expose KMS and dumb GEM
+    /// buffers without registering a render node.
+    gpu: Option<Arc<GpuDevice>>,
+    /// Display-only operations consumed by the generic KMS implementation.
+    scanout_backend: Arc<dyn backend::ScanoutBackend>,
+    /// Optional hardware-cursor operations. The firmware backend has none.
+    cursor_backend: Option<Arc<dyn backend::CursorBackend>>,
+    driver: &'static DriverInfo,
+    /// The VMO pool all dumb buffers are carved out of.
     pool: Mutex<Option<Arc<Vmo>>>,
     /// Lifetime-aware allocator for page-aligned sub-ranges of `pool`.
     dumb_pool: Arc<dumb::DumbPool>,
@@ -302,6 +333,11 @@ struct GpuManager {
     auth_magics: SpinLock<BTreeMap<u32, Weak<AtomicBool>>>,
     next_auth_magic: AtomicU32,
     next_file_id: AtomicU64,
+}
+
+enum ManagerBackend {
+    Virtio(Arc<GpuDevice>),
+    Firmware(Arc<backend::FirmwareFramebufferBackend>),
 }
 
 /// A VMA-owned GEM reference; the final split/forked mapping releases it.
@@ -397,10 +433,24 @@ impl KmsState {
 }
 
 impl GpuManager {
-    fn new(gpu: Arc<GpuDevice>) -> Self {
-        let (width, height) = (gpu.width(), gpu.height());
+    fn new(backend: ManagerBackend) -> Self {
+        let (gpu, scanout_backend, cursor_backend, driver): (
+            Option<Arc<GpuDevice>>,
+            Arc<dyn backend::ScanoutBackend>,
+            Option<Arc<dyn backend::CursorBackend>>,
+            &'static DriverInfo,
+        ) = match backend {
+            ManagerBackend::Virtio(gpu) => {
+                (Some(gpu.clone()), gpu.clone(), Some(gpu), &VIRTIO_DRIVER)
+            }
+            ManagerBackend::Firmware(framebuffer) => (None, framebuffer, None, &FIRMWARE_DRIVER),
+        };
+        let (width, height) = scanout_backend.dimensions();
         Self {
             gpu,
+            scanout_backend,
+            cursor_backend,
+            driver,
             pool: Mutex::new(None),
             dumb_pool: dumb::DumbPool::new(DUMB_POOL_SIZE),
             gem_objects: SpinLock::new(BTreeMap::new()),
@@ -427,25 +477,50 @@ impl GpuManager {
         }
     }
 
+    fn new_virtio(gpu: Arc<GpuDevice>) -> Self {
+        Self::new(ManagerBackend::Virtio(gpu))
+    }
+
+    fn new_firmware(framebuffer: Arc<framebuffer::FrameBuffer>) -> Result<Self> {
+        let scanout_backend = Arc::new(backend::FirmwareFramebufferBackend::new(framebuffer)?);
+        Ok(Self::new(ManagerBackend::Firmware(scanout_backend)))
+    }
+
     /// Disables scanout and its display clock as one backend transition.
     fn disable_scanout(&self) -> Result<()> {
-        self.gpu
-            .disable_scanout()
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable failed"))?;
+        self.scanout_backend.disable_scanout()?;
         self.vblank_clock.stop();
         Ok(())
     }
 
-    /// Returns the global GpuManager, initialised on first call.
-    fn get_or_init() -> Arc<Self> {
-        static INSTANCE: spin::Once<Arc<GpuManager>> = spin::Once::new();
+    /// Returns the global [`GpuManager`], initialized on first use.
+    fn get_or_init() -> Option<Arc<Self>> {
+        static INSTANCE: spin::Once<Option<Arc<GpuManager>>> = spin::Once::new();
         INSTANCE
             .call_once(|| {
-                let gpu = first_device()
-                    .expect("GpuManager::get_or_init called without a virtio-gpu device");
-                Arc::new(GpuManager::new(gpu))
+                if let Some(gpu) = gpu::first_device() {
+                    return Some(Arc::new(GpuManager::new_virtio(gpu)));
+                }
+                let framebuffer = framebuffer::FRAMEBUFFER.get()?.clone();
+                match GpuManager::new_firmware(framebuffer) {
+                    Ok(manager) => Some(Arc::new(manager)),
+                    Err(error) => {
+                        warn!("cannot create firmware-framebuffer DRM device: {:?}", error);
+                        None
+                    }
+                }
             })
             .clone()
+    }
+
+    fn has_gpu(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    fn gpu(&self) -> Result<&GpuDevice> {
+        self.gpu
+            .as_deref()
+            .ok_or_else(|| Error::with_message(Errno::ENODEV, "virtio-gpu backend is unavailable"))
     }
 
     /// Returns the dumb-buffer pool, allocating it on first use.
@@ -454,20 +529,32 @@ impl GpuManager {
         if let Some(pool) = guard.as_ref() {
             return Ok(pool.clone());
         }
-        let pool = VmoOptions::new(DUMB_POOL_SIZE)
-            .flags(VmoFlags::CONTIGUOUS)
-            .alloc()?;
+        let pool = if self.has_gpu() {
+            VmoOptions::new(DUMB_POOL_SIZE)
+                .flags(VmoFlags::CONTIGUOUS)
+                .alloc()?
+        } else {
+            VmoOptions::new(DUMB_POOL_SIZE).alloc()?
+        };
         *guard = Some(pool.clone());
         Ok(pool)
     }
 
-    /// Base guest physical address of the pool.
+    /// Base guest physical address of the pool for virtio resource attachment.
     fn pool_paddr(&self) -> Result<Paddr> {
         self.pool
             .lock()
             .as_ref()
             .and_then(|pool| pool.paddr())
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
+    }
+
+    fn pool_vmo(&self) -> Result<Arc<Vmo>> {
+        self.pool
+            .lock()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool is unavailable"))
     }
 
     /// Allocates a framebuffer ID from the device-wide mode-object namespace.
@@ -494,7 +581,7 @@ impl GpuManager {
         drop(gem_resources);
 
         let context_counts = self.virgl_contexts.counts();
-        let backend = self.gpu.resource_snapshot();
+        let backend = self.gpu.as_ref().map(|gpu| gpu.resource_snapshot());
         DrmResourceSnapshot {
             dumb_pool_used_bytes: dumb_pool_usage.used_bytes(),
             dumb_pool_high_water_bytes: dumb_pool_usage.high_water_bytes(),
@@ -510,10 +597,10 @@ impl GpuManager {
             pending_context_cleanup: context_counts.pending_cleanup,
             tracked_fences: self.tracked_fences.lock().len(),
             fence_associations: self.fence_associations.load(Ordering::Relaxed),
-            backend_backing_owners: backend.backing_owners(),
-            backend_pending_cleanup: backend.pending_cleanup(),
-            scanout_resources: backend.scanout_resources(),
-            cursor_resources: backend.cursor_resources(),
+            backend_backing_owners: backend.map_or(0, |value| value.backing_owners()),
+            backend_pending_cleanup: backend.map_or(0, |value| value.pending_cleanup()),
+            scanout_resources: backend.map_or(0, |value| value.scanout_resources()),
+            cursor_resources: backend.map_or(0, |value| value.cursor_resources()),
         }
     }
 
@@ -598,15 +685,20 @@ impl GpuManager {
             }
         }
         let mut cleanup_status = HostCleanupStatus::Confirmed;
-        if let Some(resource_id) = resource.map(GemResourceState::resource_id)
-            && let Err(error) = self.gpu.resource_unref(resource_id)
-        {
-            warn!(
-                "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
-                resource_id, object_id, error
-            );
-            cleanup_status = HostCleanupStatus::Unconfirmed;
-            self.pending_resource_cleanup.lock().insert(resource_id);
+        if let Some(resource_id) = resource.map(GemResourceState::resource_id) {
+            let release_result = self.gpu().and_then(|gpu| {
+                gpu.resource_unref(resource_id).map_err(|_| {
+                    Error::with_message(Errno::EIO, "cannot release virtio-gpu resource")
+                })
+            });
+            if let Err(error) = release_result {
+                warn!(
+                    "cannot release virtio-gpu resource {} for GEM object {}: {:?}",
+                    resource_id, object_id, error
+                );
+                cleanup_status = HostCleanupStatus::Unconfirmed;
+                self.pending_resource_cleanup.lock().insert(resource_id);
+            }
         }
         Ok(cleanup_status)
     }
@@ -749,15 +841,21 @@ impl GpuManager {
 
     /// Retries resources that outlived their GEM objects without holding a spinlock.
     fn drain_pending_resource_cleanup(&self) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
         retry_pending_ids(&self.pending_resource_cleanup, |resource_id| {
-            self.gpu.resource_unref(resource_id).is_ok()
+            gpu.resource_unref(resource_id).is_ok()
         });
     }
 
     /// Retries context destruction before retrying attached host resources.
     fn drain_pending_context_cleanup(&self) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
         self.virgl_contexts
-            .retry_pending(|context_id| self.gpu.ctx_destroy(context_id).is_ok());
+            .retry_pending(|context_id| gpu.ctx_destroy(context_id).is_ok());
     }
 }
 
@@ -1292,15 +1390,13 @@ impl DriHandle {
         }
         if !context.is_created {
             self.gpu_manager.drain_pending_context_cleanup();
+            let gpu = self.gpu_manager.gpu()?;
             // `VIRTIO_GPU_F_CONTEXT_INIT` is not negotiated, so the legacy
             // context-create payload must leave `context_init` at zero.
-            let create_result = self
-                .gpu_manager
-                .gpu
-                .ctx_create(context.id, 0, b"asterinas-drm");
+            let create_result = gpu.ctx_create(context.id, 0, b"asterinas-drm");
             if matches!(create_result, Err(VirtioDeviceError::AmbiguousCompletion)) {
                 self.gpu_manager.virgl_contexts.record_created(context.id);
-                if self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+                if gpu.ctx_destroy(context.id).is_ok() {
                     self.gpu_manager.virgl_contexts.record_destroyed(context.id);
                 } else {
                     self.gpu_manager.virgl_contexts.defer_destroy(context.id);
@@ -1325,7 +1421,12 @@ impl DriHandle {
     fn poison_virgl_context_locked(&self, context: &mut VirglContext) {
         context.is_poisoned = true;
         if context.is_created {
-            if self.gpu_manager.gpu.ctx_destroy(context.id).is_ok() {
+            if self
+                .gpu_manager
+                .gpu
+                .as_ref()
+                .is_some_and(|gpu| gpu.ctx_destroy(context.id).is_ok())
+            {
                 self.gpu_manager.virgl_contexts.record_destroyed(context.id);
             } else {
                 self.gpu_manager.virgl_contexts.defer_destroy(context.id);
@@ -1349,7 +1450,7 @@ impl DriHandle {
         }
         if self
             .gpu_manager
-            .gpu
+            .gpu()?
             .ctx_attach_resource(context_id, resource_id)
             .is_err()
         {
@@ -1397,7 +1498,7 @@ impl DriHandle {
         }
         if self
             .gpu_manager
-            .gpu
+            .gpu()?
             .ctx_detach_resource(context.id, resource_id)
             .is_err()
         {
@@ -1593,10 +1694,9 @@ impl Drop for DriHandle {
             self.gpu_manager.property_manager.reset_atomic_state();
         }
         if let Some(resource_id) = resource_id {
-            let _ = self
-                .gpu_manager
-                .gpu
-                .clear_cursor(resource_id, position.x, position.y);
+            if let Some(cursor_backend) = self.gpu_manager.cursor_backend.as_ref() {
+                let _ = cursor_backend.clear_cursor(resource_id, position.x, position.y);
+            }
         }
         if kms_state.is_master(self.file_id) {
             kms_state.master_file_id = None;
@@ -1613,12 +1713,21 @@ impl Drop for DriHandle {
         let context = self.context.get_mut();
         self.gpu_manager.wait_for_all_fences();
         if context.is_created {
-            match self.gpu_manager.gpu.ctx_destroy(context.id) {
-                Ok(()) => self.gpu_manager.virgl_contexts.record_destroyed(context.id),
-                Err(error) => {
-                    warn!("cannot destroy virgl context {}: {:?}", context.id, error);
-                    self.gpu_manager.virgl_contexts.defer_destroy(context.id);
-                }
+            let destroy_result = self
+                .gpu_manager
+                .gpu
+                .as_ref()
+                .ok_or_else(|| Error::with_message(Errno::ENODEV, "virtio-gpu backend disappeared"))
+                .and_then(|gpu| {
+                    gpu.ctx_destroy(context.id).map_err(|_| {
+                        Error::with_message(Errno::EIO, "cannot destroy virgl context")
+                    })
+                });
+            if let Err(error) = destroy_result {
+                warn!("cannot destroy virgl context {}: {:?}", context.id, error);
+                self.gpu_manager.virgl_contexts.defer_destroy(context.id);
+            } else {
+                self.gpu_manager.virgl_contexts.record_destroyed(context.id);
             }
         }
 
@@ -1738,9 +1847,21 @@ impl PerOpenFileOps for DriHandle {
                 version.version_major = 0;
                 version.version_minor = 1;
                 version.version_patchlevel = 0;
-                copy_field(version.name, &mut version.name_len, DRIVER_NAME)?;
-                copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
-                copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
+                copy_field(
+                    version.name,
+                    &mut version.name_len,
+                    self.gpu_manager.driver.name,
+                )?;
+                copy_field(
+                    version.date,
+                    &mut version.date_len,
+                    self.gpu_manager.driver.date,
+                )?;
+                copy_field(
+                    version.desc,
+                    &mut version.desc_len,
+                    self.gpu_manager.driver.description,
+                )?;
                 cmd.write(&version)?;
                 Ok(0)
             }
@@ -1756,10 +1877,20 @@ impl PerOpenFileOps for DriHandle {
                     DRM_CAP_DUMB_BUFFER => 1,
                     DRM_CAP_VBLANK_HIGH_CRTC => 1,
                     DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
-                    DRM_CAP_DUMB_PREFER_SHADOW => 0,
+                    DRM_CAP_DUMB_PREFER_SHADOW => u64::from(!self.gpu_manager.has_gpu()),
                     DRM_CAP_TIMESTAMP_MONOTONIC => 1,
-                    DRM_CAP_CURSOR_WIDTH => u64::from(CURSOR_SIZE),
-                    DRM_CAP_CURSOR_HEIGHT => u64::from(CURSOR_SIZE),
+                    DRM_CAP_CURSOR_WIDTH => u64::from(
+                        self.gpu_manager
+                            .cursor_backend
+                            .as_ref()
+                            .map_or(0, |backend| backend.dimensions().0),
+                    ),
+                    DRM_CAP_CURSOR_HEIGHT => u64::from(
+                        self.gpu_manager
+                            .cursor_backend
+                            .as_ref()
+                            .map_or(0, |backend| backend.dimensions().1),
+                    ),
                     DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
                     DRM_CAP_SYNCOBJ => 1,
                     DRM_CAP_SYNCOBJ_TIMELINE => 1,
@@ -2118,8 +2249,9 @@ impl PerOpenFileOps for DriHandle {
                     return Ok(0);
                 }
                 let framebuffer = kms::prepare_fb(self, req.fb_id)?;
+                let damage = kms::validate_dirty_fb(&framebuffer, req)?;
                 if kms_state.scanout_matches(self.file_id, req.fb_id) {
-                    kms::scanout_prepared_fb(&self.gpu_manager, framebuffer)?;
+                    kms::dirty_prepared_fb(&self.gpu_manager, framebuffer, &damage)?;
                 }
                 Ok(0)
             }
@@ -2325,14 +2457,31 @@ fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn init_in_first_kthread() {
-    if first_device().is_none() {
+    let Some(gpu_manager) = GpuManager::get_or_init() else {
         return;
-    }
-    let gpu_manager = GpuManager::get_or_init();
+    };
     char::register(Arc::new(DriPrimary {
         gpu_manager: gpu_manager.clone(),
     }))
     .expect("failed to register DRM primary char device");
-    char::register(Arc::new(DriRender { gpu_manager }))
-        .expect("failed to register DRM render char device");
+    let (width, height) = gpu_manager.scanout_backend.dimensions();
+    info!(
+        "Registered DRM primary device: driver={}, resolution={}x{}",
+        gpu_manager.driver.name, width, height
+    );
+    if gpu_manager.has_gpu() {
+        char::register(Arc::new(DriRender { gpu_manager }))
+            .expect("failed to register DRM render char device");
+        info!("Registered DRM render device: driver=virtio_gpu");
+    }
+}
+
+/// Returns the backend accepted by DRM initialization, if any.
+pub(crate) fn initialize_backend_kind() -> Option<DrmBackendKind> {
+    let gpu_manager = GpuManager::get_or_init()?;
+    Some(if gpu_manager.has_gpu() {
+        DrmBackendKind::Virtio
+    } else {
+        DrmBackendKind::Firmware
+    })
 }

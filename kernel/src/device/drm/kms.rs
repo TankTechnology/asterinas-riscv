@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! KMS (Kernel Mode Setting) ioctls: framebuffer registration, CRTC
-//! control, cursor, and page-flip.
+//! KMS (Kernel Mode Setting) ioctls:
+//! framebuffer registration, CRTC control, cursor, and page-flip.
 //!
 //! These are only available on the primary node (`/dev/dri/card0`), not on
 //! the render node. The caller (`mod.rs`) must gate on `is_render_node()`
 //! before dispatching here.
 
-use aster_virtio::device::gpu::GpuBackingOwner;
 use ostd::mm::VmIo;
 
 use super::{
     CONNECTOR_ID, CRTC_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL,
-    DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2, DrmModeGetConnector,
-    DrmModeGetEncoder, ENCODER_ID, Framebuffer, build_mode,
-    cursor::{CursorBuffer, CursorImage, DrmModeCursor2, MODE_CURSOR_BO, validate_cursor},
+    DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2, DrmModeFbDirtyCmd,
+    DrmModeGetConnector, DrmModeGetEncoder, ENCODER_ID, Framebuffer,
+    backend::{CursorGeometry, CursorScanoutBuffer, DamageRect, ScanoutBuffer},
+    build_mode,
+    cursor::{self, CursorBuffer, CursorImage, DrmModeCursor2},
 };
 use crate::{
     context::current_userspace,
@@ -26,6 +27,16 @@ const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
 const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
 const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+const MAX_DIRTY_CLIPS: u32 = 4096;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmClipRect {
+    x1: u16,
+    y1: u16,
+    x2: u16,
+    y2: u16,
+}
 
 fn framebuffer_extent(
     offset_bytes: u32,
@@ -286,7 +297,7 @@ pub(super) fn set_crtc(
     Ok(())
 }
 
-/// Presents a framebuffer on the scanout, copying its pixels to the host.
+/// Presents a framebuffer through the active display backend.
 pub(super) fn present_fb(
     handle: &super::DriHandle,
     kms_state: &mut super::KmsState,
@@ -304,22 +315,18 @@ pub(super) fn present_fb(
 
 /// Framebuffer data pinned for a synchronous or asynchronous presentation.
 pub(super) struct PreparedFramebuffer {
-    addr: u64,
-    size: u32,
-    backing_owner: Arc<dyn GpuBackingOwner>,
-    width: u32,
-    height: u32,
+    scanout: ScanoutBuffer,
 }
 
 impl PreparedFramebuffer {
     pub(super) fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        self.scanout.dimensions()
     }
 }
 
-/// Pins the backing and resolves the address of a framebuffer before commit.
+/// Pins and validates a framebuffer before commit.
 pub(super) fn prepare_fb(handle: &super::DriHandle, fb_id: u32) -> Result<PreparedFramebuffer> {
-    let (addr, size, backing_owner, width, height) = {
+    let (size_bytes, backing_owner, source_offset, pitch, width, height) = {
         let inner = handle.inner.lock();
         let fb = inner
             .framebuffers
@@ -329,7 +336,6 @@ pub(super) fn prepare_fb(handle: &super::DriHandle, fb_id: u32) -> Result<Prepar
         let obj = guard
             .get(&fb.object_id)
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
-        let base = handle.gpu_manager.pool_paddr()?;
         debug_assert!(matches!(
             fb.pixel_format,
             DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888
@@ -337,26 +343,31 @@ pub(super) fn prepare_fb(handle: &super::DriHandle, fb_id: u32) -> Result<Prepar
         let size = framebuffer_extent(0, fb.pitch, fb.width, fb.height, 32)
             .and_then(|size| u32::try_from(size).ok())
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer size overflows"))?;
-        let addr = base
-            .checked_add(obj.buffer.offset)
-            .and_then(|addr| addr.checked_add(fb.offset as usize))
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer address overflows"))?;
+        let source_offset = obj
+            .buffer
+            .offset
+            .checked_add(fb.offset as usize)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer offset overflows"))?;
         (
-            addr,
             size,
             obj.buffer.allocation.clone(),
+            source_offset,
+            fb.pitch as usize,
             fb.width,
             fb.height,
         )
     };
-
-    Ok(PreparedFramebuffer {
-        addr: addr as u64,
-        size,
+    let source = handle.gpu_manager.pool_vmo()?;
+    let scanout = ScanoutBuffer::new(
+        source,
+        source_offset,
+        pitch,
+        size_bytes,
         backing_owner,
         width,
         height,
-    })
+    );
+    Ok(PreparedFramebuffer { scanout })
 }
 
 /// Applies a prepared framebuffer to scanout and publishes the KMS state.
@@ -379,17 +390,83 @@ pub(super) fn scanout_prepared_fb(
     framebuffer: PreparedFramebuffer,
 ) -> Result<()> {
     gpu_manager
-        .gpu
-        .present_framebuffer(
-            framebuffer.addr,
-            framebuffer.size,
-            framebuffer.backing_owner,
-            framebuffer.width,
-            framebuffer.height,
-        )
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
+        .scanout_backend
+        .present_framebuffer(framebuffer.scanout)?;
     gpu_manager.vblank_clock.start();
     Ok(())
+}
+
+/// Validates and copies the userspace damage list for a framebuffer.
+pub(super) fn validate_dirty_fb(
+    framebuffer: &PreparedFramebuffer,
+    request: DrmModeFbDirtyCmd,
+) -> Result<Vec<DamageRect>> {
+    if request.flags != 0 {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "dirty framebuffer flags are unsupported");
+    }
+    read_damage_rects(request, framebuffer.dimensions())
+}
+
+/// Copies only the validated damage into the active scanout.
+pub(super) fn dirty_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    framebuffer: PreparedFramebuffer,
+    damage: &[DamageRect],
+) -> Result<()> {
+    gpu_manager
+        .scanout_backend
+        .dirty_framebuffer(framebuffer.scanout, damage)
+}
+
+fn read_damage_rects(
+    request: DrmModeFbDirtyCmd,
+    (width, height): (u32, u32),
+) -> Result<Vec<DamageRect>> {
+    if request.num_clips == 0 {
+        return Ok(Vec::new());
+    }
+    if request.num_clips > MAX_DIRTY_CLIPS {
+        return_errno_with_message!(Errno::EINVAL, "too many dirty framebuffer clips");
+    }
+    let base = usize::try_from(request.clips_ptr)
+        .map_err(|_| Error::with_message(Errno::EFAULT, "dirty clip pointer overflows"))?;
+    let mut damage = Vec::with_capacity(request.num_clips as usize);
+    let full_area = u64::from(width) * u64::from(height);
+    let mut total_area = 0u64;
+    let mut collapse_to_full = false;
+    for index in 0..request.num_clips as usize {
+        let offset = index
+            .checked_mul(size_of::<DrmClipRect>())
+            .and_then(|offset| base.checked_add(offset))
+            .ok_or_else(|| Error::with_message(Errno::EFAULT, "dirty clip pointer overflows"))?;
+        let clip: DrmClipRect = current_userspace!().read_val(offset)?;
+        let rect = validate_damage_rect(clip, width, height)?;
+        if !collapse_to_full {
+            total_area = total_area.saturating_add(rect.area());
+            collapse_to_full = total_area >= full_area;
+            if collapse_to_full {
+                damage.clear();
+            } else {
+                damage.push(rect);
+            }
+        }
+    }
+    if collapse_to_full {
+        Ok(vec![DamageRect::new(0, 0, width, height, width, height)?])
+    } else {
+        Ok(damage)
+    }
+}
+
+fn validate_damage_rect(clip: DrmClipRect, width: u32, height: u32) -> Result<DamageRect> {
+    DamageRect::new(
+        u32::from(clip.x1),
+        u32::from(clip.y1),
+        u32::from(clip.x2),
+        u32::from(clip.y2),
+        width,
+        height,
+    )
 }
 
 /// GETCRTC: read back the current CRTC state.
@@ -437,10 +514,8 @@ pub(super) fn get_connector(
     conn.subpixel = 0;
     conn.pad = 0;
     if conn.modes_ptr != 0 && mode_capacity >= 1 {
-        let mode = build_mode(
-            handle.gpu_manager.gpu.width(),
-            handle.gpu_manager.gpu.height(),
-        );
+        let (width, height) = handle.gpu_manager.scanout_backend.dimensions();
+        let mode = build_mode(width, height);
         current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
     }
     if conn.encoders_ptr != 0 && encoder_capacity >= 1 {
@@ -468,10 +543,14 @@ pub(super) fn get_encoder(
 
 /// CURSOR / CURSOR2: validate and apply one hardware-cursor update.
 pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> Result<()> {
+    let cursor_backend =
+        handle.gpu_manager.cursor_backend.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::EOPNOTSUPP, "hardware cursor is unavailable")
+        })?;
     let _cursor_operation = handle.cursor_operation.lock();
     let (update, position, backing) = {
         let inner = handle.inner.lock();
-        let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
+        let buffer = if request.flags & cursor::MODE_CURSOR_BO != 0 && request.handle != 0 {
             let object_id = inner.handles.get(&request.handle);
             object_id.and_then(|object_id| {
                 let objects = handle.gpu_manager.gem_objects.lock();
@@ -489,7 +568,7 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
         } else {
             None
         };
-        let update = validate_cursor(request, buffer, CRTC_ID)
+        let update = cursor::validate_cursor(request, buffer, CRTC_ID)
             .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
         let position = inner.cursor.position_for(update);
         let backing = match update.image {
@@ -503,9 +582,8 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
                 let object = objects
                     .get(object_id)
                     .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale cursor GEM object"))?;
-                let base = handle.gpu_manager.pool_paddr()?;
                 Some((
-                    (base + object.buffer.offset) as u64,
+                    object.buffer.offset,
                     u32::try_from(object.buffer.size).map_err(|_| {
                         Error::with_message(Errno::EINVAL, "cursor buffer is too large")
                     })?,
@@ -525,43 +603,30 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
             hot_y,
             ..
         }) => {
-            let (addr, size, backing_owner) = backing.ok_or_else(|| {
+            let (offset, size, backing_owner) = backing.ok_or_else(|| {
                 Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
             })?;
-            Some(
-                handle
-                    .gpu_manager
-                    .gpu
-                    .update_cursor(
-                        addr,
-                        size,
-                        backing_owner,
-                        width,
-                        height,
-                        hot_x,
-                        hot_y,
-                        position.x,
-                        position.y,
-                    )
-                    .map_err(|_| {
-                        Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")
-                    })?,
-            )
+            let source = handle.gpu_manager.pool_vmo()?;
+            Some(cursor_backend.update_cursor(CursorScanoutBuffer::new(
+                source,
+                offset,
+                size,
+                backing_owner,
+                CursorGeometry {
+                    width,
+                    height,
+                    hot_x,
+                    hot_y,
+                },
+                position,
+            ))?)
         }
         Some(CursorImage::Hide) => {
-            handle
-                .gpu_manager
-                .gpu
-                .hide_cursor(position.x, position.y)
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed"))?;
+            cursor_backend.hide_cursor(position.x, position.y)?;
             None
         }
         None => {
-            handle
-                .gpu_manager
-                .gpu
-                .move_cursor(position.x, position.y)
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu cursor move failed"))?;
+            cursor_backend.move_cursor(position.x, position.y)?;
             None
         }
     };
@@ -574,13 +639,56 @@ pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> 
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::framebuffer_extent;
+    use super::{DrmClipRect, framebuffer_extent, validate_damage_rect};
     use crate::device::drm::{ActiveFramebuffer, KmsState};
 
     #[ktest]
     fn framebuffer_extent_rejects_empty_or_overlapping_rows() {
         assert_eq!(framebuffer_extent(0, 256, 64, 0, 32), None);
         assert_eq!(framebuffer_extent(0, 255, 64, 64, 32), None);
+    }
+
+    #[ktest]
+    fn dirty_clip_must_be_nonempty_and_inside_the_framebuffer() {
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 10,
+                    y1: 20,
+                    x2: 30,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 30,
+                    y1: 20,
+                    x2: 30,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 10,
+                    y1: 20,
+                    x2: 1921,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_err()
+        );
     }
 
     #[ktest]

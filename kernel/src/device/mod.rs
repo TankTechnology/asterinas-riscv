@@ -16,6 +16,7 @@ pub mod tty;
 use alloc::borrow::Cow;
 
 use device_id::DeviceId;
+pub(crate) use drm::{DrmBackendKind, initialize_backend_kind};
 pub use mem::{getrandom, geturandom};
 pub use pty::{PtyMaster, PtySlave, new_pty_pair};
 pub use registry::lookup;

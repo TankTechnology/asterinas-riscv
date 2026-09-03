@@ -4,11 +4,11 @@
 
 use core::fmt::Formatter;
 
-use super::{DRIVER_NAME, DriHandle};
+use super::DriHandle;
 
 pub(super) fn write(handle: &DriHandle, formatter: &mut Formatter<'_>) -> core::fmt::Result {
     let snapshot = handle.gpu_manager.resource_snapshot();
-    writeln!(formatter, "drm-driver:\t{DRIVER_NAME}")?;
+    writeln!(formatter, "drm-driver:\t{}", handle.gpu_manager.driver.name)?;
     writeln!(formatter, "drm-client-id:\t{}", handle.file_id)?;
     writeln!(
         formatter,

@@ -1,18 +1,22 @@
 # DRM validation and architecture plan
 
-Date: 2026-08-28
+Date: 2026-09-03
 
 ## Scope
 
-The current target is Asterinas's single-scanout virtio-gpu driver on QEMU.
+The validated target is Asterinas's single-scanout virtio-gpu driver on QEMU.
 It covers the primary and render nodes, legacy and atomic KMS, dumb buffers,
 GEM/FLINK/PRIME sharing, cursor commands, virgl contexts and transfers,
 asynchronous fences, Mesa DRI3, Xorg glamor, and an Xfce desktop.
 
+The kernel also has a firmware-framebuffer KMS fallback for systems without virtio-gpu.
+It exposes `card0` as `simpledrm`, allocates non-contiguous dumb buffers, copies BGRX8888/XRGB8888 rows into the fixed firmware scanout, reports no hardware cursor, and does not expose `renderD128`.
+This path has passed RISC-V and x86_64 OSDK compile checks, but still requires a Megrez board run before it is considered operational evidence.
+
 This scope does not claim every Linux DRM feature.
 Unsupported capabilities must be rejected instead of advertised as working.
-Native EIC7700 display and GPU support remains a later backend.
-Work on it begins after the virtio-gpu implementation reaches the exit criteria below.
+Native EIC7700 modesetting and GPU acceleration remain later backends.
+The firmware fallback intentionally leaves the mode, HDMI link, clocks, and resets under firmware control.
 
 ## Validation model
 
@@ -23,10 +27,8 @@ It combines three independent sources of evidence:
 2. real unmodified userspace such as libdrm, Mesa, Xorg, and Xfce; and
 3. guest-visible results plus QEMU virtio-gpu command traces.
 
-A small set of disputed or high-risk behaviours may be captured once on Linux
-as versioned golden results.
-Those samples are refreshed only when the UAPI baseline changes or a semantic
-question cannot be settled from an authoritative specification.
+A small set of disputed or high-risk behaviours may be captured once on Linux as versioned golden results.
+Those samples are refreshed only when the UAPI baseline changes or when an authoritative specification cannot settle a semantic question.
 
 ## Test tiers
 
@@ -47,6 +49,40 @@ question cannot be settled from an authoritative specification.
 - M22 device-wide lifetime counters and repeated GEM/PRIME/context/fence close;
 - concurrent control-queue clients; and
 - one complete Mesa DRI3/Xorg/Xfce virgl boot.
+
+### Firmware-framebuffer change: physical board gate
+
+- current HEAD boots on Megrez through the existing RAM-only framebuffer DTB handoff;
+- `/dev/dri/card0` exists and reports `simpledrm`, while `renderD128` is absent;
+- `modetest` enumerates the fixed 1920x1080 mode and reports zero cursor dimensions;
+- `SETCRTC`, `PAGE_FLIP`, and `DIRTYFB` produce the distinct HDMI patterns A, B, and C in order;
+- Xorg modesetting with llvmpipe reaches the desktop without using the fbdev driver; and
+- serial logs contain no framebuffer mapping, KMS, page-flip, or kernel errors.
+
+Before the board is available, `make test_riscv_drm_firmware_preboard` is the required migration gate.
+It cross-builds a deterministic static RISC-V initramfs and tests the Megrez board-session contract without opening a serial device.
+The probe checks `simpledrm`, absence of `renderD128`, the advertised dumb/shadow/cursor capabilities, the fixed 1920x1080 preferred mode, two dumb buffer mappings, `ADDFB2`, `SETCRTC`, `PAGE_FLIP`, and `DIRTYFB`.
+Its negative self-tests reject a virtio driver identity, an unexpected render node, wrong capabilities or mode, and an ioctl failure.
+This is compile/static evidence; only the physical `firmware-drm` session may produce runtime evidence.
+
+The physical serial transcript must contain these probe records in order:
+
+```text
+DRM_FIRMWARE_VERSION driver=simpledrm render-node=absent
+DRM_FIRMWARE_CAPS dumb=1 prefer-shadow=1 cursor=0x0
+DRM_FIRMWARE_MODE connector=connected mode=1920x1080 preferred=1
+DRM_FIRMWARE_DUMB buffers=2 format=XRGB8888 mmap=pass
+DRM_FIRMWARE_PRESENT stage=setcrtc pattern=A ioctl=pass
+DRM_FIRMWARE_PRESENT stage=page-flip pattern=B ioctl=pass
+DRM_FIRMWARE_PRESENT stage=dirtyfb pattern=C ioctl=pass
+ASTERINAS_DRM_FIRMWARE_R1_READY
+```
+
+The serial markers only prove successful ioctl returns.
+Physical evidence must also include HDMI video or an operator record showing A, B, and C in order;
+otherwise the board run is incomplete.
+
+The executable build and guarded board command are maintained in [`../README.md`](../README.md#firmware-drm-pre-board-gate).
 
 ### Nightly
 
@@ -147,10 +183,9 @@ committed KMS properties are inherited across partial updates.
 The current method and evidence are recorded in
 [`../nixos/DRM-M22-report.md`](../nixos/DRM-M22-report.md).
 
-The backend boundary is considered useful only after both the virtio-gpu tests
-and a small fake-backend state test can consume it.
-This avoids designing the later Megrez interface before its hardware contract
-is available.
+The scanout backend boundary is now consumed by virtio-gpu, a fake ktest backend, and the firmware framebuffer implementation.
+The fixed framebuffer layout validator covers the physically observed Megrez 1920x1080 BGRX8888 contract and rejects incompatible formats or undersized strides.
+This does not replace the physical HDMI gate above.
 
 ## Exit criteria for the virtio-gpu DRM foundation
 
@@ -168,5 +203,5 @@ The foundation is ready for mainline integration when:
 7. performance results include frame-time percentiles and stall counts; and
 8. RISC-V kernel tests build and run in CI.
 
-Only after this gate should work begin on a firmware-framebuffer DRM backend or
-native EIC7700 display/GPU support.
+Native EIC7700 register programming remains gated on a separate, source-led
+clock/reset/MMIO/interrupt contract and physical recovery plan.

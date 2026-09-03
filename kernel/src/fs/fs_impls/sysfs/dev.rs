@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! `/sys/dev/char` device tree for the DRM (virtio-gpu) device.
+//! `/sys/dev/char` device tree for DRM devices.
 //!
-//! Mesa's DRI loader selects the GPU driver by reading the PCI vendor/device
-//! id from `/sys/dev/char/<major>:<minor>/device/{vendor,device}`. Xorg also
-//! asks libdrm to reopen the device for DRI3 clients, which reads `DEVNAME`
-//! from `/sys/dev/char/<major>:<minor>/uevent`. This module exposes both paths
-//! for the virtio-gpu DRM nodes (PCI id `1af4:1050`).
+//! Mesa's DRI loader selects the GPU driver by reading the PCI vendor/device id from `/sys/dev/char/<major>:<minor>/device/{vendor,device}`.
+//! Xorg also asks libdrm to reopen the device for DRI3 clients, which reads `DEVNAME` from `/sys/dev/char/<major>:<minor>/uevent`.
+//! Virtio-gpu exposes both DRM nodes with PCI id `1af4:1050`.
+//! Firmware framebuffer DRM exposes only a platform-backed primary node.
 
 use alloc::sync::Arc;
 
@@ -19,7 +18,13 @@ use inherit_methods_macro::inherit_methods;
 use ostd::mm::{VmReader, VmWriter};
 use spin::Once;
 
+use crate::device::{DrmBackendKind, initialize_backend_kind};
+
 const DRM_CHAR_MAJOR: u16 = 226;
+const VIRTIO_PCI_VENDOR_ID: u32 = 0x1af4;
+const VIRTIO_GPU_DEVICE_ID: u32 = 0x1050;
+const VIRTIO_GPU_SUBSYSTEM_VENDOR_ID: u32 = 0x1af4;
+const VIRTIO_GPU_SUBSYSTEM_DEVICE_ID: u32 = 0x1100;
 
 /// An attribute-less directory in the sysfs tree.
 #[derive(Debug)]
@@ -55,7 +60,8 @@ struct DrmCharNode {
 
 #[inherit_methods(from = "self.fields")]
 impl DrmCharNode {
-    fn new(name: SysStr, minor: u16, dev_name: &'static str) -> Arc<Self> {
+    fn new(minor: u16, dev_name: &'static str) -> Arc<Self> {
+        let name = SysStr::from(alloc::format!("{}:{}", DRM_CHAR_MAJOR, minor));
         let mut builder = SysAttrSetBuilder::new();
         builder.add(SysStr::from("uevent"), SysPerms::DEFAULT_RO_ATTR_PERMS);
         let attrs = builder
@@ -103,13 +109,13 @@ inherit_sys_branch_node!(DrmCharNode, fields, {
 /// whether the device is render-capable: `subsystem_vendor`/`subsystem_device`
 /// (hex, separate files) and a `uevent` carrying `PCI_SLOT_NAME`.
 #[derive(Debug)]
-struct CharDeviceNode {
+struct VirtioGpuPciDeviceNode {
     fields: BranchNodeFields<dyn SysObj, Self>,
     vendor: u32,
     device: u32,
 }
 
-impl CharDeviceNode {
+impl VirtioGpuPciDeviceNode {
     fn new(name: SysStr, vendor: u32, device: u32) -> Arc<Self> {
         let mut builder = SysAttrSetBuilder::new();
         builder.add(SysStr::from("vendor"), SysPerms::DEFAULT_RO_ATTR_PERMS);
@@ -138,7 +144,7 @@ impl CharDeviceNode {
     }
 }
 
-inherit_sys_branch_node!(CharDeviceNode, fields, {
+inherit_sys_branch_node!(VirtioGpuPciDeviceNode, fields, {
     fn read_attr_at(&self, name: &str, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
         match name {
@@ -149,16 +155,19 @@ inherit_sys_branch_node!(CharDeviceNode, fields, {
                 writeln!(printer, "0x{:04x}", self.device)?;
             }
             "subsystem_vendor" => {
-                // virtio vendor id
-                writeln!(printer, "0x1af4")?;
+                writeln!(printer, "0x{:04x}", VIRTIO_GPU_SUBSYSTEM_VENDOR_ID)?;
             }
             "subsystem_device" => {
-                writeln!(printer, "0x1100")?;
+                writeln!(printer, "0x{:04x}", VIRTIO_GPU_SUBSYSTEM_DEVICE_ID)?;
             }
             "uevent" => {
                 writeln!(printer, "DRIVER=virtio_gpu")?;
-                writeln!(printer, "PCI_ID=1AF4:1050")?;
-                writeln!(printer, "PCI_SUBSYS_ID=1AF4:1100")?;
+                writeln!(printer, "PCI_ID={:04X}:{:04X}", self.vendor, self.device)?;
+                writeln!(
+                    printer,
+                    "PCI_SUBSYS_ID={:04X}:{:04X}",
+                    VIRTIO_GPU_SUBSYSTEM_VENDOR_ID, VIRTIO_GPU_SUBSYSTEM_DEVICE_ID
+                )?;
                 writeln!(printer, "PCI_SLOT_NAME=0000:00:01.0")?;
             }
             _ => return Err(Error::AttributeError),
@@ -175,9 +184,10 @@ inherit_sys_branch_node!(CharDeviceNode, fields, {
     }
 });
 
-/// The `subsystem` symlink under `/sys/dev/char/226:0/device`. libdrm's
-/// `get_subsystem_type` readlink's this path and classifies the device by the
-/// last component of the target (`/pci` => DRM_BUS_PCI).
+/// The `subsystem` symlink below each `/sys/dev/char/226:*/device` directory.
+///
+/// libdrm's `get_subsystem_type` reads this link and classifies the device by
+/// the last component of the target (`/pci` => DRM_BUS_PCI).
 #[derive(Debug)]
 struct SubsystemSymlink {
     fields: SymlinkNodeFields<Self>,
@@ -198,31 +208,48 @@ impl SubsystemSymlink {
 
 inherit_sys_symlink_node!(SubsystemSymlink, fields);
 
-/// Registers `/sys/dev/char/<major>:<minor>` for both DRM nodes.
-///
-/// The top-level `uevent` supplies the `DEVNAME` used by
-/// `drmGetDeviceNameFromFd2`, while the `device` child supplies the PCI identity
-/// used by `drmGetDevice2`.
+fn add_virtio_drm_nodes(char_dir: &Arc<AttrlessDir>) {
+    for (minor, dev_name) in [(0, "dri/card0"), (128, "dri/renderD128")] {
+        let node = DrmCharNode::new(minor, dev_name);
+        let device = VirtioGpuPciDeviceNode::new(
+            SysStr::from("device"),
+            VIRTIO_PCI_VENDOR_ID,
+            VIRTIO_GPU_DEVICE_ID,
+        );
+        let subsystem = SubsystemSymlink::new(SysStr::from("subsystem"), "/sys/bus/pci");
+        // libdrm's drmNodeIsDRM() stats this path to decide whether a
+        // device is a DRM node; it just needs to exist.
+        let drm_dir = AttrlessDir::new(SysStr::from("drm"));
+
+        device.fields.add_child(subsystem).unwrap();
+        device.fields.add_child(drm_dir).unwrap();
+        node.add_child(device).unwrap();
+        char_dir.add_child(node).unwrap();
+    }
+}
+
+fn add_firmware_drm_node(char_dir: &Arc<AttrlessDir>) {
+    let node = DrmCharNode::new(0, "dri/card0");
+    let device = AttrlessDir::new(SysStr::from("device"));
+    let subsystem = SubsystemSymlink::new(SysStr::from("subsystem"), "/sys/bus/platform");
+    let drm_dir = AttrlessDir::new(SysStr::from("drm"));
+
+    device.add_child(subsystem).unwrap();
+    device.add_child(drm_dir).unwrap();
+    node.add_child(device).unwrap();
+    char_dir.add_child(node).unwrap();
+}
+
+/// Registers `/sys/dev/char/<major>:<minor>` for the available DRM backend.
 pub(super) fn init() {
     DEV_CHAR_ROOT.call_once(|| {
         let dev = AttrlessDir::new(SysStr::from("dev"));
         let char_dir = AttrlessDir::new(SysStr::from("char"));
 
-        for (node_name, minor, dev_name) in [
-            ("226:0", 0, "dri/card0"),
-            ("226:128", 128, "dri/renderD128"),
-        ] {
-            let node = DrmCharNode::new(SysStr::from(node_name), minor, dev_name);
-            let device = CharDeviceNode::new(SysStr::from("device"), 0x1af4, 0x1050);
-            let subsystem = SubsystemSymlink::new(SysStr::from("subsystem"), "/sys/bus/pci");
-            // libdrm's drmNodeIsDRM() stats this path to decide whether a
-            // device is a DRM node; it just needs to exist.
-            let drm_dir = AttrlessDir::new(SysStr::from("drm"));
-
-            device.fields.add_child(subsystem).unwrap();
-            device.fields.add_child(drm_dir).unwrap();
-            node.add_child(device).unwrap();
-            char_dir.add_child(node).unwrap();
+        match initialize_backend_kind() {
+            Some(DrmBackendKind::Virtio) => add_virtio_drm_nodes(&char_dir),
+            Some(DrmBackendKind::Firmware) => add_firmware_drm_node(&char_dir),
+            None => {}
         }
 
         dev.add_child(char_dir).unwrap();
@@ -234,14 +261,14 @@ static DEV_CHAR_ROOT: Once<()> = Once::new();
 
 #[cfg(ktest)]
 mod tests {
-    use aster_systree::SysNode;
+    use aster_systree::{SysBranchNode, SysNode};
     use ostd::prelude::ktest;
 
     use super::*;
 
     #[ktest]
     fn drm_char_uevent_reports_device_name() {
-        let node = DrmCharNode::new(SysStr::from("226:0"), 0, "dri/card0");
+        let node = DrmCharNode::new(0, "dri/card0");
         let mut output = [0u8; 128];
         let mut writer = VmWriter::from(&mut output[..]).to_fallible();
 
@@ -255,5 +282,40 @@ mod tests {
         assert!(uevent.contains("MINOR=0\n"));
         assert!(uevent.contains("DEVNAME=dri/card0\n"));
         assert!(uevent.contains("DEVTYPE=drm_minor\n"));
+    }
+
+    #[ktest]
+    fn firmware_drm_has_only_a_platform_primary_node() {
+        let char_dir = AttrlessDir::new(SysStr::from("char"));
+        add_firmware_drm_node(&char_dir);
+
+        let primary = char_dir.child("226:0").unwrap().cast_to_branch().unwrap();
+        let device = primary.child("device").unwrap().cast_to_branch().unwrap();
+        let subsystem = device
+            .child("subsystem")
+            .unwrap()
+            .cast_to_symlink()
+            .unwrap();
+
+        assert_eq!(subsystem.target_path(), "/sys/bus/platform");
+        assert!(device.child("drm").is_some());
+        assert!(char_dir.child("226:128").is_none());
+    }
+
+    #[ktest]
+    fn virtio_drm_keeps_primary_and_render_pci_nodes() {
+        let char_dir = AttrlessDir::new(SysStr::from("char"));
+        add_virtio_drm_nodes(&char_dir);
+
+        for name in ["226:0", "226:128"] {
+            let node = char_dir.child(name).unwrap().cast_to_branch().unwrap();
+            let device = node.child("device").unwrap().cast_to_branch().unwrap();
+            let subsystem = device
+                .child("subsystem")
+                .unwrap()
+                .cast_to_symlink()
+                .unwrap();
+            assert_eq!(subsystem.target_path(), "/sys/bus/pci");
+        }
     }
 }
