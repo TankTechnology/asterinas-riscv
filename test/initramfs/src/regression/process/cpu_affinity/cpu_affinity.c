@@ -4,8 +4,10 @@
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <pthread.h>
+#include <unistd.h>
+
+#define MIGRATION_ROUNDS 32
 
 int main()
 {
@@ -64,6 +66,32 @@ int main()
 		printf("Error: CPU affinity not set to CPU 0\n");
 		exit(EXIT_FAILURE);
 	}
+	if (sched_getcpu() != 0) {
+		printf("Error: thread did not migrate to CPU 0\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// Force the caller through every online CPU. This checks actual execution
+	// placement, not only the affinity mask recorded by the kernel.
+	long online_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	for (int round = 0; round < MIGRATION_ROUNDS; round++) {
+		for (int cpu = 0; cpu < online_cpus; cpu++) {
+			CPU_ZERO(&mask);
+			CPU_SET(cpu, &mask);
+			if (sched_setaffinity(0, sizeof(cpu_set_t), &mask) ==
+			    -1) {
+				perror("sched_setaffinity migration");
+				exit(EXIT_FAILURE);
+			}
+			if (sched_getcpu() != cpu) {
+				printf("Error: expected CPU %d, running on CPU %d\n",
+				       cpu, sched_getcpu());
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+	printf("Observed affinity migration across %ld CPU(s) for %d rounds\n",
+	       online_cpus, MIGRATION_ROUNDS);
 
 	return 0;
 }

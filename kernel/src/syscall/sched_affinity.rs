@@ -3,13 +3,18 @@
 use core::{cmp, sync::atomic::Ordering};
 
 use ostd::{
-    cpu::{CpuId, CpuSet, num_cpus},
+    cpu::{CpuId, CpuSet, PinCurrentCpu, num_cpus},
     mm::VmIo,
+    task::{Task, disable_preempt},
     util::id_set::Id,
 };
 
 use super::SyscallReturn;
-use crate::{prelude::*, process::pid_table, thread::Tid};
+use crate::{
+    prelude::*,
+    process::pid_table,
+    thread::{Thread, Tid},
+};
 
 pub fn sys_sched_getaffinity(
     tid: Tid,
@@ -30,10 +35,6 @@ pub fn sys_sched_getaffinity(
     Ok(SyscallReturn::Return(bytes_written as isize))
 }
 
-// TODO: The manual page of `sched_setaffinity` says that if the thread is not
-// running on the CPU specified in the affinity mask, it would be migrated to
-// one of the CPUs specified in the mask. We currently do not support this
-// feature as the scheduler is not ready for migration yet.
 pub fn sys_sched_setaffinity(
     tid: Tid,
     cpuset_size: usize,
@@ -42,19 +43,32 @@ pub fn sys_sched_setaffinity(
 ) -> Result<SyscallReturn> {
     let user_cpu_set = read_cpu_set_from(ctx.user_space(), cpuset_size, cpu_set_ptr)?;
 
-    match tid {
-        0 => ctx
-            .thread
-            .atomic_cpu_affinity()
-            .store(&user_cpu_set, Ordering::Relaxed),
+    let current_thread = Thread::current().expect("a syscall must have a current thread");
+    let target_thread = match tid {
+        0 => current_thread.clone(),
         _ => match pid_table::pid_table_mut().get_thread(tid) {
-            Some(thread) => {
-                thread
-                    .atomic_cpu_affinity()
-                    .store(&user_cpu_set, Ordering::Relaxed);
-            }
+            Some(thread) => thread,
             None => return_errno_with_message!(Errno::ESRCH, "the target thread does not exist"),
         },
+    };
+
+    target_thread
+        .atomic_cpu_affinity()
+        .store(&user_cpu_set, Ordering::Relaxed);
+
+    // A sleeping target is placed on an allowed CPU when it is next woken.
+    // Immediately migrate the caller if its current CPU was removed from the
+    // mask. Migration of another runnable thread requires arbitrary runqueue
+    // removal and is intentionally left for the scheduler's next migration
+    // phase.
+    if Arc::ptr_eq(&target_thread, &current_thread) {
+        let should_migrate = {
+            let guard = disable_preempt();
+            !user_cpu_set.contains(guard.current_cpu())
+        };
+        if should_migrate {
+            Task::migrate_current();
+        }
     }
 
     Ok(SyscallReturn::Return(0))

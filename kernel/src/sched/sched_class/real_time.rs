@@ -232,7 +232,7 @@ impl SchedClassRq for RealTimeClassRq {
                 }
                 ts => ts <= rt.period_delta && !self.is_empty(),
             },
-            UpdateFlags::Wait | UpdateFlags::Exit => !self.is_empty(),
+            UpdateFlags::Wait | UpdateFlags::Exit | UpdateFlags::Migrate => !self.is_empty(),
         }
     }
 }

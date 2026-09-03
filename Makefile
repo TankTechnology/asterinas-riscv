@@ -139,6 +139,17 @@ ENABLE_REGRESSION_TEST := true
 # Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
 RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
+else ifeq ($(AUTO_TEST), riscv_affinity_smp4)
+ifneq ($(TARGET_ARCH), riscv64)
+$(error AUTO_TEST=riscv_affinity_smp4 requires TARGET_ARCH=riscv64)
+endif
+ifneq ($(SMP), 4)
+$(error AUTO_TEST=riscv_affinity_smp4 requires SMP=4)
+endif
+ENABLE_REGRESSION_TEST := true
+# Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
+RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_affinity_smp4_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -816,6 +827,10 @@ else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 	@tail --lines 100 qemu.log | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
 		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), riscv_affinity_smp4)
+	@tail --lines 100 qemu.log | tr -d '\r' | \
+		grep -Fxq "RISC-V SMP4 affinity migration regression passed." \
+		|| (echo "RISC-V SMP4 affinity migration regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), boot)
 	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
