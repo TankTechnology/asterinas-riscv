@@ -1797,6 +1797,14 @@ printf '200\t10.0.2.15'
             NetworkM5QemuOperations.MILESTONES,
             DESKTOP_M5_QEMU_MILESTONES,
         )
+        self.assertEqual(
+            DesktopM5QemuOperations._accepted_profile_identities(),
+            ((5, "desktop-m5-network"),),
+        )
+        self.assertEqual(
+            NetworkM5QemuOperations._accepted_profile_identities(),
+            ((5, "desktop-m5-network"), (7, "browser-web")),
+        )
 
     def test_qemu_web_network_mode_argv(self) -> None:
         proxy = qemu_web_network_bootargs(network_gate.NetworkMode.PROXY)
