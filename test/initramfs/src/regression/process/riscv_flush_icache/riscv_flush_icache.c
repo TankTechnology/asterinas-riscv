@@ -177,6 +177,25 @@ static int select_available_cpus(cpu_set_t *original_mask, int *cpus)
 	return count;
 }
 
+static int select_current_cpu_as_local(int *cpus, int cpu_count)
+{
+	int current_cpu = sched_getcpu();
+	int index;
+
+	if (current_cpu < 0)
+		return -1;
+	for (index = 0; index < cpu_count; index++) {
+		if (cpus[index] == current_cpu) {
+			cpus[index] = cpus[0];
+			cpus[0] = current_cpu;
+			return 0;
+		}
+	}
+
+	errno = EINVAL;
+	return -1;
+}
+
 static int test_local_flush(void *code)
 {
 	char *code_end = (char *)code + 2 * sizeof(uint32_t);
@@ -325,6 +344,10 @@ int main(int argc, char **argv)
 	if (cpu_count < 2) {
 		puts("riscv_flush_icache cross-hart skipped: fewer than two CPUs");
 		return EXIT_SUCCESS;
+	}
+	if (select_current_cpu_as_local(cpus, cpu_count) < 0) {
+		perror("select current CPU as local hart");
+		return EXIT_FAILURE;
 	}
 	if (pin_current_thread(cpus[0]) < 0) {
 		perror("pin local-hart thread");
