@@ -23,12 +23,11 @@ pub fn sys_mmap(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let perms = VmPerms::from_user_bits_truncate(perms as u32);
-    let option = MMapOptions::try_from(flags as u32)?;
     let res = do_sys_mmap(
         addr as usize,
         len as usize,
         perms,
-        option,
+        flags as u32,
         fd as _,
         offset as usize,
         ctx,
@@ -40,16 +39,39 @@ fn do_sys_mmap(
     addr: Vaddr,
     len: usize,
     vm_perms: VmPerms,
-    option: MMapOptions,
+    raw_flags: u32,
     raw_fd: RawFileDesc,
     offset: usize,
     ctx: &Context,
 ) -> Result<Vaddr> {
     debug!(
-        "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, option = {:?}, raw_fd = {}, offset = 0x{:x}",
-        addr, len, vm_perms, option, raw_fd, offset
+        "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, flags = 0x{:x}, raw_fd = {}, offset = 0x{:x}",
+        addr, len, vm_perms, raw_flags, raw_fd, offset
     );
 
+    // RISC-V Linux rejects a byte offset that is not page-aligned at the
+    // syscall boundary, before `ksys_mmap_pgoff` resolves the descriptor. See
+    // `sys_mmap` in Linux:
+    // <https://github.com/torvalds/linux/blob/v6.19/arch/riscv/kernel/sys_riscv.c#L21-L29>.
+    check_offset_alignment(offset)?;
+
+    let flags = MMapFlags::from_bits_truncate(raw_flags & !MAP_TYPE_MASK);
+
+    // Linux resolves a file-backed mapping's descriptor before validating the
+    // flags, length, or address. Apart from matching its observable error
+    // ordering, doing the lookup once also keeps the exact file stable if the
+    // file table is shared and another thread closes or reuses the descriptor.
+    // See `ksys_mmap_pgoff` in Linux:
+    // <https://github.com/torvalds/linux/blob/v6.19/mm/mmap.c#L566-L608>.
+    let mut file_table = (!flags.contains(MMapFlags::MAP_ANONYMOUS))
+        .then(|| ctx.thread_local.borrow_file_table_mut());
+    let file = if let Some(file_table) = file_table.as_mut() {
+        Some(get_file_fast!(file_table, raw_fd.try_into()?))
+    } else {
+        None
+    };
+
+    let option = MMapOptions::try_from(raw_flags)?;
     let len = check_len(len)?;
     let addr = if option.flags().is_fixed() {
         check_addr(addr, len)?;
@@ -57,7 +79,7 @@ fn do_sys_mmap(
     } else {
         adjust_addr_hint(addr, len)
     };
-    check_offset(offset, len, option.flags())?;
+    check_offset_overflow(offset, len, option.flags())?;
 
     // On x86_64 and riscv64, `PROT_WRITE` implies `PROT_READ`.
     // Reference:
@@ -119,9 +141,7 @@ fn do_sys_mmap(
                 options = options.vmo(shared_vmo);
             }
         } else {
-            let mut file_table = ctx.thread_local.borrow_file_table_mut();
-            let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
-
+            let file = file.as_deref().unwrap();
             let access_mode = file.access_mode();
             if vm_perms.contains(VmPerms::READ) && !access_mode.is_readable() {
                 return_errno_with_message!(Errno::EACCES, "the file is not opened readable");
@@ -135,7 +155,7 @@ fn do_sys_mmap(
 
             options = options
                 .may_perms(vm_may_perms)
-                .mappable(file.as_ref().as_ref())?
+                .mappable(file.as_ref())?
                 .vmo_offset(offset)
                 .handle_page_faults_around();
         }
@@ -196,11 +216,15 @@ fn adjust_addr_hint(mut addr: Vaddr, len: usize) -> Vaddr {
     addr
 }
 
-fn check_offset(offset: usize, len: usize, flags: MMapFlags) -> Result<()> {
+fn check_offset_alignment(offset: usize) -> Result<()> {
     if !offset.is_multiple_of(PAGE_SIZE) {
         return_errno_with_message!(Errno::EINVAL, "the mapping offset is not aligned");
     }
 
+    Ok(())
+}
+
+fn check_offset_overflow(offset: usize, len: usize, flags: MMapFlags) -> Result<()> {
     if flags.contains(MMapFlags::MAP_ANONYMOUS) {
         return Ok(());
     }
