@@ -454,7 +454,11 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
                 f"DEBIAN_WEB_NETWORK_FAIL mode={network_mode.value} "
                 f"layer={layer} reason={reason}",
             )
-            self.FAILURE_MARKER = b"DEBIAN_WEB_NETWORK_FAIL mode="
+            # Waiting on the generic prefix is racy: serial input may expose
+            # it before the rest of this expected line arrives.  Make the
+            # expected negative marker atomic for the protocol wait; the
+            # classifier still rejects duplicates and any additional failure.
+            self.FAILURE_MARKER = self.MILESTONES[-1].encode()
         should_start_proxy = (
             network_mode is NetworkMode.PROXY
             and expected_failure is not QemuExpectedFailure.PROXY_UNAVAILABLE
