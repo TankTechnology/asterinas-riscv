@@ -1037,6 +1037,7 @@ esac
             "ASTERINAS_DESKTOP_M5_RESOLV_CONF": str(resolv_conf),
             "ASTERINAS_DESKTOP_M5_URL_FILE": str(directory / "desktop-url"),
             "ASTERINAS_WEB_NETWORK_MODE": mode,
+            "ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY": "1",
             "ASTERINAS_WEB_NETWORK_ADDRESS": "10.100.19.200/21",
             "ASTERINAS_WEB_NETWORK_GATEWAY": "10.100.16.1",
             "ASTERINAS_WEB_NETWORK_RESOLVER": "10.100.16.1",
@@ -1189,6 +1190,34 @@ esac
         self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
         self.assertFalse(
             any(line.startswith("ping ") for line in command_log.read_text().splitlines())
+        )
+
+    def test_web_network_skips_unsupported_neighbor_query(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-neighbor-query-disabled",
+            mode="proxy",
+            fail_stage="neighbor-command",
+        )
+        environment["ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY"] = "0"
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = console.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=proxy "
+            "neighbor=unobservable proof=owned-fixture-http",
+            lines,
+        )
+        self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
+        self.assertFalse(
+            any(line.startswith("ip neigh ") for line in command_log.read_text().splitlines())
         )
 
     def test_web_network_failure_taxonomy(self) -> None:
