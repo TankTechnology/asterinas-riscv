@@ -43,7 +43,10 @@ from tools.riscv.debian.rootfs.gate_runtime import GateTermination, TerminationS
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure, parse_gate_args
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
-from tools.riscv.megrez_proxy_bridge import ProxyBridge, ProxyBridgeConfig
+from tools.riscv.megrez_proxy_bridge import (
+    ProxyBridge,
+    proxy_bridge_config_from_environment,
+)
 
 
 _BROWSER_WEB_PREFIX_MILESTONES = (
@@ -683,7 +686,9 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         self.MILESTONES = browser_web_milestones(network_mode)
         self.proxy_bridge = proxy_bridge
         if network_mode is NetworkMode.PROXY and self.proxy_bridge is None:
-            self.proxy_bridge = ProxyBridge(ProxyBridgeConfig(listen_address="0.0.0.0"))
+            self.proxy_bridge = ProxyBridge(
+                proxy_bridge_config_from_environment(listen_address="0.0.0.0")
+            )
         super().__init__(config, **arguments)
         self._web_evidence: dict[str, bytes] = {}
         self._web_evidence_index: dict[str, dict[str, object]] = {}
