@@ -126,13 +126,15 @@ if [[ "${1:-}" == "--verify-uboot-source" ]]; then
         printf '%s\n' 'missing U-Boot source directory' >&2
         exit 2
     fi
-    actual_commit="$(git -C "${source_dir}" rev-parse HEAD 2>/dev/null || true)"
+    actual_commit="$(git -c "safe.directory=${source_dir}" -C "${source_dir}" \
+        rev-parse HEAD 2>/dev/null || true)"
     if [[ "${actual_commit}" != "${expected_commit}" ]]; then
         printf 'U-Boot commit mismatch: expected %s, got %s\n' \
             "${expected_commit}" "${actual_commit:-not-a-git-checkout}" >&2
         exit 1
     fi
-    if [[ -n "$(git -C "${source_dir}" status --porcelain --untracked-files=all)" ]]; then
+    if [[ -n "$(git -c "safe.directory=${source_dir}" -C "${source_dir}" \
+        status --porcelain --untracked-files=all)" ]]; then
         printf '%s\n' 'U-Boot checkout is not clean' >&2
         exit 1
     fi
@@ -223,10 +225,13 @@ if [[ "${1:-}" == "prepare" ]]; then
         git clone --filter=blob:none --no-checkout \
             https://github.com/u-boot/u-boot.git "${source_dir}"
     fi
-    if [[ "$(git -C "${source_dir}" rev-parse HEAD 2>/dev/null || true)" \
+    if [[ "$(git -c "safe.directory=${source_dir}" -C "${source_dir}" \
+        rev-parse HEAD 2>/dev/null || true)" \
         != "${UBOOT_COMMIT}" ]]; then
-        git -C "${source_dir}" fetch --depth=1 origin "${UBOOT_COMMIT}"
-        git -C "${source_dir}" checkout --detach "${UBOOT_COMMIT}"
+        git -c "safe.directory=${source_dir}" -C "${source_dir}" \
+            fetch --depth=1 origin "${UBOOT_COMMIT}"
+        git -c "safe.directory=${source_dir}" -C "${source_dir}" \
+            checkout --detach "${UBOOT_COMMIT}"
     fi
     bash "$0" --verify-uboot-source "${source_dir}"
 
