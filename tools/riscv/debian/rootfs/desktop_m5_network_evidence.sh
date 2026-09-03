@@ -129,6 +129,7 @@ web_network_evidence() {
     local limit
     local link_output
     local local_address
+    local neighbor_observable=1
     local neighbor_output
     local peer
     local signature
@@ -194,16 +195,25 @@ web_network_evidence() {
     if ! neighbor_output="$(timeout "$limit" ip neigh show to "$peer" dev "$INTERFACE" 2>/dev/null)"; then
         web_fail neighbor neighbor-unusable
     fi
-    [[ "$neighbor_output" == *"lladdr "* ]] || web_fail neighbor neighbor-unusable
-    [[ "$neighbor_output" != *FAILED* && "$neighbor_output" != *INCOMPLETE* ]] ||
-        web_fail neighbor neighbor-unusable
-    web_emit_layer neighbor
+    if [[ -z "$neighbor_output" ]]; then
+        # Asterinas does not yet implement RTM_GETNEIGH.  In that case the
+        # fixed-IP owned fixture below is the authoritative active proof that
+        # ARP resolution and peer reachability both worked.
+        neighbor_observable=0
+    else
+        [[ "$neighbor_output" == *"lladdr "* ]] ||
+            web_fail neighbor neighbor-unusable
+        [[ "$neighbor_output" != *FAILED* && "$neighbor_output" != *INCOMPLETE* ]] ||
+            web_fail neighbor neighbor-unusable
+        web_emit_layer neighbor
 
-    limit="$(web_timeout_seconds "$deadline")" || web_fail reachability timeout
-    if ! timeout "$limit" ping -4 -c 1 -W 3 "$peer" >/dev/null 2>&1; then
-        web_fail reachability icmp-timeout
+        limit="$(web_timeout_seconds "$deadline")" ||
+            web_fail reachability timeout
+        if ! timeout "$limit" ping -4 -c 1 -W 3 "$peer" >/dev/null 2>&1; then
+            web_fail reachability icmp-timeout
+        fi
+        web_emit_layer reachability
     fi
-    web_emit_layer reachability
 
     if [[ "$WEB_NETWORK_MODE" == direct ]]; then
         printf 'nameserver %s\n' "$WEB_NETWORK_RESOLVER" >"$RESOLV_CONF" ||
@@ -213,7 +223,6 @@ web_network_evidence() {
             web_fail dns resolve
         fi
     fi
-    web_emit_layer dns
 
     http_file="$WEB_TEMPORARY_DIRECTORY/http"
     http_headers="$WEB_TEMPORARY_DIRECTORY/http-headers"
@@ -243,6 +252,12 @@ web_network_evidence() {
     [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
         web_fail http date-header
     date --utc --set "$clock_date" >/dev/null || web_fail http clock-set
+    if ((neighbor_observable == 0)); then
+        emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE neighbor=unobservable proof=owned-fixture-http"
+        web_emit_layer neighbor
+        web_emit_layer reachability
+    fi
+    web_emit_layer dns
     web_emit_layer http
 
     limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout

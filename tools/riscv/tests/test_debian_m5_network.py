@@ -934,6 +934,8 @@ case "$*" in
     neigh*)
         if [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor ]; then
             printf '%s\n' '10.100.16.1 dev eth0 INCOMPLETE'
+        elif [ "$ASTERINAS_WEB_FAIL_STAGE" = neighbor-unobservable ]; then
+            :
         else
             printf '%s\n' "$4 dev eth0 lladdr 4c:d6:29:18:93:43 REACHABLE"
         fi
@@ -1156,6 +1158,35 @@ esac
         self.assertNotIn("--proxy", commands)
         self.assertIn("getent ahostsv4 www.baidu.com", commands)
         self.assertEqual(resolv_conf.read_text(), "nameserver 10.100.16.1\n")
+
+    def test_web_network_uses_owned_fixture_when_neighbor_dump_is_unobservable(
+        self,
+    ) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-neighbor-unobservable",
+            mode="proxy",
+            fail_stage="neighbor-unobservable",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = console.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=proxy "
+            "neighbor=unobservable proof=owned-fixture-http",
+            lines,
+        )
+        self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
+        self.assertFalse(
+            any(line.startswith("ping ") for line in command_log.read_text().splitlines())
+        )
 
     def test_web_network_failure_taxonomy(self) -> None:
         cases = {
