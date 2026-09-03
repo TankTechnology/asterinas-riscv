@@ -221,6 +221,31 @@ class ProxyBridgeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bridge.ProxyBridgeConfig(**values)
 
+    def test_environment_selects_current_clash_upstream_port(self) -> None:
+        config = bridge.proxy_bridge_config_from_environment(
+            {"ASTERINAS_PROXY_UPSTREAM_PORT": "7890"},
+            listen_address="0.0.0.0",
+        )
+
+        self.assertEqual(config.listen_address, "0.0.0.0")
+        self.assertEqual(config.upstream_address, "127.0.0.1")
+        self.assertEqual(config.upstream_port, 7890)
+
+    def test_environment_port_is_strict_and_preserves_legacy_default(self) -> None:
+        self.assertEqual(
+            bridge.proxy_bridge_config_from_environment({}).upstream_port,
+            17892,
+        )
+        for value in ("", "0", "65536", " 7890", "07890", "+7890", "abc"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^ASTERINAS_PROXY_UPSTREAM_PORT must be a canonical port$",
+                ):
+                    bridge.proxy_bridge_config_from_environment(
+                        {"ASTERINAS_PROXY_UPSTREAM_PORT": value}
+                    )
+
     def test_megrez_gmac_unit_target_runs_bridge_lifecycle_tests(self) -> None:
         makefile = Path(__file__).resolve().parents[3] / "Makefile"
         target = (

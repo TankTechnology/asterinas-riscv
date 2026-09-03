@@ -13,7 +13,7 @@ import socket
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import BinaryIO, Protocol
 
@@ -74,6 +74,35 @@ class ProxyBridgeConfig:
         _validate_port(self.upstream_port, "upstream port")
         _validate_timeout(self.startup_timeout, "startup timeout")
         _validate_timeout(self.shutdown_timeout, "shutdown timeout")
+
+
+def proxy_bridge_config_from_environment(
+    environment: Mapping[str, str] | None = None,
+    *,
+    listen_address: str = "10.100.19.216",
+) -> ProxyBridgeConfig:
+    """Return the owned bridge configuration with one explicit port override."""
+
+    environment = os.environ if environment is None else environment
+    raw_port = environment.get("ASTERINAS_PROXY_UPSTREAM_PORT")
+    if raw_port is None:
+        upstream_port = ProxyBridgeConfig.upstream_port
+    elif (
+        not isinstance(raw_port, str)
+        or not raw_port.isascii()
+        or not raw_port.isdigit()
+        or str(int(raw_port)) != raw_port
+        or not 1 <= int(raw_port) <= 65535
+    ):
+        raise ValueError(
+            "ASTERINAS_PROXY_UPSTREAM_PORT must be a canonical port"
+        )
+    else:
+        upstream_port = int(raw_port)
+    return ProxyBridgeConfig(
+        listen_address=listen_address,
+        upstream_port=upstream_port,
+    )
 
 
 def probe_tcp_endpoint(address: str, port: int, timeout: float) -> bool:

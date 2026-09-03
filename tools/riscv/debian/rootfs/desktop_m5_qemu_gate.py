@@ -50,7 +50,10 @@ from tools.riscv.megrez_network_fixture import (
     FixtureServer,
     is_successful_summary,
 )
-from tools.riscv.megrez_proxy_bridge import ProxyBridge, ProxyBridgeConfig
+from tools.riscv.megrez_proxy_bridge import (
+    ProxyBridge,
+    proxy_bridge_config_from_environment,
+)
 
 
 QEMU_FIXTURE_PORT = 17894
@@ -452,7 +455,7 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
         self.proxy_bridge = proxy_bridge
         if should_start_proxy and self.proxy_bridge is None:
             self.proxy_bridge = ProxyBridge(
-                ProxyBridgeConfig(listen_address="0.0.0.0")
+                proxy_bridge_config_from_environment(listen_address="0.0.0.0")
             )
         self._start_proxy = should_start_proxy
         self.tls_fixture = tls_fixture
