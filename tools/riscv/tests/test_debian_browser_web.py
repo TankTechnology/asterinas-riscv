@@ -612,7 +612,10 @@ class BrowserWebContractTests(unittest.TestCase):
                 "size_bytes": profile.root_size_bytes,
                 "block_size_bytes": 4096,
             },
-            "tool_versions": {"debootstrap": "test"},
+            "tool_versions": {
+                "browser-web-runtime": "a" * 64,
+                "debootstrap": "test",
+            },
             "build_timestamp": "2026-08-28T00:00:00Z",
             "root_image_sha256": zero,
             "gate_packages": {name: "1" for name in profile.identity_packages},
@@ -623,7 +626,15 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertEqual(profile.schema_version, 7)
         self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
         self.assertEqual(profile.root_size_bytes, 2 * 1024 * 1024 * 1024)
-        for package in ("firefox-esr", "curl", "ca-certificates"):
+        for package in (
+            "firefox-esr",
+            "python3-minimal",
+            "ca-certificates",
+            "curl",
+            "iproute2",
+            "iputils-ping",
+            "xdotool",
+        ):
             self.assertIn(package, profile.requested_packages)
             self.assertIn(package, profile.identity_packages)
         for package in ("libnss3", "libnss3-tools", "p11-kit", "p11-kit-modules"):
@@ -648,6 +659,70 @@ class BrowserWebContractTests(unittest.TestCase):
         ).stdout.splitlines()
         self.assertEqual(printed, list(profile.requested_packages))
 
+    def test_browser_web_runtime_digest_changes_with_every_gate_input(self) -> None:
+        inputs = (
+            "desktop_m5_network_evidence.sh",
+            "desktop_m5_network_gate.py",
+            "browser_web_firefox.sh",
+            "browser_web_marionette_gate.py",
+            "browser_m5_marionette_gate.py",
+            "browser_web_evidence.sh",
+            "browser_web.service",
+            "browser_web_evidence.service",
+        )
+
+        def digest(source_directory: Path) -> str:
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'source "$1"; browser_web_runtime_digest "$2"',
+                    "browser-web-runtime-test",
+                    str(ROOTFS / "build_rootfs.sh"),
+                    str(source_directory),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            value = result.stdout.strip()
+            self.assertRegex(value, r"\A[0-9a-f]{64}\Z")
+            return value
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_directory = Path(directory)
+            for name in inputs:
+                (source_directory / name).write_bytes((ROOTFS / name).read_bytes())
+            baseline = digest(source_directory)
+            for name in inputs:
+                with self.subTest(name=name):
+                    path = source_directory / name
+                    original = path.read_bytes()
+                    path.write_bytes(original + b"\n# runtime-contract-test\n")
+                    self.assertNotEqual(digest(source_directory), baseline)
+                    path.write_bytes(original)
+
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        self.assertIn(
+            '--tool-version "browser-web-runtime=$browser_web_runtime_version"',
+            builder,
+        )
+
+    def test_browser_evidence_orders_after_network_and_desktop_without_hard_link(self) -> None:
+        service = (ROOTFS / "browser_web_evidence.service").read_text()
+        self.assertIn(
+            "Wants=network-online.target asterinas-desktop-m5.service", service
+        )
+        self.assertIn(
+            "After=network-online.target asterinas-desktop-m5.service", service
+        )
+        self.assertNotIn("Requires=network-online.target", service)
+        self.assertNotIn("Requires=asterinas-desktop-m5.service", service)
+        self.assertNotIn("Environment=ASTERINAS_WEB_NETWORK_MODE=", service)
+        self.assertNotIn("Environment=ASTERINAS_DESKTOP_PROXY", service)
+        browser_service = (ROOTFS / "browser_web.service").read_text()
+        self.assertNotIn("Requires=asterinas-desktop-m5-network.service", browser_service)
+
     def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
         profile = get_profile("browser-web")
         rows = tuple(
@@ -671,12 +746,18 @@ class BrowserWebContractTests(unittest.TestCase):
                 "schema6-browser-web",
                 "schema7-browser-m5",
                 "missing-source-role",
+                "missing-runtime-digest",
+                "malformed-runtime-digest",
             ):
                 forged = copy.deepcopy(payload)
                 if mutation == "schema6-browser-web":
                     forged["schema_version"] = 6
                 elif mutation == "schema7-browser-m5":
                     forged["profile"] = "browser-m5"
+                elif mutation == "missing-runtime-digest":
+                    forged["tool_versions"].pop("browser-web-runtime")
+                elif mutation == "malformed-runtime-digest":
+                    forged["tool_versions"]["browser-web-runtime"] = "not-a-digest"
                 else:
                     forged["downloaded_packages"][0].pop("source_role")
                 path.write_text(json.dumps(forged))
@@ -723,7 +804,7 @@ class BrowserWebContractTests(unittest.TestCase):
                 suite="trixie",
                 debian_release="13.6",
                 build_timestamp="2026-08-28T00:00:00Z",
-                tool_versions=("debootstrap=test",),
+                tool_versions=("debootstrap=test", "browser-web-runtime=" + "a" * 64),
                 profile_name="browser-web",
                 signed_source_files=sources,
             )
