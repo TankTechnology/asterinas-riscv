@@ -2,12 +2,13 @@
 
 use core::num::NonZeroU64;
 
-use ostd::{arch::cpu::context::UserContext, mm::VmIo};
+use ostd::arch::cpu::context::UserContext;
 
 use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::{CloneArgs, CloneFlags, clone_child, signal::sig_num::SigNum},
+    util::CopyCompat,
     vm::vmar::is_userspace_vaddr,
 };
 
@@ -54,12 +55,19 @@ pub fn sys_clone3(
         "clone args addr = 0x{:x}, size = 0x{:x}",
         clong_args_addr, size
     );
-    if size != size_of::<Clone3Args>() {
-        return_errno_with_message!(Errno::EINVAL, "invalid size");
+    const CLONE_ARGS_SIZE_VER0: usize = 64;
+
+    if size < CLONE_ARGS_SIZE_VER0 {
+        return_errno_with_message!(Errno::EINVAL, "clone arguments are too small");
+    }
+    if size > PAGE_SIZE {
+        return_errno_with_message!(Errno::E2BIG, "clone arguments are too large");
     }
 
     let clone_args = {
-        let args: Clone3Args = ctx.user_space().read_val(clong_args_addr)?;
+        let args = ctx
+            .user_space()
+            .read_val_compat::<Clone3Args>(clong_args_addr, size)?;
         debug!("clone3 args = {:x?}", args);
         CloneArgs::try_from(args)?
     };
