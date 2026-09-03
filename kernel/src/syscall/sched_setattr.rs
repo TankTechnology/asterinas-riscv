@@ -2,7 +2,9 @@
 
 use super::{
     SyscallReturn,
-    sched_getattr::{read_linux_sched_attr_from_user, update_sched_attr_with},
+    sched_getattr::{
+        SCHED_FLAG_RESET_ON_FORK, read_linux_sched_attr_from_user, update_sched_attr_with,
+    },
 };
 use crate::{prelude::*, sched::SchedPolicy, thread::Tid};
 
@@ -25,7 +27,6 @@ pub fn sys_sched_setattr(
     // `SCHED_FLAG_RESET_ON_FORK` is carried in `sched_flags` (see
     // `<linux/sched/types.h>`), unlike the legacy `sched_setscheduler` API
     // which folds it into the `policy` argument.
-    const SCHED_FLAG_RESET_ON_FORK: u64 = 0x01;
     let reset_on_fork = (attr.sched_flags & SCHED_FLAG_RESET_ON_FORK) != 0;
 
     let policy = SchedPolicy::try_from(attr)?;

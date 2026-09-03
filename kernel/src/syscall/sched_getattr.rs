@@ -51,6 +51,10 @@ pub(super) struct LinuxSchedAttr {
 const SCHED_ATTR_SIZE_VER0: u32 = 48;
 // Reference: <https://elixir.bootlin.com/linux/v6.17.7/source/include/uapi/linux/sched/types.h#L8>
 const SCHED_ATTR_SIZE_VER1: u32 = 56;
+// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/linux/sched/types.h#L104>
+pub(super) const SCHED_FLAG_RESET_ON_FORK: u64 = 0x01;
+// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/linux/sched.h#L122>
+pub(super) const SCHED_RESET_ON_FORK: u32 = 0x4000_0000;
 
 const_assert!(size_of::<LinuxSchedAttr>() == SCHED_ATTR_SIZE_VER1 as usize);
 
@@ -88,6 +92,12 @@ impl TryFrom<SchedPolicy> for LinuxSchedAttr {
                 ..Default::default()
             },
 
+            SchedPolicy::Batch(nice) => LinuxSchedAttr {
+                sched_policy: LinuxSchedPolicy::Batch as u32,
+                sched_nice: nice.value().get().into(),
+                ..Default::default()
+            },
+
             SchedPolicy::Idle => return_errno_with_message!(
                 Errno::EACCES,
                 "scheduling attributes for idle tasks are not accessible"
@@ -118,26 +128,29 @@ impl TryFrom<LinuxSchedAttr> for SchedPolicy {
                 return_errno_with_message!(Errno::EINVAL, "invalid scheduling priority")
             }
 
-            LinuxSchedPolicy::Normal => SchedPolicy::Fair(Nice::new(
-                i8::try_from(value.sched_nice)
-                    .ok()
-                    .and_then(|n| n.try_into().ok())
-                    .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid nice number"))?,
-            )),
+            LinuxSchedPolicy::Normal => SchedPolicy::Fair(linux_nice(value.sched_nice)?),
+
+            LinuxSchedPolicy::Batch => SchedPolicy::Batch(linux_nice(value.sched_nice)?),
 
             // The SCHED_IDLE policy is mapped to the highest nice value of
             // `SchedPolicy::Fair` instead of `SchedPolicy::Idle`. Tasks of the
             // latter policy are invisible to the user API.
             LinuxSchedPolicy::Idle => SchedPolicy::Fair(Nice::MAX),
 
-            LinuxSchedPolicy::Batch
-            | LinuxSchedPolicy::Iso
-            | LinuxSchedPolicy::Deadline
-            | LinuxSchedPolicy::Ext => {
+            LinuxSchedPolicy::Iso | LinuxSchedPolicy::Deadline | LinuxSchedPolicy::Ext => {
                 return_errno_with_message!(Errno::EINVAL, "invalid scheduling policy")
             }
         })
     }
+}
+
+fn linux_nice(value: i32) -> Result<Nice> {
+    Ok(Nice::new(
+        i8::try_from(value)
+            .ok()
+            .and_then(|value| value.try_into().ok())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid nice number"))?,
+    ))
 }
 
 pub(super) fn read_linux_sched_attr_from_user(
@@ -320,9 +333,9 @@ fn policy_update_requires_privilege(
             let new_priority = u64::from(rt_to_static(new_priority));
             (!same_policy && rlimit == 0) || (new_priority > old_priority && new_priority > rlimit)
         }
-        SchedPolicy::Fair(new_nice) => {
+        SchedPolicy::Fair(new_nice) | SchedPolicy::Batch(new_nice) => {
             let old_nice = match old_policy {
-                SchedPolicy::Fair(nice) => nice,
+                SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => nice,
                 _ => Nice::default(),
             };
             let nice_rlimit = u64::try_from(20 - i32::from(new_nice.value().get()))
@@ -348,10 +361,14 @@ pub fn sys_sched_getattr(
         return_errno_with_message!(Errno::EINVAL, "invalid flags");
     }
 
-    let policy = access_sched_attr_with(tid, ctx, |attr| Ok(attr.policy()))?;
-    let attr: LinuxSchedAttr = policy
+    let (policy, reset_on_fork) =
+        access_sched_attr_with(tid, ctx, |attr| Ok((attr.policy(), attr.reset_on_fork())))?;
+    let mut attr: LinuxSchedAttr = policy
         .try_into()
         .expect("all user-visible scheduling attributes should be valid");
+    if reset_on_fork {
+        attr.sched_flags |= SCHED_FLAG_RESET_ON_FORK;
+    }
     write_linux_sched_attr_to_user(attr, addr, user_size, ctx)?;
 
     Ok(SyscallReturn::Return(0))
