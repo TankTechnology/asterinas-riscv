@@ -1067,6 +1067,40 @@ class BrowserWebContractTests(unittest.TestCase):
                     "timeline.log": evidence["timeline.log"] + b"unstructured\n",
                 }
             )
+        diagnostics = (
+            b'A_WEB_PROBE_COMMAND state=start\n'
+            b'A_WEB_PROBE_RETRY error="document not ready"\n'
+            b'A_WEB_PROBE_CAPABILITIES state=running error="None" '
+            b'checks={"canvas":true,"wasm":true}\n'
+            b'A_WEB_PROBE_COMMAND state=done\n'
+        )
+        validate_web_evidence(
+            {
+                **evidence,
+                "timeline.log": diagnostics + evidence["timeline.log"],
+            }
+        )
+        with self.assertRaisesRegex(GateFailure, "invalid record"):
+            validate_web_evidence(
+                {
+                    **evidence,
+                    "timeline.log": (
+                        b'A_WEB_PROBE_RETRY error="unterminated\n'
+                        + evidence["timeline.log"]
+                    ),
+                }
+            )
+        with self.assertRaisesRegex(GateFailure, "invalid record"):
+            validate_web_evidence(
+                {
+                    **evidence,
+                    "timeline.log": (
+                        b'A_WEB_PROBE_CAPABILITIES state=running error="None" '
+                        b'checks={"wasm":"yes"}\n'
+                        + evidence["timeline.log"]
+                    ),
+                }
+            )
 
     def test_build_time_cache_checker_is_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
@@ -1452,6 +1486,7 @@ generate_fontconfig_cache "$stage" "$3"
         for marker in (
             b"DEBIAN_BROWSER_WEB_FAIL reason=challenge",
             b"DEBIAN_NETWORK_M5_FAIL reason=qemu-https",
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=baidu-asset reason=dns",
             *KERNEL_FATAL_MARKERS,
         ):
             with self.subTest(marker=marker):
@@ -2066,7 +2101,7 @@ generate_fontconfig_cache "$stage" "$3"
                 summary, payload, expected_payload=png(width=3)
             )
 
-    def test_post_stop_evidence_rejects_external_captcha(self) -> None:
+    def test_post_stop_evidence_records_strict_external_captcha(self) -> None:
         evidence = web_evidence()
         challenge = snapshot(
             "https://wappass.baidu.com/static/captcha/tuxing_v2.html?"
@@ -2076,8 +2111,14 @@ generate_fontconfig_cache "$stage" "$3"
             **evidence,
             "baidu-search.json": (json.dumps(challenge) + "\n").encode(),
         }
-        with self.assertRaisesRegex(GateFailure, "did not produce a result"):
-            validate_web_evidence(challenge_evidence)
+        index = validate_web_evidence(challenge_evidence)
+        self.assertEqual(
+            index["baidu-search.json"]["outcome"], "external-captcha"
+        )
+        self.assertNotIn(
+            "fail baidu-search-not-pass",
+            (ROOTFS / "browser_web_evidence.sh").read_text(),
+        )
         challenge["url"] = challenge["url"].replace("Asterinas", "forged")
         with self.assertRaisesRegex(GateError, "back URL"):
             validate_web_evidence(

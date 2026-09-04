@@ -74,7 +74,10 @@ def browser_web_milestones(mode: NetworkMode) -> tuple[str, ...]:
 
 
 BROWSER_WEB_MILESTONES = browser_web_milestones(NetworkMode.DIRECT)
-_NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
+_NETWORK_FAILURES = (
+    b"DEBIAN_NETWORK_M5_FAIL reason=",
+    b"DEBIAN_WEB_NETWORK_FAIL mode=",
+)
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
 _EXTERNAL_BLOCK = b"DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 KERNEL_FATAL_MARKERS = (
@@ -168,6 +171,50 @@ _TIMELINE_PLATFORM_LINE = re.compile(
     rb"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
     rb"bilibili_detail=pass bv=(BV[0-9A-Za-z]{10}) tls=verified"
 )
+_TIMELINE_PROBE_COMMAND_LINE = re.compile(
+    rb"A_WEB_PROBE_COMMAND state=(?:start|done)"
+)
+_TIMELINE_PROBE_RETRY_LINE = re.compile(
+    rb'A_WEB_PROBE_RETRY error=("(?:[^"\\]|\\.){1,1024}")'
+)
+_TIMELINE_PROBE_CAPABILITIES_LINE = re.compile(
+    rb'A_WEB_PROBE_CAPABILITIES state=(running|error) '
+    rb'error=("(?:[^"\\]|\\.){0,256}") checks=(\{[ -~]{2,1536}\})'
+)
+MAX_TIMELINE_PROBE_DIAGNOSTICS = 256
+
+
+def _valid_timeline_probe_retry(line: bytes) -> bool:
+    match = _TIMELINE_PROBE_RETRY_LINE.fullmatch(line)
+    if match is None:
+        return False
+    try:
+        error = json.loads(match.group(1))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(error, str)
+
+
+def _valid_timeline_probe_capabilities(line: bytes) -> bool:
+    match = _TIMELINE_PROBE_CAPABILITIES_LINE.fullmatch(line)
+    if match is None:
+        return False
+    try:
+        error = json.loads(match.group(2))
+        checks = json.loads(match.group(3))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(error, str)
+        and isinstance(checks, dict)
+        and 0 < len(checks) <= 32
+        and all(
+            isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", name)
+            and isinstance(value, bool)
+            for name, value in checks.items()
+        )
+    )
 
 
 def _decode_json(contents: bytes, name: str) -> dict[str, object]:
@@ -368,6 +415,7 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
     phase_pairs = 0
     selected_bv: bytes | None = None
     platform_bv: bytes | None = None
+    probe_diagnostics = 0
     previous_ns = -1
     legacy_clock_reset = False
     browser_pid: int | None = None
@@ -396,6 +444,17 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
                 if platform_bv is not None:
                     raise GateFailure("browser platform evidence is duplicated")
                 platform_bv = platform_match.group(1)
+                continue
+            if (
+                _TIMELINE_PROBE_COMMAND_LINE.fullmatch(line)
+                or _valid_timeline_probe_retry(line)
+                or _valid_timeline_probe_capabilities(line)
+            ):
+                probe_diagnostics += 1
+                if probe_diagnostics > MAX_TIMELINE_PROBE_DIAGNOSTICS:
+                    raise GateFailure(
+                        "browser startup timeline has too many probe diagnostics"
+                    )
                 continue
             raise GateFailure("browser startup timeline contains an invalid record")
         marker, monotonic, pid_text, page = match.groups()
@@ -481,8 +540,9 @@ def validate_web_evidence(
         )
     }
     validate_baidu_home(snapshots["baidu-home"])
-    if validate_baidu_search_outcome(snapshots["baidu-search"]) != "pass":
-        raise GateFailure("Baidu search did not produce a result page")
+    baidu_search_outcome = validate_baidu_search_outcome(
+        snapshots["baidu-search"]
+    )
     validate_fixture_search(
         snapshots["fixture-search"],
         "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas",
@@ -541,6 +601,7 @@ def validate_web_evidence(
         for name, contents in sorted(evidence.items())
     }
     index["security.log"]["sandbox_outcome"] = sandbox_outcome
+    index["baidu-search.json"]["outcome"] = baidu_search_outcome
     index["trust-static.log"]["trust_mode"] = _TRUST_LINE.fullmatch(
         trust_lines[0]
     ).group(1)
@@ -645,7 +706,7 @@ def classify_browser_web_qemu(
     clean = transcript.lower()
     if any(marker.lower() in clean for marker in KERNEL_FATAL_MARKERS):
         return GateResult(False, "kernel fatal marker", None)
-    if _NETWORK_FAILURE.lower() in clean:
+    if any(marker.lower() in clean for marker in _NETWORK_FAILURES):
         return GateResult(False, "network guest failure", None)
     foreign_mode = (
         NetworkMode.PROXY if network_mode is NetworkMode.DIRECT else NetworkMode.DIRECT
@@ -666,7 +727,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     ARTIFACT_PREFIX = "browser-web-qemu"
     MILESTONES = BROWSER_WEB_MILESTONES
     FAILURE_MARKER = _WEB_FAILURE
-    ADDITIONAL_FAILURE_MARKERS = (_NETWORK_FAILURE, *KERNEL_FATAL_MARKERS)
+    ADDITIONAL_FAILURE_MARKERS = (*_NETWORK_FAILURES, *KERNEL_FATAL_MARKERS)
     BOOTARGS = qemu_web_network_bootargs(NetworkMode.DIRECT)
 
     def __init__(

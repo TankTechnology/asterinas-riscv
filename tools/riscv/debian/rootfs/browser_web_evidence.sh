@@ -573,7 +573,6 @@ cat "$GATE_STDERR" >>"$TIMELINE_LOG"
 if [[ "$content" == *" baidu_outcome=external-captcha" ]]; then
     emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 fi
-[[ "$content" == *" baidu_outcome=pass "* ]] || fail baidu-search-not-pass
 validate_desktop_input
 observe_firefox_stability
 systemctl_bounded is-active --quiet asterinas-browser-web.service || fail firefox-not-active-after-gate
