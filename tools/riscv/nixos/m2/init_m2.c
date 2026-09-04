@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 /* M2 /init (static glibc): mount /proc, run the dynamically linked musl
  * hello_dyn, then fall back to busybox sh for the final marker. */
 #include <stdio.h>
