@@ -391,6 +391,24 @@ pub(crate) fn on_coarse_clock_update(real_time: Duration, monotonic_time: Durati
     }
 }
 
+/// Disables the shared vDSO clock fast path after time namespaces are used.
+///
+/// The current vDSO has one global data page, while namespace offsets are
+/// process-specific. Returning `ENOSYS` from the vDSO makes libc use the
+/// namespace-aware syscall until per-namespace vvar pages are implemented.
+pub(crate) fn disable_clock_fast_path_for_time_namespaces() {
+    let Some(vdso) = VDSO.get() else {
+        return;
+    };
+    let mut data = vdso.data.lock();
+    vdso.begin_update_data_frame(&mut data);
+    data.set_clock_mode(VdsoClockMode::None);
+    vdso.data_frame
+        .write_val(vdso_data_field_offset!(clock_mode), &data.clock_mode)
+        .unwrap();
+    vdso.finish_update_data_frame(&mut data);
+}
+
 /// Initializes the time duration from 1970-01-01 00:00:00 to the start time,
 /// keeping sub-second precision so that vDSO realtime matches the syscall path.
 fn init_start_duration() {

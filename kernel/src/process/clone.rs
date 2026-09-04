@@ -1017,7 +1017,7 @@ fn clone_ns_proxy(
     posix_thread: &PosixThread,
     clone_flags: CloneFlags,
 ) -> Result<Arc<NsProxy>> {
-    parent_ns_proxy.new_clone(user_ns, process, posix_thread, clone_flags)
+    parent_ns_proxy.new_clone(user_ns, process, posix_thread, clone_flags, false)
 }
 
 #[expect(clippy::too_many_arguments)]

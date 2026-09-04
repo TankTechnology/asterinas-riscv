@@ -13,6 +13,7 @@ use crate::{
         posix_thread::PosixThread,
     },
     security::lsm::hooks as lsm_hooks,
+    time::namespace::TimeNamespace,
 };
 
 /// A struct that acts as a per-thread proxy to give access to most namespaces.
@@ -31,6 +32,8 @@ pub struct NsProxy {
     mnt_ns: Arc<MountNamespace>,
     net_ns: Arc<NetNamespace>,
     pid_ns: Arc<PidNamespace>,
+    time_ns: Arc<TimeNamespace>,
+    time_ns_for_children: Arc<TimeNamespace>,
     uts_ns: Arc<UtsNamespace>,
 }
 
@@ -45,6 +48,8 @@ impl NsProxy {
                 mnt_ns: MountNamespace::get_init_singleton().clone(),
                 net_ns: NetNamespace::get_init_singleton().clone(),
                 pid_ns: PidNamespace::get_init_singleton().clone(),
+                time_ns: TimeNamespace::get_init_singleton().clone(),
+                time_ns_for_children: TimeNamespace::get_init_singleton().clone(),
                 uts_ns: UtsNamespace::get_init_singleton().clone(),
             })
         })
@@ -65,21 +70,19 @@ impl NsProxy {
         process: &Process,
         posix_thread: &PosixThread,
         clone_flags: CloneFlags,
+        is_unshare: bool,
     ) -> Result<Arc<Self>> {
         let clone_ns_flags = (clone_flags & CloneFlags::CLONE_NS_FLAGS) - CloneFlags::CLONE_NEWUSER;
-
-        // Fast path: If there are no new namespaces to clone,
-        // we can directly clone the proxy and return.
-        if clone_ns_flags.is_empty() {
-            return Ok(self.clone());
-        }
-
-        // Slow path: One or more namespaces need to be cloned,
-        // so a new `NsProxy` must be created.
 
         check_unsupported_ns_flags(clone_ns_flags)?;
 
         let mut builder = NsProxyBuilder::new(self);
+
+        // A newly forked process enters the parent's time namespace for
+        // children. Threads remain in the process's current namespace.
+        if !is_unshare && !clone_flags.contains(CloneFlags::CLONE_THREAD) {
+            builder.time_ns(self.time_ns_for_children.clone());
+        }
 
         if clone_ns_flags.contains(CloneFlags::CLONE_NEWCGROUP) {
             let current_cgroup = process.cgroup().get().as_deref().map(Arc::clone);
@@ -131,6 +134,20 @@ impl NsProxy {
             builder.net_ns(NetNamespace::new_child(user_ns.clone()));
         }
 
+        if clone_ns_flags.contains(CloneFlags::CLONE_NEWTIME) {
+            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                user_ns.as_ref(),
+                posix_thread,
+                CapSet::SYS_ADMIN,
+            ))?;
+            crate::vdso::disable_clock_fast_path_for_time_namespaces();
+            let new_time_ns = TimeNamespace::new_child(user_ns.clone());
+            if !is_unshare {
+                builder.time_ns(new_time_ns.clone());
+            }
+            builder.time_ns_for_children(new_time_ns);
+        }
+
         // TODO: Support other namespaces.
 
         Ok(Arc::new(builder.build()))
@@ -162,6 +179,16 @@ impl NsProxy {
         &self.pid_ns
     }
 
+    /// Returns the current time namespace.
+    pub fn time_ns(&self) -> &Arc<TimeNamespace> {
+        &self.time_ns
+    }
+
+    /// Returns the time namespace that child processes will enter.
+    pub fn time_ns_for_children(&self) -> &Arc<TimeNamespace> {
+        &self.time_ns_for_children
+    }
+
     /// Returns the associated UTS namespace.
     pub fn uts_ns(&self) -> &Arc<UtsNamespace> {
         &self.uts_ns
@@ -179,6 +206,8 @@ pub struct NsProxyBuilder<'a> {
     mnt_ns: Option<Arc<MountNamespace>>,
     net_ns: Option<Arc<NetNamespace>>,
     pid_ns: Option<Arc<PidNamespace>>,
+    time_ns: Option<Arc<TimeNamespace>>,
+    time_ns_for_children: Option<Arc<TimeNamespace>>,
     uts_ns: Option<Arc<UtsNamespace>>,
 }
 
@@ -192,6 +221,8 @@ impl<'a> NsProxyBuilder<'a> {
             mnt_ns: None,
             net_ns: None,
             pid_ns: None,
+            time_ns: None,
+            time_ns_for_children: None,
             uts_ns: None,
         }
     }
@@ -232,6 +263,18 @@ impl<'a> NsProxyBuilder<'a> {
         self
     }
 
+    /// Sets the current time namespace.
+    pub fn time_ns(&mut self, time_ns: Arc<TimeNamespace>) -> &mut Self {
+        self.time_ns = Some(time_ns);
+        self
+    }
+
+    /// Sets the time namespace for subsequently created children.
+    pub fn time_ns_for_children(&mut self, time_ns: Arc<TimeNamespace>) -> &mut Self {
+        self.time_ns_for_children = Some(time_ns);
+        self
+    }
+
     /// Builds the new `NsProxy`.
     pub fn build(self) -> NsProxy {
         let Self {
@@ -241,6 +284,8 @@ impl<'a> NsProxyBuilder<'a> {
             mnt_ns: new_mnt,
             net_ns: new_net,
             pid_ns: new_pid,
+            time_ns: new_time,
+            time_ns_for_children: new_time_for_children,
             uts_ns: new_uts,
         } = self;
 
@@ -249,6 +294,9 @@ impl<'a> NsProxyBuilder<'a> {
         let new_mnt = new_mnt.unwrap_or_else(|| old_proxy.mnt_ns.clone());
         let new_net = new_net.unwrap_or_else(|| old_proxy.net_ns.clone());
         let new_pid = new_pid.unwrap_or_else(|| old_proxy.pid_ns.clone());
+        let new_time = new_time.unwrap_or_else(|| old_proxy.time_ns.clone());
+        let new_time_for_children =
+            new_time_for_children.unwrap_or_else(|| old_proxy.time_ns_for_children.clone());
         let new_uts = new_uts.unwrap_or_else(|| old_proxy.uts_ns.clone());
 
         NsProxy {
@@ -257,6 +305,8 @@ impl<'a> NsProxyBuilder<'a> {
             mnt_ns: new_mnt,
             net_ns: new_net,
             pid_ns: new_pid,
+            time_ns: new_time,
+            time_ns_for_children: new_time_for_children,
             uts_ns: new_uts,
         }
     }
@@ -271,6 +321,7 @@ pub fn check_unsupported_ns_flags(flags: CloneFlags) -> Result<()> {
         .union(CloneFlags::CLONE_NEWNS)
         .union(CloneFlags::CLONE_NEWNET)
         .union(CloneFlags::CLONE_NEWPID)
+        .union(CloneFlags::CLONE_NEWTIME)
         .union(CloneFlags::CLONE_NEWUTS);
 
     let unsupported_flags =
