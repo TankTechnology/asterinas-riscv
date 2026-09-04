@@ -196,6 +196,9 @@ pub trait MultiRead: ReadCString {
     /// Calculates the total length of data remaining to read.
     fn sum_lens(&self) -> usize;
 
+    /// Returns the address of the next byte to read, or `None` if exhausted.
+    fn current_addr(&self) -> Option<Vaddr>;
+
     /// Checks if the data remaining to read is empty.
     fn is_empty(&self) -> bool {
         self.sum_lens() == 0
@@ -224,6 +227,9 @@ pub trait MultiWrite {
 
     /// Calculates the length of space available to write.
     fn sum_lens(&self) -> usize;
+
+    /// Returns the address of the next byte to write, or `None` if exhausted.
+    fn current_addr(&self) -> Option<Vaddr>;
 
     /// Checks if the space available to write is empty.
     fn is_empty(&self) -> bool {
@@ -255,6 +261,13 @@ impl MultiRead for VmReaderArray<'_> {
         self.0.iter().map(|vm_reader| vm_reader.remain()).sum()
     }
 
+    fn current_addr(&self) -> Option<Vaddr> {
+        self.0
+            .iter()
+            .find(|reader| reader.has_remain())
+            .map(|reader| reader.cursor().addr())
+    }
+
     fn skip_some(&mut self, mut nbytes: usize) {
         for reader in &mut self.0 {
             let bytes_to_skip = reader.remain().min(nbytes);
@@ -275,6 +288,10 @@ impl MultiRead for VmReader<'_> {
 
     fn sum_lens(&self) -> usize {
         self.remain()
+    }
+
+    fn current_addr(&self) -> Option<Vaddr> {
+        self.has_remain().then(|| self.cursor().addr())
     }
 
     fn skip_some(&mut self, nbytes: usize) {
@@ -319,6 +336,13 @@ impl MultiWrite for VmWriterArray<'_> {
         self.0.iter().map(|vm_writer| vm_writer.avail()).sum()
     }
 
+    fn current_addr(&self) -> Option<Vaddr> {
+        self.0
+            .iter()
+            .find(|writer| writer.has_avail())
+            .map(|writer| writer.cursor().addr())
+    }
+
     fn skip_some(&mut self, mut nbytes: usize) {
         for writer in &mut self.0 {
             let bytes_to_skip = writer.avail().min(nbytes);
@@ -342,6 +366,10 @@ impl MultiWrite for VmWriter<'_> {
 
     fn sum_lens(&self) -> usize {
         self.avail()
+    }
+
+    fn current_addr(&self) -> Option<Vaddr> {
+        self.has_avail().then(|| self.cursor().addr())
     }
 
     fn skip_some(&mut self, nbytes: usize) {

@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -14,6 +15,22 @@
 #define LISTEN_BACKLOG 4
 #define RECEIVE_BUFFER_FILL_DRAIN_ROUNDS 16
 #define TCP_SETTLE_USEC 100000
+
+static ssize_t recv_exact(int fd, void *buf, size_t len)
+{
+	size_t received = 0;
+
+	while (received < len) {
+		ssize_t result =
+			recv(fd, (char *)buf + received, len - received, 0);
+
+		if (result <= 0)
+			return result < 0 ? result : (ssize_t)received;
+		received += result;
+	}
+
+	return (ssize_t)received;
+}
 
 /*
  * Tokio's PollEvented clears readiness after a positive short read on
@@ -91,5 +108,66 @@ FN_TEST(tcp_read_wrap_receive_buffer_tail)
 	TEST_SUCC(close(client_fd));
 	TEST_SUCC(close(server_fd));
 	TEST_SUCC(close(listen_fd));
+}
+END_TEST()
+
+/*
+ * TCP copies run while the network stack protects its ring buffers.  A valid
+ * anonymous mapping may still be demand-paged, so both send and receive must
+ * resolve that fault without panicking or losing stream data.
+ *
+ * See: https://github.com/TankTechnology/asterinas-riscv/issues/132
+ */
+FN_TEST(tcp_io_resolves_demand_paged_user_buffers)
+{
+	static const char message[] = "demand-paged TCP receive";
+	struct sockaddr_in listen_addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+		.sin_port = 0,
+	};
+	socklen_t listen_addr_len = sizeof(listen_addr);
+	int listen_fd = CHECK(socket(AF_INET, SOCK_STREAM, 0));
+	int client_fd = CHECK(socket(AF_INET, SOCK_STREAM, 0));
+	int server_fd;
+	size_t page_size = CHECK(sysconf(_SC_PAGESIZE));
+	char receive_buf[32];
+	char *demand_paged_buf;
+
+	CHECK(bind(listen_fd, (struct sockaddr *)&listen_addr,
+		   sizeof(listen_addr)));
+	CHECK(getsockname(listen_fd, (struct sockaddr *)&listen_addr,
+			  &listen_addr_len));
+	CHECK(listen(listen_fd, LISTEN_BACKLOG));
+	CHECK(connect(client_fd, (struct sockaddr *)&listen_addr,
+		      sizeof(listen_addr)));
+	server_fd = CHECK(accept(listen_fd, NULL, NULL));
+
+	demand_paged_buf = CHECK_WITH(mmap(NULL, page_size, PROT_WRITE,
+					   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+				      _ret != MAP_FAILED);
+	CHECK_WITH(send(server_fd, message, sizeof(message), 0),
+		   _ret == (ssize_t)sizeof(message));
+	TEST_RES(recv_exact(client_fd, demand_paged_buf, sizeof(message)),
+		 _ret == (ssize_t)sizeof(message));
+	CHECK(mprotect(demand_paged_buf, page_size, PROT_READ));
+	TEST_RES(memcmp(demand_paged_buf, message, sizeof(message)), _ret == 0);
+	CHECK(munmap(demand_paged_buf, page_size));
+
+	demand_paged_buf =
+		CHECK_WITH(mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+			   _ret != MAP_FAILED);
+	CHECK_WITH(send(client_fd, demand_paged_buf, sizeof(receive_buf), 0),
+		   _ret == (ssize_t)sizeof(receive_buf));
+	TEST_RES(recv_exact(server_fd, receive_buf, sizeof(receive_buf)),
+		 _ret == (ssize_t)sizeof(receive_buf));
+	TEST_RES(memcmp(receive_buf, demand_paged_buf, sizeof(receive_buf)),
+		 _ret == 0);
+	CHECK(munmap(demand_paged_buf, page_size));
+
+	CHECK(close(client_fd));
+	CHECK(close(server_fd));
+	CHECK(close(listen_fd));
 }
 END_TEST()

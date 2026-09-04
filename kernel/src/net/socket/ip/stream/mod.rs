@@ -5,7 +5,7 @@ use aster_bigtcp::{
     time::Duration,
     wire::IpEndpoint,
 };
-use connected::{ConnectedStream, close_and_linger};
+use connected::{ConnectedStream, IoAttempt, close_and_linger};
 use connecting::{ConnResult, ConnectingStream};
 use init::InitStream;
 use listen::ListenStream;
@@ -14,7 +14,10 @@ use options::{
     Congestion, DeferAccept, Inq, KeepCnt, KeepIdle, KeepIntvl, MaxSegment, NoDelay, SynCnt,
     UserTimeout, WindowClamp,
 };
-use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
+use ostd::{
+    sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard},
+    task::Task,
+};
 use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
@@ -48,6 +51,7 @@ use crate::{
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
     util::{MultiRead, MultiWrite, net::SockType},
+    vm::{perms::VmPerms, vmar::PageFaultInfo},
 };
 
 mod connected;
@@ -104,6 +108,20 @@ impl OptionSet {
             is_nagle_enabled: !self.tcp.no_delay(),
         }
     }
+}
+
+fn handle_socket_page_fault(fault_addr: Vaddr, required_perms: VmPerms) -> Result<()> {
+    let current_task = Task::current().unwrap();
+    let thread_local = current_task.as_thread_local().unwrap();
+    CurrentUserSpace::new(thread_local)
+        .vmar()
+        .handle_page_fault(&PageFaultInfo::new(fault_addr, required_perms))
+        .map_err(|_| {
+            Error::with_message(
+                Errno::EFAULT,
+                "the socket I/O buffer page fault cannot be resolved",
+            )
+        })
 }
 
 impl StreamSocket {
@@ -363,70 +381,88 @@ impl StreamSocket {
         writer: &mut dyn MultiWrite,
         flags: RecvFlags,
     ) -> Result<(usize, SocketAddr)> {
-        let state = self.read_updated_state();
+        loop {
+            let state = self.read_updated_state();
 
-        let connected_stream = match state.as_ref() {
-            State::Connected(connected_stream) => connected_stream,
-            State::Init(init_stream) => {
-                let result = init_stream.try_recv();
-                self.pollee.invalidate();
-                return result;
+            let connected_stream = match state.as_ref() {
+                State::Connected(connected_stream) => connected_stream,
+                State::Init(init_stream) => {
+                    let result = init_stream.try_recv();
+                    self.pollee.invalidate();
+                    return result;
+                }
+                State::Listen(_) => {
+                    return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected")
+                }
+                State::Connecting(_) => {
+                    return_errno_with_message!(Errno::EAGAIN, "the socket is connecting")
+                }
+            };
+
+            match connected_stream.try_recv(writer, flags) {
+                IoAttempt::Complete(result) => {
+                    self.pollee.invalidate();
+
+                    let (recv_bytes, need_poll) = result?;
+                    let iface_to_poll = need_poll.then(|| connected_stream.iface().clone());
+                    let remote_endpoint = connected_stream.remote_endpoint();
+
+                    drop(state);
+                    if let Some(iface) = iface_to_poll {
+                        iface.poll();
+                    }
+
+                    return Ok((recv_bytes, remote_endpoint.into()));
+                }
+                IoAttempt::PageFault(fault_addr) => {
+                    drop(state);
+                    handle_socket_page_fault(fault_addr, VmPerms::WRITE)?;
+                }
             }
-            State::Listen(_) => {
-                return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected")
-            }
-            State::Connecting(_) => {
-                return_errno_with_message!(Errno::EAGAIN, "the socket is connecting")
-            }
-        };
-
-        let result = connected_stream.try_recv(writer, flags);
-        self.pollee.invalidate();
-
-        let (recv_bytes, need_poll) = result?;
-        let iface_to_poll = need_poll.then(|| connected_stream.iface().clone());
-        let remote_endpoint = connected_stream.remote_endpoint();
-
-        drop(state);
-        if let Some(iface) = iface_to_poll {
-            iface.poll();
         }
-
-        Ok((recv_bytes, remote_endpoint.into()))
     }
 
     fn try_send(&self, reader: &mut dyn MultiRead, flags: SendFlags) -> Result<usize> {
-        let state = self.read_updated_state();
+        loop {
+            let state = self.read_updated_state();
 
-        let connected_stream = match state.as_ref() {
-            State::Connected(connected_stream) => connected_stream,
-            State::Init(init_stream) => {
-                let result = init_stream.try_send();
-                self.pollee.invalidate();
-                return result;
+            let connected_stream = match state.as_ref() {
+                State::Connected(connected_stream) => connected_stream,
+                State::Init(init_stream) => {
+                    let result = init_stream.try_send();
+                    self.pollee.invalidate();
+                    return result;
+                }
+                State::Listen(_) => {
+                    return_errno_with_message!(Errno::EPIPE, "the socket is not connected");
+                }
+                State::Connecting(_) => {
+                    // FIXME: Linux indeed allows data to be buffered at this point. Can we do
+                    // something similar?
+                    return_errno_with_message!(Errno::EAGAIN, "the socket is connecting")
+                }
+            };
+
+            match connected_stream.try_send(reader, flags) {
+                IoAttempt::Complete(result) => {
+                    self.pollee.invalidate();
+
+                    let (sent_bytes, need_poll) = result?;
+                    let iface_to_poll = need_poll.then(|| connected_stream.iface().clone());
+
+                    drop(state);
+                    if let Some(iface) = iface_to_poll {
+                        iface.poll();
+                    }
+
+                    return Ok(sent_bytes);
+                }
+                IoAttempt::PageFault(fault_addr) => {
+                    drop(state);
+                    handle_socket_page_fault(fault_addr, VmPerms::READ)?;
+                }
             }
-            State::Listen(_) => {
-                return_errno_with_message!(Errno::EPIPE, "the socket is not connected");
-            }
-            State::Connecting(_) => {
-                // FIXME: Linux indeed allows data to be buffered at this point. Can we do
-                // something similar?
-                return_errno_with_message!(Errno::EAGAIN, "the socket is connecting")
-            }
-        };
-
-        let result = connected_stream.try_send(reader, flags);
-        self.pollee.invalidate();
-
-        let (sent_bytes, need_poll) = result?;
-        let iface_to_poll = need_poll.then(|| connected_stream.iface().clone());
-
-        drop(state);
-        if let Some(iface) = iface_to_poll {
-            iface.poll();
         }
-
-        Ok(sent_bytes)
     }
 
     fn check_io_events(&self) -> IoEvents {

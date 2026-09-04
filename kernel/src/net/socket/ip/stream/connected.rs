@@ -5,6 +5,7 @@ use aster_bigtcp::{
     socket::{NeedIfacePoll, RawTcpSetOption},
     wire::IpEndpoint,
 };
+use ostd::task::Task;
 
 use super::observer::StreamObserver;
 use crate::{
@@ -17,6 +18,11 @@ use crate::{
     process::signal::{Pollee, Poller},
     util::{MultiRead, MultiWrite},
 };
+
+pub(super) enum IoAttempt<T> {
+    Complete(T),
+    PageFault(Vaddr),
+}
 
 pub(super) struct ConnectedStream {
     tcp_conn: TcpConnection,
@@ -73,6 +79,29 @@ impl ConnectedStream {
         &self,
         writer: &mut dyn MultiWrite,
         flags: RecvFlags,
+    ) -> IoAttempt<Result<(usize, NeedIfacePoll)>> {
+        if flags.contains(RecvFlags::MSG_TRUNC) {
+            return IoAttempt::Complete(self.try_recv_inner(writer, flags));
+        }
+
+        let current_task = Task::current().unwrap();
+        let thread_local = current_task.as_thread_local().unwrap();
+        match thread_local.with_page_fault_disabled(|| self.try_recv_inner(writer, flags)) {
+            Some(result) => IoAttempt::Complete(result),
+            None => match writer.current_addr() {
+                Some(fault_addr) => IoAttempt::PageFault(fault_addr),
+                None => IoAttempt::Complete(Err(Error::with_message(
+                    Errno::EFAULT,
+                    "TCP receive buffer faulted after it was exhausted",
+                ))),
+            },
+        }
+    }
+
+    fn try_recv_inner(
+        &self,
+        writer: &mut dyn MultiWrite,
+        flags: RecvFlags,
     ) -> Result<(usize, NeedIfacePoll)> {
         let mut trunc_len = if flags.contains(RecvFlags::MSG_TRUNC) {
             Some(writer.sum_lens())
@@ -112,7 +141,22 @@ impl ConnectedStream {
         &self,
         reader: &mut dyn MultiRead,
         _flags: SendFlags,
-    ) -> Result<(usize, NeedIfacePoll)> {
+    ) -> IoAttempt<Result<(usize, NeedIfacePoll)>> {
+        let current_task = Task::current().unwrap();
+        let thread_local = current_task.as_thread_local().unwrap();
+        match thread_local.with_page_fault_disabled(|| self.try_send_inner(reader)) {
+            Some(result) => IoAttempt::Complete(result),
+            None => match reader.current_addr() {
+                Some(fault_addr) => IoAttempt::PageFault(fault_addr),
+                None => IoAttempt::Complete(Err(Error::with_message(
+                    Errno::EFAULT,
+                    "TCP send buffer faulted after it was exhausted",
+                ))),
+            },
+        }
+    }
+
+    fn try_send_inner(&self, reader: &mut dyn MultiRead) -> Result<(usize, NeedIfacePoll)> {
         let result = self
             .tcp_conn
             .send(|socket_buffer| reader.read(&mut VmWriter::from(socket_buffer)));
