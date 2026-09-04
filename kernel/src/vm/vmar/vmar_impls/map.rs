@@ -70,6 +70,9 @@ pub struct VmarMapOptions<'a> {
     // Whether the mapping needs to handle surrounding pages when handling
     // page fault.
     handle_page_faults_around: bool,
+    // The locked-memory limit for an explicitly locked mapping. The outer
+    // `Option` distinguishes an ordinary mapping from a privileged request.
+    explicit_lock_limit: Option<Option<usize>>,
 }
 
 /// An offset within a VMAR where a new mapping will reside.
@@ -119,6 +122,7 @@ impl<'a> VmarMapOptions<'a> {
             align: PAGE_SIZE,
             is_shared: false,
             handle_page_faults_around: false,
+            explicit_lock_limit: None,
         }
     }
 
@@ -235,6 +239,14 @@ impl<'a> VmarMapOptions<'a> {
         self
     }
 
+    /// Requests that the new mapping be locked in memory.
+    ///
+    /// `max_locked_size` is `None` when the caller may bypass `RLIMIT_MEMLOCK`.
+    pub fn lock(mut self, max_locked_size: Option<usize>) -> Self {
+        self.explicit_lock_limit = Some(max_locked_size);
+        self
+    }
+
     /// Binds the file's [`Mappable`] object to the mapping and sets the
     /// [`Path`] of the mapping.
     ///
@@ -284,9 +296,24 @@ impl<'a> VmarMapOptions<'a> {
             align,
             is_shared,
             handle_page_faults_around,
+            explicit_lock_limit,
         } = self;
 
         let mut inner = parent.inner.write();
+
+        let new_mapping_lock_limit = inner.new_mapping_lock_limit(explicit_lock_limit);
+
+        // Validate locked-memory accounting before `MAP_FIXED` removes any
+        // overlapping mappings, so a failed request leaves the address space
+        // unchanged.
+        if let (Some(max_locked_size), VmarMapOffset::FixedReplace(map_to_addr)) =
+            (new_mapping_lock_limit, offset)
+        {
+            inner.check_new_locked_mapping(
+                &(map_to_addr..map_to_addr + map_size),
+                max_locked_size,
+            )?;
+        }
 
         inner
             .check_extra_size_fits_rlimit(map_size)
@@ -345,6 +372,15 @@ impl<'a> VmarMapOptions<'a> {
             VmarMapOffset::Any => inner.alloc_free_region(map_size, align)?.start,
         };
 
+        if let Some(max_locked_size) = new_mapping_lock_limit
+            && !matches!(offset, VmarMapOffset::FixedReplace(_))
+        {
+            inner.check_new_locked_mapping(
+                &(map_to_addr..map_to_addr + map_size),
+                max_locked_size,
+            )?;
+        }
+
         // Parse the `Mappable` and prepare the `MappedMemory`.
         let (mapped_mem, io_mem) = match mappable {
             Some(Mappable::Vmo(vmo)) => {
@@ -385,6 +421,7 @@ impl<'a> VmarMapOptions<'a> {
             path,
             is_shared,
             handle_page_faults_around,
+            new_mapping_lock_limit.is_some(),
             perms | may_perms,
         );
 

@@ -2,6 +2,7 @@
 
 mod access_alien;
 mod fork;
+mod lock;
 pub(super) mod map;
 pub(super) mod page_fault;
 mod protect;
@@ -195,6 +196,11 @@ struct VmarInner {
     vm_mappings: IntervalSet<Vaddr, VmMapping>,
     /// The total mapped memory in bytes.
     total_vm: usize,
+    /// Whether future mappings should be locked, as requested by `mlockall`.
+    lock_future: bool,
+    /// The locked-memory limit captured by the latest `MCL_FUTURE` request.
+    /// `None` means that the caller may bypass the limit.
+    lock_future_limit: Option<usize>,
 }
 
 impl VmarInner {
@@ -202,6 +208,8 @@ impl VmarInner {
         Self {
             vm_mappings: IntervalSet::new(),
             total_vm: 0,
+            lock_future: false,
+            lock_future_limit: None,
         }
     }
 
