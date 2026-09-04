@@ -1,5 +1,9 @@
 # BROWSER M6 — render-matrix expansion + font fix + image-decode verification
 
+> **Historical NetSurf milestone.** M7 refuted the remaining GIF decode gap as
+> viewport clipping. The retry and SMP1 fallback used here are diagnostic
+> techniques and do not satisfy a current SMP4 or Firefox admission gate.
+
 **Status:** harness + content landed & committed; per-site matrix run in progress.
 **Date:** 2026-08-15
 **Scope:** follow M5 (default-browser experience + render-matrix harness). M6 has

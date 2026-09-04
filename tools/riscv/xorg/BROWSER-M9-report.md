@@ -1,5 +1,9 @@
 # BROWSER M9 — netsurf.service crash-loop in the interactive desktop
 
+> **Historical NetSurf milestone.** The SMP1 retry in §4.1 is diagnostic only;
+> the earlier SMP4 timeout must not be described as a proven raw-CPIO hang or
+> counted as a current four-hart pass.
+
 **Status:** root cause located and fixed; the interactive desktop no longer
 crash-loops `netsurf.service`.
 **Date:** 2026-08-16
@@ -145,7 +149,7 @@ content/content.c:614 content_scaled_redraw: Content … 186x160 …
 
 Independent re-verification for this milestone: re-pack a fresh boot disk from the
 current kernel + the fixed initramfs and boot it. The first attempt (`--smp 4`)
-hit the known raw-cpio initramfs-unpack hang under host contention (M5/M6 §3); the
+timed out during initramfs unpack under host contention (M5/M6 §3); the diagnostic
 retry (`--smp 1 --net --settle-seconds 180`) completed. Result in §4.1.
 
 ### 4.1 Fresh-boot result

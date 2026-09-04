@@ -1,5 +1,9 @@
 # GTK M2 — a real window manager + file manager on the Asterinas RISC-V desktop
 
+> **Historical milestone with a superseded diagnosis.** The ~20 MiB initramfs
+> limit and kernel-hang conclusion in §4 were refuted by GTK M3: a fixed
+> 120-second deadline had classified a slow QEMU boot as a hang.
+
 **Status:** milestone reached (WM + panel + multiple GTK2 windows) + file-manager evaluation
 **Date:** 2026-08-14
 **Scope:** make `matchbox-window-manager` (a *reparenting* WM) actually render client

@@ -7298,6 +7298,12 @@ class PreparationContractTests(unittest.TestCase):
             "ece349ade2973e220f524ce59e59711cc919263f\n",
         )
 
+    def test_cached_uboot_uses_only_command_scoped_safe_directory(self) -> None:
+        script = PREPARE_SCRIPT.read_text()
+
+        self.assertIn('git -c "safe.directory=${source_dir}"', script)
+        self.assertNotIn("git config --global", script)
+
     def test_check_tools_reports_every_missing_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as empty_path:
             python = Path(empty_path) / "python3"
@@ -7312,18 +7318,26 @@ class PreparationContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         for tool in (
+            "bc",
+            "bison",
             "dtc",
             "fdtget",
             "fdtput",
+            "flex",
             "git",
             "make",
             "mkfs.ext4",
             "qemu-system-riscv64",
             "riscv64-linux-gnu-gcc",
+            "swig",
         ):
             self.assertIn(f"missing tool: {tool}", result.stderr)
         self.assertIn("missing Python module: setuptools", result.stderr)
         self.assertIn("missing Python development headers", result.stderr)
+        self.assertIn(
+            "missing OpenSSL development headers",
+            PREPARE_SCRIPT.read_text(),
+        )
 
     def test_preparation_delegates_profile_matched_dtb_before_artifacts(self) -> None:
         script = PREPARE_SCRIPT.read_text()

@@ -35,20 +35,21 @@ image when working on the Debian, NetSurf, or Firefox gates:
 make build_riscv_rootfs_image
 ```
 
-The target defaults to the locally validated
-`asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached` base and produces
+The target defaults to the published
+`asterinas/asterinas:0.18.0-20260702` base and produces
 `asterinas/asterinas:0.18.0-20260702-riscv-rootfs`. Both values can be pinned or
 overridden without changing the general image:
 
 ```bash
 make build_riscv_rootfs_image \
-  RISCV_ROOTFS_BASE_IMAGE=asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  RISCV_ROOTFS_BASE_IMAGE=asterinas/asterinas:0.18.0-20260702@sha256:<digest> \
   RISCV_ROOTFS_IMAGE=asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 ```
 
-Run the image with `--privileged --network=host`. The entrypoint validates the
-host-provided `binfmt_misc` registration before executing any long build. Keep
-the content-addressed rootfs cache in a named volume mounted at
+Run the image with `--network=host`; its default explicit-QEMU/proot execution
+path needs neither `--privileged` nor a `/dev` mount. The entrypoint never
+changes the host's `binfmt_misc` registration. Keep the content-addressed rootfs
+cache in a named volume mounted at
 `/root/asterinas/target/debian-riscv/cache`; it can be reused safely because
 the rootfs builder admits entries only after SHA-256 verification. See
 `tools/docker/riscv-rootfs/README.md` for the complete run and proxy examples.

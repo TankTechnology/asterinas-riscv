@@ -114,6 +114,14 @@ impl Task {
         scheduler::yield_now()
     }
 
+    /// Re-enqueues the current task so that the scheduler can move it to another CPU.
+    ///
+    /// The caller should update the task's scheduling constraints before invoking this method.
+    #[track_caller]
+    pub fn migrate_current() {
+        scheduler::migrate_current()
+    }
+
     /// Kicks the task scheduler to run the task.
     ///
     /// BUG: This method highly depends on the current scheduling policy.

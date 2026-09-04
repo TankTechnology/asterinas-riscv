@@ -4,7 +4,7 @@ use ostd::mm::VmIo;
 
 use super::{
     SyscallReturn,
-    sched_getattr::{LinuxSchedAttr, access_sched_attr_with},
+    sched_getattr::{LinuxSchedAttr, SCHED_RESET_ON_FORK, update_sched_attr_with},
 };
 use crate::{prelude::*, thread::Tid};
 
@@ -23,7 +23,6 @@ pub fn sys_sched_setscheduler(
     // The legacy `sched_setscheduler` API folds `SCHED_RESET_ON_FORK` into the
     // `policy` argument's high bit (see `<linux/sched.h>`). Strip it before
     // interpreting the policy code and record the flag separately.
-    const SCHED_RESET_ON_FORK: u32 = 0x4000_0000;
     let reset_on_fork = (policy as u32) & SCHED_RESET_ON_FORK != 0;
 
     let attr = LinuxSchedAttr {
@@ -33,11 +32,7 @@ pub fn sys_sched_setscheduler(
     };
 
     let policy = attr.try_into()?;
-    access_sched_attr_with(tid, ctx, |attr| {
-        attr.set_policy(policy);
-        attr.set_reset_on_fork(reset_on_fork);
-        Ok(())
-    })?;
+    update_sched_attr_with(tid, ctx, Some(reset_on_fork), |_| Ok(policy))?;
 
     Ok(SyscallReturn::Return(0))
 }

@@ -30,6 +30,21 @@ bitflags! {
 }
 
 impl VmPerms {
+    /// Returns the access permissions that the hardware effectively grants.
+    ///
+    /// Keep these permissions separate from the logical VMA permissions:
+    /// `/proc/[pid]/maps` must report the latter exactly as requested by
+    /// userspace. On x86-64 and RISC-V, however, writable page-table entries
+    /// are also readable.
+    pub(crate) fn effective_access_perms(self) -> Self {
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+        if self.contains(Self::WRITE) {
+            return self | Self::READ;
+        }
+
+        self
+    }
+
     /// Checks whether all requested permissions (`READ`, `WRITE`, `EXEC`) are
     /// allowed by their corresponding `MAY_*` capabilities.
     pub fn check(&self) -> Result<()> {
@@ -112,6 +127,7 @@ impl From<PageFlags> for VmPerms {
 
 impl From<VmPerms> for PageFlags {
     fn from(val: VmPerms) -> Self {
+        let val = val.effective_access_perms();
         let mut flags = PageFlags::empty();
         if val.contains(VmPerms::READ) {
             flags |= PageFlags::R;
@@ -123,5 +139,28 @@ impl From<VmPerms> for PageFlags {
             flags |= PageFlags::X;
         }
         flags
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn logical_write_permission_is_preserved() {
+        let logical = VmPerms::WRITE;
+
+        assert!(!logical.contains(VmPerms::READ));
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+        {
+            assert!(
+                logical
+                    .effective_access_perms()
+                    .contains(VmPerms::READ | VmPerms::WRITE)
+            );
+            assert!(PageFlags::from(logical).contains(PageFlags::R | PageFlags::W));
+        }
     }
 }

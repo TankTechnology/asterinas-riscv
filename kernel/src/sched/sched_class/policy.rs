@@ -12,7 +12,7 @@ use crate::sched::nice::Nice;
 /// The User-chosen scheduling policy.
 ///
 /// The scheduling policies are specified by the user, usually through its priority.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchedPolicy {
     #[expect(dead_code)]
     Stop,
@@ -20,7 +20,17 @@ pub enum SchedPolicy {
         rt_prio: RealTimePriority,
         rt_policy: RealTimePolicy,
     },
+    /// A deadline reservation exposed through `sched_{set,get}attr`.
+    ///
+    /// Deadline tasks currently reuse the real-time run queue; the reservation
+    /// values are retained exactly for Linux ABI compatibility.
+    Deadline {
+        runtime: u64,
+        deadline: u64,
+        period: u64,
+    },
     Fair(Nice),
+    Batch(Nice),
     Idle,
 }
 
@@ -39,8 +49,8 @@ pub enum LinuxSchedPolicy {
     Normal = 0,
     Fifo = 1,
     RoundRobin = 2,
-    Batch = 3, // Not supported.
-    Iso = 4,   // Reserved but not implemented yet on Linux.
+    Batch = 3,
+    Iso = 4, // Reserved but not implemented yet on Linux.
     Idle = 5,
     Deadline = 6, // Not supported.
     Ext = 7,      // Not supported.
@@ -62,7 +72,9 @@ impl From<SchedPolicy> for LinuxSchedPolicy {
                 rt_policy: RealTimePolicy::RoundRobin { .. },
                 ..
             } => LinuxSchedPolicy::RoundRobin,
+            SchedPolicy::Deadline { .. } => LinuxSchedPolicy::Deadline,
             SchedPolicy::Fair(_) | SchedPolicy::Idle => LinuxSchedPolicy::Normal,
+            SchedPolicy::Batch(_) => LinuxSchedPolicy::Batch,
         }
     }
 }
@@ -81,8 +93,47 @@ impl SchedPolicy {
         match self {
             SchedPolicy::Stop => SchedPolicyKind::Stop,
             SchedPolicy::RealTime { .. } => SchedPolicyKind::RealTime,
-            SchedPolicy::Fair(_) => SchedPolicyKind::Fair,
+            SchedPolicy::Deadline { .. } => SchedPolicyKind::RealTime,
+            SchedPolicy::Fair(_) | SchedPolicy::Batch(_) => SchedPolicyKind::Fair,
             SchedPolicy::Idle => SchedPolicyKind::Idle,
+        }
+    }
+
+    /// Returns whether this policy has a higher runnable priority than another.
+    pub(super) fn outranks(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Stop, Self::Stop) => false,
+            (Self::Stop, _) => true,
+            (_, Self::Stop) => false,
+            (
+                Self::RealTime {
+                    rt_prio: this_prio, ..
+                },
+                Self::RealTime {
+                    rt_prio: other_prio,
+                    ..
+                },
+            ) => this_prio < other_prio,
+            (Self::RealTime { .. }, _) => true,
+            (_, Self::RealTime { .. }) => false,
+            (
+                Self::Deadline {
+                    deadline: this_deadline,
+                    ..
+                },
+                Self::Deadline {
+                    deadline: other_deadline,
+                    ..
+                },
+            ) => this_deadline < other_deadline,
+            (Self::Deadline { .. }, _) => true,
+            (_, Self::Deadline { .. }) => false,
+            (
+                Self::Fair(this_nice) | Self::Batch(this_nice),
+                Self::Fair(other_nice) | Self::Batch(other_nice),
+            ) => this_nice < other_nice,
+            (Self::Fair(_) | Self::Batch(_), Self::Idle) => true,
+            (Self::Idle, _) => false,
         }
     }
 }
@@ -144,9 +195,5 @@ impl SchedPolicyState {
         update(policy);
         self.kind.store(policy.kind(), Relaxed);
         *this = policy;
-    }
-
-    pub fn update<T>(&self, update: impl FnOnce(&mut SchedPolicy) -> T) -> T {
-        update(&mut self.policy.disable_irq().lock())
     }
 }

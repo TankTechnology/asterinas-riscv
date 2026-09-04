@@ -8,6 +8,27 @@ The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
 
+## SMP4 cross-hart instruction-cache regression
+
+The formal RISC-V regression job runs with exactly four guest CPUs and sets
+`RISCV_ICACHE_REQUIRE_SMP4=1`. The guest test pins its writer to one CPU, warms
+and rewrites executable code on each of the other three CPUs for 1024
+generations, and rejects any topology other than four available CPUs.
+
+The host validates the complete `qemu.log`, not only its tail. A pass requires
+one overall regression terminal marker, one exact four-distinct-CPU icache
+marker, no skip, and no panic, unexpected exception, or failed SBI remote
+`fence.i` marker anywhere in the transcript:
+
+```bash
+make run_kernel AUTO_TEST=regression TARGET_ARCH=riscv64 SMP=4 \
+  RISCV_ICACHE_REQUIRE_SMP4=1
+```
+
+This QEMU test validates the syscall and cross-hart software protocol. Physical
+instruction-cache behavior still requires a result from the exact board binary
+and configuration being claimed.
+
 ## Unit tests
 
 Run the repository-contract tests before launching QEMU:
