@@ -37,6 +37,7 @@ pub struct InodeHandle {
     open_file: Option<Box<dyn PerOpenFileOps>>,
     offset: Mutex<usize>,
     rights: Rights,
+    write_access_tracked: bool,
 }
 
 impl InodeHandle {
@@ -60,16 +61,42 @@ impl InodeHandle {
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Result<Self> {
+        Self::new_unchecked_access_impl(path, access_mode, status_flags, true)
+    }
+
+    /// Creates a handle without registering its writable access in the inode's
+    /// exec/write exclusion counter.
+    ///
+    /// Linux uses this behavior for the original anonymous file returned by
+    /// `memfd_create`. Normal VFS opens, including later opens of the same
+    /// inode, must continue to use [`Self::new_unchecked_access`].
+    pub(in crate::fs) fn new_unchecked_access_without_write_tracking(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+    ) -> Result<Self> {
+        Self::new_unchecked_access_impl(path, access_mode, status_flags, false)
+    }
+
+    fn new_unchecked_access_impl(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+        track_write_access: bool,
+    ) -> Result<Self> {
         let inode = path.inode();
-        let (open_file, rights) = if status_flags.contains(StatusFlags::O_PATH) {
-            (None, Rights::empty())
+        let (open_file, rights, write_access_tracked) = if status_flags
+            .contains(StatusFlags::O_PATH)
+        {
+            (None, Rights::empty(), false)
         } else if inode.type_() == InodeType::Dir && access_mode.is_writable() {
             return_errno_with_message!(Errno::EISDIR, "a directory cannot be opened writable");
         } else {
             // Track opens for writing so that `execve` can deny executing a
             // file that is being written to (ETXTBSY), mirroring Linux's
             // `i_writecount`. The count is released when the handle is dropped.
-            let write_tracked = access_mode.is_writable() && inode.type_().is_regular_file();
+            let write_tracked =
+                track_write_access && access_mode.is_writable() && inode.type_().is_regular_file();
             if write_tracked {
                 inode.write_access_tracker_or_init().acquire_write()?;
             }
@@ -83,7 +110,7 @@ impl InodeHandle {
                 }
             };
             let rights = Rights::from(access_mode);
-            (open_file, rights)
+            (open_file, rights, write_tracked)
         };
 
         Ok(Self {
@@ -91,6 +118,7 @@ impl InodeHandle {
             open_file,
             offset: Mutex::new(0),
             rights,
+            write_access_tracked,
         })
     }
 
@@ -556,12 +584,8 @@ impl Drop for InodeHandle {
     fn drop(&mut self) {
         let _ = self.unlock_flock();
 
-        // Release the write-access tracking registered at open time.
-        // The predicate mirrors the one in `new_unchecked_access`
-        // (`O_PATH` handles have empty rights and thus never match).
-        if self.access_mode().is_writable()
-            && self.path().inode().type_().is_regular_file()
-        {
+        // Release exactly the write-access reference acquired at open time.
+        if self.write_access_tracked {
             self.path()
                 .inode()
                 .write_access_tracker_or_init()
