@@ -83,6 +83,7 @@ macro_rules! import_generic_syscall_entries {
             madvise::sys_madvise,
             membarrier::sys_membarrier,
             memfd_create::sys_memfd_create,
+            mincore::sys_mincore,
             mkdir::sys_mkdirat,
             mknod::sys_mknodat,
             mlock::{sys_mlock, sys_munlock},
@@ -420,6 +421,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_MSYNC = 227                  => sys_msync(args[..3]);
             SYS_MLOCK = 228                  => sys_mlock(args[..2]);
             SYS_MUNLOCK = 229                => sys_munlock(args[..2]);
+            SYS_MINCORE = 232                => sys_mincore(args[..3]);
             SYS_MADVISE = 233                => sys_madvise(args[..3]);
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);
