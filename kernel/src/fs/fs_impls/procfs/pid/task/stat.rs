@@ -377,6 +377,7 @@ fn sched_values(thread: &Thread) -> (i32, u8, i32) {
             let rt_priority = RT_PRIORITY_LIMIT - rt_prio.get();
             (-i32::from(rt_priority) - 1, rt_priority)
         }
+        SchedPolicy::Deadline { .. } => (-1, 0),
         SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => {
             (NICE_TO_PRIORITY_OFFSET + nice.value().get() as i32, 0)
         }

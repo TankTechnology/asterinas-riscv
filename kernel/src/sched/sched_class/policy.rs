@@ -20,6 +20,15 @@ pub enum SchedPolicy {
         rt_prio: RealTimePriority,
         rt_policy: RealTimePolicy,
     },
+    /// A deadline reservation exposed through `sched_{set,get}attr`.
+    ///
+    /// Deadline tasks currently reuse the real-time run queue; the reservation
+    /// values are retained exactly for Linux ABI compatibility.
+    Deadline {
+        runtime: u64,
+        deadline: u64,
+        period: u64,
+    },
     Fair(Nice),
     Batch(Nice),
     Idle,
@@ -63,6 +72,7 @@ impl From<SchedPolicy> for LinuxSchedPolicy {
                 rt_policy: RealTimePolicy::RoundRobin { .. },
                 ..
             } => LinuxSchedPolicy::RoundRobin,
+            SchedPolicy::Deadline { .. } => LinuxSchedPolicy::Deadline,
             SchedPolicy::Fair(_) | SchedPolicy::Idle => LinuxSchedPolicy::Normal,
             SchedPolicy::Batch(_) => LinuxSchedPolicy::Batch,
         }
@@ -83,6 +93,7 @@ impl SchedPolicy {
         match self {
             SchedPolicy::Stop => SchedPolicyKind::Stop,
             SchedPolicy::RealTime { .. } => SchedPolicyKind::RealTime,
+            SchedPolicy::Deadline { .. } => SchedPolicyKind::RealTime,
             SchedPolicy::Fair(_) | SchedPolicy::Batch(_) => SchedPolicyKind::Fair,
             SchedPolicy::Idle => SchedPolicyKind::Idle,
         }
@@ -105,6 +116,18 @@ impl SchedPolicy {
             ) => this_prio < other_prio,
             (Self::RealTime { .. }, _) => true,
             (_, Self::RealTime { .. }) => false,
+            (
+                Self::Deadline {
+                    deadline: this_deadline,
+                    ..
+                },
+                Self::Deadline {
+                    deadline: other_deadline,
+                    ..
+                },
+            ) => this_deadline < other_deadline,
+            (Self::Deadline { .. }, _) => true,
+            (_, Self::Deadline { .. }) => false,
             (
                 Self::Fair(this_nice) | Self::Batch(this_nice),
                 Self::Fair(other_nice) | Self::Batch(other_nice),

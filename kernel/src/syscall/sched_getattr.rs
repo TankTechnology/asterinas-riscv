@@ -78,6 +78,18 @@ impl TryFrom<SchedPolicy> for LinuxSchedAttr {
                 ..Default::default()
             },
 
+            SchedPolicy::Deadline {
+                runtime,
+                deadline,
+                period,
+            } => LinuxSchedAttr {
+                sched_policy: LinuxSchedPolicy::Deadline as u32,
+                sched_runtime: runtime,
+                sched_deadline: deadline,
+                sched_period: period,
+                ..Default::default()
+            },
+
             // The SCHED_IDLE policy is mapped to the highest nice value of
             // `SchedPolicy::Fair` instead of `SchedPolicy::Idle`. Tasks of the
             // latter policy are invisible to the user API.
@@ -137,7 +149,25 @@ impl TryFrom<LinuxSchedAttr> for SchedPolicy {
             // latter policy are invisible to the user API.
             LinuxSchedPolicy::Idle => SchedPolicy::Fair(Nice::MAX),
 
-            LinuxSchedPolicy::Iso | LinuxSchedPolicy::Deadline | LinuxSchedPolicy::Ext => {
+            LinuxSchedPolicy::Deadline => {
+                if value.sched_runtime == 0
+                    || value.sched_deadline < value.sched_runtime
+                    || (value.sched_period != 0 && value.sched_period < value.sched_deadline)
+                {
+                    return_errno_with_message!(Errno::EINVAL, "invalid deadline reservation")
+                }
+                SchedPolicy::Deadline {
+                    runtime: value.sched_runtime,
+                    deadline: value.sched_deadline,
+                    period: if value.sched_period == 0 {
+                        value.sched_deadline
+                    } else {
+                        value.sched_period
+                    },
+                }
+            }
+
+            LinuxSchedPolicy::Iso | LinuxSchedPolicy::Ext => {
                 return_errno_with_message!(Errno::EINVAL, "invalid scheduling policy")
             }
         })
@@ -342,7 +372,7 @@ fn policy_update_requires_privilege(
                 .expect("a valid nice value always maps to a positive rlimit");
             new_nice < old_nice && nice_rlimit > limits.get_rlimit(RLIMIT_NICE).get_cur()
         }
-        SchedPolicy::Stop | SchedPolicy::Idle => true,
+        SchedPolicy::Deadline { .. } | SchedPolicy::Stop | SchedPolicy::Idle => true,
     }
 }
 
@@ -372,4 +402,41 @@ pub fn sys_sched_getattr(
     write_linux_sched_attr_to_user(attr, addr, user_size, ctx)?;
 
     Ok(SyscallReturn::Return(0))
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::LinuxSchedAttr;
+    use crate::sched::{LinuxSchedPolicy, SchedPolicy};
+
+    #[ktest]
+    fn deadline_attributes_round_trip() {
+        let linux = LinuxSchedAttr {
+            sched_policy: LinuxSchedPolicy::Deadline as u32,
+            sched_runtime: 10_000_000,
+            sched_deadline: 30_000_000,
+            sched_period: 30_000_000,
+            ..Default::default()
+        };
+        let policy = SchedPolicy::try_from(linux).unwrap();
+        let actual = LinuxSchedAttr::try_from(policy).unwrap();
+        assert_eq!(actual.sched_policy, linux.sched_policy);
+        assert_eq!(actual.sched_runtime, linux.sched_runtime);
+        assert_eq!(actual.sched_deadline, linux.sched_deadline);
+        assert_eq!(actual.sched_period, linux.sched_period);
+    }
+
+    #[ktest]
+    fn rejects_invalid_deadline_reservation() {
+        let linux = LinuxSchedAttr {
+            sched_policy: LinuxSchedPolicy::Deadline as u32,
+            sched_runtime: 20,
+            sched_deadline: 10,
+            sched_period: 30,
+            ..Default::default()
+        };
+        assert!(SchedPolicy::try_from(linux).is_err());
+    }
 }
