@@ -24,7 +24,7 @@ class LtpSuiteTests(unittest.TestCase):
         self.assertEqual(syscalls.expected_unavailable, 12)
 
         arch = suite_by_name(REPO, "arch-riscv64")
-        self.assertEqual(arch.expected_selected, 139)
+        self.assertEqual(arch.expected_selected, 154)
         self.assertEqual(arch.expected_unavailable, 0)
         self.assertEqual(
             arch.enabled,
@@ -55,7 +55,7 @@ class LtpSuiteTests(unittest.TestCase):
             output.getvalue().splitlines(),
             [
                 str(repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"),
-                "139",
+                "154",
                 "0",
             ],
         )
