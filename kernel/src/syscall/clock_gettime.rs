@@ -79,22 +79,30 @@ pub fn sys_clock_getres(
 ///
 /// The coarse clocks (`CLOCK_REALTIME_COARSE`/`CLOCK_MONOTONIC_COARSE`) are
 /// updated once per system timer tick (see `ostd::timer::TIMER_FREQ`, 1000 Hz),
-/// so their resolution is one tick (1 ms). Every other supported clock reads a
+/// so their resolution is one tick (1 ms). CPU clocks are also accounted in
+/// jiffies today, while the remaining supported clocks read a
 /// nanosecond-granular clocksource.
 fn read_clock_resolution(clockid: clockid_t) -> Result<Duration> {
     if clockid >= 0 {
         let clock_id = ClockId::try_from(clockid)?;
         let resolution = match clock_id {
-            ClockId::CLOCK_REALTIME_COARSE | ClockId::CLOCK_MONOTONIC_COARSE => {
-                Duration::from_millis(1)
-            }
+            ClockId::CLOCK_REALTIME_COARSE
+            | ClockId::CLOCK_MONOTONIC_COARSE
+            | ClockId::CLOCK_PROCESS_CPUTIME_ID
+            | ClockId::CLOCK_THREAD_CPUTIME_ID => Duration::from_millis(1),
             _ => Duration::from_nanos(1),
         };
         Ok(resolution)
     } else {
-        // Dynamic (process/thread/fd) clocks are nanosecond-granular.
-        let _ = DynamicClockIdInfo::try_from(clockid)?;
-        Ok(Duration::from_nanos(1))
+        match DynamicClockIdInfo::try_from(clockid)? {
+            DynamicClockIdInfo::Pid(_, _) | DynamicClockIdInfo::Tid(_, _) => {
+                Ok(Duration::from_millis(1))
+            }
+            DynamicClockIdInfo::Fd(_) => return_errno_with_message!(
+                Errno::EINVAL,
+                "the file descriptor does not provide a dynamic clock"
+            ),
+        }
     }
 }
 
@@ -127,9 +135,10 @@ pub enum ClockId {
 /// - A clock ID is invalid if bits 2, 1, and 0 are all set.
 ///
 /// Ref: <https://github.com/torvalds/linux/blob/master/include/linux/posix-timers_types.h>.
+#[derive(Debug, PartialEq)]
 pub(super) enum DynamicClockIdInfo {
-    Pid(u32, DynamicClockType),
-    Tid(u32, DynamicClockType),
+    Pid(u32, DynamicCpuClockType),
+    Tid(u32, DynamicCpuClockType),
     #[cfg_attr(all(target_arch = "x86_64", not(ktest)), expect(dead_code))]
     Fd(u32),
 }
@@ -147,11 +156,12 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
         }
 
         let id = !(value >> 3);
-        let cpu_clock_type = DynamicClockType::try_from(CPU_CLOCK_TYPE_MASK & value)?;
+        let raw_clock_type = CPU_CLOCK_TYPE_MASK & value;
 
-        if let DynamicClockType::FD = cpu_clock_type {
+        if raw_clock_type == 3 {
             return Ok(DynamicClockIdInfo::Fd(id as u32));
         }
+        let cpu_clock_type = DynamicCpuClockType::try_from(raw_clock_type)?;
 
         if ID_TYPE_MASK & value > 0 {
             Ok(DynamicClockIdInfo::Tid(id as u32, cpu_clock_type))
@@ -163,11 +173,10 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
-pub(super) enum DynamicClockType {
+pub(super) enum DynamicCpuClockType {
     Profiling = 0,
     Virtual = 1,
     Scheduling = 2,
-    FD = 3,
 }
 
 /// Reads the time of a clock specified by the input clock ID.
@@ -206,10 +215,16 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
                     .get_process(pid)
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 match clock_type {
-                    DynamicClockType::Profiling => Ok(process.prof_clock().read_time()),
-                    DynamicClockType::Virtual => Ok(process.prof_clock().user_clock().read_time()),
-                    // TODO: support scheduling clock and fd clock.
-                    _ => unimplemented!(),
+                    // Asterinas accounts execution time in one combined
+                    // user-plus-kernel clock.  Until sub-tick scheduler
+                    // accounting is available, this is also the best source
+                    // for Linux's CPUCLOCK_SCHED view.
+                    DynamicCpuClockType::Profiling | DynamicCpuClockType::Scheduling => {
+                        Ok(process.prof_clock().read_time())
+                    }
+                    DynamicCpuClockType::Virtual => {
+                        Ok(process.prof_clock().user_clock().read_time())
+                    }
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
@@ -218,14 +233,64 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 let posix_thread = thread.as_posix_thread().unwrap();
                 match clock_type {
-                    DynamicClockType::Profiling => Ok(posix_thread.prof_clock().read_time()),
-                    DynamicClockType::Virtual => {
+                    DynamicCpuClockType::Profiling | DynamicCpuClockType::Scheduling => {
+                        Ok(posix_thread.prof_clock().read_time())
+                    }
+                    DynamicCpuClockType::Virtual => {
                         Ok(posix_thread.prof_clock().user_clock().read_time())
                     }
-                    _ => unimplemented!(),
                 }
             }
-            DynamicClockIdInfo::Fd(_) => unimplemented!(),
+            DynamicClockIdInfo::Fd(_) => return_errno_with_message!(
+                Errno::EINVAL,
+                "the file descriptor does not provide a dynamic clock"
+            ),
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::{DynamicClockIdInfo, DynamicCpuClockType, read_clock_resolution};
+    use crate::prelude::*;
+
+    fn cpu_clock_id(id: u32, kind: u32, per_thread: bool) -> i32 {
+        ((!id << 3) | kind | u32::from(per_thread) * 4) as i32
+    }
+
+    #[ktest]
+    fn decodes_dynamic_cpu_and_fd_clocks() {
+        assert_eq!(
+            DynamicClockIdInfo::try_from(cpu_clock_id(42, 2, false)).unwrap(),
+            DynamicClockIdInfo::Pid(42, DynamicCpuClockType::Scheduling)
+        );
+        assert_eq!(
+            DynamicClockIdInfo::try_from(cpu_clock_id(17, 1, true)).unwrap(),
+            DynamicClockIdInfo::Tid(17, DynamicCpuClockType::Virtual)
+        );
+        assert_eq!(
+            DynamicClockIdInfo::try_from(cpu_clock_id(9, 3, false)).unwrap(),
+            DynamicClockIdInfo::Fd(9)
+        );
+    }
+
+    #[ktest]
+    fn rejects_reserved_dynamic_clock_encoding() {
+        let error = DynamicClockIdInfo::try_from(-1).unwrap_err();
+        assert_eq!(error.error(), Errno::EINVAL);
+    }
+
+    #[ktest]
+    fn reports_tick_resolution_for_cpu_clocks() {
+        assert_eq!(
+            read_clock_resolution(super::ClockId::CLOCK_PROCESS_CPUTIME_ID as i32).unwrap(),
+            core::time::Duration::from_millis(1)
+        );
+        assert_eq!(
+            read_clock_resolution(cpu_clock_id(42, 2, false)).unwrap(),
+            core::time::Duration::from_millis(1)
+        );
     }
 }
