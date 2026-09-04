@@ -212,7 +212,7 @@ fn calculate_priority(
 fn metadata() -> json::JsonValue {
     let mut cmd = Command::new(env!("CARGO"));
     cmd.arg("metadata");
-    cmd.arg("--format-version").arg("1");
+    cmd.args(["--format-version", "1", "--no-deps", "--locked"]);
     let output = cmd.output().unwrap();
 
     if !output.status.success() {

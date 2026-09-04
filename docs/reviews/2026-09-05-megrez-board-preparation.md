@@ -14,6 +14,7 @@ root images; the profile/manifest still determines which size is valid.
 
 | artifact | path | SHA-256 |
 | --- | --- | --- |
+| board Sv48 kernel (current source) | `target/firefox-artifacts/asterinas-firefox-current-board-sv48.Image` | `c8376335996446a1c56ed9a588a3a2faa99b08c7f4d9c5ce49c63d12bacb8d1d` |
 | board Sv48 kernel (historical) | `target/firefox-artifacts/asterinas-firefox-7fc8fd4-board-sv48.Image` | `4507a5fc4d8c3fb67a6077a9b0e29ae6b4c9cdf235c76eecd538dd59ad584005` |
 | Stage1 initramfs | `target/debian-riscv/stage1/initramfs.cpio` | `d59a60bb57660403a97d4ecc65b5fa4ad1728cf975c1a48fbfa8328367d01db` |
 | Megrez DTB | `target/dev-overlays/browser-web/physical-stage1-argv/artifacts/eic7700-milkv-megrez.dtb` | `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17` |
@@ -27,20 +28,18 @@ root images; the profile/manifest still determines which size is valid.
 
 ## Blocking conditions before a physical gate
 
-1. The available board kernel was built at commit `7fc8fd4`, while the
-   current source is `83c122c094c81a075ab67d58b46fa82380c4f8bd`. It is kept as
-   historical evidence only and must not be presented as a current-source
-   board result.
+1. The historical board kernel was built at commit `7fc8fd4`; it remains
+   evidence only and is not used for the next run. A fresh Sv48 SMP=4 kernel
+   has now been built from the current source commit and copied to the
+   `current-board-sv48` path above.
 2. The dependency cache was repaired from the local `with-cargo-cache` and
    `nixos-build` images (including the smoltcp and rust-ctor Git refs), so the
-   build reached `aster-kernel`. It then exposed a merge regression: the
+   build reached `aster-kernel`. It exposed a merge regression: the
    source still imported the deleted `START_TIME_AS_DURATION`. That regression
    is now fixed by restoring the separate coarse monotonic snapshot logic.
-3. The same build currently stops in `component::parse_metadata!()` with
-   `cannot get metadata`; this is an OSDK nested-`cargo metadata` issue and is
-   independent of the Megrez hardware path. It must be isolated before using
-   the resulting kernel on the board.
-4. QEMU desktop evidence uses a separate Sv39 kernel. The existing schema-2
+3. The OSDK nested metadata issue is fixed by invoking `cargo metadata` with
+   `--no-deps --locked`; the current Sv48 build now completes. QEMU desktop
+   evidence still uses a separate Sv39 kernel. The existing schema-2
    browser plan does not represent separate QEMU-Sv39 and Megrez-Sv48 kernel
    identities, so it cannot issue a valid physical permit until a fresh Sv48
    kernel is built (or the dual-path shell contract is extended for the
@@ -48,8 +47,7 @@ root images; the profile/manifest still determines which size is valid.
 
 ## Next safe step
 
-Restore the missing Rust dependency cache (or provide a controlled mirror),
-build a fresh Sv48 SMP=4 kernel into a board-qualified path, and then run the
-existing QEMU desktop/recovery gates against the exact artifact set. Only a
-passing, current-source evidence pair may unlock the serial gate. The board
-session must remain fail-closed until then.
+Run the existing QEMU desktop/recovery gates against the exact current
+artifact set, then add the separate Sv39/Sv48 identities to the board permit
+workflow. Only a passing, current-source evidence pair may unlock the serial
+gate. The board session remains fail-closed until then.
