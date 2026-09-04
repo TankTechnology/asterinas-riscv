@@ -24,6 +24,7 @@ use crate::{
     prelude::*,
     process::{NsProxy, PidNamespace, UserNamespace, posix_thread::AsPosixThread},
     thread::Thread,
+    time::namespace::TimeNamespace,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/ns` (and also `/proc/[pid]/ns`).
@@ -56,6 +57,10 @@ enum NsProxyEntry {
     Net,
     /// The PID namespace for children.
     PidForChildren,
+    /// The current time namespace.
+    Time,
+    /// The time namespace for child processes.
+    TimeForChildren,
     /// The UTS namespace.
     Uts,
 }
@@ -68,6 +73,8 @@ impl NsProxyEntry {
         Self::Mnt,
         Self::Net,
         Self::PidForChildren,
+        Self::Time,
+        Self::TimeForChildren,
         Self::Uts,
     ];
 
@@ -79,6 +86,8 @@ impl NsProxyEntry {
             Self::Mnt => "mnt",
             Self::Net => "net",
             Self::PidForChildren => "pid_for_children",
+            Self::Time => "time",
+            Self::TimeForChildren => "time_for_children",
             Self::Uts => "uts",
         }
     }
@@ -91,6 +100,8 @@ impl NsProxyEntry {
             "mnt" => Some(Self::Mnt),
             "net" => Some(Self::Net),
             "pid_for_children" => Some(Self::PidForChildren),
+            "time" => Some(Self::Time),
+            "time_for_children" => Some(Self::TimeForChildren),
             "uts" => Some(Self::Uts),
             _ => None,
         }
@@ -129,6 +140,16 @@ impl NsProxyEntry {
                 ns_proxy.pid_ns_for_children().get_path(),
                 parent,
             ),
+            Self::Time => NsSymOps::<TimeNamespace>::new_inode(
+                dir.clone(),
+                ns_proxy.time_ns().get_path(),
+                parent,
+            ),
+            Self::TimeForChildren => NsSymOps::<TimeNamespace>::new_inode(
+                dir.clone(),
+                ns_proxy.time_ns_for_children().get_path(),
+                parent,
+            ),
             Self::Uts => NsSymOps::<UtsNamespace>::new_inode(
                 dir.clone(),
                 ns_proxy.uts_ns().get_path(),
@@ -152,6 +173,9 @@ fn cached_ns_path(inode: &dyn Inode) -> Option<&Path> {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<PidNamespace>>() {
+        return Some(&sym.inner().ns_path);
+    }
+    if let Some(sym) = inode.downcast_ref::<NsSymlink<TimeNamespace>>() {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<MountNamespace>>() {
@@ -289,6 +313,22 @@ impl ProcDirOps for NsDirOps {
                 return false;
             };
             return cached_path == &process.pid_ns().get_path();
+        }
+
+        if child.downcast_ref::<NsSymlink<TimeNamespace>>().is_some() {
+            let Some(thread) = self.dir.thread() else {
+                return false;
+            };
+            let ns_proxy = thread.as_posix_thread().unwrap().ns_proxy().lock();
+            let Some(ns_proxy) = ns_proxy.as_ref() else {
+                return false;
+            };
+            let current = if name == "time_for_children" {
+                ns_proxy.time_ns_for_children()
+            } else {
+                ns_proxy.time_ns()
+            };
+            return cached_path == &current.get_path();
         }
 
         let Some(thread) = self.dir.thread() else {

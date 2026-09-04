@@ -89,6 +89,7 @@ impl ContextUnshareAdminApi for Context<'_> {
             self.process.as_ref(),
             self.posix_thread,
             flags,
+            true,
         )?;
 
         if flags.contains(CloneFlags::CLONE_NEWNS) {
