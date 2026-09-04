@@ -9,7 +9,7 @@ use crate::{
     vm::{
         page_cache::VmoOptions,
         perms::VmPerms,
-        vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, VmarMapOffset},
+        vmar::{PageFaultInfo, VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, VmarMapOffset},
     },
 };
 
@@ -155,7 +155,35 @@ fn do_sys_mmap(
 
     let map_addr = vm_map_options.build()?;
 
+    if option.flags().contains(MMapFlags::MAP_POPULATE)
+        && !option.flags().contains(MMapFlags::MAP_NONBLOCK)
+        && let Some(required_perms) = population_perms(vm_perms)
+    {
+        populate_mapping(vmar, map_addr, len, required_perms);
+    }
+
     Ok(map_addr)
+}
+
+fn populate_mapping(vmar: &crate::vm::vmar::Vmar, addr: Vaddr, len: usize, perms: VmPerms) {
+    // Like Linux's `mm_populate`, best-effort prefaulting must not turn a valid
+    // mapping into an mmap failure. A later access will report any backing-store
+    // error through the normal page-fault path.
+    for page_addr in (addr..addr + len).step_by(PAGE_SIZE) {
+        if let Err(err) = vmar.handle_page_fault(&PageFaultInfo::new(page_addr, perms)) {
+            debug!(
+                "failed to populate mmap page at 0x{:x}: {:?}",
+                page_addr, err
+            );
+            break;
+        }
+    }
+}
+
+fn population_perms(vm_perms: VmPerms) -> Option<VmPerms> {
+    [VmPerms::READ, VmPerms::WRITE, VmPerms::EXEC]
+        .into_iter()
+        .find(|perms| vm_perms.contains(*perms))
 }
 
 fn check_len(len: usize) -> Result<usize> {
@@ -330,5 +358,24 @@ impl MMapOptions {
 
     pub(self) fn flags(&self) -> MMapFlags {
         self.flags
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::population_perms;
+    use crate::vm::perms::VmPerms;
+
+    #[ktest]
+    fn population_uses_an_available_mapping_permission() {
+        assert_eq!(population_perms(VmPerms::empty()), None);
+        assert_eq!(population_perms(VmPerms::EXEC), Some(VmPerms::EXEC));
+        assert_eq!(population_perms(VmPerms::WRITE), Some(VmPerms::WRITE));
+        assert_eq!(
+            population_perms(VmPerms::READ | VmPerms::WRITE),
+            Some(VmPerms::READ)
+        );
     }
 }
