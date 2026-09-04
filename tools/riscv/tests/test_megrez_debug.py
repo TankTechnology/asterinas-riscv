@@ -36,6 +36,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.megrez_debug_contract import (
+    BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     MAX_ARTIFACT_BYTES,
@@ -339,6 +340,15 @@ class MegrezDebugArtifactTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(DebugContractError):
                 invalid.validate()
+
+    def test_browser_root_image_accepts_the_frozen_two_gibibyte_profile(self) -> None:
+        root_image = self.directory / "browser-root.ext2"
+        with root_image.open("wb") as stream:
+            stream.truncate(BROWSER_ROOT_IMAGE_BYTES)
+
+        identity = ArtifactIdentity.from_path("root_image", root_image, 0)
+
+        self.assertEqual(identity.size, BROWSER_ROOT_IMAGE_BYTES)
 
 
 class MegrezDebugPlanTests(unittest.TestCase):
@@ -763,6 +773,47 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
         load_checksums.assert_called_once_with(self.paths["package_checksums"])
+
+    def test_create_plan_accepts_current_browser_web_signed_sources(self) -> None:
+        base_hash = hashlib.sha256(self.paths["in_release"].read_bytes()).hexdigest()
+        manifest = SimpleNamespace(
+            profile="browser-web",
+            root_image_sha256=self.root_identity.sha256,
+            packages_lock_sha256=hashlib.sha256(
+                self.paths["packages_lock"].read_bytes()
+            ).hexdigest(),
+            signed_metadata_sha256="",
+            signed_sources=(
+                (
+                    "base",
+                    "https://mirrors.example.invalid/debian",
+                    "trixie",
+                    "https://mirrors.example.invalid/debian/dists/trixie/InRelease",
+                    base_hash,
+                ),
+            ),
+            downloaded_packages=self.package_rows,
+        )
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=self.package_rows,
+                create=True,
+            ),
+        ):
+            plan = debug_module._create_plan(self._arguments())
+
+        self.assertEqual(plan.profile, "debian-browser")
 
     def test_create_plan_defaults_browser_recovery_window_to_six_hundred_seconds(
         self,

@@ -208,7 +208,7 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
             package_rows = load_package_checksums(required["package_checksums"])
         except (ContractError, OSError) as error:
             raise WorkflowError(f"plan-rootfs-invalid: {error}") from error
-        if manifest.profile != "desktop-m5-network":
+        if manifest.profile not in ("desktop-m5-network", "browser-web"):
             raise WorkflowError("plan-rootfs-profile-mismatch")
         if package_rows != manifest.downloaded_packages:
             raise WorkflowError("plan-package-checksums-mismatch")
@@ -217,10 +217,25 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
             for name in DEBIAN_BROWSER_ARTIFACT_ORDER[len(boot_artifacts) :]
         )
         evidence_by_name = {identity.name: identity for identity in evidence_artifacts}
+        signed_metadata_sha256 = getattr(manifest, "signed_metadata_sha256", "")
+        if not signed_metadata_sha256:
+            signed_sources = getattr(manifest, "signed_sources", ())
+            signed_metadata_sha256 = next(
+                (
+                    source[4]
+                    for source in signed_sources
+                    if isinstance(source, tuple)
+                    and len(source) == 5
+                    and source[0] == "base"
+                ),
+                "",
+            )
+        if not signed_metadata_sha256:
+            raise WorkflowError("plan-rootfs-missing-base-inrelease")
         expected_hashes = {
             "root_image": manifest.root_image_sha256,
             "packages_lock": manifest.packages_lock_sha256,
-            "in_release": manifest.signed_metadata_sha256,
+            "in_release": signed_metadata_sha256,
         }
         if any(
             evidence_by_name[name].sha256 != expected

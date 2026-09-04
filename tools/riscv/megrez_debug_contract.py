@@ -30,6 +30,10 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
 ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
+# The browser-web profile reserves 2 GiB for Firefox ESR and its desktop
+# runtime. Keep the legacy 1 GiB size for minimal-root fixtures while allowing
+# the browser profile's exact, manifest-validated image size.
+BROWSER_ROOT_IMAGE_BYTES = 2 * 1024 * 1024 * 1024
 DEBIAN_BROWSER_MIN_REBOOT_AFTER = 600
 ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
@@ -111,10 +115,15 @@ class DebugContractError(ValueError):
 
 def _artifact_size_bounds(name: str) -> tuple[int, int]:
     if name == "root_image":
-        return ROOT_IMAGE_BYTES, ROOT_IMAGE_BYTES
+        return ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES
     if name in METADATA_ARTIFACT_NAMES:
         return 1, METADATA_ARTIFACT_BYTES
     return 1, MAX_ARTIFACT_BYTES
+
+
+def _validate_root_image_size(size: int) -> None:
+    if size not in (ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES):
+        raise DebugContractError("root image must be exactly 1 GiB or 2 GiB")
 
 
 def _validate_load_address(name: str, load_address: object) -> None:
@@ -148,13 +157,19 @@ class ArtifactIdentity:
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
             raise DebugContractError("artifact must be a regular non-symlink file")
         minimum_size, maximum_size = _artifact_size_bounds(name)
+        if name == "root_image":
+            _validate_root_image_size(before.st_size)
         if before.st_size < minimum_size:
-            if minimum_size == maximum_size:
-                raise DebugContractError("root image must be exactly 1 GiB")
+            if name == "root_image":
+                raise DebugContractError(
+                    "root image must be exactly 1 GiB or 2 GiB"
+                )
             raise DebugContractError("artifact is empty")
         if before.st_size > maximum_size:
-            if minimum_size == maximum_size:
-                raise DebugContractError("root image must be exactly 1 GiB")
+            if name == "root_image":
+                raise DebugContractError(
+                    "root image must be exactly 1 GiB or 2 GiB"
+                )
             if maximum_size == METADATA_ARTIFACT_BYTES:
                 raise DebugContractError("metadata artifact exceeds the 8 MiB limit")
             raise DebugContractError("artifact exceeds the 64 MiB limit")
@@ -197,6 +212,8 @@ class ArtifactIdentity:
             raise DebugContractError("artifact path must be absolute")
         _validate_load_address(self.name, self.load_address)
         minimum_size, maximum_size = _artifact_size_bounds(self.name)
+        if self.name == "root_image":
+            _validate_root_image_size(self.size)
         if (
             isinstance(self.size, bool)
             or not isinstance(self.size, int)
