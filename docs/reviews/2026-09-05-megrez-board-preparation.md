@@ -14,7 +14,7 @@ root images; the profile/manifest still determines which size is valid.
 
 | artifact | path | SHA-256 |
 | --- | --- | --- |
-| board Sv48 kernel (current source) | `target/firefox-artifacts/asterinas-firefox-current-board-sv48.Image` | `c8376335996446a1c56ed9a588a3a2faa99b08c7f4d9c5ce49c63d12bacb8d1d` |
+| board Sv48 kernel (current source) | `target/firefox-artifacts/asterinas-firefox-current-board-sv48.Image` | `531f74ec0eb26f5854146116edde69d58b400418f61dfdbe68c924811609673f` |
 | board Sv48 kernel (historical) | `target/firefox-artifacts/asterinas-firefox-7fc8fd4-board-sv48.Image` | `4507a5fc4d8c3fb67a6077a9b0e29ae6b4c9cdf235c76eecd538dd59ad584005` |
 | Stage1 initramfs | `target/debian-riscv/stage1/initramfs.cpio` | `d59a60bb57660403a97d4ecc65b5fa4ad1728cf975c1a48fbfa8328367d01db` |
 | Megrez DTB | `target/dev-overlays/browser-web/physical-stage1-argv/artifacts/eic7700-milkv-megrez.dtb` | `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17` |
@@ -35,19 +35,29 @@ root images; the profile/manifest still determines which size is valid.
 2. The dependency cache was repaired from the local `with-cargo-cache` and
    `nixos-build` images (including the smoltcp and rust-ctor Git refs), so the
    build reached `aster-kernel`. It exposed a merge regression: the
-   source still imported the deleted `START_TIME_AS_DURATION`. That regression
-   is now fixed by restoring the separate coarse monotonic snapshot logic.
+   source still imported the deleted `START_TIME_AS_DURATION`. That source
+   regression is fixed. A second runtime regression was isolated in the
+   periodic coarse-clock callback: publishing the coarse snapshot into the
+   vDSO VMO from the RISC-V softirq can block first-userspace scheduling. The
+   callback now updates only the syscall-side snapshot; vDSO is still refreshed
+   during first-kthread initialization and explicit wall-clock changes.
 3. The OSDK nested metadata issue is fixed by invoking `cargo metadata` with
    `--no-deps --locked`; the current Sv48 build now completes. QEMU desktop
-   evidence still uses a separate Sv39 kernel. The existing schema-2
-   browser plan does not represent separate QEMU-Sv39 and Megrez-Sv48 kernel
-   identities, so it cannot issue a valid physical permit until a fresh Sv48
-   kernel is built (or the dual-path shell contract is extended for the
-   browser profile).
+   evidence still uses a separate Sv39 kernel. The fresh Sv48 candidate above
+   passed `megrez-sv48-svade-fast` with `BOOT_COMPLETED` in
+   `target/qemu-uboot/megrez-firefox-board-preflight-8e09fc796/qemu`.
+   The existing schema-2 browser plan still does not represent separate
+   QEMU-Sv39 and Megrez-Sv48 kernel identities, so it cannot issue a physical
+   permit until the dual-path shell contract is extended for the browser
+   profile.
 
 ## Next safe step
 
-Run the existing QEMU desktop/recovery gates against the exact current
-artifact set, then add the separate Sv39/Sv48 identities to the board permit
-workflow. Only a passing, current-source evidence pair may unlock the serial
-gate. The board session remains fail-closed until then.
+The current Sv39 QEMU network gate passes with the coarse-clock fix: 20/20
+owned-fixture requests, all ten protocol layers, and `multi-user.target` plus
+Xorg startup. The fresh Sv48 candidate also passes the four-hart Megrez
+contract simulation. The remaining preparation work is to extend the board
+permit metadata with the separate Sv39/Sv48 identities and to bind the exact
+Sv48 image, Stage1, and board DTB hashes into one run manifest. Only that
+passing, current-source evidence pair may unlock the serial gate. The board
+session remains fail-closed until then.

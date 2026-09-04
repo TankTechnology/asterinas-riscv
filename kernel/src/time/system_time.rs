@@ -76,6 +76,7 @@ impl SystemTime {
         // Keep syscall and vDSO coarse clocks on the same post-adjustment
         // snapshot instead of waiting for the next timer tick.
         crate::time::clocks::update_coarse_clock();
+        crate::time::clocks::refresh_vdso_coarse_clock();
 
         // Refresh the vDSO data page immediately so that vDSO-accelerated
         // `clock_gettime(CLOCK_REALTIME)` sees the new wall clock at once.

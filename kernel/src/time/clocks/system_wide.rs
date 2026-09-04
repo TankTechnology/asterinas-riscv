@@ -309,8 +309,21 @@ pub(crate) fn update_coarse_clock() {
     };
     *monotonic_current.disable_irq().lock() = monotonic_time;
 
-    // Serialize publishing both representations. Otherwise an older callback
-    // could update vDSO after a newer callback has updated the syscall cache.
+    // The vDSO coarse snapshot is initialized by `Vdso::new`. Updating the
+    // VMO from this periodic softirq callback is unsafe on RISC-V: the VMO
+    // write path can contend with page-table/allocator locks and prevent the
+    // first userspace task from being scheduled. Keep the syscall-side
+    // snapshot live here; process-context callers use
+    // `refresh_vdso_coarse_clock` when they need to publish it.
+}
+
+/// Publish the current coarse syscall snapshots to vDSO from process context.
+///
+/// This must not be called from the periodic timer softirq; the VMO write path
+/// may take locks that are not safe to contend with in interrupt context.
+pub(crate) fn refresh_vdso_coarse_clock() {
+    let real_time = RealTimeCoarseClock::get().read_time();
+    let monotonic_time = MonotonicCoarseClock::get().read_time();
     crate::vdso::on_coarse_clock_update(real_time, monotonic_time);
 }
 
