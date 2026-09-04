@@ -2,9 +2,10 @@
 
 use core::ops::Range;
 
-use ostd::sync::RwMutexReadGuard;
+use ostd::{sync::RwMutexReadGuard, task::disable_preempt};
 
-use super::{VmMapping, Vmar, VmarInner};
+use super::{VMAR_CAP_ADDR, VmMapping, Vmar, VmarInner};
+use crate::prelude::*;
 
 impl Vmar {
     /// Finds all the mapped regions that intersect with the specified range.
@@ -13,6 +14,26 @@ impl Vmar {
             vmar: self.inner.read(),
             range,
         }
+    }
+
+    /// Returns whether a page is currently present in this address space's page table.
+    ///
+    /// This method only observes the page table. It does not trigger a page fault for a
+    /// lazily allocated mapping.
+    pub fn is_page_present(&self, page_addr: Vaddr) -> Result<bool> {
+        if !page_addr.is_multiple_of(PAGE_SIZE) || page_addr >= VMAR_CAP_ADDR {
+            return_errno_with_message!(Errno::EINVAL, "the page address is outside userspace");
+        }
+
+        let preempt_guard = disable_preempt();
+        let page_end = page_addr
+            .checked_add(PAGE_SIZE)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the page address overflows"))?;
+        let mut cursor = self
+            .vm_space()
+            .cursor(&preempt_guard, &(page_addr..page_end))?;
+
+        Ok(cursor.query()?.1.is_some())
     }
 }
 
