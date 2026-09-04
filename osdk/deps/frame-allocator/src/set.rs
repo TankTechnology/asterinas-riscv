@@ -154,6 +154,28 @@ impl<const MAX_ORDER: BuddyOrder> BuddySet<MAX_ORDER> {
         head_frame.reset_as_unused();
         Some(paddr)
     }
+
+    /// Moves every free chunk into a buddy set with at least as many orders.
+    ///
+    /// Inserting the chunks again is intentional: chunks that were separated
+    /// across CPU-local sets can then coalesce in the destination set.
+    pub(crate) fn drain_into<const DEST_MAX_ORDER: BuddyOrder>(
+        &mut self,
+        dest: &mut BuddySet<DEST_MAX_ORDER>,
+    ) {
+        assert!(MAX_ORDER <= DEST_MAX_ORDER);
+
+        for (order, list) in self.lists.iter_mut().enumerate() {
+            while let Some(head) = list.pop_front() {
+                let addr = head.paddr();
+                head.reset_as_unused();
+                self.total_size -= size_of_order(order);
+                dest.insert_chunk(addr, order);
+            }
+        }
+
+        debug_assert_eq!(self.total_size, 0);
+    }
 }
 
 #[cfg(ktest)]
@@ -245,5 +267,34 @@ mod test {
         assert_eq!(set.total_size(), region_size);
         assert_eq!(set.alloc_chunk(region_order), Some(region_start));
         assert_eq!(set.total_size(), 0);
+    }
+
+    #[ktest]
+    fn draining_sets_coalesces_chunks_in_destination() {
+        let region_order = 4;
+        let region_size = size_of_order(region_order);
+        let region = MockMemoryRegion::alloc(region_size);
+        let region_start = region.paddr();
+
+        let mut source = BuddySet::<5>::new_empty();
+        source.insert_chunk(region_start, region_order);
+        let left = source.alloc_chunk(region_order - 1).unwrap();
+        let right = source.alloc_chunk(region_order - 1).unwrap();
+
+        let mut local1 = BuddySet::<5>::new_empty();
+        let mut local2 = BuddySet::<5>::new_empty();
+        let mut global = BuddySet::<6>::new_empty();
+        local1.insert_chunk(left, region_order - 1);
+        local2.insert_chunk(right, region_order - 1);
+
+        assert_eq!(global.alloc_chunk(region_order), None);
+        local1.drain_into(&mut global);
+        assert_eq!(global.alloc_chunk(region_order), None);
+        local2.drain_into(&mut global);
+
+        assert_eq!(local1.total_size(), 0);
+        assert_eq!(local2.total_size(), 0);
+        assert_eq!(global.alloc_chunk(region_order), Some(region_start));
+        assert_eq!(global.total_size(), 0);
     }
 }
