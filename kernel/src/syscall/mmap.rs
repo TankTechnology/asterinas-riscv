@@ -116,6 +116,10 @@ fn do_sys_mmap(
             options = options.lock(locked_memory_limit(ctx)?);
         }
 
+        if option.flags().contains(MMapFlags::MAP_GROWSDOWN) {
+            options = options.grows_down();
+        }
+
         if option.flags().contains(MMapFlags::MAP_ANONYMOUS) {
             // Linux rejects MAP_SHARED_VALIDATE for anonymous mappings.
             if option.typ() == MMapType::SharedValidate {

@@ -21,8 +21,17 @@ pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception:
     if let Ok(page_fault_info) = PageFaultInfo::try_from(&exception) {
         let user_space = ctx.user_space();
         let vmar = user_space.vmar();
-        if handle_page_fault_from_vmar(vmar, &page_fault_info).is_ok() {
-            return;
+        match handle_page_fault_from_vmar(vmar, &page_fault_info) {
+            Ok(()) => return,
+            Err(err) if err.error() == Errno::ENXIO => {
+                use crate::process::signal::constants::{BUS_ADRERR, SIGBUS};
+                generate_signal(
+                    FaultSignal::new(SIGBUS, BUS_ADRERR, Some(page_fault_info.address() as u64)),
+                    ctx,
+                );
+                return;
+            }
+            Err(_) => {}
         }
     }
 
@@ -32,13 +41,13 @@ pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception:
 }
 
 /// Handles the page fault occurs in the VMAR.
-fn handle_page_fault_from_vmar(vmar: &Vmar, page_fault_info: &PageFaultInfo) -> Result<(), ()> {
+fn handle_page_fault_from_vmar(vmar: &Vmar, page_fault_info: &PageFaultInfo) -> Result<()> {
     if let Err(e) = vmar.handle_page_fault(page_fault_info) {
         warn!(
             "page fault handler failed: info: {:#x?}, err: {:?}",
             page_fault_info, e
         );
-        return Err(());
+        return Err(e);
     }
     Ok(())
 }
@@ -74,6 +83,10 @@ fn generate_fault_signal(exception: CpuException, ctx: &Context, user_ctx: &User
     let Some(signal) = exception.to_fault_signal(user_ctx) else {
         panic!("`{:?}` cannot be handled via signals", exception);
     };
+    generate_signal(signal, ctx);
+}
+
+fn generate_signal(signal: FaultSignal, ctx: &Context) {
     let sig_num = signal.num();
 
     let blocked = ctx.posix_thread.sig_mask().contains(sig_num);
@@ -107,5 +120,5 @@ pub(super) fn page_fault_handler(info: &CpuException) -> Result<(), ()> {
     }
 
     let user_space = CurrentUserSpace::new(thread_local);
-    handle_page_fault_from_vmar(user_space.vmar(), &info.try_into().unwrap())
+    handle_page_fault_from_vmar(user_space.vmar(), &info.try_into().unwrap()).map_err(|_| ())
 }
