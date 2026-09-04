@@ -338,6 +338,7 @@ mod lseek;
 mod madvise;
 mod membarrier;
 mod memfd_create;
+mod mincore;
 mod mkdir;
 mod mknod;
 mod mlock;
