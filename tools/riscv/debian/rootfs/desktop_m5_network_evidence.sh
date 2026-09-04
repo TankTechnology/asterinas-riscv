@@ -127,6 +127,7 @@ web_network_evidence() {
     local http_file
     local http_headers
     local https_status
+    local https_attempt
     local limit
     local link_output
     local local_address
@@ -284,16 +285,24 @@ web_network_evidence() {
     web_emit_layer dns
     web_emit_layer http
 
-    limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout
-    if curl_result="$(timeout "$limit" curl --fail --ipv4 --location --silent \
-        --show-error --max-time "$limit" "${external_curl[@]}" \
-        --output /dev/null --write-out $'%{http_code}\t%{local_ip}\t%{time_connect}\t%{time_appconnect}' \
-        "$BAIDU_URL")"; then
-        :
-    else
-        curl_status=$?
-        web_fail https "$(web_curl_reason "$curl_status")"
-    fi
+    curl_status=1
+    for https_attempt in 1 2 3; do
+        limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout
+        if curl_result="$(timeout "$limit" curl --fail --ipv4 --location --silent \
+            --show-error --max-time "$limit" "${external_curl[@]}" \
+            --output /dev/null --write-out $'%{http_code}\t%{local_ip}\t%{time_connect}\t%{time_appconnect}' \
+            "$BAIDU_URL")"; then
+            curl_status=0
+            break
+        else
+            curl_status=$?
+        fi
+        if ((https_attempt != 3)); then
+            emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE layer=https attempt=$https_attempt reason=$(web_curl_reason "$curl_status")"
+            sleep 1
+        fi
+    done
+    ((curl_status == 0)) || web_fail https "$(web_curl_reason "$curl_status")"
     IFS=$'\t' read -r https_status local_address _ _ <<<"$curl_result"
     [[ "$https_status" =~ ^(2|3)[0-9][0-9]$ ]] || web_fail https http-status
     [[ "$local_address" == "${WEB_NETWORK_ADDRESS%/*}" ]] ||

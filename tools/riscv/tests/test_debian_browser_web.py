@@ -733,7 +733,7 @@ class BrowserWebContractTests(unittest.TestCase):
             builder,
         )
 
-    def test_browser_evidence_orders_after_network_and_desktop_without_hard_link(self) -> None:
+    def test_browser_startup_orders_after_network_clock_sync(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
         self.assertIn(
             "Wants=network-online.target asterinas-desktop-m5.service", service
@@ -746,7 +746,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("Environment=ASTERINAS_WEB_NETWORK_MODE=", service)
         self.assertNotIn("Environment=ASTERINAS_DESKTOP_PROXY", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
-        self.assertNotIn("Requires=asterinas-desktop-m5-network.service", browser_service)
+        self.assertIn("Requires=asterinas-desktop-m5-network.service", browser_service)
+        self.assertIn("After=asterinas-desktop-m5-network.service", browser_service)
 
     def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
         profile = get_profile("browser-web")

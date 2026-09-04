@@ -1,15 +1,11 @@
 [Unit]
 Description=Asterinas Debian online Firefox workload
-# Starting the Xorg session can remain in the activating state on a minimal
-# Asterinas device even after it has spawned Xorg.  Launch the browser in
-# parallel and let wait-x provide the real readiness barrier; tying browser
-# activation to the desktop unit otherwise causes an unbounded dependency
-# wait and Firefox never starts.
-# Network evidence is a parallel prerequisite for the formal evidence service,
-# not for launching Firefox about:blank.  Keeping it as Wants lets Xorg and the
-# browser start while the bounded fixture batch runs; browser_web_evidence.service
-# still Requires/After-orders the strict DNS/TLS/content checks on completion.
-Wants=asterinas-desktop-m5-network.service
+# The board starts with a dummy 1970 RTC.  The network service obtains a trusted
+# HTTP Date and corrects CLOCK_REALTIME.  Do not start Firefox or its timeout
+# helpers across that clock step: it can invalidate their first startup epoch
+# and make the initial TLS request fail even though a retry later succeeds.
+Requires=asterinas-desktop-m5-network.service
+After=asterinas-desktop-m5-network.service
 Requires=asterinas-browser-web-timeline-basic.service
 After=asterinas-browser-web-timeline-basic.service
 

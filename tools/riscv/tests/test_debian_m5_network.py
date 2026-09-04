@@ -986,6 +986,14 @@ case "$*" in
         fi
         ;;
     *https://www.baidu.com/*|*https://10.0.2.2:8446/*)
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = https-once ]; then
+            count_file="$ASTERINAS_WEB_HTTPS_COUNT"
+            count=0
+            [ ! -f "$count_file" ] || count="$(cat "$count_file")"
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$count_file"
+            [ "$count" -gt 1 ] || exit 28
+        fi
         case "$ASTERINAS_WEB_FAIL_STAGE" in
             https-connect) exit 7 ;;
             https-tls) exit 60 ;;
@@ -1056,6 +1064,7 @@ esac
             "ASTERINAS_WEB_FIXTURE_PAYLOAD": str(fixture_payload),
             "ASTERINAS_WEB_MEDIUM_PAYLOAD": str(medium_payload),
             "ASTERINAS_WEB_FIXTURE_COUNT": str(fixture_count),
+            "ASTERINAS_WEB_HTTPS_COUNT": str(directory / "https-count"),
             "ASTERINAS_WEB_FAIL_STAGE": fail_stage,
         }
         if mode == "proxy":
@@ -1068,6 +1077,33 @@ esac
             ):
                 environment.pop(name)
         return environment, console, resolv_conf, command_log
+
+    def test_web_network_retries_a_cold_https_timeout_within_budget(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-https-cold-retry",
+            mode="direct",
+            fail_stage="https-once",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, console.read_text())
+        https_calls = [
+            line
+            for line in command_log.read_text(encoding="utf-8").splitlines()
+            if "https://www.baidu.com/" in line and "result.png" not in line
+        ]
+        self.assertEqual(len(https_calls), 2)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_READY mode=direct layers=10",
+        )
 
     def test_web_network_derives_medium_fixture_from_probe_url(self) -> None:
         environment, console, _, command_log = self._web_network_environment(
