@@ -438,7 +438,7 @@ class LtpGatePolicyTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            names = tuple(f"arch_test_{index:03d}" for index in range(154))
+            names = tuple(f"arch_test_{index:03d}" for index in range(158))
             enabled = repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"
             runtest = repo / "target/ltp/src/runtest/syscalls"
             binaries = repo / "target/ltp/rootfs/opt/ltp/testcases/bin"
