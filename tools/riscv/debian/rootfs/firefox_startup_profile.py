@@ -42,6 +42,28 @@ _MARKERS = (
     ("marionette", b"BOOT_MARIONETTE_PORT_READY"),
 )
 
+
+def _validate_stage1_artifact(path: Path) -> None:
+    """Reject an initramfs built before systemd environment forwarding.
+
+    The stage1 archive is an explicit gate input and can outlive the source
+    tree because it is generated under ``target/``.  Checking the diagnostic
+    strings in the static ELF catches that stale-artifact case before QEMU is
+    launched; otherwise the guest only reports a misleading empty fixture
+    configuration several seconds into boot.
+    """
+
+    try:
+        contents = path.read_bytes()
+    except OSError as error:
+        raise GateFailure(f"unable to read stage1 artifact: {path}") from error
+    required = (b"DEBIAN_STAGE1_PROGRESS", b"systemd-arguments")
+    if any(marker not in contents for marker in required):
+        raise GateFailure(
+            "stage1 artifact missing environment-forwarding support; "
+            "rebuild tools/riscv/debian/rootfs/build_stage1.sh"
+        )
+
 def _profile_boot_commands(operations: BrowserWebQemuOperations,
                            framebuffer_address: int) -> tuple[str, ...]:
     """Return framebuffer boot commands without overflowing U-Boot input."""
@@ -144,6 +166,7 @@ def run(
     read_detail_diagnostic: bool = False,
     futex_diagnostic: bool = False,
 ) -> int:
+    _validate_stage1_artifact(config.stage1_initramfs)
     _safe_output(config.output_directory)
     systemd_diagnostic_args = (
         " systemd.setenv=ASTERINAS_FIREFOX_PS_DIAGNOSTIC=1"

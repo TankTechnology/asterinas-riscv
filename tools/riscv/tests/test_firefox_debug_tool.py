@@ -14,6 +14,7 @@ from tools.riscv.firefox_debug_tool import manifest, summarize
 from tools.riscv.debian.rootfs.firefox_startup_profile import (
     _UBOOT_COMMAND_SAFE_LIMIT,
     _profile_boot_commands,
+    _validate_stage1_artifact,
 )
 
 
@@ -107,6 +108,22 @@ class FirefoxDebugToolTests(unittest.TestCase):
         self.assertTrue(all(len(command) <= _UBOOT_COMMAND_SAFE_LIMIT for command in commands))
         self.assertGreaterEqual(len(commands), 4)
         self.assertTrue(all("asterinas.diagnostic=1" in command for command in commands[1:-1]))
+
+    def test_startup_profile_rejects_stage1_without_systemd_environment_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "initramfs.cpio"
+            archive.write_bytes(b"DEBIAN_STAGE1_PROGRESS step=start mode=systemd\n")
+            with self.assertRaisesRegex(RuntimeError, "environment-forwarding"):
+                _validate_stage1_artifact(archive)
+
+    def test_startup_profile_accepts_stage1_with_systemd_environment_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "initramfs.cpio"
+            archive.write_bytes(
+                b"DEBIAN_STAGE1_PROGRESS step=start mode=systemd\n"
+                b"DEBIAN_STAGE1_PROGRESS step=systemd-arguments count=%s\n"
+            )
+            _validate_stage1_artifact(archive)
 
 
 if __name__ == "__main__":

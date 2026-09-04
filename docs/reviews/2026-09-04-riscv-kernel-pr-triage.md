@@ -40,3 +40,31 @@
 这些能力解决的是“启动哪个可信 Firefox rootfs”的问题，不等同于
 GMAC、DNS、TLS 或公网访问本身已经在真机闭环。
 
+## QEMU Firefox 基线（SMP=4）
+
+本轮使用重建后的 stage1 initramfs 做了两层验证：
+
+1. 启动 profile 在约 35 秒内依次达到基础桌面、X socket、Firefox exec
+   和 Marionette 四个标记；带进程诊断参数的路径同样通过。
+2. 使用冻结的 RISC-V Firefox JIT overlay 后，完整 browser-web gate
+   通过：DNS、HTTP、HTTPS、百度首页与图片、fixture 搜索/下载、Bilibili
+   页面、Marionette 及浏览器能力检查均通过。百度结果为
+   `external-captcha`，这是站点策略，不是网络或内核失败。
+
+默认 Debian ESR rootfs 不包含 JIT overlay 时，WebAssembly 能力会报告
+`false-capability:wasm`，因此不能把“Firefox 进程启动”误报为“现代网页兼容”。
+后续 browser-web 镜像应明确使用 overlay 产物，并在发布前运行
+`firefox_jit_overlay.py` 与 `browser_web_trust_check.py`。
+
+stage1 initramfs 是生成产物，源码更新后必须重新执行：
+
+```bash
+docker run --rm --network=host -v "$PWD:/root/asterinas" \
+  -w /root/asterinas asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached \
+  bash tools/riscv/debian/rootfs/build_stage1.sh \
+  target/debian-riscv/stage1/initramfs.cpio
+```
+
+Firefox 启动 profile 现在会在启动 QEMU 前检查 archive 是否含有
+`systemd-arguments` 环境转发标记，过期产物会快速失败并提示重建，而不会
+再运行数分钟后才显示 `qemu-fixture-config`。
