@@ -27,12 +27,14 @@ pub fn sys_fcntl(raw_fd: RawFileDesc, cmd: i32, arg: u64, ctx: &Context) -> Resu
         FcntlCmd::F_SETFD => handle_setfd(fd, arg, ctx),
         FcntlCmd::F_GETFL => handle_getfl(fd, ctx),
         FcntlCmd::F_SETFL => handle_setfl(fd, arg, ctx),
-        FcntlCmd::F_GETLK => handle_getlk(fd, arg, ctx),
-        FcntlCmd::F_SETLK => handle_setlk(fd, arg, true, ctx),
-        FcntlCmd::F_SETLKW => handle_setlk(fd, arg, false, ctx).map_err(|err| match err.error() {
-            Errno::EINTR => Error::new(Errno::ERESTARTSYS),
-            _ => err,
-        }),
+        FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => handle_getlk(fd, arg, ctx),
+        FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => handle_setlk(fd, arg, true, ctx),
+        FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
+            handle_setlk(fd, arg, false, ctx).map_err(|err| match err.error() {
+                Errno::EINTR => Error::new(Errno::ERESTARTSYS),
+                _ => err,
+            })
+        }
         FcntlCmd::F_GETOWN => handle_getown(fd, ctx),
         FcntlCmd::F_SETOWN => handle_setown(fd, arg, ctx),
         FcntlCmd::F_ADD_SEALS => handle_addseal(fd, arg, ctx),
@@ -232,11 +234,30 @@ enum FcntlCmd {
     F_GETLK = 5,
     F_SETLK = 6,
     F_SETLKW = 7,
+    // 32-bit Linux ABIs expose the 64-bit-offset record-lock commands under
+    // distinct numbers. RISC-V currently runs the 64-bit ABI here, but
+    // accepting these aliases keeps the generic syscall ABI compatible with
+    // musl/glibc binaries that select the large-file command set explicitly.
+    F_GETLK64 = 12,
+    F_SETLK64 = 13,
+    F_SETLKW64 = 14,
     F_SETOWN = 8,
     F_GETOWN = 9,
     F_DUPFD_CLOEXEC = 1030,
     F_ADD_SEALS = 1033,
     F_GET_SEALS = 1034,
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::FcntlCmd;
+
+    #[ktest]
+    fn large_file_lock_commands_are_accepted() {
+        assert!(matches!(FcntlCmd::try_from(12), Ok(FcntlCmd::F_GETLK64)));
+        assert!(matches!(FcntlCmd::try_from(13), Ok(FcntlCmd::F_SETLK64)));
+        assert!(matches!(FcntlCmd::try_from(14), Ok(FcntlCmd::F_SETLKW64)));
+    }
 }
 
 #[expect(non_camel_case_types)]
