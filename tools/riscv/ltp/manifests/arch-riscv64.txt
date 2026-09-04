@@ -32,8 +32,12 @@ madvise01
 madvise03
 madvise05
 madvise10
+mincore01
 mlock01
+mlock02
 mlock03
+mlockall01
+mlockall02
 mmap01
 mmap02
 mmap03
