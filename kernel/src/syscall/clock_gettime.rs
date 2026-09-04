@@ -79,24 +79,22 @@ pub fn sys_clock_getres(
 ///
 /// The coarse clocks (`CLOCK_REALTIME_COARSE`/`CLOCK_MONOTONIC_COARSE`) are
 /// updated once per system timer tick (see `ostd::timer::TIMER_FREQ`, 1000 Hz),
-/// so their resolution is one tick (1 ms). CPU clocks are also accounted in
-/// jiffies today, while the remaining supported clocks read a
-/// nanosecond-granular clocksource.
+/// so their resolution is one tick (1 ms). The remaining supported clocks,
+/// including CPU clocks, read a nanosecond-granular clocksource.
 fn read_clock_resolution(clockid: clockid_t) -> Result<Duration> {
     if clockid >= 0 {
         let clock_id = ClockId::try_from(clockid)?;
         let resolution = match clock_id {
-            ClockId::CLOCK_REALTIME_COARSE
-            | ClockId::CLOCK_MONOTONIC_COARSE
-            | ClockId::CLOCK_PROCESS_CPUTIME_ID
-            | ClockId::CLOCK_THREAD_CPUTIME_ID => Duration::from_millis(1),
+            ClockId::CLOCK_REALTIME_COARSE | ClockId::CLOCK_MONOTONIC_COARSE => {
+                Duration::from_millis(1)
+            }
             _ => Duration::from_nanos(1),
         };
         Ok(resolution)
     } else {
         match DynamicClockIdInfo::try_from(clockid)? {
             DynamicClockIdInfo::Pid(_, _) | DynamicClockIdInfo::Tid(_, _) => {
-                Ok(Duration::from_millis(1))
+                Ok(Duration::from_nanos(1))
             }
             DynamicClockIdInfo::Fd(_) => return_errno_with_message!(
                 Errno::EINVAL,

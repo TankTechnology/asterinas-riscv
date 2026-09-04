@@ -89,3 +89,10 @@ pub fn sys_timer_gettime(
 
     Ok(SyscallReturn::Return(0))
 }
+
+pub fn sys_timer_getoverrun(timer_id: usize, ctx: &Context) -> Result<SyscallReturn> {
+    let Some(overrun) = ctx.process.timer_manager().posix_timer_overrun(timer_id) else {
+        return_errno_with_message!(Errno::EINVAL, "invalid timer ID");
+    };
+    Ok(SyscallReturn::Return(overrun as isize))
+}

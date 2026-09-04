@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
 use ostd::{
@@ -21,6 +24,7 @@ use crate::{
         ExitCode, Pid,
         namespace::nsproxy::NsProxy,
         posix_thread::ptrace::TraceeStatus,
+        process::timer_manager::{CpuTimeAccounting, CpuTimeMode},
         signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
     syscall::SockFilter,
@@ -165,6 +169,8 @@ pub struct PosixThread {
     // Time
     /// A profiling clock measures the user CPU time and kernel CPU time in the thread.
     prof_clock: Arc<ProfClock>,
+    /// Precise CPU-time state while this thread is scheduled.
+    cpu_time_accounting: SpinLock<CpuTimeAccounting>,
     /// A manager that manages timers based on the user CPU time of the current thread.
     virtual_timer_manager: Arc<TimerManager>,
     /// A manager that manages timers based on the profiling clock of the current thread.
@@ -367,6 +373,82 @@ impl PosixThread {
     /// Returns a reference to the profiling clock of the current thread.
     pub fn prof_clock(&self) -> &Arc<ProfClock> {
         &self.prof_clock
+    }
+
+    fn charge_cpu_delta(&self, mode: CpuTimeMode, elapsed: Duration) {
+        let thread_clock = match mode {
+            CpuTimeMode::User => self.prof_clock.user_clock(),
+            CpuTimeMode::Kernel => self.prof_clock.kernel_clock(),
+        };
+        thread_clock.add_duration(elapsed);
+
+        let Some(process) = self.process.upgrade() else {
+            return;
+        };
+        let process_clock = match mode {
+            CpuTimeMode::User => process.prof_clock().user_clock(),
+            CpuTimeMode::Kernel => process.prof_clock().kernel_clock(),
+        };
+        process_clock.add_duration(elapsed);
+    }
+
+    pub(crate) fn switch_cpu_time_mode(&self, mode: CpuTimeMode) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .switch_mode(ostd::arch::read_tsc(), mode);
+        if let Some((old_mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(old_mode, elapsed);
+        }
+        self.process_cpu_timers();
+    }
+
+    pub(crate) fn pause_cpu_time(&self) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .pause(ostd::arch::read_tsc());
+        if let Some((mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(mode, elapsed);
+        }
+        self.process_cpu_timers();
+    }
+
+    pub(crate) fn resume_cpu_time(&self) {
+        self.cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .resume_kernel(ostd::arch::read_tsc());
+    }
+
+    pub(crate) fn account_cpu_time(&self) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .elapsed_to(ostd::arch::read_tsc());
+        if let Some((mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(mode, elapsed);
+        }
+    }
+
+    pub(crate) fn process_cpu_timers(&self) {
+        if let Some(process) = self.process.upgrade() {
+            process
+                .timer_manager()
+                .virtual_timer()
+                .timer_manager()
+                .process_expired_timers();
+            process
+                .timer_manager()
+                .prof_timer()
+                .timer_manager()
+                .process_expired_timers();
+        }
+        self.virtual_timer_manager.process_expired_timers();
+        self.process_expired_timers();
     }
 
     /// Creates a timer based on the profiling CPU clock of the current thread.

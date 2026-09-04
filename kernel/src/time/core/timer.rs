@@ -46,6 +46,7 @@ struct TimerInner {
 pub struct TimerGuard<'a> {
     inner: SpinLockGuard<'a, TimerInner, LocalIrqDisabled>,
     timer: &'a Arc<Timer>,
+    overrun: u64,
 }
 
 impl TimerGuard<'_> {
@@ -116,6 +117,15 @@ impl TimerGuard<'_> {
     pub fn interval(&self) -> Duration {
         self.inner.interval
     }
+
+    /// Returns the number of additional interval expirations represented by
+    /// the current callback.
+    ///
+    /// This is zero for one-shot timers and for guards acquired outside an
+    /// expiration callback.
+    pub fn overrun(&self) -> u64 {
+        self.overrun
+    }
 }
 
 impl Timer {
@@ -140,6 +150,7 @@ impl Timer {
         TimerGuard {
             inner: self.inner.disable_irq().lock(),
             timer: self,
+            overrun: 0,
         }
     }
 
@@ -158,6 +169,9 @@ impl Timer {
 pub struct TimerManager {
     clock: Arc<dyn Clock>,
     timer_callbacks: SpinLock<BinaryHeap<Arc<TimerCallback>>>,
+    /// Avoid taking the heap lock on hot paths when this manager has never
+    /// been armed or has already drained all callbacks.
+    may_have_callbacks: AtomicBool,
 }
 
 impl TimerManager {
@@ -166,6 +180,7 @@ impl TimerManager {
         Arc::new(Self {
             clock,
             timer_callbacks: SpinLock::new(BinaryHeap::new()),
+            may_have_callbacks: AtomicBool::new(false),
         })
     }
 
@@ -187,10 +202,11 @@ impl TimerManager {
 
     fn insert(&self, timer_callback: Arc<TimerCallback>) {
         let expired_time = timer_callback.expired_time;
-        self.timer_callbacks
-            .disable_irq()
-            .lock()
-            .push(timer_callback);
+        {
+            let mut callbacks = self.timer_callbacks.disable_irq().lock();
+            callbacks.push(timer_callback);
+            self.may_have_callbacks.store(true, Ordering::Release);
+        }
         self.request_interrupt_at(expired_time);
     }
 
@@ -198,9 +214,14 @@ impl TimerManager {
     ///
     /// If any of the timers have timed out, call the corresponding callback functions.
     pub fn process_expired_timers(&self) {
+        if !self.may_have_callbacks.load(Ordering::Acquire) {
+            return;
+        }
+
         let (callbacks, next_expired_time) = {
             let mut timeout_list = self.timer_callbacks.disable_irq().lock();
             if timeout_list.is_empty() {
+                self.may_have_callbacks.store(false, Ordering::Release);
                 return;
             }
 
@@ -217,6 +238,8 @@ impl TimerManager {
                 }
             }
             let next_expired_time = timeout_list.peek().map(|timer| timer.expired_time);
+            self.may_have_callbacks
+                .store(next_expired_time.is_some(), Ordering::Release);
             (callbacks, next_expired_time)
         };
 
@@ -285,13 +308,46 @@ impl TimerCallback {
 
         let interval = timer_guard.interval();
         if interval != Duration::ZERO {
-            timer_guard.set_timeout(Timeout::After(interval));
+            let (overrun, next_expired_time) = periodic_expiration(
+                timer.timer_manager.clock.read_time(),
+                self.expired_time,
+                interval,
+            );
+            timer_guard.overrun = overrun;
+            timer_guard.set_timeout(Timeout::When(next_expired_time));
         }
 
         // Pass the `timer_guard` guard to the callback, allowing it to prevent race conditions.
         // The callback may choose to use the guard or drop it if not needed.
         (timer.registered_callback)(timer_guard);
     }
+}
+
+fn periodic_expiration(
+    now: Duration,
+    expired_time: Duration,
+    interval: Duration,
+) -> (u64, Duration) {
+    debug_assert_ne!(interval, Duration::ZERO);
+    let lateness = now.saturating_sub(expired_time);
+    let overrun = lateness.as_nanos() / interval.as_nanos();
+
+    // Rearm relative to the previous deadline, rather than relative to
+    // callback execution. This preserves the periodic phase and folds all
+    // missed intervals into this callback's overrun count.
+    let intervals = overrun.saturating_add(1);
+    let offset_nanos = interval.as_nanos().saturating_mul(intervals);
+    let offset_secs = offset_nanos / 1_000_000_000;
+    let offset = if offset_secs > u128::from(u64::MAX) {
+        Duration::MAX
+    } else {
+        Duration::new(offset_secs as u64, (offset_nanos % 1_000_000_000) as u32)
+    };
+    let next_expired_time = expired_time.checked_add(offset).unwrap_or(Duration::MAX);
+    (
+        u64::try_from(overrun).unwrap_or(u64::MAX),
+        next_expired_time,
+    )
 }
 
 impl PartialEq for TimerCallback {
@@ -314,5 +370,36 @@ impl Ord for TimerCallback {
         // and the in-order management of `TimerCallback`s currently relies on a maximum heap,
         // so we need the reverse instruction here.
         self.expired_time.cmp(&other.expired_time).reverse()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::time::Duration;
+
+    use ostd::prelude::ktest;
+
+    use super::periodic_expiration;
+
+    #[ktest]
+    fn posix_timer_periodic_phase_and_overrun_count() {
+        let (overrun, next) = periodic_expiration(
+            Duration::from_millis(37),
+            Duration::from_millis(10),
+            Duration::from_millis(5),
+        );
+        assert_eq!(overrun, 5);
+        assert_eq!(next, Duration::from_millis(40));
+    }
+
+    #[ktest]
+    fn posix_timer_on_time_has_no_overrun() {
+        let (overrun, next) = periodic_expiration(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            Duration::from_millis(5),
+        );
+        assert_eq!(overrun, 0);
+        assert_eq!(next, Duration::from_millis(15));
     }
 }
