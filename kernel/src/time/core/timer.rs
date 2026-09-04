@@ -186,17 +186,19 @@ impl TimerManager {
     }
 
     fn insert(&self, timer_callback: Arc<TimerCallback>) {
+        let expired_time = timer_callback.expired_time;
         self.timer_callbacks
             .disable_irq()
             .lock()
             .push(timer_callback);
+        self.request_interrupt_at(expired_time);
     }
 
     /// Checks and processes the managed timers.
     ///
     /// If any of the timers have timed out, call the corresponding callback functions.
     pub fn process_expired_timers(&self) {
-        let callbacks = {
+        let (callbacks, next_expired_time) = {
             let mut timeout_list = self.timer_callbacks.disable_irq().lock();
             if timeout_list.is_empty() {
                 return;
@@ -214,8 +216,13 @@ impl TimerManager {
                     break;
                 }
             }
-            callbacks
+            let next_expired_time = timeout_list.peek().map(|timer| timer.expired_time);
+            (callbacks, next_expired_time)
         };
+
+        if let Some(expired_time) = next_expired_time {
+            self.request_interrupt_at(expired_time);
+        }
 
         for callback in callbacks {
             callback.call();
@@ -228,6 +235,11 @@ impl TimerManager {
         F: Fn(TimerGuard) + Send + Sync + 'static,
     {
         Timer::new(function, self.clone())
+    }
+
+    fn request_interrupt_at(&self, expired_time: Duration) {
+        let remaining = expired_time.saturating_sub(self.clock.read_time());
+        ostd::timer::request_interrupt_after(remaining);
     }
 }
 
