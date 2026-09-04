@@ -389,10 +389,8 @@ pub(crate) enum NsType {
     Cgroup,
     Ipc,
     Mnt,
-    #[expect(unused)]
     Net,
     Pid,
-    #[expect(unused)]
     Time,
     User,
     Uts,
