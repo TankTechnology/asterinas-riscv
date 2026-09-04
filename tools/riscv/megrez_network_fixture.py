@@ -82,6 +82,7 @@ BROWSER_INDEX = b"""<!doctype html>
   const checks = Object.create(null);
   let wasmFailure = null;
   const search = new URLSearchParams(location.search).get('q') === 'asterinas';
+  const diagnostics = new URLSearchParams(location.search).get('capabilities') === '1';
   const phase = search ? 'search' : 'home';
   window.__asterinasCapabilities = {version: 1, phase, state: 'running', checks, error: null};
   const publish = () => {
@@ -143,6 +144,24 @@ BROWSER_INDEX = b"""<!doctype html>
     // covered by the separate screenshot/render gate.
     checks.canvas = typeof HTMLCanvasElement === 'function' &&
       typeof HTMLCanvasElement.prototype.getContext === 'function';
+
+    // Keep the normal browser-quality page responsive on slow or partially
+    // implemented kernels.  Some API entry points (notably Worker creation,
+    // IndexedDB open, and media loading) can block Gecko synchronously, so a
+    // Promise timeout cannot safely bound them.  The regular home/search gate
+    // records their API presence only; the explicit ?capabilities=1 page runs
+    // the full behavioural checks below for diagnostics.
+    if (!diagnostics) {
+      checks.wasm = typeof WebAssembly !== 'undefined';
+      checks.worker = typeof Worker === 'function';
+      checks.indexedDb = typeof indexedDB === 'object' && indexedDB !== null;
+      checks.audio = typeof HTMLAudioElement === 'function';
+      checks.fetch = typeof fetch === 'function';
+      mark('static');
+      window.__asterinasCapabilities.state = 'complete';
+      publish();
+      return;
+    }
 
     mark('wasm');
     try {

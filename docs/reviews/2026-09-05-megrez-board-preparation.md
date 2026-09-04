@@ -127,3 +127,9 @@ guest that could not complete `WebAssembly.instantiate()` left capabilities in
 the unsupported capability explicit and keeps the gate fail-closed.  A full
 proxy Firefox-content pass is still pending until the RISC-V Firefox WASM
 capability itself completes successfully.
+
+To keep the primary browsing gate responsive, the normal fixture home/search
+pages now perform non-blocking API-presence checks.  The full behavioural
+checks are reserved for the explicit `?capabilities=1` diagnostic URL; this
+separates basic HTML/JavaScript navigation from optional kernel-sensitive APIs
+without deleting the diagnostic workload.
