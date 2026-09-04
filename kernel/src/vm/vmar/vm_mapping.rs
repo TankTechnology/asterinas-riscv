@@ -111,6 +111,8 @@ pub struct VmMapping {
     /// Whether the mapping needs to handle surrounding pages when handling
     /// page fault.
     handle_page_faults_around: bool,
+    /// Whether the mapping is locked in memory.
+    is_locked: bool,
     /// The permissions of pages in the mapping.
     ///
     /// All pages within the same `VmMapping` have the same permissions.
@@ -133,6 +135,7 @@ impl VmMapping {
         path: Option<Path>,
         is_shared: bool,
         handle_page_faults_around: bool,
+        is_locked: bool,
         perms: VmPerms,
     ) -> Self {
         Self {
@@ -142,6 +145,7 @@ impl VmMapping {
             path,
             is_shared,
             handle_page_faults_around,
+            is_locked,
             perms,
         }
     }
@@ -150,6 +154,8 @@ impl VmMapping {
         VmMapping {
             mapped_mem: self.mapped_mem.dup(),
             path: self.path.clone(),
+            // POSIX memory locks and MCL_FUTURE are not inherited across fork.
+            is_locked: false,
             ..*self
         }
     }
@@ -189,6 +195,11 @@ impl VmMapping {
     /// Returns the permissions of pages in the mapping.
     pub fn perms(&self) -> VmPerms {
         self.perms
+    }
+
+    /// Returns whether the mapping is locked in memory.
+    pub fn is_locked(&self) -> bool {
+        self.is_locked
     }
 
     /// Returns the inode of the file that backs the mapping.
@@ -845,6 +856,11 @@ impl VmMapping {
         }
     }
 
+    /// Changes whether the mapping is locked in memory.
+    pub(super) fn set_locked(self, is_locked: bool) -> Self {
+        Self { is_locked, ..self }
+    }
+
     /// Splits the mapping at the specified address.
     ///
     /// The address must be within the mapping and page-aligned. The address
@@ -1170,6 +1186,7 @@ fn try_merge(left: &VmMapping, right: &VmMapping) -> Option<VmMapping> {
     let is_adjacent = left.map_end() == right.map_to_addr();
     let is_type_equal = left.is_shared == right.is_shared
         && left.handle_page_faults_around == right.handle_page_faults_around
+        && left.is_locked == right.is_locked
         && left.perms == right.perms;
 
     if !is_adjacent || !is_type_equal {
@@ -1296,6 +1313,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             VmPerms::READ | VmPerms::EXEC,
         );
         mapping
@@ -1346,6 +1364,7 @@ mod tests {
             None,
             false,
             false,
+            false,
             VmPerms::READ | VmPerms::WRITE,
         );
         mapping
@@ -1394,6 +1413,7 @@ mod tests {
             None,
             false,
             true,
+            false,
             VmPerms::READ,
         );
         mapping
@@ -1441,6 +1461,7 @@ mod tests {
             None,
             false,
             true,
+            false,
             VmPerms::READ,
         );
         mapping
