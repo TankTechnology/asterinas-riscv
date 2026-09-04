@@ -111,6 +111,8 @@ pub struct VmMapping {
     /// Whether the mapping needs to handle surrounding pages when handling
     /// page fault.
     handle_page_faults_around: bool,
+    /// Whether faults below this mapping may expand it towards lower addresses.
+    grows_down: bool,
     /// Whether the mapping is locked in memory.
     is_locked: bool,
     /// The permissions of pages in the mapping.
@@ -135,6 +137,7 @@ impl VmMapping {
         path: Option<Path>,
         is_shared: bool,
         handle_page_faults_around: bool,
+        grows_down: bool,
         is_locked: bool,
         perms: VmPerms,
     ) -> Self {
@@ -145,6 +148,7 @@ impl VmMapping {
             path,
             is_shared,
             handle_page_faults_around,
+            grows_down,
             is_locked,
             perms,
         }
@@ -251,6 +255,11 @@ impl VmMapping {
     /// regions.
     pub(super) fn can_expand(&self) -> bool {
         !matches!(self.mapped_mem, MappedMemory::Device)
+    }
+
+    /// Returns whether this anonymous mapping may grow towards lower addresses.
+    pub(super) fn can_grow_down(&self) -> bool {
+        self.grows_down && matches!(self.mapped_mem, MappedMemory::Anonymous)
     }
 
     /// Populates device memory for this mapping.
@@ -614,6 +623,14 @@ impl VmMapping {
         };
 
         let page_offset = page_aligned_addr - self.map_to_addr;
+        if self.is_shared && page_offset >= vmo.valid_size() {
+            // Linux delivers SIGBUS when a shared file mapping accesses a page
+            // wholly beyond the backing object's current end.
+            return Err(VmoCommitError::Err(Error::with_message(
+                Errno::ENXIO,
+                "the shared mapping page is beyond the backing object",
+            )));
+        }
         if !self.is_shared && page_offset >= vmo.valid_size() {
             // The page index is outside the VMO. This is only allowed in private mapping.
             return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
@@ -852,6 +869,19 @@ impl VmMapping {
     pub fn enlarge(self, extra_size: usize) -> Self {
         Self {
             map_size: NonZeroUsize::new(self.map_size.get() + extra_size).unwrap(),
+            ..self
+        }
+    }
+
+    /// Enlarges an anonymous mapping towards lower virtual addresses.
+    pub(super) fn enlarge_down(self, new_start: Vaddr) -> Self {
+        debug_assert!(new_start < self.map_to_addr);
+        debug_assert!(new_start.is_multiple_of(PAGE_SIZE));
+        debug_assert!(matches!(self.mapped_mem, MappedMemory::Anonymous));
+        let extra_size = self.map_to_addr - new_start;
+        Self {
+            map_size: NonZeroUsize::new(self.map_size.get() + extra_size).unwrap(),
+            map_to_addr: new_start,
             ..self
         }
     }
@@ -1186,6 +1216,7 @@ fn try_merge(left: &VmMapping, right: &VmMapping) -> Option<VmMapping> {
     let is_adjacent = left.map_end() == right.map_to_addr();
     let is_type_equal = left.is_shared == right.is_shared
         && left.handle_page_faults_around == right.handle_page_faults_around
+        && left.grows_down == right.grows_down
         && left.is_locked == right.is_locked
         && left.perms == right.perms;
 
@@ -1314,6 +1345,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             VmPerms::READ | VmPerms::EXEC,
         );
         mapping
@@ -1362,6 +1394,7 @@ mod tests {
             map_range.start,
             MappedMemory::Anonymous,
             None,
+            false,
             false,
             false,
             false,
@@ -1414,6 +1447,7 @@ mod tests {
             false,
             true,
             false,
+            false,
             VmPerms::READ,
         );
         mapping
@@ -1461,6 +1495,7 @@ mod tests {
             None,
             false,
             true,
+            false,
             false,
             VmPerms::READ,
         );

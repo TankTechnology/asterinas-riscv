@@ -73,6 +73,8 @@ pub struct VmarMapOptions<'a> {
     // Whether the mapping needs to handle surrounding pages when handling
     // page fault.
     handle_page_faults_around: bool,
+    // Whether page faults immediately below the mapping may expand it down.
+    grows_down: bool,
     // The locked-memory limit for an explicitly locked mapping. The outer
     // `Option` distinguishes an ordinary mapping from a privileged request.
     explicit_lock_limit: Option<Option<usize>>,
@@ -125,6 +127,7 @@ impl<'a> VmarMapOptions<'a> {
             align: PAGE_SIZE,
             is_shared: false,
             handle_page_faults_around: false,
+            grows_down: false,
             explicit_lock_limit: None,
         }
     }
@@ -242,6 +245,12 @@ impl<'a> VmarMapOptions<'a> {
         self
     }
 
+    /// Marks the mapping as a downward-growing mapping (`MAP_GROWSDOWN`).
+    pub fn grows_down(mut self) -> Self {
+        self.grows_down = true;
+        self
+    }
+
     /// Requests that the new mapping be locked in memory.
     ///
     /// `max_locked_size` is `None` when the caller may bypass `RLIMIT_MEMLOCK`.
@@ -299,6 +308,7 @@ impl<'a> VmarMapOptions<'a> {
             align,
             is_shared,
             handle_page_faults_around,
+            grows_down,
             explicit_lock_limit,
         } = self;
 
@@ -442,6 +452,7 @@ impl<'a> VmarMapOptions<'a> {
             path,
             is_shared,
             handle_page_faults_around,
+            grows_down,
             new_mapping_lock_limit.is_some(),
             perms | may_perms,
         );
