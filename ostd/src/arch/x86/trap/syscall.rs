@@ -101,5 +101,8 @@ impl RawUserContext {
         core::mem::forget(guard);
 
         unsafe { syscall_return(self) };
+
+        let guard = crate::irq::disable_local();
+        crate::task::call_post_user_run_handler(&guard);
     }
 }
