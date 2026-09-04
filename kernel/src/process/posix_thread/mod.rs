@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
 use ostd::{
@@ -10,22 +13,23 @@ use ostd::{
 use spin::Once;
 
 use super::{
-    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
     Credentials, Process,
+    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
 };
 use crate::{
     events::IoEvents,
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
+        ExitCode, Pid,
         namespace::nsproxy::NsProxy,
         posix_thread::ptrace::TraceeStatus,
-        signal::{sig_mask::SigMask, PauseReason, PollHandle},
-        ExitCode, Pid,
+        process::timer_manager::{CpuTimeAccounting, CpuTimeMode},
+        signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
     syscall::SockFilter,
     thread::{Thread, Tid},
-    time::{clocks::ProfClock, timer::TimerGuard, Timer, TimerManager},
+    time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
 
 pub mod alien_access;
@@ -44,13 +48,13 @@ mod thread_local;
 pub use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
-pub use name::{ThreadName, MAX_THREAD_NAME_LEN};
+pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
 pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
 pub use rseq::{
-    Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
-    RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+    RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER, RSEQ_MIN_SIZE,
+    RSEQ_SIG_OFFSET, Rseq,
 };
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 
@@ -165,6 +169,8 @@ pub struct PosixThread {
     // Time
     /// A profiling clock measures the user CPU time and kernel CPU time in the thread.
     prof_clock: Arc<ProfClock>,
+    /// Precise CPU-time state while this thread is scheduled.
+    cpu_time_accounting: SpinLock<CpuTimeAccounting>,
     /// A manager that manages timers based on the user CPU time of the current thread.
     virtual_timer_manager: Arc<TimerManager>,
     /// A manager that manages timers based on the profiling clock of the current thread.
@@ -369,6 +375,82 @@ impl PosixThread {
         &self.prof_clock
     }
 
+    fn charge_cpu_delta(&self, mode: CpuTimeMode, elapsed: Duration) {
+        let thread_clock = match mode {
+            CpuTimeMode::User => self.prof_clock.user_clock(),
+            CpuTimeMode::Kernel => self.prof_clock.kernel_clock(),
+        };
+        thread_clock.add_duration(elapsed);
+
+        let Some(process) = self.process.upgrade() else {
+            return;
+        };
+        let process_clock = match mode {
+            CpuTimeMode::User => process.prof_clock().user_clock(),
+            CpuTimeMode::Kernel => process.prof_clock().kernel_clock(),
+        };
+        process_clock.add_duration(elapsed);
+    }
+
+    pub(crate) fn switch_cpu_time_mode(&self, mode: CpuTimeMode) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .switch_mode(ostd::arch::read_tsc(), mode);
+        if let Some((old_mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(old_mode, elapsed);
+        }
+        self.process_cpu_timers();
+    }
+
+    pub(crate) fn pause_cpu_time(&self) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .pause(ostd::arch::read_tsc());
+        if let Some((mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(mode, elapsed);
+        }
+        self.process_cpu_timers();
+    }
+
+    pub(crate) fn resume_cpu_time(&self) {
+        self.cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .resume_kernel(ostd::arch::read_tsc());
+    }
+
+    pub(crate) fn account_cpu_time(&self) {
+        let elapsed = self
+            .cpu_time_accounting
+            .disable_irq()
+            .lock()
+            .elapsed_to(ostd::arch::read_tsc());
+        if let Some((mode, elapsed)) = elapsed {
+            self.charge_cpu_delta(mode, elapsed);
+        }
+    }
+
+    pub(crate) fn process_cpu_timers(&self) {
+        if let Some(process) = self.process.upgrade() {
+            process
+                .timer_manager()
+                .virtual_timer()
+                .timer_manager()
+                .process_expired_timers();
+            process
+                .timer_manager()
+                .prof_timer()
+                .timer_manager()
+                .process_expired_timers();
+        }
+        self.virtual_timer_manager.process_expired_timers();
+        self.process_expired_timers();
+    }
+
     /// Creates a timer based on the profiling CPU clock of the current thread.
     pub fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
     where
@@ -569,27 +651,104 @@ impl ContextPthreadAdminApi for Context<'_> {
 /// The TID of the first POSIX thread (i.e., the main thread of the init process).
 pub const FIRST_POSIX_TID: Tid = 1;
 
-static POSIX_TID_ALLOCATOR: AtomicU32 = AtomicU32::new(FIRST_POSIX_TID);
+struct PosixTidAllocator {
+    next: Tid,
+    last: Tid,
+    allocated: BTreeSet<Tid>,
+}
+
+static POSIX_TID_ALLOCATOR: Mutex<PosixTidAllocator> = Mutex::new(PosixTidAllocator {
+    next: FIRST_POSIX_TID,
+    last: 0,
+    allocated: BTreeSet::new(),
+});
+
+/// A TID reserved for a task that is being created.
+///
+/// Dropping an uncommitted reservation makes the TID available again. A
+/// successful task creation must commit the reservation after publishing the
+/// task in the PID table.
+pub(in crate::process) struct PosixTidReservation {
+    tid: Tid,
+    committed: bool,
+}
+
+impl PosixTidReservation {
+    pub(in crate::process) fn tid(&self) -> Tid {
+        self.tid
+    }
+
+    pub(in crate::process) fn commit(mut self) -> Tid {
+        POSIX_TID_ALLOCATOR.lock().last = self.tid;
+        self.committed = true;
+        self.tid
+    }
+}
+
+impl Drop for PosixTidReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let removed = POSIX_TID_ALLOCATOR.lock().allocated.remove(&self.tid);
+            debug_assert!(removed);
+        }
+    }
+}
+
+/// Reserves an automatically selected or explicitly requested TID.
+pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<PosixTidReservation> {
+    let mut allocator = POSIX_TID_ALLOCATOR.lock();
+
+    let tid = if let Some(requested) = requested {
+        if requested < FIRST_POSIX_TID || requested >= PID_MAX {
+            return_errno_with_message!(Errno::EINVAL, "the requested PID is out of range");
+        }
+        if !allocator.allocated.insert(requested) {
+            return_errno_with_message!(Errno::EEXIST, "the requested PID is in use");
+        }
+        requested
+    } else {
+        let start = allocator.next;
+        let mut candidate = start;
+        loop {
+            if allocator.allocated.insert(candidate) {
+                allocator.next = if candidate + 1 < PID_MAX {
+                    candidate + 1
+                } else {
+                    FIRST_POSIX_TID
+                };
+                break candidate;
+            }
+
+            candidate = if candidate + 1 < PID_MAX {
+                candidate + 1
+            } else {
+                FIRST_POSIX_TID
+            };
+            if candidate == start {
+                return_errno_with_message!(Errno::EAGAIN, "no process IDs are available");
+            }
+        }
+    };
+
+    Ok(PosixTidReservation {
+        tid,
+        committed: false,
+    })
+}
 
 /// Allocates a new TID for the new POSIX thread.
-pub fn allocate_posix_tid() -> Tid {
-    let tid = POSIX_TID_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
-    if tid >= PID_MAX {
-        // When the kernel's next PID value reaches `PID_MAX`,
-        // it should wrap back to a minimum PID value.
-        // PIDs with a value of `PID_MAX` or larger should not be allocated.
-        // Reference: <https://docs.kernel.org/admin-guide/sysctl/kernel.html#pid-max>.
-        //
-        // FIXME: Currently, we cannot determine which PID is recycled,
-        // so we are unable to allocate smaller PIDs.
-        warn!("the allocated ID is greater than the maximum allowed PID");
-    }
-    tid
+pub fn allocate_posix_tid() -> Result<Tid> {
+    Ok(reserve_posix_tid(None)?.commit())
+}
+
+/// Releases a TID after its final PID-table reference has disappeared.
+pub(in crate::process) fn release_posix_tid(tid: Tid) {
+    POSIX_TID_ALLOCATOR.lock().allocated.remove(&tid);
 }
 
 /// Returns the last allocated TID.
 pub fn last_tid() -> Tid {
-    POSIX_TID_ALLOCATOR.load(Ordering::Relaxed) - 1
+    POSIX_TID_ALLOCATOR.lock().last
 }
 
 /// The maximum allowed process ID.

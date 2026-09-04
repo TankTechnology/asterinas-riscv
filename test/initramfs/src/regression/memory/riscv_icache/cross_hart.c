@@ -18,6 +18,11 @@
 #define PRIME_ITERATIONS 1024
 #define CLAIM_ATTEMPTS 10000
 #define RISCV_FLUSH_ICACHE_SYSCALL 259
+#define MEMBARRIER_SYSCALL 283
+#define MEMBARRIER_CMD_QUERY 0
+#define MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE (1 << 5)
+#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE (1 << 6)
+#define MEMBARRIER_CMD_GET_REGISTRATIONS (1 << 9)
 
 typedef int (*jit_fn_t)(void);
 
@@ -34,6 +39,7 @@ static atomic_uint claimed_mask;
 static atomic_uint ready_mask;
 static atomic_uint done_mask;
 static atomic_uint failed_mask;
+static int use_membarrier_sync_core;
 
 static int pin_to_cpu(int cpu)
 {
@@ -64,8 +70,63 @@ static void emit_return_value(int value)
 
 static int flush_all_harts(void)
 {
+	if (use_membarrier_sync_core)
+		return syscall(MEMBARRIER_SYSCALL,
+			       MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0);
+
 	return syscall(RISCV_FLUSH_ICACHE_SYSCALL, jit_code,
 		       (char *)jit_code + 2 * sizeof(*jit_code), 0);
+}
+
+static int register_membarrier_sync_core(void)
+{
+	long query = syscall(MEMBARRIER_SYSCALL, MEMBARRIER_CMD_QUERY, 0, 0);
+	const long required =
+		MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE |
+		MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE |
+		MEMBARRIER_CMD_GET_REGISTRATIONS;
+
+	if (query < 0) {
+		perror("membarrier query");
+		return -1;
+	}
+	if ((query & required) != required) {
+		fprintf(stderr,
+			"membarrier query omitted sync-core commands: %#lx\n",
+			query);
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	errno = 0;
+	if (syscall(MEMBARRIER_SYSCALL,
+		    MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0) != -1 ||
+	    errno != EPERM) {
+		fprintf(stderr,
+			"unregistered membarrier sync-core did not fail with EPERM\n");
+		errno = EPROTO;
+		return -1;
+	}
+
+	if (syscall(MEMBARRIER_SYSCALL,
+		    MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0) < 0) {
+		perror("register membarrier sync-core");
+		return -1;
+	}
+
+	long registrations = syscall(MEMBARRIER_SYSCALL,
+				     MEMBARRIER_CMD_GET_REGISTRATIONS, 0, 0);
+	if (registrations < 0 ||
+	    !(registrations &
+	      MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE)) {
+		fprintf(stderr,
+			"membarrier registration was not retained: %#lx\n",
+			registrations);
+		errno = EPROTO;
+		return -1;
+	}
+
+	return 0;
 }
 
 static int call_jit(void)
@@ -138,20 +199,30 @@ static void *worker_main(void *arg)
 	return NULL;
 }
 
-static int require_smp4(int argc, char **argv)
+static int parse_options(int argc, char **argv)
 {
-	if (argc == 1)
-		return 0;
-	if (argc == 2 && strcmp(argv[1], "--require-smp4") == 0)
-		return 1;
+	int require_smp4 = 0;
 
-	fprintf(stderr, "usage: %s [--require-smp4]\n", argv[0]);
-	exit(EXIT_FAILURE);
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--require-smp4") == 0) {
+			require_smp4 = 1;
+		} else if (strcmp(argv[i], "--membarrier-sync-core") == 0) {
+			use_membarrier_sync_core = 1;
+		} else {
+			fprintf(stderr,
+				"usage: %s [--require-smp4] "
+				"[--membarrier-sync-core]\n",
+				argv[0]);
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	return require_smp4;
 }
 
 int main(int argc, char **argv)
 {
-	const int required = require_smp4(argc, argv);
+	const int required = parse_options(argc, argv);
 	cpu_set_t original_mask;
 	pthread_t helpers[NUM_HELPERS];
 	struct worker_state states[NUM_HELPERS] = { 0 };
@@ -185,6 +256,8 @@ int main(int argc, char **argv)
 		perror("mmap executable JIT page");
 		return EXIT_FAILURE;
 	}
+	if (use_membarrier_sync_core && register_membarrier_sync_core() < 0)
+		return EXIT_FAILURE;
 
 	emit_return_value(1);
 	if (flush_all_harts() < 0) {
@@ -279,8 +352,10 @@ int main(int argc, char **argv)
 	if (failed)
 		return EXIT_FAILURE;
 
-	printf("RISC-V cross-hart icache: CPU%d updated JIT code; "
+	printf("RISC-V cross-hart icache (%s): CPU%d updated JIT code; "
 	       "remote mask %#x observed the new instruction\n",
+	       use_membarrier_sync_core ? "membarrier sync-core" :
+					   "riscv_flush_icache",
 	       coordinator, target_mask);
 	return EXIT_SUCCESS;
 }

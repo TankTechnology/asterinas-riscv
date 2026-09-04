@@ -12,3 +12,4 @@ set -e
 
 ./itimer/setitimer
 ./itimer/timer_create
+./itimer/dynamic_clock

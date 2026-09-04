@@ -1,25 +1,31 @@
 # Milk-V Megrez RISC-V 移植状态
 
-> **本页是唯一实时状态入口。** 可执行命令只维护在
+> **本页是人工维护的状态导航，不是独立验收证据。** 可执行命令只维护在
 > [`tools/riscv/README.md`](../../tools/riscv/README.md)；冻结结果只维护在
-> [证据索引](evidence/megrez-history-index.md)及其日期页中。
+> [证据索引](evidence/megrez-history-index.md)及其日期页中。任何“当前通过”
+> 结论仍须绑定完整 commit、日期、镜像身份和保留的 result/evidence 路径。
 
 ## 当前状态
 
 | 项目 | 当前值 |
 |---|---|
 | 状态来源 | 本文件所在 Git commit |
-| 工作分支 | `codex/drm-r1-current-main` |
-| 最近真机候选 | `f3d9c73fc` |
-| 最近真机记录 | [Debian Desktop M4 应用](evidence/2026-08-26-debian-desktop-m4-apps.md) |
-| 当前目标 | 固化鼠标交互，再接入原生网络并逐步替换 framebuffer 路径 |
+| 工作分支 | `main` |
+| 最近桌面真机候选 | `f3d9c73fc` |
+| 最近网络真机候选 | `ed3a6508e` |
+| 最近真机记录 | [DWMAC streaming-DMA closure](evidence/megrez-dwmac-rx-liveness-contract.md#streaming-dma-physical-closure) |
+| 当前目标 | 将已验证的 DWMAC 路径接入 Debian/Firefox 门禁，并补真机鼠标交互；原生显示另行验收 |
 
 当前结论：Asterinas 的 compiled Sv39 内核已在 Megrez 上启动 4 个 hart，
 通过 MMC 与 Stage1 进入持久 Debian Trixie 根；systemd 257.13、udev、
 logind、Xorg fbdev、双 xHCI、USB 键盘和鼠标、Matchbox、PCManFM、NetSurf
 与 xterm 已在无自动重启的真机启动中到达完整 M4 READY。HDMI 桌面与串口
 调试可同时保留。这仍是集成与调试成果，**不代表 Asterinas 已正式支持
-Megrez**，也不代表原生 DRM 加速或网络已经可用。
+Megrez**，也不代表原生显示加速或 Debian 桌面网络已经可用。
+
+独立的原生 DWMAC 真机门禁随后在 `ed3a6508e` 上完成 17,907,712 字节的
+四阶段 TCP 接收并安全回到 U-Boot。该结果证明冻结 probe 的网络数据路径，
+尚未证明 Desktop M4/Firefox 根文件系统已经完成网络集成。
 
 ## 最后真机边界
 
@@ -72,11 +78,12 @@ Image 的连续运行。
 
 ## 第一缺失边界
 
-基础桌面第一缺失边界已经推进到 **真机鼠标交互与网络**：鼠标已通过
+基础桌面第一缺失边界已经推进到 **真机鼠标交互与网络集成**：鼠标已通过
 xHCI、HID、evdev 并被 Xorg 选中，但物理移动/点击仍需 HDMI 操作者确认；
-Asterinas 网络尚未接入这个 Debian 根，因此 NetSurf 目前只证明应用和窗口
-启动，不能外推为网页访问。显示仍使用 U-Boot 交接的 firmware framebuffer，
-不是原生 EIC7700 DRM 或加速渲染。
+冻结 probe 已证明 Asterinas DWMAC 的持续 TCP 接收，但该路径尚未接入这个
+Debian 桌面根，因此 NetSurf 目前只证明应用和窗口启动，不能外推为网页
+访问。显示仍使用 U-Boot 交接的 firmware framebuffer，不是原生 EIC7700
+显示控制器或加速渲染。
 
 ## 当前单变量假设
 
@@ -89,7 +96,8 @@ QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光�
 
 1. 真机光标移动和点击仍需操作者确认；USB 热插拔和任意 report-protocol
    HID 尚未验证。
-2. PCI/板载网络尚未纳入 Desktop M4 门禁，NetSurf 还不能访问网页。
+2. 已验证的板载 DWMAC 路径尚未纳入 Desktop M4/Firefox 门禁，NetSurf 的
+   桌面结果还不能外推为网页访问。
 3. EIC7700 原生 DRM、cache/coherency、加速渲染与显示模式切换尚未实现；
    当前依赖 RAM-only 1920x1080 firmware framebuffer handoff。
 4. systemd 仍会报告缺少 kmod、部分 clone/syscall 与 cgroup 语义，但这些

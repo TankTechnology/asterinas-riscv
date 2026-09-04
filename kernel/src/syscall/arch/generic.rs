@@ -83,9 +83,10 @@ macro_rules! import_generic_syscall_entries {
             madvise::sys_madvise,
             membarrier::sys_membarrier,
             memfd_create::sys_memfd_create,
+            mincore::sys_mincore,
             mkdir::sys_mkdirat,
             mknod::sys_mknodat,
-            mlock::{sys_mlock, sys_munlock},
+            mlock::{sys_mlock, sys_mlockall, sys_munlock, sys_munlockall},
             mmap::sys_mmap,
             mount::sys_mount,
             mount_setattr::sys_mount_setattr,
@@ -134,6 +135,7 @@ macro_rules! import_generic_syscall_entries {
             sched_getattr::sys_sched_getattr,
             sched_getparam::sys_sched_getparam,
             sched_getscheduler::sys_sched_getscheduler,
+            sched_rr_get_interval::sys_sched_rr_get_interval,
             sched_setattr::sys_sched_setattr,
             sched_setparam::sys_sched_setparam,
             sched_setscheduler::sys_sched_setscheduler,
@@ -185,7 +187,7 @@ macro_rules! import_generic_syscall_entries {
             sysinfo::sys_sysinfo,
             tgkill::{sys_tgkill, sys_tkill},
             timer_create::{sys_timer_create, sys_timer_delete},
-            timer_settime::{sys_timer_gettime, sys_timer_settime},
+            timer_settime::{sys_timer_getoverrun, sys_timer_gettime, sys_timer_settime},
             timerfd_create::sys_timerfd_create,
             timerfd_gettime::sys_timerfd_gettime,
             timerfd_settime::sys_timerfd_settime,
@@ -319,6 +321,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SETITIMER = 103              => sys_setitimer(args[..3]);
             SYS_TIMER_CREATE = 107           => sys_timer_create(args[..3]);
             SYS_TIMER_GETTIME = 108          => sys_timer_gettime(args[..2]);
+            SYS_TIMER_GETOVERRUN = 109       => sys_timer_getoverrun(args[..1]);
             SYS_TIMER_SETTIME = 110          => sys_timer_settime(args[..4]);
             SYS_TIMER_DELETE = 111           => sys_timer_delete(args[..1]);
             SYS_CLOCK_SETTIME = 112          => sys_clock_settime(args[..2]);
@@ -335,6 +338,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SCHED_YIELD = 124            => sys_sched_yield(args[..0]);
             SYS_SCHED_GET_PRIORITY_MAX = 125 => sys_sched_get_priority_max(args[..1]);
             SYS_SCHED_GET_PRIORITY_MIN = 126 => sys_sched_get_priority_min(args[..1]);
+            SYS_SCHED_RR_GET_INTERVAL = 127  => sys_sched_rr_get_interval(args[..2]);
             SYS_KILL = 129                   => sys_kill(args[..2]);
             SYS_TKILL = 130                  => sys_tkill(args[..2]);
             SYS_TGKILL = 131                 => sys_tgkill(args[..3]);
@@ -420,6 +424,9 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_MSYNC = 227                  => sys_msync(args[..3]);
             SYS_MLOCK = 228                  => sys_mlock(args[..2]);
             SYS_MUNLOCK = 229                => sys_munlock(args[..2]);
+            SYS_MLOCKALL = 230               => sys_mlockall(args[..1]);
+            SYS_MUNLOCKALL = 231             => sys_munlockall(args[..0]);
+            SYS_MINCORE = 232                => sys_mincore(args[..3]);
             SYS_MADVISE = 233                => sys_madvise(args[..3]);
             SYS_ACCEPT4 = 242                => sys_accept4(args[..4]);
             SYS_WAIT4 = 260                  => sys_wait4(args[..4]);

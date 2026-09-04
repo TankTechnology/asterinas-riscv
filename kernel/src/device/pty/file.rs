@@ -29,8 +29,8 @@ impl PtySlaveFile {
 
         let master_flags = slave.driver().tty_flags();
         // On Linux the slave may still be opened after the master is closed
-        // (it just sees a hangup), so only reject when the master has it
-        // explicitly locked via TIOCSPTLCK.
+        // (it just sees a hangup), so only reject while the master has it
+        // locked. A Unix98 PTY starts locked and unlockpt(3) clears this flag.
         if master_flags.is_pty_locked() {
             return_errno_with_message!(
                 Errno::EIO,

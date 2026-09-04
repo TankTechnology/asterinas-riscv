@@ -94,7 +94,7 @@ fn create_init_process(
     let fs_path = FsPath::try_from(executable_path)?;
     let elf_path = fs.resolver().read().lookup(&fs_path)?;
 
-    let pid = allocate_posix_tid();
+    let pid = allocate_posix_tid()?;
     let vmar = VmarHandle::new(ProcessVm::new(elf_path.clone()));
     let resource_limits = new_resource_limits_for_init();
     let nice = Nice::default();
@@ -102,6 +102,7 @@ fn create_init_process(
     let sig_dispositions = Arc::new(Mutex::new(SigDispositions::default()));
     let user_ns = UserNamespace::get_init_singleton().clone();
     let pid_ns = PidNamespace::get_init_singleton().clone();
+    let pid_ns_reservation = pid_ns.reserve_process_ids(pid, &[])?;
 
     let init_proc = Process::new(
         pid,
@@ -112,6 +113,7 @@ fn create_init_process(
         sig_dispositions,
         user_ns,
         pid_ns,
+        pid_ns_reservation,
     );
 
     let init_task = create_init_task(pid, &init_proc, fs, vmar, elf_path, argv, envp)?;

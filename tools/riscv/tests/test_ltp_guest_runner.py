@@ -355,6 +355,21 @@ class LtpGuestRunnerTests(unittest.TestCase):
 
 
 class LtpBuildScriptContractTests(unittest.TestCase):
+    def test_builder_applies_musl_syscall_adaptations_idempotently(self) -> None:
+        source = BUILD_SCRIPT.read_text()
+        clone_patch = (LTP / "cloner-riscv-raw-clone.patch").read_text()
+
+        self.assertIn('SCHED_VARIANT_PATCH="${SRC_DIR}/', source)
+        self.assertIn('CLONE_RAW_PATCH="${SRC_DIR}/', source)
+        self.assertIn(
+            'for patch in "${SCHED_VARIANT_PATCH}" "${CLONE_RAW_PATCH}"', source
+        )
+        self.assertIn("--reverse --check", source)
+        self.assertIn("ltp_riscv_raw_clone", clone_patch)
+        self.assertIn('"mv a3, a5\\n"', clone_patch)
+        self.assertIn('"mv a4, a6\\n"', clone_patch)
+        self.assertIn('"li a7, 220\\n"', clone_patch)
+
     def test_builder_requires_busybox_before_replacing_rootfs(self) -> None:
         source = BUILD_SCRIPT.read_text()
 

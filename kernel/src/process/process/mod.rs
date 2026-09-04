@@ -9,7 +9,7 @@ use ostd::timer::Jiffies;
 
 use self::timer_manager::PosixTimerManager;
 use super::{
-    namespace::pid_ns::PidNamespace,
+    namespace::pid_ns::{PidNamespace, PidNsReservation},
     pid_table::{self, PidTable},
     posix_thread::{AsPosixThread, FIRST_POSIX_TID},
     process_vm::ProcessVmarGuard,
@@ -42,7 +42,7 @@ mod job_control;
 mod process_group;
 mod session;
 mod terminal;
-mod timer_manager;
+pub(crate) mod timer_manager;
 
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 pub use init_proc::spawn_init_process;
@@ -244,13 +244,11 @@ impl Process {
         sig_dispositions: Arc<Mutex<SigDispositions>>,
         user_ns: Arc<UserNamespace>,
         pid_ns: Arc<PidNamespace>,
+        pid_ns_reservation: PidNsReservation,
     ) -> Arc<Self> {
+        let mut pid_ns_reservation = Some(pid_ns_reservation);
         Arc::new_cyclic(|process_ref: &Weak<Process>| {
-            // Register the process in its PID namespace and all ancestors,
-            // allocating a virtual PID in each.
-            let ns_vpids = pid_ns
-                .register_process(process_ref, pid as u32)
-                .into_boxed_slice();
+            let ns_vpids = pid_ns_reservation.take().unwrap().commit(process_ref);
 
             // SIGCHID does not interrupt pauser. Child process will
             // resume paused parent when doing exit.

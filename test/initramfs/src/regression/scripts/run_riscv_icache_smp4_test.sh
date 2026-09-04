@@ -10,4 +10,5 @@ if [ "$(uname -m)" != "riscv64" ]; then
 fi
 
 /test/memory/riscv_icache/cross_hart --require-smp4
+/test/memory/riscv_icache/cross_hart --require-smp4 --membarrier-sync-core
 echo "RISC-V SMP4 icache regression passed."

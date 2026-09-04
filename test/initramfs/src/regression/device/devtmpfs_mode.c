@@ -19,7 +19,6 @@ struct device_node {
 static const struct device_node device_nodes[] = {
 	/* Explicit Linux overrides (non-default mode). */
 	{ "/dev/null", 0666, 1, 3 },
-	{ "/dev/zero", 0666, 1, 5 },
 	{ "/dev/tty", 0666, 5, 0 },
 	/*
 	 * Devices that fall back to the kernel devtmpfs default (0600).

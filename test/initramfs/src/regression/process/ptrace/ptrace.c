@@ -64,6 +64,32 @@ static unsigned long read_proc_mem_word(int proc_mem_fd, unsigned long addr)
 	return value;
 }
 
+FN_TEST(ptrace_attach_detach)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		for (;;)
+			pause();
+	}
+
+	TEST_SUCC(ptrace(PTRACE_ATTACH, pid, 0, 0));
+
+	int status = 0;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGSTOP);
+	TEST_RES(read_tracer_pid(pid), _ret == getpid());
+
+	TEST_SUCC(ptrace(PTRACE_DETACH, pid, 0, 0));
+	TEST_RES(read_tracer_pid(pid), _ret == 0);
+
+	TEST_SUCC(kill(pid, SIGKILL));
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSIGNALED(status) &&
+						   WTERMSIG(status) == SIGKILL);
+}
+END_TEST()
+
 FN_TEST(ptrace_signal_stop_wait_continue)
 {
 	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);

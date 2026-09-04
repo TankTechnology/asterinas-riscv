@@ -91,13 +91,12 @@ impl ClockSource {
     /// the passed cycles into passed time and calculate the current instant.
     ///
     /// Returns the calculated instant and instant cycles.
-    fn calculate_instant(&self) -> (Instant, u64) {
-        let (instant_cycles, last_instant, last_cycles) = {
-            let last_record = self.last_record.read();
-            let (last_instant, last_cycles) = *last_record;
-            (self.read_cycles(), last_instant, last_cycles)
-        };
-
+    fn calculate_from_record(
+        &self,
+        instant_cycles: u64,
+        last_instant: Instant,
+        last_cycles: u64,
+    ) -> Instant {
         let delta_nanos = match instant_cycles.checked_sub(last_cycles) {
             Some(delta) => self.cycles_to_nanos_lossy(delta),
             None => {
@@ -111,7 +110,15 @@ impl ClockSource {
             }
         };
         let duration = Duration::from_nanos(delta_nanos);
-        (last_instant + duration, instant_cycles)
+        last_instant + duration
+    }
+
+    fn calculate_instant(&self) -> (Instant, u64) {
+        let last_record = self.last_record.read();
+        let (last_instant, last_cycles) = *last_record;
+        let instant_cycles = self.read_cycles();
+        let instant = self.calculate_from_record(instant_cycles, last_instant, last_cycles);
+        (instant, instant_cycles)
     }
 
     fn cycles_to_nanos_lossy(&self, cycles: u64) -> u64 {
@@ -166,8 +173,14 @@ impl ClockSource {
 
     /// Gets the instant to update the internal instant in the `ClockSource`.
     pub(crate) fn update(&self) {
-        let (instant, instant_cycles) = self.calculate_instant();
-        self.update_last_record((instant, instant_cycles));
+        // Keep the read/compute/write sequence under one exclusive lock so
+        // concurrent refresh callers cannot let an older sample overwrite a
+        // newer record and make the clock move backwards.
+        let mut last_record = self.last_record.write();
+        let (last_instant, last_cycles) = *last_record;
+        let instant_cycles = self.read_cycles();
+        let instant = self.calculate_from_record(instant_cycles, last_instant, last_cycles);
+        *last_record = (instant, instant_cycles);
     }
 
     /// Reads the instant corresponding to the current time.
