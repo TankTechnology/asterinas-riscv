@@ -2,7 +2,7 @@
 
 use align_ext::AlignExt;
 
-use super::SyscallReturn;
+use super::{SyscallReturn, mlock::locked_memory_limit};
 use crate::{
     fs::file::file_table::{RawFileDesc, get_file_fast},
     prelude::*,
@@ -112,6 +112,10 @@ fn do_sys_mmap(
             options = options.is_shared(true);
         }
 
+        if option.flags().contains(MMapFlags::MAP_LOCKED) {
+            options = options.lock(locked_memory_limit(ctx)?);
+        }
+
         if option.flags().contains(MMapFlags::MAP_ANONYMOUS) {
             // Linux rejects MAP_SHARED_VALIDATE for anonymous mappings.
             if option.typ() == MMapType::SharedValidate {
@@ -155,7 +159,8 @@ fn do_sys_mmap(
 
     let map_addr = vm_map_options.build()?;
 
-    if option.flags().contains(MMapFlags::MAP_POPULATE)
+    if (option.flags().contains(MMapFlags::MAP_POPULATE)
+        || option.flags().contains(MMapFlags::MAP_LOCKED))
         && !option.flags().contains(MMapFlags::MAP_NONBLOCK)
         && let Some(required_perms) = population_perms(vm_perms)
     {

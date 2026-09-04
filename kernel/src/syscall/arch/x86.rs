@@ -81,7 +81,7 @@ use super::{
     mincore::sys_mincore,
     mkdir::{sys_mkdir, sys_mkdirat},
     mknod::{sys_mknod, sys_mknodat},
-    mlock::{sys_mlock, sys_munlock},
+    mlock::{sys_mlock, sys_mlockall, sys_munlock, sys_munlockall},
     mmap::sys_mmap,
     mount::sys_mount,
     mount_setattr::sys_mount_setattr,
@@ -340,6 +340,8 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SCHED_RR_GET_INTERVAL = 148 => sys_sched_rr_get_interval(args[..2]);
     SYS_MLOCK = 149            => sys_mlock(args[..2]);
     SYS_MUNLOCK = 150          => sys_munlock(args[..2]);
+    SYS_MLOCKALL = 151         => sys_mlockall(args[..1]);
+    SYS_MUNLOCKALL = 152       => sys_munlockall(args[..0]);
     SYS_PIVOT_ROOT = 155       => sys_pivot_root(args[..2]);
     SYS_PRCTL = 157            => sys_prctl(args[..5]);
     SYS_ARCH_PRCTL = 158       => sys_arch_prctl(args[..2]);
