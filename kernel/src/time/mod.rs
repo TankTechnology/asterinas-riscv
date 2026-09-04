@@ -5,8 +5,8 @@
 pub use core::{Clock, timer};
 
 use ::core::time::Duration;
-pub use system_time::{START_TIME, SystemTime};
 pub(crate) use system_time::wall_clock_adjust_nanos;
+pub use system_time::{START_TIME, SystemTime};
 pub use timer::{Timer, TimerManager};
 
 use crate::prelude::*;
@@ -14,6 +14,7 @@ use crate::prelude::*;
 pub mod clocks;
 mod core;
 pub mod cpu_time_stats;
+pub mod namespace;
 mod softirq;
 mod system_time;
 pub mod timerfd;
@@ -35,6 +36,7 @@ pub(super) fn init() {
 }
 
 pub(super) fn init_on_each_cpu() {
+    softirq::init_on_each_cpu();
     cpu_time_stats::init_on_each_cpu();
 }
 

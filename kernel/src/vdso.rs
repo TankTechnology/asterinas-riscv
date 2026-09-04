@@ -13,9 +13,9 @@
 //! mapped into the address space of every user space process for efficient access.
 
 use alloc::sync::Arc;
-use core::{mem::ManuallyDrop, time::Duration};
+use core::time::Duration;
 
-use aster_time::{Instant, read_monotonic_time};
+use aster_time::Instant;
 use aster_util::coeff::Coeff;
 use ostd::{
     const_assert,
@@ -27,11 +27,7 @@ use spin::Once;
 
 use crate::{
     syscall::ClockId,
-    time::{
-        START_TIME, SystemTime,
-        clocks::MonotonicClock,
-        timer::{Timeout, TimerGuard},
-    },
+    time::{START_TIME, SystemTime},
     vm::page_cache::{Vmo, VmoOptions},
 };
 
@@ -196,14 +192,24 @@ impl VdsoData {
     }
 
     fn update_coarse_res_instant(&mut self, instant: Instant) {
-        for clock_id in COARSE_RES_CLOCK_IDS {
-            let (secs, nanos) = if clock_id == ClockId::CLOCK_REALTIME_COARSE {
-                Self::wall_clock_basetime(instant)
-            } else {
-                (instant.secs(), instant.nanos() as u64)
-            };
-            self.update_clock_instant(clock_id as usize, secs, nanos);
-        }
+        let (real_secs, real_nanos) = Self::wall_clock_basetime(instant);
+        self.update_coarse_res_time(
+            Duration::new(real_secs, real_nanos as u32),
+            Duration::new(instant.secs(), instant.nanos()),
+        );
+    }
+
+    fn update_coarse_res_time(&mut self, real_time: Duration, monotonic_time: Duration) {
+        self.update_clock_instant(
+            ClockId::CLOCK_REALTIME_COARSE as usize,
+            real_time.as_secs(),
+            real_time.subsec_nanos() as u64,
+        );
+        self.update_clock_instant(
+            ClockId::CLOCK_MONOTONIC_COARSE as usize,
+            monotonic_time.as_secs(),
+            monotonic_time.subsec_nanos() as u64,
+        );
     }
 }
 
@@ -305,10 +311,10 @@ impl Vdso {
         self.finish_update_data_frame(&mut data);
     }
 
-    fn update_coarse_res_instant(&self, instant: Instant) {
+    fn update_coarse_res_time(&self, real_time: Duration, monotonic_time: Duration) {
         let mut data = self.data.lock();
 
-        data.update_coarse_res_instant(instant);
+        data.update_coarse_res_time(real_time, monotonic_time);
 
         // Update begins.
         self.begin_update_data_frame(&mut data);
@@ -366,10 +372,8 @@ fn update_vdso_high_res_instant(instant: Instant, instant_cycles: u64) {
         .update_high_res_instant(instant, instant_cycles);
 }
 
-/// Immediately refreshes the wall-clock fields in the vDSO data page after
-/// `clock_settime`, mirroring Linux's `timekeeping_update()` →
-/// `update_vsyscall()` (the periodic update runs at only 10 Hz, which is too
-/// slow for `settime`-then-`gettime` sequences).
+/// Immediately refreshes the high-resolution wall clock in the vDSO data page
+/// after `clock_settime`.
 pub(crate) fn on_wall_clock_change() {
     let Some(vdso) = VDSO.get() else {
         return;
@@ -378,13 +382,31 @@ pub(crate) fn on_wall_clock_change() {
     let clocksource = aster_time::default_clocksource();
     let (instant, cycles) = clocksource.last_record();
     vdso.update_high_res_instant(instant, cycles);
-    vdso.update_coarse_res_instant(instant);
 }
 
-/// Updates instants with respect to coarse-resolution clocks in vDSO data.
-fn update_vdso_coarse_res_instant(_guard: TimerGuard) {
-    let instant = Instant::from(read_monotonic_time());
-    VDSO.get().unwrap().update_coarse_res_instant(instant);
+/// Publishes the same coarse snapshot used by the syscall clock path to vDSO.
+pub(crate) fn on_coarse_clock_update(real_time: Duration, monotonic_time: Duration) {
+    if let Some(vdso) = VDSO.get() {
+        vdso.update_coarse_res_time(real_time, monotonic_time);
+    }
+}
+
+/// Disables the shared vDSO clock fast path after time namespaces are used.
+///
+/// The current vDSO has one global data page, while namespace offsets are
+/// process-specific. Returning `ENOSYS` from the vDSO makes libc use the
+/// namespace-aware syscall until per-namespace vvar pages are implemented.
+pub(crate) fn disable_clock_fast_path_for_time_namespaces() {
+    let Some(vdso) = VDSO.get() else {
+        return;
+    };
+    let mut data = vdso.data.lock();
+    vdso.begin_update_data_frame(&mut data);
+    data.set_clock_mode(VdsoClockMode::None);
+    vdso.data_frame
+        .write_val(vdso_data_field_offset!(clock_mode), &data.clock_mode)
+        .unwrap();
+    vdso.finish_update_data_frame(&mut data);
 }
 
 /// Initializes the time duration from 1970-01-01 00:00:00 to the start time,
@@ -409,15 +431,7 @@ pub(super) fn init_in_first_kthread() {
     init_vdso();
 
     aster_time::VDSO_DATA_HIGH_RES_UPDATE_FN.call_once(|| update_vdso_high_res_instant);
-
-    // Coarse resolution clock IDs directly read the instant stored in vDSO data without
-    // using coefficients for calculation, thus the related instant requires more frequent updating.
-    let coarse_instant_timer = ManuallyDrop::new(
-        MonotonicClock::timer_manager().create_timer(update_vdso_coarse_res_instant),
-    );
-    let mut timer_guard = coarse_instant_timer.lock();
-    timer_guard.set_interval(Duration::from_millis(100));
-    timer_guard.set_timeout(Timeout::After(Duration::from_millis(100)));
+    crate::time::clocks::update_coarse_clock();
 }
 
 /// Returns the vDSO VMO.

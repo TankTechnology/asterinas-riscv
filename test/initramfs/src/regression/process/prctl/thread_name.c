@@ -9,6 +9,8 @@
 #include "../../common/test.h"
 
 #define THREAD_NAME "fork_comm"
+#define LONG_THREAD_NAME "prctl05_test_xxxxx"
+#define TRUNCATED_THREAD_NAME "prctl05_test_xx"
 
 static int check_proc_stat_comm(const char *expected_comm)
 {
@@ -43,5 +45,16 @@ FN_TEST(fork_inherits_thread_name)
 
 	TEST_RES(waitpid(pid, &status, 0),
 		 _ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+END_TEST()
+
+FN_TEST(long_thread_name_is_silently_truncated)
+{
+	char thread_name[16] = { 0 };
+
+	TEST_SUCC(prctl(PR_SET_NAME, LONG_THREAD_NAME));
+	TEST_SUCC(prctl(PR_GET_NAME, thread_name));
+	TEST_RES(strcmp(thread_name, TRUNCATED_THREAD_NAME), _ret == 0);
+	TEST_RES(check_proc_stat_comm(TRUNCATED_THREAD_NAME), _ret == 0);
 }
 END_TEST()

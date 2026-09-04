@@ -26,6 +26,7 @@ use crate::{
     },
     security::lsm::hooks as lsm_hooks,
     syscall::SyscallReturn,
+    time::namespace::TimeNamespace,
 };
 
 pub fn sys_setns(fd: RawFileDesc, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
@@ -121,6 +122,10 @@ fn build_proxy_from_pid_file(
         set_pid_ns(&mut builder, &target_ns, ctx)?;
     }
 
+    if flags.contains(CloneFlags::CLONE_NEWTIME) {
+        set_time_ns(&mut builder, target_proxy.time_ns(), ctx)?;
+    }
+
     // TODO: Support setting other namespaces from the target process.
 
     Ok(builder.build())
@@ -162,6 +167,9 @@ fn build_proxy_from_ns_file(
         })?
         || try_apply_ns_from_inode::<PidNamespace>(inode_handle, flags, |ns| {
             set_pid_ns(&mut builder, &ns, ctx)
+        })?
+        || try_apply_ns_from_inode::<TimeNamespace>(inode_handle, flags, |ns| {
+            set_time_ns(&mut builder, &ns, ctx)
         })?
         || try_apply_ns_from_inode::<UtsNamespace>(inode_handle, flags, |ns| {
             set_uts_ns(&mut builder, &ns, ctx)
@@ -249,6 +257,16 @@ fn set_net_ns(
 
     builder.net_ns(target_ns.clone());
 
+    Ok(())
+}
+
+fn set_time_ns(
+    builder: &mut NsProxyBuilder,
+    target_ns: &Arc<TimeNamespace>,
+    ctx: &Context,
+) -> Result<()> {
+    check_set_ns_perms(target_ns, ctx)?;
+    builder.time_ns(target_ns.clone());
     Ok(())
 }
 

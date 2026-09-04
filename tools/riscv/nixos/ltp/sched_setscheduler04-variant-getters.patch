@@ -1,0 +1,10 @@
+diff --git a/testcases/kernel/syscalls/sched_setscheduler/sched_setscheduler04.c b/testcases/kernel/syscalls/sched_setscheduler/sched_setscheduler04.c
+index abdd4c6..c68cfee 100644
+--- a/testcases/kernel/syscalls/sched_setscheduler/sched_setscheduler04.c
++++ b/testcases/kernel/syscalls/sched_setscheduler/sched_setscheduler04.c
+@@ -52 +52 @@ static void test_reset_on_fork(unsigned int i)
+-		if (sched_getscheduler(pid) == SCHED_NORMAL)
++		if (tv->sched_getscheduler(pid) == SCHED_NORMAL)
+@@ -57 +57 @@ static void test_reset_on_fork(unsigned int i)
+-		sched_getparam(pid, &param);
++		tv->sched_getparam(pid, &param);
