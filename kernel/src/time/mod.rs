@@ -14,6 +14,7 @@ use crate::prelude::*;
 pub mod clocks;
 mod core;
 pub mod cpu_time_stats;
+pub mod namespace;
 mod softirq;
 mod system_time;
 pub mod timerfd;
