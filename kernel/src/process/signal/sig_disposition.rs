@@ -3,7 +3,10 @@
 use super::{constants::*, sig_action::SigAction, sig_num::SigNum};
 use crate::{
     prelude::*,
-    process::signal::{sig_action::SigActionFlags, signals::Signal},
+    process::signal::{
+        sig_action::{SigActionFlags, SigHandler},
+        signals::Signal,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -47,9 +50,14 @@ impl SigDispositions {
         Ok(core::mem::replace(&mut self.map[idx], sa))
     }
 
+    pub fn reset_handler(&mut self, num: SigNum) {
+        let idx = Self::num_to_idx(num);
+        self.map[idx].reset_handler();
+    }
+
     pub fn set_default(&mut self, num: SigNum) {
         let idx = Self::num_to_idx(num);
-        self.map[idx] = SigAction::Dfl;
+        self.map[idx] = SigAction::default();
     }
 
     /// man 7 signal:
@@ -58,8 +66,8 @@ impl SigDispositions {
     /// This function should be used when execve.
     pub fn inherit(&mut self) {
         for sigaction in &mut self.map {
-            if let SigAction::User { .. } = sigaction {
-                *sigaction = SigAction::Dfl;
+            if matches!(sigaction.handler(), SigHandler::User(_)) {
+                *sigaction = SigAction::default();
             }
         }
     }
@@ -80,16 +88,11 @@ fn check_sigaction(sig_action: &SigAction) -> Result<()> {
     // whereas we have moved this check forward to prevent this action from being set.
     // This may result in some differences from the behavior of Linux.
 
-    let SigAction::User {
-        flags,
-        restorer_addr,
-        ..
-    } = sig_action
-    else {
+    if !matches!(sig_action.handler(), SigHandler::User(_)) {
         return Ok(());
-    };
+    }
 
-    if flags.contains(SigActionFlags::SA_RESTORER) && *restorer_addr != 0 {
+    if sig_action.flags().contains(SigActionFlags::SA_RESTORER) && sig_action.restorer_addr() != 0 {
         return Ok(());
     }
 
