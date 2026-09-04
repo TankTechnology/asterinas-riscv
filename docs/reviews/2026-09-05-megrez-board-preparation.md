@@ -61,3 +61,35 @@ permit metadata with the separate Sv39/Sv48 identities and to bind the exact
 Sv48 image, Stage1, and board DTB hashes into one run manifest. Only that
 passing, current-source evidence pair may unlock the serial gate. The board
 session remains fail-closed until then.
+
+## Firefox startup evidence
+
+The bounded QEMU startup profiler was rerun with `--boot-timeout 360 --smp 4`.
+It reached all four startup boundaries, including Marionette readiness, in
+223.826 seconds and exited cleanly:
+
+```text
+STARTUP_PROFILE_MARKER name=basic elapsed=53.713
+STARTUP_PROFILE_MARKER name=x-socket-ready elapsed=79.564
+STARTUP_PROFILE_MARKER name=firefox-exec elapsed=80.674
+STARTUP_PROFILE_MARKER name=marionette elapsed=223.826
+STARTUP_PROFILE_DONE elapsed=223.826 bytes=121737
+```
+
+This is a startup-compatibility pass, not a Baidu-content pass. The subsequent
+proxy browser gate reached `BOOT_MARIONETTE_CONNECTED`, created a WebDriver
+session, and completed the network checks, but the first `GetTitle` command
+after Baidu navigation exceeded the remaining bounded gate time. The physical
+run therefore remains limited to the desktop/Firefox-window target until that
+content-process phase is separately closed.
+
+## Board transfer bundle
+
+The current-source board artifacts were staged without copying the 2-GiB
+rootfs image:
+
+`target/firefox-artifacts/board-bundle-20260905/SHA256SUMS`
+
+The bundle contains the current Sv48 kernel, current Stage1 initramfs, and the
+Megrez DTB. The rootfs remains at its immutable signed path above; its hash is
+bound in this document and must be checked immediately before any transfer.
