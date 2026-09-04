@@ -59,8 +59,8 @@ pub fn do_execve(
     );
 
     // Deny write access to the executable file while it is being loaded, and
-    // fail with ETXTBSY if it is currently open for writing (the behavior of
-    // Linux's `deny_write_access()` in `open_exec()` before Linux 6.11).
+    // fail with ETXTBSY if a normal VFS open currently holds write access,
+    // mirroring Linux's inode write/execute exclusion.
     let _write_deny_guard = WriteAccessDenyGuard::new(elf_file.inode().clone())?;
 
     let program_to_load =
