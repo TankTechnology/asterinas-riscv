@@ -17,13 +17,14 @@ use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
-        posix_thread::{name::ThreadName, thread_local::SuppUserContext},
-        signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
         Credentials, NsProxy, Process, UserNamespace,
+        posix_thread::{name::ThreadName, thread_local::SuppUserContext},
+        process::timer_manager::CpuTimeAccounting,
+        signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
-    thread::{task, Thread, Tid},
-    time::{clocks::ProfClock, TimerManager},
+    thread::{Thread, Tid, task},
+    time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,
 };
 
@@ -217,6 +218,7 @@ impl PosixThreadBuilder {
                     sig_queues,
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
+                    cpu_time_accounting: SpinLock::new(CpuTimeAccounting::new()),
                     virtual_timer_manager,
                     prof_timer_manager,
                     io_priority: AtomicU32::new(0),

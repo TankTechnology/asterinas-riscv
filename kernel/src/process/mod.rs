@@ -34,6 +34,7 @@ pub use namespace::{
     user_ns::{IdMapExtent, UserNamespace},
 };
 pub use pid_file::PidFile;
+pub(crate) use process::timer_manager::CpuTimeMode;
 pub use process::{
     ExitCode, INIT_PROCESS_PID, JobControl, Pgid, Pid, Process, ProcessGroup, ReapedChildrenStats,
     Session, Sid, Terminal, broadcast_signal_async, enqueue_signal_async, spawn_init_process,
