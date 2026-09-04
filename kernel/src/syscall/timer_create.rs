@@ -4,7 +4,7 @@ use ostd::mm::VmIo;
 
 use super::{
     SyscallReturn,
-    clock_gettime::{DynamicClockIdInfo, DynamicClockType},
+    clock_gettime::{DynamicClockIdInfo, DynamicCpuClockType},
 };
 use crate::{
     prelude::*,
@@ -65,13 +65,16 @@ pub fn sys_timer_create(
                         process.enqueue_signal(Box::new(signal));
                     })
                 }
-                // Spawn a POSIX thread to run the `sigev_function`, which is stored in
-                // `sig_event.sigev_un._sigev_thread`.
-                //
-                // TODO: enable this instructions. Currently the system does not provide an API to spawn
-                // a POSIX thread to run a specified function.
+                // SIGEV_THREAD is implemented by the C library using an
+                // internal signal and helper thread.  The kernel side only
+                // validates and delivers the requested signal, just like the
+                // SIGEV_SIGNAL path.
                 SigNotify::SIGEV_THREAD => {
-                    unimplemented!()
+                    let process = current_process.clone();
+                    let signal = KernelSignal::new(SigNum::try_from(signo as u8)?);
+                    Box::new(move || {
+                        process.enqueue_signal(Box::new(signal));
+                    })
                 }
                 // Send a signal to the specified thread when the timer is expired.
                 SigNotify::SIGEV_THREAD_ID => {
@@ -152,10 +155,12 @@ where
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 let process_timer_manager = process.timer_manager();
                 match clock_type {
-                    DynamicClockType::Profiling => process_timer_manager.create_prof_timer(func),
-                    DynamicClockType::Virtual => process_timer_manager.create_virtual_timer(func),
-                    // TODO: support scheduling clock and fd clock.
-                    _ => unimplemented!(),
+                    DynamicCpuClockType::Profiling | DynamicCpuClockType::Scheduling => {
+                        process_timer_manager.create_prof_timer(func)
+                    }
+                    DynamicCpuClockType::Virtual => {
+                        process_timer_manager.create_virtual_timer(func)
+                    }
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
@@ -164,12 +169,16 @@ where
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 let posix_thread = thread.as_posix_thread().unwrap();
                 match clock_type {
-                    DynamicClockType::Profiling => posix_thread.create_prof_timer(func),
-                    DynamicClockType::Virtual => posix_thread.create_virtual_timer(func),
-                    _ => unimplemented!(),
+                    DynamicCpuClockType::Profiling | DynamicCpuClockType::Scheduling => {
+                        posix_thread.create_prof_timer(func)
+                    }
+                    DynamicCpuClockType::Virtual => posix_thread.create_virtual_timer(func),
                 }
             }
-            DynamicClockIdInfo::Fd(_) => unimplemented!(),
+            DynamicClockIdInfo::Fd(_) => return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "the file descriptor does not provide a dynamic clock"
+            ),
         }
     };
     Ok(timer)
