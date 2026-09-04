@@ -118,6 +118,7 @@ web_validate_ipv4() {
 
 web_network_evidence() {
     local address_output
+    local asset_attempt
     local clock_date=''
     local curl_result
     local curl_status
@@ -310,15 +311,24 @@ web_network_evidence() {
     web_emit_layer https
 
     temporary_asset="$WEB_TEMPORARY_DIRECTORY/baidu-logo.png"
-    limit="$(web_timeout_seconds "$deadline")" || web_fail baidu-asset timeout
-    if timeout "$limit" curl --fail --ipv4 --location --silent --show-error \
-        --max-time "$limit" "${external_curl[@]}" --output "$temporary_asset" \
-        "$BAIDU_ASSET"; then
-        :
-    else
-        curl_status=$?
-        web_fail baidu-asset "$(web_curl_reason "$curl_status")"
-    fi
+    curl_status=1
+    for asset_attempt in 1 2 3; do
+        limit="$(web_timeout_seconds "$deadline")" || web_fail baidu-asset timeout
+        if timeout "$limit" curl --fail --ipv4 --location --silent --show-error \
+            --max-time "$limit" "${external_curl[@]}" --output "$temporary_asset" \
+            "$BAIDU_ASSET"; then
+            curl_status=0
+            break
+        else
+            curl_status=$?
+        fi
+        if ((asset_attempt != 3)); then
+            emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE \
+layer=baidu-asset attempt=$asset_attempt reason=$(web_curl_reason "$curl_status")"
+            sleep 1
+        fi
+    done
+    ((curl_status == 0)) || web_fail baidu-asset "$(web_curl_reason "$curl_status")"
     signature="$(od -An -N8 -tx1 "$temporary_asset" | tr -d '[:space:]')"
     [[ "$signature" == 89504e470d0a1a0a ]] || web_fail baidu-asset content
     web_emit_layer baidu-asset

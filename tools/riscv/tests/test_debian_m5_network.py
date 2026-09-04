@@ -977,6 +977,14 @@ case "$*" in
         printf 'HTTP/1.1 200 OK\r\nDate: Sat, 29 Aug 2026 02:02:25 GMT\r\n\r\n'
         ;;
     *result.png*)
+        if [ "$ASTERINAS_WEB_FAIL_STAGE" = baidu-asset-once ]; then
+            count_file="$ASTERINAS_WEB_ASSET_COUNT"
+            count=0
+            [ ! -f "$count_file" ] || count="$(cat "$count_file")"
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$count_file"
+            [ "$count" -gt 1 ] || exit 6
+        fi
         [ "$ASTERINAS_WEB_FAIL_STAGE" = baidu-asset-curl ] && exit 22
         [ -n "$output" ] || exit 96
         if [ "$ASTERINAS_WEB_FAIL_STAGE" = baidu-asset ]; then
@@ -1065,6 +1073,7 @@ esac
             "ASTERINAS_WEB_MEDIUM_PAYLOAD": str(medium_payload),
             "ASTERINAS_WEB_FIXTURE_COUNT": str(fixture_count),
             "ASTERINAS_WEB_HTTPS_COUNT": str(directory / "https-count"),
+            "ASTERINAS_WEB_ASSET_COUNT": str(directory / "asset-count"),
             "ASTERINAS_WEB_FAIL_STAGE": fail_stage,
         }
         if mode == "proxy":
@@ -1103,6 +1112,34 @@ esac
         self.assertEqual(
             console.read_text(encoding="utf-8").splitlines()[-1],
             "DEBIAN_WEB_NETWORK_READY mode=direct layers=10",
+        )
+
+    def test_web_network_retries_a_transient_baidu_asset_dns_failure(self) -> None:
+        environment, console, _, command_log = self._web_network_environment(
+            self.directory / "web-baidu-asset-retry",
+            mode="direct",
+            fail_stage="baidu-asset-once",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, console.read_text())
+        asset_calls = [
+            line
+            for line in command_log.read_text(encoding="utf-8").splitlines()
+            if "result.png" in line
+        ]
+        self.assertEqual(len(asset_calls), 2)
+        self.assertIn(
+            "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=direct layer=baidu-asset "
+            "attempt=1 reason=dns",
+            console.read_text(encoding="utf-8").splitlines(),
         )
 
     def test_web_network_derives_medium_fixture_from_probe_url(self) -> None:
