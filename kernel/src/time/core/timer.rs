@@ -201,13 +201,11 @@ impl TimerManager {
     }
 
     fn insert(&self, timer_callback: Arc<TimerCallback>) {
-        let expired_time = timer_callback.expired_time;
         {
             let mut callbacks = self.timer_callbacks.disable_irq().lock();
             callbacks.push(timer_callback);
             self.may_have_callbacks.store(true, Ordering::Release);
         }
-        self.request_interrupt_at(expired_time);
     }
 
     /// Checks and processes the managed timers.
@@ -218,7 +216,7 @@ impl TimerManager {
             return;
         }
 
-        let (callbacks, next_expired_time) = {
+        let callbacks = {
             let mut timeout_list = self.timer_callbacks.disable_irq().lock();
             if timeout_list.is_empty() {
                 self.may_have_callbacks.store(false, Ordering::Release);
@@ -237,15 +235,10 @@ impl TimerManager {
                     break;
                 }
             }
-            let next_expired_time = timeout_list.peek().map(|timer| timer.expired_time);
             self.may_have_callbacks
-                .store(next_expired_time.is_some(), Ordering::Release);
-            (callbacks, next_expired_time)
+                .store(!timeout_list.is_empty(), Ordering::Release);
+            callbacks
         };
-
-        if let Some(expired_time) = next_expired_time {
-            self.request_interrupt_at(expired_time);
-        }
 
         for callback in callbacks {
             callback.call();
@@ -260,10 +253,6 @@ impl TimerManager {
         Timer::new(function, self.clone())
     }
 
-    fn request_interrupt_at(&self, expired_time: Duration) {
-        let remaining = expired_time.saturating_sub(self.clock.read_time());
-        ostd::timer::request_interrupt_after(remaining);
-    }
 }
 
 /// A `TimerCallback` can be used to execute a timer callback function.

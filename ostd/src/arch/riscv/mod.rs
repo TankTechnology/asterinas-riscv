@@ -99,10 +99,6 @@ pub fn tsc_freq() -> u64 {
     timer::get_timebase_freq()
 }
 
-pub(crate) fn request_timer_interrupt_after(duration: core::time::Duration) {
-    timer::request_interrupt_after(duration);
-}
-
 /// Flushes the instruction cache so that freshly written code becomes
 /// executable.
 ///
