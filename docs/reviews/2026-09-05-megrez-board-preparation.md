@@ -104,3 +104,26 @@ The physical gate must use `--target firefox --network-mode proxy` with these
 three names and CRCs, `--load-transport mmc` only after the board's existing
 rootfs identity is checked, and finite `--boot-timeout`/`--recovery-timeout`.
 No `saveenv`, partition write, or blind reset is part of this preparation.
+
+## Firefox gate scheduling diagnostics
+
+The proxy gate now performs the deterministic local fixture workload before
+visiting public pages.  This ordering is intentional: a public Baidu or
+Bilibili document can leave third-party work on Gecko's shared main thread and
+starve the next Marionette command.  A fresh tab did not isolate that shared
+thread.  One bounded retry also re-navigates Baidu when the first probe
+transiently observes `about:blank`.
+
+Proxy-mode browser evidence does not require a positive
+`secureConnectionStart`: Firefox may report the HTTP proxy connection while
+the proxy performs the upstream CONNECT/TLS handshake.  The independent proxy
+network gate still requires strict HTTPS verification; direct mode retains the
+browser-side timing check.
+
+The local fixture's WebAssembly probe is now wrapped in the same five-second
+timeout as worker, IndexedDB, audio, and fetch checks.  Before this change a
+guest that could not complete `WebAssembly.instantiate()` left capabilities in
+`state=running` and consumed the entire Marionette budget.  The timeout makes
+the unsupported capability explicit and keeps the gate fail-closed.  A full
+proxy Firefox-content pass is still pending until the RISC-V Firefox WASM
+capability itself completes successfully.

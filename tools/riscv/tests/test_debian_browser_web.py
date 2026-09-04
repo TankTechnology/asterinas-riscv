@@ -1729,7 +1729,10 @@ generate_fontconfig_cache "$stage" "$3"
 
         gate = (ROOTFS / "browser_web_marionette_gate.py").read_text()
         self.assertNotIn('"clear-baidu-document"', gate)
-        self.assertIn('"navigate-fixture-home"', gate)
+        self.assertLess(
+            gate.index('"navigate-fixture-home"'),
+            gate.index('"navigate-baidu-home"'),
+        )
 
     def test_clear_document_stops_busy_public_script_before_replacement(self) -> None:
         client = mock.Mock()
@@ -1766,6 +1769,36 @@ generate_fontconfig_cache "$stage" "$3"
             )
         self.assertEqual(observed, ready)
         self.assertIsNone(result)
+        self.assertEqual(client.command.call_count, 2)
+
+    def test_marionette_wait_recovers_about_blank_once(self) -> None:
+        ready = snapshot("https://www.baidu.com/")
+        ready["dom"]["baiduKeyword"] = True
+        ready["dom"]["baiduSubmit"] = True
+        ready["dom"]["baiduLogo"] = True
+        fields = {
+            "url", "title", "readyState", "bodyText", "jsComplete",
+            "browserCapabilities", "dom",
+        }
+        about_blank = snapshot("about:blank")
+        client = mock.Mock()
+        client.command.side_effect = [
+            {"value": json.dumps({key: about_blank[key] for key in fields})},
+            {"value": json.dumps({key: ready[key] for key in fields})},
+        ]
+        recover = mock.Mock()
+        with mock.patch(
+            "tools.riscv.debian.rootfs.browser_web_marionette_gate.time.sleep"
+        ):
+            observed, result = _wait_for_probe(
+                client,
+                probe_baidu_home,
+                time.monotonic() + 5,
+                recover=recover,
+            )
+        self.assertEqual(observed["url"], "https://www.baidu.com/")
+        self.assertIsNone(result)
+        recover.assert_called_once()
         self.assertEqual(client.command.call_count, 2)
 
     def test_marionette_reports_running_fixture_capabilities_once(self) -> None:
@@ -2064,6 +2097,13 @@ generate_fontconfig_cache "$stage" "$3"
         proxy = proxy_web_evidence()
         validate_web_evidence(direct, network_mode=NetworkMode.DIRECT)
         validate_web_evidence(proxy, network_mode=NetworkMode.PROXY)
+        proxy_no_timing = dict(proxy)
+        proxy_home = json.loads(proxy_no_timing["baidu-home.json"])
+        proxy_home["navigation"]["secureConnectionStart"] = 0
+        proxy_no_timing["baidu-home.json"] = (
+            json.dumps(proxy_home) + "\n"
+        ).encode()
+        validate_web_evidence(proxy_no_timing, network_mode=NetworkMode.PROXY)
         for evidence, wrong_mode in (
             (direct, NetworkMode.PROXY),
             (proxy, NetworkMode.DIRECT),

@@ -147,10 +147,10 @@ BROWSER_INDEX = b"""<!doctype html>
     mark('wasm');
     try {
       checks.wasm = typeof WebAssembly !== 'undefined' &&
-        (await WebAssembly.instantiate(new Uint8Array([
+        (await failAfter(WebAssembly.instantiate(new Uint8Array([
           0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,
           7,10,1,6,97,110,115,119,101,114,0,0,10,6,1,4,0,65,42,11
-        ]))).instance.exports.answer() === 42;
+        ])), 'wasm')).instance.exports.answer() === 42;
     } catch (error) {
       checks.wasm = false;
       wasmFailure = String(error && error.message || error).slice(0, 96);

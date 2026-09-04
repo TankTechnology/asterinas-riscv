@@ -166,6 +166,13 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                     )
             self.assertEqual(server.summary()["request_count"], 0)
 
+    def test_browser_wasm_probe_is_bounded(self) -> None:
+        source = BROWSER_INDEX.decode("utf-8")
+        self.assertIn(
+            "await failAfter(WebAssembly.instantiate(new Uint8Array(", source
+        )
+        self.assertIn(")), 'wasm')).instance.exports.answer()", source)
+
     def test_accepts_one_bounded_capture_and_reports_immutable_evidence(self) -> None:
         payload = b"xwd-capture"
         with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:

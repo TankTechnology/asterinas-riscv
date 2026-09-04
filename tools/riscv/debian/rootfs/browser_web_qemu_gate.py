@@ -539,7 +539,15 @@ def validate_web_evidence(
             "bilibili-detail",
         )
     }
-    validate_baidu_home(snapshots["baidu-home"])
+    # With an HTTP proxy, Firefox's NavigationTiming secureConnectionStart is
+    # allowed to be zero because the browser records the proxy connection
+    # rather than the proxy's upstream CONNECT/TLS handshake.  The proxy
+    # network gate already verifies the upstream certificate and HTTPS status;
+    # direct mode retains the browser-side timing requirement.
+    validate_baidu_home(
+        snapshots["baidu-home"],
+        require_tls_handshake=network_mode is NetworkMode.DIRECT,
+    )
     baidu_search_outcome = validate_baidu_search_outcome(
         snapshots["baidu-search"]
     )

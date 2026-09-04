@@ -409,8 +409,14 @@ def _validate_common(
     return result
 
 
-def validate_baidu_home(snapshot: object) -> None:
-    result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=True)
+def validate_baidu_home(
+    snapshot: object, *, require_tls_handshake: bool = True
+) -> None:
+    result = _validate_common(
+        snapshot,
+        host="www.baidu.com",
+        require_tls_handshake=require_tls_handshake,
+    )
     dom = result["dom"]
     assert isinstance(dom, dict)
     if (
@@ -932,10 +938,12 @@ def _wait_for_probe(
     client: Marionette,
     validator: Callable[[object], object],
     deadline: float,
+    recover: Callable[[GateError], None] | None = None,
 ) -> tuple[dict[str, object], object]:
     last_error: GateError | None = None
     capability_reported = False
     command_reported = False
+    recovered = False
     while time.monotonic() < deadline:
         probe: object | None = None
         try:
@@ -975,6 +983,9 @@ def _wait_for_probe(
                 )
             if "challenge" in str(error) or "403" in str(error) or "access denial" in str(error):
                 raise
+            if recover is not None and not recovered and "about:blank" in str(error):
+                recovered = True
+                recover(error)
             if last_error is None:
                 print(
                     "A_WEB_PROBE_RETRY error="
@@ -1100,7 +1111,13 @@ def _write_evidence(
 
 
 def run_gate(
-    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+    host: str,
+    port: int,
+    timeout: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+    *,
+    require_tls_handshake: bool = True,
 ) -> tuple[str, str]:
     deadline = time.monotonic() + timeout
     def phase(name: str, state: str, error: BaseException | None = None) -> None:
@@ -1148,51 +1165,12 @@ def run_gate(
             raise GateError("Firefox created no first browser window")
         _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
 
-        command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
-        # Native WebDriver metadata is a cheap control probe.  If this phase
-        # completes while ExecuteScript below does not, the stall is in
-        # Firefox's JS evaluation/sandbox path rather than navigation or the
-        # kernel's socket transport.
-        run_phase(
-            "title-baidu-home",
-            lambda: client.command("WebDriver:GetTitle"),
-        )
-        run_phase(
-            "probe-baidu-home",
-            lambda: _wait_for_probe(client, probe_baidu_home, deadline),
-        )
-        baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
-        assert isinstance(baidu_home, dict)
-        validate_baidu_home(baidu_home)
-        api_types = baidu_home.get("apiTypes")
-        if isinstance(api_types, dict) and all(
-            isinstance(api_types.get(name), str)
-            for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
-        ):
-            print(
-                "A_WEB_CAPABILITY_TYPES "
-                + " ".join(f"{name}={api_types[name]}" for name in (
-                    "wasm", "worker", "indexedDb", "audio", "fetch"
-                )),
-                file=sys.stderr,
-                flush=True,
-            )
-        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
-        run_phase(
-            "evidence-baidu-home",
-            lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
-        )
-
+        # Run the deterministic fixture before visiting script-heavy public
+        # pages.  This keeps the capability/download contract independent of
+        # third-party timers that can otherwise starve Marionette commands.
         fixture_index = fixture_index_url_from_environment()
         fixture_search_url = f"{fixture_index}?q=asterinas"
-        # pageLoadStrategy=none makes this controlled navigation independent
-        # of third-party Baidu timers.  Do not issue an ExecuteScript cleanup
-        # here: a busy public page can starve the Marionette main thread and
-        # make the cleanup command itself unbounded.  Navigation replaces the
-        # document and the fixture probes below remain fail-closed.
-        run_phase(
-            "navigate-fixture-home", lambda: _navigate(client, fixture_index)
-        )
+        run_phase("navigate-fixture-home", lambda: _navigate(client, fixture_index))
         run_phase(
             "probe-fixture-home",
             lambda: _wait_for_probe(
@@ -1228,6 +1206,48 @@ def run_gate(
             lambda: _wait_for_fixture_download(
                 FIXTURE_DOWNLOAD_FILE, deadline, evidence_dir, firefox_uid
             ),
+        )
+
+        command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
+        # Native WebDriver metadata is a cheap control probe.  If this phase
+        # completes while ExecuteScript below does not, the stall is in
+        # Firefox's JS evaluation/sandbox path rather than navigation or the
+        # kernel's socket transport.
+        run_phase(
+            "title-baidu-home",
+            lambda: client.command("WebDriver:GetTitle"),
+        )
+        run_phase(
+            "probe-baidu-home",
+            lambda: _wait_for_probe(
+                client,
+                probe_baidu_home,
+                deadline,
+                recover=lambda _error: _navigate(client, BAIDU_HOME),
+            ),
+        )
+        baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
+        assert isinstance(baidu_home, dict)
+        validate_baidu_home(
+            baidu_home, require_tls_handshake=require_tls_handshake
+        )
+        api_types = baidu_home.get("apiTypes")
+        if isinstance(api_types, dict) and all(
+            isinstance(api_types.get(name), str)
+            for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
+        ):
+            print(
+                "A_WEB_CAPABILITY_TYPES "
+                + " ".join(f"{name}={api_types[name]}" for name in (
+                    "wasm", "worker", "indexedDb", "audio", "fetch"
+                )),
+                file=sys.stderr,
+                flush=True,
+            )
+        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
+        run_phase(
+            "evidence-baidu-home",
+            lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
         )
 
         run_phase("navigate-bilibili-home", lambda: _navigate(client, BILIBILI_HOME))
@@ -1338,6 +1358,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
             values.timeout,
             values.evidence_dir,
             values.firefox_pid,
+            require_tls_handshake=(
+                os.environ.get("ASTERINAS_WEB_NETWORK_MODE", "direct")
+                == "direct"
+            ),
         )
     except (GateError, OSError, TimeoutError) as error:
         parser.error(str(error))
