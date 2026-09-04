@@ -25,7 +25,7 @@ use ostd::{
 pub use pause::{Pause, PauseReason, with_sigmask_changed};
 pub use pending::{DequeuedSignal, HandlePendingSignal};
 pub use poll::{PollAdaptor, PollHandle, Pollable, Pollee, Poller};
-use sig_action::{SigAction, SigActionFlags, SigDefaultAction};
+use sig_action::{SigAction, SigActionFlags, SigDefaultAction, SigHandler};
 use sig_mask::SigMask;
 use sig_num::SigNum;
 pub use sig_stack::{SigStack, SigStackFlags, SigStackStatus};
@@ -125,23 +125,19 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
 
     let sig_num = signal.num();
     provenance::trace_delivery(sig_num, ctx);
-    match sig_action {
-        SigAction::Ign => {
+    match sig_action.handler() {
+        SigHandler::Ign => {
             debug!("Ignore signal {:?}", sig_num);
         }
-        SigAction::User {
-            handler_addr,
-            flags,
-            restorer_addr,
-            mask,
-        } => {
+        SigHandler::User(handler_addr) => {
+            let flags = sig_action.flags();
             if flags.contains(SigActionFlags::SA_RESETHAND) {
                 // In Linux, SA_RESETHAND corresponds to SA_ONESHOT,
                 // which means the user handler will be executed only once and then reset to the default.
                 // Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/kernel/signal.c#L2761>.
                 let sig_dispositions = ctx.process.sig_dispositions().lock();
                 let mut sig_dispositions = sig_dispositions.lock();
-                sig_dispositions.set_default(sig_num);
+                sig_dispositions.reset_handler(sig_num);
             }
 
             if let Some(orig_syscall_ret) = syscall_restart
@@ -164,8 +160,8 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
                 sig_num,
                 handler_addr,
                 flags,
-                restorer_addr,
-                mask,
+                sig_action.restorer_addr(),
+                sig_action.mask(),
                 restore_sig_mask.map(RestoreSigMaskGuard::into_mask),
                 user_ctx,
                 signal.to_info(),
@@ -180,12 +176,12 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
                 do_exit_group(TermStatus::Killed(SIGSEGV), ctx, user_ctx);
             }
         }
-        SigAction::Dfl if ctx.process.is_init_process() => {
+        SigHandler::Dfl if ctx.process.is_init_process() => {
             // From Linux man pages "kill(2)":
             // "The only signals that can be sent to process ID 1, the init process, are those for
             // which init has explicitly installed signal handlers."
         }
-        SigAction::Dfl => {
+        SigHandler::Dfl => {
             let sig_default_action = SigDefaultAction::from_signum(sig_num);
             debug!("sig_default_action = {:?}", sig_default_action);
 

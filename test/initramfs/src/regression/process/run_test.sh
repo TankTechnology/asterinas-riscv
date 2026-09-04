@@ -71,6 +71,7 @@ fi
 ./signal/parent_death_signal
 ./signal/pidfd_send_signal
 ./signal/signal_fd
+./signal/sigaction_reset_hand
 ./signal/signal_test2
 
 if [ "$(uname -m)" = "x86_64" ]; then
