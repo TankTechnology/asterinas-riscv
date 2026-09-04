@@ -42,7 +42,7 @@ mod job_control;
 mod process_group;
 mod session;
 mod terminal;
-mod timer_manager;
+pub(crate) mod timer_manager;
 
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 pub use init_proc::spawn_init_process;
