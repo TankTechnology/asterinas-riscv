@@ -93,3 +93,14 @@ rootfs image:
 The bundle contains the current Sv48 kernel, current Stage1 initramfs, and the
 Megrez DTB. The rootfs remains at its immutable signed path above; its hash is
 bound in this document and must be checked immediately before any transfer.
+
+For the U-Boot artifact contract, the bundle's CRC32 values are:
+
+```text
+kernel=44f36474 initramfs=a096d0fb megrez_dtb=4afcb20e
+```
+
+The physical gate must use `--target firefox --network-mode proxy` with these
+three names and CRCs, `--load-transport mmc` only after the board's existing
+rootfs identity is checked, and finite `--boot-timeout`/`--recovery-timeout`.
+No `saveenv`, partition write, or blind reset is part of this preparation.
