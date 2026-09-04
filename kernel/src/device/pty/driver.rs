@@ -41,6 +41,9 @@ pub type PtySlave = Tty<PtyDriver>;
 impl PtyDriver {
     pub(super) fn new() -> Self {
         let tty_flags = TtyFlags::new();
+        // A newly allocated Unix98 PTY starts with its slave locked. Userspace
+        // makes it accessible with unlockpt(3), which issues TIOCSPTLCK=0.
+        tty_flags.set_pty_locked();
         Self {
             output: SpinLock::new(RingBuffer::new(BUFFER_CAPACITY)),
             pollee: Pollee::new(),
