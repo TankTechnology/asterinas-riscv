@@ -31,11 +31,16 @@ root images; the profile/manifest still determines which size is valid.
    current source is `83c122c094c81a075ab67d58b46fa82380c4f8bd`. It is kept as
    historical evidence only and must not be presented as a current-source
    board result.
-2. A fresh `TARGET_ARCH=riscv64 SMP=4 make kernel` attempt in the pinned
-   container stopped before Rust compilation because the container lacked the
-   `inferno` crate in offline mode; the online mode stalled at crates.io index
-   refresh and was bounded at 180 seconds.
-3. QEMU desktop evidence uses a separate Sv39 kernel. The existing schema-2
+2. The dependency cache was repaired from the local `with-cargo-cache` and
+   `nixos-build` images (including the smoltcp and rust-ctor Git refs), so the
+   build reached `aster-kernel`. It then exposed a merge regression: the
+   source still imported the deleted `START_TIME_AS_DURATION`. That regression
+   is now fixed by restoring the separate coarse monotonic snapshot logic.
+3. The same build currently stops in `component::parse_metadata!()` with
+   `cannot get metadata`; this is an OSDK nested-`cargo metadata` issue and is
+   independent of the Megrez hardware path. It must be isolated before using
+   the resulting kernel on the board.
+4. QEMU desktop evidence uses a separate Sv39 kernel. The existing schema-2
    browser plan does not represent separate QEMU-Sv39 and Megrez-Sv48 kernel
    identities, so it cannot issue a valid physical permit until a fresh Sv48
    kernel is built (or the dual-path shell contract is extended for the
