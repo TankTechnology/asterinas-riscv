@@ -38,7 +38,7 @@ class RepositoryManifestContractTests(unittest.TestCase):
             }.issubset(enabled)
         )
 
-    def test_arch_riscv64_manifest_has_154_unique_requested_names(self) -> None:
+    def test_arch_riscv64_manifest_has_158_unique_requested_names(self) -> None:
         self.assertTrue(
             ARCH_RISCV64_MANIFEST.read_text().startswith(
                 "# RISC-V architecture-sensitive LTP syscall requests.\n"
@@ -50,8 +50,8 @@ class RepositoryManifestContractTests(unittest.TestCase):
             if (stripped := line.strip()) and not stripped.startswith("#")
         )
 
-        self.assertEqual(len(requested), 154)
-        self.assertEqual(len(set(requested)), 154)
+        self.assertEqual(len(requested), 158)
+        self.assertEqual(len(set(requested)), 158)
         self.assertEqual(requested[0], "brk01")
         self.assertEqual(requested[-1], "membarrier01")
         self.assertTrue(
@@ -60,7 +60,11 @@ class RepositoryManifestContractTests(unittest.TestCase):
                 "clone08",
                 "getcpu01",
                 "madvise03",
+                "mincore01",
+                "mlock02",
                 "mlock03",
+                "mlockall01",
+                "mlockall02",
                 "mmap04",
                 "mremap05",
                 "msync02",
