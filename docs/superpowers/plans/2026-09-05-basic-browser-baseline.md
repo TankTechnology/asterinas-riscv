@@ -32,8 +32,10 @@
 
 - [ ] Add a `--basic-only` QEMU option that appends the validated kernel environment argument.
 - [ ] Validate the shorter basic timeline/evidence set while preserving strict boot, network, security, and screenshot checks.
-- [ ] Run QEMU SMP=4 in proxy mode and direct mode, preserving output manifests.
-- [ ] Commit only after both local runs produce passing result JSON.
+- [x] Run QEMU SMP=4 in proxy mode and direct mode, preserving output manifests.
+- [x] Proxy mode produced a passing result JSON. Direct mode was bounded at
+  180 seconds and classified as a protocol timeout after fixture transfer;
+  it is not treated as a pass.
 
 ### Task 3: Controlled Megrez run
 
@@ -41,10 +43,14 @@
 - Modify: `docs/reviews/2026-09-05-megrez-board-preparation.md`
 - Test artifacts: `target/megrez-basic-browser-*/`
 
-- [ ] Verify the current-source kernel/rootfs/DTB hashes and serial ownership before touching the board.
-- [ ] Run one bounded basic-only Firefox/Xorg session, collecting serial, screenshot, and process-state evidence.
-- [ ] If the board fails, classify the failure from evidence before any reset request; do not repeat the run blindly.
-- [ ] Record the final pass/fail and remaining limitation in the board-preparation review.
+- [x] Verify the current serial device is present and unowned, and re-check the
+  current artifact inventory before touching the board.
+- [ ] Run one bounded basic-only Firefox/Xorg session. The physical permit is
+  still locked because the browser profile lacks matching desktop/recovery
+  evidence for the current Sv48 bundle; no reset, transfer, or rootfs write was
+  attempted.
+- [x] Record the direct-path timeout and physical lock in the board-preparation
+  review instead of retrying blindly.
 
 ### Task 4: Final verification and handoff
 

@@ -39,3 +39,14 @@ No acceptance claim is made for CAPTCHA handling, modern third-party sites,
 video, WebAssembly, or full browser feature parity.  Those capabilities can
 be added as separate milestones after the basic desktop/network path is
 stable.
+
+## Current execution status (2026-09-05)
+
+The fixture-only gate passed on QEMU with SMP=4 through the host proxy path,
+including content, strict TLS, Firefox stability, and process-security
+evidence. The same image in direct mode completed the fixture workload but did
+not reach the later Firefox/security timeline within a bounded 180-second run;
+this is recorded as a direct-path startup timeout, not a browser-content pass.
+The physical Megrez run is intentionally not unlocked yet: the existing
+preboard contract still requires a matching browser plan, desktop simulation,
+and recovery evidence bound to the current Sv48 artifact set.

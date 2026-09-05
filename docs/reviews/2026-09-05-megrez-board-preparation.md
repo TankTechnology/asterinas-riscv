@@ -133,3 +133,22 @@ pages now perform non-blocking API-presence checks.  The full behavioural
 checks are reserved for the explicit `?capabilities=1` diagnostic URL; this
 separates basic HTML/JavaScript navigation from optional kernel-sensitive APIs
 without deleting the diagnostic workload.
+
+## Basic Firefox gate execution
+
+The fixture-only browser gate was run with the current injected test image and
+SMP=4. Proxy mode passed with the expected content, strict TLS, stable Firefox
+process, and security markers; its result is retained at
+`target/firefox-basic-proxy-20260905g/result.json`. Direct mode was then run
+with the same image and a 180-second bound. It completed all 20 fixture
+requests but stopped before the later Firefox/security markers, yielding
+`reason=protocol`; this is evidence of a direct-path startup/timing issue, not
+evidence that the fixture or proxy path is broken. The image used for these
+QEMU experiments is an ephemeral overlay (its root hash differs from the
+signed `browser-web` image), so it is not a physical-board payload.
+
+The physical Megrez gate remains fail-closed. `/dev/ttyUSB0` was present and
+unowned during the read-only check, but no current browser `debian-browser`
+plan, matching desktop simulation result, and software-recovery evidence exist
+for the current Sv48 kernel/rootfs/DTB tuple. Therefore no serial takeover,
+U-Boot command, reset, transfer, or rootfs installation was attempted.

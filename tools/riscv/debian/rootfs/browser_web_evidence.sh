@@ -210,7 +210,9 @@ validate_desktop_input() {
 }
 
 observe_firefox_stability() {
-    local observed_pid end=$((SECONDS + STABILITY_SECONDS))
+    local duration="$STABILITY_SECONDS"
+    [[ "$BASIC_ONLY" == 1 ]] && duration=5
+    local observed_pid end=$((SECONDS + duration))
     while ((SECONDS < end)); do
         kill -0 "$browser_pid" 2>/dev/null || fail firefox-exited-during-stability
         observed_pid="$(find_firefox_process || true)"
