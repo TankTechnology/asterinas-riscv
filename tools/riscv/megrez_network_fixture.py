@@ -466,6 +466,8 @@ class FixtureServer:
                 return 200, "text/html; charset=utf-8", BROWSER_INDEX
             if query == "q=asterinas":
                 return 200, "text/html; charset=utf-8", BROWSER_SEARCH
+            if query == "capabilities=1":
+                return 200, "text/html; charset=utf-8", BROWSER_INDEX
             return 400, "text/plain; charset=utf-8", b""
         if query:
             return 400, "text/plain; charset=utf-8", b""

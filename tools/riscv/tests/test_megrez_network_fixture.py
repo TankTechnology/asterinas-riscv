@@ -158,6 +158,11 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             status, body, _ = self.request(server, f"{BROWSER_INDEX_PATH}?q=asterinas")
             self.assertEqual(status, 200)
             self.assertEqual(body, BROWSER_SEARCH)
+            status, body, _ = self.request(
+                server, f"{BROWSER_INDEX_PATH}?capabilities=1"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body, BROWSER_INDEX)
             for invalid_query in ("?q=asterinas&q=again", "?other=asterinas", "?q="):
                 with self.subTest(query=invalid_query):
                     self.assertEqual(
