@@ -29,6 +29,7 @@ sleep 0.2
 ./tcp_poll
 ./tcp_reuseaddr
 ./tcp_wrapped_buffer_io
+./tcp_user_buffer_prefault
 ./udp_broadcast
 ./udp_err
 ./unix_datagram_err

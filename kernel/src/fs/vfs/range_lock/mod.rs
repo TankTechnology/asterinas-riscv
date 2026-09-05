@@ -5,18 +5,126 @@ use core::fmt;
 use ostd::sync::{RwMutexWriteGuard, WaitQueue, Waiter, Waker};
 pub use range::{FileRange, OFFSET_MAX};
 use range::{FileRangeChange, OverlapWith};
+use spin::Once;
 
 use crate::{prelude::*, process::Pid};
 
 mod range;
 
 /// Identifies the file table that owns a [`RangeLock`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct RangeLockOwner(usize);
 
 impl RangeLockOwner {
     pub(in crate::fs) fn from_address(address: usize) -> Self {
         Self(address)
+    }
+}
+
+/// The wait-for graph used to detect POSIX record-lock deadlocks.
+///
+/// An edge `A -> B` means that a blocking lock request owned by `A` is
+/// currently waiting for a lock owned by `B`.  The graph is global because a
+/// deadlock can span several inodes.  Edge counts allow multiple threads
+/// sharing one file table to wait on the same owner independently.
+#[derive(Default)]
+struct RangeLockWaitGraph {
+    edges: BTreeMap<RangeLockOwner, BTreeMap<RangeLockOwner, usize>>,
+}
+
+impl RangeLockWaitGraph {
+    fn add_wait(&mut self, waiter: RangeLockOwner, blockers: &[RangeLockOwner]) -> bool {
+        let mut added = Vec::new();
+        for blocker in blockers {
+            if self.reaches(*blocker, waiter) {
+                self.remove_wait(waiter, &added);
+                return false;
+            }
+            let count = self
+                .edges
+                .entry(waiter)
+                .or_default()
+                .entry(*blocker)
+                .or_default();
+            *count = count.saturating_add(1);
+            added.push(*blocker);
+        }
+        true
+    }
+
+    fn remove_wait(&mut self, waiter: RangeLockOwner, blockers: &[RangeLockOwner]) {
+        for blocker in blockers {
+            let mut remove_source = false;
+            if let Some(targets) = self.edges.get_mut(&waiter) {
+                let mut remove_target = false;
+                if let Some(count) = targets.get_mut(blocker) {
+                    *count = count.saturating_sub(1);
+                    remove_target = *count == 0;
+                }
+                if remove_target {
+                    targets.remove(blocker);
+                }
+                remove_source = targets.is_empty();
+            }
+            if remove_source {
+                self.edges.remove(&waiter);
+            }
+        }
+    }
+
+    fn reaches(&self, start: RangeLockOwner, target: RangeLockOwner) -> bool {
+        if start == target {
+            return true;
+        }
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![start];
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) {
+                continue;
+            }
+            let Some(next_owners) = self.edges.get(&owner) else {
+                continue;
+            };
+            for (next, count) in next_owners {
+                if *count == 0 {
+                    continue;
+                }
+                if *next == target {
+                    return true;
+                }
+                pending.push(*next);
+            }
+        }
+        false
+    }
+}
+
+static RANGE_LOCK_WAIT_GRAPH: Once<SpinLock<RangeLockWaitGraph>> = Once::new();
+
+fn range_lock_wait_graph() -> &'static SpinLock<RangeLockWaitGraph> {
+    RANGE_LOCK_WAIT_GRAPH.call_once(|| SpinLock::new(RangeLockWaitGraph::default()))
+}
+
+struct RangeLockWaitRegistration {
+    waiter: RangeLockOwner,
+    blockers: Vec<RangeLockOwner>,
+}
+
+impl RangeLockWaitRegistration {
+    fn new(waiter: RangeLockOwner, blockers: Vec<RangeLockOwner>) -> Result<Self> {
+        let mut graph = range_lock_wait_graph().lock();
+        if !graph.add_wait(waiter, &blockers) {
+            return_errno_with_message!(Errno::EDEADLK, "resource deadlock would occur");
+        }
+        Ok(Self { waiter, blockers })
+    }
+}
+
+impl Drop for RangeLockWaitRegistration {
+    fn drop(&mut self) {
+        range_lock_wait_graph()
+            .lock()
+            .remove_wait(self.waiter, &self.blockers);
     }
 }
 
@@ -246,11 +354,28 @@ impl RangeLockList {
     /// If no conflicting locks exist, the lock is set and the function returns `Ok(())`.
     /// If a conflicting lock exists:
     /// - If waker is not `None`, it is added to the conflicting lock's waitqueue, and the function returns `EAGAIN`.
+    ///   A wait-for cycle is rejected with `EDEADLK` before the waiter sleeps.
     /// - If waker is `None`, the function returns `EAGAIN`.
-    fn try_set_lock(&self, req_lock: &RangeLockItem, waker: Option<&Arc<Waker>>) -> Result<()> {
+    fn try_set_lock(
+        &self,
+        req_lock: &RangeLockItem,
+        waker: Option<&Arc<Waker>>,
+        wait_registration: &mut Option<RangeLockWaitRegistration>,
+    ) -> Result<()> {
         let mut list = self.inner.write();
         if let Some(conflict_lock) = list.iter().find(|l| req_lock.conflict_with(l)) {
             if let Some(waker) = waker {
+                let mut blockers = Vec::new();
+                for lock in list.iter().filter(|l| req_lock.conflict_with(l)) {
+                    if !blockers.contains(&lock.owner()) {
+                        blockers.push(lock.owner());
+                    }
+                }
+                // A retry may observe a different set of blockers. Replace the
+                // old registration before adding the new dependency set.
+                drop(wait_registration.take());
+                *wait_registration =
+                    Some(RangeLockWaitRegistration::new(req_lock.owner(), blockers)?);
                 conflict_lock.waitqueue.enqueue(waker.clone());
             }
             return_errno_with_message!(Errno::EAGAIN, "the file is locked");
@@ -270,17 +395,21 @@ impl RangeLockList {
             req_lock, is_nonblocking
         );
         if is_nonblocking {
-            self.try_set_lock(req_lock, None)
+            let mut wait_registration = None;
+            self.try_set_lock(req_lock, None, &mut wait_registration)
         } else {
             let (waiter, waker) = Waiter::new_pair();
-            waiter.pause_until(|| {
-                let result = self.try_set_lock(req_lock, Some(&waker));
+            let mut wait_registration = None;
+            let result = waiter.pause_until(|| {
+                let result = self.try_set_lock(req_lock, Some(&waker), &mut wait_registration);
                 if result.is_err_and(|err| err.error() == Errno::EAGAIN) {
                     None
                 } else {
                     Some(result)
                 }
-            })?
+            });
+            drop(wait_registration);
+            result?
         }
     }
 
@@ -437,6 +566,44 @@ impl RangeLockList {
 impl Default for RangeLockList {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    fn owner(id: usize) -> RangeLockOwner {
+        RangeLockOwner::from_address(id)
+    }
+
+    #[ktest]
+    fn wait_graph_rejects_transitive_cycles() {
+        let mut graph = RangeLockWaitGraph::default();
+        let first = owner(1);
+        let second = owner(2);
+        let third = owner(3);
+
+        assert!(graph.add_wait(first, &[second]));
+        assert!(graph.add_wait(second, &[third]));
+        assert!(!graph.add_wait(third, &[first]));
+        assert!(!graph.reaches(third, first));
+    }
+
+    #[ktest]
+    fn wait_graph_keeps_duplicate_waiters_independent() {
+        let mut graph = RangeLockWaitGraph::default();
+        let waiter = owner(1);
+        let blocker = owner(2);
+
+        assert!(graph.add_wait(waiter, &[blocker]));
+        assert!(graph.add_wait(waiter, &[blocker]));
+        graph.remove_wait(waiter, &[blocker]);
+        assert!(graph.reaches(waiter, blocker));
+        graph.remove_wait(waiter, &[blocker]);
+        assert!(!graph.reaches(waiter, blocker));
     }
 }
 

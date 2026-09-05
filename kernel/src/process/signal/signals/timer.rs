@@ -43,9 +43,29 @@ impl TimerSignalState {
             false
         } else {
             inner.pending = true;
-            inner.overrun = callback_overrun;
+            // A previously generated notification may have been discarded
+            // because another standard signal with the same number was
+            // already queued. Keep those expirations as overruns for the next
+            // notification that can actually be delivered.
+            inner.overrun = inner.overrun.saturating_add(callback_overrun);
             true
         }
+    }
+
+    /// Reopens delivery after a generated notification was discarded.
+    ///
+    /// Standard signals do not queue. A POSIX timer notification can therefore
+    /// be dropped when an unrelated signal with the same number is already
+    /// pending. The expiration represented by the dropped notification must
+    /// be carried into the next successful notification, and future timer
+    /// callbacks must be allowed to enqueue that notification.
+    fn discard_delivery(&self) {
+        let mut inner = self.inner.disable_irq().lock();
+        if !inner.pending {
+            return;
+        }
+        inner.pending = false;
+        inner.overrun = inner.overrun.saturating_add(1);
     }
 
     fn complete_delivery(&self) -> i32 {
@@ -108,11 +128,24 @@ impl Signal for TimerSignal {
     }
 }
 
+impl Drop for TimerSignal {
+    fn drop(&mut self) {
+        // `to_info` completes a delivered notification first, making this a
+        // no-op. If the signal queue discarded the notification, this resets
+        // the timer-specific pending state so a later expiration is not lost
+        // forever.
+        self.state.discard_delivery();
+    }
+}
+
 #[cfg(ktest)]
 mod tests {
+    use alloc::sync::Arc;
+
     use ostd::prelude::ktest;
 
-    use super::TimerSignalState;
+    use super::{TimerSignal, TimerSignalState};
+    use crate::process::signal::{c_types::sigval_t, constants::SIGALRM};
 
     #[ktest]
     fn posix_timer_coalesced_expirations_accumulate_overrun() {
@@ -130,5 +163,17 @@ mod tests {
         assert!(state.record_expirations(u64::MAX));
         assert!(!state.record_expirations(u64::MAX));
         assert_eq!(state.complete_delivery(), i32::MAX);
+    }
+
+    #[ktest]
+    fn discarded_posix_timer_signal_can_be_retried() {
+        let state = Arc::new(TimerSignalState::new());
+        assert!(state.record_expirations(2));
+
+        let signal = TimerSignal::new(SIGALRM, 7, sigval_t::from_int(0), state.clone());
+        drop(signal);
+
+        assert!(state.record_expirations(3));
+        assert_eq!(state.complete_delivery(), 6);
     }
 }

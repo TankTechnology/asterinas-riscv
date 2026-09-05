@@ -5,7 +5,7 @@ use ostd::{
     mm::{Infallible, VmSpace},
 };
 
-use crate::prelude::*;
+use crate::{prelude::*, vm::perms::VmPerms};
 
 /// A kernel space I/O vector.
 #[derive(Clone, Copy, Debug)]
@@ -151,6 +151,14 @@ impl<'a> VmReaderArray<'a> {
         &mut self.0
     }
 
+    /// Resolve user-backed pages before a network stack may enter atomic mode.
+    pub(crate) fn prefault(&self, user_space: &CurrentUserSpace<'_>) -> Result<()> {
+        for reader in &self.0 {
+            user_space.prefault(reader.cursor().addr(), reader.remain(), VmPerms::READ)?;
+        }
+        Ok(())
+    }
+
     /// Creates a new `VmReaderArray`.
     #[cfg(ktest)]
     pub const fn new(readers: Box<[VmReader<'a>]>) -> Self {
@@ -175,6 +183,14 @@ impl<'a> VmWriterArray<'a> {
     /// Returns mutable reference to [`VmWriter`]s.
     pub fn writers_mut(&mut self) -> &mut [VmWriter<'a>] {
         &mut self.0
+    }
+
+    /// Resolve user-backed pages before a network stack may enter atomic mode.
+    pub(crate) fn prefault(&self, user_space: &CurrentUserSpace<'_>) -> Result<()> {
+        for writer in &self.0 {
+            user_space.prefault(writer.cursor().addr(), writer.avail(), VmPerms::WRITE)?;
+        }
+        Ok(())
     }
 }
 

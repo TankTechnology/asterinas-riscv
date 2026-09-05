@@ -34,7 +34,10 @@ pub fn sys_timerfd_settime(
     let user_space = ctx.user_space();
     let new_itimerspec = user_space.read_val::<itimerspec_t>(new_itimerspec_addr)?;
     let interval = Duration::try_from(new_itimerspec.it_interval)?;
-    let expire_time = Duration::try_from(new_itimerspec.it_value)?;
+    let expire_time = timespec_to_nanos(
+        new_itimerspec.it_value,
+        flags.contains(TFDSetTimeFlags::TFD_TIMER_ABSTIME),
+    )?;
 
     let (old_interval, remain) = timerfd_file.set_time(expire_time, interval, flags);
     if old_itimerspec_addr > 0 {
@@ -48,4 +51,16 @@ pub fn sys_timerfd_settime(
     }
 
     Ok(SyscallReturn::Return(0))
+}
+
+/// Parse the absolute timerfd value as a signed nanosecond deadline. Linux
+/// permits a negative absolute deadline (it is already expired), while a
+/// relative timeout must be non-negative.
+fn timespec_to_nanos(value: timespec_t, absolute: bool) -> Result<i128> {
+    if value.nsec < 0 || value.nsec >= 1_000_000_000 || (!absolute && value.sec < 0) {
+        return_errno_with_message!(Errno::EINVAL, "invalid timerfd timespec");
+    }
+    Ok(i128::from(value.sec)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(i128::from(value.nsec)))
 }

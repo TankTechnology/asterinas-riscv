@@ -77,6 +77,10 @@ fn timerfd_profile_log(op: &str, count: u64, pid: u32, tid: u32) {
 /// A file-like object representing a timer that can be used with file descriptors.
 pub struct TimerfdFile {
     clockid: clockid_t,
+    /// Signed time-namespace offset captured when the timerfd is created.
+    /// Relative expirations are unchanged; absolute expirations are converted
+    /// back to the host clock before entering the shared timer manager.
+    clock_offset_nanos: i128,
     timer: Arc<Timer>,
     ticks: Arc<AtomicU64>,
     pollee: Pollee,
@@ -142,6 +146,13 @@ define_atomic_version_of_integer_like_type!(TFDSetTimeFlags, try_from = true, {
 impl TimerfdFile {
     /// Creates a new `TimerfdFile` instance.
     pub fn new(clockid: clockid_t, flags: TFDFlags, ctx: &Context) -> Result<Self> {
+        let clock_offset_nanos = match clockid {
+            1 | 7 => {
+                let ns_proxy = ctx.thread_local.borrow_ns_proxy();
+                ns_proxy.unwrap().time_ns().offset_nanos(clockid == 7)
+            }
+            _ => 0,
+        };
         let ticks = Arc::new(AtomicU64::new(0));
         let pollee = Pollee::new();
 
@@ -171,6 +182,7 @@ impl TimerfdFile {
 
         Ok(TimerfdFile {
             clockid,
+            clock_offset_nanos,
             timer,
             ticks,
             pollee,
@@ -185,7 +197,7 @@ impl TimerfdFile {
     // returned afterwards.
     pub fn set_time(
         &self,
-        expire_time: Duration,
+        expire_time_nanos: i128,
         interval: Duration,
         flags: TFDSetTimeFlags,
     ) -> (Duration, Duration) {
@@ -204,7 +216,7 @@ impl TimerfdFile {
         timer_guard.cancel();
         self.ticks.store(0, Ordering::Relaxed);
 
-        if expire_time != Duration::ZERO {
+        if expire_time_nanos != 0 {
             if flags.contains(TFDSetTimeFlags::TFD_TIMER_CANCEL_ON_SET) {
                 // TODO: Currently this flag has no effect since the system time cannot be changed.
                 // Once add the support for modifying the system time, the corresponding logics for
@@ -213,9 +225,12 @@ impl TimerfdFile {
             }
 
             let timeout = if flags.contains(TFDSetTimeFlags::TFD_TIMER_ABSTIME) {
-                Timeout::When(expire_time)
+                Timeout::When(remove_clock_offset(
+                    expire_time_nanos,
+                    self.clock_offset_nanos,
+                ))
             } else {
-                Timeout::After(expire_time)
+                Timeout::After(nanos_to_duration(expire_time_nanos))
             };
 
             timer_guard.set_timeout(timeout);
@@ -274,8 +289,24 @@ impl TimerfdFile {
     }
 }
 
+/// Convert a time-namespace absolute deadline back to the underlying kernel
+/// clock used by [`TimerManager`]. Namespace offsets are signed, while
+/// `Duration` is non-negative, so values below zero are clamped to now.
+fn remove_clock_offset(value_nanos: i128, offset_nanos: i128) -> Duration {
+    let raw_nanos = value_nanos.saturating_sub(offset_nanos).max(0);
+    nanos_to_duration(raw_nanos)
+}
+
+fn nanos_to_duration(nanos: i128) -> Duration {
+    let raw_nanos = nanos.max(0);
+    let secs = (raw_nanos / 1_000_000_000).min(i128::from(u64::MAX)) as u64;
+    Duration::new(secs, (raw_nanos % 1_000_000_000) as u32)
+}
+
 #[cfg(ktest)]
 mod tests {
+    use core::time::Duration;
+
     use ostd::prelude::ktest;
 
     use super::timerfd_io_events;
@@ -286,6 +317,18 @@ mod tests {
         assert_eq!(timerfd_io_events(0), IoEvents::empty());
         assert_eq!(timerfd_io_events(1), IoEvents::IN);
         assert_eq!(timerfd_io_events(u64::MAX), IoEvents::IN);
+    }
+
+    #[ktest]
+    fn absolute_deadline_removes_signed_namespace_offset() {
+        assert_eq!(
+            super::remove_clock_offset(15_000_000_000, 10_000_000_000),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            super::remove_clock_offset(5_000_000_000, -10_000_000_000),
+            Duration::from_secs(15)
+        );
     }
 }
 
