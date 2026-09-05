@@ -8,6 +8,7 @@ readonly FIREFOX_HOME="${HOME:-/home/asterinas}"
 readonly XAUTHORITY="$FIREFOX_HOME/.Xauthority"
 readonly PROFILE="$FIREFOX_HOME/.mozilla/asterinas-browser-web"
 readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 # Let Firefox finish its parent/child, window, and Marionette bootstrap before
@@ -53,6 +54,7 @@ validate_network_profile() {
             ;;
         *) return 1 ;;
     esac
+    [[ "$BASIC_ONLY" == 0 || "$BASIC_ONLY" == 1 ]] || return 1
 }
 
 configure_network_profile() {
@@ -97,6 +99,25 @@ configure_network_profile() {
                 >>"$temporary"
         else
             printf '%s\n' 'user_pref("network.proxy.type", 0);' >>"$temporary"
+        fi
+        if [[ "$BASIC_ONLY" == 1 ]]; then
+            # The fixture-only acceptance path deliberately has no public-site
+            # dependency. Disable background update/safebrowsing/settings
+            # fetchers so a direct QEMU guest cannot starve Marionette while
+            # the controlled page is being probed. These preferences are
+            # scoped to the explicit basic gate; the normal public-site path
+            # retains its existing Firefox defaults.
+            printf '%s\n' \
+                'user_pref("app.update.auto", false);' \
+                'user_pref("app.update.enabled", false);' \
+                'user_pref("browser.safebrowsing.downloads.remote.enabled", false);' \
+                'user_pref("browser.safebrowsing.malware.enabled", false);' \
+                'user_pref("browser.safebrowsing.phishing.enabled", false);' \
+                'user_pref("extensions.systemAddon.update.enabled", false);' \
+                'user_pref("extensions.update.enabled", false);' \
+                'user_pref("network.trr.mode", 5);' \
+                'user_pref("services.settings.server", "");' \
+                >>"$temporary"
         fi
         /usr/bin/chmod 0600 -- "$temporary"
         /usr/bin/mv -T -- "$temporary" "$PROFILE/user.js"

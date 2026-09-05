@@ -388,11 +388,13 @@ class BrowserWebContractTests(unittest.TestCase):
         mode: str,
         proxy_host: str = "",
         proxy_port: str = "",
+        basic_only: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
             "HOME": str(home),
             "ASTERINAS_WEB_NETWORK_MODE": mode,
+            "ASTERINAS_BROWSER_WEB_BASIC_ONLY": "1" if basic_only else "0",
             "ASTERINAS_DESKTOP_PROXY_HOST": proxy_host,
             "ASTERINAS_DESKTOP_PROXY_PORT": proxy_port,
         }
@@ -498,6 +500,25 @@ class BrowserWebContractTests(unittest.TestCase):
                         ).read_text(encoding="utf-8"),
                         profile,
                     )
+
+    def test_firefox_basic_profile_disables_public_background_fetchers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            result = self._prepare_firefox_profile(
+                home, mode="direct", basic_only=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = (
+                home / ".mozilla/asterinas-browser-web/user.js"
+            ).read_text(encoding="utf-8")
+            for preference in (
+                'user_pref("app.update.enabled", false);',
+                'user_pref("browser.safebrowsing.downloads.remote.enabled", false);',
+                'user_pref("extensions.update.enabled", false);',
+                'user_pref("network.trr.mode", 5);',
+                'user_pref("services.settings.server", "");',
+            ):
+                self.assertIn(preference, profile)
 
     def test_baidu_home_requires_logo(self) -> None:
         home = snapshot("https://www.baidu.com/")
