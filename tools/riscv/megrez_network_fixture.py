@@ -90,6 +90,11 @@ BROWSER_INDEX = b"""<!doctype html>
       phase: search ? 'search' : 'home',
       state: 'complete',
       checks: {
+        localStorage: 'localStorage' in window,
+        sessionStorage: 'sessionStorage' in window,
+        cookie: typeof document.cookie === 'string',
+        canvas: typeof HTMLCanvasElement === 'function' &&
+          typeof HTMLCanvasElement.prototype.getContext === 'function',
         wasm: typeof WebAssembly !== 'undefined',
         worker: typeof Worker === 'function',
         indexedDb: typeof indexedDB === 'object' && indexedDB !== null,
