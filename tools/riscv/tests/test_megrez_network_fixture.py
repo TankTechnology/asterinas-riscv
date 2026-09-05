@@ -179,6 +179,8 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertIn(")), 'wasm')).instance.exports.answer()", source)
         self.assertIn("get('capabilities') === '1'", source)
         self.assertIn("checks.worker = typeof Worker === 'function'", source)
+        self.assertIn("if (!diagnostics) {", source)
+        self.assertIn("if (output !== null) output.textContent", source)
 
     def test_accepts_one_bounded_capture_and_reports_immutable_evidence(self) -> None:
         payload = b"xwd-capture"

@@ -79,10 +79,29 @@ BROWSER_INDEX = b"""<!doctype html>
 <script>
 (() => {
   'use strict';
-  const checks = Object.create(null);
-  let wasmFailure = null;
   const search = new URLSearchParams(location.search).get('q') === 'asterinas';
   const diagnostics = new URLSearchParams(location.search).get('capabilities') === '1';
+  if (!diagnostics) {
+    // The primary navigation/search gate must never instantiate optional APIs:
+    // some RISC-V kernels can block synchronously in those entry points.
+    const output = document.querySelector('#quality-capabilities');
+    if (output !== null) output.textContent = JSON.stringify({
+      version: 1,
+      phase: search ? 'search' : 'home',
+      state: 'complete',
+      checks: {
+        wasm: typeof WebAssembly !== 'undefined',
+        worker: typeof Worker === 'function',
+        indexedDb: typeof indexedDB === 'object' && indexedDB !== null,
+        audio: typeof HTMLAudioElement === 'function',
+        fetch: typeof fetch === 'function'
+      },
+      error: null
+    });
+    return;
+  }
+  const checks = Object.create(null);
+  let wasmFailure = null;
   const phase = search ? 'search' : 'home';
   window.__asterinasCapabilities = {version: 1, phase, state: 'running', checks, error: null};
   const publish = () => {
