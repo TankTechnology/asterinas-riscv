@@ -176,3 +176,9 @@ board sequence is:
 
 Until those inputs exist, the physical result is intentionally “not run”; the
 QEMU evidence is not treated as a substitute for board evidence.
+
+The follow-up read-only audit found the host on `10.100.19.216` and the
+historical Megrez address `10.100.19.200` unresolved in ARP; one ICMP probe and
+one SSH connect attempt both timed out. The FTDI serial port likewise produced
+zero bytes in an 8-second read. This confirms that the board is currently not
+an observable test target, rather than a Firefox or fixture failure.
