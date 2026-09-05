@@ -36,6 +36,7 @@ pub fn sys_sendto(
 
     let user_space = ctx.user_space();
     let mut reader = user_space.reader(buf, len)?;
+    user_space.prefault(buf, len, crate::vm::perms::VmPerms::READ)?;
     let send_size = socket
         .sendmsg(&mut reader, message_header, flags)
         .map_err(|err| match err.error() {
