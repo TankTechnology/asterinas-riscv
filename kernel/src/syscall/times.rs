@@ -53,9 +53,11 @@ pub fn sys_times(buf_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
 mod tests {
     use core::time::Duration;
 
+    use ostd::prelude::ktest;
+
     use super::duration_to_ticks;
 
-    #[test]
+    #[ktest]
     fn times_uses_user_hz_not_scheduler_hz() {
         assert_eq!(duration_to_ticks(Duration::from_secs(1)), 100);
         assert_eq!(duration_to_ticks(Duration::from_millis(9)), 0);

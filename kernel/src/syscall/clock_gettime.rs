@@ -38,12 +38,19 @@ fn read_clock_timespec(clockid: clockid_t, ctx: &Context) -> Result<timespec_t> 
     }
 
     let clock_id = ClockId::try_from(clockid)?;
-    let (base, boot_time) = match clock_id {
-        ClockId::CLOCK_MONOTONIC => (MonotonicClock::get().read_time(), false),
-        ClockId::CLOCK_MONOTONIC_RAW => (MonotonicRawClock::get().read_time(), false),
-        ClockId::CLOCK_MONOTONIC_COARSE => (MonotonicCoarseClock::get().read_time(), false),
-        ClockId::CLOCK_BOOTTIME => (BootTimeClock::get().read_time(), true),
+    let base = match clock_id {
+        ClockId::CLOCK_MONOTONIC => MonotonicClock::get().read_time(),
+        ClockId::CLOCK_MONOTONIC_RAW => MonotonicRawClock::get().read_time(),
+        ClockId::CLOCK_MONOTONIC_COARSE => MonotonicCoarseClock::get().read_time(),
+        ClockId::CLOCK_BOOTTIME => BootTimeClock::get().read_time(),
         _ => return Ok(timespec_t::from(read_clock(clockid, ctx)?)),
+    };
+
+    let Some(boot_time) = time_namespace_offset_kind(clock_id) else {
+        // Linux time namespaces only virtualize CLOCK_MONOTONIC (including
+        // its coarse form) and CLOCK_BOOTTIME. In particular,
+        // CLOCK_MONOTONIC_RAW must keep exposing the host clocksource.
+        return Ok(timespec_t::from(base));
     };
 
     let ns_proxy = ctx.thread_local.borrow_ns_proxy();
@@ -119,6 +126,19 @@ pub enum ClockId {
     CLOCK_BOOTTIME = 7,
 }
 
+/// Returns the time-namespace offset class for clocks virtualized by Linux.
+///
+/// `Some(false)` selects the monotonic offset and `Some(true)` selects the
+/// boottime offset. `None` means that the clock is global and must not be
+/// shifted when a task enters a time namespace.
+fn time_namespace_offset_kind(clock_id: ClockId) -> Option<bool> {
+    match clock_id {
+        ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_MONOTONIC_COARSE => Some(false),
+        ClockId::CLOCK_BOOTTIME => Some(true),
+        _ => None,
+    }
+}
+
 /// The information decoded from a dynamic clock ID.
 ///
 /// Dynamic clocks are the clocks operates on certain
@@ -190,21 +210,20 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
                 .time_ns()
                 .apply_offset(duration, boot_time)
         };
-        match clock_id {
-            ClockId::CLOCK_REALTIME => Ok(RealTimeClock::get().read_time()),
-            ClockId::CLOCK_MONOTONIC => Ok(apply_time_ns(MonotonicClock::get().read_time(), false)),
-            ClockId::CLOCK_MONOTONIC_RAW => {
-                Ok(apply_time_ns(MonotonicRawClock::get().read_time(), false))
-            }
-            ClockId::CLOCK_REALTIME_COARSE => Ok(RealTimeCoarseClock::get().read_time()),
-            ClockId::CLOCK_MONOTONIC_COARSE => Ok(apply_time_ns(
-                MonotonicCoarseClock::get().read_time(),
-                false,
-            )),
-            ClockId::CLOCK_BOOTTIME => Ok(apply_time_ns(BootTimeClock::get().read_time(), true)),
-            ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(ctx.process.prof_clock().read_time()),
-            ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(ctx.posix_thread.prof_clock().read_time()),
-        }
+        let duration = match clock_id {
+            ClockId::CLOCK_REALTIME => RealTimeClock::get().read_time(),
+            ClockId::CLOCK_MONOTONIC => MonotonicClock::get().read_time(),
+            ClockId::CLOCK_MONOTONIC_RAW => MonotonicRawClock::get().read_time(),
+            ClockId::CLOCK_REALTIME_COARSE => RealTimeCoarseClock::get().read_time(),
+            ClockId::CLOCK_MONOTONIC_COARSE => MonotonicCoarseClock::get().read_time(),
+            ClockId::CLOCK_BOOTTIME => BootTimeClock::get().read_time(),
+            ClockId::CLOCK_PROCESS_CPUTIME_ID => ctx.process.prof_clock().read_time(),
+            ClockId::CLOCK_THREAD_CPUTIME_ID => ctx.posix_thread.prof_clock().read_time(),
+        };
+        Ok(match time_namespace_offset_kind(clock_id) {
+            Some(boot_time) => apply_time_ns(duration, boot_time),
+            None => duration,
+        })
     } else {
         let dynamic_clockid_info = DynamicClockIdInfo::try_from(clockid)?;
         match dynamic_clockid_info {
@@ -251,11 +270,35 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::{DynamicClockIdInfo, DynamicCpuClockType, read_clock_resolution};
+    use super::{
+        ClockId, DynamicClockIdInfo, DynamicCpuClockType, read_clock_resolution,
+        time_namespace_offset_kind,
+    };
     use crate::prelude::*;
 
     fn cpu_clock_id(id: u32, kind: u32, per_thread: bool) -> i32 {
         ((!id << 3) | kind | u32::from(per_thread) * 4) as i32
+    }
+
+    #[ktest]
+    fn time_namespace_only_offsets_linux_virtual_clocks() {
+        assert_eq!(
+            time_namespace_offset_kind(ClockId::CLOCK_MONOTONIC),
+            Some(false)
+        );
+        assert_eq!(
+            time_namespace_offset_kind(ClockId::CLOCK_MONOTONIC_COARSE),
+            Some(false)
+        );
+        assert_eq!(
+            time_namespace_offset_kind(ClockId::CLOCK_BOOTTIME),
+            Some(true)
+        );
+        assert_eq!(
+            time_namespace_offset_kind(ClockId::CLOCK_MONOTONIC_RAW),
+            None
+        );
+        assert_eq!(time_namespace_offset_kind(ClockId::CLOCK_REALTIME), None);
     }
 
     #[ktest]
@@ -281,14 +324,14 @@ mod tests {
     }
 
     #[ktest]
-    fn reports_tick_resolution_for_cpu_clocks() {
+    fn reports_nanosecond_resolution_for_cpu_clocks() {
         assert_eq!(
-            read_clock_resolution(super::ClockId::CLOCK_PROCESS_CPUTIME_ID as i32).unwrap(),
-            core::time::Duration::from_millis(1)
+            read_clock_resolution(ClockId::CLOCK_PROCESS_CPUTIME_ID as i32).unwrap(),
+            core::time::Duration::from_nanos(1)
         );
         assert_eq!(
             read_clock_resolution(cpu_clock_id(42, 2, false)).unwrap(),
-            core::time::Duration::from_millis(1)
+            core::time::Duration::from_nanos(1)
         );
     }
 }

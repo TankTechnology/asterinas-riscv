@@ -250,6 +250,8 @@ enum FcntlCmd {
 
 #[cfg(ktest)]
 mod tests {
+    use ostd::prelude::ktest;
+
     use super::FcntlCmd;
 
     #[ktest]
