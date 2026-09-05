@@ -157,3 +157,22 @@ transfer was authorized.
 The physical Megrez gate therefore remains fail-closed. `/dev/ttyUSB0` is
 present but was unowned during the read-only check; no serial takeover,
 U-Boot command, reset, transfer, or rootfs installation was attempted.
+
+## Physical browser-basic admission checklist
+
+The first board run must use a plan bound to the exact Sv48 kernel, four-hart
+DTB, initramfs, and signed Debian rootfs manifest. Its simulation input is the
+passing QEMU browser-basic result above, and its recovery input must contain a
+fresh firmware epoch plus an automatic software-watchdog reboot. The one-shot
+board sequence is:
+
+1. Open the serial device read-only and confirm a fresh U-Boot prompt; do not
+   transmit anything if no prompt or boot epoch is observable.
+2. Cache/transfer only artifacts whose SHA-256 and CRC32 match the plan.
+3. Arm the software recovery timeout before booting, capture serial markers,
+   and stop on the first fatal marker or missing desktop/browser-basic marker.
+4. Collect the Xorg/Firefox screenshot and fixture capability JSON, then wait
+   for automatic recovery and verify a second U-Boot epoch.
+
+Until those inputs exist, the physical result is intentionally “not run”; the
+QEMU evidence is not treated as a substitute for board evidence.
