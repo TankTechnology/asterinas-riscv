@@ -504,11 +504,11 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
         "fixtureQuery", "fixtureImage", "fixtureSecond"
     )):
         raise GateError("fixture form, PNG, or navigation link is not ready")
-    _validate_fixture_capabilities(result["browserCapabilities"], "search")
+    _validate_fixture_capability_shape(result["browserCapabilities"], "search")
     return result
 
 
-def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
+def _validate_fixture_capability_shape(capabilities: object, phase: str) -> None:
     expected_checks = {
         "audio", "canvas", "cookie", "fetch", "indexedDb",
         "localStorage", "sessionStorage", "wasm", "worker",
@@ -517,12 +517,31 @@ def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
         "version", "phase", "state", "checks", "error"
     }:
         raise GateError("fixture browser capability evidence is malformed")
+    if capabilities["version"] != 1 or capabilities["phase"] != phase:
+        raise GateError(
+            "fixture browser capabilities are incomplete: "
+            f"phase={capabilities.get('phase')!r} "
+            f"state={capabilities.get('state')!r} "
+            f"error={capabilities.get('error')!r}"
+        )
+    if capabilities["state"] not in {"running", "complete", "error"}:
+        raise GateError(
+            "fixture browser capability state is malformed: "
+            f"state={capabilities.get('state')!r}"
+        )
+    checks = capabilities["checks"]
     if (
-        capabilities["version"] != 1
-        or capabilities["phase"] != phase
-        or capabilities["state"] != "complete"
-        or capabilities["error"] is not None
+        not isinstance(checks, dict)
+        or set(checks) != expected_checks
+        or not all(isinstance(value, bool) for value in checks.values())
     ):
+        raise GateError("fixture browser capability checks are malformed")
+
+
+def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
+    _validate_fixture_capability_shape(capabilities, phase)
+    assert isinstance(capabilities, dict)
+    if capabilities["state"] != "complete" or capabilities["error"] is not None:
         raise GateError(
             "fixture browser capabilities are incomplete: "
             f"phase={capabilities.get('phase')!r} "
@@ -530,11 +549,8 @@ def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
             f"error={capabilities.get('error')!r}"
         )
     checks = capabilities["checks"]
-    if (
-        not isinstance(checks, dict)
-        or set(checks) != expected_checks
-        or not all(value is True for value in checks.values())
-    ):
+    assert isinstance(checks, dict)
+    if not all(value is True for value in checks.values()):
         raise GateError("fixture browser capability checks are incomplete")
 
 
@@ -566,7 +582,7 @@ def probe_fixture_home(probe: object, expected_url: str) -> None:
         "fixtureQuery", "fixtureImage", "fixtureSecond"
     )):
         raise GateError("fixture home form, PNG, or navigation link is not ready")
-    _validate_fixture_capabilities(result["browserCapabilities"], "home")
+    _validate_fixture_capability_shape(result["browserCapabilities"], "home")
 
 
 def probe_fixture_capabilities(probe: object, expected_url: str) -> None:
