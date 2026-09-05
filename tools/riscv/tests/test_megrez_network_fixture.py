@@ -184,6 +184,7 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertIn(")), 'wasm')).instance.exports.answer()", source)
         self.assertIn("capabilityMode === '1'", source)
         self.assertIn("capabilityMode === 'basic'", source)
+        self.assertIn("basicDiagnostics ? 'basic'", source)
         self.assertIn("checks.worker = typeof Worker === 'function'", source)
         self.assertIn("if (!diagnostics) {", source)
         self.assertIn("if (output !== null) output.textContent", source)

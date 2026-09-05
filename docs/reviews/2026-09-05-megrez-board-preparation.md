@@ -169,9 +169,11 @@ dispatch result to `null`, so it remains fail-closed until the follow-up probe
 reports `state=complete`. The root hashes are for ephemeral test overlays and
 must not be used as a board transfer identity.
 
-The synchronized capability-probe attempt
-(`firefox-basic-proxy-capabilities-v5-20260905`) reproduced the same result:
-all fixture navigation and download phases passed, while
-`start-fixture-capabilities` returned a JSON `null` dispatch result. No
-capability evidence was published and no physical-board transfer was
-authorized.
+The synchronized capability-probe attempts first exposed a Marionette
+dispatch quirk (`v5`, JSON `null`) and then reached the page's capability
+runner (`v6`). In `v6`, storage, cookie, canvas, and Fetch checks were true;
+the run was rejected only because the page reported phase `home` while the
+new basic contract expected phase `basic`. The source now aligns that phase
+and excludes optional WASM/worker/IndexedDB/audio checks from the basic
+required set. A fresh pass with the aligned contract is still required before
+physical-board transfer; no such transfer was authorized.

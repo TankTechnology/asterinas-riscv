@@ -569,10 +569,12 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
 
 
 def _validate_fixture_capability_shape(capabilities: object, phase: str) -> None:
-    expected_checks = {
-        "audio", "canvas", "cookie", "fetch", "indexedDb",
-        "localStorage", "sessionStorage", "wasm", "worker",
-    }
+    expected_checks = (
+        {"canvas", "cookie", "fetch", "localStorage", "sessionStorage"}
+        if phase == "basic" else
+        {"audio", "canvas", "cookie", "fetch", "indexedDb",
+         "localStorage", "sessionStorage", "wasm", "worker"}
+    )
     if not isinstance(capabilities, dict) or set(capabilities) != {
         "version", "phase", "state", "checks", "error"
     }:
@@ -656,7 +658,8 @@ def probe_fixture_capabilities(probe: object, expected_url: str) -> None:
         or result["jsComplete"] is not True
     ):
         raise GateError("fixture capability document or JavaScript is incomplete")
-    _validate_fixture_capabilities(result["browserCapabilities"], "home")
+    phase = "basic" if "capabilities=basic" in expected_url else "home"
+    _validate_fixture_capabilities(result["browserCapabilities"], phase)
 
 
 def validate_fixture_search(snapshot: object, expected_url: str) -> None:

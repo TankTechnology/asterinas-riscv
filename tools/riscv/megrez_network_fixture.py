@@ -109,7 +109,7 @@ BROWSER_INDEX = b"""<!doctype html>
   }
   const checks = Object.create(null);
   let wasmFailure = null;
-  const phase = search ? 'search' : 'home';
+  const phase = basicDiagnostics ? 'basic' : (search ? 'search' : 'home');
   window.__asterinasCapabilities = {version: 1, phase, state: 'running', checks, error: null};
   const publish = () => {
     document.querySelector('#quality-capabilities').textContent =
@@ -182,10 +182,6 @@ BROWSER_INDEX = b"""<!doctype html>
       // semantics explicitly while leaving optional RISC-V-sensitive APIs at
       // presence-only checks. This keeps the acceptance target meaningful
       // without making it depend on WebAssembly/audio/worker support.
-      checks.wasm = typeof WebAssembly !== 'undefined';
-      checks.worker = typeof Worker === 'function';
-      checks.indexedDb = typeof indexedDB === 'object' && indexedDB !== null;
-      checks.audio = typeof HTMLAudioElement === 'function';
       mark('fetch');
       try {
         const api = await failAfter(fetch('/browser-quality/capabilities.json', {cache: 'no-store'}), 'fetch');
@@ -288,6 +284,12 @@ BROWSER_INDEX = b"""<!doctype html>
     window.__asterinasCapabilities.state = 'complete';
     publish();
   };
+  let runStarted = false;
+  const startRun = () => {
+    if (runStarted) return;
+    runStarted = true;
+    setTimeout(() => run().catch(publishError), 0);
+  };
   // Let the navigation/readiness probe observe a responsive DOM before
   // starting optional capability work. Some guest implementations service
   // storage/media on the main thread; launching it during HTML parsing can
@@ -307,9 +309,13 @@ BROWSER_INDEX = b"""<!doctype html>
     document.addEventListener('asterinas-basic-capabilities-start', () => {
       // Do not execute storage/fetch work on the Marionette dispatch stack;
       // returning to the event loop first keeps ExecuteScript responsive.
-      setTimeout(() => run().catch(publishError), 0);
+      startRun();
     }, {once: true});
-    window.__asterinasRunBasicCapabilities = () => run().catch(publishError);
+    window.__asterinasRunBasicCapabilities = startRun;
+    // Start from the page's own event loop as a fallback for Marionette
+    // implementations that isolate DOM events across sandboxes. The gate
+    // still polls the published report and remains fail-closed.
+    setTimeout(startRun, 500);
   } else {
     setTimeout(() => run().catch(publishError), 500);
   }
