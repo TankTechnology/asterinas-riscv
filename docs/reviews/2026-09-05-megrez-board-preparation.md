@@ -1,10 +1,9 @@
 # Megrez real-board preparation (2026-09-05)
 
-This record freezes the current pre-board state without opening the board
-serial session or writing any U-Boot/eMMC state. The physical device node
-`/dev/ttyUSB0` exists, is owned by `root:dialout`, and had no `lsof`/`fuser`
-owner during the read-only check. No reset, `booti`, TFTP, YMODEM, or rootfs
-installation was attempted.
+This record first froze the pre-board state without opening the board serial
+session or writing any U-Boot/eMMC state. A later controlled run (recorded
+below) opened `/dev/ttyUSB0` and booted already-present eMMC artifacts in RAM;
+it still performed no eMMC writes, TFTP/YMODEM transfer, or reset command.
 
 ## Artifact inventory
 
@@ -151,12 +150,14 @@ Both runs produced fixture search/capability screenshots and JSON, validated
 the download hash, strict HTTPS verification, Firefox security markers, and
 the basic storage/cookie/Fetch contract. The root hashes are ephemeral test
 overlays and must not be used as a board transfer identity. A matching
-physical browser plan and recovery evidence are still required; no physical
-transfer was authorized.
+physical browser plan and recovery evidence are still required; these QEMU
+runs alone did not authorize a physical transfer.
 
-The physical Megrez gate therefore remains fail-closed. `/dev/ttyUSB0` is
-present but was unowned during the read-only check; no serial takeover,
-U-Boot command, reset, transfer, or rootfs installation was attempted.
+The initial physical Megrez gate was fail-closed because `/dev/ttyUSB0` was
+silent and the historical network address was unreachable. The subsequent
+controlled run below shows that a single bounded serial wake-up can establish
+the U-Boot prompt without a reset, after which the board session can proceed
+with paced commands.
 
 ## Physical browser-basic admission checklist
 
@@ -174,7 +175,7 @@ board sequence is:
 4. Collect the Xorg/Firefox screenshot and fixture capability JSON, then wait
    for automatic recovery and verify a second U-Boot epoch.
 
-Until those inputs exist, the physical result is intentionally “not run”; the
+Until those inputs exist, the physical browser result remains “not run”; the
 QEMU evidence is not treated as a substitute for board evidence.
 
 The follow-up read-only audit found the host on `10.100.19.216` and the
@@ -182,3 +183,38 @@ historical Megrez address `10.100.19.200` unresolved in ARP; one ICMP probe and
 one SSH connect attempt both timed out. The FTDI serial port likewise produced
 zero bytes in an 8-second read. This confirms that the board is currently not
 an observable test target, rather than a Firefox or fixture failure.
+
+## Controlled physical run (2026-09-05)
+
+The next probe sent exactly one carriage return (`\\r`) after the passive serial
+read returned zero bytes. The board answered with `=> `, proving that the FTDI
+TX/RX path and U-Boot console were alive. The initial mistake was treating a
+silent console as an unavailable console and waiting passively; a bounded,
+single-character wake-up is needed when the board is already stopped at a
+U-Boot prompt. Long U-Boot commands must then be sent one character at a time
+with a pacing delay: a burst caused `md.b` to be concatenated into an unfinished
+`ext4load` path (`/extlmd.b`).
+
+The controlled boot used only existing eMMC files and verified U-Boot CRC32
+values before `booti`:
+
+```text
+kernel  asterinas-firefox-7fc8fd4-board-sv48.booti  CRC32 4b42f214
+initrd  debian-browser-web-stage1-safe.cpio           CRC32 34ca7110
+dtb     eic7700-milkv-megrez.dtb                      CRC32 4afcb20e
+bootargs: console=ttyS0 loglevel=info init=/init asterinas.reboot_after=120
+```
+
+The kernel entered successfully with SMP=4. UART, both GMACs (GMAC1 selected
+at 1000 Mbps/full duplex), MMC, both xHCI controllers, a Logitech keyboard,
+and a USB mouse all initialized. The run then failed closed at the stage1
+root-device discovery boundary: all three `/dev/mmcblk0p{1,2,3}` probes reported
+`no-match`, followed by `DEBIAN_ROOTFS_FAIL reason=root-discovery-timeout`.
+This identifies an eMMC rootfs marker/identity mismatch; it is not a kernel
+panic or USB HID hang. The software recovery timer was armed and the board
+later returned silently to U-Boot; one final carriage return recovered the
+`=>` prompt. No physical reset was needed.
+
+This run therefore validates the physical kernel/device path and recovery
+mechanism, while leaving the Debian desktop/browser path blocked on installing
+or identifying a rootfs whose stage1 marker matches the current contract.
