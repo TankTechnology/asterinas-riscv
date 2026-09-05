@@ -72,6 +72,12 @@ pub fn read_tsc() -> u64 {
     loongArch64::time::Time::read() as _
 }
 
+/// Requests an earlier timer interrupt on the current CPU.
+///
+/// LoongArch currently uses its periodic timer callback path; this hook keeps the generic timer
+/// manager independent from that implementation detail.
+pub(crate) fn request_timer_interrupt_after(_duration: core::time::Duration) {}
+
 /// Reads a hardware generated 64-bit random value.
 ///
 /// Returns `None` if no random value was generated.

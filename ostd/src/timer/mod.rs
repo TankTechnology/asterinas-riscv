@@ -63,16 +63,15 @@ where
         .push(Box::new(func));
 }
 
-/// Requests a timer interrupt after at most the given duration.
+/// Requests a timer interrupt after at most the given duration on the current CPU.
 ///
-/// RISC-V uses the hardware timer as a one-shot deadline source. Other architectures retain
-/// their periodic-tick behavior until they provide an equivalent one-shot implementation.
+/// The timer manager is architecture-independent and always reports its earliest deadline
+/// through this hook. The architecture backend may program a one-shot hardware deadline or keep
+/// using its periodic tick until an equivalent deadline source is available. Keeping that choice
+/// below this interface is important: POSIX timers and sleep/wakeup code must not grow
+/// architecture-specific branches.
 pub fn request_interrupt_after(duration: Duration) {
-    #[cfg(target_arch = "riscv64")]
     crate::arch::request_timer_interrupt_after(duration);
-
-    #[cfg(not(target_arch = "riscv64"))]
-    let _ = duration;
 }
 
 pub(crate) fn call_timer_callback_functions(_: &TrapFrame) {

@@ -140,6 +140,13 @@ pub fn read_tsc() -> u64 {
     unsafe { _rdtsc() }
 }
 
+/// Requests an earlier timer interrupt on the current CPU.
+///
+/// x86 currently uses the periodic APIC timer path. Keeping the hook at the architecture
+/// boundary lets the generic timer manager use the same deadline API when an APIC one-shot
+/// backend is added.
+pub(crate) fn request_timer_interrupt_after(_duration: core::time::Duration) {}
+
 /// Reads a hardware generated 64-bit random value.
 ///
 /// Returns `None` if no random value was generated.
