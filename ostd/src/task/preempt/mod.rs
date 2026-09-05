@@ -23,6 +23,17 @@ pub use self::guard::{DisabledPreemptGuard, disable_preempt};
 pub fn halt_cpu() {
     crate::task::atomic_mode::might_sleep();
 
+    // An idle CPU does not necessarily pass through a task context switch
+    // while it is waiting in WFI.  RCU uses context-switch boundaries as
+    // quiescent states, so explicitly report one before entering the idle
+    // loop; otherwise a grace period started on another CPU can retain every
+    // subsequently exited process's page tables until the idle CPU runs a
+    // non-idle task again.
+    //
+    // SAFETY: `might_sleep` above guarantees that the idle path is not in an
+    // atomic section or an RCU read-side critical section.
+    unsafe { crate::sync::finish_grace_period() };
+
     let irq_guard = crate::irq::disable_local();
 
     if cpu_local::need_preempt() {

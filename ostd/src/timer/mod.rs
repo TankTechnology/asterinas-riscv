@@ -86,6 +86,16 @@ pub(crate) fn call_timer_callback_functions(_: &TrapFrame) {
         (callback)();
     }
     drop(callbacks_guard);
+
+    // A CPU that is sitting in its idle loop may not perform a task context
+    // switch for a long time.  Timer interrupts are nevertheless a regular
+    // quiescent point, so report one here to let SMP RCU/TLB reclamation make
+    // progress while other CPUs create and destroy address spaces.
+    //
+    // SAFETY: Timer IRQ callbacks run outside an RCU read-side critical
+    // section. The local IRQ guard remains held, which is stronger than the
+    // preemption/IRQ exclusion required by the RCU monitor.
+    unsafe { crate::sync::finish_grace_period() };
 }
 
 #[cfg(target_arch = "riscv64")]
