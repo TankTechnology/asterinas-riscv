@@ -114,6 +114,29 @@ return JSON.stringify({
   }
 });"""
 
+_PUBLIC_LIGHT_PROBE_SCRIPT = r"""const host = location.hostname;
+return JSON.stringify({
+  url: location.href,
+  title: document.title,
+  readyState: document.readyState,
+  // Avoid enumerating a large third-party DOM.  URL/title are sufficient for
+  // challenge detection after the host has been checked by the validator.
+  bodyText: ((document.title || '') + '\n' + location.href).slice(0, 512),
+  jsComplete: (() => { window.__asterinasWebGate = 6 * 7; return window.__asterinasWebGate === 42; })(),
+  browserCapabilities: null,
+  dom: {
+    baiduLogo: false,
+    baiduKeyword: false,
+    baiduSubmit: false,
+    baiduResults: 0,
+    bilibiliHome: host === 'www.bilibili.com' && document.querySelector('a[href*="/video/BV"], main, #app') !== null,
+    bilibiliDetail: host === 'www.bilibili.com' && document.querySelector('video, .bpx-player-container, #bilibili-player') !== null,
+    fixtureQuery: false,
+    fixtureImage: false,
+    fixtureSecond: false
+  }
+});"""
+
 _SNAPSHOT_SCRIPT = r"""const detailPage = location.hostname === 'www.bilibili.com' && location.pathname.startsWith('/video/');
 return JSON.stringify({
   url: location.href,
@@ -799,9 +822,9 @@ def _snapshot(client: Marionette, *, lightweight: bool = False) -> dict[str, obj
     return _mapping(parsed)
 
 
-def _probe(client: Marionette) -> dict[str, object]:
+def _probe(client: Marionette, *, lightweight: bool = False) -> dict[str, object]:
     response = client.command("WebDriver:ExecuteScript", {
-        "script": _PROBE_SCRIPT,
+        "script": _PUBLIC_LIGHT_PROBE_SCRIPT if lightweight else _PROBE_SCRIPT,
         "args": [],
         "line": 1,
         "filename": "asterinas-browser-web-readiness",
@@ -959,6 +982,7 @@ def _wait_for_probe(
     validator: Callable[[object], object],
     deadline: float,
     recover: Callable[[GateError], None] | None = None,
+    lightweight: bool = False,
 ) -> tuple[dict[str, object], object]:
     last_error: GateError | None = None
     capability_reported = False
@@ -977,7 +1001,7 @@ def _wait_for_probe(
             if not command_reported:
                 command_reported = True
                 print("A_WEB_PROBE_COMMAND state=start", file=sys.stderr, flush=True)
-            probe = _probe(client)
+            probe = _probe(client, lightweight=lightweight)
             print("A_WEB_PROBE_COMMAND state=done", file=sys.stderr, flush=True)
             return probe, validator(probe)
         except GateError as error:
@@ -1276,7 +1300,9 @@ def run_gate(
         run_phase("navigate-bilibili-home", lambda: _navigate(client, BILIBILI_HOME))
         run_phase(
             "probe-bilibili-home",
-            lambda: _wait_for_probe(client, probe_bilibili_home, deadline),
+            lambda: _wait_for_probe(
+                client, probe_bilibili_home, deadline, lightweight=True
+            ),
         )
         bilibili_home = run_phase(
             "snapshot-bilibili-home", lambda: _snapshot(client)
@@ -1307,6 +1333,7 @@ def run_gate(
                 client,
                 lambda probe: probe_bilibili_detail(probe, selected),
                 deadline,
+                lightweight=True,
             ),
         )
         bilibili_detail = run_phase(

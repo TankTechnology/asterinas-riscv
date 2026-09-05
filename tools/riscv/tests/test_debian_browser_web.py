@@ -1943,6 +1943,24 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("getEntriesByType", script)
         self.assertNotIn("querySelectorAll('a[href*=", script)
 
+    def test_lightweight_public_probe_avoids_body_enumeration(self) -> None:
+        client = mock.Mock()
+        probe = snapshot("https://www.bilibili.com/")
+        probe["bodyText"] = "Bilibili https://www.bilibili.com/"
+        probe["dom"]["bilibiliHome"] = True
+        fields = {
+            "url", "title", "readyState", "bodyText", "jsComplete",
+            "browserCapabilities", "dom",
+        }
+        client.command.return_value = {
+            "value": json.dumps({key: probe[key] for key in fields})
+        }
+        self.assertEqual(_probe(client, lightweight=True)["url"], probe["url"])
+        script = client.command.call_args.args[1]["script"]
+        self.assertIn("document.title || ''", script)
+        self.assertNotIn("document.body.textContent", script)
+        self.assertNotIn("Array.from(document.querySelectorAll", script)
+
     def test_marionette_gate_reports_screenshot_and_search_phases(self) -> None:
         gate = (ROOTFS / "browser_web_marionette_gate.py").read_text()
         for phase in (
