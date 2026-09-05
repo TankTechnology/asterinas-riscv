@@ -550,7 +550,11 @@ def probe_fixture_home(probe: object, expected_url: str) -> None:
         or result["readyState"] != "complete"
         or result["jsComplete"] is not True
     ):
-        raise GateError("fixture home document or JavaScript is incomplete")
+        raise GateError(
+            "fixture home document or JavaScript is incomplete: "
+            f"url={result['url']!r} title={result['title']!r} "
+            f"readyState={result['readyState']!r} jsComplete={result['jsComplete']!r}"
+        )
     body = result["bodyText"]
     if not isinstance(body, str) or not all(
         token in body for token in ("Asterinas browser quality", "浏览器质量")
@@ -944,6 +948,7 @@ def _wait_for_probe(
     capability_reported = False
     command_reported = False
     recovered = False
+    reported_errors: set[str] = set()
     while time.monotonic() < deadline:
         probe: object | None = None
         try:
@@ -986,10 +991,12 @@ def _wait_for_probe(
             if recover is not None and not recovered and "about:blank" in str(error):
                 recovered = True
                 recover(error)
-            if last_error is None:
+            error_text = str(error)
+            if error_text not in reported_errors:
+                reported_errors.add(error_text)
                 print(
                     "A_WEB_PROBE_RETRY error="
-                    + json.dumps(str(error), ensure_ascii=True),
+                    + json.dumps(error_text, ensure_ascii=True),
                     file=sys.stderr,
                     flush=True,
                 )
