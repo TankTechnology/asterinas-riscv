@@ -197,6 +197,9 @@ _TIMELINE_PLATFORM_LINE = re.compile(
     rb"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
     rb"bilibili_detail=pass bv=(BV[0-9A-Za-z]{10}) tls=verified"
 )
+_TIMELINE_PLATFORM_BASIC_LINE = re.compile(
+    rb"DEBIAN_BROWSER_WEB_PLATFORM_READY_BASIC fixture_search=pass download=pass"
+)
 _TIMELINE_PROBE_COMMAND_LINE = re.compile(
     rb"A_WEB_PROBE_COMMAND state=(?:start|done)"
 )
@@ -497,6 +500,8 @@ def _validate_timeline(
                 if platform_bv is not None:
                     raise GateFailure("browser platform evidence is duplicated")
                 platform_bv = platform_match.group(1)
+                continue
+            if basic_only and _TIMELINE_PLATFORM_BASIC_LINE.fullmatch(line):
                 continue
             if (
                 _TIMELINE_PROBE_COMMAND_LINE.fullmatch(line)
