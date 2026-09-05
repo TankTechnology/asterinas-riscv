@@ -25,6 +25,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     _probe,
     _submit_fixture_search,
     _trigger_fixture_download,
+    _start_fixture_capabilities,
     _submit_baidu_search,
     _script_value,
     _wait_for_fixture_download,
@@ -1651,6 +1652,19 @@ generate_fontconfig_cache "$stage" "$3"
                 _wait_for_fixture_download(
                     download, time.monotonic() + 0.01, evidence, os.getuid() + 1
                 )
+
+    def test_basic_capability_runner_is_started_explicitly(self) -> None:
+        client = mock.Mock()
+        client.command.return_value = {"value": "basic-capabilities-started"}
+        _start_fixture_capabilities(client)
+        command, arguments = client.command.call_args.args
+        self.assertEqual(command, "WebDriver:ExecuteScript")
+        self.assertIn("asterinas-basic-capabilities-start", arguments["script"])
+
+    def test_basic_capability_runner_accepts_firefox_null_dispatch_result(self) -> None:
+        client = mock.Mock()
+        client.command.return_value = {"value": None}
+        _start_fixture_capabilities(client)
 
     def test_controlled_fixture_url_and_evidence_are_exact(self) -> None:
         environment = {

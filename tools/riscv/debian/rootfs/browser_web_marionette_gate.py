@@ -75,6 +75,39 @@ def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
     print(line, file=sys.stderr, flush=True)
 
 _PROBE_SCRIPT = r"""const host = location.hostname;
+// The repository-owned fixture is the first readiness boundary.  Keep this
+// script deliberately tiny: on slow RISC-V guests even harmless selector
+// enumeration over a document with pending image loads can starve Marionette.
+// Public pages still use the richer branch below after fixture readiness.
+if (location.pathname.startsWith('/browser-quality/')) {
+  const output = document.querySelector('#quality-capabilities');
+  let browserCapabilities = null;
+  if (output !== null && output.textContent !== '') {
+    try { browserCapabilities = JSON.parse(output.textContent); } catch (_) {
+      browserCapabilities = {state: 'malformed'};
+    }
+  }
+  const image = document.querySelector('img[alt="pattern"]');
+  return JSON.stringify({
+    url: location.href,
+    title: document.title,
+    readyState: document.readyState,
+    bodyText: (document.body === null ? '' : (document.body.textContent || '')).slice(0, 2048),
+    jsComplete: (() => { window.__asterinasWebGate = 6 * 7; return window.__asterinasWebGate === 42; })(),
+    browserCapabilities,
+    dom: {
+      baiduLogo: false,
+      baiduKeyword: false,
+      baiduSubmit: false,
+      baiduResults: 0,
+      bilibiliHome: false,
+      bilibiliDetail: false,
+      fixtureQuery: document.querySelector('form input[name="q"]') !== null,
+      fixtureImage: image !== null && image.complete && image.naturalWidth === 32,
+      fixtureSecond: document.querySelector('a[href="/browser-quality/second.html"]') !== null
+    }
+  });
+}
 return JSON.stringify({
   // Readiness probes run against script-heavy public pages.  Keep this pass
   // deliberately small: the full NavigationTiming/resource snapshot is
@@ -948,6 +981,32 @@ def _trigger_fixture_download(client: Marionette) -> None:
         raise GateError("controlled fixture download link could not be activated")
 
 
+def _start_fixture_capabilities(client: Marionette) -> None:
+    response = client.command("WebDriver:ExecuteScript", {
+        "script": "window.setTimeout(() => document.dispatchEvent(new Event('asterinas-basic-capabilities-start')), 0); "
+        "return 'basic-capabilities-started';",
+        "args": [],
+        # Dispatching a DOM event reaches the page from a fresh sandbox and
+        # avoids relying on a function binding that may belong to another
+        # Marionette sandbox instance.
+        "newSandbox": True,
+        "sandbox": "default",
+        "line": 1,
+        "filename": "asterinas-browser-basic-capabilities",
+    })
+    value = _script_value(response)
+    # Some Firefox ESR builds normalize an ExecuteScript result from a
+    # sandboxed asynchronous dispatch to JSON null even though the event was
+    # queued successfully. The subsequent capability probe is authoritative.
+    if value not in {"basic-capabilities-started", None}:
+        print(
+            f"A_WEB_CAPABILITY_START_RESULT value={json.dumps(value, ensure_ascii=True)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise GateError("controlled fixture capability runner could not be started")
+
+
 def _wait_for_fixture_download(
     path: Path, deadline: float, evidence_dir: Path, expected_owner_uid: int
 ) -> dict[str, object]:
@@ -1261,9 +1320,43 @@ def run_gate(
         )
 
         if basic_only:
+            capability_url = f"{fixture_index}?capabilities=basic"
+            run_phase(
+                "navigate-fixture-capabilities",
+                lambda: _navigate(client, capability_url),
+            )
+            run_phase(
+                "start-fixture-capabilities",
+                lambda: _start_fixture_capabilities(client),
+            )
+            capability_probe = run_phase(
+                "probe-fixture-capabilities",
+                lambda: _wait_for_probe(
+                    client,
+                    lambda probe: probe_fixture_capabilities(probe, capability_url),
+                    deadline,
+                ),
+            )
+            capability_snapshot = run_phase(
+                "snapshot-fixture-capabilities", lambda: _snapshot(client)
+            )
+            assert isinstance(capability_snapshot, dict)
+            probe_fixture_capabilities(capability_probe[0], capability_url)
+            _validate_fixture_capabilities(
+                capability_snapshot.get("browserCapabilities"), "basic"
+            )
+            run_phase(
+                "evidence-fixture-capabilities",
+                lambda: _write_evidence(
+                    client,
+                    evidence_dir,
+                    "fixture-capabilities",
+                    capability_snapshot,
+                ),
+            )
             print(
                 "DEBIAN_BROWSER_WEB_PLATFORM_READY_BASIC "
-                "fixture_search=pass download=pass",
+                "fixture_search=pass capabilities=pass download=pass",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1440,8 +1533,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     if values.basic_only:
         print(
-            f"{PASS_PREFIX} fixture_search=pass download=pass "
-            "public_sites=not-run capabilities=fixture",
+            f"{PASS_PREFIX} fixture_search=pass capabilities=pass download=pass "
+            "public_sites=not-run",
         )
         return 0
     print(

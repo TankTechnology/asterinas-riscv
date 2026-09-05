@@ -592,7 +592,7 @@ fi
 stop_gate_sampler
 cat "$GATE_STDERR" >>"$TIMELINE_LOG"
 if [[ "$BASIC_ONLY" == 1 ]]; then
-    [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture" ]] ||
+    [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass capabilities=pass download=pass public_sites=not-run" ]] ||
         fail browser-content-output
 else
 [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified baidu_outcome=pass capabilities=pass download=pass" ||
@@ -631,7 +631,7 @@ case "$CONTENT_SECCOMP_MODE" in
         ;;
 esac
 if [[ "$BASIC_ONLY" == 1 ]]; then
-    emit "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture"
+    emit "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass capabilities=pass download=pass public_sites=not-run"
 else
     emit "$content"
 fi

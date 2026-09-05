@@ -163,6 +163,11 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(body, BROWSER_INDEX)
+            status, body, _ = self.request(
+                server, f"{BROWSER_INDEX_PATH}?capabilities=basic"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body, BROWSER_INDEX)
             for invalid_query in ("?q=asterinas&q=again", "?other=asterinas", "?q="):
                 with self.subTest(query=invalid_query):
                     self.assertEqual(
@@ -177,7 +182,8 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             "await failAfter(WebAssembly.instantiate(new Uint8Array(", source
         )
         self.assertIn(")), 'wasm')).instance.exports.answer()", source)
-        self.assertIn("get('capabilities') === '1'", source)
+        self.assertIn("capabilityMode === '1'", source)
+        self.assertIn("capabilityMode === 'basic'", source)
         self.assertIn("checks.worker = typeof Worker === 'function'", source)
         self.assertIn("if (!diagnostics) {", source)
         self.assertIn("if (output !== null) output.textContent", source)

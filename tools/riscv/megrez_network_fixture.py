@@ -80,8 +80,10 @@ BROWSER_INDEX = b"""<!doctype html>
 (() => {
   'use strict';
   const search = new URLSearchParams(location.search).get('q') === 'asterinas';
-  const diagnostics = new URLSearchParams(location.search).get('capabilities') === '1';
-  if (!diagnostics) {
+  const capabilityMode = new URLSearchParams(location.search).get('capabilities');
+  const diagnostics = capabilityMode === '1';
+  const basicDiagnostics = capabilityMode === 'basic';
+  if (!diagnostics && !basicDiagnostics) {
     // The primary navigation/search gate must never instantiate optional APIs:
     // some RISC-V kernels can block synchronously in those entry points.
     const output = document.querySelector('#quality-capabilities');
@@ -175,6 +177,31 @@ BROWSER_INDEX = b"""<!doctype html>
     // Promise timeout cannot safely bound them.  The regular home/search gate
     // records their API presence only; the explicit ?capabilities=1 page runs
     // the full behavioural checks below for diagnostics.
+    if (basicDiagnostics) {
+      // The basic acceptance profile exercises the storage and Fetch
+      // semantics explicitly while leaving optional RISC-V-sensitive APIs at
+      // presence-only checks. This keeps the acceptance target meaningful
+      // without making it depend on WebAssembly/audio/worker support.
+      checks.wasm = typeof WebAssembly !== 'undefined';
+      checks.worker = typeof Worker === 'function';
+      checks.indexedDb = typeof indexedDB === 'object' && indexedDB !== null;
+      checks.audio = typeof HTMLAudioElement === 'function';
+      mark('fetch');
+      try {
+        const api = await failAfter(fetch('/browser-quality/capabilities.json', {cache: 'no-store'}), 'fetch');
+        const payload = await failAfter(api.json(), 'fetch-json');
+        checks.fetch = api.ok && payload.schema_version === 1 && payload.token === 'asterinas-browser-quality';
+      } catch (_) {
+        checks.fetch = false;
+      }
+      mark('complete');
+      if (!checks.localStorage || !checks.sessionStorage || !checks.cookie || !checks.fetch) {
+        throw new Error('basic-capability-failure');
+      }
+      window.__asterinasCapabilities.state = 'complete';
+      publish();
+      return;
+    }
     if (!diagnostics) {
       checks.wasm = typeof WebAssembly !== 'undefined';
       checks.worker = typeof Worker === 'function';
@@ -262,10 +289,12 @@ BROWSER_INDEX = b"""<!doctype html>
     publish();
   };
   // Let the navigation/readiness probe observe a responsive DOM before
-  // starting optional capability work.  Some guest implementations service
+  // starting optional capability work. Some guest implementations service
   // storage/media on the main thread; launching it during HTML parsing can
-  // otherwise starve the first Marionette ExecuteScript command.
-  setTimeout(() => run().catch(error => {
+  // otherwise starve the first Marionette ExecuteScript command. The basic
+  // gate starts the function explicitly after navigation and then polls the
+  // published result.
+  const publishError = error => {
     window.__asterinasCapabilities.state = 'error';
     const failed = Object.entries(window.__asterinasCapabilities.checks)
       .filter(([, value]) => value !== true).map(([name]) => name).join(',');
@@ -273,7 +302,17 @@ BROWSER_INDEX = b"""<!doctype html>
       String(error && error.message || error) + (failed ? ':' + failed : '')
     ).slice(0, 160);
     publish();
-  }), 500);
+  };
+  if (basicDiagnostics) {
+    document.addEventListener('asterinas-basic-capabilities-start', () => {
+      // Do not execute storage/fetch work on the Marionette dispatch stack;
+      // returning to the event loop first keeps ExecuteScript responsive.
+      setTimeout(() => run().catch(publishError), 0);
+    }, {once: true});
+    window.__asterinasRunBasicCapabilities = () => run().catch(publishError);
+  } else {
+    setTimeout(() => run().catch(publishError), 500);
+  }
 })();
 </script>"""
 BROWSER_SECOND = b"""<!doctype html>
@@ -490,7 +529,7 @@ class FixtureServer:
                 return 200, "text/html; charset=utf-8", BROWSER_INDEX
             if query == "q=asterinas":
                 return 200, "text/html; charset=utf-8", BROWSER_SEARCH
-            if query == "capabilities=1":
+            if query in {"capabilities=1", "capabilities=basic"}:
                 return 200, "text/html; charset=utf-8", BROWSER_INDEX
             return 400, "text/plain; charset=utf-8", b""
         if query:

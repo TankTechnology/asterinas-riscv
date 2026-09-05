@@ -30,6 +30,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     validate_baidu_search_outcome,
     validate_bilibili_detail,
     validate_fixture_search,
+    _validate_fixture_capabilities,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
@@ -60,7 +61,7 @@ _BROWSER_WEB_SUFFIX_MILESTONES = (
 
 _BASIC_BROWSER_WEB_SUFFIX_MILESTONES = (
     "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited",
-    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture",
+    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass capabilities=pass download=pass public_sites=not-run",
     "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent",
 )
 
@@ -125,6 +126,8 @@ WEB_EVIDENCE_PATHS = {
 BASIC_WEB_EVIDENCE_PATHS = {
     "fixture-search.json": "/home/asterinas/browser-web-evidence/fixture-search.json",
     "fixture-search.png": "/home/asterinas/browser-web-evidence/fixture-search.png",
+    "fixture-capabilities.json": "/home/asterinas/browser-web-evidence/fixture-capabilities.json",
+    "fixture-capabilities.png": "/home/asterinas/browser-web-evidence/fixture-capabilities.png",
     "fixture-download.json": "/home/asterinas/browser-web-evidence/fixture-download.json",
     "curl.log": "/home/asterinas/browser-web-curl-evidence.log",
     "security.log": "/home/asterinas/browser-web-security-evidence.log",
@@ -198,7 +201,7 @@ _TIMELINE_PLATFORM_LINE = re.compile(
     rb"bilibili_detail=pass bv=(BV[0-9A-Za-z]{10}) tls=verified"
 )
 _TIMELINE_PLATFORM_BASIC_LINE = re.compile(
-    rb"DEBIAN_BROWSER_WEB_PLATFORM_READY_BASIC fixture_search=pass download=pass"
+    rb"DEBIAN_BROWSER_WEB_PLATFORM_READY_BASIC fixture_search=pass capabilities=pass download=pass"
 )
 _TIMELINE_PROBE_COMMAND_LINE = re.compile(
     rb"A_WEB_PROBE_COMMAND state=(?:start|done)"
@@ -592,6 +595,11 @@ def validate_web_evidence(
             _decode_json(evidence["fixture-search.json"], "fixture-search.json"),
             "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas",
         )
+        capabilities = _decode_json(
+            evidence["fixture-capabilities.json"], "fixture-capabilities.json"
+        )
+        _validate_fixture_capabilities(capabilities.get("browserCapabilities"), "basic")
+        validate_png_evidence(evidence["fixture-capabilities.png"], "fixture-capabilities")
         fixture_download = _decode_json(
             evidence["fixture-download.json"], "fixture-download.json"
         )

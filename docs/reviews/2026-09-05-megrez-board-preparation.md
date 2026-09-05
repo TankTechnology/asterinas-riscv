@@ -154,3 +154,24 @@ unowned during the read-only check, but no current browser `debian-browser`
 plan, matching desktop simulation result, and software-recovery evidence exist
 for the current Sv48 kernel/rootfs/DTB tuple. Therefore no serial takeover,
 U-Boot command, reset, transfer, or rootfs installation was attempted.
+
+| QEMU run | SMP | network path | result | final root hash |
+| --- | ---: | --- | --- | --- |
+| `firefox-basic-proxy-20260905g` | 4 | host proxy | pass | `1ba17afea02bf7d195d1ca3c71b4d6e2943a4e804013252546917da027e9738b` |
+| `firefox-basic-direct-final2-20260905` | 4 | direct slirp | pass | `c766e8d77cf9615c31d6743c1b0f9af9598ed49fbe0add7f1541cd84e0c9735e` |
+
+Both runs validated the repository fixture's CJK/text and PNG evidence,
+form/search navigation, JavaScript probe, API-presence checks, download hash,
+strict HTTPS probe, and Firefox process-security markers. They predate the
+explicit storage/cookie/Fetch behavior probe; that probe currently reaches the
+Marionette dispatch step but this Firefox ESR build normalizes the asynchronous
+dispatch result to `null`, so it remains fail-closed until the follow-up probe
+reports `state=complete`. The root hashes are for ephemeral test overlays and
+must not be used as a board transfer identity.
+
+The synchronized capability-probe attempt
+(`firefox-basic-proxy-capabilities-v5-20260905`) reproduced the same result:
+all fixture navigation and download phases passed, while
+`start-fixture-capabilities` returned a JSON `null` dispatch result. No
+capability evidence was published and no physical-board transfer was
+authorized.

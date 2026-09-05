@@ -33,6 +33,14 @@ PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended
 # graphics-heavy public page.  Keep the transport bounded, but size it for the
 # online screenshot contract instead of the tiny repository-owned HTML probe.
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+# A hung content script must not consume the whole gate deadline.  The guest
+# remains fail-closed, while the caller gets a useful protocol failure and can
+# tear down QEMU promptly.
+# Firefox ESR cold-start on the emulated RISC-V guest can take roughly 150 s
+# before WebDriver:NewSession responds.  Keep enough headroom for that one
+# startup command while still bounding a genuinely hung command well below
+# the overall gate deadline.
+COMMAND_TIMEOUT = 180.0
 
 _EXPRESSION = r"""return JSON.stringify({
   url: location.href,
@@ -88,26 +96,26 @@ class Marionette:
             raise
         self._phase("greeting", "done", None)
 
-    def _remaining(self) -> float:
-        remaining = self._deadline - time.monotonic()
+    def _remaining(self, deadline: float | None = None) -> float:
+        remaining = (self._deadline if deadline is None else deadline) - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Marionette gate deadline expired")
         return remaining
 
-    def _read_exact(self, length: int) -> bytes:
+    def _read_exact(self, length: int, deadline: float | None = None) -> bytes:
         data = bytearray()
         while len(data) < length:
-            self._socket.settimeout(self._remaining())
+            self._socket.settimeout(self._remaining(deadline))
             chunk = self._socket.recv(length - len(data))
             if not chunk:
                 raise GateError("truncated Marionette message")
             data.extend(chunk)
         return bytes(data)
 
-    def _receive(self) -> object:
+    def _receive(self, deadline: float | None = None) -> object:
         digits = bytearray()
         while True:
-            byte = self._read_exact(1)
+            byte = self._read_exact(1, deadline)
             if byte == b":":
                 break
             if not byte.isdigit() or len(digits) >= 10:
@@ -119,7 +127,7 @@ class Marionette:
         if length > MAX_MESSAGE_BYTES:
             raise GateError("oversized Marionette message")
         try:
-            return json.loads(self._read_exact(length).decode("utf-8"))
+            return json.loads(self._read_exact(length, deadline).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise GateError("invalid Marionette JSON") from error
 
@@ -127,9 +135,10 @@ class Marionette:
         identifier = self._next_id
         self._next_id += 1
         payload = json.dumps([0, identifier, name, parameters or {}], separators=(",", ":")).encode()
-        self._socket.settimeout(self._remaining())
+        command_deadline = min(self._deadline, time.monotonic() + COMMAND_TIMEOUT)
+        self._socket.settimeout(self._remaining(command_deadline))
         self._socket.sendall(str(len(payload)).encode("ascii") + b":" + payload)
-        response = self._receive()
+        response = self._receive(command_deadline)
         if not isinstance(response, list) or len(response) != 4:
             raise GateError("malformed Marionette response")
         kind, response_id, error, result = response
