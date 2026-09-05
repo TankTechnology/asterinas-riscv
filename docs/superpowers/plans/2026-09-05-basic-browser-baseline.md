@@ -33,9 +33,10 @@
 - [ ] Add a `--basic-only` QEMU option that appends the validated kernel environment argument.
 - [ ] Validate the shorter basic timeline/evidence set while preserving strict boot, network, security, and screenshot checks.
 - [x] Run QEMU SMP=4 in proxy mode and direct mode, preserving output manifests.
-- [x] Proxy mode produced a passing result JSON. Direct mode was bounded at
-  420 seconds and classified as a protocol timeout after fixture transfer;
-  it is not treated as a pass.
+- [x] Proxy mode produced a passing result JSON. Direct mode initially exposed
+  a cold-start/protocol timeout; after bounding Marionette cleanup and disabling
+  unrelated basic-profile background traffic, the final SMP=4 run also
+  produced a passing result JSON.
 
 ### Task 3: Controlled Megrez run
 

@@ -42,11 +42,12 @@ stable.
 
 ## Current execution status (2026-09-05)
 
-The fixture-only gate passed on QEMU with SMP=4 through the host proxy path,
-including content, strict TLS, Firefox stability, and process-security
-evidence. The same image in direct mode completed the fixture workload but did
-not reach the later Firefox/security timeline within a bounded 420-second run;
-this is recorded as a direct-path startup timeout, not a browser-content pass.
+The fixture-only gate passed on QEMU with SMP=4 through both the host proxy and
+direct paths, including content, strict TLS, Firefox stability, and
+process-security evidence. Direct mode requires a larger bounded window because
+RISC-V Firefox cold startup is slow; the final run completed with
+`reason=pass` after the basic profile suppressed unrelated public background
+fetchers.
 The physical Megrez run is intentionally not unlocked yet: the existing
 preboard contract still requires a matching browser plan, desktop simulation,
 and recovery evidence bound to the current Sv48 artifact set.

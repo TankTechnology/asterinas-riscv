@@ -142,9 +142,11 @@ process, and security markers; its result is retained at
 `target/firefox-basic-proxy-20260905g/result.json`. Direct mode was then run
 with the same image and a 420-second bound. It completed all 20 fixture
 requests but stopped before the later Firefox/security markers, yielding
-`reason=protocol`; this is evidence of a direct-path startup/timing issue, not
-evidence that the fixture or proxy path is broken. The image used for these
-QEMU experiments is an ephemeral overlay (its root hash differs from the
+`reason=protocol`; this exposed the cold-start/timing issue. After the
+basic-profile background fetch suppression and bounded Marionette cleanup, the
+final direct SMP=4 run passed with `reason=pass`; its result is retained at
+`target/firefox-basic-direct-final2-20260905/result.json`. The image used for
+these QEMU experiments is an ephemeral overlay (its root hash differs from the
 signed `browser-web` image), so it is not a physical-board payload.
 
 The physical Megrez gate remains fail-closed. `/dev/ttyUSB0` was present and
