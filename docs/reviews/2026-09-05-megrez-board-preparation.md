@@ -136,44 +136,24 @@ without deleting the diagnostic workload.
 
 ## Basic Firefox gate execution
 
-The fixture-only browser gate was run with the current injected test image and
-SMP=4. Proxy mode passed with the expected content, strict TLS, stable Firefox
-process, and security markers; its result is retained at
-`target/firefox-basic-proxy-20260905g/result.json`. Direct mode was then run
-with the same image and a 420-second bound. It completed all 20 fixture
-requests but stopped before the later Firefox/security markers, yielding
-`reason=protocol`; this exposed the cold-start/timing issue. After the
-basic-profile background fetch suppression and bounded Marionette cleanup, the
-final direct SMP=4 run passed with `reason=pass`; its result is retained at
-`target/firefox-basic-direct-final2-20260905/result.json`. The image used for
-these QEMU experiments is an ephemeral overlay (its root hash differs from the
-signed `browser-web` image), so it is not a physical-board payload.
+The final fixture-only browser gates were run with the current injected test
+image and SMP=4. Earlier attempts exposed Marionette cold-start and phase
+normalization issues; those are now bounded and aligned in the source.
 
-The physical Megrez gate remains fail-closed. `/dev/ttyUSB0` was present and
-unowned during the read-only check, but no current browser `debian-browser`
-plan, matching desktop simulation result, and software-recovery evidence exist
-for the current Sv48 kernel/rootfs/DTB tuple. Therefore no serial takeover,
-U-Boot command, reset, transfer, or rootfs installation was attempted.
+With that contract aligned, the final QEMU runs passed:
 
 | QEMU run | SMP | network path | result | final root hash |
 | --- | ---: | --- | --- | --- |
-| `firefox-basic-proxy-20260905g` | 4 | host proxy | pass | `1ba17afea02bf7d195d1ca3c71b4d6e2943a4e804013252546917da027e9738b` |
-| `firefox-basic-direct-final2-20260905` | 4 | direct slirp | pass | `c766e8d77cf9615c31d6743c1b0f9af9598ed49fbe0add7f1541cd84e0c9735e` |
+| `firefox-basic-proxy-capabilities-final-20260905` | 4 | host proxy | `passed=true` | `f4671b6178fa45e193b2902e67f4204ed44d3925decb758263aead89470489ce` |
+| `firefox-basic-direct-capabilities-final2-20260905` | 4 | direct slirp | `passed=true` | `6df1fc59e421ca4331143b818e030f5d8740aceeaae6b228981e1d474dfb9ac4` |
 
-Both runs validated the repository fixture's CJK/text and PNG evidence,
-form/search navigation, JavaScript probe, API-presence checks, download hash,
-strict HTTPS probe, and Firefox process-security markers. They predate the
-explicit storage/cookie/Fetch behavior probe; that probe currently reaches the
-Marionette dispatch step but this Firefox ESR build normalizes the asynchronous
-dispatch result to `null`, so it remains fail-closed until the follow-up probe
-reports `state=complete`. The root hashes are for ephemeral test overlays and
-must not be used as a board transfer identity.
+Both runs produced fixture search/capability screenshots and JSON, validated
+the download hash, strict HTTPS verification, Firefox security markers, and
+the basic storage/cookie/Fetch contract. The root hashes are ephemeral test
+overlays and must not be used as a board transfer identity. A matching
+physical browser plan and recovery evidence are still required; no physical
+transfer was authorized.
 
-The synchronized capability-probe attempts first exposed a Marionette
-dispatch quirk (`v5`, JSON `null`) and then reached the page's capability
-runner (`v6`). In `v6`, storage, cookie, canvas, and Fetch checks were true;
-the run was rejected only because the page reported phase `home` while the
-new basic contract expected phase `basic`. The source now aligns that phase
-and excludes optional WASM/worker/IndexedDB/audio checks from the basic
-required set. A fresh pass with the aligned contract is still required before
-physical-board transfer; no such transfer was authorized.
+The physical Megrez gate therefore remains fail-closed. `/dev/ttyUSB0` is
+present but was unowned during the read-only check; no serial takeover,
+U-Boot command, reset, transfer, or rootfs installation was attempted.
