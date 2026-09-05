@@ -4,7 +4,7 @@ use core::time::Duration;
 
 use ostd::mm::VmIo;
 
-use super::SyscallReturn;
+use super::{SyscallReturn, timer_create::posix_timer_profile_log};
 use crate::{
     prelude::*,
     time::{TIMER_ABSTIME, itimerspec_t, timer::Timeout, timespec_t},
@@ -31,6 +31,12 @@ pub fn sys_timer_settime(
     };
 
     let mut timer_guard = timer.lock();
+
+    posix_timer_profile_log(
+        "set",
+        timer_id,
+        u64::try_from(expire_time.as_nanos()).unwrap_or(u64::MAX),
+    );
 
     let (old_interval, remain) = (timer_guard.interval(), timer_guard.remain());
 

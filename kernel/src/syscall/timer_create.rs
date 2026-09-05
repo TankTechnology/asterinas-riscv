@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ostd::mm::VmIo;
 
 use super::{
@@ -29,6 +31,20 @@ use crate::{
         timer::TimerGuard,
     },
 };
+
+static POSIX_TIMER_PROFILE: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param_early!("asterinas.posix_timer_profile", POSIX_TIMER_PROFILE);
+
+pub(super) fn posix_timer_profile_log(operation: &str, timer_id: usize, value: u64) {
+    if POSIX_TIMER_PROFILE.load(Ordering::Relaxed) {
+        ostd::early_println!(
+            "ASTERINAS_POSIX_TIMER_PROFILE op={} timer_id={} value={}",
+            operation,
+            timer_id,
+            value
+        );
+    }
+}
 
 #[derive(Clone)]
 enum TimerNotification {
@@ -90,6 +106,7 @@ fn create_timer_callback(
     };
 
     move |guard: TimerGuard| {
+        posix_timer_profile_log("expire", timer_id as usize, guard.overrun());
         let Some(work_item) = &delivery else {
             return;
         };
@@ -180,6 +197,7 @@ pub fn sys_timer_create(
     else {
         return_errno_with_message!(Errno::EAGAIN, "timer IDs are exhausted");
     };
+    posix_timer_profile_log("create", timer_id, clockid as u64);
     ctx.user_space().write_val(timer_id_addr, &timer_id)?;
     Ok(SyscallReturn::Return(0))
 }
@@ -191,6 +209,7 @@ pub fn sys_timer_delete(timer_id: usize, _ctx: &Context) -> Result<SyscallReturn
     };
 
     timer.lock().cancel();
+    posix_timer_profile_log("delete", timer_id, 0);
     Ok(SyscallReturn::Return(0))
 }
 

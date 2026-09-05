@@ -450,6 +450,7 @@ mod sync;
 mod sysinfo;
 mod tgkill;
 mod time;
+mod times;
 mod timer_create;
 mod timer_settime;
 mod timerfd_create;
