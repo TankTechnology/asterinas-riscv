@@ -1169,6 +1169,7 @@ def run_gate(
     firefox_pid: int,
     *,
     require_tls_handshake: bool = True,
+    basic_only: bool = False,
 ) -> tuple[str, str]:
     deadline = time.monotonic() + timeout
     def phase(name: str, state: str, error: BaseException | None = None) -> None:
@@ -1258,6 +1259,18 @@ def run_gate(
                 FIXTURE_DOWNLOAD_FILE, deadline, evidence_dir, firefox_uid
             ),
         )
+
+        if basic_only:
+            print(
+                "DEBIAN_BROWSER_WEB_PLATFORM_READY_BASIC "
+                "fixture_search=pass download=pass",
+                file=sys.stderr,
+                flush=True,
+            )
+            deleted = _script_value(client.command("WebDriver:DeleteSession"))
+            if deleted is not None:
+                raise GateError("Marionette returned an invalid session deletion result")
+            return "", "basic"
 
         command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
         # Native WebDriver metadata is a cheap control probe.  If this phase
@@ -1395,6 +1408,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--firefox-pid", type=int, required=True)
+    parser.add_argument("--basic-only", action="store_true")
     parser.add_argument(
         "--evidence-dir", type=Path,
         default=Path("/home/asterinas/browser-web-evidence"),
@@ -1416,9 +1430,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 os.environ.get("ASTERINAS_WEB_NETWORK_MODE", "direct")
                 == "direct"
             ),
+            basic_only=values.basic_only,
         )
     except (GateError, OSError, TimeoutError) as error:
         parser.error(str(error))
+    if values.basic_only:
+        print(
+            f"{PASS_PREFIX} fixture_search=pass download=pass "
+            "public_sites=not-run capabilities=fixture",
+        )
+        return 0
     print(
         f"{PASS_PREFIX} fixture_search=pass baidu_home=pass "
         f"baidu_search=observed bilibili_home=pass bilibili_detail=pass "

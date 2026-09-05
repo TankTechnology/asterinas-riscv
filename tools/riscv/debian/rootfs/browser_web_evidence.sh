@@ -25,6 +25,7 @@ readonly HOT_MAP_MAX_LINES=128
 readonly NETWORK_ERROR_LOG=/run/asterinas-browser-web-network-error
 readonly USER_ID=1000
 readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
 readonly NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"
 readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
@@ -68,6 +69,7 @@ is_canonical_ipv4() {
 
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-timeout
 [[ "$FORMAL_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-formal-timeout
+[[ "$BASIC_ONLY" == 0 || "$BASIC_ONLY" == 1 ]] || fail invalid-basic-only
 case "$NETWORK_MODE" in
     direct)
         [[ -z "$PROXY_URL" && -z "$PROXY_HOST" && -z "$PROXY_PORT" ]] ||
@@ -214,8 +216,13 @@ observe_firefox_stability() {
         observed_pid="$(find_firefox_process || true)"
         [[ "$observed_pid" == "$browser_pid" ]] ||
             fail firefox-pid-changed-during-stability
-        /usr/bin/timeout 6 /usr/bin/sleep 5 ||
-            fail firefox-stability-sleep
+        if [[ "$BASIC_ONLY" == 1 ]]; then
+            /usr/bin/timeout 3 /usr/bin/sleep 1 ||
+                fail firefox-stability-sleep
+        else
+            /usr/bin/timeout 6 /usr/bin/sleep 5 ||
+                fail firefox-stability-sleep
+        fi
     done
 }
 
@@ -239,6 +246,11 @@ validate_dns_and_tls() {
     local hosts name ip line status effective verify lookup connect tls first_byte
     local command_status stderr_hex
     local -a curl_network=()
+    if [[ "$BASIC_ONLY" == 1 ]]; then
+        hosts=(deb.debian.org)
+    else
+        hosts=(www.baidu.com www.bilibili.com)
+    fi
     if [[ "$NETWORK_MODE" == direct ]]; then
         grep -Fqx "nameserver $NETWORK_RESOLVER" /etc/resolv.conf ||
             fail dns-resolver-mismatch
@@ -266,7 +278,7 @@ validate_dns_and_tls() {
     if [[ "$ready" != true ]]; then
         emit "DEBIAN_BROWSER_WEB_NETWORK_LOCAL state=unverified reason=ip-link-address-route"
     fi
-    for name in www.baidu.com www.bilibili.com; do
+    for name in "${hosts[@]}"; do
         emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=start"
         if [[ "$NETWORK_MODE" == proxy ]]; then
             printf 'DNS_DELEGATED mode=proxy host=%s proxy=%s\n' \
@@ -287,7 +299,13 @@ validate_dns_and_tls() {
         printf 'DNS host=%s address=%s\n' "$name" "$ip" >>"$CURL_LOG"
         emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=dns host=$name state=done address=$ip"
     done
-    for name in https://www.baidu.com/ https://www.bilibili.com/; do
+    local -a https_names
+    if [[ "$BASIC_ONLY" == 1 ]]; then
+        https_names=(https://deb.debian.org/)
+    else
+        https_names=(https://www.baidu.com/ https://www.bilibili.com/)
+    fi
+    for name in "${https_names[@]}"; do
         : >"$NETWORK_ERROR_LOG" || fail network-error-log-reset
         emit "DEBIAN_BROWSER_WEB_NETWORK_PHASE phase=https host=${name#https://} state=start"
         if line="$(/usr/bin/timeout 135 curl --proto '=https' --tlsv1.2 --fail --location --silent \
@@ -547,8 +565,12 @@ stop_gate_sampler() {
 }
 start_gate_sampler
 : >"$GATE_STDERR"
-if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
-    --evidence-dir /home/asterinas/browser-web-evidence \
+gate_args=(--firefox-pid "$browser_pid" --timeout "$remaining" \
+    --evidence-dir /home/asterinas/browser-web-evidence)
+if [[ "$BASIC_ONLY" == 1 ]]; then
+    gate_args+=(--basic-only)
+fi
+if ! content="$($GATE "${gate_args[@]}" \
     2> >(/usr/bin/tee -a "$GATE_STDERR" >>"$CONSOLE"))"; then
     stop_gate_sampler
     capture_gecko_profile
@@ -567,9 +589,14 @@ if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
 fi
 stop_gate_sampler
 cat "$GATE_STDERR" >>"$TIMELINE_LOG"
+if [[ "$BASIC_ONLY" == 1 ]]; then
+    [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture" ]] ||
+        fail browser-content-output
+else
 [[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified baidu_outcome=pass capabilities=pass download=pass" ||
     "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified baidu_outcome=external-captcha capabilities=pass download=pass" ]] ||
     fail browser-content-output
+fi
 if [[ "$content" == *" baidu_outcome=external-captcha" ]]; then
     emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 fi
@@ -584,7 +611,9 @@ validate_firefox_logs
 printf 'BROWSER_WEB_SECURITY service_pid=%s nrestarts=0 stable=1 active=1\n' \
     "$browser_pid" >>"$SECURITY_LOG"
 validate_child_security "$browser_pid"
-upload_baidu_screenshot
+if [[ "$BASIC_ONLY" == 0 ]]; then
+    upload_baidu_screenshot
+fi
 emit "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited"
 case "$CONTENT_SECCOMP_MODE" in
     0)
@@ -599,7 +628,15 @@ case "$CONTENT_SECCOMP_MODE" in
         fail security-content-seccomp-missing
         ;;
 esac
-emit "$content"
+if [[ "$BASIC_ONLY" == 1 ]]; then
+    emit "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture"
+else
+    emit "$content"
+fi
 emit "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent"
 /usr/bin/timeout 20 /usr/bin/sync || fail evidence-sync
-emit "DEBIAN_FIREFOX_BAIDU_READY mode=$NETWORK_MODE home=pass logo=pass search=pass input=pass stable=pass screenshot=baidu-search.png"
+if [[ "$BASIC_ONLY" == 1 ]]; then
+    emit "DEBIAN_FIREFOX_BASIC_READY mode=$NETWORK_MODE fixture=pass stable=pass"
+else
+    emit "DEBIAN_FIREFOX_BAIDU_READY mode=$NETWORK_MODE home=pass logo=pass search=pass input=pass stable=pass screenshot=baidu-search.png"
+fi

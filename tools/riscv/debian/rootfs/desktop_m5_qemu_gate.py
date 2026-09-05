@@ -204,6 +204,7 @@ def qemu_web_network_bootargs(
     mode: NetworkMode,
     *,
     expected_failure: QemuExpectedFailure = QemuExpectedFailure.NONE,
+    basic_only: bool = False,
 ) -> str:
     """Return an isolated QEMU web-network environment for one selected mode."""
 
@@ -211,6 +212,8 @@ def qemu_web_network_bootargs(
         raise ValueError("mode must be a NetworkMode")
     if not isinstance(expected_failure, QemuExpectedFailure):
         raise ValueError("expected failure must be a QemuExpectedFailure")
+    if not isinstance(basic_only, bool):
+        raise ValueError("basic_only must be a bool")
     resolver = "192.0.2.1" if expected_failure is QemuExpectedFailure.DNS else "10.0.2.3"
     mode_arguments = (
         f"ASTERINAS_WEB_NETWORK_MODE={mode.value} "
@@ -232,6 +235,8 @@ def qemu_web_network_bootargs(
             "ASTERINAS_WEB_NETWORK_HTTPS_URL="
             "https://10.0.2.2:8446/ "
         )
+    if basic_only:
+        mode_arguments += "ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 "
     return (
         "console=ttyS0 loglevel=4 init=/init "
         "asterinas.debian_network=qemu-slirp "

@@ -58,18 +58,30 @@ _BROWSER_WEB_SUFFIX_MILESTONES = (
     "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent",
 )
 
+_BASIC_BROWSER_WEB_SUFFIX_MILESTONES = (
+    "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited",
+    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass download=pass public_sites=not-run capabilities=fixture",
+    "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent",
+)
 
-def browser_web_milestones(mode: NetworkMode) -> tuple[str, ...]:
+
+def browser_web_milestones(
+    mode: NetworkMode, *, basic_only: bool = False
+) -> tuple[str, ...]:
     if not isinstance(mode, NetworkMode):
         raise ValueError("browser web mode must be a NetworkMode")
     dns = "proxy-delegated" if mode is NetworkMode.PROXY else "10.0.2.3"
+    suffix = _BASIC_BROWSER_WEB_SUFFIX_MILESTONES if basic_only else _BROWSER_WEB_SUFFIX_MILESTONES
     return (
         f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10",
         *_BROWSER_WEB_PREFIX_MILESTONES,
         f"DEBIAN_BROWSER_WEB_NETWORK mode={mode.value} nic=virtio-slirp "
         f"dns={dns} https=curl-verified",
-        *_BROWSER_WEB_SUFFIX_MILESTONES,
-        firefox_ready_marker(mode),
+        *suffix,
+        (
+            f"DEBIAN_FIREFOX_BASIC_READY mode={mode.value} fixture=pass stable=pass"
+            if basic_only else firefox_ready_marker(mode)
+        ),
     )
 
 
@@ -105,6 +117,20 @@ WEB_EVIDENCE_PATHS = {
     "MarionetteActivePort": (
         "/home/asterinas/.mozilla/asterinas-browser-web/MarionetteActivePort"
     ),
+    "trust-static.log": "/usr/share/asterinas/browser-web-trust-static.log",
+    "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
+    "timeline.log": "/home/asterinas/browser-web-timeline.log",
+    "firefox-user.js": "/home/asterinas/.mozilla/asterinas-browser-web/user.js",
+}
+BASIC_WEB_EVIDENCE_PATHS = {
+    "fixture-search.json": "/home/asterinas/browser-web-evidence/fixture-search.json",
+    "fixture-search.png": "/home/asterinas/browser-web-evidence/fixture-search.png",
+    "fixture-download.json": "/home/asterinas/browser-web-evidence/fixture-download.json",
+    "curl.log": "/home/asterinas/browser-web-curl-evidence.log",
+    "security.log": "/home/asterinas/browser-web-security-evidence.log",
+    "firefox-stderr.log": "/home/asterinas/firefox-web-stderr.log",
+    "firefox-mozilla.log": "/home/asterinas/firefox-web-mozilla.log",
+    "MarionetteActivePort": "/home/asterinas/.mozilla/asterinas-browser-web/MarionetteActivePort",
     "trust-static.log": "/usr/share/asterinas/browser-web-trust-static.log",
     "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
     "timeline.log": "/home/asterinas/browser-web-timeline.log",
@@ -291,6 +317,25 @@ def _validate_curl_log(contents: bytes, *, network_mode: NetworkMode) -> None:
         raise GateFailure("curl HTTPS timing evidence has no matching HTTPS record")
 
 
+def _validate_basic_curl_log(contents: bytes, *, network_mode: NetworkMode) -> None:
+    """Validate the single controlled HTTPS reachability probe for basic mode."""
+
+    lines = _text_lines(contents, "curl.log")
+    expected_url = "https://deb.debian.org/"
+    expected_host = "deb.debian.org"
+    if network_mode is NetworkMode.DIRECT:
+        dns = [line for line in lines if line.startswith("DNS host=")]
+        if len(dns) != 1 or not dns[0].startswith(f"DNS host={expected_host} address="):
+            raise GateFailure("basic curl DNS evidence is missing")
+    else:
+        delegated = [line for line in lines if line.startswith("DNS_DELEGATED mode=proxy")]
+        if len(delegated) != 1 or f"host={expected_host} " not in delegated[0]:
+            raise GateFailure("basic curl delegated DNS evidence is missing")
+    https = [line for line in lines if line.startswith("HTTPS requested=")]
+    if len(https) != 1 or f"requested={expected_url} " not in https[0] or " verify=0" not in https[0]:
+        raise GateFailure("basic curl HTTPS evidence is missing")
+
+
 def _validate_security_log(
     contents: bytes,
     *,
@@ -391,7 +436,9 @@ def _validate_firefox_network_profile(
         raise GateFailure("Firefox network profile does not match selected mode")
 
 
-def _validate_timeline(contents: bytes) -> tuple[int, str]:
+def _validate_timeline(
+    contents: bytes, *, basic_only: bool = False
+) -> tuple[int, str]:
     required = (
         (b"BOOT_SYSTEMD_BEGIN", None),
         (b"BOOT_BASIC_TARGET", None),
@@ -403,12 +450,18 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
         (b"BOOT_MARIONETTE_CONNECTED", None),
         (b"BOOT_NEW_SESSION_DONE", None),
         (b"BOOT_FIRST_WINDOW_READY", None),
-        (b"BOOT_DOM_READY", b"baidu-home"),
-        (b"BOOT_DOM_READY", b"fixture-search"),
-        (b"BOOT_DOM_READY", b"bilibili-home"),
-        (b"BOOT_DOM_READY", b"bilibili-detail"),
-        (b"BOOT_DOM_READY", b"baidu-search"),
     )
+    if basic_only:
+        required = (*required, (b"BOOT_DOM_READY", b"fixture-search"))
+    else:
+        required = (
+            *required[:10],
+            (b"BOOT_DOM_READY", b"baidu-home"),
+            (b"BOOT_DOM_READY", b"fixture-search"),
+            (b"BOOT_DOM_READY", b"bilibili-home"),
+            (b"BOOT_DOM_READY", b"bilibili-detail"),
+            (b"BOOT_DOM_READY", b"baidu-search"),
+        )
     observed: list[tuple[bytes, bytes | None]] = []
     phase_pids: set[int] = set()
     pending_phase: bytes | None = None
@@ -492,14 +545,10 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
     if tuple(observed) != required:
         raise GateFailure("browser startup timeline is incomplete or out of order")
     assert browser_pid is not None
-    if (
-        pending_phase is not None
-        or phase_pairs == 0
-        or phase_pids != {browser_pid}
-        or selected_bv is None
-        or platform_bv != selected_bv
-    ):
+    if pending_phase is not None or phase_pairs == 0 or phase_pids != {browser_pid}:
         raise GateFailure("browser phase diagnostics are incomplete or inconsistent")
+    if not basic_only and (selected_bv is None or platform_bv != selected_bv):
+        raise GateFailure("browser public-site evidence is incomplete or inconsistent")
     return browser_pid, (
         "legacy-split-realtime-monotonic" if legacy_clock_reset else "monotonic"
     )
@@ -509,12 +558,14 @@ def validate_web_evidence(
     evidence: Mapping[str, bytes],
     *,
     network_mode: NetworkMode = NetworkMode.DIRECT,
+    basic_only: bool = False,
 ) -> dict[str, dict[str, object]]:
     """Validate the exact extracted browser evidence set and return its index."""
 
     if not isinstance(network_mode, NetworkMode):
         raise GateFailure("browser web evidence network mode is invalid")
-    if set(evidence) != set(WEB_EVIDENCE_PATHS):
+    expected_paths = BASIC_WEB_EVIDENCE_PATHS if basic_only else WEB_EVIDENCE_PATHS
+    if set(evidence) != set(expected_paths):
         raise GateFailure("browser web evidence file set is incomplete")
     if sum(len(contents) for contents in evidence.values()) > MAX_WEB_EVIDENCE_TOTAL_BYTES:
         raise GateFailure("browser web evidence exceeds aggregate size cap")
@@ -527,7 +578,57 @@ def validate_web_evidence(
     _validate_firefox_logs(
         evidence["firefox-stderr.log"], evidence["firefox-mozilla.log"]
     )
-    timeline_pid, timeline_clock = _validate_timeline(evidence["timeline.log"])
+    timeline_pid, timeline_clock = _validate_timeline(
+        evidence["timeline.log"], basic_only=basic_only
+    )
+
+    if basic_only:
+        validate_fixture_search(
+            _decode_json(evidence["fixture-search.json"], "fixture-search.json"),
+            "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas",
+        )
+        fixture_download = _decode_json(
+            evidence["fixture-download.json"], "fixture-download.json"
+        )
+        if fixture_download != {
+            "bytes": 256 * 1024,
+            "filename": "asterinas-browser-quality.bin",
+            "sha256": (
+                "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
+            ),
+        }:
+            raise GateFailure("controlled Firefox download evidence is malformed")
+        validate_png_evidence(evidence["fixture-search.png"], "fixture-search")
+        _validate_basic_curl_log(evidence["curl.log"], network_mode=network_mode)
+        security_hashes, security_pid, sandbox_outcome = _validate_security_log(
+            evidence["security.log"], network_mode=network_mode
+        )
+        _validate_firefox_network_profile(
+            evidence["firefox-user.js"], network_mode=network_mode
+        )
+        if timeline_pid != security_pid:
+            raise GateFailure("browser startup timeline PID does not match security evidence")
+        if evidence["MarionetteActivePort"].strip() != b"2828":
+            raise GateFailure("MarionetteActivePort is not the fixed endpoint")
+        trust_lines = _text_lines(evidence["trust-static.log"], "trust-static.log")
+        if len(trust_lines) != 1 or not _TRUST_LINE.fullmatch(trust_lines[0]):
+            raise GateFailure("static Firefox trust evidence is missing")
+        if security_hashes["TRUST_STATIC"][0] != hashlib.sha256(
+            evidence["trust-static.log"]
+        ).hexdigest() or security_hashes["SYSTEM_CA"][0] != hashlib.sha256(
+            evidence["ca-certificates.crt"]
+        ).hexdigest():
+            raise GateFailure("Firefox trust evidence hash does not match")
+        index = {
+            name: {"sha256": hashlib.sha256(contents).hexdigest(), "size": len(contents)}
+            for name, contents in sorted(evidence.items())
+        }
+        index["security.log"]["sandbox_outcome"] = sandbox_outcome
+        index["trust-static.log"]["trust_mode"] = _TRUST_LINE.fullmatch(
+            trust_lines[0]
+        ).group(1)
+        index["timeline.log"]["clock_outcome"] = timeline_clock
+        return index
 
     snapshots = {
         name: _decode_json(evidence[f"{name}.json"], f"{name}.json")
@@ -617,11 +718,14 @@ def validate_web_evidence(
     return index
 
 
-def _extract_web_evidence(root_fd: int, directory: Path) -> dict[str, bytes]:
+def _extract_web_evidence(
+    root_fd: int, directory: Path, *, basic_only: bool = False
+) -> dict[str, bytes]:
     extracted: dict[str, bytes] = {}
     image = f"/proc/self/fd/{root_fd}"
     deadline = time.monotonic() + WEB_EVIDENCE_EXTRACT_TIMEOUT
-    for name, guest_path in WEB_EVIDENCE_PATHS.items():
+    paths = BASIC_WEB_EVIDENCE_PATHS if basic_only else WEB_EVIDENCE_PATHS
+    for name, guest_path in paths.items():
         destination = directory / name
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -708,6 +812,7 @@ def classify_browser_web_qemu(
     *,
     expected_debian_release: str,
     network_mode: NetworkMode = NetworkMode.DIRECT,
+    basic_only: bool = False,
 ) -> GateResult:
     if not isinstance(network_mode, NetworkMode):
         return GateResult(False, "Firefox network mode is invalid", None)
@@ -724,7 +829,7 @@ def classify_browser_web_qemu(
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=browser_web_milestones(network_mode),
+        milestones=browser_web_milestones(network_mode, basic_only=basic_only),
         failure_marker=_WEB_FAILURE,
     )
 
@@ -744,6 +849,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         *,
         network_mode: NetworkMode = NetworkMode.DIRECT,
         proxy_bridge: ProxyBridge | None = None,
+        basic_only: bool = False,
         **arguments: Any,
     ) -> None:
         if not isinstance(network_mode, NetworkMode):
@@ -751,8 +857,15 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         if network_mode is NetworkMode.DIRECT and proxy_bridge is not None:
             raise ValueError("direct browser mode cannot own a proxy bridge")
         self.network_mode = network_mode
-        self.BOOTARGS = qemu_web_network_bootargs(network_mode)
-        self.MILESTONES = browser_web_milestones(network_mode)
+        if not isinstance(basic_only, bool):
+            raise ValueError("basic_only must be a bool")
+        self.basic_only = basic_only
+        self.BOOTARGS = qemu_web_network_bootargs(
+            network_mode, basic_only=basic_only
+        )
+        self.MILESTONES = browser_web_milestones(
+            network_mode, basic_only=basic_only
+        )
         self.proxy_bridge = proxy_bridge
         if network_mode is NetworkMode.PROXY and self.proxy_bridge is None:
             self.proxy_bridge = ProxyBridge(
@@ -801,7 +914,9 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
         self._require_output().invalidate(
-            *(f"browser-web-{name}" for name in WEB_EVIDENCE_PATHS),
+            *(f"browser-web-{name}" for name in (
+                BASIC_WEB_EVIDENCE_PATHS if self.basic_only else WEB_EVIDENCE_PATHS
+            )),
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
             "proxy-bridge.json",
@@ -821,11 +936,15 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 prefix=".browser-web-extract-",
                 dir=f"/proc/self/fd/{output._operation_fd}",
             ) as temporary:
-                self._web_evidence = _extract_web_evidence(root_fd, Path(temporary))
+                self._web_evidence = _extract_web_evidence(
+                    root_fd, Path(temporary), basic_only=self.basic_only
+                )
         finally:
             os.close(root_fd)
         self._web_evidence_index = validate_web_evidence(
-            self._web_evidence, network_mode=self.network_mode
+            self._web_evidence,
+            network_mode=self.network_mode,
+            basic_only=self.basic_only,
         )
         return super().hash_final_root(config, prepared)
 
@@ -848,23 +967,24 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 ).encode(),
             )
         if result.get("passed"):
-            try:
-                expected_capture = self._web_evidence.get("baidu-search.png")
-                if expected_capture is None:
-                    raise GateFailure("validated Baidu screenshot was not retained")
-                capture_summary = validate_uploaded_baidu_screenshot(
-                    self.fixture.capture_summary(),
-                    self.fixture.capture_payload(),
-                    expected_payload=expected_capture,
-                )
-            except GateFailure as error:
-                result["passed"] = False
-                result["reason"] = error.reason
-            else:
-                result["baidu_screenshot"] = {
-                    **capture_summary,
-                    "artifact": "browser-web-baidu-search.png",
-                }
+            if not self.basic_only:
+                try:
+                    expected_capture = self._web_evidence.get("baidu-search.png")
+                    if expected_capture is None:
+                        raise GateFailure("validated Baidu screenshot was not retained")
+                    capture_summary = validate_uploaded_baidu_screenshot(
+                        self.fixture.capture_summary(),
+                        self.fixture.capture_payload(),
+                        expected_payload=expected_capture,
+                    )
+                except GateFailure as error:
+                    result["passed"] = False
+                    result["reason"] = error.reason
+                else:
+                    result["baidu_screenshot"] = {
+                        **capture_summary,
+                        "artifact": "browser-web-baidu-search.png",
+                    }
         if result.get("passed"):
             if not self._web_evidence or not self._web_evidence_index:
                 raise GateFailure("validated browser web evidence was not retained")
@@ -877,13 +997,16 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
             output.atomic_write("browser-web-evidence.SHA256SUMS", sums.encode())
             index = {
                 "files": self._web_evidence_index,
-                "selected_bv_url": json.loads(
-                    self._web_evidence["bilibili-detail.json"]
-                )["url"],
-                "baidu_search_outcome": validate_baidu_search_outcome(
-                    json.loads(self._web_evidence["baidu-search.json"])
-                ),
             }
+            if self.basic_only:
+                index["profile"] = "basic-fixture"
+            else:
+                index["selected_bv_url"] = json.loads(
+                    self._web_evidence["bilibili-detail.json"]
+                )["url"]
+                index["baidu_search_outcome"] = validate_baidu_search_outcome(
+                    json.loads(self._web_evidence["baidu-search.json"])
+                )
             output.atomic_write(
                 "browser-web-evidence-index.json",
                 (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
@@ -903,6 +1026,7 @@ def orchestrate_browser_web_qemu_gate(
                 transcript,
                 expected_debian_release=expected_debian_release,
                 network_mode=operations.network_mode,
+                basic_only=operations.basic_only,
             )
         ),
     )
@@ -916,20 +1040,28 @@ def _parse_network_mode(arguments: list[str] | None) -> tuple[NetworkMode, list[
         type=NetworkMode,
         required=True,
     )
+    parser.add_argument("--basic-only", action="store_true")
     values, remaining = parser.parse_known_args(
         sys.argv[1:] if arguments is None else arguments
     )
+    if values.basic_only:
+        remaining = [*remaining, "--basic-only"]
     return values.network_mode, remaining
 
 
 def main(arguments: list[str] | None = None) -> int:
     try:
         network_mode, gate_arguments = _parse_network_mode(arguments)
+        basic_only = "--basic-only" in gate_arguments
+        if basic_only:
+            gate_arguments = [arg for arg in gate_arguments if arg != "--basic-only"]
         config = parse_gate_args(gate_arguments)
         _safe_output(config.output_directory)
         with (
             TerminationSignalState(),
-            BrowserWebQemuOperations(config, network_mode=network_mode) as operations,
+            BrowserWebQemuOperations(
+                config, network_mode=network_mode, basic_only=basic_only
+            ) as operations,
         ):
             result = orchestrate_browser_web_qemu_gate(config, operations)
         return 0 if result["passed"] else 1
