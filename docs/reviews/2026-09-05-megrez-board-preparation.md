@@ -140,7 +140,7 @@ The fixture-only browser gate was run with the current injected test image and
 SMP=4. Proxy mode passed with the expected content, strict TLS, stable Firefox
 process, and security markers; its result is retained at
 `target/firefox-basic-proxy-20260905g/result.json`. Direct mode was then run
-with the same image and a 180-second bound. It completed all 20 fixture
+with the same image and a 420-second bound. It completed all 20 fixture
 requests but stopped before the later Firefox/security markers, yielding
 `reason=protocol`; this is evidence of a direct-path startup/timing issue, not
 evidence that the fixture or proxy path is broken. The image used for these

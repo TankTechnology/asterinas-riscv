@@ -34,7 +34,7 @@
 - [ ] Validate the shorter basic timeline/evidence set while preserving strict boot, network, security, and screenshot checks.
 - [x] Run QEMU SMP=4 in proxy mode and direct mode, preserving output manifests.
 - [x] Proxy mode produced a passing result JSON. Direct mode was bounded at
-  180 seconds and classified as a protocol timeout after fixture transfer;
+  420 seconds and classified as a protocol timeout after fixture transfer;
   it is not treated as a pass.
 
 ### Task 3: Controlled Megrez run
