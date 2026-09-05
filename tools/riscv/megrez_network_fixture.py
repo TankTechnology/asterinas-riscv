@@ -184,7 +184,7 @@ BROWSER_INDEX = b"""<!doctype html>
       // without making it depend on WebAssembly/audio/worker support.
       mark('fetch');
       try {
-        const api = await failAfter(fetch('/browser-quality/capabilities.json', {cache: 'no-store'}), 'fetch');
+        const api = await failAfter(fetch('/browser-quality/capabilities.json'), 'fetch');
         const payload = await failAfter(api.json(), 'fetch-json');
         checks.fetch = api.ok && payload.schema_version === 1 && payload.token === 'asterinas-browser-quality';
       } catch (_) {
