@@ -142,9 +142,13 @@ return JSON.stringify({
   url: location.href,
   title: document.title,
   readyState: document.readyState,
-  // Keep evidence collection layout-free as well.  textContent is sufficient
-  // for challenge detection and the bounded Latin/CJK content contract.
-  bodyText: document.body === null ? '' : (document.body.textContent || '').slice(0, 8192),
+  // Keep evidence collection layout-free as well.  The Bilibili home page can
+  // contain a very large hydrated tree; its lightweight snapshot only needs
+  // enough text for challenge/empty-document checks.  The full branch remains
+  // available for Baidu and the deterministic fixture evidence.
+  bodyText: (arguments[0] && arguments[0].lightweight) ?
+    ((document.title || '') + '\\n' + location.href).slice(0, 512) :
+    (document.body === null ? '' : (document.body.textContent || '').slice(0, 8192)),
   jsComplete: (() => { window.__asterinasWebGate = 6 * 7; return window.__asterinasWebGate === 42; })(),
   browserCapabilities: (() => {
     const output = document.querySelector('#quality-capabilities');
@@ -1305,7 +1309,7 @@ def run_gate(
             ),
         )
         bilibili_home = run_phase(
-            "snapshot-bilibili-home", lambda: _snapshot(client)
+            "snapshot-bilibili-home", lambda: _snapshot(client, lightweight=True)
         )
         assert isinstance(bilibili_home, dict)
         selected = select_bilibili_video(bilibili_home)
