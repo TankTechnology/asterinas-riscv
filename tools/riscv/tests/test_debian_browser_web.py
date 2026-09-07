@@ -980,7 +980,11 @@ class BrowserWebContractTests(unittest.TestCase):
         desktop_session = (ROOTFS / "desktop_m5_session.sh").read_text()
         self.assertIn('-logfile "$HOME/Xorg.0.log" vt1', desktop_session)
         self.assertIn("-novtswitch -keeptty", desktop_session)
-        self.assertIn("runuser --user asterinas", desktop_session)
+        self.assertIn(
+            "/usr/sbin/runuser --user asterinas --preserve-environment",
+            desktop_session,
+        )
+        self.assertNotIn("/usr/bin/runuser", desktop_session)
         self.assertIn('/usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2', desktop_session)
         self.assertIn('/usr/bin/rm -f -- /tmp/.X11-unix/X0', desktop_session)
         self.assertIn('/usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY"', desktop_session)
@@ -1004,6 +1008,30 @@ class BrowserWebContractTests(unittest.TestCase):
         device_access = (ROOTFS / "desktop_m3_device_access.sh").read_text()
         self.assertIn("device_deadline=$((SECONDS + 120))", device_access)
         self.assertIn("/usr/bin/sleep 1", device_access)
+        self.assertIn('readonly XKB_CACHE_DIR="/var/lib/xkb"', device_access)
+        self.assertIn('/usr/bin/mountpoint -q "$XKB_CACHE_DIR"', device_access)
+        self.assertIn(
+            "/usr/bin/mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs",
+            device_access,
+        )
+        self.assertIn("/proc/self/mounts", device_access)
+        self.assertIn("$2 == path { print $3, $4; matches++ }", device_access)
+        self.assertIn('[[ "$xkb_fstype" != tmpfs ]]', device_access)
+        for option in ("rw", "nosuid", "nodev"):
+            self.assertIn(f'",$xkb_options," != *",{option},"*', device_access)
+        self.assertIn("xkb_cache_created=0", device_access)
+        self.assertIn("xkb_cache_created=1", device_access)
+        self.assertIn('/usr/bin/chown root:root "$XKB_CACHE_DIR"', device_access)
+        self.assertIn('/usr/bin/chmod 01777 "$XKB_CACHE_DIR"', device_access)
+        self.assertIn(
+            '/usr/bin/stat -c "%u %g %a" "$XKB_CACHE_DIR"', device_access
+        )
+        self.assertIn('[[ "$xkb_owner_mode" != "0 0 1777" ]]', device_access)
+        self.assertLess(
+            device_access.index("/proc/self/mounts"),
+            device_access.index('/usr/bin/chown root:root "$XKB_CACHE_DIR"'),
+        )
+        self.assertIn("BROWSER_WEB_DESKTOP_STAGE=xkb-cache-ready", device_access)
         self.assertIn("while [[ ! -c /dev/fb0 ]]", device_access)
         self.assertIn("input-devices-absent", device_access)
         self.assertIn("device-access-failed reason=fb0-timeout", device_access)
