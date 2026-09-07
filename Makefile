@@ -290,6 +290,11 @@ MEGREZ_DEBUG_FAST_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/fast
 MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
+RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT ?=
+MEGREZ_PHYSICAL_GRAPHICS_PLAN ?=
+MEGREZ_PHYSICAL_GRAPHICS_DEVICE ?=
+MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE ?=
+MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= $(CURDIR)/target/current-main-physical-graphics/physical/evidence
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 DEBIAN_WEB_NETWORK_MODE ?=
@@ -387,6 +392,14 @@ test_riscv_megrez_debug_unit:
 		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v
 
+.PHONY: test_riscv_physical_graphics_unit
+test_riscv_physical_graphics_unit:
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_physical_graphics_gate \
+		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_physical_graphics_qemu_gate -v
+
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
@@ -427,6 +440,28 @@ test_riscv_megrez_debug_board: test_riscv_megrez_debug_unit
 		--simulation-result "$(MEGREZ_DEBUG_SIMULATION_RESULT)" \
 		--output-directory "$(MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE)" \
 		--timeout "$(MEGREZ_DEBUG_BOARD_TIMEOUT)"
+
+.PHONY: prepare_riscv_megrez_physical_graphics
+prepare_riscv_megrez_physical_graphics:
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_PLAN is required" >&2; exit 2; }
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_DEVICE is required" >&2; exit 2; }
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE is required" >&2; exit 2; }
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH="$(CURDIR)" python3 -c \
+		'from pathlib import Path; import sys; from tools.riscv.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)"
+	@printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
+		tools.riscv.megrez_physical_graphics \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" \
+		--plan "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" \
+		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" \
+		--hdmi-capture "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" \
+		--open-timeout 60 --artifact-timeout 300 --boot-timeout 120 \
+		--cycle-timeout 180 --hdmi-timeout 60 --recovery-timeout 930; printf '\n'
 
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
@@ -618,6 +653,26 @@ test_riscv_debian_browser_web_qemu_gate:
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" --smp 4 --boot-timeout 7200
+
+.PHONY: test_riscv_physical_graphics_qemu_gate
+test_riscv_physical_graphics_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -m tools.riscv.physical_graphics_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
+		--smp 4 --boot-timeout 7200 --command-timeout 240
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:

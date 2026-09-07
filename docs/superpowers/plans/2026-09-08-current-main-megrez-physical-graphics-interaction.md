@@ -508,7 +508,7 @@ Expected: all QEMU adapter tests pass.
 - Modify: `tools/riscv/README.md`
 - Modify: `tools/riscv/tests/test_megrez_physical_graphics.py`
 
-- [ ] **Step 1: Write failing documentation and Make-target tests**
+- [x] **Step 1: Write failing documentation and Make-target tests**
 
 Require targets `test_riscv_physical_graphics_unit`,
 `test_riscv_physical_graphics_qemu_gate`, and
@@ -517,7 +517,7 @@ the current-main source identity, seven immutable input arguments,
 `--hdmi-capture`, three 180-second interaction windows, the 900-second guest
 recovery, and the fact that QEMU cannot satisfy the physical result.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -528,14 +528,14 @@ PYTHONPATH="$PWD/tools/riscv:$PWD" python3 -W error::ResourceWarning -m unittest
 
 Expected: FAIL because targets and documentation are absent.
 
-- [ ] **Step 3: Add targets and operator commands**
+- [x] **Step 3: Add targets and operator commands**
 
 The unit target runs all three new test modules. The QEMU target requires all
 browser-web artifacts and an output directory. The prepare target validates
 artifacts and prints the exact physical command but cannot open the serial
 device or modify U-Boot state.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run:
 
@@ -598,7 +598,9 @@ sequences, three non-blank captures, no fatal marker, and complete cleanup.
 - [ ] **Step 1: Freeze inputs and prepare a capture path**
 
 Copy the current kernel, frozen Megrez DTB, Stage1 archive, browser-web root,
-manifest, lock, and checksums into the run directory with mode 0600. Reserve
+manifest, lock, and checksums into the run root with mode 0600. Use
+`target/current-main-physical-graphics/physical/evidence/` as the gate output.
+Reserve the sibling path
 `target/current-main-physical-graphics/physical/operator-hdmi.png` for the
 operator or capture-card image; do not create it before the final interaction.
 

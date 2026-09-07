@@ -263,6 +263,108 @@ immediately as `guest-reboot-before-terminal`; a bare pre-boot prompt is not
 mistaken for current-attempt evidence. The host retains its independent
 300-second cap even though the current DT describes a 200 MHz watchdog clock.
 
+## Current-main Megrez physical graphics
+
+This gate is based on `origin/main` commit
+`69a7b6e41ca74932f79d917f3638199da573b1e9`. The candidate branch adds the
+opt-in debug-root console and physical-interaction witness without importing a
+different RISC-V kernel baseline. Record both `git rev-parse origin/main` and
+`git rev-parse HEAD` with every run so that the upstream base and candidate
+source remain distinguishable.
+
+Before building, require a clean tracked worktree and confirm that the pinned
+base is an ancestor. The QEMU and physical results record artifact SHA-256
+values; retain this source record beside those results:
+
+```bash
+set -euo pipefail
+PINNED_MAIN=69a7b6e41ca74932f79d917f3638199da573b1e9
+EVIDENCE_ROOT="$PWD/target/current-main-physical-graphics"
+SOURCE_RECORD="$EVIDENCE_ROOT/source-identity.txt"
+mkdir -p -m 0700 "$EVIDENCE_ROOT"
+test ! -e "$SOURCE_RECORD"
+test -z "$(git status --porcelain --untracked-files=all)"
+test "$(git rev-parse origin/main)" = "$PINNED_MAIN"
+git merge-base --is-ancestor "$PINNED_MAIN" HEAD
+SOURCE_TMP=$(mktemp "$EVIDENCE_ROOT/.source-identity.XXXXXX")
+trap 'rm -f -- "$SOURCE_TMP"' EXIT
+{
+  printf 'origin_main=%s\n' "$(git rev-parse origin/main)"
+  printf 'candidate_head=%s\n' "$(git rev-parse HEAD)"
+  printf 'tracked_and_untracked_clean=true\n'
+} >"$SOURCE_TMP"
+chmod 0600 "$SOURCE_TMP"
+mv -- "$SOURCE_TMP" "$SOURCE_RECORD"
+trap - EXIT
+```
+
+The QEMU run binds the source-built current-main `--kernel` to seven immutable
+supporting inputs: `--uboot`, `--dtb`, `--stage1-initramfs`, `--root-image`,
+`--root-manifest`, `--packages-lock`, and `--package-checksums`. Use one set of
+these exact paths for the debug-console, browser-web, and interaction gates;
+do not rebuild or replace an input between runs.
+
+```bash
+make test_riscv_physical_graphics_unit
+
+QEMU_INPUTS=(
+  "DEBIAN_KERNEL=$PWD/target/osdk/aster-kernel-osdk-bin.Image"
+  "DEBIAN_UBOOT=$PWD/target/qemu-uboot/cache/u-boot-build/u-boot"
+  "DEBIAN_DTB=$PWD/target/qemu-uboot/current/qemu-virt.dtb"
+  "DEBIAN_STAGE1_INITRAMFS=$PWD/target/debian-riscv/stage1/initramfs.cpio"
+  "DEBIAN_ROOT_IMAGE=$PWD/target/debian-riscv/browser-web/rootfs/debian-root.ext2"
+  "DEBIAN_ROOT_MANIFEST=$PWD/target/debian-riscv/browser-web/rootfs/rootfs-manifest.json"
+  "DEBIAN_PACKAGES_LOCK=$PWD/target/debian-riscv/browser-web/rootfs/packages.lock"
+  "DEBIAN_PACKAGE_CHECKSUMS=$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums"
+)
+make test_riscv_debian_debug_console_qemu_gate "${QEMU_INPUTS[@]}" \
+  DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-debug-console"
+make test_riscv_debian_browser_web_qemu_gate "${QEMU_INPUTS[@]}" \
+  DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-browser-web"
+make test_riscv_physical_graphics_qemu_gate "${QEMU_INPUTS[@]}" \
+  RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-interaction"
+```
+
+The QEMU adapter injects events through HMP into a VirtIO keyboard and tablet.
+It validates three nonce-bound browser cycles and captures pixels, but its
+result always records `"physical":false`: QEMU cannot satisfy the physical
+result or prove the Megrez display scanout and real USB xHCI/HID paths.
+
+The real run consumes a schema-2 `debian-browser` debug plan. Its canonical
+order is `kernel`, `initramfs`, `qemu_dtb`, `megrez_dtb`, `u_boot`,
+`root_image`, `root_manifest`, `packages_lock`, `package_checksums`, and
+`in_release`; the prepare target recomputes every size, SHA-256, and CRC32.
+Use a stable `/dev/serial/by-id/...` path and arrange for the HDMI
+capture program to atomically create or replace the `--hdmi-capture` file only
+after the gate asks for the cyan cycle-3 image. First validate every plan
+artifact and print the exact command, without opening the serial device or
+changing U-Boot state:
+
+```bash
+make prepare_riscv_megrez_physical_graphics \
+  MEGREZ_PHYSICAL_GRAPHICS_PLAN="$PWD/target/megrez-debug/debug-plan.json" \
+  MEGREZ_PHYSICAL_GRAPHICS_DEVICE=/dev/serial/by-id/usb-REPLACE_ME \
+  MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE="$PWD/target/current-main-physical-graphics/physical/operator-hdmi.png" \
+  MEGREZ_PHYSICAL_GRAPHICS_OUTPUT="$PWD/target/current-main-physical-graphics/physical/evidence"
+```
+
+Run the command printed by that target. For each of the three 180-second
+interaction windows, type the displayed random 16-hex-digit nonce on the
+physical USB keyboard, then move the physical USB mouse and click the amber
+button. The guest is booted with `asterinas.reboot_after=900`; the host uses a
+930-second recovery wait so it can retain the final HDMI image and still
+observe the fresh U-Boot prompt. The printed command makes every deadline
+explicit: opening the serial link is bounded at 60 seconds, artifact
+preparation at 300 seconds, graphical readiness at 120 seconds, each cycle at
+180 seconds, and the post-cycle HDMI update at 60 seconds. The post-boot
+success-path caps total 720 seconds, leaving 180 seconds of the guest's single
+900-second lifetime for serial transfer and phase transitions. These are caps,
+not reserved waiting periods; respond to each prompt immediately. The capture
+must be a complete 1-byte-to-64-MiB PNG or JPEG that remains unchanged for at
+least 0.5 seconds. A missing input record, DOM transition,
+screenshot, HDMI update, recovery prompt, or any panic/xHCI/framebuffer fatal
+marker produces `passed:false` while retaining the diagnostic evidence.
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
