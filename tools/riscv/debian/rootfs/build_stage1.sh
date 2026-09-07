@@ -46,6 +46,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd)"
 SOURCE="$SCRIPT_DIR/stage1_init.c"
+DEBUG_CONSOLE_SOURCE="$SCRIPT_DIR/stage1_debug_console.c"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-0}"
@@ -134,7 +135,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
-    "$SOURCE" -o "$STAGE/init"
+    "$SOURCE" "$DEBUG_CONSOLE_SOURCE" -o "$STAGE/init"
 chmod 0755 "$STAGE" "$STAGE/init"
 touch -d "@$SOURCE_DATE_EPOCH" "$STAGE" "$STAGE/init"
 

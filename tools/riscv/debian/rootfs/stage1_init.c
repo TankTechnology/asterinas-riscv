@@ -13,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stage1_debug_console.h"
+
 #if !defined(DEBIAN_STAGE1_SELF_TEST) && \
     !defined(DEBIAN_STAGE1_LIFECYCLE_TEST)
 static void report_progress(const char *step, const char *key,
@@ -126,6 +128,7 @@ enum HandoffStep {
     HANDOFF_CHDIR,
     HANDOFF_EXEC,
     HANDOFF_PREPARE_API_DIRS,
+    HANDOFF_PREPARE_DEBUG_CONSOLE,
 };
 
 struct Stage1Ops {
@@ -315,7 +318,7 @@ static const char *discover_root(struct Stage1Ops *ops,
 }
 
 static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
-                                enum RootInitMode mode)
+                                const struct RootInitConfig *config)
 {
     static const struct HandoffAction interactive_steps[] = {
         { HANDOFF_MOUNT_ROOT, "root-mount" },
@@ -338,13 +341,29 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
         { HANDOFF_CHDIR, "chdir" },
         { HANDOFF_EXEC, "exec" },
     };
+    static const struct HandoffAction systemd_debug_steps[] = {
+        { HANDOFF_MOUNT_ROOT, "root-mount" },
+        { HANDOFF_BIND_DEV, "dev-bind" },
+        { HANDOFF_PREPARE_API_DIRS, "api-directories" },
+        { HANDOFF_MOUNT_RUN, "run-mount" },
+        { HANDOFF_PREPARE_DEBUG_CONSOLE, "debug-console" },
+        { HANDOFF_MOUNT_TMP, "tmp-mount" },
+        { HANDOFF_CHROOT, "chroot" },
+        { HANDOFF_CHDIR, "chdir" },
+        { HANDOFF_EXEC, "exec" },
+    };
 
     const struct HandoffAction *steps = interactive_steps;
     size_t step_count =
         sizeof(interactive_steps) / sizeof(interactive_steps[0]);
-    if (mode == ROOT_INIT_SYSTEMD) {
+    if (config->mode == ROOT_INIT_SYSTEMD) {
         steps = systemd_steps;
         step_count = sizeof(systemd_steps) / sizeof(systemd_steps[0]);
+    }
+    if (config->debug_root_console) {
+        steps = systemd_debug_steps;
+        step_count =
+            sizeof(systemd_debug_steps) / sizeof(systemd_debug_steps[0]);
     }
 
     for (size_t index = 0; index < step_count; ++index) {
@@ -584,6 +603,8 @@ static int handoff_case(const char *case_name, enum HandoffStep *step,
         { "proc-mount-failure", HANDOFF_MOUNT_PROC, "proc-mount" },
         { "sysfs-mount-failure", HANDOFF_MOUNT_SYSFS, "sysfs-mount" },
         { "run-mount-failure", HANDOFF_MOUNT_RUN, "run-mount" },
+        { "debug-console-failure", HANDOFF_PREPARE_DEBUG_CONSOLE,
+          "debug-console" },
         { "tmp-mount-failure", HANDOFF_MOUNT_TMP, "tmp-mount" },
         { "chroot-failure", HANDOFF_CHROOT, "chroot" },
         { "chdir-failure", HANDOFF_CHDIR, "chdir" },
@@ -619,11 +640,21 @@ static int run_handoff_self_test(const char *case_name,
         .wait_for_retry = mock_wait_for_retry,
         .perform_handoff = mock_perform_handoff,
     };
-    const char *reason =
-        handoff_root(&ops, "/dev/vdb", ROOT_INIT_INTERACTIVE);
+    const struct RootInitConfig config = {
+        .mode = failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE
+                    ? ROOT_INIT_SYSTEMD
+                    : ROOT_INIT_INTERACTIVE,
+        .debug_root_console =
+            failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE ? 1 : 0,
+    };
+    const char *reason = handoff_root(&ops, "/dev/vdb", &config);
+    unsigned int expected_count =
+        failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE
+            ? 5
+            : (unsigned int)failing_step + 1;
 
     if (strcmp(reason, expected_reason) != 0 ||
-        context.handoff_count != (unsigned int)failing_step + 1) {
+        context.handoff_count != expected_count) {
         return fail_self_test(case_name, "handoff failure boundary was wrong");
     }
     return 0;
@@ -779,13 +810,47 @@ static int run_root_init_self_test(const char *case_name)
             HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_RUN,
             HANDOFF_MOUNT_TMP, HANDOFF_CHROOT, HANDOFF_CHDIR, HANDOFF_EXEC,
         };
-        const char *reason =
-            handoff_root(&ops, "/dev/vdb", ROOT_INIT_SYSTEMD);
+        const struct RootInitConfig config = {
+            .mode = ROOT_INIT_SYSTEMD,
+            .debug_root_console = 0,
+        };
+        const char *reason = handoff_root(&ops, "/dev/vdb", &config);
         if (strcmp(reason, "exec-returned") != 0 ||
             context.handoff_count != sizeof(expected) / sizeof(expected[0]) ||
             memcmp(context.handoff_steps, expected, sizeof(expected)) != 0) {
             return fail_self_test(case_name,
                                   "systemd handoff sequence was incorrect");
+        }
+    } else if (strcmp(case_name, "systemd-debug-handoff-sequence") == 0) {
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = (enum HandoffStep)-1,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .perform_handoff = mock_perform_handoff,
+        };
+        static const enum HandoffStep expected[] = {
+            HANDOFF_MOUNT_ROOT,
+            HANDOFF_BIND_DEV,
+            HANDOFF_PREPARE_API_DIRS,
+            HANDOFF_MOUNT_RUN,
+            HANDOFF_PREPARE_DEBUG_CONSOLE,
+            HANDOFF_MOUNT_TMP,
+            HANDOFF_CHROOT,
+            HANDOFF_CHDIR,
+            HANDOFF_EXEC,
+        };
+        const struct RootInitConfig config = {
+            .mode = ROOT_INIT_SYSTEMD,
+            .debug_root_console = 1,
+        };
+        const char *reason = handoff_root(&ops, "/dev/vdb", &config);
+        if (strcmp(reason, "exec-returned") != 0 ||
+            context.handoff_count != sizeof(expected) / sizeof(expected[0]) ||
+            memcmp(context.handoff_steps, expected, sizeof(expected)) != 0) {
+            return fail_self_test(case_name,
+                                  "debug handoff sequence was incorrect");
         }
     } else if (strcmp(case_name, "systemd-exec") == 0) {
         char *const *arguments = root_init_arguments(ROOT_INIT_SYSTEMD);
@@ -961,6 +1026,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         [HANDOFF_MOUNT_PROC] = "proc-mount",
         [HANDOFF_MOUNT_SYSFS] = "sysfs-mount",
         [HANDOFF_MOUNT_RUN] = "run-mount",
+        [HANDOFF_PREPARE_DEBUG_CONSOLE] = "debug-console",
         [HANDOFF_MOUNT_TMP] = "tmp-mount",
         [HANDOFF_CHROOT] = "chroot",
         [HANDOFF_CHDIR] = "chdir",
@@ -998,6 +1064,9 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        break;
+    case HANDOFF_PREPARE_DEBUG_CONSOLE:
+        result = stage1_prepare_debug_console("/newroot");
         break;
     case HANDOFF_MOUNT_TMP:
         if (ensure_directory("/newroot/tmp") != 0) {
@@ -1111,7 +1180,7 @@ int main(int argc, char **argv)
         fail_and_hold("newroot-directory");
     }
 
-    reason = handoff_root(&ops, root_device, context.root_init.mode);
+    reason = handoff_root(&ops, root_device, &context.root_init);
     fail_and_hold(reason);
 }
 
