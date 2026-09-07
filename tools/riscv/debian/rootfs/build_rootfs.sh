@@ -1545,6 +1545,12 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
+            install -D -m 0644 -- \
+                "$script_directory/physical_graphics_interaction.html" \
+                "$stage/usr/share/asterinas/physical-graphics/index.html"
+            install -D -m 0755 -- "$script_directory/physical_graphics_gate.py" \
+                "$stage/usr/lib/asterinas/physical-graphics-gate"
+            install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas/physical-graphics-evidence"
             install -d -m 0700 -- "$stage/home/asterinas/browser-web-evidence"
             for evidence_name in \
                 baidu-home.json baidu-home.png \
@@ -1996,6 +2002,8 @@ browser_web_runtime_digest() {
         browser_web_evidence.sh
         browser_web.service
         browser_web_evidence.service
+        physical_graphics_interaction.html
+        physical_graphics_gate.py
     )
 
     for input in "${inputs[@]}"; do
