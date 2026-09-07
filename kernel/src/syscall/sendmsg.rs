@@ -54,6 +54,7 @@ pub(super) fn send_one_message(
         MessageHeader::new(addr, control_messages)
     };
     let mut io_vec_reader = c_user_msghdr.copy_reader_array_from_user(user_space)?;
+    io_vec_reader.prefault(user_space)?;
 
     socket
         .sendmsg(&mut io_vec_reader, message_header, flags)
