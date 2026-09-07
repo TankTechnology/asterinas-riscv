@@ -542,9 +542,10 @@ class DebugConsoleQemuClassifierTests(unittest.TestCase):
 
     def test_rejects_stage1_or_kernel_failure(self) -> None:
         passing = self.passing_web_transcript()
-        for marker in (
-            b"DEBIAN_ROOTFS_FAIL reason=root-mount\n",
-            b"Kernel panic - not syncing\n",
+        for marker, expected_reason in (
+            (b"DEBIAN_ROOTFS_FAIL reason=root-mount\n", "stage1 failure"),
+            (b"Kernel panic - not syncing\n", "kernel panic"),
+            (b"Printing stack trace:\n", "kernel stack trace"),
         ):
             with self.subTest(marker=marker):
                 result = classify_debug_console_qemu(
@@ -553,6 +554,7 @@ class DebugConsoleQemuClassifierTests(unittest.TestCase):
                     expected_profile="browser-web",
                 )
                 self.assertFalse(result.passed)
+                self.assertEqual(result.reason, expected_reason)
 
     def test_rejects_transcript_for_the_other_validated_profile(self) -> None:
         cases = (

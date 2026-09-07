@@ -52,6 +52,7 @@ _DEBUG_CONSOLE_QEMU_FATAL_MARKERS = (
     (b"debian_browser_web_fail reason=", "browser guest failure"),
     (b"kernel panic", "kernel panic"),
     (b"uncaught panic:", "kernel panic"),
+    (b"printing stack trace:", "kernel stack trace"),
     (b"ext2-fs error", "ext2 error"),
     (b"buffer i/o error", "block I/O error"),
 )
@@ -64,6 +65,7 @@ _POST_CONSOLE_FAILURE_MARKERS = (
     b"DEBIAN_BROWSER_WEB_FAIL reason=",
     b"Kernel panic",
     b"Uncaught panic:",
+    b"Printing stack trace:",
 )
 
 
