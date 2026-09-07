@@ -28,6 +28,7 @@ class DebugConsoleCommand:
     name: str
     payload: str
     begin_marker: str
+    value_prefix: str
     status_prefix: str
     end_marker: str
 
@@ -52,9 +53,7 @@ class DebugConsoleSerial(Protocol):
 
     def send(self, payload: bytes, deadline: float) -> None: ...
 
-    def wait_for(
-        self, marker: bytes, deadline: float, *, start: int = 0
-    ) -> bytes: ...
+    def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes: ...
 
     def wait_for_any(
         self, markers: Sequence[bytes], deadline: float, *, start: int = 0
@@ -72,7 +71,7 @@ def debug_console_commands(nonce: str) -> tuple[DebugConsoleCommand, ...]:
     _validate_nonce(nonce)
     probes = (
         ("uid", "UID", "id -u"),
-        ("pid1", "PID1", "tr -d '\\n' </proc/1/comm; printf '\\n'"),
+        ("pid1", "PID1", "tr -d '\\n' </proc/1/comm"),
         ("root", "ROOT", "awk '$2 == \"/\" { print $1, $3; exit }' /proc/mounts"),
         (
             "graphical",
@@ -82,36 +81,38 @@ def debug_console_commands(nonce: str) -> tuple[DebugConsoleCommand, ...]:
             "asterinas-desktop-m4-evidence.service && "
             "! systemctl is-active --quiet asterinas-desktop-m5.service; do "
             "_asterinas_debug_attempt=$((_asterinas_debug_attempt + 1)); "
-            "[ \"$_asterinas_debug_attempt\" -ge 45 ] && break; sleep 1; done; "
+            '[ "$_asterinas_debug_attempt" -ge 45 ] && break; sleep 1; done; '
             "if systemctl is-active --quiet asterinas-desktop-m4-evidence.service "
             "|| systemctl is-active --quiet asterinas-desktop-m5.service; then "
-            "printf 'active\\n'; else printf 'inactive\\n'; false; fi",
+            "echo active; else echo inactive; false; fi",
         ),
         (
             "desktop",
             "DESKTOP",
             "if systemctl is-active --quiet asterinas-desktop-m4.service || "
             "systemctl is-active --quiet asterinas-desktop-m5.service; then "
-            "printf 'active\\n'; else printf 'inactive\\n'; false; fi",
+            "echo active; else echo inactive; false; fi",
         ),
     )
     commands = []
     for name, token, probe in probes:
         prefix = f"__ASTERINAS_DEBUG_{nonce}_{token}"
         begin = f"{prefix}_BEGIN__"
+        value = f"{prefix}_VALUE__"
         status = f"{prefix}_STATUS__"
         end = f"{prefix}_END__"
         payload = (
-            f"printf '{begin}\\n'; {probe}; "
+            f"_asterinas_debug_output=$({probe}); "
             "_asterinas_debug_status=$?; "
-            f"printf '{status}%s\\n' \"$_asterinas_debug_status\"; "
-            f"printf '{end}\\n'"
+            f"printf '{begin}\\n{value}%s\\n{status}%s\\n{end}\\n' "
+            '"$_asterinas_debug_output" "$_asterinas_debug_status"'
         )
         commands.append(
             DebugConsoleCommand(
                 name=name,
                 payload=payload,
                 begin_marker=begin,
+                value_prefix=value,
                 status_prefix=status,
                 end_marker=end,
             )
@@ -142,13 +143,15 @@ def _extract_outputs(
 ) -> dict[str, str]:
     observed_nonces = set(_PROTOCOL_NONCE_RE.findall("\n".join(lines)))
     if observed_nonces - {nonce}:
-        raise DebugConsoleProtocolError("serial transcript contains stale nonce markers")
+        raise DebugConsoleProtocolError(
+            "serial transcript contains stale nonce markers"
+        )
 
-    expected_protocol_lines = {
-        command.begin_marker for command in commands
-    } | {command.end_marker for command in commands} | {
-        f"{command.status_prefix}0" for command in commands
-    }
+    expected_protocol_lines = (
+        {command.begin_marker for command in commands}
+        | {command.end_marker for command in commands}
+        | {f"{command.status_prefix}0" for command in commands}
+    )
     outputs: dict[str, str] = {}
     previous_end = -1
     for command in commands:
@@ -160,20 +163,24 @@ def _extract_outputs(
             for index, line in enumerate(lines)
             if line.startswith(command.status_prefix)
         ]
-        ends = [
-            index for index, line in enumerate(lines) if line == command.end_marker
+        values = [
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(command.value_prefix)
         ]
-        if len(begins) != 1 or len(statuses) != 1 or len(ends) != 1:
+        ends = [index for index, line in enumerate(lines) if line == command.end_marker]
+        if len(begins) != 1 or len(values) != 1 or len(statuses) != 1 or len(ends) != 1:
             raise DebugConsoleProtocolError(
                 f"{command.name} command markers are missing or duplicated"
             )
-        begin, status, end = begins[0], statuses[0], ends[0]
-        if not previous_end < begin < status < end:
-            raise DebugConsoleProtocolError("debug-console command markers are reordered")
+        begin, value, status, end = begins[0], values[0], statuses[0], ends[0]
+        if not previous_end < begin < value < status < end:
+            raise DebugConsoleProtocolError(
+                "debug-console command markers are reordered"
+            )
         if any(
-            ord(character) < 0x20 and character != "\t"
-            or ord(character) == 0x7F
-            for line in lines[begin : end + 1]
+            ord(character) < 0x20 and character != "\t" or ord(character) == 0x7F
+            for line in (lines[begin], lines[value], lines[status], lines[end])
             for character in line
         ):
             raise DebugConsoleProtocolError(
@@ -183,12 +190,9 @@ def _extract_outputs(
             raise DebugConsoleProtocolError(
                 f"{command.name} command returned a nonzero or invalid status"
             )
-        output_lines = lines[begin + 1 : status]
-        if len(output_lines) != 1:
-            raise DebugConsoleProtocolError(
-                f"{command.name} command output was not exactly one line"
-            )
-        outputs[command.name] = output_lines[0]
+        value_line = lines[value]
+        expected_protocol_lines.add(value_line)
+        outputs[command.name] = value_line.removeprefix(command.value_prefix)
         previous_end = end
 
     for line in lines:
@@ -199,9 +203,7 @@ def _extract_outputs(
     return outputs
 
 
-def classify_debug_console(
-    transcript: str | bytes, nonce: str
-) -> DebugConsoleEvidence:
+def classify_debug_console(transcript: str | bytes, nonce: str) -> DebugConsoleEvidence:
     """Validate a complete five-command exchange and return exact evidence."""
 
     commands = debug_console_commands(nonce)

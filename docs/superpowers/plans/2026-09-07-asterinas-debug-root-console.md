@@ -385,16 +385,26 @@ Build Stage1 only:
 make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
 tools/riscv/debian/rootfs/build_stage1.sh \
   target/debian-riscv/debug-console/stage1/initramfs.cpio
+make build_riscv_debian_browser_web_dev_overlay
+DEBUG_ROOTFS="$PWD/target/dev-overlays/browser-web/rootfs"
 make test_riscv_debian_debug_console_qemu_gate \
   DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  DEBIAN_UBOOT="$PWD/target/riscv-boot/riscv64-qemu/u-boot.bin" \
-  DEBIAN_DTB="$PWD/target/riscv-boot/riscv64-qemu/qemu-virt.dtb" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
   DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/debug-console/stage1/initramfs.cpio" \
-  DEBIAN_ROOTFS_IMAGE="$PWD/target/debian-riscv/desktop-m5-network-current/rootfs/debian-root.ext2" \
-  DEBIAN_ROOTFS_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network-current/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network-current/rootfs/packages.lock" \
-  DEBIAN_OUTPUT_DIR="$PWD/target/debian-riscv/debug-console/qemu"
+  DEBIAN_ROOT_IMAGE="$DEBUG_ROOTFS/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$DEBUG_ROOTFS/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$DEBUG_ROOTFS/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$DEBUG_ROOTFS/source-metadata/package-checksums" \
+  DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/debug-console/qemu"
 ```
+
+The earlier review run used
+`/tmp/asterinas-xkb-contract-overlay-v4-20260907/rootfs`, and the final run used
+`/tmp/asterinas-xkb-contract-overlay-v5-20260907/rootfs`. These historical paths
+are evidence metadata, not the executable build guide. The generated development
+overlay has manifest identity schema 7, profile `browser-web`; its overlay
+manifest records the XKB-cache and `runuser` fixes tested on Megrez.
 
 Expected: `result.json` reports pass, UID 0, PID 1 `systemd`, ext2 root, active
 graphical and desktop services, and a non-empty rendered screenshot.

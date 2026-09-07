@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import math
 import os
 import secrets
 import select
@@ -318,12 +319,21 @@ class SerialConsole:
         *,
         process: GateProcess | None = None,
         max_bytes: int,
+        tx_delay: float = 0.0,
     ) -> None:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
+        if (
+            isinstance(tx_delay, bool)
+            or not isinstance(tx_delay, (int, float))
+            or not math.isfinite(tx_delay)
+            or not 0 <= tx_delay <= 0.1
+        ):
+            raise ValueError("tx_delay must be a finite value in [0, 0.1]")
         self.fd = fd
         self.process = process
         self.max_bytes = max_bytes
+        self.tx_delay = float(tx_delay)
         self._transcript = bytearray()
         os.set_blocking(fd, False)
 
@@ -349,9 +359,15 @@ class SerialConsole:
             if not writable:
                 continue
             try:
-                sent += os.write(self.fd, view[sent:])
+                end = sent + 1 if self.tx_delay else len(view)
+                sent += os.write(self.fd, view[sent:end])
             except BlockingIOError:
                 continue
+            if self.tx_delay and sent < len(view):
+                remaining = deadline - time.monotonic()
+                if remaining <= self.tx_delay:
+                    raise TimeoutError("serial command deadline expired")
+                time.sleep(self.tx_delay)
 
     def _read(self, deadline: float) -> bytes | None:
         ready, _, _ = select.select([self.fd], [], [], _remaining(deadline))

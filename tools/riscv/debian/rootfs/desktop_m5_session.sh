@@ -70,7 +70,7 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Xorg owns the VT as the privileged display provider; keep the window
     # manager unprivileged so the desktop surface cannot grant Firefox extra
     # capabilities through the session process.
-    /usr/bin/runuser --user asterinas --preserve-environment -- \
+    /usr/sbin/runuser --user asterinas --preserve-environment -- \
         /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
     wait "$xorg_pid"
     xorg_status=$?

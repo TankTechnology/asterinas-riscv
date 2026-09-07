@@ -346,12 +346,12 @@ recovery timer, and require a fresh U-Boot epoch:
 
 ```bash
 SERIAL=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
-PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \
   --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
-  --bootargs "console=tty0 console=ttyS0 loglevel=info init=/init asterinas.reboot_after=120 -- --root-init=systemd --debug-console=root" \
+  --bootargs "console=tty0 console=ttyS0 loglevel=off init=/init asterinas.reboot_after=120 -- --root-init=systemd --debug-console=root" \
   --firmware-framebuffer \
   --final-profile debug-root-console \
   --milestone-timeout 150 \
@@ -369,12 +369,12 @@ timer and `--require-recovery`. The runner closes its descriptor after the
 fixed probes, so the same root prompt can then be opened interactively:
 
 ```bash
-PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \
   --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
-  --bootargs "console=tty0 console=ttyS0 loglevel=info init=/init -- --root-init=systemd --debug-console=root" \
+  --bootargs "console=tty0 console=ttyS0 loglevel=off init=/init -- --root-init=systemd --debug-console=root" \
   --firmware-framebuffer \
   --final-profile debug-root-console \
   --milestone-timeout 120 \
@@ -387,6 +387,13 @@ picocom --baud 115200 "$SERIAL"
 it requires no username or password. The `debian` / `debian` credentials below
 belong only to the unrelated RockOS recovery system and never authenticate to
 Asterinas.
+
+This profile requires exactly one `loglevel=off`. On Megrez, asynchronous
+kernel diagnostics and the shell share the physical UART; sustained block
+errors can otherwise splice bytes into a framed shell response. Suppressing
+kernel logging is limited to this fixed-command acceptance and operator
+handoff profile. Use a separate diagnostic boot when kernel logs are the
+evidence under investigation.
 
 ## Generic U-Boot `booti`
 

@@ -348,6 +348,11 @@ python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
 进入/完成次数、累计 jiffies 及 clone/exec 边界。两者都只影响诊断镜像的
 bootargs，默认关闭，不改变正常启动语义。
 
+`debug-root-console` 验收是一个独立的低噪声串口 profile。QEMU 与 Megrez
+都使用恰好一个 `loglevel=off`，防止异步内核日志在字节层打断固定命令的
+nonce 协议。需要分析内核日志时应使用单独的诊断启动，不要扩大 root console
+分类器的接受范围。
+
 For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
 one QEMU process alive across the guest's normal reboot, interrupts the second
 U-Boot autoboot, and launches Asterinas a second time without `saveenv`:

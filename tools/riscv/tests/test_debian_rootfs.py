@@ -4033,6 +4033,19 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         self.assertIn(b"boot noise", console.transcript)
         self.assertEqual(os.read(slave, 128), b"echo ready\n")
 
+    def test_serial_console_can_pace_physical_uart_transmission(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(writer, max_bytes=128, tx_delay=0.005)
+
+        with mock.patch("tools.riscv.debian.rootfs.gate_runtime.time.sleep") as sleep:
+            console.send(b"abc", self._deadline())
+
+        self.assertEqual(os.read(reader, 128), b"abc")
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_has_calls([mock.call(0.005), mock.call(0.005)])
+
     def test_serial_console_bounds_prompt_boot_and_drain_deadlines(self) -> None:
         master, slave = os.openpty()
         self.addCleanup(os.close, master)
