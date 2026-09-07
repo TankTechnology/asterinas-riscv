@@ -418,6 +418,23 @@ The unit tests use only the Python standard library and repository files.
 
 ### Host-side Megrez debugging
 
+#### RockOS recovery login
+
+The public factory-default credentials for the Milk-V Megrez RockOS/Debian
+maintenance system are:
+
+```text
+username: debian
+password: debian
+```
+
+A serial session on 2026-07-16 confirmed that this pair reaches
+`debian@rockos-eswin`. It applies only to the board's RockOS recovery system,
+not to the Debian root filesystem running on Asterinas. In particular, it
+cannot unlock an Asterinas account whose shadow entry is `!` or `*`.
+If an operator replaces the factory password, do not record the replacement in
+the repository, shell history, or controller logs.
+
 Keep builds and QEMU runs in the pinned development container.
 On the host, install only the tools that observe the physical serial and Ethernet paths:
 

@@ -40,11 +40,12 @@ python3 paced_serial_bridge.py /dev/ttyUSB0 /tmp/megrez-session.serial.log
 # U-Boot 中断 autoboot
 sysboot mmc 1:1 any 0x88200000 /extlinux/extlinux.conf
 # 选 RockOS 6.6.87
+# 官方默认登录及适用边界见 tools/riscv/README.md
 ```
 
 ```bash
 # 板端网络（10.100.19.200/21 示例）→ 主机 http 下载产物 → SHA-256 校验 → 安装到 /boot（新文件名）→ sync
-# 具体命令见 runbook（board-runbook.md）；凭据不写文档
+# 具体命令见 megrez-asterinas-boot-guide.md 第 8.2 节
 ```
 
 ## 4. 重启回 U-Boot → 加载与校验
