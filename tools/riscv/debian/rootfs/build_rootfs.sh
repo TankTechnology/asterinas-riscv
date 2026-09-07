@@ -82,7 +82,10 @@ run_chroot() {
         # Use a plain root mapping rather than -R: the latter implicitly binds
         # host /proc, /sys and /dev, which makes paths such as staged /etc
         # cross mount boundaries under proot and breaks maintainer scripts.
-        command proot -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
+        # Keep credentials virtual too.  Without -0, APT's switch to the _apt
+        # user changes the QEMU process's host credentials, after which an
+        # unprivileged proot tracer can no longer translate pathname pointers.
+        command proot -0 -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
     else
         chroot "$stage" "$@"
     fi
