@@ -605,6 +605,7 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertEqual(
             bashrc.read_text(),
             "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
+            "bind 'set enable-bracketed-paste off' 2>/dev/null\n"
             "PS1='root@asterinas-debug:\\w# '\n",
         )
         self.assertEqual(
