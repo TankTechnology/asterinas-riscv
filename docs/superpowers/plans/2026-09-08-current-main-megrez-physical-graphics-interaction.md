@@ -173,7 +173,7 @@ Expected: all page-contract tests pass.
 - Create: `tools/riscv/debian/rootfs/physical_graphics_gate.py`
 - Modify: `tools/riscv/tests/test_physical_graphics_gate.py`
 
-- [ ] **Step 1: Write failing evdev parser tests**
+- [x] **Step 1: Write failing evdev parser tests**
 
 Use `struct.Struct("=qqHHi")` fixtures and require `EvdevCycle` to:
 
@@ -190,7 +190,7 @@ self.assertTrue(cycle.left_click_complete)
 Also reject button-up-before-down, counter overflow, truncated records, and an
 empty event-node set.
 
-- [ ] **Step 2: Run parser RED**
+- [x] **Step 2: Run parser RED**
 
 Run:
 
@@ -201,7 +201,7 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: FAIL because `physical_graphics_gate.py` does not exist.
 
-- [ ] **Step 3: Implement the bounded evdev observer**
+- [x] **Step 3: Implement the bounded evdev observer**
 
 Implement constants `EV_KEY=1`, `EV_REL=2`, `REL_X=0`, `REL_Y=1`, and
 `BTN_LEFT=0x110`. Open `/dev/input/event*` with
@@ -210,7 +210,7 @@ descriptors, drain pending records before READY, and use `selectors` until the
 cycle deadline. Count non-button `value==1` key-downs, non-zero X/Y relative
 events, and one ordered left-button down/up pair. Cap every counter at 4096.
 
-- [ ] **Step 4: Write failing snapshot and no-synthesis tests**
+- [x] **Step 4: Write failing snapshot and no-synthesis tests**
 
 Require `validate_snapshot(snapshot, expected_nonce, cycle)` to reject every
 field drift and accept only:
@@ -233,7 +233,7 @@ commands are `WebDriver:ExecuteScript` with the literal snapshot expression
 and `WebDriver:TakeScreenshot`. Any `PerformActions`, `ElementClick`,
 `SendKeys`, or script that mutates the input must raise `GateError`.
 
-- [ ] **Step 5: Run snapshot RED**
+- [x] **Step 5: Run snapshot RED**
 
 Run:
 
@@ -244,7 +244,7 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: FAIL because the snapshot witness is absent.
 
-- [ ] **Step 6: Implement the Marionette cycle**
+- [x] **Step 6: Implement the Marionette cycle**
 
 Reuse `GateError`, `Marionette`, and `_connect` from
 `browser_m5_marionette_gate.py`. Before READY, navigate to:
@@ -271,7 +271,7 @@ ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=N
 On failure, emit one `ASTERINAS_PHYSICAL_GRAPHICS_FAIL cycle=N reason=<token>`
 record and exit nonzero.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [x] **Step 7: Run GREEN and commit**
 
 Run:
 
