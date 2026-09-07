@@ -33,7 +33,7 @@
 - Verify: `docs/superpowers/specs/2026-09-07-asterinas-debug-root-console-design.md`
 - Verify: `docs/superpowers/plans/2026-09-07-asterinas-debug-root-console.md`
 
-- [ ] **Step 1: Record the exact source range**
+- [x] **Step 1: Record the exact source range**
 
 Run:
 
@@ -44,7 +44,7 @@ git log --reverse --format='%H %s' 374a42092145f143c4dcd0613c909e0d4b2d2800..d77
 
 Expected: merge base `374a42092145f143c4dcd0613c909e0d4b2d2800` and exactly nine commits ending at `d77b05f58`.
 
-- [ ] **Step 2: Cherry-pick the nine commits in order**
+- [x] **Step 2: Cherry-pick the nine commits in order**
 
 Run:
 
@@ -63,7 +63,7 @@ git cherry-pick \
 
 Resolve conflicts by retaining current-main kernel/rootfs behavior and applying only the debug-console deltas. Do not copy unrelated historical versions of files wholesale.
 
-- [ ] **Step 3: Verify transplant identity and formatting**
+- [x] **Step 3: Verify transplant identity and formatting**
 
 Run:
 
@@ -74,7 +74,7 @@ git diff --check origin/main..HEAD
 
 Expected: the design commit followed by nine transplanted commits, with no whitespace errors.
 
-- [ ] **Step 4: Run the transplanted unit tests**
+- [x] **Step 4: Run the transplanted unit tests**
 
 Run:
 
@@ -95,7 +95,7 @@ Expected: all tests pass with zero failures and zero errors.
 - Create: `tools/riscv/debian/rootfs/physical_graphics_interaction.html`
 - Create: `tools/riscv/tests/test_physical_graphics_gate.py`
 
-- [ ] **Step 1: Write failing page-contract tests**
+- [x] **Step 1: Write failing page-contract tests**
 
 Add tests that load the page as text and require the exact IDs
 `interaction-nonce`, `interaction-button`, `interaction-state`, and
@@ -114,7 +114,7 @@ for event_name in ("keydown", "input", "pointermove", "click"):
 self.assertGreaterEqual(page.count("event.isTrusted"), 4)
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -125,7 +125,7 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: FAIL because `physical_graphics_interaction.html` does not exist.
 
-- [ ] **Step 3: Implement the deterministic page**
+- [x] **Step 3: Implement the deterministic page**
 
 Create a self-contained page with no external resources. Parse only
 `cycle=<1..3>` and `nonce_length=16` from the query string. Focus the input on
@@ -151,7 +151,7 @@ trusted pointer move was already seen. Set `clickCount=1`, `color="cyan"`,
 disable the button, and return a frozen copy of the state from
 `window.__asterinasPhysicalGraphicsSnapshot()`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run:
 
