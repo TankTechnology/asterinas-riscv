@@ -121,6 +121,10 @@ DESKTOP_LXPANEL_CONFIG = (
 )
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
+STAGE1_DEBUG_CONSOLE_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_debug_console.c"
+)
+STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
     "debootstrap",
@@ -501,9 +505,48 @@ class DebianStage1Tests(unittest.TestCase):
         ]
         if define is not None:
             command.append(f"-D{define}")
-        command.extend((str(STAGE1_SOURCE), "-o", str(output)))
+        command.extend(
+            (
+                str(STAGE1_SOURCE),
+                str(STAGE1_DEBUG_CONSOLE_SOURCE),
+                "-o",
+                str(output),
+            )
+        )
         return subprocess.run(
             command,
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def compile_debug_console_harness(
+        self, output: Path
+    ) -> subprocess.CompletedProcess[str]:
+        harness = self.directory / "debug-console-harness.c"
+        harness.write_text(
+            '#include "stage1_debug_console.h"\n'
+            "int main(int argc, char **argv)\n"
+            "{\n"
+            "    return argc == 2 ? stage1_prepare_debug_console(argv[1]) : 2;\n"
+            "}\n"
+        )
+        return subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(STAGE1_DEBUG_CONSOLE_INCLUDE),
+                str(harness),
+                str(STAGE1_DEBUG_CONSOLE_SOURCE),
+                "-o",
+                str(output),
+            ],
             cwd=REPOSITORY_ROOT,
             check=False,
             capture_output=True,
@@ -524,6 +567,77 @@ class DebianStage1Tests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_debug_console_runtime_tree_is_exact(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+
+        result = subprocess.run(
+            [binary, root], check=False, capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        runtime = root / "run"
+        service = runtime / "systemd/system/asterinas-debug-console.service"
+        bashrc = runtime / "asterinas-debug-console.bashrc"
+        marker = runtime / "asterinas-debug-console.enabled"
+        drop_in = (
+            runtime
+            / "systemd/system/console-getty.service.d/asterinas-debug-console.conf"
+        )
+        service_link = (
+            runtime
+            / "systemd/system/getty.target.wants/asterinas-debug-console.service"
+        )
+
+        self.assertEqual(marker.read_bytes(), b"")
+        service_text = service.read_text()
+        self.assertIn("TTYPath=/dev/ttyS0\n", service_text)
+        self.assertIn("StandardInput=tty-force\n", service_text)
+        self.assertIn("Restart=always\n", service_text)
+        self.assertIn(
+            "ConditionPathExists=/run/asterinas-debug-console.enabled\n",
+            service_text,
+        )
+        self.assertEqual(
+            bashrc.read_text(),
+            "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
+            "PS1='root@asterinas-debug:\\w# '\n",
+        )
+        self.assertEqual(
+            drop_in.read_text(),
+            "[Unit]\n"
+            "ConditionPathExists=!/run/asterinas-debug-console.enabled\n",
+        )
+        self.assertTrue(service_link.is_symlink())
+        self.assertEqual(
+            os.readlink(service_link), "../asterinas-debug-console.service"
+        )
+
+    def test_debug_console_rejects_symlink_destination(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        systemd = root / "run/systemd/system"
+        systemd.mkdir(parents=True)
+        sentinel = self.directory / "sentinel"
+        sentinel.write_text("unchanged")
+        service = systemd / "asterinas-debug-console.service"
+        service.symlink_to(sentinel)
+
+        result = subprocess.run(
+            [binary, root], check=False, capture_output=True, text=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sentinel.read_text(), "unchanged")
+        self.assertTrue(service.is_symlink())
+        self.assertEqual(service.resolve(), sentinel)
+        self.assertFalse((root / "run/asterinas-debug-console.enabled").exists())
 
     def test_native_self_test_covers_discovery_and_handoff_failures(self) -> None:
         binary = self.directory / "stage1-self-test"
@@ -547,6 +661,7 @@ class DebianStage1Tests(unittest.TestCase):
             "proc-mount-failure",
             "sysfs-mount-failure",
             "run-mount-failure",
+            "debug-console-failure",
             "tmp-mount-failure",
             "chroot-failure",
             "chdir-failure",
@@ -570,6 +685,7 @@ class DebianStage1Tests(unittest.TestCase):
             "systemd-browser-root-label",
             "systemd-software-desktop-root-label",
             "systemd-handoff-sequence",
+            "systemd-debug-handoff-sequence",
             "systemd-exec",
         )
 
@@ -655,6 +771,7 @@ int main(int argc, char **argv)
                 "-Werror",
                 "-Wno-return-type",
                 harness_source,
+                STAGE1_DEBUG_CONSOLE_SOURCE,
                 "-o",
                 binary,
             ],
@@ -698,6 +815,7 @@ int main(void)
                 "-Werror",
                 "-Wno-return-type",
                 harness_source,
+                STAGE1_DEBUG_CONSOLE_SOURCE,
                 "-o",
                 binary,
             ],
