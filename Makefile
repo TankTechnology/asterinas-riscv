@@ -336,6 +336,12 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_m8_browser_quality \
 		tools.riscv.tests.test_debian_m9_software -v
 
+.PHONY: test_riscv_debian_debug_console
+test_riscv_debian_debug_console:
+	@python3 -m unittest \
+		tools.riscv.tests.test_debian_debug_console \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
 .PHONY: build_riscv_debian_browser_web_dev_overlay
 build_riscv_debian_browser_web_dev_overlay:
 	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
