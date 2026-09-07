@@ -1550,7 +1550,6 @@ configure_desktop() {
                 "$stage/usr/share/asterinas/physical-graphics/index.html"
             install -D -m 0755 -- "$script_directory/physical_graphics_gate.py" \
                 "$stage/usr/lib/asterinas/physical-graphics-gate"
-            install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas/physical-graphics-evidence"
             install -d -m 0700 -- "$stage/home/asterinas/browser-web-evidence"
             for evidence_name in \
                 baidu-home.json baidu-home.png \

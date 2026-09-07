@@ -747,11 +747,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn(
             '"$stage/usr/lib/asterinas/physical-graphics-gate"', builder
         )
-        self.assertIn(
-            'install -d -m 0700 -o 1000 -g 1000 -- '
-            '"$stage/home/asterinas/physical-graphics-evidence"',
-            builder,
-        )
+        self.assertNotIn("physical-graphics-evidence", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
                 "publish_artifacts()"

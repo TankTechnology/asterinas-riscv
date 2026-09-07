@@ -15,22 +15,22 @@ import os
 from pathlib import Path
 import re
 import selectors
+import socket
 import stat
 import struct
 import sys
 import time
 from typing import Any, Protocol
+import zlib
 
 if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
     sys.path.insert(0, "/usr/lib/asterinas")
     from browser_m5_marionette_gate import (  # type: ignore[import-not-found]
         _connect,
-        validate_network_namespace,
     )
 else:
     from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
         _connect,
-        validate_network_namespace,
     )
 
 
@@ -41,7 +41,10 @@ REL_Y = 1
 BTN_MISC = 0x100
 BTN_LEFT = 0x110
 MAX_EVENT_COUNT = 4096
-MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
+MAX_SCREENSHOT_BYTES = 512 * 1024
+MAX_DECODED_SCREENSHOT_BYTES = 16 * 1024 * 1024
+EXPECTED_SCREENSHOT_WIDTH = 1920
+EXPECTED_SCREENSHOT_HEIGHT = 1080
 INPUT_EVENT_STRUCT = struct.Struct("=qqHHi")
 NONCE_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 PAGE_URL = "file:///usr/share/asterinas/physical-graphics/index.html"
@@ -350,42 +353,119 @@ class EvdevCycle:
         self._digest.update(encoded)
 
 
-def _write_screenshot(path: Path, payload: bytes) -> str:
-    if not path.is_absolute():
-        raise GateError("screenshot-path-not-absolute")
+def validate_firefox_namespace(firefox_pid: int) -> None:
+    """Require the witness to share the selected online Firefox network stack."""
+
+    if firefox_pid <= 1:
+        raise GateError("Firefox PID is outside the valid contract")
+    try:
+        gate_namespace = os.readlink("/proc/self/ns/net")
+        firefox_namespace = os.readlink(f"/proc/{firefox_pid}/ns/net")
+        interfaces = [name for _, name in socket.if_nameindex()]
+    except OSError as error:
+        raise GateError("cannot inspect Firefox network namespace") from error
+    if gate_namespace != firefox_namespace:
+        raise GateError("physical gate did not join the Firefox network namespace")
+    if (
+        "lo" not in interfaces
+        or len([name for name in interfaces if name != "lo"]) != 1
+    ):
+        raise GateError("physical gate does not have exactly one non-loopback NIC")
+
+
+def validate_png_screenshot(
+    payload: bytes,
+    *,
+    max_bytes: int = MAX_SCREENSHOT_BYTES,
+    expected_dimensions: tuple[int, int] | None = (
+        EXPECTED_SCREENSHOT_WIDTH,
+        EXPECTED_SCREENSHOT_HEIGHT,
+    ),
+) -> None:
+    """Require one complete, bounded, non-interlaced PNG."""
+
     if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         raise GateError("screenshot-not-png")
-    if not 8 < len(payload) <= MAX_SCREENSHOT_BYTES:
+    if (
+        type(max_bytes) is not int
+        or not 8 < max_bytes <= 64 * 1024 * 1024
+        or not 8 < len(payload) <= max_bytes
+    ):
         raise GateError("screenshot-size-invalid")
-    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if path.exists() and path.is_symlink():
-        raise GateError("screenshot-output-symlink")
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-        0o600,
+    offset = 8
+    chunks: list[tuple[bytes, bytes]] = []
+    while offset < len(payload):
+        if offset + 12 > len(payload):
+            raise GateError("screenshot-chunk-truncated")
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        kind = payload[offset + 4 : offset + 8]
+        end = offset + 12 + length
+        if length > MAX_DECODED_SCREENSHOT_BYTES or end > len(payload):
+            raise GateError("screenshot-chunk-invalid")
+        contents = payload[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + length : end])[0]
+        if zlib.crc32(kind + contents) & 0xFFFFFFFF != expected_crc:
+            raise GateError("screenshot-chunk-crc-invalid")
+        chunks.append((kind, contents))
+        offset = end
+        if kind == b"IEND":
+            break
+    if (
+        offset != len(payload)
+        or not chunks
+        or chunks[0][0] != b"IHDR"
+        or chunks[-1] != (b"IEND", b"")
+        or sum(kind == b"IHDR" for kind, _ in chunks) != 1
+        or not any(kind == b"IDAT" for kind, _ in chunks)
+    ):
+        raise GateError("screenshot-structure-invalid")
+    ihdr = chunks[0][1]
+    if len(ihdr) != 13:
+        raise GateError("screenshot-ihdr-invalid")
+    width, height, depth, color_type, compression, filtering, interlace = struct.unpack(
+        ">IIBBBBB", ihdr
     )
+    if (
+        not width
+        or not height
+        or width > 16384
+        or height > 16384
+        or (expected_dimensions is not None and (width, height) != expected_dimensions)
+    ):
+        raise GateError("screenshot-dimensions-invalid")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
+    if channels is None or depth != 8 or compression or filtering or interlace:
+        raise GateError("screenshot-format-unsupported")
+    expected_size = height * (1 + width * channels)
+    if expected_size > MAX_DECODED_SCREENSHOT_BYTES:
+        raise GateError("screenshot-decoded-size-excessive")
+    compressed = b"".join(contents for kind, contents in chunks if kind == b"IDAT")
     try:
-        view = memoryview(payload)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise GateError("screenshot-write-stalled")
-            view = view[written:]
-        os.fsync(descriptor)
-    except BaseException:
-        os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-        raise
-    os.close(descriptor)
-    os.replace(temporary, path)
-    directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
-    try:
-        os.fsync(directory_descriptor)
-    finally:
-        os.close(directory_descriptor)
-    return hashlib.sha256(payload).hexdigest()
+        decompressor = zlib.decompressobj()
+        pixels = decompressor.decompress(compressed, expected_size + 1)
+    except zlib.error as error:
+        raise GateError("screenshot-pixels-invalid") from error
+    if (
+        len(pixels) != expected_size
+        or decompressor.unconsumed_tail
+        or decompressor.unused_data
+        or not decompressor.eof
+    ):
+        raise GateError("screenshot-pixel-size-invalid")
+    row_size = 1 + width * channels
+    if any(pixels[row * row_size] > 4 for row in range(height)):
+        raise GateError("screenshot-filter-invalid")
+
+
+def _emit_screenshot_frame(
+    emit: Callable[[str], None], *, cycle: int, payload: bytes, sha256: str
+) -> None:
+    emit(
+        f"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle={cycle} "
+        f"size={len(payload)} sha256={sha256}"
+    )
+    emit(base64.b64encode(payload).decode("ascii"))
+    emit(f"__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle={cycle}")
 
 
 def run_cycle(
@@ -395,7 +475,6 @@ def run_cycle(
     nonce: str,
     cycle: int,
     timeout: float,
-    screenshot: Path,
     emit: Callable[[str], None],
 ) -> CycleEvidence:
     """Observe one correlated physical interaction cycle without input synthesis."""
@@ -417,6 +496,13 @@ def run_cycle(
             session.get("sessionId"), str
         ):
             raise GateError("physical-graphics-marionette-session")
+        window = _script_value(guarded.command("WebDriver:FullscreenWindow"))
+        if (
+            not isinstance(window, dict)
+            or window.get("width") != EXPECTED_SCREENSHOT_WIDTH
+            or window.get("height") != EXPECTED_SCREENSHOT_HEIGHT
+        ):
+            raise GateError("physical-graphics-fullscreen-dimensions")
         if (
             _script_value(guarded.command("WebDriver:Navigate", {"url": page_url}))
             is not None
@@ -462,7 +548,8 @@ def run_cycle(
                 screenshot_payload = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError) as error:
                 raise GateError("physical-graphics-screenshot-base64") from error
-            screenshot_sha256 = _write_screenshot(screenshot, screenshot_payload)
+            validate_png_screenshot(screenshot_payload)
+            screenshot_sha256 = hashlib.sha256(screenshot_payload).hexdigest()
             emit(
                 f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} "
                 f"key_downs={input_evidence.key_downs} "
@@ -480,6 +567,12 @@ def run_cycle(
                 f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} "
                 f"sha256={screenshot_sha256}"
             )
+            _emit_screenshot_frame(
+                emit,
+                cycle=cycle,
+                payload=screenshot_payload,
+                sha256=screenshot_sha256,
+            )
             emit(f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}")
             return CycleEvidence(
                 cycle=cycle,
@@ -493,6 +586,21 @@ def run_cycle(
         events.close()
 
 
+def verify_final_state(client: MarionetteClient, *, nonce: str, cycle: int) -> None:
+    """Recheck the terminal DOM without navigating or synthesizing input."""
+
+    if cycle != 3 or NONCE_PATTERN.fullmatch(nonce) is None:
+        raise GateError("physical-graphics-final-identity")
+    guarded = GuardedMarionette(client)
+    session = guarded.command(
+        "WebDriver:NewSession", {"strictFileInteractability": True}
+    )
+    if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
+        raise GateError("physical-graphics-final-marionette-session")
+    guarded.mark_ready()
+    validate_snapshot(guarded.snapshot(), expected_nonce=nonce, cycle=cycle)
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="physical-graphics-gate")
     parser.add_argument("--nonce", required=True)
@@ -501,11 +609,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--input-directory", type=Path, default=Path("/dev/input"))
-    parser.add_argument(
-        "--evidence-directory",
-        type=Path,
-        default=Path("/home/asterinas/physical-graphics-evidence"),
-    )
+    parser.add_argument("--verify-final", action="store_true")
     values = parser.parse_args(arguments)
     if (
         NONCE_PATTERN.fullmatch(values.nonce) is None
@@ -513,25 +617,30 @@ def main(arguments: Sequence[str] | None = None) -> int:
         or not 1 <= values.port <= 65535
         or not math.isfinite(values.timeout)
         or not 0 < values.timeout <= 300
-        or not values.evidence_directory.is_absolute()
     ):
         parser.error("physical graphics arguments are outside the bounded contract")
 
     client: MarionetteClient | None = None
     try:
-        validate_network_namespace(values.firefox_pid)
+        validate_firefox_namespace(values.firefox_pid)
         deadline = time.monotonic() + values.timeout
         client = _connect("127.0.0.1", values.port, deadline)
-        run_cycle(
-            client,
-            RealEvdevSource(values.input_directory),
-            nonce=values.nonce,
-            cycle=values.cycle,
-            timeout=max(0.001, deadline - time.monotonic()),
-            screenshot=values.evidence_directory
-            / f"physical-graphics-cycle-{values.cycle}.png",
-            emit=lambda marker: print(marker, flush=True),
-        )
+        if values.verify_final:
+            verify_final_state(client, nonce=values.nonce, cycle=values.cycle)
+            print(
+                f"__ASTERINAS_PHYSICAL_FINAL__ cycle={values.cycle} "
+                f"nonce_sha256={hashlib.sha256(values.nonce.encode()).hexdigest()}",
+                flush=True,
+            )
+        else:
+            run_cycle(
+                client,
+                RealEvdevSource(values.input_directory),
+                nonce=values.nonce,
+                cycle=values.cycle,
+                timeout=max(0.001, deadline - time.monotonic()),
+                emit=lambda marker: print(marker, flush=True),
+            )
     except (GateError, OSError, TimeoutError) as error:
         print(
             f"ASTERINAS_PHYSICAL_GRAPHICS_FAIL cycle={values.cycle} "
