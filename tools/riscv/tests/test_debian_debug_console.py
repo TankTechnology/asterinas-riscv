@@ -124,6 +124,7 @@ class DebugConsoleProtocolTests(unittest.TestCase):
             "asterinas-desktop-m4-evidence.service", commands[-2].payload
         )
         self.assertIn("asterinas-desktop-m5.service", commands[-2].payload)
+        self.assertIn("while ! systemctl", commands[-2].payload)
 
     def test_runtime_accepts_tty_cr_cr_lf_line_endings(self) -> None:
         evidence = run_debug_console_phase(

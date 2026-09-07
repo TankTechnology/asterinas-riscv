@@ -41,6 +41,12 @@ def _make_session() -> board.BoardSession:
 
 
 class MilestoneDetectionTests(unittest.TestCase):
+    def test_debug_root_console_profile_uses_exact_readiness_marker(self):
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS["debug-root-console"],
+            "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
+        )
+
     def test_session_can_reuse_a_caller_owned_serial_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "serial.log"
@@ -123,6 +129,32 @@ class MilestoneDetectionTests(unittest.TestCase):
 
 
 class ArgumentContractTests(unittest.TestCase):
+    def test_debug_root_console_profile_requires_both_boot_selectors(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+            "--final-profile",
+            "debug-root-console",
+        ]
+        for bootargs in (
+            "console=ttyS0 init=/init -- --root-init=systemd",
+            "console=ttyS0 init=/init -- --debug-console=root",
+            "console=ttyS0 init=/init -- --root-init=interactive --debug-console=root",
+        ):
+            with self.subTest(bootargs=bootargs):
+                _parse_fails(_required_args() + crc_args + ["--bootargs", bootargs])
+
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--bootargs",
+                "console=ttyS0 init=/init -- --root-init=systemd "
+                "--debug-console=root",
+            ]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
+
     def test_physical_mode_parses_complete_crc_map(self):
         args = board.parse_args(
             _required_args()
@@ -998,6 +1030,82 @@ class MegrezDebianShellPhaseTests(unittest.TestCase):
 
 
 class BootTransactionTests(unittest.TestCase):
+    def test_debug_console_phase_uses_owned_fd_and_retains_transcript(self):
+        session = mock.Mock(fd=17)
+        serial = mock.Mock(transcript=b"framed exchange\r\n")
+        evidence = mock.sentinel.evidence
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial) as wrapper,
+            mock.patch.object(
+                board, "run_debug_console_phase", return_value=evidence
+            ) as protocol,
+        ):
+            result = board.run_debug_root_console(session, 123.0)
+
+        self.assertIs(result, evidence)
+        wrapper.assert_called_once_with(
+            17, max_bytes=board.MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES
+        )
+        protocol.assert_called_once()
+        self.assertEqual(protocol.call_args.args[:2], (serial, 123.0))
+        self.assertTrue(protocol.call_args.kwargs["ready_seen"])
+        session._log.assert_called_once_with("framed exchange\r\n")
+
+    def test_debug_console_phase_retains_transcript_on_failure(self):
+        session = mock.Mock(fd=17)
+        serial = mock.Mock(transcript=b"partial exchange\r\n")
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial),
+            mock.patch.object(
+                board, "run_debug_console_phase", side_effect=TimeoutError("late")
+            ),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "late"):
+                board.run_debug_root_console(session, 123.0)
+        session._log.assert_called_once_with("partial exchange\r\n")
+
+    def test_debug_console_failure_returns_nonzero_and_closes_serial(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.milestones = {
+            "kernel_enter": 1.0,
+            "userspace": 2.0,
+        }
+        physical_session.log = mock.Mock()
+        physical_session.fd = 17
+        boot_output = (
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value=boot_output
+            ),
+            mock.patch.object(
+                board,
+                "run_debug_root_console",
+                side_effect=TimeoutError("debug timeout"),
+            ),
+            mock.patch.object(board.os, "close") as close_fd,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "debug-root-console",
+                    "--bootargs",
+                    "console=ttyS0 init=/init -- --root-init=systemd "
+                    "--debug-console=root",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        physical_session.log.close.assert_called_once_with()
+        close_fd.assert_called_once_with(17)
+
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []
         session = mock.Mock()
