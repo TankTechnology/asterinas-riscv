@@ -74,11 +74,20 @@ def debug_console_commands(nonce: str) -> tuple[DebugConsoleCommand, ...]:
         ("uid", "UID", "id -u"),
         ("pid1", "PID1", "tr -d '\\n' </proc/1/comm; printf '\\n'"),
         ("root", "ROOT", "awk '$2 == \"/\" { print $1, $3; exit }' /proc/mounts"),
-        ("graphical", "GRAPHICAL", "systemctl is-active graphical.target"),
+        (
+            "graphical",
+            "GRAPHICAL",
+            "if systemctl is-active --quiet "
+            "asterinas-desktop-m4-evidence.service || "
+            "systemctl is-active --quiet asterinas-desktop-m5.service; then "
+            "printf 'active\\n'; else printf 'inactive\\n'; false; fi",
+        ),
         (
             "desktop",
             "DESKTOP",
-            "systemctl is-active asterinas-desktop-m5.service",
+            "if systemctl is-active --quiet asterinas-desktop-m4.service || "
+            "systemctl is-active --quiet asterinas-desktop-m5.service; then "
+            "printf 'active\\n'; else printf 'inactive\\n'; false; fi",
         ),
     )
     commands = []
@@ -119,12 +128,7 @@ def _lines(transcript: str | bytes) -> tuple[str, ...]:
         raise DebugConsoleProtocolError("serial transcript must be bytes or text")
     if len(raw) > MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES:
         raise DebugConsoleProtocolError("serial transcript exceeds 8 MiB")
-    if any(
-        ord(character) < 0x20 and character not in "\r\n\t"
-        or ord(character) == 0x7F
-        for character in text
-    ):
-        raise DebugConsoleProtocolError("serial transcript contains control input")
+    text = re.sub(r"\r+\n", "\n", text)
     return tuple(line.rstrip("\r") for line in text.splitlines())
 
 
@@ -161,6 +165,15 @@ def _extract_outputs(
         begin, status, end = begins[0], statuses[0], ends[0]
         if not previous_end < begin < status < end:
             raise DebugConsoleProtocolError("debug-console command markers are reordered")
+        if any(
+            ord(character) < 0x20 and character != "\t"
+            or ord(character) == 0x7F
+            for line in lines[begin : end + 1]
+            for character in line
+        ):
+            raise DebugConsoleProtocolError(
+                f"{command.name} command frame contains control input"
+            )
         if lines[status] != f"{command.status_prefix}0":
             raise DebugConsoleProtocolError(
                 f"{command.name} command returned a nonzero or invalid status"
@@ -238,7 +251,15 @@ def run_debug_console_phase(
         serial.send(f"{command.payload}\n".encode(), deadline)
         serial.wait_for_any(
             (
-                f"{command.end_marker}\r\n".encode(),
+                f"{command.begin_marker}\r".encode(),
+                f"{command.begin_marker}\n".encode(),
+            ),
+            deadline,
+            start=command_start,
+        )
+        serial.wait_for_any(
+            (
+                f"{command.end_marker}\r".encode(),
                 f"{command.end_marker}\n".encode(),
             ),
             deadline,

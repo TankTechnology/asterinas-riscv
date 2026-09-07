@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from unittest import mock
 
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
@@ -12,7 +13,13 @@ from tools.riscv.debian.rootfs.debug_console_protocol import (
     DebugConsoleProtocolError,
     classify_debug_console,
     debug_console_commands,
+    run_debug_console_phase,
 )
+from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
+    DebugConsoleQemuOperations,
+)
+from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DesktopM5QemuOperations
+from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 
 
 NONCE = "0123456789abcdef0123456789abcdef"
@@ -45,6 +52,50 @@ def make_transcript(
     return "\n".join(lines) + "\n"
 
 
+class ScriptedSerial:
+    def __init__(self) -> None:
+        self._transcript = bytearray(b"ASTERINAS_DEBUG_CONSOLE_READY uid=0\r\r\n")
+
+    @property
+    def transcript(self) -> bytes:
+        return bytes(self._transcript)
+
+    def checkpoint(self) -> int:
+        return len(self._transcript)
+
+    def send(self, payload: bytes, deadline: float) -> None:
+        del deadline
+        text = payload.decode().rstrip("\n")
+        command = next(
+            command
+            for command in debug_console_commands(NONCE)
+            if command.payload == text
+        )
+        self._transcript.extend(payload.rstrip(b"\n") + b"\r\r\n")
+        for line in (
+            command.begin_marker,
+            PASSING_OUTPUTS[command.name],
+            f"{command.status_prefix}0",
+            command.end_marker,
+        ):
+            self._transcript.extend(line.encode() + b"\r\r\n")
+
+    def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
+        del deadline
+        if self.transcript.find(marker, start) < 0:
+            raise TimeoutError(marker)
+        return self.transcript
+
+    def wait_for_any(
+        self, markers: tuple[bytes, ...], deadline: float, *, start: int = 0
+    ) -> bytes:
+        del deadline
+        for marker in markers:
+            if self.transcript.find(marker, start) >= 0:
+                return marker
+        raise TimeoutError(markers)
+
+
 class DebugConsoleProtocolTests(unittest.TestCase):
     def test_passing_transcript_yields_exact_evidence(self) -> None:
         self.assertEqual(
@@ -67,6 +118,19 @@ class DebugConsoleProtocolTests(unittest.TestCase):
         )
         self.assertEqual(len({command.payload for command in commands}), 5)
         self.assertTrue(all(NONCE in command.payload for command in commands))
+        self.assertIn("asterinas-desktop-m4.service", commands[-1].payload)
+        self.assertIn("asterinas-desktop-m5.service", commands[-1].payload)
+        self.assertIn(
+            "asterinas-desktop-m4-evidence.service", commands[-2].payload
+        )
+        self.assertIn("asterinas-desktop-m5.service", commands[-2].payload)
+
+    def test_runtime_accepts_tty_cr_cr_lf_line_endings(self) -> None:
+        evidence = run_debug_console_phase(
+            ScriptedSerial(), 123.0, NONCE, ready_seen=False
+        )
+        self.assertEqual(evidence.uid, 0)
+        self.assertEqual(evidence.desktop_state, "active")
 
     def assert_output_rejected(self, name: str, value: str) -> None:
         outputs = dict(PASSING_OUTPUTS)
@@ -128,8 +192,16 @@ class DebugConsoleProtocolTests(unittest.TestCase):
     def test_rejects_ansi_or_osc_control_input(self) -> None:
         for sequence in ("\x1b[31m", "\x1b]0;spoofed\x07"):
             with self.subTest(sequence=repr(sequence)):
+                outputs = dict(PASSING_OUTPUTS)
+                outputs["uid"] = sequence + "0"
                 with self.assertRaises(DebugConsoleProtocolError):
-                    classify_debug_console(sequence + make_transcript(), NONCE)
+                    classify_debug_console(
+                        make_transcript(outputs=outputs), NONCE
+                    )
+
+    def test_allows_unframed_ansi_boot_logs(self) -> None:
+        transcript = "\x1b[32mReached target\x1b[0m\n" + make_transcript()
+        self.assertEqual(classify_debug_console(transcript, NONCE).uid, 0)
 
     def test_rejects_transcript_over_eight_mib(self) -> None:
         oversized = b"x" * (MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES + 1)
@@ -146,6 +218,110 @@ class DebugConsoleProtocolTests(unittest.TestCase):
         command = debug_console_commands(NONCE)[0]
         mutated = replace(command, payload="id")
         self.assertNotEqual(mutated, command)
+
+
+class DebugConsoleQemuAdapterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.operations = object.__new__(DebugConsoleQemuOperations)
+        self.evidence = DebugConsoleEvidence(
+            uid=0,
+            pid1="systemd",
+            root_device="/dev/vdb",
+            root_filesystem="ext2",
+            graphical_state="active",
+            desktop_state="active",
+        )
+
+    def test_bootargs_append_debug_selector_after_systemd(self) -> None:
+        self.assertTrue(
+            self.operations.BOOTARGS.endswith(
+                "-- --root-init=systemd --debug-console=root"
+            )
+        )
+
+    def test_accepts_m5_and_browser_web_manifests(self) -> None:
+        self.assertEqual(
+            self.operations._accepted_profile_identities(),
+            ((5, "desktop-m5-network"), (7, "browser-web")),
+        )
+
+    def test_runs_base_desktop_protocol_before_debug_probes(self) -> None:
+        serial = mock.Mock()
+        session = {"serial": serial}
+        config = mock.Mock(command_timeout=17.0, boot_timeout=83.0)
+        calls: list[str] = []
+        with (
+            mock.patch.object(
+                DesktopM5QemuOperations,
+                "run_protocol",
+                side_effect=lambda *_: calls.append("base"),
+            ) as base_protocol,
+            mock.patch(
+                "tools.riscv.debian.rootfs.debug_console_qemu_gate."
+                "run_debug_console_phase",
+                side_effect=lambda *_args, **_kwargs: (
+                    calls.append("debug") or self.evidence
+                ),
+            ) as debug_protocol,
+            mock.patch(
+                "tools.riscv.debian.rootfs.debug_console_qemu_gate."
+                "secrets.token_hex",
+                return_value=NONCE,
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.debug_console_qemu_gate."
+                "time.monotonic",
+                return_value=100.0,
+            ),
+        ):
+            serial.wait_for.side_effect = lambda *_args, **_kwargs: calls.append(
+                "graphical-wait"
+            )
+            self.operations.run_protocol(session, config)
+
+        self.assertEqual(calls, ["base", "debug"])
+        base_protocol.assert_called_once_with(session, config)
+        serial.wait_for.assert_not_called()
+        debug_protocol.assert_called_once_with(
+            session["serial"], 117.0, NONCE
+        )
+        self.assertEqual(self.operations.debug_evidence, self.evidence)
+
+    def test_debug_protocol_failure_becomes_gate_failure(self) -> None:
+        serial = mock.Mock()
+        session = {"serial": serial}
+        config = mock.Mock(command_timeout=17.0, boot_timeout=83.0)
+        with (
+            mock.patch.object(DesktopM5QemuOperations, "run_protocol"),
+            mock.patch(
+                "tools.riscv.debian.rootfs.debug_console_qemu_gate."
+                "run_debug_console_phase",
+                side_effect=DebugConsoleProtocolError("wrong uid"),
+            ),
+        ):
+            with self.assertRaisesRegex(GateFailure, "wrong uid"):
+                self.operations.run_protocol(session, config)
+
+    def test_publish_adds_structured_debug_evidence(self) -> None:
+        self.operations.debug_evidence = self.evidence
+        result: dict[str, object] = {}
+        with mock.patch.object(DesktopM5QemuOperations, "publish") as publish:
+            self.operations.publish(mock.sentinel.config, None, b"serial", result)
+
+        self.assertEqual(
+            result["debug_console"],
+            {
+                "uid": 0,
+                "pid1": "systemd",
+                "root_device": "/dev/vdb",
+                "root_filesystem": "ext2",
+                "graphical_state": "active",
+                "desktop_state": "active",
+            },
+        )
+        publish.assert_called_once_with(
+            mock.sentinel.config, None, b"serial", result
+        )
 
 
 if __name__ == "__main__":
