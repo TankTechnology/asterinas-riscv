@@ -134,6 +134,7 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
     MILESTONES = DEBUG_CONSOLE_QEMU_MILESTONES
     FAILURE_MARKER = b"DEBIAN_ROOTFS_FAIL reason="
     CAPTURE_SCREENSHOT = False
+    CAPTURE_DEBUG_SCREENSHOT = True
     BOOTARGS = _debug_console_qemu_bootargs()
 
     def __init__(self, config: GateConfig) -> None:
@@ -203,6 +204,8 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
             UnicodeError,
         ) as error:
             raise GateFailure(f"debug-console protocol failed: {error}") from error
+        if not self.CAPTURE_DEBUG_SCREENSHOT:
+            return
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],

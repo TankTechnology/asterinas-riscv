@@ -180,7 +180,14 @@ Before the physical run, the current-main branch must pass:
 - the debug-root-console QEMU gate;
 - the existing browser-web QEMU gate and non-blank framebuffer capture;
 - a QEMU-only interaction contract test that drives the same guest witnesses
-  with QEMU USB input injection and verifies three complete cycles.
+  through HMP and the configured VirtIO keyboard/tablet devices, and verifies
+  three complete cycles.
+
+The VirtIO tablet reports `EV_ABS` axis records even though HMP accepts
+relative `mouse_move` commands. The QEMU classifier therefore selects an
+explicit tablet mode that accepts `EV_ABS` motion. The physical classifier
+retains its default requirement for at least one non-zero `EV_REL` record, so
+QEMU evidence cannot weaken or satisfy the real-USB mouse contract.
 
 The QEMU interaction run proves automation and regression coverage. It does
 not satisfy the physical milestone.

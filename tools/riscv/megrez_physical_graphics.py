@@ -20,6 +20,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
@@ -65,7 +66,8 @@ _READY = re.compile(
 _INPUT = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle=([1-3]) "
     rf"key_downs=([0-9]+) relative_events=([0-9]+) "
-    rf"left_down=([0-9]+) left_up=([0-9]+) digest=({_SHA256})"
+    rf"absolute_events=([0-9]+) left_down=([0-9]+) "
+    rf"left_up=([0-9]+) digest=({_SHA256})"
 )
 _DOM = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle=([1-3]) "
@@ -125,6 +127,13 @@ class HostGateError(RuntimeError):
     """A failure that prevents publishing physical graphics evidence."""
 
 
+class PointerEvidenceMode(str, Enum):
+    """Select the exact evdev motion contract for one execution environment."""
+
+    PHYSICAL_RELATIVE = "physical-relative"
+    QEMU_TABLET = "qemu-tablet"
+
+
 @dataclass(frozen=True)
 class InteractionCycleEvidence:
     """Nonce-bound evidence for one real keyboard and pointer cycle."""
@@ -133,6 +142,7 @@ class InteractionCycleEvidence:
     nonce_sha256: str
     key_downs: int
     relative_events: int
+    absolute_events: int
     left_down: int
     left_up: int
     evdev_sha256: str
@@ -240,6 +250,7 @@ class PhysicalGraphicsResult:
 
     schema_version: int
     passed: bool
+    physical: bool
     reason: str
     plan_sha256: str
     bootargs_sha256: str
@@ -248,6 +259,10 @@ class PhysicalGraphicsResult:
     cycles: tuple[InteractionCycleEvidence, ...]
     hdmi: FileEvidence | None
     transport: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.physical is not True:
+            raise HostGateError("physical result cannot describe a simulated run")
 
     def canonical_bytes(self) -> bytes:
         document = asdict(self)
@@ -347,10 +362,15 @@ def _match(line: str, pattern: re.Pattern[str], label: str) -> re.Match[str]:
 
 
 def classify_interaction_transcript(
-    transcript: str | bytes, nonces: Sequence[str]
+    transcript: str | bytes,
+    nonces: Sequence[str],
+    *,
+    pointer_mode: PointerEvidenceMode = PointerEvidenceMode.PHYSICAL_RELATIVE,
 ) -> tuple[InteractionCycleEvidence, ...]:
     """Require three exact, ordered, nonce-bound physical interaction cycles."""
 
+    if not isinstance(pointer_mode, PointerEvidenceMode):
+        raise HostGateError("pointer evidence mode is invalid")
     text = _decode_transcript(transcript)
     nonce_hashes = _validated_nonce_hashes(nonces)
     lowered = text.lower()
@@ -394,9 +414,15 @@ def classify_interaction_transcript(
 
         key_downs = int(input_event.group(2))
         relative_events = int(input_event.group(3))
-        left_down = int(input_event.group(4))
-        left_up = int(input_event.group(5))
-        if key_downs < 16 or relative_events < 1 or (left_down, left_up) != (1, 1):
+        absolute_events = int(input_event.group(4))
+        left_down = int(input_event.group(5))
+        left_up = int(input_event.group(6))
+        motion_complete = (
+            relative_events >= 1
+            if pointer_mode is PointerEvidenceMode.PHYSICAL_RELATIVE
+            else absolute_events >= 1
+        )
+        if key_downs < 16 or not motion_complete or (left_down, left_up) != (1, 1):
             raise HostGateError(
                 f"cycle {cycle} has insufficient physical input evidence"
             )
@@ -406,9 +432,10 @@ def classify_interaction_transcript(
                 nonce_sha256=nonce_sha256,
                 key_downs=key_downs,
                 relative_events=relative_events,
+                absolute_events=absolute_events,
                 left_down=left_down,
                 left_up=left_up,
-                evdev_sha256=input_event.group(6),
+                evdev_sha256=input_event.group(7),
                 screenshot_sha256=screenshot.group(2),
             )
         )
@@ -515,6 +542,8 @@ def physical_cycle_command(
     timeout: float,
     *,
     expected_browser_pid: int | None = None,
+    expected_width: int = 1920,
+    expected_height: int = 1080,
 ) -> str:
     """Return one root command that observes, but cannot synthesize, input."""
 
@@ -533,6 +562,13 @@ def physical_cycle_command(
         type(expected_browser_pid) is not int or expected_browser_pid <= 1
     ):
         raise ValueError("expected Firefox PID is outside the valid contract")
+    if (
+        type(expected_width) is not int
+        or type(expected_height) is not int
+        or not 0 < expected_width <= 16384
+        or not 0 < expected_height <= 16384
+    ):
+        raise ValueError("expected screenshot dimensions are outside the contract")
     expected_pid_check = (
         ""
         if expected_browser_pid is None
@@ -551,7 +587,9 @@ def physical_cycle_command(
         f'nsenter -t "$_asterinas_physical_pid" -n '
         f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
         f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" '
-        f"--timeout {timeout:g}; _asterinas_physical_status=$?; fi ;; esac; "
+        f"--timeout {timeout:g} --expected-width {expected_width} "
+        f"--expected-height {expected_height}; "
+        "_asterinas_physical_status=$?; fi ;; esac; "
         "_asterinas_physical_current=$(systemctl show --property MainPID --value "
         "asterinas-browser-web.service 2>/dev/null || true); "
         "_asterinas_physical_restarts=$(systemctl show --property NRestarts --value "
@@ -597,7 +635,12 @@ def physical_final_command(nonce: str, browser_pid: int, timeout: float) -> str:
     )
 
 
-def extract_screenshot_frame(transcript: str | bytes, cycle: int) -> bytes:
+def extract_screenshot_frame(
+    transcript: str | bytes,
+    cycle: int,
+    *,
+    expected_dimensions: tuple[int, int] = (1920, 1080),
+) -> bytes:
     """Decode one exact serial screenshot frame and bind its size and digest."""
 
     if type(cycle) is not int or cycle not in (1, 2, 3):
@@ -636,7 +679,7 @@ def extract_screenshot_frame(transcript: str | bytes, cycle: int) -> bytes:
     ).hexdigest() != begin.group(3):
         raise HostGateError("screenshot frame payload identity mismatch")
     try:
-        validate_png_screenshot(payload)
+        validate_png_screenshot(payload, expected_dimensions=expected_dimensions)
     except GuestGateError as error:
         raise HostGateError(f"screenshot frame PNG is invalid: {error}") from error
     return payload
@@ -671,6 +714,7 @@ def _result(
     return PhysicalGraphicsResult(
         schema_version=1,
         passed=passed,
+        physical=True,
         reason=reason,
         plan_sha256=plan.plan_sha256,
         bootargs_sha256=hashlib.sha256(bootargs.encode()).hexdigest(),

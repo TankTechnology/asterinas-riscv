@@ -97,7 +97,16 @@ class EvdevCycleTests(unittest.TestCase):
         cycle.feed(gate.InputEvent(0, 0, gate.EV_KEY, gate.BTN_LEFT, 0))
         self.assertEqual(cycle.key_downs, 1)
         self.assertEqual(cycle.relative_events, 1)
+        self.assertEqual(cycle.absolute_events, 0)
         self.assertTrue(cycle.left_click_complete)
+
+    def test_counts_qemu_tablet_absolute_axis_events_separately(self) -> None:
+        gate = load_gate(self)
+        cycle = gate.EvdevCycle()
+        cycle.feed(gate.InputEvent(0, 0, gate.EV_ABS, gate.ABS_X, 32767))
+        cycle.feed(gate.InputEvent(0, 1, gate.EV_ABS, gate.ABS_Y, 16384))
+        self.assertEqual(cycle.relative_events, 0)
+        self.assertEqual(cycle.absolute_events, 2)
 
     def test_feed_record_requires_one_exact_native_riscv64_record(self) -> None:
         gate = load_gate(self)
@@ -337,6 +346,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         self.assertTrue(events.closed)
         self.assertEqual(result.key_downs, len(nonce))
         self.assertEqual(result.relative_events, 1)
+        self.assertEqual(result.absolute_events, 0)
         self.assertEqual(len(markers), 8)
         self.assertTrue(
             markers[0].startswith("ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=2 ")
@@ -368,6 +378,50 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                 "WebDriver:TakeScreenshot",
             ],
         )
+
+    def test_run_cycle_accepts_qemu_tablet_and_requested_geometry(self) -> None:
+        gate = load_gate(self)
+        nonce = "0123456789abcdef"
+        snapshot = PhysicalGraphicsSnapshotTests._snapshot(nonce, 1)
+        client = self.Client(snapshot)
+        client.screenshot = png_payload(width=1280, height=1024, value=0x42)
+        records = [
+            gate.INPUT_EVENT_STRUCT.pack(0, index, gate.EV_KEY, 30, 1)
+            for index in range(len(nonce))
+        ] + [
+            gate.INPUT_EVENT_STRUCT.pack(0, 20, gate.EV_ABS, gate.ABS_X, 32767),
+            gate.INPUT_EVENT_STRUCT.pack(0, 21, gate.EV_KEY, gate.BTN_LEFT, 1),
+            gate.INPUT_EVENT_STRUCT.pack(0, 22, gate.EV_KEY, gate.BTN_LEFT, 0),
+        ]
+        events = self.Events(records)
+        markers: list[str] = []
+
+        with mock.patch.object(
+            client,
+            "command",
+            wraps=client.command,
+        ) as command:
+            command.side_effect = lambda name, parameters=None: (
+                {"value": {"x": 0, "y": 0, "width": 1280, "height": 1024}}
+                if name == "WebDriver:FullscreenWindow"
+                else mock.DEFAULT
+            )
+            result = gate.run_cycle(
+                client,
+                events,
+                nonce=nonce,
+                cycle=1,
+                timeout=5.0,
+                expected_width=1280,
+                expected_height=1024,
+                emit=markers.append,
+            )
+
+        self.assertEqual(result.relative_events, 0)
+        self.assertEqual(result.absolute_events, 1)
+        self.assertIn("absolute_events=1", markers[1])
+        self.assertEqual(base64.b64decode(markers[-3]), client.screenshot)
+        self.assertEqual(markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=1")
 
     def test_run_cycle_closes_input_source_on_snapshot_failure(self) -> None:
         gate = load_gate(self)

@@ -61,7 +61,7 @@ class PhysicalMarkerTests(unittest.TestCase):
         screenshot_hash = hashlib.sha256(f"screen-{cycle}".encode()).hexdigest()
         return [
             f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
-            f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 left_down=1 left_up=1 digest={event_hash}",
+            f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
             f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}",
@@ -121,6 +121,22 @@ class PhysicalMarkerTests(unittest.TestCase):
         for transcript in (weak, fatal, xhci, framebuffer):
             with self.assertRaises(gate.HostGateError):
                 gate.classify_interaction_transcript(transcript, self.NONCES)
+
+    def test_physical_mode_rejects_absolute_only_tablet_motion(self) -> None:
+        gate = load_gate(self)
+        tablet_only = self._passing().replace(
+            "relative_events=2 absolute_events=0",
+            "relative_events=0 absolute_events=2",
+        )
+        with self.assertRaisesRegex(gate.HostGateError, "physical input"):
+            gate.classify_interaction_transcript(tablet_only, self.NONCES)
+
+        cycles = gate.classify_interaction_transcript(
+            tablet_only,
+            self.NONCES,
+            pointer_mode=gate.PointerEvidenceMode.QEMU_TABLET,
+        )
+        self.assertTrue(all(cycle.absolute_events == 2 for cycle in cycles))
 
     def test_rejects_reused_screenshot_digest_across_distinct_cycles(self) -> None:
         gate = load_gate(self)
@@ -365,7 +381,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             self._transcript.extend(
                 (
                     f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
-                    f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 left_down=1 left_up=1 digest={event_hash}",
+                    f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}",
@@ -445,6 +461,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             artifact_validator=lambda _plan: {},
         )
         self.assertTrue(result.passed)
+        self.assertTrue(result.physical)
         self.assertTrue(result.recovered)
         self.assertEqual([cycle.cycle for cycle in result.cycles], [1, 2, 3])
         self.assertLess(
@@ -746,6 +763,7 @@ class PublicationTests(unittest.TestCase):
         result = gate.PhysicalGraphicsResult(
             schema_version=1,
             passed=False,
+            physical=True,
             reason="diagnostic",
             plan_sha256="a" * 64,
             bootargs_sha256="b" * 64,
@@ -762,6 +780,23 @@ class PublicationTests(unittest.TestCase):
             f"{expected}  result.json\n",
             output.payloads["sha256sums.txt"].decode(),
         )
+
+    def test_physical_result_cannot_be_mislabeled_as_simulated(self) -> None:
+        gate = load_gate(self)
+        with self.assertRaisesRegex(gate.HostGateError, "simulated"):
+            gate.PhysicalGraphicsResult(
+                schema_version=1,
+                passed=False,
+                physical=False,
+                reason="diagnostic",
+                plan_sha256="a" * 64,
+                bootargs_sha256="b" * 64,
+                recovered=False,
+                readiness=None,
+                cycles=(),
+                hdmi=None,
+                transport=(),
+            )
 
 
 class PlanInputTests(unittest.TestCase):
