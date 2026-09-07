@@ -329,6 +329,65 @@ PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 
 This proves the current-main firmware framebuffer registration boundary. It
 does not by itself prove Xorg, a desktop session, or native EIC7700 DRM.
 
+## Opt-in Asterinas root serial console
+
+The `debug-root-console` profile verifies a one-boot-only root shell created by
+Stage1 under the `/run` tmpfs. It does not change the rootfs shadow database,
+install a password, or persist a sudo rule. The exact selectors are accepted
+only together:
+
+```text
+-- --root-init=systemd --debug-console=root
+```
+
+First run the bounded acceptance boot. Resolve the stable FTDI path rather
+than relying on the current `ttyUSB0` number, retain the 120-second Asterinas
+recovery timer, and require a fresh U-Boot epoch:
+
+```bash
+SERIAL=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 console=ttyS0 loglevel=info init=/init asterinas.reboot_after=120 -- --root-init=systemd --debug-console=root" \
+  --firmware-framebuffer \
+  --final-profile debug-root-console \
+  --milestone-timeout 150 \
+  --require-recovery \
+  --yes \
+  --log /absolute/path/to/megrez-debug-root-bounded.serial.log
+```
+
+The gate sends only five fixed, read-only commands. It requires UID 0, PID 1
+`systemd`, `/dev/mmcblk0p2 ext2`, and active desktop evidence/session units.
+It also retains the complete framed exchange in the serial log on failure.
+
+After that bounded gate passes, an operator handoff may omit only the recovery
+timer and `--require-recovery`. The runner closes its descriptor after the
+fixed probes, so the same root prompt can then be opened interactively:
+
+```bash
+PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 console=ttyS0 loglevel=info init=/init -- --root-init=systemd --debug-console=root" \
+  --firmware-framebuffer \
+  --final-profile debug-root-console \
+  --milestone-timeout 120 \
+  --yes \
+  --log /absolute/path/to/megrez-debug-root-handoff.serial.log
+picocom --baud 115200 "$SERIAL"
+```
+
+`ASTERINAS_DEBUG_CONSOLE_READY uid=0` identifies the Asterinas root console;
+it requires no username or password. The `debian` / `debian` credentials below
+belong only to the unrelated RockOS recovery system and never authenticate to
+Asterinas.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.

@@ -29,13 +29,14 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import select
 import stat
 import subprocess
 import sys
 import termios
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TextIO
 
 from tools.riscv.megrez_debian_shell_physical import (
@@ -43,6 +44,12 @@ from tools.riscv.megrez_debian_shell_physical import (
     shell_commands as shell_commands,
 )
 from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+from tools.riscv.debian.rootfs.debug_console_protocol import (
+    MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+    DebugConsoleProtocolError,
+    run_debug_console_phase,
+)
+from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 
 BAUD = 115200
 YMODEM_BAUD = 1_500_000
@@ -64,6 +71,7 @@ FINAL_MILESTONE_MARKERS = {
     "verifier": "DEBIAN_VERIFY_PASS",
     "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
     "debian-shell-handoff": "__DEBIAN_ROOTFS_SHELL_READY__",
+    "debug-root-console": "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
 }
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
@@ -832,6 +840,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ]
     if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
         p.error("--firmware-framebuffer requires console=tty0 as the first console")
+    if args.final_profile == "debug-root-console":
+        tokens = args.bootargs.split()
+        if tokens.count("--") != 1:
+            p.error("debug-root-console requires one root-init argument separator")
+        separator = tokens.index("--")
+        if tokens[separator + 1 :] != [
+            "--root-init=systemd",
+            "--debug-console=root",
+        ]:
+            p.error(
+                "debug-root-console requires exact systemd and debug-console selectors"
+            )
     return args
 
 
@@ -938,6 +958,26 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     )
 
 
+def run_debug_root_console(
+    session: BoardSession, deadline: float
+):
+    """Run fixed root probes without transferring ownership of the serial FD."""
+
+    serial = SerialConsole(
+        session.fd,
+        max_bytes=MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+    )
+    try:
+        return run_debug_console_phase(
+            serial,
+            deadline,
+            secrets.token_hex(16),
+            ready_seen=True,
+        )
+    finally:
+        session._log(serial.transcript.decode("utf-8", errors="replace"))
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.mock_qemu:
@@ -979,6 +1019,26 @@ def main(argv: list[str]) -> int:
         print(json.dumps(session.milestones))
         if len(session.milestones) != expected_milestones:
             return 2
+        if args.final_profile == "debug-root-console":
+            try:
+                debug_evidence = run_debug_root_console(session, end)
+            except (
+                DebugConsoleProtocolError,
+                TimeoutError,
+                BufferError,
+                EOFError,
+                UnicodeError,
+                OSError,
+            ) as error:
+                print(f"debug root console failed: {error}", file=sys.stderr)
+                return 2
+            print(
+                json.dumps(
+                    {"debug_console": asdict(debug_evidence)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
         if args.require_recovery:
             remaining = end - time.monotonic()
             if remaining <= 0:
