@@ -58,4 +58,4 @@
 - 串口：FTDI FT232R `AL02XYO2`，/dev/ttyUSB0，115200 8N1
 - U-Boot：`2024.01-gdbb5f9e3`；DRAM `0x80000000..0x47fffffff`（16 GiB）
 - SD：`mmc 1`（SR128, 119.1 GiB）
-- RockOS：6.6.87（登录凭据不写入文档）
+- RockOS：6.6.87（公开默认凭据及适用边界见 `tools/riscv/README.md`）
