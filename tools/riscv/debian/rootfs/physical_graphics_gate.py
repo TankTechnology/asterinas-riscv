@@ -36,8 +36,11 @@ else:
 
 EV_KEY = 1
 EV_REL = 2
+EV_ABS = 3
 REL_X = 0
 REL_Y = 1
+ABS_X = 0
+ABS_Y = 1
 BTN_MISC = 0x100
 BTN_LEFT = 0x110
 MAX_EVENT_COUNT = 4096
@@ -202,6 +205,7 @@ class CycleEvidence:
     nonce_sha256: str
     key_downs: int
     relative_events: int
+    absolute_events: int
     evdev_sha256: str
     screenshot_sha256: str
 
@@ -306,6 +310,7 @@ class EvdevCycle:
 
     key_downs: int = 0
     relative_events: int = 0
+    absolute_events: int = 0
     left_down: int = 0
     left_up: int = 0
     _digest: Any = field(default_factory=hashlib.sha256, repr=False)
@@ -339,6 +344,8 @@ class EvdevCycle:
             and event.value != 0
         ):
             self.relative_events = self._increment(self.relative_events)
+        elif event.event_type == EV_ABS and event.code in (ABS_X, ABS_Y):
+            self.absolute_events = self._increment(self.absolute_events)
         elif event.event_type == EV_KEY and event.code == BTN_LEFT:
             if event.value == 1:
                 if self.left_down != 0 or self.left_up != 0:
@@ -475,6 +482,8 @@ def run_cycle(
     nonce: str,
     cycle: int,
     timeout: float,
+    expected_width: int = EXPECTED_SCREENSHOT_WIDTH,
+    expected_height: int = EXPECTED_SCREENSHOT_HEIGHT,
     emit: Callable[[str], None],
 ) -> CycleEvidence:
     """Observe one correlated physical interaction cycle without input synthesis."""
@@ -485,6 +494,13 @@ def run_cycle(
         raise GateError("physical-graphics-cycle-invalid")
     if not math.isfinite(timeout) or not 0 < timeout <= 300:
         raise GateError("physical-graphics-timeout-invalid")
+    if (
+        type(expected_width) is not int
+        or type(expected_height) is not int
+        or not 0 < expected_width <= 16384
+        or not 0 < expected_height <= 16384
+    ):
+        raise GateError("physical-graphics-expected-dimensions-invalid")
 
     guarded = GuardedMarionette(client)
     page_url = f"{PAGE_URL}?cycle={cycle}&nonce_length=16"
@@ -499,8 +515,8 @@ def run_cycle(
         window = _script_value(guarded.command("WebDriver:FullscreenWindow"))
         if (
             not isinstance(window, dict)
-            or window.get("width") != EXPECTED_SCREENSHOT_WIDTH
-            or window.get("height") != EXPECTED_SCREENSHOT_HEIGHT
+            or window.get("width") != expected_width
+            or window.get("height") != expected_height
         ):
             raise GateError("physical-graphics-fullscreen-dimensions")
         if (
@@ -535,7 +551,10 @@ def run_cycle(
             dom_complete = snapshot_complete(snapshot, cycle=cycle)
             input_complete = (
                 input_evidence.key_downs >= len(nonce)
-                and input_evidence.relative_events >= 1
+                and (
+                    input_evidence.relative_events >= 1
+                    or input_evidence.absolute_events >= 1
+                )
                 and input_evidence.left_click_complete
             )
             if not (dom_complete and input_complete):
@@ -548,12 +567,16 @@ def run_cycle(
                 screenshot_payload = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError) as error:
                 raise GateError("physical-graphics-screenshot-base64") from error
-            validate_png_screenshot(screenshot_payload)
+            validate_png_screenshot(
+                screenshot_payload,
+                expected_dimensions=(expected_width, expected_height),
+            )
             screenshot_sha256 = hashlib.sha256(screenshot_payload).hexdigest()
             emit(
                 f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} "
                 f"key_downs={input_evidence.key_downs} "
                 f"relative_events={input_evidence.relative_events} "
+                f"absolute_events={input_evidence.absolute_events} "
                 f"left_down={input_evidence.left_down} "
                 f"left_up={input_evidence.left_up} "
                 f"digest={input_evidence.digest}"
@@ -579,6 +602,7 @@ def run_cycle(
                 nonce_sha256=nonce_sha256,
                 key_downs=input_evidence.key_downs,
                 relative_events=input_evidence.relative_events,
+                absolute_events=input_evidence.absolute_events,
                 evdev_sha256=input_evidence.digest,
                 screenshot_sha256=screenshot_sha256,
             )
@@ -607,6 +631,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--cycle", type=int, choices=(1, 2, 3), required=True)
     parser.add_argument("--firefox-pid", type=int, required=True)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--expected-width", type=int, default=EXPECTED_SCREENSHOT_WIDTH)
+    parser.add_argument(
+        "--expected-height", type=int, default=EXPECTED_SCREENSHOT_HEIGHT
+    )
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--input-directory", type=Path, default=Path("/dev/input"))
     parser.add_argument("--verify-final", action="store_true")
@@ -617,6 +645,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         or not 1 <= values.port <= 65535
         or not math.isfinite(values.timeout)
         or not 0 < values.timeout <= 300
+        or not 0 < values.expected_width <= 16384
+        or not 0 < values.expected_height <= 16384
     ):
         parser.error("physical graphics arguments are outside the bounded contract")
 
@@ -639,6 +669,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 nonce=values.nonce,
                 cycle=values.cycle,
                 timeout=max(0.001, deadline - time.monotonic()),
+                expected_width=values.expected_width,
+                expected_height=values.expected_height,
                 emit=lambda marker: print(marker, flush=True),
             )
     except (GateError, OSError, TimeoutError) as error:

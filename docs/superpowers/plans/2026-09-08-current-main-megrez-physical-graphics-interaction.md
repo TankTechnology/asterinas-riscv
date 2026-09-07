@@ -443,8 +443,13 @@ Expected: all lifecycle tests pass.
 
 - Create: `tools/riscv/physical_graphics_qemu_gate.py`
 - Create: `tools/riscv/tests/test_physical_graphics_qemu_gate.py`
+- Modify: `tools/riscv/debian/rootfs/debug_console_qemu_gate.py`
+- Modify: `tools/riscv/debian/rootfs/physical_graphics_gate.py`
+- Modify: `tools/riscv/megrez_physical_graphics.py`
+- Modify: `tools/riscv/tests/test_physical_graphics_gate.py`
+- Modify: `tools/riscv/tests/test_megrez_physical_graphics.py`
 
-- [ ] **Step 1: Write failing QEMU contract tests**
+- [x] **Step 1: Write failing QEMU contract tests**
 
 Require the argv to use four harts, the existing Sv39 CPU string,
 `bochs-display`, `virtio-keyboard-device`, `virtio-tablet-device`, two
@@ -453,7 +458,7 @@ cycle require HMP to inject 16 hexadecimal keys, relative pointer movement,
 left-button down, and left-button up only after the guest READY record. Reject
 any xdotool, Marionette input-dispatch, VNC, or GTK-display fallback.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -464,15 +469,17 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: FAIL because the adapter does not exist.
 
-- [ ] **Step 3: Implement the adapter**
+- [x] **Step 3: Implement the adapter**
 
 Reuse the debug-root-console QEMU session, browser-web artifact validation,
 and physical marker classifier. Convert nonce characters to QEMU `sendkey`
 names, use HMP relative-pointer and button commands, capture a PPM after each
 PASS, and require the existing rendered-pixel thresholds. Publish a separate
-QEMU result whose `physical` field is always `false`.
+QEMU result whose `physical` field is always `false`. Record the
+`virtio-tablet` device's `EV_ABS` records under an explicit QEMU-only pointer
+mode while keeping the physical classifier's default `EV_REL` requirement.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run:
 
@@ -619,8 +626,8 @@ Wait for the 900-second guest timer and a fresh U-Boot prompt. Verify
 scan the full transcript for fatal markers, and visually inspect the HDMI and
 browser screenshots.
 
-Expected: `passed=true`, `cycles=3`, `physical=true`, `recovery_observed=true`,
-and no missing or mismatched artifact.
+Expected: `passed=true`, three `cycles` entries, `physical=true`,
+`recovered=true`, and no missing or mismatched artifact.
 
 - [ ] **Step 5: Write and commit the evidence report**
 

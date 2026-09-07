@@ -303,6 +303,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
             b"DEBIAN_ROOTFS_FAIL reason=",
         )
         self.assertFalse(self.operations.CAPTURE_SCREENSHOT)
+        self.assertTrue(self.operations.CAPTURE_DEBUG_SCREENSHOT)
 
     def test_accepts_m5_and_browser_web_manifests(self) -> None:
         self.assertEqual(
