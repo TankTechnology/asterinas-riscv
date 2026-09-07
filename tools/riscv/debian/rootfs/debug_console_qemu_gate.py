@@ -210,7 +210,7 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],
             screenshot,
-            time.monotonic() + config.command_timeout,
+            time.monotonic() + config.boot_timeout,
         )
 
     def publish(

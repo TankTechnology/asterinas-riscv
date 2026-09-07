@@ -386,7 +386,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         capture.assert_called_once_with(
             session["monitor"],
             Path("/tmp/debug-console-test/debug-root-console.ppm"),
-            117.0,
+            183.0,
         )
         self.assertEqual(self.operations.debug_evidence, self.evidence)
         self.assertEqual(self.operations._screenshot, b"ppm")
