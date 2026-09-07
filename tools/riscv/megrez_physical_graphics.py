@@ -1014,13 +1014,14 @@ def _remaining(deadline: float, *, phase: str) -> float:
 
 def _safe_output_directory(path: Path, repository: Path) -> Path:
     repository = repository.absolute()
-    allowed = repository / "target" / "megrez-physical-graphics"
+    allowed = repository / "target" / "current-main-physical-graphics" / "physical"
     candidate = path.absolute()
     try:
         candidate.relative_to(allowed)
     except ValueError as error:
         raise HostGateError(
-            "physical output must be under target/megrez-physical-graphics"
+            "physical output must be under "
+            "target/current-main-physical-graphics/physical"
         ) from error
     current = repository
     for component in candidate.relative_to(repository).parts:
@@ -1571,7 +1572,11 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--hdmi-capture", required=True, type=Path)
+    parser.add_argument("--open-timeout", type=_positive_seconds, default=60.0)
+    parser.add_argument("--artifact-timeout", type=_positive_seconds, default=300.0)
+    parser.add_argument("--boot-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--cycle-timeout", type=_positive_seconds, default=180.0)
+    parser.add_argument("--hdmi-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--recovery-timeout", type=_positive_seconds, default=930.0)
     return parser.parse_args(arguments)
 
@@ -1581,7 +1586,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         plan = _read_plan(values.plan)
         config = PhysicalGraphicsConfig(
+            open_timeout=values.open_timeout,
+            artifact_timeout=values.artifact_timeout,
+            boot_timeout=values.boot_timeout,
             cycle_timeout=values.cycle_timeout,
+            hdmi_timeout=values.hdmi_timeout,
             recovery_timeout=values.recovery_timeout,
         )
         operations = RealPhysicalGraphicsOperations(

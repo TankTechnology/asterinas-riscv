@@ -20,6 +20,9 @@ import zlib
 
 
 MODULE_PATH = Path(__file__).parents[1] / "megrez_physical_graphics.py"
+REPOSITORY_ROOT = Path(__file__).parents[3]
+MAKEFILE_PATH = REPOSITORY_ROOT / "Makefile"
+README_PATH = Path(__file__).parents[1] / "README.md"
 
 
 def png_payload(*, width: int = 1920, height: int = 1080, value: int = 0x35) -> bytes:
@@ -219,7 +222,13 @@ class HdmiEvidenceTests(unittest.TestCase):
         gate = load_gate(self)
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
-            output = repository / "target" / "megrez-physical-graphics" / "attempt"
+            output = (
+                repository
+                / "target"
+                / "current-main-physical-graphics"
+                / "physical"
+                / "evidence"
+            )
             capture = repository / "capture.png"
             stale_payload = png_payload(value=0x51)
             current_payload = png_payload(value=0x52)
@@ -256,7 +265,13 @@ class HdmiEvidenceTests(unittest.TestCase):
         gate = load_gate(self)
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
-            output = repository / "target" / "megrez-physical-graphics" / "attempt"
+            output = (
+                repository
+                / "target"
+                / "current-main-physical-graphics"
+                / "physical"
+                / "evidence"
+            )
             capture = repository / "capture.png"
             payload = png_payload(value=0x53)
             operations = gate.RealPhysicalGraphicsOperations(
@@ -585,6 +600,43 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    def test_cli_exposes_every_physical_phase_deadline(self) -> None:
+        gate = load_gate(self)
+        values = gate.parse_args(
+            (
+                "/dev/serial/by-id/test",
+                "--plan",
+                "/tmp/plan.json",
+                "--output-directory",
+                "/tmp/evidence",
+                "--hdmi-capture",
+                "/tmp/capture.png",
+                "--open-timeout",
+                "60",
+                "--artifact-timeout",
+                "300",
+                "--boot-timeout",
+                "120",
+                "--cycle-timeout",
+                "180",
+                "--hdmi-timeout",
+                "60",
+                "--recovery-timeout",
+                "930",
+            )
+        )
+        self.assertEqual(
+            (
+                values.open_timeout,
+                values.artifact_timeout,
+                values.boot_timeout,
+                values.cycle_timeout,
+                values.hdmi_timeout,
+                values.recovery_timeout,
+            ),
+            (60.0, 300.0, 120.0, 180.0, 60.0, 930.0),
+        )
+
     def test_preflight_binds_fbdev_openbox_firefox_service_and_input_nodes(
         self,
     ) -> None:
@@ -810,6 +862,123 @@ class PlanInputTests(unittest.TestCase):
             with self.assertRaises(gate.HostGateError):
                 gate._read_plan(fifo)
             self.assertLess(time.monotonic() - before, 1.0)
+
+
+class OutputDirectoryTests(unittest.TestCase):
+    def test_accepts_only_the_current_main_physical_evidence_tree(self) -> None:
+        gate = load_gate(self)
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            expected = (
+                repository
+                / "target"
+                / "current-main-physical-graphics"
+                / "physical"
+                / "evidence"
+            )
+            self.assertEqual(
+                gate._safe_output_directory(expected, repository), expected
+            )
+            for rejected in (
+                repository / "target" / "megrez-physical-graphics" / "attempt",
+                repository / "target" / "unrelated",
+            ):
+                with self.assertRaises(gate.HostGateError):
+                    gate._safe_output_directory(rejected, repository)
+
+
+class DocumentationTests(unittest.TestCase):
+    def test_makefile_exposes_unit_qemu_and_non_mutating_prepare_targets(self) -> None:
+        makefile = MAKEFILE_PATH.read_text()
+        for target in (
+            "test_riscv_physical_graphics_unit",
+            "test_riscv_physical_graphics_qemu_gate",
+            "prepare_riscv_megrez_physical_graphics",
+        ):
+            self.assertIn(f".PHONY: {target}", makefile)
+            self.assertIn(f"{target}:", makefile)
+
+        unit_recipe = makefile.split("test_riscv_physical_graphics_unit:", 1)[1].split(
+            ".PHONY:", 1
+        )[0]
+        for module in (
+            "tools.riscv.tests.test_physical_graphics_gate",
+            "tools.riscv.tests.test_megrez_physical_graphics",
+            "tools.riscv.tests.test_physical_graphics_qemu_gate",
+        ):
+            self.assertIn(module, unit_recipe)
+
+        qemu_recipe = makefile.split("test_riscv_physical_graphics_qemu_gate:", 1)[
+            1
+        ].split(".PHONY:", 1)[0]
+        for variable in (
+            "DEBIAN_KERNEL",
+            "DEBIAN_UBOOT",
+            "DEBIAN_DTB",
+            "DEBIAN_STAGE1_INITRAMFS",
+            "DEBIAN_ROOT_IMAGE",
+            "DEBIAN_ROOT_MANIFEST",
+            "DEBIAN_PACKAGES_LOCK",
+            "DEBIAN_PACKAGE_CHECKSUMS",
+            "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT",
+        ):
+            self.assertIn(f"$({variable})", qemu_recipe)
+        self.assertIn("tools.riscv.physical_graphics_qemu_gate", qemu_recipe)
+
+        prepare_recipe = makefile.split("prepare_riscv_megrez_physical_graphics:", 1)[
+            1
+        ].split(".PHONY:", 1)[0]
+        self.assertIn(
+            "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= "
+            "$(CURDIR)/target/current-main-physical-graphics/physical/evidence",
+            makefile,
+        )
+        self.assertIn("_validate_current_artifacts", prepare_recipe)
+        self.assertIn("_read_plan", prepare_recipe)
+        self.assertIn("--hdmi-capture", prepare_recipe)
+        for option in (
+            "--open-timeout 60",
+            "--artifact-timeout 300",
+            "--boot-timeout 120",
+            "--cycle-timeout 180",
+            "--hdmi-timeout 60",
+            "--recovery-timeout 930",
+        ):
+            self.assertIn(option, prepare_recipe)
+        self.assertIn(
+            '--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"',
+            prepare_recipe,
+        )
+        self.assertNotIn("tools.riscv.megrez_debug board", prepare_recipe)
+        self.assertNotIn("run_physical_graphics", prepare_recipe)
+
+    def test_operator_guide_freezes_source_inputs_and_physical_boundaries(self) -> None:
+        readme = README_PATH.read_text()
+        section = readme.split("## Current-main Megrez physical graphics", 1)[1]
+        prose = " ".join(section.split())
+        self.assertIn("69a7b6e41ca74932f79d917f3638199da573b1e9", section)
+        for option in (
+            "--kernel",
+            "--uboot",
+            "--dtb",
+            "--stage1-initramfs",
+            "--root-image",
+            "--root-manifest",
+            "--packages-lock",
+            "--package-checksums",
+            "--hdmi-capture",
+        ):
+            self.assertIn(option, section)
+        self.assertIn("seven immutable supporting inputs", prose)
+        self.assertIn("three 180-second", prose)
+        self.assertIn("asterinas.reboot_after=900", section)
+        self.assertIn("QEMU cannot satisfy the physical result", prose)
+        self.assertIn("set -euo pipefail", section)
+        self.assertIn("source-identity.txt", section)
+        self.assertIn("prepare_riscv_megrez_physical_graphics", section)
+        self.assertIn("test_riscv_physical_graphics_qemu_gate", section)
+        self.assertIn("physical/operator-hdmi.png", section)
+        self.assertIn("physical/evidence", section)
 
 
 if __name__ == "__main__":
