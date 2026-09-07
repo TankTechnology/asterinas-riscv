@@ -88,8 +88,13 @@ enum RootInitMode {
     ROOT_INIT_SYSTEMD,
 };
 
+struct RootInitConfig {
+    enum RootInitMode mode;
+    int debug_root_console;
+};
+
 struct ProductionContext {
-    enum RootInitMode root_init_mode;
+    struct RootInitConfig root_init;
 };
 
 static char *const INTERACTIVE_ROOT_INIT_ARGV[] = {
@@ -173,16 +178,26 @@ static int compare_timespec(const struct timespec *left,
     return 0;
 }
 
-static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
+static int parse_root_init(int argc, char **argv,
+                           struct RootInitConfig *config)
 {
-    *mode = ROOT_INIT_INTERACTIVE;
+    config->mode = ROOT_INIT_INTERACTIVE;
+    config->debug_root_console = 0;
     int selector_seen = 0;
+    int debug_seen = 0;
     for (int index = 1; index < argc; ++index) {
         enum RootInitMode selected_mode;
         if (strcmp(argv[index], "--root-init=interactive") == 0) {
             selected_mode = ROOT_INIT_INTERACTIVE;
         } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
             selected_mode = ROOT_INIT_SYSTEMD;
+        } else if (strcmp(argv[index], "--debug-console=root") == 0) {
+            if (debug_seen) {
+                return -1;
+            }
+            debug_seen = 1;
+            config->debug_root_console = 1;
+            continue;
         } else {
             return -1;
         }
@@ -190,9 +205,11 @@ static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
             return -1;
         }
         selector_seen = 1;
-        *mode = selected_mode;
+        config->mode = selected_mode;
     }
-    return 0;
+    return config->debug_root_console && config->mode != ROOT_INIT_SYSTEMD
+               ? -1
+               : 0;
 }
 
 static int ext2_superblock_matches(
@@ -614,10 +631,26 @@ static int run_handoff_self_test(const char *case_name,
 
 static int run_root_init_self_test(const char *case_name)
 {
-    enum RootInitMode mode = ROOT_INIT_INTERACTIVE;
+    struct RootInitConfig config;
     char *default_argv[] = { "init", NULL };
     char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *systemd_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root", NULL,
+    };
+    char *interactive_debug_argv[] = {
+        "init", "--root-init=interactive", "--debug-console=root", NULL,
+    };
+    char *duplicate_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root",
+        "--debug-console=root", NULL,
+    };
+    char *unknown_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=user", NULL,
+    };
+    char *control_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root\n", NULL,
+    };
     char *duplicate_argv[] = {
         "init", "--root-init=interactive", "--root-init=systemd", NULL,
     };
@@ -625,31 +658,59 @@ static int run_root_init_self_test(const char *case_name)
     char *control_argv[] = { "init", "--root-init=systemd\n", NULL };
 
     if (strcmp(case_name, "root-init-default-interactive") == 0) {
-        if (parse_root_init(1, default_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(1, default_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_INTERACTIVE ||
+            config.debug_root_console) {
             return fail_self_test(case_name, "default mode was not interactive");
         }
     } else if (strcmp(case_name, "root-init-explicit-interactive") == 0) {
-        if (parse_root_init(2, interactive_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(2, interactive_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_INTERACTIVE ||
+            config.debug_root_console) {
             return fail_self_test(case_name,
                                   "explicit interactive mode was rejected");
         }
     } else if (strcmp(case_name, "root-init-systemd") == 0) {
-        if (parse_root_init(2, systemd_argv, &mode) != 0 ||
-            mode != ROOT_INIT_SYSTEMD) {
+        if (parse_root_init(2, systemd_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || config.debug_root_console) {
             return fail_self_test(case_name, "systemd mode was rejected");
         }
+    } else if (strcmp(case_name, "root-init-systemd-debug-root") == 0) {
+        if (parse_root_init(3, systemd_debug_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console) {
+            return fail_self_test(case_name,
+                                  "systemd debug root console was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-debug-with-interactive") == 0) {
+        if (parse_root_init(3, interactive_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "interactive debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-duplicate") == 0) {
+        if (parse_root_init(4, duplicate_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "duplicate debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-unknown") == 0) {
+        if (parse_root_init(3, unknown_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "unknown debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-control-character") == 0) {
+        if (parse_root_init(3, control_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "debug console control character was accepted");
+        }
     } else if (strcmp(case_name, "root-init-duplicate") == 0) {
-        if (parse_root_init(3, duplicate_argv, &mode) == 0) {
+        if (parse_root_init(3, duplicate_argv, &config) == 0) {
             return fail_self_test(case_name, "duplicate selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-unknown") == 0) {
-        if (parse_root_init(2, unknown_argv, &mode) == 0) {
+        if (parse_root_init(2, unknown_argv, &config) == 0) {
             return fail_self_test(case_name, "unknown selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-control-character") == 0) {
-        if (parse_root_init(2, control_argv, &mode) == 0) {
+        if (parse_root_init(2, control_argv, &config) == 0) {
             return fail_self_test(case_name,
                                   "control character was accepted");
         }
@@ -835,7 +896,7 @@ static enum ProbeResult production_probe_device(
         return PROBE_NO_MATCH;
     }
     if (!ext2_superblock_matches_mode(superblock,
-                                      production_context->root_init_mode)) {
+                                      production_context->root_init.mode)) {
         report_progress("probe-complete", "result", "no-match");
         return PROBE_NO_MATCH;
     }
@@ -960,7 +1021,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         break;
     case HANDOFF_EXEC: {
         char *const *arguments =
-            root_init_arguments(production_context->root_init_mode);
+            root_init_arguments(production_context->root_init.mode);
         return execv(arguments[0], arguments);
     }
     }
@@ -1022,7 +1083,7 @@ static int configure_console(void)
 int main(int argc, char **argv)
 {
     struct ProductionContext context;
-    int root_init_result = parse_root_init(argc, argv, &context.root_init_mode);
+    int root_init_result = parse_root_init(argc, argv, &context.root_init);
     if (configure_console() != 0) {
         fail_and_hold("console-open");
     }
@@ -1030,8 +1091,8 @@ int main(int argc, char **argv)
         fail_and_hold("root-init-argument");
     }
     report_progress("start", "mode",
-                    context.root_init_mode == ROOT_INIT_SYSTEMD ? "systemd"
-                                                                : "interactive");
+                    context.root_init.mode == ROOT_INIT_SYSTEMD ? "systemd"
+                                                               : "interactive");
 
     struct Stage1Ops ops = {
         .context = &context,
@@ -1050,7 +1111,7 @@ int main(int argc, char **argv)
         fail_and_hold("newroot-directory");
     }
 
-    reason = handoff_root(&ops, root_device, context.root_init_mode);
+    reason = handoff_root(&ops, root_device, context.root_init.mode);
     fail_and_hold(reason);
 }
 
