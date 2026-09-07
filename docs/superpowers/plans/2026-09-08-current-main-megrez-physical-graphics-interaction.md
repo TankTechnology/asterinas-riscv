@@ -352,7 +352,7 @@ Expected: the browser-web suite passes.
 - Create: `tools/riscv/megrez_physical_graphics.py`
 - Create: `tools/riscv/tests/test_megrez_physical_graphics.py`
 
-- [ ] **Step 1: Write failing marker-classifier tests**
+- [x] **Step 1: Write failing marker-classifier tests**
 
 Create fixtures for three cycles with distinct nonce hashes. Require exactly
 READY, INPUT, DOM, SCREENSHOT, PASS per cycle, in order. Reject missing,
@@ -363,7 +363,7 @@ post-PASS failure, and transcript-overflow cases. Require the final marker:
 ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3
 ```
 
-- [ ] **Step 2: Run classifier RED**
+- [x] **Step 2: Run classifier RED**
 
 Run:
 
@@ -374,7 +374,7 @@ PYTHONPATH="$PWD/tools/riscv:$PWD" python3 -W error::ResourceWarning -m unittest
 
 Expected: FAIL because the host gate does not exist.
 
-- [ ] **Step 3: Implement marker and artifact validation**
+- [x] **Step 3: Implement marker and artifact validation**
 
 Use immutable dataclasses for each cycle and the final result. Bind nonce
 plaintext to its SHA-256, require `key_downs>=16`, `relative_events>=1`, one
@@ -382,13 +382,13 @@ ordered click, exact screenshot digests, and exactly three cycles. Reuse the
 existing debug plan artifact validation for kernel, DTB, Stage1, root image,
 manifest, lock, and checksums.
 
-- [ ] **Step 4: Write failing HDMI-ingestion tests**
+- [x] **Step 4: Write failing HDMI-ingestion tests**
 
 Test PNG and JPEG signatures, the 1-byte and 64-MiB boundaries, symlink and
 non-regular rejection, changing-size rejection, output-alias rejection, and
 atomic copy plus SHA-256 publication.
 
-- [ ] **Step 5: Run HDMI RED**
+- [x] **Step 5: Run HDMI RED**
 
 Run:
 
@@ -399,7 +399,7 @@ PYTHONPATH="$PWD/tools/riscv:$PWD" python3 -W error::ResourceWarning -m unittest
 
 Expected: FAIL because HDMI ingestion is absent.
 
-- [ ] **Step 6: Implement the bounded physical lifecycle**
+- [x] **Step 6: Implement the bounded physical lifecycle**
 
 Reuse the board-session boot transaction and debug-console command protocol.
 Boot with the existing firmware framebuffer, dual USB host selector,
@@ -416,7 +416,7 @@ Atomically publish mode-0600 `result.json`, `physical.serial.log`, the three
 guest PNGs, `hdmi-evidence.<png|jpg>`, and `sha256sums.txt`. Never publish
 `passed: true` before recovery has been observed.
 
-- [ ] **Step 7: Run lifecycle GREEN and commit**
+- [x] **Step 7: Run lifecycle GREEN and commit**
 
 Run:
 

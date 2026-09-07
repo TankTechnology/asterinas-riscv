@@ -7,15 +7,37 @@ from __future__ import annotations
 
 import importlib
 import base64
+import hashlib
 from pathlib import Path
+import struct
 import sys
-import tempfile
 import unittest
+from unittest import mock
+import zlib
 
 
 ROOTFS_DIRECTORY = Path(__file__).parents[1] / "debian" / "rootfs"
 PAGE = ROOTFS_DIRECTORY / "physical_graphics_interaction.html"
 GATE = ROOTFS_DIRECTORY / "physical_graphics_gate.py"
+
+
+def png_payload(*, width: int = 1920, height: int = 1080, value: int = 0x35) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", checksum)
+        )
+
+    row = b"\0" + bytes((value, 0x77, 0xB5)) * width
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(row * height))
+        + chunk(b"IEND", b"")
+    )
 
 
 def load_gate(test: unittest.TestCase):
@@ -181,16 +203,85 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
                 guarded.command(name, {})
 
 
+class FirefoxNamespaceTests(unittest.TestCase):
+    def test_accepts_online_firefox_in_the_same_non_loopback_namespace(self) -> None:
+        gate = load_gate(self)
+        self.assertTrue(
+            hasattr(gate, "validate_firefox_namespace"),
+            "online Firefox namespace validator is missing",
+        )
+        with (
+            mock.patch.object(
+                gate.os,
+                "readlink",
+                side_effect=("net:[4026532000]", "net:[4026532000]"),
+            ),
+            mock.patch.object(
+                gate.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]
+            ),
+        ):
+            gate.validate_firefox_namespace(42)
+
+    def test_rejects_invalid_pid_and_a_different_namespace(self) -> None:
+        gate = load_gate(self)
+        self.assertTrue(hasattr(gate, "validate_firefox_namespace"))
+        with self.assertRaises(gate.GateError):
+            gate.validate_firefox_namespace(1)
+        with (
+            mock.patch.object(
+                gate.os,
+                "readlink",
+                side_effect=("net:[4026532000]", "net:[4026532001]"),
+            ),
+            self.assertRaises(gate.GateError),
+        ):
+            gate.validate_firefox_namespace(42)
+
+    def test_rejects_loopback_only_and_multiple_non_loopback_interfaces(self) -> None:
+        gate = load_gate(self)
+        for interfaces in ([(1, "lo")], [(1, "lo"), (2, "eth0"), (3, "eth1")]):
+            with (
+                self.subTest(interfaces=interfaces),
+                mock.patch.object(
+                    gate.os,
+                    "readlink",
+                    side_effect=("net:[4026532000]", "net:[4026532000]"),
+                ),
+                mock.patch.object(gate.socket, "if_nameindex", return_value=interfaces),
+                self.assertRaisesRegex(gate.GateError, "one non-loopback"),
+            ):
+                gate.validate_firefox_namespace(42)
+
+
+class ScreenshotValidationTests(unittest.TestCase):
+    def test_accepts_only_complete_1920_by_1080_png(self) -> None:
+        gate = load_gate(self)
+        payload = png_payload()
+        gate.validate_png_screenshot(payload)
+        variants = (
+            png_payload(width=1280, height=1024),
+            payload[:-12],
+            payload[:-1] + bytes((payload[-1] ^ 1,)),
+            b"\x89PNG\r\n\x1a\nnot-a-png",
+        )
+        for variant in variants:
+            with self.subTest(size=len(variant)), self.assertRaises(gate.GateError):
+                gate.validate_png_screenshot(variant)
+
+
 class PhysicalGraphicsRunTests(unittest.TestCase):
     class Client:
         def __init__(self, snapshot: dict[str, object]) -> None:
             self.snapshot = snapshot
+            self.screenshot = png_payload(value=int(snapshot["cycle"]) + 0x30)
             self.calls: list[tuple[str, object | None]] = []
 
         def command(self, name: str, parameters: object | None = None) -> object:
             self.calls.append((name, parameters))
             if name == "WebDriver:NewSession":
                 return {"sessionId": "physical-session"}
+            if name == "WebDriver:FullscreenWindow":
+                return {"value": {"x": 0, "y": 0, "width": 1920, "height": 1080}}
             if name == "WebDriver:Navigate":
                 return {"value": None}
             if name == "WebDriver:ExecuteScript":
@@ -199,7 +290,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                     return {"value": "focused"}
                 return {"value": self.snapshot}
             if name == "WebDriver:TakeScreenshot":
-                return {"value": base64.b64encode(b"\x89PNG\r\n\x1a\nimage").decode()}
+                return {"value": base64.b64encode(self.screenshot).decode()}
             raise AssertionError(f"unexpected Marionette command: {name}")
 
     class Events:
@@ -234,33 +325,38 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         ]
         events = self.Events(records)
         markers: list[str] = []
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "cycle-2.png"
-            result = gate.run_cycle(
-                client,
-                events,
-                nonce=nonce,
-                cycle=2,
-                timeout=5.0,
-                screenshot=output,
-                emit=markers.append,
-            )
-            self.assertEqual(output.read_bytes(), b"\x89PNG\r\n\x1a\nimage")
+        result = gate.run_cycle(
+            client,
+            events,
+            nonce=nonce,
+            cycle=2,
+            timeout=5.0,
+            emit=markers.append,
+        )
         self.assertTrue(events.drained)
         self.assertTrue(events.closed)
         self.assertEqual(result.key_downs, len(nonce))
         self.assertEqual(result.relative_events, 1)
-        self.assertEqual(len(markers), 5)
+        self.assertEqual(len(markers), 8)
         self.assertTrue(
             markers[0].startswith("ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=2 ")
         )
         self.assertEqual(markers[-1], "ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=2")
+        digest = hashlib.sha256(client.screenshot).hexdigest()
+        self.assertEqual(
+            markers[-4],
+            f"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle=2 "
+            f"size={len(client.screenshot)} sha256={digest}",
+        )
+        self.assertEqual(base64.b64decode(markers[-3]), client.screenshot)
+        self.assertEqual(markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=2")
         names = [name for name, _ in client.calls]
         ready_index = names.index("WebDriver:ExecuteScript") + 1
         self.assertEqual(
             names[:ready_index],
             [
                 "WebDriver:NewSession",
+                "WebDriver:FullscreenWindow",
                 "WebDriver:Navigate",
                 "WebDriver:ExecuteScript",
             ],
@@ -280,20 +376,26 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             PhysicalGraphicsSnapshotTests._snapshot("fedcba9876543210", 1)
         )
         events = self.Events([])
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            self.assertRaises(gate.GateError),
-        ):
+        with self.assertRaises(gate.GateError):
             gate.run_cycle(
                 client,
                 events,
                 nonce="0123456789abcdef",
                 cycle=1,
                 timeout=0.01,
-                screenshot=Path(directory) / "cycle-1.png",
                 emit=lambda _marker: None,
             )
         self.assertTrue(events.closed)
+
+    def test_final_state_verifier_only_reads_existing_cycle_three_dom(self) -> None:
+        gate = load_gate(self)
+        nonce = "0011223344556677"
+        client = self.Client(PhysicalGraphicsSnapshotTests._snapshot(nonce, 3))
+        gate.verify_final_state(client, nonce=nonce, cycle=3)
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["WebDriver:NewSession", "WebDriver:ExecuteScript"],
+        )
 
 
 if __name__ == "__main__":
