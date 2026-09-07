@@ -300,7 +300,7 @@ Expected: all tests and static checks pass.
 - Modify: `tools/riscv/debian/rootfs/build_rootfs.sh`
 - Modify: `tools/riscv/tests/test_debian_browser_web.py`
 
-- [ ] **Step 1: Write the failing rootfs contract test**
+- [x] **Step 1: Write the failing rootfs contract test**
 
 Require the `browser-web` branch of the builder to install:
 
@@ -312,7 +312,7 @@ Require the `browser-web` branch of the builder to install:
 
 Require both source inputs in the builder's fail-closed runtime-input list.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -323,13 +323,13 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: FAIL because the builder does not install the new inputs.
 
-- [ ] **Step 3: Implement the installation**
+- [x] **Step 3: Implement the installation**
 
 Install the page and executable only for `browser-web`; create and chown the
 evidence directory; keep the existing package tuple unchanged because
 `browser-web` already contains Firefox ESR and Python 3.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run:
 

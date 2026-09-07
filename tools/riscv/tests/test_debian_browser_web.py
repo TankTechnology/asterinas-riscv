@@ -694,6 +694,8 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_evidence.sh",
             "browser_web.service",
             "browser_web_evidence.service",
+            "physical_graphics_interaction.html",
+            "physical_graphics_gate.py",
         )
 
         def digest(source_directory: Path) -> str:
@@ -732,6 +734,31 @@ class BrowserWebContractTests(unittest.TestCase):
             '--tool-version "browser-web-runtime=$browser_web_runtime_version"',
             builder,
         )
+
+    def test_physical_graphics_witness_is_installed_fail_closed(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        self.assertIn(
+            '"$script_directory/physical_graphics_interaction.html"', builder
+        )
+        self.assertIn(
+            '"$stage/usr/share/asterinas/physical-graphics/index.html"', builder
+        )
+        self.assertIn('"$script_directory/physical_graphics_gate.py"', builder)
+        self.assertIn(
+            '"$stage/usr/lib/asterinas/physical-graphics-gate"', builder
+        )
+        self.assertIn(
+            'install -d -m 0700 -o 1000 -g 1000 -- '
+            '"$stage/home/asterinas/physical-graphics-evidence"',
+            builder,
+        )
+        runtime_inputs = builder[
+            builder.index("browser_web_runtime_digest()") : builder.index(
+                "publish_artifacts()"
+            )
+        ]
+        self.assertIn("physical_graphics_interaction.html", runtime_inputs)
+        self.assertIn("physical_graphics_gate.py", runtime_inputs)
 
     def test_browser_evidence_orders_after_network_and_desktop_without_hard_link(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
