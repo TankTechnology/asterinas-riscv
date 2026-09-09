@@ -534,6 +534,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
             (
                 "console=",
                 "loglevel=",
+                "asterinas.klog_capture=",
                 "asterinas.mmc_write_partition2",
                 "asterinas.reboot_after=",
                 "systemd.unit=",
@@ -547,6 +548,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         "console=tty0",
         "console=ttyS0",
         "loglevel=off",
+        "asterinas.klog_capture=info",
         *retained,
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
@@ -625,7 +627,8 @@ def physical_external_services_quiesce_command() -> str:
         "|| _asterinas_external_status=$?; "
         "for _asterinas_external_unit in "
         "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service; do "
+        "asterinas-desktop-m5-network.service "
+        "serial-getty@ttyS0.service console-getty.service; do "
         "/usr/bin/ln -sfn /dev/null "
         '"/run/systemd/system.control/$_asterinas_external_unit" '
         "|| _asterinas_external_status=$?; done; "
@@ -633,7 +636,8 @@ def physical_external_services_quiesce_command() -> str:
         "|| _asterinas_external_status=$?; "
         "/usr/bin/timeout 60 /usr/bin/systemctl stop "
         "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service >/dev/null 2>&1 "
+        "asterinas-desktop-m5-network.service "
+        "serial-getty@ttyS0.service console-getty.service >/dev/null 2>&1 "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/systemctl reset-failed "
         "asterinas-browser-web-evidence.service "

@@ -457,8 +457,10 @@ target. The `system.control` lookup tier takes precedence over the rootfs's
 `/etc/systemd/system/default.target`, so no rootfs service can start before the
 orchestrator installs transient `/run/systemd/system.control` masks for the
 competing network evidence services and starts the graphical target. The
-physical boot also uses `loglevel=off`: kernel records remain available to the
-later `dmesg` probes, while repeated writeback failures cannot saturate the
+same high-priority tier masks the generated serial getty so it cannot take the
+UART away from the debug shell. The physical boot combines `loglevel=off` with
+`asterinas.klog_capture=info`: kernel records remain available to later
+`dmesg` probes, while repeated writeback failures cannot saturate the
 115200-baud control channel. This does not depend on systemd's
 optional kernel-command-line generators, and the ordinary
 `--debug-console=root` mode continues to boot the rootfs's normal default
