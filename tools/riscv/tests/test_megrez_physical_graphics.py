@@ -617,6 +617,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         tokens = bootargs.split()
         self.assertEqual(tokens[:3], ["console=tty0", "console=ttyS0", "loglevel=info"])
         self.assertEqual(tokens.count("asterinas.reboot_after=900"), 1)
+        self.assertEqual(tokens.count("systemd.unit=multi-user.target"), 1)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
@@ -917,6 +918,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "timeout 60",
             "systemctl mask --runtime",
             "systemctl stop",
+            "systemctl start --no-block graphical.target",
             "systemctl reset-failed",
             "asterinas-browser-web-evidence.service",
             "asterinas-desktop-m5-network.service",
@@ -928,6 +930,10 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(
             command.index("systemctl mask --runtime"),
             command.index("systemctl stop"),
+        )
+        self.assertLess(
+            command.index("systemctl stop"),
+            command.index("systemctl start --no-block graphical.target"),
         )
 
     def test_real_gate_requires_quiesced_services_before_preflight(self) -> None:

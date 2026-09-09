@@ -535,6 +535,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
                 "console=",
                 "loglevel=",
                 "asterinas.reboot_after=",
+                "systemd.unit=",
                 "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
             )
         )
@@ -545,6 +546,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         "console=tty0",
         "console=ttyS0",
         "loglevel=info",
+        "systemd.unit=multi-user.target",
         *retained,
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
@@ -630,6 +632,9 @@ def physical_external_services_quiesce_command() -> str:
         "/usr/bin/systemctl reset-failed "
         "asterinas-browser-web-evidence.service "
         "asterinas-desktop-m5-network.service >/dev/null 2>&1 || true; "
+        "/usr/bin/systemctl start --no-block graphical.target >/dev/null 2>&1 "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/sleep 1; "
         "_asterinas_evidence_state=$(/usr/bin/systemctl is-active "
         "asterinas-browser-web-evidence.service 2>/dev/null || true); "
         "_asterinas_evidence_pid=$(/usr/bin/systemctl show --property MainPID "
