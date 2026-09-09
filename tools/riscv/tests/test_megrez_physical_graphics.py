@@ -537,7 +537,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
                 firefox=True,
                 browser_service="active",
                 browser_restarts=0,
-                xhci_hosts=2,
+                usb_inputs=2,
                 usb_keyboard=True,
                 usb_mouse=True,
             )
@@ -911,9 +911,12 @@ class PhysicalCommandTests(unittest.TestCase):
         command = gate.physical_preflight_command()
         for fragment in (
             "/dev/fb0",
-            "resolution=1920x1080, stride=7680, format=BgrReserved",
             "/dev/input/event*",
             "FBDEV(0)",
+            "0x81004506",
+            "0x80084502",
+            "usb_boot_keyboard",
+            "usb_boot_mouse",
             "pgrep -x Xorg",
             "/tmp/.X11-unix/X0",
             "openbox",
@@ -923,6 +926,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "__ASTERINAS_PHYSICAL_PREFLIGHT__",
         ):
             self.assertIn(fragment, command)
+        self.assertNotIn("dmesg", command)
 
     def test_preflight_returns_incomplete_marker_for_bounded_retry(self) -> None:
         gate = load_gate(self)
@@ -934,7 +938,7 @@ class PhysicalCommandTests(unittest.TestCase):
         marker = (
             "__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=0 input_nodes=2 "
             "framebuffer=0 xorg_fbdev=0 openbox=1 firefox=0 "
-            "browser_service=inactive browser_restarts=0 xhci_hosts=0 "
+            "browser_service=inactive browser_restarts=0 usb_inputs=0 "
             "usb_keyboard=0 usb_mouse=0"
         )
 
@@ -961,11 +965,19 @@ class PhysicalCommandTests(unittest.TestCase):
         for fragment in (
             "timeout 60",
             "/run/systemd/system.control",
+            "/run/asterinas-physical-home",
+            "mount --bind",
+            "$_asterinas_browser.d/physical.conf",
+            "Environment=HOME=/run/asterinas-physical-home",
+            "Environment=ASTERINAS_WEB_NETWORK_MODE=proxy",
             "ln -sfn /dev/null",
             "systemctl daemon-reload",
             "systemctl stop",
+            "systemctl start asterinas-browser-web-timeline-basic.service",
+            "systemctl start --no-block asterinas-browser-web.service",
             "systemctl start --no-block graphical.target",
             "systemctl reset-failed",
+            "asterinas-browser-web-timeline-basic.service",
             "asterinas-browser-web-evidence.service",
             "asterinas-desktop-m5-network.service",
             "serial-getty@ttyS0.service",
@@ -985,6 +997,14 @@ class PhysicalCommandTests(unittest.TestCase):
         )
         self.assertLess(
             command.index("systemctl stop"),
+            command.index("systemctl start asterinas-browser-web-timeline-basic.service"),
+        )
+        self.assertLess(
+            command.index("systemctl start asterinas-browser-web-timeline-basic.service"),
+            command.index("systemctl start --no-block asterinas-browser-web.service"),
+        )
+        self.assertLess(
+            command.index("systemctl start --no-block asterinas-browser-web.service"),
             command.index("systemctl start --no-block graphical.target"),
         )
 
@@ -1041,7 +1061,7 @@ class PhysicalCommandTests(unittest.TestCase):
             firefox=True,
             browser_service="active",
             browser_restarts=0,
-            xhci_hosts=2,
+            usb_inputs=2,
             usb_keyboard=True,
             usb_mouse=True,
         )
@@ -1080,7 +1100,7 @@ class PhysicalCommandTests(unittest.TestCase):
             events, ["ready", "validate", "quiesce", "probe", "debug", "sync"]
         )
 
-    def test_readiness_requires_two_xhci_hosts_and_both_usb_hid_devices(self) -> None:
+    def test_readiness_requires_two_linux_evdev_usb_hid_devices(self) -> None:
         gate = load_gate(self)
         values = {
             "browser_pid": 41,
@@ -1091,13 +1111,13 @@ class PhysicalCommandTests(unittest.TestCase):
             "firefox": True,
             "browser_service": "active",
             "browser_restarts": 0,
-            "xhci_hosts": 2,
+            "usb_inputs": 2,
             "usb_keyboard": True,
             "usb_mouse": True,
         }
         gate.GraphicalReadinessEvidence(**values)
         for mutation in (
-            {"xhci_hosts": 1},
+            {"usb_inputs": 1},
             {"usb_keyboard": False},
             {"usb_mouse": False},
             {"framebuffer": False},
