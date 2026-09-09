@@ -219,6 +219,7 @@ impl PosixThreadBuilder {
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
                     cpu_time_accounting: SpinLock::new(CpuTimeAccounting::new()),
+                    syscall_diagnostics: Default::default(),
                     virtual_timer_manager,
                     prof_timer_manager,
                     io_priority: AtomicU32::new(0),

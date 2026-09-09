@@ -158,6 +158,18 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
 else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_user_buffer_prefault_test.sh"
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_ppoll_wakeup_test.sh"
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_event_handoff_test.sh"
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pthread_cond_handoff_test.sh"
+else ifeq ($(AUTO_TEST), sysv_shm)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sysv_shm_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -675,7 +687,7 @@ test_riscv_physical_graphics_qemu_gate:
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
-		--smp 4 --boot-timeout 7200 --command-timeout 240
+		--smp 4 --boot-timeout 7200 --command-timeout 300
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:
@@ -951,6 +963,22 @@ else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "TCP user buffer prefault regression passed." \
 		|| (echo "TCP user buffer prefault regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "TCP ppoll wakeup regression passed." \
+		|| (echo "TCP ppoll wakeup regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "tcp_event_handoff: passed 4096 socket-to-queue-to-pipe handoffs" \
+		|| (echo "TCP event handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "pthread condition handoff regression passed." \
+		|| (echo "pthread condition handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sysv_shm)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "System V shared memory regression passed." \
+		|| (echo "System V shared memory regression failed" && exit 1)
 endif
 
 # Build the Asterinas NixOS ISO installer image
@@ -1022,12 +1050,18 @@ profile_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk profile $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT) \
 		--samples $(GDB_PROFILE_COUNT) --interval $(GDB_PROFILE_INTERVAL) --format $(GDB_PROFILE_FORMAT)
 
+.PHONY: test_klog_store
+test_klog_store:
+	@mkdir -p target
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/klog/store_tests.rs -o target/klog-store-tests
+	@target/klog-store-tests
+
 .PHONY: test
 test: NON_DEFAULT_PACKAGE_NAMES = \
     $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
 test: TEST_PACKAGE_NAMES = \
     $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
-test:
+test: test_klog_store
 	@if [ -n "$(TEST_PACKAGE_NAMES)" ]; then \
 		cargo test $(addprefix -p ,$(TEST_PACKAGE_NAMES)); \
 	fi

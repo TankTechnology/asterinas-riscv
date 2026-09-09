@@ -557,13 +557,18 @@ Expected: unit target passes and the documented commands match the parser.
 - Runtime only: `target/current-main-physical-graphics/qemu-browser-web/`
 - Runtime only: `target/current-main-physical-graphics/qemu-interaction/`
 
-- [ ] **Step 1: Build the current-main RISC-V kernel and browser-web root**
+- [x] **Step 1: Build the current-main RISC-V kernel and browser-web root**
 
 Use the pinned Asterinas container from `AGENTS.md`, `TARGET_ARCH=riscv64`,
 `SMP=4`, and the existing browser-web package cache. Record kernel and rootfs
 hashes before launching QEMU.
 
-- [ ] **Step 2: Run the debug-root-console QEMU gate**
+Artifact identities and the still-failing setup experiments are recorded in
+`docs/porting/evidence/2026-09-08-physical-graphics-setup-diagnostics.md`.
+The September 8 document-readiness overlay is a separate immutable output;
+none of these setup experiments constitutes a three-cycle or physical pass.
+
+- [x] **Step 2: Run the debug-root-console QEMU gate**
 
 Run the documented `make test_riscv_debian_debug_console_qemu_gate` command
 with the current kernel, U-Boot, DTB, Stage1, browser-web root, manifest, lock,
@@ -571,6 +576,10 @@ checksums, and a fresh output directory.
 
 Expected: one READY, all UID/PID1/ext2/graphical/desktop probes pass, one
 rendered non-blank PPM, and complete cleanup.
+
+The final plan-bound desktop run supersedes the original standalone output
+path. Its native result records UID 0, systemd PID 1, ext2 on `/dev/vdb`, and
+active graphical and desktop units before the interaction cycles begin.
 
 - [ ] **Step 3: Run the browser-web QEMU gate**
 
@@ -580,13 +589,18 @@ Expected: browser-web result passes, all 20 controlled fixture requests are
 present, the final 1280x1024 framebuffer is non-blank, and no fatal marker is
 present in the drained transcript.
 
-- [ ] **Step 4: Run the three-cycle interaction QEMU gate**
+- [x] **Step 4: Run the three-cycle interaction QEMU gate**
 
 Run `make test_riscv_physical_graphics_qemu_gate` with the same immutable
 inputs and a fresh output directory.
 
 Expected: three distinct nonce hashes, three complete INPUT/DOM/SCREENSHOT/PASS
 sequences, three non-blank captures, no fatal marker, and complete cleanup.
+
+The retained plan-bound result is
+`target/current-main-physical-graphics/physical/desktop-plan-bound-final/result.json`.
+It is bound to plan SHA-256
+`ccb815207c2eefa31f91d858c452dd8e7e69a306f069059a195acea2ce7069fd`.
 
 ### Task 9: Run the bounded physical Megrez gate
 
@@ -595,7 +609,7 @@ sequences, three non-blank captures, no fatal marker, and complete cleanup.
 - Runtime only: `target/current-main-physical-graphics/physical/`
 - Create: `docs/porting/evidence/2026-09-08-current-main-megrez-physical-graphics.md`
 
-- [ ] **Step 1: Freeze inputs and prepare a capture path**
+- [x] **Step 1: Freeze inputs and prepare a capture path**
 
 Copy the current kernel, frozen Megrez DTB, Stage1 archive, browser-web root,
 manifest, lock, and checksums into the run root with mode 0600. Use

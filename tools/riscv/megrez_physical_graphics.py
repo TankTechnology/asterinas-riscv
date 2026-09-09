@@ -58,11 +58,24 @@ MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_HDMI_BYTES = 64 * 1024 * 1024
 MAX_GUEST_SCREENSHOT_BYTES = 512 * 1024
 PHYSICAL_REBOOT_AFTER = 900
+PHYSICAL_REBOOT_HEADROOM = 30.0
+PHYSICAL_MARIONETTE_SETUP_TIMEOUT = 300.0
 _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
+PHYSICAL_EXTERNAL_MARKER = "__ASTERINAS_PHYSICAL_EXTERNAL__"
+_EXTERNAL_SERVICES_QUIESCED = re.compile(
+    rf"{PHYSICAL_EXTERNAL_MARKER} status=([0-9]+) "
+    r"evidence_state=([a-z-]+) evidence_pid=([0-9]+) "
+    r"network_state=([a-z-]+) network_pid=([0-9]+)"
+)
 _READY = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=([1-3]) nonce_sha256=({_SHA256})"
 )
+_KEY_READY = re.compile(
+    rf"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=([1-3]) "
+    rf"nonce_sha256=({_SHA256})"
+)
+_POINTER_READY = re.compile(r"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=([1-3])")
 _INPUT = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle=([1-3]) "
     rf"key_downs=([0-9]+) relative_events=([0-9]+) "
@@ -354,6 +367,22 @@ def _validated_nonce_hashes(nonces: Sequence[str]) -> tuple[str, str, str]:
     return tuple(hashlib.sha256(nonce.encode()).hexdigest() for nonce in nonces)  # type: ignore[return-value]
 
 
+def _validated_sha256_identities(
+    nonce_hashes: Sequence[str],
+) -> tuple[str, str, str]:
+    if (
+        isinstance(nonce_hashes, (str, bytes))
+        or len(nonce_hashes) != 3
+        or any(
+            not isinstance(identity, str) or re.fullmatch(_SHA256, identity) is None
+            for identity in nonce_hashes
+        )
+        or len(set(nonce_hashes)) != 3
+    ):
+        raise HostGateError("expected three distinct SHA-256 nonce identities")
+    return tuple(nonce_hashes)  # type: ignore[return-value]
+
+
 def _match(line: str, pattern: re.Pattern[str], label: str) -> re.Match[str]:
     match = pattern.fullmatch(line)
     if match is None:
@@ -369,10 +398,39 @@ def classify_interaction_transcript(
 ) -> tuple[InteractionCycleEvidence, ...]:
     """Require three exact, ordered, nonce-bound physical interaction cycles."""
 
+    return _classify_interaction_hash_transcript(
+        transcript,
+        _validated_nonce_hashes(nonces),
+        pointer_mode=pointer_mode,
+    )
+
+
+def classify_interaction_hash_transcript(
+    transcript: str | bytes,
+    nonce_hashes: Sequence[str],
+    *,
+    pointer_mode: PointerEvidenceMode = PointerEvidenceMode.PHYSICAL_RELATIVE,
+) -> tuple[InteractionCycleEvidence, ...]:
+    """Validate the same protocol from already-bound nonce identities."""
+
+    return _classify_interaction_hash_transcript(
+        transcript,
+        _validated_sha256_identities(nonce_hashes),
+        pointer_mode=pointer_mode,
+    )
+
+
+def _classify_interaction_hash_transcript(
+    transcript: str | bytes,
+    nonce_hashes: tuple[str, str, str],
+    *,
+    pointer_mode: PointerEvidenceMode,
+) -> tuple[InteractionCycleEvidence, ...]:
+    """Implement the shared exact marker protocol after identity validation."""
+
     if not isinstance(pointer_mode, PointerEvidenceMode):
         raise HostGateError("pointer evidence mode is invalid")
     text = _decode_transcript(transcript)
-    nonce_hashes = _validated_nonce_hashes(nonces)
     lowered = text.lower()
     for marker in _FATAL_MARKERS:
         if marker in lowered:
@@ -385,31 +443,41 @@ def classify_interaction_transcript(
     )
     if any(line.startswith(f"{_PROTOCOL_PREFIX}FAIL") for line in protocol_lines):
         raise HostGateError("guest physical graphics gate reported failure")
-    if len(protocol_lines) != 16:
-        raise HostGateError("expected exactly 16 physical graphics markers")
+    if len(protocol_lines) != 22:
+        raise HostGateError("expected exactly 22 physical graphics markers")
 
     evidence: list[InteractionCycleEvidence] = []
     offset = 0
     for cycle, nonce_sha256 in enumerate(nonce_hashes, start=1):
         ready = _match(protocol_lines[offset], _READY, "READY")
-        input_event = _match(protocol_lines[offset + 1], _INPUT, "INPUT")
-        dom = _match(protocol_lines[offset + 2], _DOM, "DOM")
-        screenshot = _match(protocol_lines[offset + 3], _SCREENSHOT, "SCREENSHOT")
-        passed = _match(protocol_lines[offset + 4], _PASS, "PASS")
-        offset += 5
+        key_ready = _match(protocol_lines[offset + 1], _KEY_READY, "KEY_READY")
+        pointer_ready = _match(
+            protocol_lines[offset + 2], _POINTER_READY, "POINTER_READY"
+        )
+        input_event = _match(protocol_lines[offset + 3], _INPUT, "INPUT")
+        dom = _match(protocol_lines[offset + 4], _DOM, "DOM")
+        screenshot = _match(protocol_lines[offset + 5], _SCREENSHOT, "SCREENSHOT")
+        passed = _match(protocol_lines[offset + 6], _PASS, "PASS")
+        offset += 7
 
         marker_cycles = (
             int(ready.group(1)),
+            int(key_ready.group(1)),
+            int(pointer_ready.group(1)),
             int(input_event.group(1)),
             int(dom.group(1)),
             int(screenshot.group(1)),
             int(passed.group(1)),
         )
-        if marker_cycles != (cycle,) * 5:
+        if marker_cycles != (cycle,) * 7:
             raise HostGateError(
                 f"cycle {cycle} markers do not share the expected cycle"
             )
-        if ready.group(2) != nonce_sha256 or dom.group(2) != nonce_sha256:
+        if (
+            ready.group(2) != nonce_sha256
+            or key_ready.group(2) != nonce_sha256
+            or dom.group(2) != nonce_sha256
+        ):
             raise HostGateError(f"cycle {cycle} nonce hash mismatch")
 
         key_downs = int(input_event.group(2))
@@ -461,7 +529,14 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
     retained = [
         token
         for token in tokens[:separator]
-        if not token.startswith(("console=", "loglevel=", "asterinas.reboot_after="))
+        if not token.startswith(
+            (
+                "console=",
+                "loglevel=",
+                "asterinas.reboot_after=",
+                "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
+            )
+        )
     ]
     if retained.count("init=/init") != 1:
         raise HostGateError("plan must contain one stage1 init selector")
@@ -472,6 +547,8 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         *retained,
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
+        "systemd.mask=asterinas-desktop-m5-network.service",
+        "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
         "--",
         "--root-init=systemd",
         "--debug-console=root",
@@ -536,6 +613,56 @@ def physical_preflight_command() -> str:
     )
 
 
+def physical_external_services_quiesce_command() -> str:
+    """Stop network workloads that compete with the offline interaction gate."""
+
+    return (
+        "_asterinas_external_status=0; "
+        "/usr/bin/timeout 60 /usr/bin/systemctl stop "
+        "asterinas-browser-web-evidence.service "
+        "asterinas-desktop-m5-network.service >/dev/null 2>&1 "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/systemctl reset-failed "
+        "asterinas-browser-web-evidence.service "
+        "asterinas-desktop-m5-network.service >/dev/null 2>&1 || true; "
+        "_asterinas_evidence_state=$(/usr/bin/systemctl is-active "
+        "asterinas-browser-web-evidence.service 2>/dev/null || true); "
+        "_asterinas_evidence_pid=$(/usr/bin/systemctl show --property MainPID "
+        "--value asterinas-browser-web-evidence.service 2>/dev/null || true); "
+        "_asterinas_network_state=$(/usr/bin/systemctl is-active "
+        "asterinas-desktop-m5-network.service 2>/dev/null || true); "
+        "_asterinas_network_pid=$(/usr/bin/systemctl show --property MainPID "
+        "--value asterinas-desktop-m5-network.service 2>/dev/null || true); "
+        '[ "$_asterinas_evidence_state" = inactive ] && '
+        '[ "$_asterinas_evidence_pid" = 0 ] && '
+        '[ "$_asterinas_network_state" = inactive ] && '
+        '[ "$_asterinas_network_pid" = 0 ] '
+        "|| _asterinas_external_status=124; "
+        f"printf '{PHYSICAL_EXTERNAL_MARKER} status=%s "
+        "evidence_state=%s evidence_pid=%s network_state=%s network_pid=%s\n' "
+        '"$_asterinas_external_status" "$_asterinas_evidence_state" '
+        '"$_asterinas_evidence_pid" "$_asterinas_network_state" '
+        '"$_asterinas_network_pid"'
+    )
+
+
+def validate_physical_external_services_quiesced(line: str) -> None:
+    """Accept only a complete, inactive state for both competing services."""
+
+    match = _EXTERNAL_SERVICES_QUIESCED.fullmatch(line)
+    if match is None:
+        raise HostGateError("external service state is malformed")
+    status, evidence_state, evidence_pid, network_state, network_pid = match.groups()
+    if (
+        status != "0"
+        or evidence_state != "inactive"
+        or evidence_pid != "0"
+        or network_state != "inactive"
+        or network_pid != "0"
+    ):
+        raise HostGateError("external services are still active")
+
+
 def physical_cycle_command(
     cycle: int,
     nonce: str,
@@ -544,6 +671,7 @@ def physical_cycle_command(
     expected_browser_pid: int | None = None,
     expected_width: int = 1920,
     expected_height: int = 1080,
+    setup_timeout: float = PHYSICAL_MARIONETTE_SETUP_TIMEOUT,
 ) -> str:
     """Return one root command that observes, but cannot synthesize, input."""
 
@@ -558,6 +686,13 @@ def physical_cycle_command(
         or not 0 < timeout <= 300
     ):
         raise ValueError("physical cycle timeout must be in (0, 300]")
+    if (
+        isinstance(setup_timeout, bool)
+        or not isinstance(setup_timeout, (int, float))
+        or not math.isfinite(setup_timeout)
+        or not 0 < setup_timeout <= 900
+    ):
+        raise ValueError("physical setup timeout must be in (0, 900]")
     if expected_browser_pid is not None and (
         type(expected_browser_pid) is not int or expected_browser_pid <= 1
     ):
@@ -587,7 +722,8 @@ def physical_cycle_command(
         f'nsenter -t "$_asterinas_physical_pid" -n '
         f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
         f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" '
-        f"--timeout {timeout:g} --expected-width {expected_width} "
+        f"--timeout {timeout:g} --setup-timeout {setup_timeout:g} "
+        f"--expected-width {expected_width} "
         f"--expected-height {expected_height}; "
         "_asterinas_physical_status=$?; fi ;; esac; "
         "_asterinas_physical_current=$(systemctl show --property MainPID --value "
@@ -601,7 +737,13 @@ def physical_cycle_command(
     )
 
 
-def physical_final_command(nonce: str, browser_pid: int, timeout: float) -> str:
+def physical_final_command(
+    nonce: str,
+    browser_pid: int,
+    timeout: float,
+    *,
+    setup_timeout: float = PHYSICAL_MARIONETTE_SETUP_TIMEOUT,
+) -> str:
     """Return a read-only terminal-DOM check bound to the original Firefox PID."""
 
     if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
@@ -615,6 +757,13 @@ def physical_final_command(nonce: str, browser_pid: int, timeout: float) -> str:
         or not 0 < timeout <= 300
     ):
         raise ValueError("physical final timeout must be in (0, 300]")
+    if (
+        isinstance(setup_timeout, bool)
+        or not isinstance(setup_timeout, (int, float))
+        or not math.isfinite(setup_timeout)
+        or not 0 < setup_timeout <= 900
+    ):
+        raise ValueError("physical setup timeout must be in (0, 900]")
     return (
         "_asterinas_physical_pid=$(systemctl show --property MainPID --value "
         "asterinas-browser-web.service 2>/dev/null || true); "
@@ -623,7 +772,8 @@ def physical_final_command(nonce: str, browser_pid: int, timeout: float) -> str:
         f'nsenter -t "$_asterinas_physical_pid" -n '
         f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
         '--cycle 3 --firefox-pid "$_asterinas_physical_pid" --verify-final '
-        f"--timeout {timeout:g}; _asterinas_physical_status=$?; fi; "
+        f"--timeout {timeout:g} --setup-timeout {setup_timeout:g}; "
+        "_asterinas_physical_status=$?; fi; "
         "_asterinas_physical_current=$(systemctl show --property MainPID --value "
         "asterinas-browser-web.service 2>/dev/null || true); "
         "_asterinas_physical_restarts=$(systemctl show --property NRestarts --value "
@@ -646,7 +796,12 @@ def extract_screenshot_frame(
     if type(cycle) is not int or cycle not in (1, 2, 3):
         raise ValueError("physical cycle must be 1, 2, or 3")
     text = _decode_transcript(transcript)
-    lines = tuple(line.rstrip("\r") for line in text.splitlines())
+    # Asterinas' serial console can echo CR before QEMU appends its own CRLF,
+    # producing ``\r\r\n``.  ``str.splitlines`` treats both CR characters as
+    # independent boundaries and invents blank records inside the three-line
+    # frame.  Split only on the transport's LF delimiter, then normalize every
+    # preceding CR.
+    lines = tuple(line.rstrip("\r") for line in text.split("\n"))
     begins = [
         (index, match)
         for index, line in enumerate(lines)
@@ -1086,6 +1241,7 @@ class RealPhysicalGraphicsOperations:
         self._logged_serial_bytes = 0
         self._browser_pid: int | None = None
         self._guest_started = False
+        self._guest_deadline: float | None = None
 
     @property
     def transcript(self) -> str:
@@ -1098,6 +1254,7 @@ class RealPhysicalGraphicsOperations:
 
     def invalidate(self) -> None:
         self._guest_started = False
+        self._guest_deadline = None
         output_path = _safe_output_directory(self._output_path, self._repository)
         try:
             self._hdmi_capture.absolute().relative_to(output_path)
@@ -1219,6 +1376,11 @@ class RealPhysicalGraphicsOperations:
             )
         kernel = identities["kernel"]
         dtb = identities["megrez_dtb"]
+        # The kernel's recovery timer is fixed, not renewed by a new cycle.
+        # Start slightly earlier on the host and leave room to drain evidence.
+        self._guest_deadline = (
+            time.monotonic() + PHYSICAL_REBOOT_AFTER - PHYSICAL_REBOOT_HEADROOM
+        )
         session.start_boot_attempt()
         session.send(
             f"booti 0x{kernel.load_address:x} "
@@ -1232,9 +1394,18 @@ class RealPhysicalGraphicsOperations:
             tx_delay=0.005,
         )
 
+    def _guest_phase_deadline(self, timeout: float) -> float:
+        if self._guest_deadline is None:
+            raise HostGateError("physical guest lifetime was not established")
+        now = time.monotonic()
+        deadline = min(now + timeout, self._guest_deadline)
+        if deadline <= now:
+            raise TimeoutError("physical guest reboot budget exhausted")
+        return deadline
+
     def prove_graphical_readiness(self, timeout: float) -> GraphicalReadinessEvidence:
         serial = self._require_serial()
-        deadline = time.monotonic() + timeout
+        deadline = self._guest_phase_deadline(timeout)
         serial.wait_for(DEBUG_CONSOLE_READY.encode(), deadline)
         validate_debug_console_readiness(serial.transcript.decode("utf-8"))
         run_debug_console_phase(
@@ -1243,6 +1414,7 @@ class RealPhysicalGraphicsOperations:
             secrets.token_hex(16),
             ready_seen=True,
         )
+        self._quiesce_external_services(deadline)
 
         last_error: HostGateError | None = None
         while True:
@@ -1258,6 +1430,19 @@ class RealPhysicalGraphicsOperations:
             if remaining <= 0:
                 raise last_error or HostGateError("graphical preflight timed out")
             time.sleep(min(1.0, remaining))
+
+    def _quiesce_external_services(self, deadline: float) -> None:
+        serial = self._require_serial()
+        cursor = serial.checkpoint()
+        serial.send(
+            (physical_external_services_quiesce_command() + "\n").encode(), deadline
+        )
+        while True:
+            line, cursor = self._next_line(serial, cursor, deadline)
+            if not line.startswith(PHYSICAL_EXTERNAL_MARKER):
+                continue
+            validate_physical_external_services_quiesced(line)
+            return
 
     def _probe_graphical_readiness(self, deadline: float) -> GraphicalReadinessEvidence:
         serial = self._require_serial()
@@ -1286,7 +1471,9 @@ class RealPhysicalGraphicsOperations:
         serial = self._require_serial()
         if self._browser_pid is None:
             raise HostGateError("Firefox readiness was not established")
-        deadline = time.monotonic() + timeout + 90.0
+        deadline = self._guest_phase_deadline(
+            PHYSICAL_MARIONETTE_SETUP_TIMEOUT + timeout + 90.0
+        )
         cycle_start = serial.checkpoint()
         cursor = cycle_start
         command = physical_cycle_command(
@@ -1318,6 +1505,8 @@ class RealPhysicalGraphicsOperations:
                 )
             elif line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_FAIL"):
                 raise HostGateError(f"cycle {cycle} guest failure: {line}")
+            elif line.startswith("__ASTERINAS_PHYSICAL_COMMAND_STATUS__"):
+                raise HostGateError(f"cycle {cycle} command exited before PASS: {line}")
             elif line == passed:
                 if not ready_seen:
                     raise HostGateError(f"cycle {cycle} PASS preceded READY")
@@ -1335,6 +1524,7 @@ class RealPhysicalGraphicsOperations:
 
     def retain_hdmi(self, timeout: float) -> FileEvidence:
         output = self._require_output()
+        deadline = self._guest_phase_deadline(timeout)
         try:
             before_prompt = self._hdmi_capture.stat(follow_symlinks=False)
         except FileNotFoundError:
@@ -1345,7 +1535,6 @@ class RealPhysicalGraphicsOperations:
             f"[physical HDMI] capture the cyan cycle-3 page to {self._hdmi_capture}",
             flush=True,
         )
-        deadline = time.monotonic() + timeout
         candidate_identity: tuple[int, ...] | None = None
         stable_since = 0.0
         while True:
@@ -1409,7 +1598,9 @@ class RealPhysicalGraphicsOperations:
         timeout: float,
     ) -> None:
         serial = self._require_serial()
-        deadline = time.monotonic() + timeout + 30.0
+        deadline = self._guest_phase_deadline(
+            PHYSICAL_MARIONETTE_SETUP_TIMEOUT + timeout + 30.0
+        )
         final_readiness = self._probe_graphical_readiness(deadline)
         if final_readiness != readiness:
             raise HostGateError("graphical state changed during HDMI capture")
@@ -1444,7 +1635,7 @@ class RealPhysicalGraphicsOperations:
 
     def emit_complete(self, timeout: float) -> None:
         serial = self._require_serial()
-        deadline = time.monotonic() + timeout
+        deadline = self._guest_phase_deadline(timeout)
         cursor = serial.checkpoint()
         marker = "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3"
         serial.send((f"printf '{marker}\\n'\n").encode(), deadline)

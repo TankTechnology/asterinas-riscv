@@ -356,8 +356,11 @@ fn sequential_page_faults_submit_a_batch() {
 
     let reader = ThreadOptions::new(move || {
         let mut read_buffer = vec![0; NUM_PAGES * PAGE_SIZE];
-        vmo.read(0, &mut VmWriter::from(read_buffer.as_mut_slice()).to_fallible())
-            .unwrap();
+        vmo.read(
+            0,
+            &mut VmWriter::from(read_buffer.as_mut_slice()).to_fallible(),
+        )
+        .unwrap();
         *finished_thread.lock() = true;
     })
     .spawn();

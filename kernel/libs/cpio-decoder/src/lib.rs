@@ -168,8 +168,7 @@ where
         }
         let data_padding_len = align_up_pad(data_len, 4);
         if data_padding_len > 0 {
-            self.reader
-                .read_exact(&mut buffer[..data_padding_len])?;
+            self.reader.read_exact(&mut buffer[..data_padding_len])?;
             self.unread_data -= data_padding_len;
         }
         Ok(())

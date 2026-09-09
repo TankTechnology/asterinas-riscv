@@ -3,3 +3,6 @@ lseek(
     fd, offset,
     whence = SEEK_SET | SEEK_CUR | SEEK_END
 );
+
+// Only for /dev/kmsg with offset zero; not general file extent support.
+lseek(fd, offset, whence = SEEK_DATA);

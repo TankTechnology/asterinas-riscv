@@ -6,8 +6,8 @@ use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::posix_thread::{
-        Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
-        RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
+        RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
+        RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET, Rseq,
     },
 };
 
@@ -49,7 +49,8 @@ pub fn sys_rseq(
 
     // Write the signature and a stable `cpu_id`/`cpu_id_start` of 0 before
     // remembering the area. Errors here are reported to the caller.
-    ctx.user_space().write_val(rseq_ptr + RSEQ_SIG_OFFSET, &sig)?;
+    ctx.user_space()
+        .write_val(rseq_ptr + RSEQ_SIG_OFFSET, &sig)?;
     ctx.user_space().write_val(rseq_ptr, &0u32)?;
     ctx.user_space()
         .write_val(rseq_ptr + RSEQ_CPU_ID_OFFSET, &0u32)?;

@@ -23,6 +23,22 @@
       "mode": "0644"
     },
     {
+      "source": "physical_graphics_gate.py",
+      "destination": "/usr/lib/asterinas/physical-graphics-gate",
+      "mode": "0755"
+    },
+    {
+      "source": "physical_graphics_interaction.html",
+      "destination": "/usr/share/asterinas/physical-graphics/index.html",
+      "mode": "0644"
+    },
+    {
+      "source": "firefox_diagnostic_snapshot.py",
+      "destination": "/usr/lib/asterinas/firefox-diagnostic-snapshot",
+      "mode": "0755",
+      "create": true
+    },
+    {
       "source": "browser_web_firefox.sh",
       "destination": "/usr/lib/asterinas/browser-web-firefox",
       "mode": "0755"

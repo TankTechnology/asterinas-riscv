@@ -28,8 +28,9 @@ use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
     process::{
-        Credentials, Pid, UserNamespace, credentials::capabilities::CapSet,
-        posix_thread::PosixThread,
+        Credentials, Pid, UserNamespace,
+        credentials::capabilities::CapSet,
+        posix_thread::{AsPosixThread, PosixThread},
     },
     security::lsm::hooks as lsm_hooks,
 };
@@ -221,17 +222,24 @@ impl IpcNamespace {
         F: FnOnce(&ShmSet) -> Result<T>,
     {
         self.shm_ids.with(shmid, |shm_set| {
-            Self::validate_shm_set(shm_set, required_perm)?;
+            self.validate_shm_set(shm_set, required_perm)?;
             op(shm_set)
         })?
     }
 
-    /// Removes the shared memory segment identified by `shmid`.
-    pub fn remove_shm_set<F>(&self, shmid: IpcId, may_remove: F) -> Result<()>
+    /// Marks a shared memory segment for removal.
+    ///
+    /// A segment with active attachments remains addressable by its ID until
+    /// the last detach. Linux allows a new `shmat` during this interval.
+    pub fn mark_shm_set_for_removal<F>(&self, shmid: IpcId, may_remove: F) -> Result<()>
     where
         F: FnOnce(&ShmSet) -> Result<()>,
     {
-        self.shm_ids.remove(shmid, may_remove)
+        self.shm_ids.remove_if(shmid, |shm_set| {
+            may_remove(shm_set)?;
+            Ok(shm_set.mark_for_removal())
+        })?;
+        Ok(())
     }
 
     /// Returns the existing shared memory segment or creates a new one.
@@ -263,10 +271,7 @@ impl IpcNamespace {
                     return_errno_with_message!(Errno::ENOENT, "the key does not exist");
                 }
 
-                Self::validate_shm_set(
-                    shm_set,
-                    ShmPermissionMode::ALTER | ShmPermissionMode::READ,
-                )?;
+                self.validate_shm_set(shm_set, ShmPermissionMode::from_requested_mode(mode))?;
 
                 if flags.contains(IpcFlags::IPC_CREAT | IpcFlags::IPC_EXCL) {
                     return_errno_with_message!(
@@ -299,13 +304,35 @@ impl IpcNamespace {
         }
     }
 
-    fn validate_shm_set(_shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
-        if !required_perm.is_empty() {
-            // TODO: Support permission check
-            warn!("Shared memory doesn't support permission check now");
+    fn validate_shm_set(&self, shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
+        if required_perm.is_empty() {
+            return Ok(());
         }
 
-        Ok(())
+        let current = current_thread!();
+        let posix_thread = current.as_posix_thread().unwrap();
+        if shm_set
+            .permission()
+            .allows(required_perm.bits(), &posix_thread.credentials())
+            || lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                self.owner.as_ref(),
+                posix_thread,
+                CapSet::IPC_OWNER,
+            ))
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        return_errno_with_message!(
+            Errno::EACCES,
+            "the process does not have permission to access the shared memory segment"
+        );
+    }
+
+    /// Returns the user namespace that owns this IPC namespace.
+    pub fn owner(&self) -> &Arc<UserNamespace> {
+        &self.owner
     }
 
     /// Creates a new shared memory segment and returns its ID.
@@ -325,9 +352,24 @@ impl IpcNamespace {
         self.shm_attachments.write().insert((pid, addr), shmid);
     }
 
+    /// Returns the shared memory ID attached at `addr` by the process `pid`.
+    pub fn shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
+        self.shm_attachments.read().get(&(pid, addr)).copied()
+    }
+
     /// Removes and returns the shared memory ID attached at `addr` by `pid`.
     pub fn remove_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
         self.shm_attachments.write().remove(&(pid, addr))
+    }
+
+    /// Releases an attachment and destroys a removed segment after its last
+    /// attachment is gone.
+    pub fn release_shm_attachment(&self, shmid: IpcId, pid: Pid) -> Result<()> {
+        self.shm_ids.remove_if(shmid, |shm_set| {
+            let is_last = shm_set.detach(pid);
+            Ok(is_last && shm_set.is_marked_for_removal())
+        })?;
+        Ok(())
     }
 }
 

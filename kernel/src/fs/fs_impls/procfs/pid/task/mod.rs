@@ -7,13 +7,14 @@ use crate::{
         procfs::{
             StaticEntryWithOps,
             pid::task::{
-                auxv::AuxvFileOps, cgroup::CgroupFileOps, cmdline::CmdlineFileOps,
-                comm::CommFileOps, environ::EnvironFileOps, exe::ExeSymOps, fd::FdDirOps,
-                gid_map::GidMapFileOps, maps::MapsFileOps, mem::MemFileOps,
-                mountinfo::MountInfoFileOps, mounts::MountsFileOps, mountstats::MountStatsFileOps,
-                ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps, pagemap::PagemapFileOps,
-                setgroups::SetgroupsFileOps, stat::StatFileOps, status::StatusFileOps,
-                timens_offsets::TimeNsOffsetsFileOps, uid_map::UidMapFileOps,
+                asterinas_syscall::SyscallFileOps, auxv::AuxvFileOps, cgroup::CgroupFileOps,
+                cmdline::CmdlineFileOps, comm::CommFileOps, environ::EnvironFileOps,
+                exe::ExeSymOps, fd::FdDirOps, gid_map::GidMapFileOps, maps::MapsFileOps,
+                mem::MemFileOps, mountinfo::MountInfoFileOps, mounts::MountsFileOps,
+                mountstats::MountStatsFileOps, ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps,
+                pagemap::PagemapFileOps, setgroups::SetgroupsFileOps, stat::StatFileOps,
+                status::StatusFileOps, timens_offsets::TimeNsOffsetsFileOps,
+                uid_map::UidMapFileOps,
             },
             template::{
                 ListedEntry, ProcDir, ProcDirOps, ReaddirEntry, keyed_readdir_entries,
@@ -28,6 +29,7 @@ use crate::{
     thread::{Thread, Tid},
 };
 
+mod asterinas_syscall;
 mod auxv;
 mod cgroup;
 mod cmdline;
@@ -104,6 +106,11 @@ impl TidDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntryWithOps<TidDirOps>] = &[
+        (
+            "asterinas_syscall",
+            InodeType::File,
+            SyscallFileOps::new_inode,
+        ),
         ("auxv", InodeType::File, AuxvFileOps::new_inode),
         ("cgroup", InodeType::File, CgroupFileOps::new_inode),
         ("cmdline", InodeType::File, CmdlineFileOps::new_inode),

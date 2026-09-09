@@ -119,9 +119,8 @@ impl ProcFileOps for StatusFileOps {
             .process()
             .pid_ns()
             .clone();
-        let vpid_of = |process: &Arc<crate::process::Process>| {
-            process.pid_in_ns(&reader_ns).unwrap_or(0)
-        };
+        let vpid_of =
+            |process: &Arc<crate::process::Process>| process.pid_in_ns(&reader_ns).unwrap_or(0);
 
         writeln!(printer, "Tgid:\t{}", vpid_of(&process))?;
         writeln!(

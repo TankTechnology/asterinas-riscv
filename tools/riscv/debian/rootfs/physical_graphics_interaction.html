@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+        content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
   <title>Asterinas Physical Graphics Interaction</title>
   <style>
     :root {
@@ -96,6 +96,9 @@
     const nonceLength = nonceLengthText === "16" ? 16 : 0;
     const validConfiguration = cycle !== 0 && nonceLength === 16;
     const noncePattern = /^[0-9a-f]{16}$/;
+    const stageOrder = ["waiting", "key", "pointer", "complete"];
+    let reportedStage = "waiting";
+    let stageReport = Promise.resolve();
 
     const nonceInput = document.getElementById("interaction-nonce");
     const button = document.getElementById("interaction-button");
@@ -113,8 +116,39 @@
       color: "amber"
     };
 
+    function keyComplete() {
+      return state.trustedKey && state.trustedInput && noncePattern.test(state.nonce);
+    }
+
+    function domStage() {
+      if (keyComplete() && state.trustedPointer && state.trustedClick && state.color === "cyan") {
+        return "complete";
+      }
+      if (keyComplete() && state.trustedPointer) return "pointer";
+      if (keyComplete()) return "key";
+      return "waiting";
+    }
+
     function render() {
       output.textContent = JSON.stringify(state, null, 2);
+      const titleNonce = noncePattern.test(state.nonce) ? state.nonce : "";
+      const stage = domStage();
+      document.title =
+        `ASTERINAS_PHYSICAL cycle=${cycle} stage=${stage} nonce=${titleNonce}`;
+      if (stageOrder.indexOf(stage) === stageOrder.indexOf(reportedStage) + 1) {
+        reportedStage = stage;
+        const query = new URLSearchParams({cycle: String(cycle), stage, nonce: state.nonce});
+        stageReport = stageReport.then(() =>
+          fetch(`/stage?${query.toString()}`, {
+            cache: "no-store",
+            credentials: "omit"
+          }).then(response => {
+            if (!response.ok) throw new Error(`stage-http-${response.status}`);
+          })
+        ).catch(error => {
+          console.error(`ASTERINAS_PHYSICAL_STAGE_REPORT_FAIL stage=${stage} name=${error.name}`);
+        });
+      }
     }
 
     if (validConfiguration) {
@@ -145,7 +179,11 @@
     });
 
     document.addEventListener("pointermove", (event) => {
-      if (event.isTrusted && (event.movementX !== 0 || event.movementY !== 0)) {
+      const bounds = button.getBoundingClientRect();
+      const insideButton =
+        event.clientX > bounds.left && event.clientX < bounds.right &&
+        event.clientY > bounds.top && event.clientY < bounds.bottom;
+      if (event.isTrusted && keyComplete() && insideButton) {
         state.trustedPointer = true;
         render();
       }

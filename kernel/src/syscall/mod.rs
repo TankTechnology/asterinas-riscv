@@ -283,6 +283,7 @@ mod close;
 mod connect;
 mod constants;
 mod copy_file_range;
+pub(crate) mod diagnostics;
 mod dup;
 mod epoll;
 mod eventfd;
@@ -448,6 +449,7 @@ mod statx;
 mod symlink;
 mod sync;
 mod sysinfo;
+mod syslog;
 mod tgkill;
 mod time;
 mod timer_create;
@@ -647,6 +649,7 @@ impl SyscallArgument {
 
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+    diagnostics::enter(ctx, syscall_frame.syscall_number, syscall_frame.args);
     let profile_start = syscall_profile_begin(syscall_frame.syscall_number, ctx);
     syscall_profile_log_process_boundary(syscall_frame.syscall_number, &syscall_frame.args, ctx);
 
@@ -668,11 +671,13 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
                     syscall_frame.syscall_number as u32,
                 )));
             user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-(Errno::ENOSYS as isize)));
             syscall_profile_end(profile_start);
             return;
         }
         seccomp::SeccompDecision::Errno(errno) => {
             user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
             syscall_profile_end(profile_start);
             return;
         }
@@ -689,12 +694,16 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         Ok(return_value) => {
             if let SyscallReturn::Return(return_value) = return_value {
                 user_ctx.set_syscall_ret(return_value as usize);
+                diagnostics::complete(ctx, diagnostics::Outcome::Return(return_value));
+            } else {
+                diagnostics::complete(ctx, diagnostics::Outcome::NoReturn);
             }
         }
         Err(err) => {
             debug!("syscall return error: {:?}", err);
             let errno = err.error() as i32;
-            user_ctx.set_syscall_ret((-errno) as usize)
+            user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
         }
     }
     syscall_profile_end(profile_start);

@@ -205,11 +205,22 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
             manifest = validate_frozen_root(
                 required["root_image"], manifest, required["packages_lock"]
             )
-            package_rows = load_package_checksums(required["package_checksums"])
+            package_rows = load_package_checksums(
+                required["package_checksums"],
+                schema_version=manifest.schema_version,
+            )
         except (ContractError, OSError) as error:
             raise WorkflowError(f"plan-rootfs-invalid: {error}") from error
-        if manifest.profile != "desktop-m5-network":
+        if manifest.profile not in ("desktop-m5-network", "browser-web"):
             raise WorkflowError("plan-rootfs-profile-mismatch")
+        in_release_sha256 = manifest.signed_metadata_sha256
+        if manifest.profile == "browser-web":
+            base_sources = tuple(
+                source for source in manifest.signed_sources if source[0] == "base"
+            )
+            if len(base_sources) != 1:
+                raise WorkflowError("plan-rootfs-base-source-mismatch")
+            in_release_sha256 = base_sources[0][4]
         if package_rows != manifest.downloaded_packages:
             raise WorkflowError("plan-package-checksums-mismatch")
         evidence_artifacts = tuple(
@@ -220,7 +231,7 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
         expected_hashes = {
             "root_image": manifest.root_image_sha256,
             "packages_lock": manifest.packages_lock_sha256,
-            "in_release": manifest.signed_metadata_sha256,
+            "in_release": in_release_sha256,
         }
         if any(
             evidence_by_name[name].sha256 != expected

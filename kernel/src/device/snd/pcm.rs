@@ -255,12 +255,11 @@ pub struct SndPcmSyncPtr {
 }
 
 pub(crate) mod ioctl_defs {
-    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
-
     use super::{
         SndPcmChannelInfo, SndPcmHwParams, SndPcmInfo, SndPcmStatus, SndPcmSwParams, SndPcmSyncPtr,
         SndXferi,
     };
+    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/sound/asound.h#L666-L695>
     pub(crate) type Pversion = ioc!(SNDRV_PCM_IOCTL_PVERSION, b'A', 0x00, OutData<i32>);

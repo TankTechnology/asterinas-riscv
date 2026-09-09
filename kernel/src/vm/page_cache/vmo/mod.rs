@@ -803,11 +803,7 @@ impl Vmo {
     }
 
     /// Commits a read-fault window, using the normal batching policy.
-    pub(crate) fn commit_range_for_fault(
-        &self,
-        start_idx: usize,
-        end_idx: usize,
-    ) -> Result<()> {
+    pub(crate) fn commit_range_for_fault(&self, start_idx: usize, end_idx: usize) -> Result<()> {
         self.commit_range(start_idx, end_idx, CommitMode::Read)
             .map(|_| ())
     }

@@ -92,6 +92,8 @@ fn exit_internal(
         tasks.remove_exited(&current_task)
     };
 
+    crate::syscall::diagnostics::on_exit(ctx, term_status);
+
     // This is put after `current_thread.exit()`,
     // so `attach_tracee` will observe that the tracer has exited while
     // holding the `tracees` lock, and can not race with `clear_tracees`.

@@ -27,7 +27,7 @@ use crate::{
         process::timer_manager::{CpuTimeAccounting, CpuTimeMode},
         signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
-    syscall::SockFilter,
+    syscall::{SockFilter, diagnostics::ThreadDiagnostics},
     thread::{Thread, Tid},
     time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
@@ -171,6 +171,8 @@ pub struct PosixThread {
     prof_clock: Arc<ProfClock>,
     /// Precise CPU-time state while this thread is scheduled.
     cpu_time_accounting: SpinLock<CpuTimeAccounting>,
+    /// Opt-in bounded syscall records; storage is allocated on first entry.
+    syscall_diagnostics: ThreadDiagnostics,
     /// A manager that manages timers based on the user CPU time of the current thread.
     virtual_timer_manager: Arc<TimerManager>,
     /// A manager that manages timers based on the profiling clock of the current thread.
@@ -209,6 +211,10 @@ pub struct PosixThread {
 }
 
 impl PosixThread {
+    pub(crate) fn syscall_diagnostics(&self) -> &ThreadDiagnostics {
+        &self.syscall_diagnostics
+    }
+
     pub fn process(&self) -> Arc<Process> {
         self.process.upgrade().unwrap()
     }
