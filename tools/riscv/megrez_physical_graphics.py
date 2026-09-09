@@ -103,7 +103,7 @@ _PREFLIGHT = re.compile(
     r"__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=([0-9]+) "
     r"input_nodes=([0-9]+) framebuffer=([01]) xorg_fbdev=([01]) "
     r"openbox=([01]) firefox=([01]) browser_service=([a-z-]+) "
-    r"browser_restarts=([0-9]+) xhci_hosts=([0-9]+) "
+    r"browser_restarts=([0-9]+) usb_inputs=([0-9]+) "
     r"usb_keyboard=([01]) usb_mouse=([01])"
 )
 _PROTOCOL_PREFIX = "ASTERINAS_PHYSICAL_GRAPHICS_"
@@ -196,7 +196,7 @@ class GraphicalReadinessEvidence:
     firefox: bool
     browser_service: str
     browser_restarts: int
-    xhci_hosts: int
+    usb_inputs: int
     usb_keyboard: bool
     usb_mouse: bool
 
@@ -220,8 +220,8 @@ class GraphicalReadinessEvidence:
             or self.browser_service != "active"
             or type(self.browser_restarts) is not int
             or self.browser_restarts != 0
-            or type(self.xhci_hosts) is not int
-            or self.xhci_hosts != 2
+            or type(self.usb_inputs) is not int
+            or self.usb_inputs != 2
         ):
             raise HostGateError("graphical readiness contract is incomplete")
 
@@ -564,31 +564,27 @@ def physical_preflight_command() -> str:
     """Return the fixed root-shell probe for the physical graphics surface."""
 
     return (
-        "_asterinas_physical_dmesg=$(dmesg 2>/dev/null || true); "
         "_asterinas_physical_input_nodes=0; "
         "for _asterinas_physical_node in /dev/input/event*; do "
         '[ -c "$_asterinas_physical_node" ] && '
         "_asterinas_physical_input_nodes=$((_asterinas_physical_input_nodes + 1)); "
         "done; "
         "_asterinas_physical_framebuffer=0; [ -c /dev/fb0 ] && "
-        "printf '%s\\n' \"$_asterinas_physical_dmesg\" | "
-        "grep -Fq 'Registered firmware framebuffer: base=0xfd800000, "
-        "size=0x7e9000, resolution=1920x1080, stride=7680, "
-        "format=BgrReserved' && _asterinas_physical_framebuffer=1; "
-        "_asterinas_physical_xhci_hosts=0; "
-        "for _asterinas_physical_host in 0 1; do "
-        "printf '%s\\n' \"$_asterinas_physical_dmesg\" | "
-        'grep -Fq "Starting DWC3 xHCI host $_asterinas_physical_host:" && '
-        "_asterinas_physical_xhci_hosts=$((_asterinas_physical_xhci_hosts + 1)); "
-        "done; "
-        "_asterinas_physical_usb_keyboard=0; "
-        "printf '%s\\n' \"$_asterinas_physical_dmesg\" | "
-        "grep -Fq 'USB boot keyboard registered:' && "
-        "_asterinas_physical_usb_keyboard=1; "
-        "_asterinas_physical_usb_mouse=0; "
-        "printf '%s\\n' \"$_asterinas_physical_dmesg\" | "
-        "grep -Fq 'USB boot mouse registered:' && "
-        "_asterinas_physical_usb_mouse=1; "
+        "_asterinas_physical_framebuffer=1; "
+        "set -- $(/usr/bin/python3 -c 'import fcntl,glob,struct;"
+        "q=lambda p,c,n:(lambda b:(fcntl.ioctl(open(p,\"rb\",buffering=0),c,b),"
+        "bytes(b))[1])(bytearray(n));"
+        "d=[(struct.unpack(\"=HHHH\",q(p,0x80084502,8))[0],"
+        "q(p,0x81004506,256).split(b\"\\0\",1)[0],"
+        "q(p,0x81004507,256).split(b\"\\0\",1)[0]) for p in "
+        "glob.glob(\"/dev/input/event*\")];"
+        "k=(3,b\"usb_boot_keyboard\",b\"xhci/input0\");"
+        "m=(3,b\"usb_boot_mouse\",b\"xhci/input1\");"
+        "print(sum(x in (k,m) for x in d),int(k in d),int(m in d))' "
+        "2>/dev/null || printf '0 0 0'); "
+        "_asterinas_physical_usb_inputs=${1:-0}; "
+        "_asterinas_physical_usb_keyboard=${2:-0}; "
+        "_asterinas_physical_usb_mouse=${3:-0}; "
         "_asterinas_physical_xorg=0; "
         "pgrep -x Xorg >/dev/null 2>&1 && [ -S /tmp/.X11-unix/X0 ] && "
         "grep -q 'FBDEV(0)' /home/asterinas/Xorg.0.log 2>/dev/null && "
@@ -607,12 +603,12 @@ def physical_preflight_command() -> str:
         "2>/dev/null && _asterinas_physical_firefox=1 ;; esac; "
         "printf '__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=%s input_nodes=%s "
         "framebuffer=%s xorg_fbdev=%s openbox=%s firefox=%s browser_service=%s "
-        "browser_restarts=%s xhci_hosts=%s usb_keyboard=%s usb_mouse=%s\\n' "
+        "browser_restarts=%s usb_inputs=%s usb_keyboard=%s usb_mouse=%s\\n' "
         '"$_asterinas_physical_pid" '
         '"$_asterinas_physical_input_nodes" "$_asterinas_physical_framebuffer" '
         '"$_asterinas_physical_xorg" "$_asterinas_physical_openbox" '
         '"$_asterinas_physical_firefox" "$_asterinas_physical_service" '
-        '"$_asterinas_physical_restarts" "$_asterinas_physical_xhci_hosts" '
+        '"$_asterinas_physical_restarts" "$_asterinas_physical_usb_inputs" '
         '"$_asterinas_physical_usb_keyboard" "$_asterinas_physical_usb_mouse"'
     )
 
@@ -622,25 +618,57 @@ def physical_external_services_quiesce_command() -> str:
 
     return (
         "_asterinas_external_status=0; "
-        "/usr/bin/install -d -m 0755 /run/systemd/system.control "
+        "_asterinas_control=/run/systemd/system.control; "
+        "_asterinas_home=/run/asterinas-physical-home; "
+        "_asterinas_browser=asterinas-browser-web.service; "
+        "/usr/bin/install -d -m 0755 \"$_asterinas_control\" "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/install -d -m 0700 -o 1000 -g 1000 "
+        '"$_asterinas_home" "$_asterinas_home/.mozilla" '
+        '"$_asterinas_home/.mozilla/asterinas-browser-web" '
+        '"$_asterinas_home/.cache" "$_asterinas_home/Downloads" '
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/install -m 0600 -o 1000 -g 1000 /dev/null "
+        '"$_asterinas_home/browser-web-timeline.log" '
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/mountpoint -q /home/asterinas/browser-web-timeline.log || "
+        "/usr/bin/mount --bind \"$_asterinas_home/browser-web-timeline.log\" "
+        "/home/asterinas/browser-web-timeline.log "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/install -d -m 0755 "
+        '"$_asterinas_control/$_asterinas_browser.d" '
+        "|| _asterinas_external_status=$?; "
+        "printf '%s\\n' '[Service]' "
+        "'Environment=HOME=/run/asterinas-physical-home' "
+        "'Environment=ASTERINAS_WEB_NETWORK_MODE=proxy' "
+        "'Environment=XDG_CACHE_HOME=/run/asterinas-physical-home/.cache' "
+        '>"$_asterinas_control/$_asterinas_browser.d/physical.conf" '
         "|| _asterinas_external_status=$?; "
         "for _asterinas_external_unit in "
         "asterinas-browser-web-evidence.service "
         "asterinas-desktop-m5-network.service "
         "serial-getty@ttyS0.service console-getty.service; do "
         "/usr/bin/ln -sfn /dev/null "
-        '"/run/systemd/system.control/$_asterinas_external_unit" '
+        '"$_asterinas_control/$_asterinas_external_unit" '
         "|| _asterinas_external_status=$?; done; "
         "/usr/bin/timeout 15 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/timeout 60 /usr/bin/systemctl stop "
+        "asterinas-browser-web.service "
         "asterinas-browser-web-evidence.service "
         "asterinas-desktop-m5-network.service "
         "serial-getty@ttyS0.service console-getty.service >/dev/null 2>&1 "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/systemctl reset-failed "
+        "asterinas-browser-web-timeline-basic.service "
+        "asterinas-browser-web.service "
         "asterinas-browser-web-evidence.service "
         "asterinas-desktop-m5-network.service >/dev/null 2>&1 || true; "
+        "/usr/bin/timeout 15 /usr/bin/systemctl start "
+        "asterinas-browser-web-timeline-basic.service >/dev/null 2>&1 "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/systemctl start --no-block asterinas-browser-web.service "
+        ">/dev/null 2>&1 || _asterinas_external_status=$?; "
         "/usr/bin/systemctl start --no-block graphical.target >/dev/null 2>&1 "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/sleep 1; "
@@ -1501,7 +1529,7 @@ class RealPhysicalGraphicsOperations:
                 firefox=match.group(6) == "1",
                 browser_service=match.group(7),
                 browser_restarts=int(match.group(8)),
-                xhci_hosts=int(match.group(9)),
+                usb_inputs=int(match.group(9)),
                 usb_keyboard=match.group(10) == "1",
                 usb_mouse=match.group(11) == "1",
             )
