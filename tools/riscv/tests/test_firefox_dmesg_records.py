@@ -193,17 +193,50 @@ def snapshot(phase, syscall=22):
     }
 
 
-def dmesg_marker(phase="request_enter"):
+def dmesg_marker(phase="request_enter", *, request=4):
     return (
         f"<14>[  510.853000] ASTERINAS_FF_KLOG version=1 phase={phase} "
-        "request_id=4 firefox_pid=70 client_pid=252\n"
+        f"request_id={request} firefox_pid=70 client_pid=252\n"
     ).encode()
 
 
+def dmesg_window(terminal="request_error"):
+    phases = (
+        ("collector_started", 0),
+        ("request_selected", 4),
+        ("snapshot_before_start", 4),
+        ("snapshot_before_end", 4),
+        ("request_enter", 4),
+        ("snapshot_during_start", 4),
+        ("snapshot_during_end", 4),
+        (terminal, 4),
+        ("snapshot_after_start", 4),
+        ("snapshot_after_end", 4),
+        ("collector_stopping", 4),
+    )
+    return b"".join(dmesg_marker(phase, request=request) for phase, request in phases)
+
+
 class CorrelationTests(unittest.TestCase):
+    def test_missing_markers_and_unusable_process_snapshots_are_incomplete(self):
+        snapshots = [snapshot(name) for name in ("before", "during", "after")]
+        for value in snapshots:
+            value["tree"]["root_identity"] = {}
+            value["tree"]["processes"] = []
+            value["tree"]["limitations"] = ["time_limit"]
+        with self.assertRaisesRegex(ValueError, "identity|marker"):
+            correlate(b"", [], snapshots, [transport("send_complete")])
+        with self.assertRaisesRegex(ValueError, "marker"):
+            correlate(
+                b"",
+                [],
+                [snapshot(name) for name in ("before", "during", "after")],
+                [transport("send_complete")],
+            )
+
     def test_host_and_guest_clocks_remain_separate(self):
         result = correlate(
-            dmesg_marker(),
+            dmesg_window(),
             [actor("driver.enter")],
             [snapshot(name) for name in ("before", "during", "after")],
             [transport("send_complete")],
@@ -217,7 +250,7 @@ class CorrelationTests(unittest.TestCase):
 
     def test_send_without_driver_entry_selects_no_kernel_primitive(self):
         result = correlate(
-            dmesg_marker(),
+            dmesg_window(),
             [],
             [snapshot(name, syscall=22) for name in ("before", "during", "after")],
             [transport("send_complete")],
@@ -253,7 +286,7 @@ class CorrelationTests(unittest.TestCase):
         for stages, missing, subsystem in cases:
             with self.subTest(missing=missing):
                 result = correlate(
-                    dmesg_marker(),
+                    dmesg_window(),
                     [actor(stage) for stage in stages],
                     snapshots,
                     [transport("send_complete")],
@@ -268,7 +301,7 @@ class CorrelationTests(unittest.TestCase):
             ([actor("driver.enter")], snapshots[:-1]),
         ):
             with self.assertRaises(ValueError):
-                correlate(dmesg_marker(), actors, values, [transport("send_complete")])
+                correlate(dmesg_window(), actors, values, [transport("send_complete")])
 
     def test_request_return_means_the_failure_was_not_reproduced(self):
         records = [
@@ -283,7 +316,7 @@ class CorrelationTests(unittest.TestCase):
             )
         ]
         result = correlate(
-            dmesg_marker("request_return"),
+            dmesg_window("request_return"),
             records,
             [snapshot(name) for name in ("before", "during", "after")],
             [transport("send_complete"), transport("complete", stage="complete")],

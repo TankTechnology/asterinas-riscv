@@ -178,6 +178,28 @@ class BoundedDmesgTests(unittest.TestCase):
 
 
 class RunnerConstructionTests(unittest.TestCase):
+    def test_installed_diagnostic_sources_must_match_the_generated_sources(self):
+        generated = "print('driver')\n"
+        helper = experiment.GUEST_HELPER.read_bytes()
+        outputs = [generated.encode(), helper]
+
+        def run(_arguments, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=outputs.pop(0))
+
+        hashes = experiment.verify_installed_diagnostics(
+            Path("root.ext2"), generated, run=run
+        )
+        self.assertEqual(
+            hashes["guest_source_sha256"],
+            hashlib.sha256(generated.encode()).hexdigest(),
+        )
+
+        outputs[:] = [b"wrong", helper]
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            experiment.verify_installed_diagnostics(
+                Path("root.ext2"), generated, run=run
+            )
+
     def test_preparer_installs_the_matching_snapshot_parser(self):
         preparer = (
             Path(experiment.__file__).with_name("firefox_dmesg_prepare.py").read_text()
@@ -279,10 +301,25 @@ class RunnerConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "run"
             baseline = experiment.load_baseline(experiment.DEFAULT_BASELINE)
-            raw = (
-                b"<14>[  1.000000] ASTERINAS_FF_KLOG version=1 "
-                b"phase=request_enter request_id=4 firefox_pid=70 client_pid=252\n"
+            marker_phases = (
+                ("collector_started", 0),
+                ("request_selected", 4),
+                ("snapshot_before_start", 4),
+                ("snapshot_before_end", 4),
+                ("request_enter", 4),
+                ("snapshot_during_start", 4),
+                ("snapshot_during_end", 4),
+                ("request_error", 4),
+                ("snapshot_after_start", 4),
+                ("snapshot_after_end", 4),
+                ("collector_stopping", 4),
             )
+            raw = "".join(
+                "<14>[  1.000000] ASTERINAS_FF_KLOG version=1 "
+                f"phase={phase} request_id={request_id} "
+                "firefox_pid=70 client_pid=252\n"
+                for phase, request_id in marker_phases
+            ).encode()
             encoded = base64.b64encode(zlib.compress(raw)).decode()
             digest = hashlib.sha256(raw).hexdigest()
             meta = {
@@ -354,7 +391,7 @@ class RunnerConstructionTests(unittest.TestCase):
                         "root_pid": 70,
                         "root_identity": identity,
                         "limitations": [],
-                        "processes": [],
+                        "processes": [{"pid": 70, "threads": []}],
                     },
                 }
 
@@ -373,7 +410,10 @@ class RunnerConstructionTests(unittest.TestCase):
                 return 1
 
             baseline.main = fake_main
-            config = SimpleNamespace(output_directory=output)
+            config = SimpleNamespace(
+                output_directory=output,
+                root_image=Path(directory) / "diagnostic-root.ext2",
+            )
 
             def original_next(*_args, **_kwargs):
                 return lines[0], 1
@@ -384,6 +424,14 @@ class RunnerConstructionTests(unittest.TestCase):
             argv = ["runner", "--output-directory", str(output)]
             with (
                 mock.patch.object(experiment, "load_baseline", return_value=baseline),
+                mock.patch.object(
+                    experiment,
+                    "verify_installed_diagnostics",
+                    return_value={
+                        "guest_source_sha256": "b" * 64,
+                        "guest_helper_sha256": "c" * 64,
+                    },
+                ),
                 mock.patch.object(gate, "parse_gate_args", return_value=config),
                 mock.patch.object(gate, "_next_line", original_next),
                 mock.patch.object(
