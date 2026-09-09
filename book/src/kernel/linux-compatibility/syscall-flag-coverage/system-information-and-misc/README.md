@@ -105,9 +105,10 @@ oversized kernel messages end in `[truncated]`.
 `SIZE_BUFFER` reports the message capacity, excluding record metadata and output prefixes.
 Timestamps use microsecond units but currently have millisecond resolution.
 Messages emitted before the Asterinas logger is installed are not retained.
-At least warning-level messages are captured after installation,
-even when the boot console is disabled;
-more verbose capture follows the boot log level.
+By default, warning-level and more severe messages are captured after
+installation even when the boot console is disabled. The effective threshold
+is the more verbose of `loglevel` and `asterinas.klog_capture`; explicitly
+setting both to `off` disables retained logging.
 
 `/proc/sys/kernel/dmesg_restrict` defaults to `1`.
 Privileged access accepts `CAP_SYSLOG` in the initial user namespace,

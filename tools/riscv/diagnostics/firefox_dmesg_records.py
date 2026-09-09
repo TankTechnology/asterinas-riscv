@@ -274,13 +274,65 @@ def _snapshot_identity(snapshot):
     if phase not in ("before", "during", "after") or not isinstance(tree, dict):
         raise ValueError("invalid snapshot phase or tree")
     identity = tree.get("root_identity")
-    if not isinstance(identity, dict) or not _canonical_int(
-        tree.get("root_pid"), minimum=1
+    root_pid = tree.get("root_pid")
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"pid", "ppid", "start_time_ticks"}
+        or not _canonical_int(root_pid, minimum=1)
+        or identity.get("pid") != root_pid
+        or not _canonical_int(identity.get("ppid"))
+        or not _canonical_int(identity.get("start_time_ticks"))
     ):
         raise ValueError("snapshot root identity is unavailable")
     if any("identity" in value for value in tree.get("limitations", ())):
         raise ValueError("snapshot process identity is incomplete")
+    processes = tree.get("processes")
+    if not isinstance(processes, list) or not any(
+        isinstance(process, dict) and process.get("pid") == root_pid
+        for process in processes
+    ):
+        raise ValueError("snapshot root process is unavailable")
     return phase, identity
+
+
+def _validate_marker_window(dmesg_records, request_id, root_pid, transport_records):
+    markers = [record for record in dmesg_records if record["kind"] == "marker"]
+    identities = {(record["firefox_pid"], record["client_pid"]) for record in markers}
+    if len(identities) != 1 or next(iter(identities))[0] != root_pid:
+        raise ValueError("marker process identity is absent or inconsistent")
+    firefox_pid, client_pid = next(iter(identities))
+    if firefox_pid != root_pid or any(
+        record.get("pid") != client_pid for record in transport_records
+    ):
+        raise ValueError("marker process identity does not match collected evidence")
+    if not any(
+        record["phase"] == "collector_started" and record["request_id"] == 0
+        for record in markers
+    ):
+        raise ValueError("collector readiness marker is absent")
+
+    selected = [
+        record["phase"] for record in markers if record["request_id"] == request_id
+    ]
+    terminal = [
+        phase for phase in selected if phase in ("request_return", "request_error")
+    ]
+    if len(terminal) != 1:
+        raise ValueError("request terminal marker is absent or ambiguous")
+    expected = [
+        "request_selected",
+        "snapshot_before_start",
+        "snapshot_before_end",
+        "request_enter",
+        "snapshot_during_start",
+        "snapshot_during_end",
+        terminal[0],
+        "snapshot_after_start",
+        "snapshot_after_end",
+        "collector_stopping",
+    ]
+    if selected != expected:
+        raise ValueError("request marker window is incomplete or out of order")
 
 
 def _current_syscalls(snapshots):
@@ -348,6 +400,12 @@ def correlate(
     if len(request_ids) != 1:
         raise ValueError("selected request identity is absent or ambiguous")
     request_id = next(iter(request_ids))
+    _validate_marker_window(
+        dmesg_records,
+        request_id,
+        identities[0]["pid"],
+        relevant_transport,
+    )
     selected_actors = []
     for record in actor_records:
         if not isinstance(record, dict) or type(record.get("request")) is not int:

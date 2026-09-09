@@ -182,6 +182,23 @@ No serial message is emitted for ordinary syscall entry or completion.
 Syscall lifecycle records report both the current `tid` and `entered_tid`
 so successful exec's thread-ID change can be recognized.
 
+### `asterinas.tcp_diagnostic_port`
+
+Enable bounded scalar-only TCP tracing for connections whose local or remote
+port matches the configured value. Values `1..65535` select a port; omitting
+the parameter, using `0`, or using a value outside that range leaves the
+facility disabled. The trace records no payload bytes or pointers.
+
+At most 128 boundary records are emitted, followed by one suppression summary.
+The records use `info` severity, so retain them with
+`asterinas.klog_capture=info` when console output is disabled.
+
+Example:
+
+```text
+loglevel=off asterinas.klog_capture=info asterinas.tcp_diagnostic_port=2828
+```
+
 ### `asterinas.reboot_after`
 
 On RISC-V, opt in to a software recovery deadline.

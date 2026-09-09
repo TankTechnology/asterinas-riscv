@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import time
 
@@ -22,11 +23,8 @@ from tools.riscv.diagnostics.firefox_transport_records import FirefoxTransportRe
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-DEFAULT_BASELINE = (
-    REPOSITORY
-    / "target/firefox-diagnostics-20260908/browser_checkpoint_experiment-wide.py"
-)
-BASELINE_SHA256 = "fc154e4d2deb72a9ca881320dce9da108cff8b2421b39d0dc112a6238ebec01a"
+DEFAULT_BASELINE = Path(__file__).with_name("firefox_checkpoint_baseline.py")
+BASELINE_SHA256 = "457bfd780dbd182c745be5edeb17e32195c0302462b604757becc6f84e15623a"
 GUEST_HELPER = Path(__file__).with_name("firefox_dmesg_guest.py")
 SERIAL_COMMAND_LIMIT = 4000
 TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
@@ -57,6 +55,29 @@ def load_baseline(path=DEFAULT_BASELINE):
     baseline = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(baseline)
     return baseline
+
+
+def verify_installed_diagnostics(root_image, generated_source, *, run=subprocess.run):
+    expected = {
+        "guest_source_sha256": hashlib.sha256(generated_source.encode()).hexdigest(),
+        "guest_helper_sha256": sha256(GUEST_HELPER),
+    }
+    paths = {
+        "guest_source_sha256": "/usr/lib/asterinas/firefox-dmesg-driver.py",
+        "guest_helper_sha256": "/usr/lib/asterinas/firefox_dmesg_guest.py",
+    }
+    actual = {}
+    for name, path in paths.items():
+        result = run(
+            ["debugfs", "-R", f"cat {path}", str(root_image)],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"cannot read installed diagnostic source: {path}")
+        actual[name] = hashlib.sha256(result.stdout).hexdigest()
+    if actual != expected:
+        raise ValueError("installed diagnostic source hash mismatch")
+    return actual
 
 
 def transform_worker_source(source):
@@ -403,6 +424,7 @@ def main(arguments=None):
     progress("packaging_validated")
     baseline = load_baseline()
     generated_source = build_guest_source(baseline)
+    installed_source = verify_installed_diagnostics(config.root_image, generated_source)
     generated_loader = guest_loader(baseline)
     evidence = SerialEvidence(output, progress)
     original_next = gate._next_line
@@ -499,8 +521,7 @@ def main(arguments=None):
         "version": 1,
         "baseline_sha256": BASELINE_SHA256,
         "runner_sha256": sha256(Path(__file__)),
-        "guest_helper_sha256": sha256(GUEST_HELPER),
-        "guest_source_sha256": hashlib.sha256(generated_source.encode()).hexdigest(),
+        **installed_source,
         "input_sha256": {},
     }
     base_result_path = output / "result.json"

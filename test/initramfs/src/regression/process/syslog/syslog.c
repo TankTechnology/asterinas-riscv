@@ -45,6 +45,20 @@ static int reader_at_end(void)
 	return fd;
 }
 
+static int syscall_info_diagnostics_enabled(void)
+{
+	int fd = open("/proc/cmdline", O_RDONLY);
+	if (fd < 0)
+		return 0;
+	ssize_t count = read(fd, record, sizeof(record) - 1);
+	close(fd);
+	if (count < 0)
+		return 0;
+	record[count] = '\0';
+	return strstr(record, "asterinas.syscall_diag=1") &&
+	       strstr(record, "asterinas.klog_capture=info");
+}
+
 static unsigned long long read_marker(int fd, const char *marker,
 				      unsigned int *priority)
 {
@@ -313,6 +327,7 @@ END_TEST()
 
 FN_TEST(capture_level_retains_info)
 {
+	SKIP_TEST_IF(!syscall_info_diagnostics_enabled());
 	int fd = reader_at_end();
 	pid_t parent = getpid();
 	pid_t child = CHECK(fork());

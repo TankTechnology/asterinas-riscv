@@ -451,6 +451,14 @@ impl<E: Ext> PollContext<'_, E> {
             let Some(socket) = self.iface.pop_pending_tcp() else {
                 break;
             };
+            let key = socket.connection_key();
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PendingPop,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [0, 0, 0],
+            );
 
             // We set `did_something` even if no packets are actually generated. This is because a
             // timer can expire, but no packets are actually generated.
@@ -463,14 +471,6 @@ impl<E: Ext> PollContext<'_, E> {
                     let mut this = PollContext::new(iface, self.sockets, self.actions);
 
                     if !tcp_repr.payload.is_empty() {
-                        let key = socket.connection_key();
-                        record_tcp_diagnostic(
-                            TcpDiagnosticStage::PendingPop,
-                            key.hash(),
-                            key.local_port(),
-                            key.remote_port(),
-                            [tcp_repr.payload.len() as u64, 0, 0],
-                        );
                         record_tcp_diagnostic(
                             TcpDiagnosticStage::SegmentGenerated,
                             key.hash(),

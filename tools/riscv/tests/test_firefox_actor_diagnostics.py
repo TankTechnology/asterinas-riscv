@@ -142,6 +142,7 @@ class ActorTraceTests(unittest.TestCase):
             },
         )
 
+    @unittest.skipUnless(ARCHIVE.exists(), "requires the pinned Firefox archive")
     def test_transport_module_marks_callback_parser_and_dispatch_boundaries(self):
         with zipfile.ZipFile(ARCHIVE) as archive:
             source = overlay.patch_module(
@@ -162,6 +163,7 @@ class ActorTraceTests(unittest.TestCase):
         self.assertIn("Ci.nsITimer.TYPE_REPEATING_SLACK", source)
         self.assertIn("this._aFfProbeTimer.cancel()", source)
 
+    @unittest.skipUnless(ARCHIVE.exists(), "requires the pinned Firefox archive")
     def test_server_unbuffered_variant_is_explicit_and_default_is_unchanged(self):
         with zipfile.ZipFile(ARCHIVE) as archive:
             original = archive.read(overlay.SERVER).decode()
