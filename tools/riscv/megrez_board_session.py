@@ -56,6 +56,10 @@ BAUD = 115200
 YMODEM_BAUD = 1_500_000
 YMODEM_STAGING_ADDRESS = 0x9000_0000
 MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
+YMODEM_MIN_TRANSFER_TIMEOUT = 120.0
+YMODEM_MIN_BYTES_PER_SECOND = 32 * 1024
+YMODEM_TRANSFER_GRACE_SECONDS = 30.0
+YMODEM_MAX_TRANSFER_TIMEOUT = 2100.0
 TX_DELAY = 0.02
 DEBUG_CONSOLE_TX_DELAY = 0.005
 RECOVERY_GRACE_SECONDS = 30.0
@@ -241,6 +245,14 @@ def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> Non
     if result.returncode != 0:
         diagnostic = result.stderr.decode(errors="replace")[-200:]
         raise RuntimeError(f"YMODEM sender exited {result.returncode}: {diagnostic!r}")
+
+
+def _ymodem_transfer_timeout(size: int) -> float:
+    estimated = size / YMODEM_MIN_BYTES_PER_SECOND + YMODEM_TRANSFER_GRACE_SECONDS
+    return min(
+        YMODEM_MAX_TRANSFER_TIMEOUT,
+        max(YMODEM_MIN_TRANSFER_TIMEOUT, estimated),
+    )
 
 
 def read_available(fd: int, timeout: float) -> str:
@@ -523,7 +535,11 @@ class BoardSession:
             try:
                 os.write(self.fd, b"\r")
                 self.wait_for("Ready for binary", timeout=15)
-                _transfer_ymodem_file(self.fd, source_fd, 120.0)
+                _transfer_ymodem_file(
+                    self.fd,
+                    source_fd,
+                    _ymodem_transfer_timeout(metadata.st_size),
+                )
                 completion = self.wait_for("press ESC", timeout=15)
             except BaseException:
                 try:
