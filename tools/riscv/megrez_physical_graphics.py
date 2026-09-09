@@ -534,6 +534,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
             (
                 "console=",
                 "loglevel=",
+                "asterinas.mmc_write_partition2",
                 "asterinas.reboot_after=",
                 "systemd.unit=",
                 "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
