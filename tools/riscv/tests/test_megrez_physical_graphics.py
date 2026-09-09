@@ -912,7 +912,8 @@ class PhysicalCommandTests(unittest.TestCase):
         for fragment in (
             "/dev/fb0",
             "/dev/input/event*",
-            "FBDEV(0)",
+            "/proc/$_asterinas_physical_xorg_pid/fd/*",
+            "readlink",
             "0x81004506",
             "0x80084502",
             "usb_boot_keyboard",
@@ -927,6 +928,7 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             self.assertIn(fragment, command)
         self.assertNotIn("dmesg", command)
+        self.assertNotIn("Xorg.0.log", command)
 
     def test_preflight_returns_incomplete_marker_for_bounded_retry(self) -> None:
         gate = load_gate(self)
