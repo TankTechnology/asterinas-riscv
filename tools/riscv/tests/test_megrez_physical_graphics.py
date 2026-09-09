@@ -471,7 +471,8 @@ class PhysicalLifecycleTests(unittest.TestCase):
     PLAN_BOOTARGS = (
         "console=ttyS0 console=tty0 loglevel=info init=/init "
         "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
-        "asterinas.reboot_after=600 -- --root-init=systemd"
+        "asterinas.mmc_write_partition2 asterinas.reboot_after=600 "
+        "-- --root-init=systemd"
     )
 
     class Operations:
@@ -620,6 +621,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertFalse(any(token.startswith("systemd.unit=") for token in tokens))
         self.assertNotIn("systemd.unit=multi-user.target", tokens)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
+        self.assertNotIn("asterinas.mmc_write_partition2", tokens)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
         )
