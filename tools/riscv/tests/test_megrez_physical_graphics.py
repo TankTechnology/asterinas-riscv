@@ -1029,7 +1029,7 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertEqual(result, readiness)
         self.assertEqual(
-            events, ["ready", "validate", "quiesce", "debug", "probe", "sync"]
+            events, ["ready", "validate", "quiesce", "probe", "debug", "sync"]
         )
 
     def test_readiness_requires_two_xhci_hosts_and_both_usb_hid_devices(self) -> None:
