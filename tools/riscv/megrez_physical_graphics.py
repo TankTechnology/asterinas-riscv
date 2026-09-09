@@ -100,7 +100,7 @@ _SCREENSHOT_BEGIN = re.compile(
 _SCREENSHOT_END = re.compile(r"__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=([1-3])")
 _FINAL = re.compile(rf"__ASTERINAS_PHYSICAL_FINAL__ cycle=3 nonce_sha256=({_SHA256})")
 _PREFLIGHT = re.compile(
-    r"__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=([1-9][0-9]*) "
+    r"__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=([0-9]+) "
     r"input_nodes=([0-9]+) framebuffer=([01]) xorg_fbdev=([01]) "
     r"openbox=([01]) firefox=([01]) browser_service=([a-z-]+) "
     r"browser_restarts=([0-9]+) xhci_hosts=([0-9]+) "

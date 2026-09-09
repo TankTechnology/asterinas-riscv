@@ -924,6 +924,37 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             self.assertIn(fragment, command)
 
+    def test_preflight_returns_incomplete_marker_for_bounded_retry(self) -> None:
+        gate = load_gate(self)
+
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 11
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = serial
+        marker = (
+            "__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=0 input_nodes=2 "
+            "framebuffer=0 xorg_fbdev=0 openbox=1 firefox=0 "
+            "browser_service=inactive browser_restarts=0 xhci_hosts=0 "
+            "usb_keyboard=0 usb_mouse=0"
+        )
+
+        with (
+            mock.patch.object(
+                operations,
+                "_next_line",
+                side_effect=[
+                    (marker, 12),
+                    AssertionError("ignored a complete preflight marker"),
+                ],
+            ),
+            self.assertRaisesRegex(
+                gate.HostGateError, "graphical readiness contract is incomplete"
+            ),
+        ):
+            operations._probe_graphical_readiness(time.monotonic() + 30)
+
+        serial.send.assert_called_once()
+
     def test_external_service_quiesce_is_fail_closed(self) -> None:
         gate = load_gate(self)
         command = gate.physical_external_services_quiesce_command()
