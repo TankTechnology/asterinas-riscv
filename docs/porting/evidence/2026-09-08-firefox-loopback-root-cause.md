@@ -157,7 +157,11 @@ its serial SHA-256 is
 ## Claim boundary and next gate
 
 The repaired kernel has closed the Firefox software interaction loop in RISC-V
-QEMU. The remaining acceptance work is operational and hardware-specific:
+QEMU. Attachment inheritance and automatic detach on `exec` or process exit
+remain incomplete outside the explicit Firefox/Xorg attach-detach sequence;
+they are documented compatibility limitations rather than part of this
+physical acceptance claim. The remaining acceptance work is operational and
+hardware-specific:
 
 1. install the exact 2 GiB root image to the Megrez test partition;
 2. boot the same kernel on Megrez;
