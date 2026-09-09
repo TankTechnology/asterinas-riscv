@@ -105,24 +105,27 @@ pub fn shm_detach(shmaddr: Vaddr, ipc_ns: &Arc<IpcNamespace>, ctx: &Context) -> 
     }
 
     let pid = ctx.process.pid();
-    let shmid = ipc_ns.shm_attachment(pid, shmaddr).ok_or_else(|| {
+    let shmid = ipc_ns.take_shm_attachment(pid, shmaddr).ok_or_else(|| {
         Error::with_message(Errno::EINVAL, "no shared memory attached at the address")
     })?;
 
     let user_space = ctx.user_space();
     let vmar = user_space.vmar();
-    let range = {
-        let guard = vmar.query(shmaddr..shmaddr + PAGE_SIZE);
-        let mapping = guard
-            .iter()
-            .next()
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the address is not mapped"))?;
-        mapping.map_to_addr()..mapping.map_end()
-    };
-    vmar.remove_mapping(range)?;
-
-    let removed_shmid = ipc_ns.remove_shm_attachment(pid, shmaddr);
-    debug_assert_eq!(removed_shmid, Some(shmid));
+    let unmap_result = (|| {
+        let range = {
+            let guard = vmar.query(shmaddr..shmaddr + PAGE_SIZE);
+            let mapping = guard
+                .iter()
+                .next()
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "the address is not mapped"))?;
+            mapping.map_to_addr()..mapping.map_end()
+        };
+        vmar.remove_mapping(range)
+    })();
+    if let Err(error) = unmap_result {
+        ipc_ns.record_shm_attachment(pid, shmaddr, shmid);
+        return Err(error);
+    }
     ipc_ns.release_shm_attachment(shmid, pid)?;
 
     Ok(())

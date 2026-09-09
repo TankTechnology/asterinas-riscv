@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <pthread.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
@@ -174,6 +175,73 @@ FN_TEST(shmat_accepts_segment_marked_for_deletion)
 	TEST_RES(*data, _ret == 0x5678);
 	TEST_SUCC(shmdt(data));
 	TEST_ERRNO(shmctl(shmid, IPC_STAT, &ds), EINVAL);
+}
+END_TEST()
+
+FN_TEST(marked_segment_releases_its_key)
+{
+	int old_shmid = TEST_SUCC(
+		shmget(PERMISSION_KEY, SEG_SIZE, IPC_CREAT | IPC_EXCL | 0600));
+	int *data = TEST_SUCC(shmat(old_shmid, NULL, 0));
+
+	TEST_SUCC(remove_segment(old_shmid));
+	TEST_ERRNO(shmctl(old_shmid, IPC_RMID, NULL), EINVAL);
+	int new_shmid = TEST_SUCC(
+		shmget(PERMISSION_KEY, SEG_SIZE, IPC_CREAT | IPC_EXCL | 0600));
+	TEST_RES(new_shmid, _ret != old_shmid);
+	TEST_SUCC(shmdt(data));
+	TEST_SUCC(remove_segment(new_shmid));
+}
+END_TEST()
+
+struct detach_attempt {
+	pthread_barrier_t *barrier;
+	void *address;
+	int result;
+	int error;
+};
+
+static void *detach_once(void *argument)
+{
+	struct detach_attempt *attempt = argument;
+	pthread_barrier_wait(attempt->barrier);
+	errno = 0;
+	attempt->result = shmdt(attempt->address);
+	attempt->error = errno;
+	return NULL;
+}
+
+FN_TEST(concurrent_shmdt_consumes_one_attachment)
+{
+	int shmid = TEST_SUCC(create_segment());
+	void *data = TEST_SUCC(shmat(shmid, NULL, 0));
+	pthread_barrier_t barrier;
+	TEST_SUCC(pthread_barrier_init(&barrier, NULL, 3));
+	struct detach_attempt attempts[2] = {
+		{ .barrier = &barrier, .address = data },
+		{ .barrier = &barrier, .address = data },
+	};
+	pthread_t threads[2];
+	TEST_SUCC(pthread_create(&threads[0], NULL, detach_once, &attempts[0]));
+	TEST_SUCC(pthread_create(&threads[1], NULL, detach_once, &attempts[1]));
+	pthread_barrier_wait(&barrier);
+	TEST_SUCC(pthread_join(threads[0], NULL));
+	TEST_SUCC(pthread_join(threads[1], NULL));
+	TEST_SUCC(pthread_barrier_destroy(&barrier));
+
+	int successes = 0;
+	int invalid = 0;
+	for (size_t i = 0; i < 2; i++) {
+		successes += attempts[i].result == 0;
+		invalid += attempts[i].result == -1 &&
+			   attempts[i].error == EINVAL;
+	}
+	TEST_RES(successes, _ret == 1);
+	TEST_RES(invalid, _ret == 1);
+	struct shmid_ds ds;
+	TEST_SUCC(shmctl(shmid, IPC_STAT, &ds));
+	TEST_RES(ds.shm_nattch, _ret == 0);
+	TEST_SUCC(remove_segment(shmid));
 }
 END_TEST()
 

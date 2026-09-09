@@ -3,8 +3,8 @@
 //! Defines the IPC namespace abstraction.
 //!
 //! An IPC namespace isolates System V IPC resources from other namespaces.
-//! It currently manages semaphore sets only, while message queues and shared
-//! memory remain to be added.
+//! It currently manages semaphore sets and shared memory, while message queues
+//! remain to be added.
 //!
 //! Each namespace stores its semaphore sets in a per-namespace map keyed by
 //! IPC key and uses a dedicated ID allocator to assign semaphore identifiers.
@@ -42,13 +42,15 @@ use crate::{
 /// Each namespace maintains its own independent set
 /// of IPC resources and identifier allocator.
 ///
-/// Lock ordering:
-/// `sem_ids` -> `SemaphoreSet::inner`.
+/// Shared-memory lock ordering:
+/// `shm_keys` -> `shm_ids` -> `shm_attachments`.
 pub struct IpcNamespace {
     /// Semaphore sets within this namespace.
     sem_ids: IpcIds<SemaphoreSet>,
     /// Shared memory segments within this namespace.
     shm_ids: IpcIds<ShmSet>,
+    /// Discoverable non-private shared memory keys.
+    shm_keys: RwMutex<BTreeMap<IpcKey, IpcId>>,
     /// Attachments of shared memory segments, keyed by `(pid, address)`.
     shm_attachments: RwMutex<BTreeMap<(Pid, Vaddr), IpcId>>,
     /// Owner user namespace.
@@ -85,6 +87,7 @@ impl IpcNamespace {
         Arc::new(Self {
             sem_ids,
             shm_ids,
+            shm_keys: RwMutex::new(BTreeMap::new()),
             shm_attachments: RwMutex::new(BTreeMap::new()),
             owner,
             stashed_dentry,
@@ -235,10 +238,20 @@ impl IpcNamespace {
     where
         F: FnOnce(&ShmSet) -> Result<()>,
     {
+        let mut shm_keys = self.shm_keys.write();
+        let mut removed_key = None;
         self.shm_ids.remove_if(shmid, |shm_set| {
             may_remove(shm_set)?;
+            if shm_set.is_marked_for_removal() {
+                return_errno_with_message!(Errno::EINVAL, "the segment is already removed");
+            }
+            removed_key = Some(shm_set.permission().key());
             Ok(shm_set.mark_for_removal())
         })?;
+        if let Some(key) = removed_key.filter(|key| *key != IPC_PRIVATE) {
+            let removed_shmid = shm_keys.remove(&key);
+            debug_assert_eq!(removed_shmid, Some(shmid));
+        }
         Ok(())
     }
 
@@ -256,21 +269,9 @@ impl IpcNamespace {
             return self.create_shm_set(size, mode, pid, credentials);
         }
 
-        // For now, we compute `shmid` by hashing `key`. If the hash conflicts, we will simply
-        // return an error. See the TODO below.
-        const { assert!(SHMMNI <= u32::MAX as usize) };
-        let shmid = IpcId::new(key.cast_unsigned() % SHMMNI as u32 + 1);
-
-        loop {
-            match self.shm_ids.with(shmid, |shm_set| {
-                if shm_set.permission().key() != key {
-                    if flags.contains(IpcFlags::IPC_CREAT) {
-                        // TODO: Manage all keys in a data structure (e.g., a map)
-                        return_errno_with_message!(Errno::ENOSPC, "key hashes conflict");
-                    }
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-
+        let mut shm_keys = self.shm_keys.write();
+        if let Some(&shmid) = shm_keys.get(&key) {
+            return self.shm_ids.with(shmid, |shm_set| {
                 self.validate_shm_set(shm_set, ShmPermissionMode::from_requested_mode(mode))?;
 
                 if flags.contains(IpcFlags::IPC_CREAT | IpcFlags::IPC_EXCL) {
@@ -285,23 +286,18 @@ impl IpcNamespace {
                 }
 
                 Ok(shmid)
-            }) {
-                Err(_id_not_exist) if flags.contains(IpcFlags::IPC_CREAT) => {}
-                Err(_id_not_exist) => {
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-                Ok(result) => return result,
-            }
-
-            match self
-                .shm_ids
-                .insert_at(shmid, |_| ShmSet::new(key, size, mode, pid, &credentials))
-            {
-                Ok(()) => return Ok(shmid),
-                Err(err) if err.error() == Errno::EEXIST => continue,
-                Err(err) => return Err(err),
-            }
+            })?;
         }
+        if !flags.contains(IpcFlags::IPC_CREAT) {
+            return_errno_with_message!(Errno::ENOENT, "the key does not exist");
+        }
+
+        let shmid = self
+            .shm_ids
+            .insert_auto(|_| ShmSet::new(key, size, mode, pid, &credentials))?;
+        let previous = shm_keys.insert(key, shmid);
+        debug_assert!(previous.is_none());
+        Ok(shmid)
     }
 
     fn validate_shm_set(&self, shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
@@ -349,16 +345,12 @@ impl IpcNamespace {
 
     /// Records an attachment of `shmid` at `addr` by the process `pid`.
     pub fn record_shm_attachment(&self, pid: Pid, addr: Vaddr, shmid: IpcId) {
-        self.shm_attachments.write().insert((pid, addr), shmid);
+        let previous = self.shm_attachments.write().insert((pid, addr), shmid);
+        debug_assert!(previous.is_none());
     }
 
-    /// Returns the shared memory ID attached at `addr` by the process `pid`.
-    pub fn shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
-        self.shm_attachments.read().get(&(pid, addr)).copied()
-    }
-
-    /// Removes and returns the shared memory ID attached at `addr` by `pid`.
-    pub fn remove_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
+    /// Atomically claims and removes the attachment at `addr` for `pid`.
+    pub fn take_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
         self.shm_attachments.write().remove(&(pid, addr))
     }
 

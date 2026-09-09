@@ -49,9 +49,9 @@ which are summarized in the table below.
 | 26      | msync                  | ✅             | [⚠️](syscall-flag-coverage/memory-management/#msync) |
 | 27      | mincore                | ❌             | N/A |
 | 28      | madvise                | ✅             | [⚠️](syscall-flag-coverage/memory-management/#madvise) |
-| 29      | shmget                 | ❌             | N/A |
-| 30      | shmat                  | ❌             | N/A |
-| 31      | shmctl                 | ❌             | N/A |
+| 29      | shmget                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
+| 30      | shmat                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
+| 31      | shmctl                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
 | 32      | dup                    | ✅             | 💯 |
 | 33      | dup2                   | ✅             | 💯 |
 | 34      | pause                  | ✅             | 💯 |
@@ -87,7 +87,7 @@ which are summarized in the table below.
 | 64      | semget                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semget) |
 | 65      | semop                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semop-and-semtimedop) |
 | 66      | semctl                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semctl) |
-| 67      | shmdt                  | ❌             | N/A |
+| 67      | shmdt                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
 | 68      | msgget                 | ❌             | N/A |
 | 69      | msgsnd                 | ❌             | N/A |
 | 70      | msgrcv                 | ❌             | N/A |
