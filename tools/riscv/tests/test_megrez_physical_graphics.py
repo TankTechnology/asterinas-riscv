@@ -616,7 +616,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         gate = load_gate(self)
         bootargs = gate.physical_bootargs(self._plan())
         tokens = bootargs.split()
-        self.assertEqual(tokens[:3], ["console=tty0", "console=ttyS0", "loglevel=info"])
+        self.assertEqual(tokens[:3], ["console=tty0", "console=ttyS0", "loglevel=off"])
         self.assertEqual(tokens.count("asterinas.reboot_after=900"), 1)
         self.assertFalse(any(token.startswith("systemd.unit=") for token in tokens))
         self.assertNotIn("systemd.unit=multi-user.target", tokens)
