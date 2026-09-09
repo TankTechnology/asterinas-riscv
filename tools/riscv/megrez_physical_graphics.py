@@ -41,6 +41,7 @@ from tools.riscv.megrez_board_session import (
     MEGREZ_USB_HOST_COMMAND,
     BoardSession,
     open_serial,
+    safe_artifact_name,
     validate_debug_console_readiness,
     validate_recovery_epoch,
 )
@@ -1763,13 +1764,24 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--hdmi-capture", required=True, type=Path)
+    parser.add_argument("--mmc-kernel", type=safe_artifact_name)
+    parser.add_argument("--mmc-initramfs", type=safe_artifact_name)
+    parser.add_argument("--mmc-dtb", type=safe_artifact_name)
     parser.add_argument("--open-timeout", type=_positive_seconds, default=60.0)
     parser.add_argument("--artifact-timeout", type=_positive_seconds, default=300.0)
     parser.add_argument("--boot-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--cycle-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--hdmi-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--recovery-timeout", type=_positive_seconds, default=930.0)
-    return parser.parse_args(arguments)
+    values = parser.parse_args(arguments)
+    mmc_names = (values.mmc_kernel, values.mmc_initramfs, values.mmc_dtb)
+    if any(name is not None for name in mmc_names) and not all(
+        name is not None for name in mmc_names
+    ):
+        parser.error(
+            "--mmc-kernel, --mmc-initramfs, and --mmc-dtb must be supplied together"
+        )
+    return values
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

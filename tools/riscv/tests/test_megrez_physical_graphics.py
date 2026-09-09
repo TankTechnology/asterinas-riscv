@@ -332,6 +332,64 @@ class HdmiEvidenceTests(unittest.TestCase):
             self.assertEqual(evidence.sha256, hashlib.sha256(payload).hexdigest())
 
 
+class PhysicalCliTests(unittest.TestCase):
+    BASE_ARGUMENTS = (
+        "/dev/serial/by-id/test",
+        "--plan",
+        "/tmp/plan.json",
+        "--output-directory",
+        "/tmp/evidence",
+        "--hdmi-capture",
+        "/tmp/capture.png",
+    )
+
+    def test_cli_accepts_one_complete_mmc_artifact_mapping(self) -> None:
+        gate = load_gate(self)
+        values = gate.parse_args(
+            self.BASE_ARGUMENTS
+            + (
+                "--mmc-kernel",
+                "asterinas-a1b2c3d4-34bc1cc0.Image",
+                "--mmc-initramfs",
+                "asterinas-a1b2c3d4-34bc1cc0-stage1.cpio",
+                "--mmc-dtb",
+                "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb",
+            )
+        )
+        self.assertEqual(values.mmc_kernel, "asterinas-a1b2c3d4-34bc1cc0.Image")
+        self.assertEqual(
+            values.mmc_initramfs,
+            "asterinas-a1b2c3d4-34bc1cc0-stage1.cpio",
+        )
+        self.assertEqual(
+            values.mmc_dtb,
+            "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb",
+        )
+
+    def test_cli_rejects_partial_or_unsafe_mmc_artifact_mapping(self) -> None:
+        gate = load_gate(self)
+        variants = (
+            ("--mmc-kernel", "kernel.Image"),
+            (
+                "--mmc-kernel",
+                "kernel.Image",
+                "--mmc-initramfs",
+                "stage1.cpio",
+            ),
+            (
+                "--mmc-kernel",
+                "kernel;reset",
+                "--mmc-initramfs",
+                "stage1.cpio",
+                "--mmc-dtb",
+                "board.dtb",
+            ),
+        )
+        for variant in variants:
+            with self.subTest(variant=variant), self.assertRaises(SystemExit):
+                gate.parse_args(self.BASE_ARGUMENTS + variant)
+
+
 class PhysicalLifecycleTests(unittest.TestCase):
     NONCES = PhysicalMarkerTests.NONCES
     PLAN_SHA256 = "a" * 64
