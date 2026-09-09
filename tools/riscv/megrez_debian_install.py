@@ -258,7 +258,6 @@ def _validate_permit(
 
 
 def _board_command(
-    repository: Path,
     device: str,
     output: Path,
     serial_directory: Path,
@@ -269,7 +268,8 @@ def _board_command(
 ) -> list[str]:
     return [
         sys.executable,
-        str(repository / "tools/riscv/megrez_board_session.py"),
+        "-m",
+        "tools.riscv.megrez_board_session",
         device,
         "--booti",
         KERNEL_FILENAME,
@@ -353,7 +353,6 @@ def _run_network_install_request(
     except OSError as error:
         raise InstallError(f"cannot build Debian installer: {error}") from error
     command = _board_command(
-        repository,
         device,
         output,
         transport_directory,
