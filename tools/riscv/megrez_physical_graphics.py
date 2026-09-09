@@ -546,7 +546,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
     physical = (
         "console=tty0",
         "console=ttyS0",
-        "loglevel=info",
+        "loglevel=off",
         *retained,
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",

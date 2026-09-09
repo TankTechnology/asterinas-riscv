@@ -455,7 +455,11 @@ The physical graphics orchestrator instead uses
 `/run/systemd/system.control/default.target` that points at the debug-console
 target. The `system.control` lookup tier takes precedence over the rootfs's
 `/etc/systemd/system/default.target`, so no rootfs service can start before the
-orchestrator applies its runtime masks. This does not depend on systemd's
+orchestrator installs transient `/run/systemd/system.control` masks for the
+competing network evidence services and starts the graphical target. The
+physical boot also uses `loglevel=off`: kernel records remain available to the
+later `dmesg` probes, while repeated writeback failures cannot saturate the
+115200-baud control channel. This does not depend on systemd's
 optional kernel-command-line generators, and the ordinary
 `--debug-console=root` mode continues to boot the rootfs's normal default
 target.
