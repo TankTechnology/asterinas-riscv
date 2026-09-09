@@ -968,6 +968,70 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertIn("systemctl stop", serial.command)
 
+    def test_isolated_readiness_starts_graphics_only_after_runtime_masks(self) -> None:
+        gate = load_gate(self)
+        events: list[str] = []
+
+        class Serial:
+            transcript = (gate.DEBUG_CONSOLE_READY + "\n").encode()
+
+            def wait_for(self, marker: bytes, _deadline: float) -> None:
+                self_test.assertEqual(marker, gate.DEBUG_CONSOLE_READY.encode())
+                events.append("ready")
+
+        self_test = self
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = Serial()
+        operations._guest_deadline = time.monotonic() + 60
+        operations._browser_pid = None
+        readiness = gate.GraphicalReadinessEvidence(
+            browser_pid=41,
+            input_nodes=2,
+            framebuffer=True,
+            xorg_fbdev=True,
+            openbox=True,
+            firefox=True,
+            browser_service="active",
+            browser_restarts=0,
+            xhci_hosts=2,
+            usb_keyboard=True,
+            usb_mouse=True,
+        )
+
+        with (
+            mock.patch.object(
+                gate,
+                "validate_debug_console_readiness",
+                side_effect=lambda _transcript: events.append("validate"),
+            ),
+            mock.patch.object(
+                gate,
+                "run_debug_console_phase",
+                side_effect=lambda *_args, **_kwargs: events.append("debug"),
+            ),
+            mock.patch.object(
+                operations,
+                "_quiesce_external_services",
+                side_effect=lambda _deadline: events.append("quiesce"),
+            ),
+            mock.patch.object(
+                operations,
+                "_probe_graphical_readiness",
+                side_effect=lambda _deadline: (events.append("probe"), readiness)[1],
+            ),
+            mock.patch.object(
+                operations,
+                "_sync_serial_log",
+                side_effect=lambda: events.append("sync"),
+            ),
+        ):
+            result = operations.prove_graphical_readiness(30)
+
+        self.assertEqual(result, readiness)
+        self.assertEqual(
+            events, ["ready", "validate", "quiesce", "debug", "probe", "sync"]
+        )
+
     def test_readiness_requires_two_xhci_hosts_and_both_usb_hid_devices(self) -> None:
         gate = load_gate(self)
         values = {
