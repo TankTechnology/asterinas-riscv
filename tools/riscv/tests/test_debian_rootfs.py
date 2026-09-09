@@ -650,7 +650,13 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         default_target = root / "run/systemd/system.control/default.target"
         self.assertTrue(default_target.is_symlink())
-        self.assertEqual(os.readlink(default_target), "asterinas-debug-console.target")
+        self.assertEqual(
+            os.readlink(default_target), "../system/asterinas-debug-console.target"
+        )
+        self.assertEqual(
+            default_target.resolve(),
+            root / "run/systemd/system/asterinas-debug-console.target",
+        )
 
     def test_isolated_debug_console_rejects_existing_default_target(self) -> None:
         binary = self.directory / "debug-console-harness"
