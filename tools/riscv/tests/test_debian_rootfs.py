@@ -634,6 +634,7 @@ class DebianStage1Tests(unittest.TestCase):
             "After=asterinas-debug-console.service\n",
         )
         self.assertFalse((runtime / "systemd/system/default.target").exists())
+        self.assertFalse((runtime / "systemd/system.control/default.target").exists())
 
     def test_isolated_debug_console_selects_runtime_default_target(self) -> None:
         binary = self.directory / "debug-console-harness"
@@ -647,7 +648,7 @@ class DebianStage1Tests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        default_target = root / "run/systemd/system/default.target"
+        default_target = root / "run/systemd/system.control/default.target"
         self.assertTrue(default_target.is_symlink())
         self.assertEqual(os.readlink(default_target), "asterinas-debug-console.target")
 
@@ -656,7 +657,7 @@ class DebianStage1Tests(unittest.TestCase):
         compilation = self.compile_debug_console_harness(binary)
         self.assertEqual(compilation.returncode, 0, compilation.stderr)
         root = self.directory / "root"
-        systemd = root / "run/systemd/system"
+        systemd = root / "run/systemd/system.control"
         systemd.mkdir(parents=True)
         default_target = systemd / "default.target"
         default_target.write_text("unchanged")
