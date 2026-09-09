@@ -920,7 +920,9 @@ class PhysicalCommandTests(unittest.TestCase):
         command = gate.physical_external_services_quiesce_command()
         for fragment in (
             "timeout 60",
-            "systemctl mask --runtime",
+            "/run/systemd/system.control",
+            "ln -sfn /dev/null",
+            "systemctl daemon-reload",
             "systemctl stop",
             "systemctl start --no-block graphical.target",
             "systemctl reset-failed",
@@ -932,7 +934,11 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             self.assertIn(fragment, command)
         self.assertLess(
-            command.index("systemctl mask --runtime"),
+            command.index("ln -sfn /dev/null"),
+            command.index("systemctl daemon-reload"),
+        )
+        self.assertLess(
+            command.index("systemctl daemon-reload"),
             command.index("systemctl stop"),
         )
         self.assertLess(
