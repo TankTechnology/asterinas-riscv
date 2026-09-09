@@ -621,9 +621,15 @@ def physical_external_services_quiesce_command() -> str:
 
     return (
         "_asterinas_external_status=0; "
-        "/usr/bin/timeout 15 /usr/bin/systemctl mask --runtime "
+        "/usr/bin/install -d -m 0755 /run/systemd/system.control "
+        "|| _asterinas_external_status=$?; "
+        "for _asterinas_external_unit in "
         "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service >/dev/null 2>&1 "
+        "asterinas-desktop-m5-network.service; do "
+        "/usr/bin/ln -sfn /dev/null "
+        '"/run/systemd/system.control/$_asterinas_external_unit" '
+        "|| _asterinas_external_status=$?; done; "
+        "/usr/bin/timeout 15 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/timeout 60 /usr/bin/systemctl stop "
         "asterinas-browser-web-evidence.service "
