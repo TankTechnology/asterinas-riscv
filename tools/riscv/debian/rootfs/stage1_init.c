@@ -93,6 +93,7 @@ enum RootInitMode {
 struct RootInitConfig {
     enum RootInitMode mode;
     int debug_root_console;
+    int debug_console_isolated;
 };
 
 struct ProductionContext {
@@ -186,6 +187,7 @@ static int parse_root_init(int argc, char **argv,
 {
     config->mode = ROOT_INIT_INTERACTIVE;
     config->debug_root_console = 0;
+    config->debug_console_isolated = 0;
     int selector_seen = 0;
     int debug_seen = 0;
     for (int index = 1; index < argc; ++index) {
@@ -194,12 +196,16 @@ static int parse_root_init(int argc, char **argv,
             selected_mode = ROOT_INIT_INTERACTIVE;
         } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
             selected_mode = ROOT_INIT_SYSTEMD;
-        } else if (strcmp(argv[index], "--debug-console=root") == 0) {
+        } else if (strcmp(argv[index], "--debug-console=root") == 0 ||
+                   strcmp(argv[index],
+                          "--debug-console=isolated-root") == 0) {
             if (debug_seen) {
                 return -1;
             }
             debug_seen = 1;
             config->debug_root_console = 1;
+            config->debug_console_isolated =
+                strcmp(argv[index], "--debug-console=isolated-root") == 0;
             continue;
         } else {
             return -1;
@@ -646,6 +652,7 @@ static int run_handoff_self_test(const char *case_name,
                     : ROOT_INIT_INTERACTIVE,
         .debug_root_console =
             failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE ? 1 : 0,
+        .debug_console_isolated = 0,
     };
     const char *reason = handoff_root(&ops, "/dev/vdb", &config);
     unsigned int expected_count =
@@ -668,6 +675,9 @@ static int run_root_init_self_test(const char *case_name)
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
     char *systemd_debug_argv[] = {
         "init", "--root-init=systemd", "--debug-console=root", NULL,
+    };
+    char *systemd_isolated_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=isolated-root", NULL,
     };
     char *interactive_debug_argv[] = {
         "init", "--root-init=interactive", "--debug-console=root", NULL,
@@ -708,9 +718,18 @@ static int run_root_init_self_test(const char *case_name)
         }
     } else if (strcmp(case_name, "root-init-systemd-debug-root") == 0) {
         if (parse_root_init(3, systemd_debug_argv, &config) != 0 ||
-            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console) {
+            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console ||
+            config.debug_console_isolated) {
             return fail_self_test(case_name,
                                   "systemd debug root console was rejected");
+        }
+    } else if (strcmp(case_name,
+                      "root-init-systemd-debug-isolated-root") == 0) {
+        if (parse_root_init(3, systemd_isolated_debug_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console ||
+            !config.debug_console_isolated) {
+            return fail_self_test(
+                case_name, "systemd isolated debug console was rejected");
         }
     } else if (strcmp(case_name, "root-init-debug-with-interactive") == 0) {
         if (parse_root_init(3, interactive_debug_argv, &config) == 0) {
@@ -813,6 +832,7 @@ static int run_root_init_self_test(const char *case_name)
         const struct RootInitConfig config = {
             .mode = ROOT_INIT_SYSTEMD,
             .debug_root_console = 0,
+            .debug_console_isolated = 0,
         };
         const char *reason = handoff_root(&ops, "/dev/vdb", &config);
         if (strcmp(reason, "exec-returned") != 0 ||
@@ -844,6 +864,7 @@ static int run_root_init_self_test(const char *case_name)
         const struct RootInitConfig config = {
             .mode = ROOT_INIT_SYSTEMD,
             .debug_root_console = 1,
+            .debug_console_isolated = 0,
         };
         const char *reason = handoff_root(&ops, "/dev/vdb", &config);
         if (strcmp(reason, "exec-returned") != 0 ||
@@ -1066,7 +1087,9 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
         break;
     case HANDOFF_PREPARE_DEBUG_CONSOLE:
-        result = stage1_prepare_debug_console("/newroot");
+        result = production_context->root_init.debug_console_isolated
+                     ? stage1_prepare_isolated_debug_console("/newroot")
+                     : stage1_prepare_debug_console("/newroot");
         break;
     case HANDOFF_MOUNT_TMP:
         if (ensure_directory("/newroot/tmp") != 0) {

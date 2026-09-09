@@ -114,7 +114,7 @@ static int create_file(const char *path, const char *content, size_t length)
     return result;
 }
 
-int stage1_prepare_debug_console(const char *root)
+static int prepare_debug_console(const char *root, int isolated)
 {
     static const char *const directory_suffixes[] = {
         "/run",
@@ -135,6 +135,7 @@ int stage1_prepare_debug_console(const char *root)
     };
     char paths[sizeof(destination_suffixes) / sizeof(destination_suffixes[0])]
               [STAGE1_PATH_SIZE];
+    char default_target_path[STAGE1_PATH_SIZE];
 
     for (size_t index = 0;
          index < sizeof(destination_suffixes) / sizeof(destination_suffixes[0]);
@@ -143,6 +144,12 @@ int stage1_prepare_debug_console(const char *root)
             destination_absent(paths[index]) != 0) {
             return -1;
         }
+    }
+    if (isolated &&
+        (make_path(default_target_path, root,
+                   "/run/systemd/system/default.target") != 0 ||
+         destination_absent(default_target_path) != 0)) {
+        return -1;
     }
 
     for (size_t index = 0;
@@ -164,8 +171,20 @@ int stage1_prepare_debug_console(const char *root)
                     sizeof(DEBUG_CONSOLE_TARGET) - 1) != 0 ||
         create_file(paths[4], CONSOLE_GETTY_DROP_IN,
                     sizeof(CONSOLE_GETTY_DROP_IN) - 1) != 0 ||
-        symlink("../asterinas-debug-console.service", paths[5]) != 0) {
+        symlink("../asterinas-debug-console.service", paths[5]) != 0 ||
+        (isolated &&
+         symlink("asterinas-debug-console.target", default_target_path) != 0)) {
         return -1;
     }
     return 0;
+}
+
+int stage1_prepare_debug_console(const char *root)
+{
+    return prepare_debug_console(root, 0);
+}
+
+int stage1_prepare_isolated_debug_console(const char *root)
+{
+    return prepare_debug_console(root, 1);
 }
