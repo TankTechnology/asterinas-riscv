@@ -147,7 +147,7 @@ static int prepare_debug_console(const char *root, int isolated)
     }
     if (isolated &&
         (make_path(default_target_path, root,
-                   "/run/systemd/system/default.target") != 0 ||
+                   "/run/systemd/system.control/default.target") != 0 ||
          destination_absent(default_target_path) != 0)) {
         return -1;
     }
@@ -158,6 +158,14 @@ static int prepare_debug_console(const char *root, int isolated)
         char path[STAGE1_PATH_SIZE];
         if (make_path(path, root, directory_suffixes[index]) != 0 ||
             ensure_directory(path) != 0) {
+            return -1;
+        }
+    }
+    if (isolated) {
+        char control_path[STAGE1_PATH_SIZE];
+        if (make_path(control_path, root,
+                      "/run/systemd/system.control") != 0 ||
+            ensure_directory(control_path) != 0) {
             return -1;
         }
     }

@@ -452,11 +452,13 @@ only together:
 
 The physical graphics orchestrator instead uses
 `--debug-console=isolated-root`. Stage1 then creates a transient
-`/run/systemd/system/default.target` that points at the debug-console target,
-so no rootfs service can start before the orchestrator applies its runtime
-masks. This does not depend on systemd's optional kernel-command-line
-generators, and the ordinary `--debug-console=root` mode continues to boot the
-rootfs's normal default target.
+`/run/systemd/system.control/default.target` that points at the debug-console
+target. The `system.control` lookup tier takes precedence over the rootfs's
+`/etc/systemd/system/default.target`, so no rootfs service can start before the
+orchestrator applies its runtime masks. This does not depend on systemd's
+optional kernel-command-line generators, and the ordinary
+`--debug-console=root` mode continues to boot the rootfs's normal default
+target.
 
 First run the bounded acceptance boot. Resolve the stable FTDI path rather
 than relying on the current `ttyUSB0` number, retain the 120-second Asterinas
