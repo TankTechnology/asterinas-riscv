@@ -915,6 +915,7 @@ class PhysicalCommandTests(unittest.TestCase):
         command = gate.physical_external_services_quiesce_command()
         for fragment in (
             "timeout 60",
+            "systemctl mask --runtime",
             "systemctl stop",
             "systemctl reset-failed",
             "asterinas-browser-web-evidence.service",
@@ -924,6 +925,10 @@ class PhysicalCommandTests(unittest.TestCase):
             "__ASTERINAS_PHYSICAL_EXTERNAL__",
         ):
             self.assertIn(fragment, command)
+        self.assertLess(
+            command.index("systemctl mask --runtime"),
+            command.index("systemctl stop"),
+        )
 
     def test_real_gate_requires_quiesced_services_before_preflight(self) -> None:
         gate = load_gate(self)
