@@ -527,9 +527,16 @@ class DebianStage1Tests(unittest.TestCase):
         harness = self.directory / "debug-console-harness.c"
         harness.write_text(
             '#include "stage1_debug_console.h"\n'
+            "#include <string.h>\n"
             "int main(int argc, char **argv)\n"
             "{\n"
-            "    return argc == 2 ? stage1_prepare_debug_console(argv[1]) : 2;\n"
+            "    if (argc == 2) {\n"
+            "        return stage1_prepare_debug_console(argv[1]);\n"
+            "    }\n"
+            '    if (argc == 3 && strcmp(argv[2], "isolated") == 0) {\n'
+            "        return stage1_prepare_isolated_debug_console(argv[1]);\n"
+            "    }\n"
+            "    return 2;\n"
             "}\n"
         )
         return subprocess.run(
@@ -626,6 +633,41 @@ class DebianStage1Tests(unittest.TestCase):
             "Wants=asterinas-debug-console.service\n"
             "After=asterinas-debug-console.service\n",
         )
+        self.assertFalse((runtime / "systemd/system/default.target").exists())
+
+    def test_isolated_debug_console_selects_runtime_default_target(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+
+        result = subprocess.run(
+            [binary, root, "isolated"], check=False, capture_output=True, text=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        default_target = root / "run/systemd/system/default.target"
+        self.assertTrue(default_target.is_symlink())
+        self.assertEqual(os.readlink(default_target), "asterinas-debug-console.target")
+
+    def test_isolated_debug_console_rejects_existing_default_target(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        systemd = root / "run/systemd/system"
+        systemd.mkdir(parents=True)
+        default_target = systemd / "default.target"
+        default_target.write_text("unchanged")
+
+        result = subprocess.run(
+            [binary, root, "isolated"], check=False, capture_output=True, text=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(default_target.read_text(), "unchanged")
+        self.assertFalse((root / "run/asterinas-debug-console.enabled").exists())
 
     def test_debug_console_rejects_symlink_destination(self) -> None:
         binary = self.directory / "debug-console-harness"
@@ -681,6 +723,7 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-explicit-interactive",
             "root-init-systemd",
             "root-init-systemd-debug-root",
+            "root-init-systemd-debug-isolated-root",
             "root-init-debug-with-interactive",
             "root-init-debug-duplicate",
             "root-init-debug-unknown",

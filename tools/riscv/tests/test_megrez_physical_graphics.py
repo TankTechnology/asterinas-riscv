@@ -519,8 +519,8 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
         def boot(self, _plan, bootargs: str, _timeout: float) -> None:
             self.events.append("boot")
-            if "--debug-console=root" not in bootargs:
-                raise AssertionError("physical boot omitted the debug root console")
+            if "--debug-console=isolated-root" not in bootargs:
+                raise AssertionError("physical boot omitted the isolated debug console")
             self._guest_started = True
             if self.fail_boot_after_start:
                 raise self.gate.HostGateError("post-boot setup failed")
@@ -617,7 +617,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         tokens = bootargs.split()
         self.assertEqual(tokens[:3], ["console=tty0", "console=ttyS0", "loglevel=info"])
         self.assertEqual(tokens.count("asterinas.reboot_after=900"), 1)
-        self.assertEqual(tokens.count("systemd.unit=asterinas-debug-console.target"), 1)
+        self.assertFalse(any(token.startswith("systemd.unit=") for token in tokens))
         self.assertNotIn("systemd.unit=multi-user.target", tokens)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
         self.assertEqual(
@@ -630,7 +630,8 @@ class PhysicalLifecycleTests(unittest.TestCase):
             tokens.count("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1"), 1
         )
         self.assertEqual(
-            tokens[-3:], ["--", "--root-init=systemd", "--debug-console=root"]
+            tokens[-3:],
+            ["--", "--root-init=systemd", "--debug-console=isolated-root"],
         )
 
     def test_publishes_pass_only_after_three_cycles_hdmi_and_recovery(self) -> None:

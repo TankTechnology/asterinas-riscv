@@ -546,7 +546,6 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         "console=tty0",
         "console=ttyS0",
         "loglevel=info",
-        "systemd.unit=asterinas-debug-console.target",
         *retained,
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
@@ -554,7 +553,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
         "--",
         "--root-init=systemd",
-        "--debug-console=root",
+        "--debug-console=isolated-root",
     )
     return " ".join(physical)
 
