@@ -17,6 +17,7 @@
 static const char DEBUG_CONSOLE_SERVICE[] =
     "[Unit]\n"
     "Description=Asterinas opt-in root serial console\n"
+    "DefaultDependencies=no\n"
     "After=systemd-user-sessions.service\n"
     "ConditionPathExists=/run/asterinas-debug-console.enabled\n"
     "\n"
@@ -32,6 +33,13 @@ static const char DEBUG_CONSOLE_SERVICE[] =
     "TTYVHangup=yes\n"
     "Restart=always\n"
     "RestartSec=1\n";
+
+static const char DEBUG_CONSOLE_TARGET[] =
+    "[Unit]\n"
+    "Description=Asterinas opt-in root serial console target\n"
+    "DefaultDependencies=no\n"
+    "Wants=asterinas-debug-console.service\n"
+    "After=asterinas-debug-console.service\n";
 
 static const char DEBUG_CONSOLE_BASHRC[] =
     "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
@@ -119,6 +127,7 @@ int stage1_prepare_debug_console(const char *root)
         "/run/asterinas-debug-console.enabled",
         "/run/asterinas-debug-console.bashrc",
         "/run/systemd/system/asterinas-debug-console.service",
+        "/run/systemd/system/asterinas-debug-console.target",
         "/run/systemd/system/console-getty.service.d/"
         "asterinas-debug-console.conf",
         "/run/systemd/system/getty.target.wants/"
@@ -151,9 +160,11 @@ int stage1_prepare_debug_console(const char *root)
                     sizeof(DEBUG_CONSOLE_BASHRC) - 1) != 0 ||
         create_file(paths[2], DEBUG_CONSOLE_SERVICE,
                     sizeof(DEBUG_CONSOLE_SERVICE) - 1) != 0 ||
-        create_file(paths[3], CONSOLE_GETTY_DROP_IN,
+        create_file(paths[3], DEBUG_CONSOLE_TARGET,
+                    sizeof(DEBUG_CONSOLE_TARGET) - 1) != 0 ||
+        create_file(paths[4], CONSOLE_GETTY_DROP_IN,
                     sizeof(CONSOLE_GETTY_DROP_IN) - 1) != 0 ||
-        symlink("../asterinas-debug-console.service", paths[4]) != 0) {
+        symlink("../asterinas-debug-console.service", paths[5]) != 0) {
         return -1;
     }
     return 0;

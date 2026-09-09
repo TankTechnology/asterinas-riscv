@@ -582,6 +582,7 @@ class DebianStage1Tests(unittest.TestCase):
 
         runtime = root / "run"
         service = runtime / "systemd/system/asterinas-debug-console.service"
+        target = runtime / "systemd/system/asterinas-debug-console.target"
         bashrc = runtime / "asterinas-debug-console.bashrc"
         marker = runtime / "asterinas-debug-console.enabled"
         drop_in = (
@@ -598,6 +599,7 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertIn("TTYPath=/dev/ttyS0\n", service_text)
         self.assertIn("StandardInput=tty-force\n", service_text)
         self.assertIn("Restart=always\n", service_text)
+        self.assertIn("DefaultDependencies=no\n", service_text)
         self.assertIn(
             "ConditionPathExists=/run/asterinas-debug-console.enabled\n",
             service_text,
@@ -610,12 +612,19 @@ class DebianStage1Tests(unittest.TestCase):
         )
         self.assertEqual(
             drop_in.read_text(),
-            "[Unit]\n"
-            "ConditionPathExists=!/run/asterinas-debug-console.enabled\n",
+            "[Unit]\nConditionPathExists=!/run/asterinas-debug-console.enabled\n",
         )
         self.assertTrue(service_link.is_symlink())
         self.assertEqual(
             os.readlink(service_link), "../asterinas-debug-console.service"
+        )
+        self.assertEqual(
+            target.read_text(),
+            "[Unit]\n"
+            "Description=Asterinas opt-in root serial console target\n"
+            "DefaultDependencies=no\n"
+            "Wants=asterinas-debug-console.service\n"
+            "After=asterinas-debug-console.service\n",
         )
 
     def test_debug_console_rejects_symlink_destination(self) -> None:
