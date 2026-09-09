@@ -181,7 +181,8 @@ static int prepare_debug_console(const char *root, int isolated)
                     sizeof(CONSOLE_GETTY_DROP_IN) - 1) != 0 ||
         symlink("../asterinas-debug-console.service", paths[5]) != 0 ||
         (isolated &&
-         symlink("asterinas-debug-console.target", default_target_path) != 0)) {
+         symlink("../system/asterinas-debug-console.target",
+                 default_target_path) != 0)) {
         return -1;
     }
     return 0;
