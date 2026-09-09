@@ -859,6 +859,13 @@ class SerialContractTests(unittest.TestCase):
             check=False,
         )
 
+    def test_ymodem_timeout_scales_for_large_serial_artifacts(self):
+        self.assertEqual(board._ymodem_transfer_timeout(4), 120.0)
+        self.assertGreater(
+            board._ymodem_transfer_timeout(12 * 1024 * 1024),
+            120.0,
+        )
+
     def test_ymodem_failure_cancels_receiver_and_restores_prompt(self):
         session = self._session()
         session.fd = 41

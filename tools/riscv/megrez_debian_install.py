@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+import gzip
 import http.server
 import lzma
 import os
@@ -41,7 +42,7 @@ SERVER_ADDRESS = "10.100.19.216"
 SERVER_HARDWARE_ADDRESS = "04:7c:16:47:50:4e"
 SERVER_PORT = 8080
 NETMASK = "255.255.248.0"
-INSTALLER_FILENAME = "debian-current-network-installer.cpio"
+INSTALLER_FILENAME = "debian-current-network-installer.cpio.gz"
 KERNEL_FILENAME = "asterinas-debian-current.booti.lzma"
 ROOT_ARCHIVE_FILENAME = "debian-root.ext2.gz"
 DTB_FILENAME = "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb"
@@ -213,6 +214,25 @@ def _publish_lzma(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _publish_gzip(source: Path, destination: Path) -> None:
+    temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+    try:
+        compressed = gzip.compress(source.read_bytes(), compresslevel=1, mtime=0)
+        with temporary.open("xb") as output_stream:
+            output_stream.write(compressed)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        temporary.chmod(0o644)
+        os.replace(temporary, destination)
+        descriptor = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _crc32(path: Path) -> str:
     crc = 0
     with path.open("rb") as stream:
@@ -350,6 +370,7 @@ def _run_network_install_request(
             request.root_sha256,
             canonical_url,
         )
+        _publish_gzip(installer, installer)
     except OSError as error:
         raise InstallError(f"cannot build Debian installer: {error}") from error
     command = _board_command(
