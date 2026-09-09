@@ -617,7 +617,8 @@ class PhysicalLifecycleTests(unittest.TestCase):
         tokens = bootargs.split()
         self.assertEqual(tokens[:3], ["console=tty0", "console=ttyS0", "loglevel=info"])
         self.assertEqual(tokens.count("asterinas.reboot_after=900"), 1)
-        self.assertEqual(tokens.count("systemd.unit=multi-user.target"), 1)
+        self.assertEqual(tokens.count("systemd.unit=asterinas-debug-console.target"), 1)
+        self.assertNotIn("systemd.unit=multi-user.target", tokens)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
