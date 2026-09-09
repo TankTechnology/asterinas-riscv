@@ -18,7 +18,7 @@ import secrets
 import stat
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -1220,6 +1220,7 @@ class RealPhysicalGraphicsOperations:
         lock_device: Callable[[int], None] = _lock_serial,
         close_device: Callable[[int], None] = os.close,
         session_factory: Callable[..., BoardSession] = BoardSession.from_fd,
+        mmc_artifacts: Mapping[str, str] | None = None,
     ) -> None:
         self._plan = plan
         self._device = device
@@ -1234,6 +1235,7 @@ class RealPhysicalGraphicsOperations:
         self._lock_device = lock_device
         self._close_device = close_device
         self._session_factory = session_factory
+        self._mmc_artifacts = None if mmc_artifacts is None else dict(mmc_artifacts)
         self._output: PinnedOutputDirectory | None = None
         self._fd: int | None = None
         self._session: BoardSession | None = None
@@ -1341,11 +1343,29 @@ class RealPhysicalGraphicsOperations:
     def ensure_artifacts(self, plan: DebugPlan, timeout: float) -> tuple[str, ...]:
         session, fd = self._require_session()
         deadline = time.monotonic() + timeout
+        identities = {identity.name: identity for identity in plan.artifacts}
+        if self._mmc_artifacts is not None:
+            outcomes = []
+            for name in BOARD_ARTIFACT_NAMES:
+                _remaining(deadline, phase="MMC artifact load")
+                identity = identities[name]
+                actual_size = session.load_artifact(
+                    name,
+                    self._mmc_artifacts[name],
+                    identity.load_address,
+                    identity.crc32,
+                )
+                if actual_size != identity.size:
+                    raise HostGateError(
+                        f"{name}: MMC size mismatch: expected {identity.size}, "
+                        f"got {actual_size}"
+                    )
+                outcomes.append(f"{name}:mmc")
+            return tuple(outcomes)
         transport = BoardTransport(
             fd=fd,
             command=lambda command, budget: session.command(command, timeout=budget),
         )
-        identities = {identity.name: identity for identity in plan.artifacts}
         outcomes = []
         for name in BOARD_ARTIFACT_NAMES:
             outcome = transport.ensure(
@@ -1796,11 +1816,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
             hdmi_timeout=values.hdmi_timeout,
             recovery_timeout=values.recovery_timeout,
         )
+        mmc_artifacts = (
+            None
+            if values.mmc_kernel is None
+            else {
+                "kernel": values.mmc_kernel,
+                "initramfs": values.mmc_initramfs,
+                "megrez_dtb": values.mmc_dtb,
+            }
+        )
         operations = RealPhysicalGraphicsOperations(
             plan,
             values.device,
             values.output_directory,
             values.hdmi_capture,
+            mmc_artifacts=mmc_artifacts,
         )
         result = run_physical_graphics(plan, config, operations)
     except (HostGateError, OSError, RuntimeError, ValueError) as error:

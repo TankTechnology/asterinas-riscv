@@ -390,6 +390,81 @@ class PhysicalCliTests(unittest.TestCase):
                 gate.parse_args(self.BASE_ARGUMENTS + variant)
 
 
+class PhysicalMmcArtifactTests(unittest.TestCase):
+    def test_real_operations_load_complete_mmc_mapping_without_board_transport(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        artifacts = tuple(
+            SimpleNamespace(
+                name=name,
+                load_address=address,
+                size=size,
+                crc32=crc32,
+            )
+            for name, address, size, crc32 in (
+                ("kernel", 0x80200000, 101, "11111111"),
+                ("initramfs", 0x83000000, 202, "22222222"),
+                ("megrez_dtb", 0xF0000000, 303, "33333333"),
+            )
+        )
+        names = {
+            "kernel": "asterinas-a1b2c3d4-34bc1cc0.Image",
+            "initramfs": "asterinas-a1b2c3d4-34bc1cc0-stage1.cpio",
+            "megrez_dtb": (
+                "dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb"
+            ),
+        }
+        session = mock.Mock()
+        session.load_artifact.side_effect = (101, 202, 303)
+        operations = gate.RealPhysicalGraphicsOperations(
+            SimpleNamespace(artifacts=artifacts),
+            "/dev/null",
+            Path("/unused"),
+            Path("/unused-capture"),
+            mmc_artifacts=names,
+        )
+        operations._session = session
+        operations._fd = 41
+
+        with mock.patch.object(
+            gate,
+            "BoardTransport",
+            side_effect=AssertionError("YMODEM path must not be constructed"),
+        ):
+            outcomes = operations.ensure_artifacts(
+                SimpleNamespace(artifacts=artifacts), 300
+            )
+
+        self.assertEqual(outcomes, ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc"))
+        self.assertEqual(
+            session.load_artifact.call_args_list,
+            [
+                mock.call("kernel", names["kernel"], 0x80200000, "11111111"),
+                mock.call("initramfs", names["initramfs"], 0x83000000, "22222222"),
+                mock.call("megrez_dtb", names["megrez_dtb"], 0xF0000000, "33333333"),
+            ],
+        )
+
+    def test_real_operations_reject_mmc_size_mismatch(self) -> None:
+        gate = load_gate(self)
+        artifacts = (
+            SimpleNamespace(
+                name="kernel",
+                load_address=0x80200000,
+                size=101,
+                crc32="11111111",
+            ),
+        )
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._session = mock.Mock()
+        operations._session.load_artifact.return_value = 100
+        operations._fd = 41
+        operations._mmc_artifacts = {"kernel": "kernel.Image"}
+        with self.assertRaisesRegex(gate.HostGateError, "size mismatch"):
+            operations.ensure_artifacts(SimpleNamespace(artifacts=artifacts), 300)
+
+
 class PhysicalLifecycleTests(unittest.TestCase):
     NONCES = PhysicalMarkerTests.NONCES
     PLAN_SHA256 = "a" * 64
