@@ -458,7 +458,10 @@ target. The `system.control` lookup tier takes precedence over the rootfs's
 orchestrator installs transient `/run/systemd/system.control` masks for the
 competing network evidence services and starts the graphical target. The
 same high-priority tier masks the generated serial getty so it cannot take the
-UART away from the debug shell. The physical boot combines `loglevel=off` with
+UART away from the debug shell. The kernel command line deliberately does not
+declare `console=ttyS0`; Stage1 gives the debug service explicit ownership with
+`TTYPath=/dev/ttyS0`, without inviting systemd's console generator to create a
+second owner. The physical boot combines `loglevel=off` with
 `asterinas.klog_capture=info`: kernel records remain available to later
 `dmesg` probes, while repeated writeback failures cannot saturate the
 115200-baud control channel. This does not depend on systemd's
