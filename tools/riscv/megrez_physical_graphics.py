@@ -546,7 +546,6 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         raise HostGateError("plan must contain one stage1 init selector")
     physical = (
         "console=tty0",
-        "console=ttyS0",
         "loglevel=off",
         "asterinas.klog_capture=info",
         *retained,
