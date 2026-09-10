@@ -440,7 +440,7 @@ If the worktree is already clean, record that no additional commit is required.
 - Read/write evidence only: `target/megrez-desktop/evidence-77d7e42c/`
 - Modify after result: `docs/superpowers/plans/2026-09-10-megrez-desktop-firefox-diagnostics.md`
 
-- [ ] **Step 1: Compute and admit the new identity without touching the board**
+- [x] **Step 1: Compute and admit the new identity without touching the board**
 
 ```bash
 python3 - <<'PY'
@@ -475,7 +475,7 @@ PY
 
 Expected: a protocol-v7 identity different from `1fe5e884...`, ledger count `0`, and device state `True`.
 
-- [ ] **Step 2: Execute the identity once**
+- [x] **Step 2: Execute the identity once**
 
 ```bash
 python3 -m tools.riscv.megrez_desktop diagnose-firefox \
@@ -486,7 +486,7 @@ python3 -m tools.riscv.megrez_desktop diagnose-firefox \
 
 Expected invariants: one physical boot, zero QEMU runs, zero artifact-transfer bytes, stable Firefox PID/profile with zero restarts, three complete snapshots, one classified NewSession boundary, and fresh-U-Boot recovery.  Do not repeat this identity.
 
-- [ ] **Step 3: Verify immutable evidence**
+- [x] **Step 3: Verify immutable evidence**
 
 Within the newly printed evidence directory, run:
 
@@ -498,7 +498,7 @@ stat -c '%a %n' bundle.json physical.serial.log diagnostics.log \
 
 Expected: every hash reports success and every listed file has mode `600`; the directory has mode `700`.
 
-- [ ] **Step 4: Apply the stopping rule**
+- [x] **Step 4: Apply the stopping rule**
 
 - `new-session-complete`: stop diagnostics and prepare the existing physical interaction/HDMI acceptance gate; do not change the kernel.
 - `new-session-rejected`: use the retained bounded Marionette error to select one source-level or Linux-reference test; do not reboot Firefox first.
@@ -506,7 +506,7 @@ Expected: every hash reports success and every listed file has mode `600`; the d
 - `listener-not-ready` or `new-session-not-sent`: repair only the demonstrated command/listener boundary against retained data.
 - `evidence-incomplete`: repair the observer with a retained-data RED/GREEN test; do not repeat the physical identity.
 
-- [ ] **Step 5: Record and commit the physical result**
+- [x] **Step 5: Record and commit the physical result**
 
 Mark Step 4f complete in `docs/superpowers/plans/2026-09-10-megrez-desktop-firefox-diagnostics.md`.  Record the full identity, duration, classified boundary, PID/restart identity, snapshot completeness, transfer/QEMU/physical counts, evidence directory, hash verification, and recovery state.
 
