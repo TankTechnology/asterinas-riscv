@@ -265,6 +265,22 @@ def _validated_page(page_payload: bytes, marker: Mapping[str, object]) -> None:
         raise HostGateError("Baidu homepage marker does not match its JSON evidence")
 
 
+def _validated_framebuffer_screenshot(
+    payload: bytes, marker: Mapping[str, object], *, width: int, height: int
+) -> None:
+    if (
+        marker.get("screenshot_source") != "framebuffer"
+        or marker.get("screenshot_sha256") != _sha256(payload)
+        or type(marker.get("screenshot_width")) is not int
+        or type(marker.get("screenshot_height")) is not int
+        or marker.get("screenshot_width") != width
+        or marker.get("screenshot_height") != height
+    ):
+        raise HostGateError(
+            "Baidu framebuffer screenshot marker does not match its PNG evidence"
+        )
+
+
 def run_firefox_browse(
     plan: Any,
     config: FirefoxBrowseConfig,
@@ -332,6 +348,12 @@ def run_firefox_browse(
                     "browser content viewport is too small: "
                     f"{viewport_width}x{viewport_height}"
                 )
+            _validated_framebuffer_screenshot(
+                screenshot,
+                page_marker,
+                width=viewport_width,
+                height=viewport_height,
+            )
         except BaseException as error:
             if not isinstance(error, Exception):
                 interruption = error
@@ -658,6 +680,7 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             "ASTERINAS_MARIONETTE_DIAGNOSTICS=1 "
             "ASTERINAS_MARIONETTE_DEBUG_ERRORS=1 "
             "/run/asterinas-tools/browser-web-marionette-gate --scope baidu-home "
+            "--screenshot-backend framebuffer "
             f"--firefox-pid {browser_pid} --timeout {guest_timeout} "
             f"--evidence-dir {directory}"
         )

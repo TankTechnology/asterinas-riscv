@@ -18,15 +18,15 @@
 - Modify: `tools/riscv/tests/test_debian_browser_web.py`
 - Modify: `tools/riscv/debian/rootfs/browser_web_marionette_gate.py`
 
-- [ ] Add failing tests that convert deterministic BGR-reserved rows with
+- [x] Add failing tests that convert deterministic BGR-reserved rows with
   padding, reject a uniform scanout, reject unsupported framebuffer metadata,
   and produce a structurally valid RGB PNG.
-- [ ] Run the focused test and verify it fails because the framebuffer capture
+- [x] Run the focused test and verify it fails because the framebuffer capture
   API is absent.
-- [ ] Add strict framebuffer ioctl parsing, exact-read logic, sampled-pixel
+- [x] Add strict framebuffer ioctl parsing, exact-read logic, sampled-pixel
   diversity validation, and bounded PNG encoding using `struct`, `fcntl`,
   `hashlib`, and `zlib`.
-- [ ] Re-run the focused tests and verify they pass.
+- [x] Re-run the focused tests and verify they pass.
 
 ### Task 2: Separate DOM observation from display capture
 
@@ -35,15 +35,15 @@
 - Modify: `tools/riscv/tests/test_debian_browser_web.py`
 - Modify: `tools/riscv/debian/rootfs/browser_web_marionette_gate.py`
 
-- [ ] Add failing tests for `--screenshot-backend marionette` compatibility,
+- [x] Add failing tests for `--screenshot-backend marionette` compatibility,
   framebuffer capture only after `client.close()`, rejection of framebuffer
   mode for the full suite, and a final marker containing source, dimensions,
   and PNG SHA-256.
-- [ ] Run those tests and verify the missing backend behavior is the failure.
-- [ ] Thread the backend through the lightweight gate, retain the current
+- [x] Run those tests and verify the missing backend behavior is the failure.
+- [x] Thread the backend through the lightweight gate, retain the current
   Marionette default, capture `/dev/fb0` only after transport close, and emit
   the final marker only after the PNG exists and passes the local contract.
-- [ ] Re-run all `BrowserWebContractTests`.
+- [x] Re-run all `BrowserWebContractTests`.
 
 ### Task 3: Bind the physical host result to framebuffer evidence
 
@@ -52,13 +52,13 @@
 - Modify: `tools/riscv/tests/test_megrez_firefox_browse.py`
 - Modify: `tools/riscv/megrez_firefox_browse.py`
 
-- [ ] Add failing tests requiring the physical guest command to select the
+- [x] Add failing tests requiring the physical guest command to select the
   framebuffer backend and requiring marker source/hash/dimensions to match the
   transferred PNG.
-- [ ] Run the focused tests and verify the old command and marker contract fail.
-- [ ] Add the backend flag to the physical command and extend host validation
+- [x] Run the focused tests and verify the old command and marker contract fail.
+- [x] Add the backend flag to the physical command and extend host validation
   without changing the full browser-web gate or publication filenames.
-- [ ] Re-run Firefox browse and boot-stability unit tests.
+- [x] Re-run Firefox browse and boot-stability unit tests.
 
 ### Task 4: Package and verify the Stage1 delta
 

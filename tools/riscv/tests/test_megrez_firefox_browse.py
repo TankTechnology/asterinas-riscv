@@ -139,6 +139,10 @@ class _Operations:
         return {
             "marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",
             "scope": "baidu-home",
+            "screenshot_height": 887,
+            "screenshot_sha256": hashlib.sha256(_png()).hexdigest(),
+            "screenshot_source": "framebuffer",
+            "screenshot_width": 1280,
             "title_sha256": hashlib.sha256("百度一下，你就知道".encode()).hexdigest(),
             "tls": "verified",
             "url": "https://www.baidu.com/",
@@ -167,6 +171,30 @@ class _Operations:
 
 
 class FirefoxBrowseTests(unittest.TestCase):
+    def test_framebuffer_marker_is_bound_to_transferred_png(self) -> None:
+        payload = _png()
+        marker = {
+            "screenshot_height": 1080,
+            "screenshot_sha256": hashlib.sha256(payload).hexdigest(),
+            "screenshot_source": "framebuffer",
+            "screenshot_width": 1920,
+        }
+        browse._validated_framebuffer_screenshot(
+            payload, marker, width=1920, height=1080
+        )
+        for name, value in (
+            ("screenshot_height", 1079),
+            ("screenshot_sha256", "0" * 64),
+            ("screenshot_source", "marionette"),
+            ("screenshot_width", 1919),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                browse.HostGateError, "framebuffer screenshot marker"
+            ):
+                browse._validated_framebuffer_screenshot(
+                    payload, {**marker, name: value}, width=1920, height=1080
+                )
+
     def test_bootargs_keep_network_proxy_and_safety_reboot_without_writes(self) -> None:
         tokens = browse.firefox_browse_bootargs(_plan()).split()
         self.assertIn("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1", tokens)
@@ -357,6 +385,7 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertIn("megrez-clock-sync", clock_command)
         self.assertIn("nsenter -t 116 -n", clock_command)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)
+        self.assertIn("--screenshot-backend framebuffer", home_command)
         self.assertIn("--firefox-pid 116", home_command)
         self.assertIn("ASTERINAS_MARIONETTE_DIAGNOSTICS=1", home_command)
         self.assertIn("ASTERINAS_MARIONETTE_DEBUG_ERRORS=1", home_command)
