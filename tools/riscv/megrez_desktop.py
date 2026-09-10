@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import fcntl
 import hashlib
 import json
 import math
@@ -15,16 +16,20 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import re
+import secrets
 import stat
 import tempfile
 import time
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import safe_artifact_name
 from tools.riscv.megrez_boot_stability import (
     BootReadinessEvidence,
+    RealBootCycleOperations,
     _read_deployment_attestation,
+    boot_stability_bootargs,
     contains_fatal_diagnostics,
 )
 from tools.riscv.megrez_physical_graphics import (
@@ -1230,6 +1235,7 @@ def firefox_diagnostic_commands(
         "_asterinas_firefox_before_status=$?; "
         "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=before status=%s\\n' "
         '"$_asterinas_firefox_before_status"; :',
+        _snapshot_frame_command("before", snapshot_nonces["before"]),
         "( /usr/bin/sleep 5; _asterinas_firefox_snapshot "
         '>"$_asterinas_firefox_base.during"; printf \'%s\\n\' "$?" '
         '>"$_asterinas_firefox_base.during.status" ) & '
@@ -1247,6 +1253,7 @@ def firefox_diagnostic_commands(
         '"$_asterinas_firefox_base.during.status" 2>/dev/null || printf 125); '
         "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=during status=%s\\n' "
         '"$_asterinas_firefox_during_status"; :',
+        _snapshot_frame_command("during", snapshot_nonces["during"]),
         '_asterinas_firefox_snapshot >"$_asterinas_firefox_base.after"; '
         "_asterinas_firefox_after_status=$?; "
         "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=after status=%s\\n' "
@@ -1254,19 +1261,21 @@ def firefox_diagnostic_commands(
         "_asterinas_firefox_terminal=$(systemctl show --property MainPID --value "
         "asterinas-browser-web.service 2>/dev/null); "
         "_asterinas_firefox_terminal_restarts=$(systemctl show --property NRestarts "
-        "--value asterinas-browser-web.service 2>/dev/null); "
+        "--value asterinas-browser-web.service 2>/dev/null)",
         "_asterinas_firefox_terminal_start=$(cut -d' ' -f22 "
         '"/proc/$_asterinas_firefox_pid/stat" 2>/dev/null); '
+        "_asterinas_firefox_terminal_profile=$(stat -Lc '%d:%i' "
+        "/home/asterinas/.mozilla/asterinas-browser-web 2>/dev/null)",
         'if [ "$_asterinas_firefox_terminal" = "$_asterinas_firefox_pid" ] && '
         '[ "$_asterinas_firefox_terminal_restarts" = 0 ] && '
-        '[ "$_asterinas_firefox_terminal_start" = "$_asterinas_firefox_start" ]; '
-        "then printf '__ASTERINAS_FIREFOX_TERMINAL__ pid=%s start=%s restarts=%s\\n' "
+        '[ "$_asterinas_firefox_terminal_start" = "$_asterinas_firefox_start" ] && '
+        '[ "$_asterinas_firefox_terminal_profile" = "$_asterinas_firefox_profile" ]; '
+        "then printf '__ASTERINAS_FIREFOX_TERMINAL__ pid=%s start=%s restarts=%s "
+        "profile=%s\\n' "
         '"$_asterinas_firefox_pid" "$_asterinas_firefox_terminal_start" '
-        '"$_asterinas_firefox_terminal_restarts"; else false; fi',
-        *(
-            _snapshot_frame_command(phase, snapshot_nonces[phase])
-            for phase in _SNAPSHOT_PHASES
-        ),
+        '"$_asterinas_firefox_terminal_restarts" '
+        '"$_asterinas_firefox_terminal_profile"; else false; fi',
+        _snapshot_frame_command("after", snapshot_nonces["after"]),
         'rm -f -- "$_asterinas_firefox_base.during.status"; '
         "unset -f _asterinas_firefox_snapshot; :",
     )
@@ -1345,6 +1354,12 @@ def parse_firefox_snapshot_frame(
                 "Firefox snapshot frame has duplicate JSON key"
             ) from error
         raise HostGateError("Firefox snapshot frame JSON is invalid") from error
+    return _validate_firefox_snapshot(value, expected_root_pid)
+
+
+def _validate_firefox_snapshot(
+    value: object, expected_root_pid: int
+) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _SNAPSHOT_FIELDS:
         raise HostGateError("Firefox snapshot frame JSON schema is invalid")
     root_identity = value["root_identity"]
@@ -1379,3 +1394,893 @@ def parse_firefox_snapshot_frame(
     ):
         raise HostGateError("Firefox snapshot frame JSON values are invalid")
     return value
+
+
+@dataclass(frozen=True)
+class FirefoxDiagnosticConfig:
+    """One falsifiable Firefox experiment with bounded independent phases."""
+
+    hypothesis: str
+    contrary_outcome: str
+    selected_command_timeout: float = 300.0
+    total_timeout: float = 900.0
+    open_timeout: float = 60.0
+    artifact_timeout: float = 300.0
+    boot_timeout: float = 180.0
+    readiness_timeout: float = 240.0
+    firefox_preflight_timeout: float = 30.0
+    status_timeout: float = 60.0
+    snapshot_timeout: float = 60.0
+    diagnostics_timeout: float = 60.0
+    reboot_timeout: float = 30.0
+    recovery_timeout: float = 180.0
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.hypothesis, "hypothesis"),
+            (self.contrary_outcome, "contrary outcome"),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or len(value.encode("utf-8")) > 512
+                or any(character in value for character in ("\0", "\n", "\r"))
+            ):
+                raise ValueError(f"Firefox diagnostic {label} is invalid")
+        deadlines = (
+            self.selected_command_timeout,
+            self.total_timeout,
+            self.open_timeout,
+            self.artifact_timeout,
+            self.boot_timeout,
+            self.readiness_timeout,
+            self.firefox_preflight_timeout,
+            self.status_timeout,
+            self.snapshot_timeout,
+            self.diagnostics_timeout,
+            self.reboot_timeout,
+            self.recovery_timeout,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 < value <= 1200
+            for value in deadlines
+        ):
+            raise ValueError("Firefox diagnostic deadlines must be in (0, 1200]")
+        if self.selected_command_timeout > 300 or self.total_timeout > 900:
+            raise ValueError("Firefox diagnostic cost budget is exceeded")
+
+
+@dataclass(frozen=True)
+class FirefoxDiagnosticInputs:
+    """Immutable hashes admitted before a physical experiment starts."""
+
+    experiment_sha256: str
+    bundle_sha256: str
+    plan_sha256: str
+    deployment_attestation_sha256: str
+    deployment_measurement_log_sha256: str
+
+    def __post_init__(self) -> None:
+        if any(
+            _SHA256.fullmatch(value) is None
+            for value in (
+                self.experiment_sha256,
+                self.bundle_sha256,
+                self.plan_sha256,
+                self.deployment_attestation_sha256,
+                self.deployment_measurement_log_sha256,
+            )
+        ):
+            raise ValueError("Firefox diagnostic input hash is invalid")
+
+
+@dataclass(frozen=True)
+class FirefoxProcessIdentity:
+    """Stable Firefox service and profile identity across one diagnosis."""
+
+    pid: int
+    start_time_ticks: int
+    profile_identity: str
+    browser_restarts: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.pid) is not int
+            or not 1 < self.pid <= (1 << 31) - 1
+            or type(self.start_time_ticks) is not int
+            or self.start_time_ticks <= 0
+            or not isinstance(self.profile_identity, str)
+            or re.fullmatch(r"[0-9]+:[0-9]+", self.profile_identity) is None
+            or type(self.browser_restarts) is not int
+            or self.browser_restarts != 0
+        ):
+            raise HostGateError("Firefox process identity is invalid")
+
+
+@dataclass(frozen=True)
+class FirefoxDiagnosticResult:
+    """Canonical evidence and cost accounting for one admitted experiment."""
+
+    schema_version: int
+    passed: bool
+    physical: bool
+    reason: str
+    failure: str
+    experiment_sha256: str
+    bundle_sha256: str
+    plan_sha256: str
+    deployment_attestation_sha256: str
+    deployment_measurement_log_sha256: str
+    bootargs_sha256: str
+    hypothesis: str
+    contrary_outcome: str
+    artifact_transfer_bytes: int
+    qemu_runs: int
+    physical_boots: int
+    total_host_seconds: float
+    boundary: FirefoxBoundaryEvidence
+    snapshot_sha256: tuple[str, str, str]
+    diagnostics_sha256: str
+    serial_sha256: str
+    firefox: FirefoxProcessIdentity | None
+    transport: tuple[str, ...]
+    recovered: bool
+
+    def __post_init__(self) -> None:
+        digests = (
+            self.experiment_sha256,
+            self.bundle_sha256,
+            self.plan_sha256,
+            self.deployment_attestation_sha256,
+            self.deployment_measurement_log_sha256,
+            self.bootargs_sha256,
+            *self.snapshot_sha256,
+            self.diagnostics_sha256,
+            self.serial_sha256,
+        )
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != 1
+            or not isinstance(self.passed, bool)
+            or self.physical is not True
+            or not isinstance(self.reason, str)
+            or not self.reason
+            or not isinstance(self.failure, str)
+            or any(_SHA256.fullmatch(value) is None for value in digests)
+            or not isinstance(self.hypothesis, str)
+            or not isinstance(self.contrary_outcome, str)
+            or type(self.artifact_transfer_bytes) is not int
+            or self.artifact_transfer_bytes < 0
+            or type(self.qemu_runs) is not int
+            or self.qemu_runs != 0
+            or type(self.physical_boots) is not int
+            or self.physical_boots not in (0, 1)
+            or isinstance(self.total_host_seconds, bool)
+            or not isinstance(self.total_host_seconds, (int, float))
+            or not math.isfinite(self.total_host_seconds)
+            or self.total_host_seconds < 0
+            or len(self.snapshot_sha256) != 3
+            or any(not isinstance(item, str) or not item for item in self.transport)
+            or not isinstance(self.recovered, bool)
+        ):
+            raise HostGateError("Firefox diagnostic result is invalid")
+        if self.passed and (
+            self.reason != "firefox-diagnosis-complete"
+            or self.failure
+            or self.artifact_transfer_bytes != 0
+            or self.physical_boots != 1
+            or self.boundary.boundary == "evidence-incomplete"
+            or self.firefox is None
+            or not self.transport
+            or not self.recovered
+        ):
+            raise HostGateError("passing Firefox diagnostic result is incomplete")
+        if not self.passed and self.reason == "firefox-diagnosis-complete":
+            raise HostGateError("failed Firefox diagnostic result uses pass reason")
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json(asdict(self))
+
+
+class FirefoxDiagnosticOperations(Protocol):
+    """All bounded board and guest operations for one Firefox diagnosis."""
+
+    @property
+    def guest_started(self) -> bool: ...
+
+    @property
+    def transcript(self) -> str | bytes: ...
+
+    @property
+    def artifact_transfer_bytes(self) -> int: ...
+
+    def open(self, timeout: float) -> None: ...
+
+    def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]: ...
+
+    def boot(self, plan: Any, bootargs: str, timeout: float) -> None: ...
+
+    def prove_boot_readiness(self, timeout: float) -> BootReadinessEvidence: ...
+
+    def firefox_preflight(
+        self,
+        browser_pid: int,
+        snapshot_nonces: Mapping[str, str],
+        selected_timeout: float,
+        timeout: float,
+    ) -> FirefoxProcessIdentity: ...
+
+    def run_firefox_status(self, timeout: float) -> None: ...
+
+    def capture_firefox_snapshot(
+        self, phase: str, nonce: str, timeout: float
+    ) -> dict[str, object]: ...
+
+    def run_firefox_new_session(self, timeout: float) -> None: ...
+
+    def collect_diagnostics(self, timeout: float) -> bytes: ...
+
+    def request_reboot(self, timeout: float) -> None: ...
+
+    def await_recovery(self, timeout: float) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class FirefoxDiagnosticPublisher(Protocol):
+    """Admission and atomic publication for one Firefox experiment."""
+
+    @property
+    def inputs(self) -> FirefoxDiagnosticInputs: ...
+
+    def invalidate(self) -> None: ...
+
+    def publish(
+        self,
+        result: FirefoxDiagnosticResult,
+        serial: bytes,
+        diagnostics: bytes,
+        snapshots: Mapping[str, bytes],
+    ) -> None: ...
+
+
+def experiment_identity(
+    bundle: DesktopBundle, plan: Any, config: FirefoxDiagnosticConfig
+) -> str:
+    """Identify runtime semantics while excluding human hypothesis wording."""
+
+    plan.validate()
+    if bundle.plan_sha256 != plan.plan_sha256:
+        raise HostGateError("desktop bundle and Firefox plan identity differ")
+    value = {
+        "schema_version": 1,
+        "diagnostic_protocol_version": 1,
+        "plan_sha256": plan.plan_sha256,
+        "deployment_attestation_sha256": bundle.deployment_attestation_sha256,
+        "deployment_measurement_log_sha256": (bundle.deployment_measurement_log_sha256),
+        "mmc_artifacts": dict(bundle.mmc_artifacts),
+        "bootargs_sha256": _sha256(boot_stability_bootargs(plan).encode()),
+        "deadlines": {
+            "selected_command": config.selected_command_timeout,
+            "total": config.total_timeout,
+            "open": config.open_timeout,
+            "artifact": config.artifact_timeout,
+            "boot": config.boot_timeout,
+            "readiness": config.readiness_timeout,
+            "firefox_preflight": config.firefox_preflight_timeout,
+            "status": config.status_timeout,
+            "snapshot": config.snapshot_timeout,
+            "diagnostics": config.diagnostics_timeout,
+            "reboot": config.reboot_timeout,
+            "recovery": config.recovery_timeout,
+        },
+        "diagnostic_environment": ["ASTERINAS_MARIONETTE_DIAGNOSTICS=1"],
+        "snapshot_limits": {
+            "max_seconds": 3,
+            "max_processes": 16,
+            "max_threads": 128,
+            "max_fds": 64,
+            "max_file_bytes": 8192,
+            "max_total_bytes": 262144,
+        },
+        "new_session_parameters": {
+            "pageLoadStrategy": "none",
+            "strictFileInteractability": True,
+        },
+    }
+    return _sha256(_canonical_json(value))
+
+
+def _phase_budget(
+    clock: Callable[[], float], deadline: float, requested: float
+) -> float:
+    remaining = deadline - clock()
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise TimeoutError("Firefox diagnostic total deadline expired")
+    return min(requested, remaining)
+
+
+def _complete_snapshot_payload(value: object, firefox: FirefoxProcessIdentity) -> bytes:
+    snapshot = _validate_firefox_snapshot(value, firefox.pid)
+    identity = snapshot["root_identity"]
+    if (
+        snapshot["complete"] is not True
+        or snapshot["limitations"]
+        or not isinstance(identity, dict)
+        or identity["start_time_ticks"] != firefox.start_time_ticks
+    ):
+        raise HostGateError("Firefox snapshot evidence is incomplete")
+    return _canonical_json(snapshot)
+
+
+def _run_firefox_diagnosis(
+    plan: Any,
+    config: FirefoxDiagnosticConfig,
+    operations: FirefoxDiagnosticOperations,
+    publisher: FirefoxDiagnosticPublisher,
+    *,
+    snapshot_nonces: Mapping[str, str],
+    clock: Callable[[], float] = time.monotonic,
+) -> FirefoxDiagnosticResult:
+    """Run one admitted physical diagnosis and always recover a started guest."""
+
+    plan.validate()
+    bootargs = boot_stability_bootargs(plan)
+    inputs = publisher.inputs
+    if inputs.plan_sha256 != plan.plan_sha256:
+        raise HostGateError("diagnostic publisher plan identity is stale")
+    firefox_diagnostic_commands(
+        2,
+        snapshot_nonces,
+        selected_timeout=config.selected_command_timeout,
+    )
+    publisher.invalidate()
+    total_start = clock()
+    total_deadline = total_start + config.total_timeout
+    transport: tuple[str, ...] = ()
+    transfer_bytes = 0
+    readiness: BootReadinessEvidence | None = None
+    firefox: FirefoxProcessIdentity | None = None
+    snapshot_payloads: dict[str, bytes] = {}
+    diagnostics = b""
+    serial = b""
+    recovered = False
+    boundary = _boundary_evidence("evidence-incomplete")
+    failures: list[str] = []
+    interruption: BaseException | None = None
+    recovery_failed = False
+
+    try:
+        operations.open(_phase_budget(clock, total_deadline, config.open_timeout))
+        transport = operations.ensure_artifacts(
+            plan,
+            _phase_budget(clock, total_deadline, config.artifact_timeout),
+        )
+        transfer_bytes = operations.artifact_transfer_bytes
+        if type(transfer_bytes) is not int or transfer_bytes < 0:
+            raise HostGateError("artifact transfer accounting is invalid")
+        if transfer_bytes != 0:
+            raise HostGateError("unchanged experiment transferred artifact bytes")
+        operations.boot(
+            plan,
+            bootargs,
+            _phase_budget(clock, total_deadline, config.boot_timeout),
+        )
+        readiness = operations.prove_boot_readiness(
+            _phase_budget(clock, total_deadline, config.readiness_timeout)
+        )
+    except Exception as error:
+        failures.append(_failure_reason(error))
+    except BaseException as error:
+        interruption = error
+        failures.append(_failure_reason(error))
+
+    if readiness is not None and interruption is None:
+        try:
+            firefox = operations.firefox_preflight(
+                readiness.browser_pid,
+                snapshot_nonces,
+                config.selected_command_timeout,
+                _phase_budget(clock, total_deadline, config.firefox_preflight_timeout),
+            )
+        except Exception as error:
+            failures.append(f"firefox-preflight-{_failure_reason(error)}")
+        except BaseException as error:
+            interruption = error
+            failures.append(_failure_reason(error))
+
+    if firefox is not None and interruption is None:
+        try:
+            operations.run_firefox_status(
+                _phase_budget(clock, total_deadline, config.status_timeout)
+            )
+        except Exception as error:
+            failures.append(f"status-{_failure_reason(error)}")
+        except BaseException as error:
+            interruption = error
+            failures.append(_failure_reason(error))
+
+        try:
+            value = operations.capture_firefox_snapshot(
+                "before",
+                snapshot_nonces["before"],
+                _phase_budget(clock, total_deadline, config.snapshot_timeout),
+            )
+            snapshot_payloads["before"] = _complete_snapshot_payload(value, firefox)
+        except Exception as error:
+            failures.append(f"snapshot-before-{_failure_reason(error)}")
+        except BaseException as error:
+            if interruption is None:
+                interruption = error
+            failures.append(_failure_reason(error))
+
+        try:
+            operations.run_firefox_new_session(
+                _phase_budget(
+                    clock,
+                    total_deadline,
+                    config.selected_command_timeout,
+                )
+            )
+        except Exception as error:
+            failures.append(f"new-session-{_failure_reason(error)}")
+        except BaseException as error:
+            interruption = error
+            failures.append(_failure_reason(error))
+
+        for phase in ("during", "after"):
+            try:
+                value = operations.capture_firefox_snapshot(
+                    phase,
+                    snapshot_nonces[phase],
+                    _phase_budget(clock, total_deadline, config.snapshot_timeout),
+                )
+                snapshot_payloads[phase] = _complete_snapshot_payload(value, firefox)
+            except Exception as error:
+                failures.append(f"snapshot-{phase}-{_failure_reason(error)}")
+            except BaseException as error:
+                if interruption is None:
+                    interruption = error
+                failures.append(_failure_reason(error))
+
+    if operations.guest_started:
+        try:
+            collected = operations.collect_diagnostics(
+                _phase_budget(clock, total_deadline, config.diagnostics_timeout)
+            )
+            if not isinstance(collected, bytes):
+                raise HostGateError("Firefox diagnostics must be bytes")
+            diagnostics = collected
+        except Exception as error:
+            failures.append(f"diagnostics-{_failure_reason(error)}")
+        except BaseException as error:
+            if interruption is None:
+                interruption = error
+            failures.append(_failure_reason(error))
+
+        try:
+            operations.request_reboot(config.reboot_timeout)
+        except Exception as error:
+            failures.append(f"reboot-{_failure_reason(error)}")
+        except BaseException as error:
+            if interruption is None:
+                interruption = error
+            failures.append(_failure_reason(error))
+        try:
+            operations.await_recovery(config.recovery_timeout)
+            recovered = True
+        except Exception as error:
+            recovery_failed = True
+            failures.append(f"recovery-{_failure_reason(error)}")
+        except BaseException as error:
+            recovery_failed = True
+            if interruption is None:
+                interruption = error
+            failures.append(_failure_reason(error))
+
+    try:
+        serial = _transcript_bytes(operations.transcript)
+        boundary = classify_new_session_transcript(serial)
+    except Exception as error:
+        failures.append(f"transport-{_failure_reason(error)}")
+    except BaseException as error:
+        if interruption is None:
+            interruption = error
+        failures.append(_failure_reason(error))
+    if boundary.boundary == "evidence-incomplete":
+        failures.append("transport-evidence-incomplete")
+    if firefox is None:
+        failures.append("firefox-identity-incomplete")
+    if set(snapshot_payloads) != set(_SNAPSHOT_PHASES):
+        failures.append("snapshot-evidence-incomplete")
+    if operations.guest_started and not recovered:
+        failures.append("recovery-incomplete")
+
+    passed = not failures and interruption is None
+    if passed:
+        reason = "firefox-diagnosis-complete"
+    elif recovery_failed:
+        reason = "manual-reset-required"
+    else:
+        reason = "firefox-diagnosis-incomplete"
+    result = FirefoxDiagnosticResult(
+        schema_version=1,
+        passed=passed,
+        physical=True,
+        reason=reason,
+        failure=";".join(dict.fromkeys(failures)),
+        experiment_sha256=inputs.experiment_sha256,
+        bundle_sha256=inputs.bundle_sha256,
+        plan_sha256=inputs.plan_sha256,
+        deployment_attestation_sha256=inputs.deployment_attestation_sha256,
+        deployment_measurement_log_sha256=(inputs.deployment_measurement_log_sha256),
+        bootargs_sha256=_sha256(bootargs.encode()),
+        hypothesis=config.hypothesis,
+        contrary_outcome=config.contrary_outcome,
+        artifact_transfer_bytes=transfer_bytes,
+        qemu_runs=0,
+        physical_boots=1 if operations.guest_started else 0,
+        total_host_seconds=_elapsed_seconds(clock, total_start),
+        boundary=boundary,
+        snapshot_sha256=tuple(
+            _sha256(snapshot_payloads.get(phase, b"")) for phase in _SNAPSHOT_PHASES
+        ),
+        diagnostics_sha256=_sha256(diagnostics),
+        serial_sha256=_sha256(serial),
+        firefox=firefox,
+        transport=transport,
+        recovered=recovered,
+    )
+    publisher.publish(result, serial, diagnostics, snapshot_payloads)
+    if interruption is not None:
+        raise interruption
+    return result
+
+
+def run_firefox_diagnosis(
+    plan: Any,
+    config: FirefoxDiagnosticConfig,
+    operations: FirefoxDiagnosticOperations,
+    publisher: FirefoxDiagnosticPublisher,
+    *,
+    snapshot_nonces: Mapping[str, str],
+    clock: Callable[[], float] = time.monotonic,
+) -> FirefoxDiagnosticResult:
+    """Close the host serial descriptor on every terminal path."""
+
+    try:
+        return _run_firefox_diagnosis(
+            plan,
+            config,
+            operations,
+            publisher,
+            snapshot_nonces=snapshot_nonces,
+            clock=clock,
+        )
+    finally:
+        operations.close()
+
+
+class RealFirefoxDiagnosticPublisher:
+    """Race-safe one-run admission and private atomic evidence publisher."""
+
+    _OUTPUT_NAMES = (
+        "bundle.json",
+        "physical.serial.log",
+        "diagnostics.log",
+        "snapshot-before.json",
+        "snapshot-during.json",
+        "snapshot-after.json",
+        "sha256sums.txt",
+        "result.json",
+    )
+    _MAX_LEDGER_BYTES = 1024 * 1024
+
+    def __init__(
+        self,
+        bundle: DesktopBundle,
+        plan: Any,
+        config: FirefoxDiagnosticConfig,
+        output_directory: Path,
+    ) -> None:
+        identity = experiment_identity(bundle, plan, config)
+        self._bundle = bundle
+        self._output_directory = output_directory
+        self._evidence_root = Path(bundle.evidence_root)
+        self._inputs = FirefoxDiagnosticInputs(
+            experiment_sha256=identity,
+            bundle_sha256=_sha256(bundle.canonical_bytes()),
+            plan_sha256=plan.plan_sha256,
+            deployment_attestation_sha256=bundle.deployment_attestation_sha256,
+            deployment_measurement_log_sha256=(
+                bundle.deployment_measurement_log_sha256
+            ),
+        )
+        self._output: PinnedOutputDirectory | None = None
+
+    @property
+    def inputs(self) -> FirefoxDiagnosticInputs:
+        return self._inputs
+
+    def _admit_once(self) -> None:
+        ledger = self._evidence_root / "experiments.jsonl"
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(ledger, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size > self._MAX_LEDGER_BYTES
+            ):
+                raise HostGateError("Firefox experiment ledger is invalid")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            payload = bytearray()
+            while len(payload) <= self._MAX_LEDGER_BYTES:
+                chunk = os.read(descriptor, self._MAX_LEDGER_BYTES + 1 - len(payload))
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            try:
+                lines = payload.decode("ascii").splitlines()
+            except UnicodeDecodeError as error:
+                raise HostGateError("Firefox experiment ledger is invalid") from error
+            for line in lines:
+                try:
+                    value = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
+                except (json.JSONDecodeError, ValueError) as error:
+                    raise HostGateError(
+                        "Firefox experiment ledger is invalid"
+                    ) from error
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"schema_version", "experiment_sha256", "state"}
+                    or type(value["schema_version"]) is not int
+                    or value["schema_version"] != 1
+                    or _SHA256.fullmatch(value["experiment_sha256"]) is None
+                    or value["state"] != "admitted"
+                    or _canonical_json(value).decode("ascii").rstrip("\n") != line
+                ):
+                    raise HostGateError("Firefox experiment ledger is invalid")
+                if value["experiment_sha256"] == self._inputs.experiment_sha256:
+                    raise HostGateError(
+                        "Firefox experiment identity was already executed"
+                    )
+            record = _canonical_json(
+                {
+                    "schema_version": 1,
+                    "experiment_sha256": self._inputs.experiment_sha256,
+                    "state": "admitted",
+                }
+            )
+            if len(payload) + len(record) > self._MAX_LEDGER_BYTES:
+                raise HostGateError("Firefox experiment ledger is full")
+            os.lseek(descriptor, 0, os.SEEK_END)
+            written = 0
+            while written < len(record):
+                written += os.write(descriptor, record[written:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def invalidate(self) -> None:
+        if self._output is not None:
+            raise HostGateError("Firefox diagnostic output is already active")
+        if self._output_directory.parent != self._evidence_root:
+            raise HostGateError("Firefox diagnostic output must be under evidence root")
+        self._evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self._evidence_root.is_symlink() or not self._evidence_root.is_dir():
+            raise HostGateError("Firefox evidence root is unsafe")
+        if self._evidence_root.stat().st_mode & 0o077:
+            raise HostGateError("Firefox evidence root must be private")
+        if self._output_directory.exists():
+            raise HostGateError("Firefox diagnostic output directory already exists")
+        self._admit_once()
+        self._output_directory.mkdir(mode=0o700)
+        output = PinnedOutputDirectory(self._output_directory)
+        try:
+            output.lock_exclusive()
+        except BaseException:
+            output.close()
+            raise
+        self._output = output
+
+    def close(self) -> None:
+        if self._output is not None:
+            self._output.close()
+            self._output = None
+
+    def publish(
+        self,
+        result: FirefoxDiagnosticResult,
+        serial: bytes,
+        diagnostics: bytes,
+        snapshots: Mapping[str, bytes],
+    ) -> None:
+        if self._output is None:
+            raise HostGateError("Firefox diagnostic output is not pinned")
+        if (
+            result.experiment_sha256 != self._inputs.experiment_sha256
+            or result.bundle_sha256 != self._inputs.bundle_sha256
+            or result.plan_sha256 != self._inputs.plan_sha256
+            or not isinstance(serial, bytes)
+            or len(serial) > 8 * 1024 * 1024
+            or not isinstance(diagnostics, bytes)
+            or len(diagnostics) > 256 * 1024
+            or not set(snapshots).issubset(_SNAPSHOT_PHASES)
+            or (result.passed and set(snapshots) != set(_SNAPSHOT_PHASES))
+            or any(
+                not isinstance(payload, bytes)
+                or not 0 < len(payload) <= MAX_FIREFOX_SNAPSHOT_BYTES
+                for payload in snapshots.values()
+            )
+            or result.serial_sha256 != _sha256(serial)
+            or result.diagnostics_sha256 != _sha256(diagnostics)
+            or result.snapshot_sha256
+            != tuple(_sha256(snapshots.get(phase, b"")) for phase in _SNAPSHOT_PHASES)
+        ):
+            raise HostGateError("Firefox diagnostic publication identity is invalid")
+        output, self._output = self._output, None
+        try:
+            payloads = {
+                "bundle.json": self._bundle.canonical_bytes(),
+                "physical.serial.log": serial,
+                "diagnostics.log": diagnostics,
+                **{
+                    f"snapshot-{phase}.json": payload
+                    for phase, payload in snapshots.items()
+                },
+            }
+            for name, payload in payloads.items():
+                output.atomic_write(name, payload, mode=0o600)
+            result_payload = result.canonical_bytes()
+            sums = [f"{_sha256(payload)}  {name}" for name, payload in payloads.items()]
+            sums.append(f"{_sha256(result_payload)}  result.json")
+            output.atomic_write(
+                "sha256sums.txt", ("\n".join(sums) + "\n").encode(), mode=0o600
+            )
+            output.atomic_write("result.json", result_payload, mode=0o600)
+        finally:
+            output.close()
+
+
+_FIREFOX_PREFLIGHT_MARKER = re.compile(
+    r"\A__ASTERINAS_FIREFOX_PREFLIGHT__ pid=([0-9]+) start=([0-9]+) "
+    r"restarts=([0-9]+) profile=([0-9]+:[0-9]+)\Z"
+)
+_FIREFOX_STATUS_MARKER = re.compile(r"\A__ASTERINAS_FIREFOX_STATUS__ status=([0-9]+)\Z")
+_FIREFOX_NEW_SESSION_MARKER = re.compile(
+    r"\A__ASTERINAS_FIREFOX_NEW_SESSION__ status=([0-9]+)\Z"
+)
+_FIREFOX_TERMINAL_MARKER = re.compile(
+    r"\A__ASTERINAS_FIREFOX_TERMINAL__ pid=([0-9]+) start=([0-9]+) "
+    r"restarts=([0-9]+) profile=([0-9]+:[0-9]+)\Z"
+)
+
+
+class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
+    """MMC-only board adapter for the short Firefox diagnostic protocol."""
+
+    @property
+    def artifact_transfer_bytes(self) -> int:
+        return 0
+
+    def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]:
+        if self._mmc_artifacts is None:
+            raise HostGateError("Firefox diagnosis requires existing MMC artifacts")
+        outcomes = super().ensure_artifacts(plan, timeout)
+        if outcomes != ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc"):
+            raise HostGateError("Firefox diagnosis attempted a non-MMC transport")
+        return outcomes
+
+    def _run_diagnostic_command(self, expected_index: int, timeout: float) -> None:
+        commands = getattr(self, "_firefox_commands", None)
+        cursor_index = getattr(self, "_firefox_command_index", 0)
+        if commands is None or cursor_index != expected_index:
+            raise HostGateError("Firefox diagnostic command order is invalid")
+        serial = self._require_serial()
+        deadline = self._guest_phase_deadline(timeout)
+        nonce = secrets.token_hex(8)
+        marker = (
+            f"__ASTERINAS_FIREFOX_COMMAND__ nonce={nonce} step={expected_index} done=1"
+        )
+        cursor = serial.checkpoint()
+        try:
+            self._send_bounded(serial, commands[expected_index], deadline)
+            self._send_bounded(serial, f"printf '{marker}\\n'", deadline)
+            while True:
+                line, cursor = self._next_line(serial, cursor, deadline)
+                if line == marker:
+                    break
+        except TimeoutError:
+            self._abort_guest_shell()
+            raise
+        self._firefox_command_index = expected_index + 1
+        self._sync_serial_log()
+
+    def _single_marker(self, pattern: re.Pattern[str], label: str) -> re.Match[str]:
+        text = _transcript_bytes(self.transcript).decode("utf-8")
+        matches = [pattern.fullmatch(line.rstrip("\r")) for line in text.split("\n")]
+        selected = [match for match in matches if match is not None]
+        if len(selected) != 1:
+            raise HostGateError(f"Firefox {label} marker is missing or duplicated")
+        return selected[0]
+
+    def firefox_preflight(
+        self,
+        browser_pid: int,
+        snapshot_nonces: Mapping[str, str],
+        selected_timeout: float,
+        timeout: float,
+    ) -> FirefoxProcessIdentity:
+        self._firefox_commands = firefox_diagnostic_commands(
+            browser_pid,
+            snapshot_nonces,
+            selected_timeout=selected_timeout,
+        )
+        self._firefox_command_index = 0
+        for index in range(4):
+            self._run_diagnostic_command(index, timeout)
+        marker = self._single_marker(_FIREFOX_PREFLIGHT_MARKER, "preflight")
+        identity = FirefoxProcessIdentity(
+            pid=int(marker.group(1)),
+            start_time_ticks=int(marker.group(2)),
+            browser_restarts=int(marker.group(3)),
+            profile_identity=marker.group(4),
+        )
+        if identity.pid != browser_pid:
+            raise HostGateError("Firefox preflight changed the readiness PID")
+        self._firefox_identity = identity
+        return identity
+
+    def run_firefox_status(self, timeout: float) -> None:
+        self._run_diagnostic_command(4, timeout)
+        self._single_marker(_FIREFOX_STATUS_MARKER, "Status")
+
+    def capture_firefox_snapshot(
+        self, phase: str, nonce: str, timeout: float
+    ) -> dict[str, object]:
+        if phase == "before":
+            indexes = (5, 6)
+        elif phase == "during":
+            indexes = (9, 10)
+        elif phase == "after":
+            indexes = (11, 12, 13, 14, 15, 16)
+        else:
+            raise ValueError("Firefox snapshot phase is invalid")
+        for index in indexes:
+            self._run_diagnostic_command(index, timeout)
+        browser_pid = int(getattr(self, "_browser_pid", 0) or 0)
+        snapshot = parse_firefox_snapshot_frame(
+            self.transcript,
+            phase,
+            nonce,
+            expected_root_pid=browser_pid,
+        )
+        if phase == "after":
+            marker = self._single_marker(_FIREFOX_TERMINAL_MARKER, "terminal identity")
+            identity = getattr(self, "_firefox_identity", None)
+            if identity is None or (
+                int(marker.group(1)),
+                int(marker.group(2)),
+                int(marker.group(3)),
+                marker.group(4),
+            ) != (
+                identity.pid,
+                identity.start_time_ticks,
+                identity.browser_restarts,
+                identity.profile_identity,
+            ):
+                raise HostGateError("Firefox terminal identity changed")
+        return snapshot
+
+    def run_firefox_new_session(self, timeout: float) -> None:
+        self._run_diagnostic_command(7, min(timeout, 15.0))
+        self._run_diagnostic_command(8, timeout + 15.0)
+        self._single_marker(_FIREFOX_NEW_SESSION_MARKER, "NewSession")

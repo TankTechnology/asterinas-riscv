@@ -309,7 +309,7 @@ git commit -m "feat(riscv): collect bounded physical Firefox evidence"
 - Modify: `tools/riscv/megrez_desktop.py`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py`
 
-- [ ] **Step 1: Write failing diagnostic lifecycle tests**
+- [x] **Step 1: Write failing diagnostic lifecycle tests**
 
 Use fake operations to require this order on success and every post-boot
 failure:
@@ -331,7 +331,7 @@ zero, fail closed on missing/invalid snapshot or transport evidence, and still
 attempt recovery after timeout, malformed output, interruption, or diagnostic
 collection failure.
 
-- [ ] **Step 2: Run lifecycle tests and observe RED**
+- [x] **Step 2: Run lifecycle tests and observe RED**
 
 ```bash
 python3 -m unittest \
@@ -340,7 +340,7 @@ python3 -m unittest \
 
 Expected: missing lifecycle/result/publisher failures.
 
-- [ ] **Step 3: Implement one-run admission, lifecycle, and publication**
+- [x] **Step 3: Implement one-run admission, lifecycle, and publication**
 
 Add immutable `FirefoxDiagnosticConfig` fields `hypothesis`,
 `contrary_outcome`, `selected_command_timeout=300.0`, and
@@ -356,7 +356,7 @@ directories are mode `0700`, must be empty/new, and receive `result.json` last.
 Reuse boot diagnostics and recovery from `RealBootCycleOperations`; add only
 the short Firefox command/frame exchange methods.
 
-- [ ] **Step 4: Run all focused desktop tests**
+- [x] **Step 4: Run all focused desktop tests**
 
 ```bash
 python3 -W error::ResourceWarning -m unittest \
@@ -365,7 +365,7 @@ python3 -W error::ResourceWarning -m unittest \
 
 Expected: all tests pass without warnings.
 
-- [ ] **Step 5: Commit the diagnostic lifecycle**
+- [x] **Step 5: Commit the diagnostic lifecycle**
 
 ```bash
 git add tools/riscv/megrez_desktop.py tools/riscv/tests/test_megrez_desktop.py

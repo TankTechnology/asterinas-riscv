@@ -897,5 +897,433 @@ class FirefoxGuestCommandTests(unittest.TestCase):
                     )
 
 
+def _diagnostic_transcript(boundary: str = "new-session-complete") -> bytes:
+    lines = _status_complete() + _greeting(22, 300)
+    if boundary == "new-session-complete":
+        lines.extend(_complete_command(22, "WebDriver:NewSession", 400))
+    elif boundary == "new-session-response-absent":
+        lines.extend(
+            (
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=400,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="begin",
+                    stage="send",
+                ),
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=410,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="send_complete",
+                    stage="send",
+                    send_complete=True,
+                ),
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=500,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="failure",
+                    stage="response_header",
+                    send_complete=True,
+                ),
+            )
+        )
+    elif boundary == "malformed":
+        return b'A_WEB_MARIONETTE_TRANSPORT {"bad"\n'
+    else:
+        raise ValueError(boundary)
+    return "".join(lines).encode()
+
+
+class _DiagnosticPublisher:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.inputs = desktop.FirefoxDiagnosticInputs(
+            experiment_sha256="e" * 64,
+            bundle_sha256="b" * 64,
+            plan_sha256="a" * 64,
+            deployment_attestation_sha256="c" * 64,
+            deployment_measurement_log_sha256="d" * 64,
+        )
+        self.published = None
+
+    def invalidate(self) -> None:
+        self.events.append("invalidate")
+
+    def publish(self, result, serial, diagnostics, snapshots) -> None:
+        self.events.append("publish")
+        self.published = (result, serial, diagnostics, snapshots)
+
+
+class _DiagnosticOperations:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        boundary: str = "new-session-complete",
+        transfer_bytes: int = 0,
+        invalid_snapshot: str | None = None,
+        diagnostics_fail: bool = False,
+        interrupt_new_session: bool = False,
+        recover: bool = True,
+    ) -> None:
+        self.events = events
+        self._guest_started = False
+        self._artifact_transfer_bytes = transfer_bytes
+        self._transcript = _diagnostic_transcript(boundary)
+        self.invalid_snapshot = invalid_snapshot
+        self.diagnostics_fail = diagnostics_fail
+        self.interrupt_new_session = interrupt_new_session
+        self.recover = recover
+
+    @property
+    def guest_started(self) -> bool:
+        return self._guest_started
+
+    @property
+    def transcript(self) -> bytes:
+        return self._transcript
+
+    @property
+    def artifact_transfer_bytes(self) -> int:
+        return self._artifact_transfer_bytes
+
+    def open(self, _timeout: float) -> None:
+        self.events.append("open")
+
+    def ensure_artifacts(self, _plan, _timeout: float) -> tuple[str, ...]:
+        self.events.append("ensure-artifacts")
+        return ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc")
+
+    def boot(self, _plan, bootargs: str, _timeout: float) -> None:
+        self.events.append("boot")
+        if "asterinas.reboot_after=900" not in bootargs:
+            raise AssertionError("diagnostic boot must retain bounded recovery")
+        self._guest_started = True
+
+    def prove_boot_readiness(self, _timeout: float):
+        self.events.append("readiness")
+        return desktop.BootReadinessEvidence(
+            browser_pid=41,
+            framebuffer=True,
+            xorg_fbdev=True,
+            openbox=True,
+            firefox=True,
+            browser_service="active",
+            browser_restarts=0,
+        )
+
+    def firefox_preflight(
+        self,
+        browser_pid: int,
+        _snapshot_nonces,
+        _selected_timeout: float,
+        _timeout: float,
+    ):
+        self.events.append("firefox-preflight")
+        if browser_pid != 41:
+            raise AssertionError("wrong readiness PID")
+        return desktop.FirefoxProcessIdentity(
+            pid=41,
+            start_time_ticks=100,
+            profile_identity="8:90",
+            browser_restarts=0,
+        )
+
+    def run_firefox_status(self, _timeout: float) -> None:
+        self.events.append("status")
+
+    def capture_firefox_snapshot(
+        self, phase: str, _nonce: str, _timeout: float
+    ) -> dict[str, object]:
+        self.events.append(f"snapshot-{phase}")
+        value = FirefoxGuestCommandTests().snapshot()
+        if phase == self.invalid_snapshot:
+            value["complete"] = False
+            value["limitations"] = ["diagnostics_disabled"]
+        return value
+
+    def run_firefox_new_session(self, _timeout: float) -> None:
+        self.events.append("new-session")
+        if self.interrupt_new_session:
+            raise KeyboardInterrupt("injected interruption")
+
+    def collect_diagnostics(self, _timeout: float) -> bytes:
+        self.events.append("diagnostics")
+        if self.diagnostics_fail:
+            raise TimeoutError("diagnostic collection failed")
+        return b"bounded kernel and service diagnostics\n"
+
+    def request_reboot(self, _timeout: float) -> None:
+        self.events.append("request-reboot")
+
+    def await_recovery(self, _timeout: float) -> None:
+        self.events.append("recovery")
+        if not self.recover:
+            raise TimeoutError("fresh U-Boot prompt not observed")
+
+    def close(self) -> None:
+        self.events.append("close")
+
+
+class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
+    EXPECTED_EVENTS = [
+        "invalidate",
+        "open",
+        "ensure-artifacts",
+        "boot",
+        "readiness",
+        "firefox-preflight",
+        "status",
+        "snapshot-before",
+        "new-session",
+        "snapshot-during",
+        "snapshot-after",
+        "diagnostics",
+        "request-reboot",
+        "recovery",
+        "publish",
+        "close",
+    ]
+
+    def run_diagnosis(self, **operation_options):
+        events: list[str] = []
+        operations = _DiagnosticOperations(events, **operation_options)
+        publisher = _DiagnosticPublisher(events)
+        result = desktop.run_firefox_diagnosis(
+            _start_plan(),
+            desktop.FirefoxDiagnosticConfig(
+                hypothesis="Status completes and NewSession returns no header",
+                contrary_outcome=(
+                    "Status fails, send fails, response begins, or call completes"
+                ),
+            ),
+            operations,
+            publisher,
+            snapshot_nonces={
+                "before": "1" * 16,
+                "during": "2" * 16,
+                "after": "3" * 16,
+            },
+            clock=lambda: 10.0,
+        )
+        return result, events, publisher
+
+    def test_complete_diagnosis_has_exact_order_cost_and_input_evidence(self) -> None:
+        result, events, publisher = self.run_diagnosis()
+
+        self.assertEqual(events, self.EXPECTED_EVENTS)
+        self.assertTrue(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertEqual(result.boundary.boundary, "new-session-complete")
+        self.assertEqual(
+            result.hypothesis, "Status completes and NewSession returns no header"
+        )
+        self.assertEqual(result.artifact_transfer_bytes, 0)
+        self.assertEqual(result.qemu_runs, 0)
+        self.assertEqual(result.physical_boots, 1)
+        self.assertEqual(result.experiment_sha256, "e" * 64)
+        self.assertEqual(result.bundle_sha256, "b" * 64)
+        self.assertEqual(result.plan_sha256, "a" * 64)
+        self.assertEqual(result.firefox.pid, 41)
+        self.assertEqual(result.firefox.browser_restarts, 0)
+        self.assertEqual(len(result.snapshot_sha256), 3)
+        self.assertEqual(publisher.published[1], _diagnostic_transcript())
+
+    def test_selected_timeout_is_classified_and_still_recovers(self) -> None:
+        result, events, _publisher = self.run_diagnosis(
+            boundary="new-session-response-absent"
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.boundary.boundary, "new-session-response-absent")
+        self.assertEqual(events, self.EXPECTED_EVENTS)
+
+    def test_missing_snapshot_malformed_transport_and_diagnostics_fail_closed(
+        self,
+    ) -> None:
+        cases = (
+            {"invalid_snapshot": "during"},
+            {"boundary": "malformed"},
+            {"diagnostics_fail": True},
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                result, events, _publisher = self.run_diagnosis(**options)
+
+                self.assertFalse(result.passed)
+                self.assertTrue(result.recovered)
+                self.assertEqual(events, self.EXPECTED_EVENTS)
+
+    def test_unchanged_identity_cannot_transfer_artifacts(self) -> None:
+        result, events, _publisher = self.run_diagnosis(transfer_bytes=1)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.artifact_transfer_bytes, 1)
+        self.assertNotIn("boot", events)
+        self.assertEqual(events[-2:], ["publish", "close"])
+
+    def test_recovery_loss_is_never_a_completed_diagnosis(self) -> None:
+        result, events, _publisher = self.run_diagnosis(recover=False)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.recovered)
+        self.assertEqual(result.reason, "manual-reset-required")
+        self.assertEqual(events, self.EXPECTED_EVENTS)
+
+    def test_interruption_still_collects_diagnostics_recovers_publishes_and_closes(
+        self,
+    ) -> None:
+        events: list[str] = []
+        operations = _DiagnosticOperations(events, interrupt_new_session=True)
+        publisher = _DiagnosticPublisher(events)
+
+        with self.assertRaises(KeyboardInterrupt):
+            desktop.run_firefox_diagnosis(
+                _start_plan(),
+                desktop.FirefoxDiagnosticConfig(
+                    hypothesis="one hypothesis",
+                    contrary_outcome="one contrary observation",
+                ),
+                operations,
+                publisher,
+                snapshot_nonces={
+                    "before": "1" * 16,
+                    "during": "2" * 16,
+                    "after": "3" * 16,
+                },
+                clock=lambda: 10.0,
+            )
+
+        for event in (
+            "snapshot-during",
+            "snapshot-after",
+            "diagnostics",
+            "request-reboot",
+            "recovery",
+            "publish",
+            "close",
+        ):
+            self.assertIn(event, events)
+
+
+class FirefoxDiagnosticPublisherTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.evidence = self.root / "evidence"
+        self.plan_file = self.root / "plan.json"
+        self.attestation = self.root / "attestation.json"
+        self.measurement = self.root / "measurement.log"
+        self.plan_file.write_bytes(b"plan\n")
+        self.attestation.write_bytes(b"attestation\n")
+        self.measurement.write_bytes(b"measurement\n")
+        self.plan = _start_plan()
+        self.bundle = desktop.DesktopBundle(
+            schema_version=1,
+            device="/dev/serial/by-id/usb-test",
+            plan_path=str(self.plan_file),
+            plan_sha256=self.plan.plan_sha256,
+            deployment_attestation_path=str(self.attestation),
+            deployment_attestation_sha256=hashlib.sha256(
+                self.attestation.read_bytes()
+            ).hexdigest(),
+            deployment_measurement_log_path=str(self.measurement),
+            deployment_measurement_log_sha256=hashlib.sha256(
+                self.measurement.read_bytes()
+            ).hexdigest(),
+            mmc_artifacts=MMC_ARTIFACTS,
+            evidence_root=str(self.evidence),
+        )
+        self.config = desktop.FirefoxDiagnosticConfig(
+            hypothesis="one bounded hypothesis",
+            contrary_outcome="one observation that rejects it",
+        )
+
+    def run_real_publisher(self, **operation_options):
+        output = self.evidence / "run"
+        publisher = desktop.RealFirefoxDiagnosticPublisher(
+            self.bundle, self.plan, self.config, output
+        )
+        events: list[str] = []
+        result = desktop.run_firefox_diagnosis(
+            self.plan,
+            self.config,
+            _DiagnosticOperations(events, **operation_options),
+            publisher,
+            snapshot_nonces={
+                "before": "1" * 16,
+                "during": "2" * 16,
+                "after": "3" * 16,
+            },
+            clock=lambda: 10.0,
+        )
+        return result, output
+
+    def test_publication_is_private_hash_bound_and_writes_result_last(self) -> None:
+        result, output = self.run_real_publisher()
+
+        self.assertTrue(result.passed)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+        expected = {
+            "bundle.json",
+            "physical.serial.log",
+            "diagnostics.log",
+            "snapshot-before.json",
+            "snapshot-during.json",
+            "snapshot-after.json",
+            "sha256sums.txt",
+            "result.json",
+        }
+        self.assertEqual({path.name for path in output.iterdir()}, expected)
+        self.assertTrue(
+            all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
+        )
+        value = json.loads((output / "result.json").read_bytes())
+        self.assertEqual(value["experiment_sha256"], result.experiment_sha256)
+        sums = (output / "sha256sums.txt").read_text()
+        for name in expected - {"sha256sums.txt"}:
+            digest = hashlib.sha256((output / name).read_bytes()).hexdigest()
+            self.assertIn(f"{digest}  {name}", sums)
+
+    def test_failed_incomplete_snapshot_is_still_published_for_analysis(self) -> None:
+        result, output = self.run_real_publisher(invalid_snapshot="during")
+
+        self.assertFalse(result.passed)
+        self.assertTrue((output / "result.json").is_file())
+        self.assertTrue((output / "snapshot-before.json").is_file())
+        self.assertFalse((output / "snapshot-during.json").exists())
+        self.assertTrue((output / "snapshot-after.json").is_file())
+
+    def test_admission_ledger_rejects_same_runtime_identity_with_new_wording(
+        self,
+    ) -> None:
+        first = desktop.RealFirefoxDiagnosticPublisher(
+            self.bundle, self.plan, self.config, self.evidence / "run-1"
+        )
+        first.invalidate()
+        first.close()
+
+        reworded = desktop.FirefoxDiagnosticConfig(
+            hypothesis="different words for the same hypothesis",
+            contrary_outcome="different words for the same contrary observation",
+        )
+        second = desktop.RealFirefoxDiagnosticPublisher(
+            self.bundle, self.plan, reworded, self.evidence / "run-2"
+        )
+        with self.assertRaisesRegex(desktop.HostGateError, "already executed"):
+            second.invalidate()
+        second.close()
+
+        ledger = self.evidence / "experiments.jsonl"
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
