@@ -423,6 +423,11 @@ test_riscv_megrez_boot_stability_unit:
 		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_debian_rootfs.DebianRootfsGateRuntimeTests -v
 
+.PHONY: test_riscv_megrez_desktop_unit
+test_riscv_megrez_desktop_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_desktop -v
+
 .PHONY: test_riscv_megrez_probe_unit
 test_riscv_megrez_probe_unit:
 	@python3 -W error::ResourceWarning -m unittest \

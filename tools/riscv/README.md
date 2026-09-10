@@ -536,6 +536,85 @@ attempts, syscalls 213/272, and `SA_NOCLDSTOP` warnings are retained as kernel
 compatibility work. They are not hidden by the deployment gate and are not
 treated as proof of a fatal graphics failure.
 
+## One-command Megrez desktop and Firefox diagnosis
+
+Configure the already deployed, measured MMC release once. This operation is
+local-only: it validates and hashes the existing plan, RockOS receipt, and
+measurement log, then writes one private bundle. It does not open the serial
+device, build an image, transfer a file, boot RockOS, or write either MMC
+partition:
+
+```bash
+python3 -m tools.riscv.megrez_desktop configure \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  --deployment-attestation "$PWD/target/current-main-physical-graphics/physical/rockos-attestation-isolated-resolved/deployment-attestation.json" \
+  --deployment-measurement-log "$PWD/target/current-main-physical-graphics/physical/rockos-attestation-isolated-resolved/deployment-measurement.serial.log" \
+  --mmc-kernel asterinas-790ab694-34bc1cc0.Image \
+  --mmc-initramfs asterinas-78c4a36c-f4d9b349-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb \
+  --evidence-root "$PWD/target/megrez-desktop/evidence" \
+  --output "$PWD/target/megrez-desktop/current.json"
+```
+
+After that one-time configuration, the routine desktop boot is one command:
+
+```bash
+python3 -m tools.riscv.megrez_desktop start
+```
+
+`start` reads only the three named files already on MMC partition 1, verifies
+their U-Boot byte counts and CRC32 values, and reaches the existing systemd,
+framebuffer, Xorg, Openbox, and Firefox readiness contract. A successful run
+closes the host serial descriptor and leaves the desktop running; it does not
+arm the 900-second diagnostic reboot timer. A failure after Asterinas starts
+collects bounded `dmesg`, systemd, process, Xorg, and Firefox evidence, requests
+`reboot -f`, and checks for a new U-Boot epoch. Complete firmware/SBI loss is
+reported as `manual-reset-required`; without an independent reset controller,
+software cannot recover that state remotely.
+
+Use the heavier action only for one explicitly falsifiable Firefox experiment:
+
+```bash
+python3 -m tools.riscv.megrez_desktop diagnose-firefox \
+  --hypothesis "Status completes and NewSession returns no header" \
+  --contrary-outcome "Status fails, send fails, response begins, or call completes"
+```
+
+The diagnostic runs `WebDriver:Status` first, then exactly one
+`WebDriver:NewSession` with a 300-second absolute deadline. It captures bounded
+before/during/after Firefox-tree and syscall snapshots, kernel/service logs,
+and payload-free Marionette transport counters, then always requests recovery.
+The complete physical experiment is capped at 15 host minutes before the
+independent recovery wait. It records zero QEMU runs, exactly one physical boot,
+and requires zero artifact-transfer bytes.
+
+Every runtime identity is admitted once in the mode-`0600`
+`target/megrez-desktop/evidence/experiments.jsonl` ledger. Rewording the
+hypothesis does not permit another identical boot. A repeat requires a proven
+observer defect and a changed, regression-tested diagnostic protocol identity.
+Each run gets a new mode-`0700` directory; raw evidence is mode `0600`, and
+`result.json` is published last with hashes for every retained input and file.
+The frozen partition-2 image is not reinstalled. Because
+`/home/asterinas` is backed by the physical run's volatile tmpfs, Firefox still
+starts with a cold profile on every boot; current measured graphical readiness
+is approximately 175–220 seconds, not an instant warm resume.
+
+The classifier reports only the first observed boundary: listener unavailable,
+Status stalled, NewSession not sent, no response bytes, partial response, or
+complete session. Older `mmc-graphics-final-19` evidence predates transport
+records and therefore classifies only as `evidence-incomplete`; it is not proof
+of a TCP, `poll`, scheduler, or Firefox deadlock. If a new run is also
+incomplete, fix and replay the observer before any further live Firefox boot.
+
+Run the focused host tests in the persistent development container. The tests
+use local loopback sockets, so do not pass the container launcher's `--offline`
+network-isolation flag; the command still performs no dependency download:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_desktop_unit
+```
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
