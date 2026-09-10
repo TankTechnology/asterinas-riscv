@@ -2,12 +2,16 @@
 
 //! Opt-in RISC-V software reboot recovery.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    time::Duration,
+};
 
+use aster_time::read_monotonic_time;
 use ostd::{
     panic,
     power::{self, ExitCode},
-    timer::{self, Jiffies},
+    timer,
 };
 use spin::Once;
 
@@ -18,7 +22,8 @@ aster_cmdline::define_kv_param!("asterinas.reboot_after", REBOOT_AFTER_SECONDS);
 
 pub(super) fn arm_if_requested() {
     let seconds = REBOOT_AFTER_SECONDS.load(Ordering::Relaxed);
-    let Some(deadline) = deadline_after_seconds(Jiffies::elapsed(), seconds) else {
+    let now = read_monotonic_time();
+    let Some(deadline) = deadline_after_seconds(now, seconds) else {
         return;
     };
 
@@ -30,8 +35,9 @@ pub(super) fn arm_if_requested() {
     }
 
     RECOVERY_STATE.freeze_deadline(deadline);
-    timer::register_callback_on_cpu(on_timer_tick);
+    timer::register_high_resolution_callback_on_cpu(on_timer_interrupt);
     RECOVERY_STATE.publish_armed();
+    timer::request_interrupt_after(deadline.saturating_sub(read_monotonic_time()));
 
     ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_ARMED seconds={}", seconds);
 }
@@ -40,33 +46,35 @@ pub(super) fn is_armed() -> bool {
     RECOVERY_STATE.is_armed()
 }
 
-fn on_timer_tick() {
-    if deadline_reached(Jiffies::elapsed(), RECOVERY_STATE.armed_deadline()) {
+fn on_timer_interrupt() {
+    let Some(remaining) =
+        remaining_before_deadline(read_monotonic_time(), RECOVERY_STATE.armed_deadline())
+    else {
+        return;
+    };
+    if remaining.is_zero() {
         power::emergency_restart(ExitCode::Failure);
+    } else {
+        // Another one-shot timer may expire before the recovery deadline.
+        // Re-arm the shared hardware deadline for the remaining interval.
+        timer::request_interrupt_after(remaining);
     }
 }
 
-fn deadline_after_seconds(now: Jiffies, seconds: u32) -> Option<Jiffies> {
+fn deadline_after_seconds(now: Duration, seconds: u32) -> Option<Duration> {
     if seconds == 0 {
         return None;
     }
 
-    let timeout_jiffies = u64::from(seconds).saturating_mul(timer::TIMER_FREQ);
-    let mut deadline = now;
-    deadline.add(timeout_jiffies);
-    Some(deadline)
+    Some(now.saturating_add(Duration::from_secs(u64::from(seconds))))
 }
 
-fn deadline_reached(now: Jiffies, deadline: Option<Jiffies>) -> bool {
-    let Some(deadline) = deadline else {
-        return false;
-    };
-
-    now.as_u64() >= deadline.as_u64()
+fn remaining_before_deadline(now: Duration, deadline: Option<Duration>) -> Option<Duration> {
+    deadline.map(|deadline| deadline.saturating_sub(now))
 }
 
 struct RecoveryState {
-    deadline: Once<Jiffies>,
+    deadline: Once<Duration>,
     is_armed: AtomicBool,
 }
 
@@ -78,7 +86,7 @@ impl RecoveryState {
         }
     }
 
-    fn freeze_deadline(&self, deadline: Jiffies) {
+    fn freeze_deadline(&self, deadline: Duration) {
         self.deadline.call_once(|| deadline);
     }
 
@@ -91,7 +99,7 @@ impl RecoveryState {
         self.is_armed.load(Ordering::Acquire)
     }
 
-    fn armed_deadline(&self) -> Option<Jiffies> {
+    fn armed_deadline(&self) -> Option<Duration> {
         if !self.is_armed() {
             return None;
         }
@@ -108,49 +116,58 @@ mod tests {
 
     #[ktest]
     fn zero_seconds_leaves_recovery_disabled() {
-        assert!(deadline_after_seconds(Jiffies::new(10), 0).is_none());
+        assert!(deadline_after_seconds(Duration::from_secs(10), 0).is_none());
     }
 
     #[ktest]
     fn nonzero_seconds_creates_future_deadline() {
-        let deadline = deadline_after_seconds(Jiffies::new(10), 2).unwrap();
-        assert_eq!(deadline.as_u64(), 10 + 2 * timer::TIMER_FREQ);
+        let deadline = deadline_after_seconds(Duration::from_secs(10), 2).unwrap();
+        assert_eq!(deadline, Duration::from_secs(12));
     }
 
     #[ktest]
     fn deadline_calculation_saturates() {
-        let now = Jiffies::new(u64::MAX - timer::TIMER_FREQ / 2);
+        let now = Duration::MAX - Duration::from_millis(500);
         let deadline = deadline_after_seconds(now, 1).unwrap();
-        assert_eq!(deadline.as_u64(), u64::MAX);
+        assert_eq!(deadline, Duration::MAX);
     }
 
     #[ktest]
-    fn time_before_deadline_does_not_request_restart() {
-        let deadline = Jiffies::new(100);
-        assert!(!deadline_reached(Jiffies::new(99), Some(deadline)));
+    fn time_before_deadline_rearms_the_remaining_duration() {
+        let deadline = Duration::from_secs(100);
+        assert_eq!(
+            remaining_before_deadline(Duration::from_secs(99), Some(deadline)),
+            Some(Duration::from_secs(1))
+        );
     }
 
     #[ktest]
     fn time_at_deadline_requests_restart() {
-        let deadline = Jiffies::new(100);
-        assert!(deadline_reached(Jiffies::new(100), Some(deadline)));
+        let deadline = Duration::from_secs(100);
+        assert_eq!(
+            remaining_before_deadline(deadline, Some(deadline)),
+            Some(Duration::ZERO)
+        );
     }
 
     #[ktest]
-    fn time_after_deadline_requests_restart() {
-        let deadline = Jiffies::new(100);
-        assert!(deadline_reached(Jiffies::new(101), Some(deadline)));
+    fn delayed_timer_interrupt_still_requests_restart() {
+        let deadline = Duration::from_secs(100);
+        assert_eq!(
+            remaining_before_deadline(Duration::from_secs(140), Some(deadline)),
+            Some(Duration::ZERO)
+        );
     }
 
     #[ktest]
     fn fatal_restart_is_selected_only_after_recovery_is_armed() {
         let state = RecoveryState::new();
-        state.freeze_deadline(Jiffies::new(100));
+        state.freeze_deadline(Duration::from_secs(100));
         assert!(!state.is_armed());
         assert!(state.armed_deadline().is_none());
 
         state.publish_armed();
         assert!(state.is_armed());
-        assert_eq!(state.armed_deadline().unwrap().as_u64(), 100);
+        assert_eq!(state.armed_deadline(), Some(Duration::from_secs(100)));
     }
 }
