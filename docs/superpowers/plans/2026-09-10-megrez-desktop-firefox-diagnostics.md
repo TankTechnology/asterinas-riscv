@@ -102,7 +102,7 @@ git commit -m "feat(riscv): configure immutable Megrez desktop bundles"
 - Modify: `tools/riscv/megrez_desktop.py`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py`
 
-- [ ] **Step 1: Write failing start lifecycle tests**
+- [x] **Step 1: Write failing start lifecycle tests**
 
 Define a fake `DesktopOperations` that records calls.  Require this exact
 successful order:
@@ -125,7 +125,7 @@ that a started guest attempts diagnostics, forced reboot, and fresh-U-Boot
 recovery, while a pre-boot failure never sends a reboot command.  Verify that
 firmware/SBI loss becomes `manual-reset-required` rather than a false pass.
 
-- [ ] **Step 2: Run the start tests and observe RED**
+- [x] **Step 2: Run the start tests and observe RED**
 
 ```bash
 python3 -m unittest \
@@ -135,7 +135,7 @@ python3 -m unittest \
 Expected: failures for missing `desktop_start_bootargs`, `DesktopStartConfig`,
 `DesktopStartResult`, and `run_desktop_start`.
 
-- [ ] **Step 3: Implement the minimal start lifecycle**
+- [x] **Step 3: Implement the minimal start lifecycle**
 
 Add the `DesktopOperations` protocol with `guest_started` and `transcript`
 properties plus `open`, `ensure_artifacts`, `boot`, `prove_boot_readiness`,
@@ -150,7 +150,7 @@ and leave the guest running.  On failure after guest start, collect bounded
 diagnostics and attempt recovery in `finally`-style control flow before
 publishing.  Never treat recovery as desktop readiness.
 
-- [ ] **Step 4: Run start tests and the existing stability tests**
+- [x] **Step 4: Run start tests and the existing stability tests**
 
 ```bash
 python3 -m unittest \
@@ -160,7 +160,7 @@ python3 -m unittest \
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit the start lifecycle**
+- [x] **Step 5: Commit the start lifecycle**
 
 ```bash
 git add tools/riscv/megrez_desktop.py tools/riscv/tests/test_megrez_desktop.py
@@ -440,9 +440,9 @@ manual-reset boundary.
 - [ ] **Step 5: Run unit targets and formatting checks**
 
 ```bash
-tools/docker/run_dev_container.sh --offline -- \
+tools/docker/run_dev_container.sh -- \
   make test_riscv_megrez_desktop_unit
-tools/docker/run_dev_container.sh --offline -- \
+tools/docker/run_dev_container.sh -- \
   make test_riscv_megrez_boot_stability_unit \
        test_riscv_physical_graphics_unit \
        test_riscv_megrez_probe_unit

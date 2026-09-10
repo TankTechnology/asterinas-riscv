@@ -8,18 +8,28 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import re
 import stat
 import tempfile
+import time
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from tools.riscv.megrez_board_session import safe_artifact_name
-from tools.riscv.megrez_boot_stability import _read_deployment_attestation
-from tools.riscv.megrez_physical_graphics import _read_plan
+from tools.riscv.megrez_boot_stability import (
+    BootReadinessEvidence,
+    _read_deployment_attestation,
+    contains_fatal_diagnostics,
+)
+from tools.riscv.megrez_physical_graphics import (
+    HostGateError,
+    _read_plan,
+    physical_bootargs,
+)
 
 
 BUNDLE_SCHEMA_VERSION = 1
@@ -223,9 +233,7 @@ class DesktopBundle:
                 MAX_MEASUREMENT_BYTES,
             ),
         ):
-            actual = _sha256(
-                _read_bounded_regular(Path(input_path), label, maximum)
-            )
+            actual = _sha256(_read_bounded_regular(Path(input_path), label, maximum))
             if actual != expected:
                 raise ValueError(f"{label} changed after bundle configuration")
         return bundle
@@ -331,3 +339,294 @@ def configure_bundle(
     )
     _publish_bundle(destination, bundle.canonical_bytes())
     return bundle
+
+
+@dataclass(frozen=True)
+class DesktopStartConfig:
+    """Independent bounded deadlines for one desktop startup attempt."""
+
+    open_timeout: float = 60.0
+    artifact_timeout: float = 300.0
+    boot_timeout: float = 180.0
+    readiness_timeout: float = 240.0
+    diagnostics_timeout: float = 60.0
+    reboot_timeout: float = 30.0
+    recovery_timeout: float = 180.0
+
+    def __post_init__(self) -> None:
+        deadlines = (
+            self.open_timeout,
+            self.artifact_timeout,
+            self.boot_timeout,
+            self.readiness_timeout,
+            self.diagnostics_timeout,
+            self.reboot_timeout,
+            self.recovery_timeout,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 < value <= 1200
+            for value in deadlines
+        ):
+            raise ValueError("desktop-start deadlines must be in (0, 1200]")
+
+
+@dataclass(frozen=True)
+class DesktopStartResult:
+    """Canonical terminal evidence for one configured desktop startup."""
+
+    schema_version: int
+    passed: bool
+    physical: bool
+    reason: str
+    failure: str
+    plan_sha256: str
+    bootargs_sha256: str
+    recovered: bool
+    readiness: BootReadinessEvidence | None
+    transport: tuple[str, ...]
+    serial_sha256: str
+    diagnostics_sha256: str
+    artifact_seconds: float
+    readiness_seconds: float
+    diagnostics_seconds: float
+    recovery_seconds: float
+    total_seconds: float
+
+    def __post_init__(self) -> None:
+        durations = (
+            self.artifact_seconds,
+            self.readiness_seconds,
+            self.diagnostics_seconds,
+            self.recovery_seconds,
+            self.total_seconds,
+        )
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != 1
+            or not isinstance(self.passed, bool)
+            or self.physical is not True
+            or not isinstance(self.reason, str)
+            or not self.reason
+            or not isinstance(self.failure, str)
+            or _SHA256.fullmatch(self.plan_sha256) is None
+            or _SHA256.fullmatch(self.bootargs_sha256) is None
+            or not isinstance(self.recovered, bool)
+            or any(not isinstance(item, str) or not item for item in self.transport)
+            or _SHA256.fullmatch(self.serial_sha256) is None
+            or _SHA256.fullmatch(self.diagnostics_sha256) is None
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+                for value in durations
+            )
+        ):
+            raise HostGateError("desktop-start result is invalid")
+        if self.passed:
+            if (
+                self.reason != "desktop-ready"
+                or self.failure
+                or self.recovered
+                or self.readiness is None
+                or not self.transport
+            ):
+                raise HostGateError("passing desktop-start result is incomplete")
+        elif self.reason == "desktop-ready":
+            raise HostGateError("failed desktop-start result uses pass reason")
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json(asdict(self))
+
+
+class DesktopOperations(Protocol):
+    """Side effects required for one configured desktop start."""
+
+    @property
+    def guest_started(self) -> bool: ...
+
+    @property
+    def transcript(self) -> str | bytes: ...
+
+    def open(self, timeout: float) -> None: ...
+
+    def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]: ...
+
+    def boot(self, plan: Any, bootargs: str, timeout: float) -> None: ...
+
+    def prove_boot_readiness(self, timeout: float) -> BootReadinessEvidence: ...
+
+    def collect_diagnostics(self, timeout: float) -> bytes: ...
+
+    def request_reboot(self, timeout: float) -> None: ...
+
+    def await_recovery(self, timeout: float) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class DesktopPublisher(Protocol):
+    """Atomic output operations for one desktop start attempt."""
+
+    def invalidate(self) -> None: ...
+
+    def publish(
+        self, result: DesktopStartResult, serial: bytes, diagnostics: bytes
+    ) -> None: ...
+
+
+def desktop_start_bootargs(plan: Any) -> str:
+    """Derive a local, read-only desktop boot without an automatic reboot."""
+
+    excluded = (
+        "asterinas.net=",
+        "asterinas.neighbor=",
+        "asterinas.reboot_after=",
+        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_",
+    )
+    return " ".join(
+        token
+        for token in physical_bootargs(plan).split()
+        if not token.startswith(excluded)
+    )
+
+
+def _elapsed_seconds(clock: Callable[[], float], start: float) -> float:
+    elapsed = clock() - start
+    if not math.isfinite(elapsed) or elapsed < 0:
+        raise HostGateError("monotonic clock moved backwards")
+    return round(elapsed, 3)
+
+
+def _transcript_bytes(transcript: str | bytes) -> bytes:
+    if isinstance(transcript, str):
+        return transcript.encode("utf-8")
+    if isinstance(transcript, bytes):
+        return transcript
+    raise HostGateError("serial transcript must be text or bytes")
+
+
+def _failure_reason(error: BaseException) -> str:
+    name = re.sub(r"(?<!^)(?=[A-Z])", "-", type(error).__name__).lower()
+    detail = re.sub(r"[^a-z0-9]+", "-", str(error).lower()).strip("-")[:96]
+    return f"{name}-{detail or 'unspecified'}"
+
+
+def run_desktop_start(
+    plan: Any,
+    config: DesktopStartConfig,
+    operations: DesktopOperations,
+    publisher: DesktopPublisher,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> DesktopStartResult:
+    """Start one desktop, leaving success running and recovering failures."""
+
+    plan.validate()
+    bootargs = desktop_start_bootargs(plan)
+    publisher.invalidate()
+    total_start = clock()
+    readiness: BootReadinessEvidence | None = None
+    transport: tuple[str, ...] = ()
+    diagnostics = b""
+    serial = b""
+    recovered = False
+    artifact_seconds = 0.0
+    readiness_seconds = 0.0
+    diagnostics_seconds = 0.0
+    recovery_seconds = 0.0
+    failure: BaseException | None = None
+    interruption: BaseException | None = None
+    failure_details: list[str] = []
+    recovery_failed = False
+
+    try:
+        artifact_start = clock()
+        operations.open(config.open_timeout)
+        transport = operations.ensure_artifacts(plan, config.artifact_timeout)
+        artifact_seconds = _elapsed_seconds(clock, artifact_start)
+
+        readiness_start = clock()
+        operations.boot(plan, bootargs, config.boot_timeout)
+        readiness = operations.prove_boot_readiness(config.readiness_timeout)
+        readiness_seconds = _elapsed_seconds(clock, readiness_start)
+        serial = _transcript_bytes(operations.transcript)
+        if contains_fatal_diagnostics(serial):
+            raise HostGateError("fatal diagnostics in serial transcript")
+    except Exception as error:
+        failure = error
+        failure_details.append(_failure_reason(error))
+    except BaseException as error:
+        interruption = error
+        failure_details.append(_failure_reason(error))
+
+    if operations.guest_started and (failure is not None or interruption is not None):
+        diagnostics_start = clock()
+        try:
+            collected = operations.collect_diagnostics(config.diagnostics_timeout)
+            if not isinstance(collected, bytes):
+                raise HostGateError("desktop diagnostics must be bytes")
+            diagnostics = collected
+        except Exception as error:
+            diagnostics = b""
+            failure_details.append(f"diagnostics-{_failure_reason(error)}")
+        diagnostics_seconds = _elapsed_seconds(clock, diagnostics_start)
+
+        recovery_start = clock()
+        try:
+            operations.request_reboot(config.reboot_timeout)
+        except Exception as error:
+            failure_details.append(f"reboot-{_failure_reason(error)}")
+        try:
+            operations.await_recovery(config.recovery_timeout)
+            recovered = True
+        except Exception as error:
+            recovery_failed = True
+            failure_details.append(f"recovery-{_failure_reason(error)}")
+        recovery_seconds = _elapsed_seconds(clock, recovery_start)
+
+    try:
+        serial = _transcript_bytes(operations.transcript)
+    except Exception as error:
+        if failure is None:
+            failure = error
+        failure_details.append(f"transcript-{_failure_reason(error)}")
+
+    passed = failure is None and interruption is None
+    if passed:
+        reason = "desktop-ready"
+    elif recovery_failed:
+        reason = "manual-reset-required"
+    else:
+        primary = failure if failure is not None else interruption
+        assert primary is not None
+        reason = f"desktop-start-{_failure_reason(primary)}"
+    result = DesktopStartResult(
+        schema_version=1,
+        passed=passed,
+        physical=True,
+        reason=reason,
+        failure=";".join(failure_details),
+        plan_sha256=plan.plan_sha256,
+        bootargs_sha256=_sha256(bootargs.encode()),
+        recovered=recovered,
+        readiness=readiness,
+        transport=transport,
+        serial_sha256=_sha256(serial),
+        diagnostics_sha256=_sha256(diagnostics),
+        artifact_seconds=artifact_seconds,
+        readiness_seconds=readiness_seconds,
+        diagnostics_seconds=diagnostics_seconds,
+        recovery_seconds=recovery_seconds,
+        total_seconds=_elapsed_seconds(clock, total_start),
+    )
+    try:
+        publisher.publish(result, serial, diagnostics)
+    finally:
+        operations.close()
+    if interruption is not None:
+        raise interruption
+    return result
