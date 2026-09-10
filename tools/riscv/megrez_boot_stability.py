@@ -810,10 +810,22 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
             time.sleep(min(1.0, remaining))
 
     def collect_diagnostics(self, timeout: float) -> bytes:
-        serial = self._require_serial()
-        deadline = self._guest_phase_deadline(timeout)
         nonce = secrets.token_hex(8)
         commands = boot_diagnostics_commands(nonce)
+        return self._collect_diagnostics_commands(timeout, nonce, commands)
+
+    def _collect_diagnostics_commands(
+        self,
+        timeout: float,
+        nonce: str,
+        commands: Sequence[str],
+    ) -> bytes:
+        """Run a bounded diagnostic command set and verify its serial frame."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", nonce) is None or not commands:
+            raise HostGateError("diagnostic command contract is invalid")
+        serial = self._require_serial()
+        deadline = self._guest_phase_deadline(timeout)
         for step, command in enumerate(commands[:-1], start=1):
             self._send_guest_step(command, f"diagnostics-{step}", nonce, deadline)
         cursor = serial.checkpoint()

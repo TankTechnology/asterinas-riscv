@@ -409,6 +409,36 @@ class FirefoxBrowseTests(unittest.TestCase):
                 command = browse.evidence_frame_command("0123456789abcdef", name)
                 self.assertLess(len((command + "\n").encode()), 768)
 
+    def test_failure_diagnostics_are_compact_and_boundary_focused(self) -> None:
+        commands = browse.browse_diagnostics_commands("0123456789abcdef")
+
+        self.assertLessEqual(len(commands), 6)
+        self.assertTrue(all(len((command + "\n").encode()) < 768 for command in commands))
+        self.assertLess(sum(len(command.encode()) for command in commands), 2400)
+        joined = "\n".join(commands)
+        self.assertIn("dmesg --color=never", joined)
+        self.assertIn("tail -c 131072", joined)
+        self.assertIn("firefox-diagnostic-snapshot", joined)
+        self.assertIn("baidu-home.json", joined)
+        self.assertIn("systemctl show", joined)
+        self.assertNotIn("/proc/net/tcp", joined)
+
+    def test_real_failure_collection_uses_compact_browse_commands(self) -> None:
+        operations = object.__new__(browse.RealFirefoxBrowseOperations)
+        operations._collect_diagnostics_commands = mock.Mock(
+            return_value=b"focused diagnostics\n"
+        )
+
+        with mock.patch.object(browse.secrets, "token_hex", return_value="1" * 16):
+            result = operations.collect_diagnostics(45.0)
+
+        self.assertEqual(result, b"focused diagnostics\n")
+        operations._collect_diagnostics_commands.assert_called_once()
+        timeout, nonce, commands = operations._collect_diagnostics_commands.call_args.args
+        self.assertEqual(timeout, 45.0)
+        self.assertEqual(nonce, "1" * 16)
+        self.assertEqual(commands, browse.browse_diagnostics_commands("1" * 16))
+
 
 if __name__ == "__main__":
     unittest.main()
