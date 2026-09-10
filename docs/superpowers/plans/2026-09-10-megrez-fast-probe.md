@@ -274,11 +274,11 @@ git commit -m "Add the bounded Megrez probe lifecycle"
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 - Modify: `Makefile`
 
-- [ ] **Step 1: Write failing physical-adapter and CLI tests**
+- [x] **Step 1: Write failing physical-adapter and CLI tests**
 
-Mock `BoardSession` and `SerialConsole`. Require exactly three MMC `ext4load` plus CRC checks, no host artifact transfer, no framebuffer/USB/network/U-Boot-environment commands, one `booti`, one encoded probe request after `READY`, one immediate reboot request, and `validate_recovery_epoch()` over a newly observed OpenSBI/U-Boot/prompt sequence. Test the normal CLI with only probe names and the one-time `configure` command that atomically writes `target/megrez-probe/current.json`.
+Mock `BoardSession` and `SerialConsole`. Require exactly three MMC `ext4load` plus CRC checks, no host artifact transfer, no framebuffer/USB/network/`saveenv` commands, one `booti`, one encoded probe request after `READY`, one immediate reboot request, and `validate_recovery_epoch()` over a newly observed OpenSBI/U-Boot/prompt sequence. Volatile `setenv` commands may stage bootargs but must never be persisted. Test the normal CLI with only probe names and the one-time `configure` command that atomically writes `target/megrez-probe/current.json`.
 
-- [ ] **Step 2: Run adapter/CLI tests and verify failure**
+- [x] **Step 2: Run adapter/CLI tests and verify failure**
 
 Run:
 
@@ -288,11 +288,11 @@ python3 -m unittest tools.riscv.tests.test_megrez_probe.PhysicalProbeOperationsT
 
 Expected: adapter or CLI entry points are missing.
 
-- [ ] **Step 3: Implement `PhysicalProbeOperations` using existing primitives**
+- [x] **Step 3: Implement `PhysicalProbeOperations` using existing primitives**
 
 Open the by-id device with `open_serial`, acquire the existing nonblocking exclusive serial lock, and wrap it in `BoardSession.from_fd(confirm=False)`. Wake and require U-Boot, load the three bundle paths with `BoardSession.load_artifact`, prepare only `mmc dev 1`, `mmc rescan`, `fdt addr`, `initrd_size`, and safe chunked `setenv bootargs`, then `booti`. Use `SerialConsole` for the request and exchange. Do not call `RealPhysicalGraphicsOperations.boot()` because its framebuffer and USB preparation is intentionally outside this path.
 
-- [ ] **Step 4: Implement the normal and configure CLI paths**
+- [x] **Step 4: Implement the normal and configure CLI paths**
 
 Normal defaults must be:
 
@@ -305,7 +305,7 @@ recovery-seconds=30
 
 `configure` takes `--plan`, `--device`, and the three `--mmc-*` paths, validates all inputs, atomically replaces `current.json`, and prints its bundle hash. Normal use accepts only probe names plus optional `--bundle`, `--output-directory`, bounded duration flags, and `--shell`. Unit tests require `--shell --session-seconds=29` and `301` to fail before the adapter is constructed, and require a 180-second shell request to preserve one immutable deadline through boot, probes, console input, and recovery.
 
-- [ ] **Step 5: Add the focused Make target and run tests**
+- [x] **Step 5: Add the focused Make target and run tests**
 
 Add `test_riscv_megrez_probe_unit` running the new test module plus the Stage1 probe tests. Run:
 
@@ -315,7 +315,7 @@ make test_riscv_megrez_probe_unit
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Makefile tools/riscv/megrez_probe.py tools/riscv/tests/test_megrez_probe.py
