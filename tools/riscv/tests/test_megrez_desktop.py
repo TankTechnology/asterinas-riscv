@@ -568,6 +568,52 @@ def _complete_command(
     ]
 
 
+def _complete_error_command(pid: int, command: str, start_ns: int) -> list[str]:
+    return [
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns,
+            request_id=1,
+            command=command,
+            event="begin",
+            stage="send",
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 10,
+            request_id=1,
+            command=command,
+            event="send_complete",
+            stage="send",
+            send_complete=True,
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 20,
+            request_id=1,
+            command=command,
+            event="frame_header",
+            stage="response_body",
+            send_complete=True,
+            header_bytes=4,
+            body_expected=662,
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 30,
+            request_id=1,
+            command=command,
+            event="failure",
+            stage="response_identity",
+            send_complete=True,
+            header_bytes=4,
+            body_expected=662,
+            body_received=662,
+            error_type="GateError",
+        ),
+    ]
+
+
 def _status_complete() -> list[str]:
     return [*_greeting(11, 100), *_complete_command(11, "WebDriver:Status", 200)]
 
@@ -593,7 +639,6 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         )
 
         self.assertEqual(evidence.boundary, "listener-not-ready")
-        self.assertFalse(evidence.status_complete)
         self.assertIsNone(evidence.new_session_request_id)
 
     def test_connection_refused_retries_are_distinct_greeting_attempts(self) -> None:
@@ -614,7 +659,6 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         evidence = self.classify(retries)
 
         self.assertEqual(evidence.boundary, "listener-not-ready")
-        self.assertFalse(evidence.status_complete)
 
     def test_connection_refused_retries_may_precede_a_successful_greeting(self) -> None:
         retries = [
@@ -631,10 +675,9 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
             for monotonic_ns in (50, 75)
         ]
 
-        evidence = self.classify(retries + _status_complete())
+        evidence = self.classify(retries + _greeting(11, 100))
 
         self.assertEqual(evidence.boundary, "new-session-not-sent")
-        self.assertTrue(evidence.status_complete)
 
     def test_status_failure_is_status_command_stalled(self) -> None:
         lines = _greeting(11, 100)
@@ -672,17 +715,23 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         evidence = self.classify(lines)
 
         self.assertEqual(evidence.boundary, "status-command-stalled")
-        self.assertFalse(evidence.status_complete)
 
     def test_status_complete_without_new_session_is_not_sent(self) -> None:
         evidence = self.classify(_status_complete())
 
         self.assertEqual(evidence.boundary, "new-session-not-sent")
-        self.assertTrue(evidence.status_complete)
         self.assertFalse(evidence.send_complete)
 
+    def test_retained_complete_status_error_is_rejected_not_stalled(self) -> None:
+        evidence = self.classify(
+            _greeting(11, 100)
+            + _complete_error_command(11, "WebDriver:Status", 200)
+        )
+
+        self.assertEqual(evidence.boundary, "status-command-rejected")
+
     def test_new_session_begin_without_send_is_not_sent(self) -> None:
-        lines = _status_complete() + _greeting(22, 300)
+        lines = _greeting(22, 300)
         lines.append(
             _transport_record(
                 pid=22,
@@ -700,7 +749,7 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         self.assertEqual(evidence.new_session_request_id, 1)
 
     def test_send_complete_with_zero_header_bytes_is_response_absent(self) -> None:
-        lines = _status_complete() + _greeting(22, 300)
+        lines = _greeting(22, 300)
         lines.extend(
             (
                 _transport_record(
@@ -752,7 +801,7 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         )
         for progress in cases:
             with self.subTest(progress=progress):
-                lines = _status_complete() + _greeting(22, 300)
+                lines = _greeting(22, 300)
                 lines.extend(
                     (
                         _transport_record(
@@ -808,17 +857,25 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
                     progress.get("body_received", 0),
                 )
 
-    def test_complete_response_reports_guest_selected_duration(self) -> None:
-        lines = _status_complete() + _greeting(22, 300)
+    def test_direct_greeting_may_precede_new_session_without_status(self) -> None:
+        lines = _greeting(22, 300)
         lines.extend(_complete_command(22, "WebDriver:NewSession", 400, body_bytes=80))
 
         evidence = self.classify(lines)
 
         self.assertEqual(evidence.boundary, "new-session-complete")
-        self.assertTrue(evidence.status_complete)
         self.assertEqual(evidence.response_body_expected, 80)
         self.assertEqual(evidence.response_body_received, 80)
         self.assertEqual(evidence.selected_command_seconds, 0.00000005)
+
+    def test_complete_new_session_error_is_rejected_not_partial(self) -> None:
+        evidence = self.classify(
+            _greeting(22, 100)
+            + _complete_error_command(22, "WebDriver:NewSession", 200)
+        )
+
+        self.assertEqual(evidence.boundary, "new-session-rejected")
+        self.assertEqual(evidence.response_body_received, 662)
 
     def test_old_failure_without_transport_records_is_only_incomplete(self) -> None:
         evidence = desktop.classify_new_session_transcript(
@@ -833,7 +890,7 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
     def test_reordered_duplicate_malformed_and_wrong_records_are_rejected(self) -> None:
         complete_new_session = _complete_command(22, "WebDriver:NewSession", 400)
         invalid_cases = {
-            "request order": _greeting(22, 300) + complete_new_session,
+            "request order": complete_new_session,
             ".*request order": (
                 _status_complete()[:-1]
                 + _greeting(22, 300)
