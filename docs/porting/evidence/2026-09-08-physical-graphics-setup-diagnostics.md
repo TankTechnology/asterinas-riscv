@@ -388,7 +388,7 @@ No such kernel change has been integrated on the strength of these diagnostics.
 
 ## Physical lifetime review
 
-The scoped `aster-code-review` pass confirmed that independently renewed
+The scoped code review confirmed that independently renewed
 setup/cycle budgets could exceed the unchanged 900-second board reboot timer.
 The correction preserves that safety timer and caps all guest phases at a
 shared host deadline, measured conservatively before booti with 30 seconds
