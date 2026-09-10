@@ -452,6 +452,52 @@ def evidence_frame_command(nonce: str, name: str) -> str:
     )
 
 
+def browse_diagnostics_commands(nonce: str) -> tuple[str, ...]:
+    """Capture the current Firefox boundary with minimal serial setup."""
+
+    if _NONCE.fullmatch(nonce) is None:
+        raise ValueError("Firefox browse diagnostic nonce is invalid")
+    path = f"/run/asterinas-browse-diag-{nonce}"
+    zeros = "0" * 64
+    return (
+        f"_d={path}; "
+        'rm -f -- "$_d" "$_d".*; : >"$_d"; '
+        "_p=$(/usr/bin/timeout 3 systemctl show --property MainPID --value "
+        "asterinas-browser-web.service 2>/dev/null); "
+        'case "$_p" in ""|*[!0-9]*|0|1) _p=;; esac',
+        "{ printf '%s\\n' '== uptime and cmdline =='; cat /proc/uptime /proc/cmdline; "
+        "printf '%s\\n' '== bounded dmesg tail =='; "
+        'dmesg --color=never; } 2>&1 | tail -c 131072 >"$_d.01"',
+        "{ printf '%s\\n' '== graphical services =='; /usr/bin/timeout 3 "
+        "systemctl show --no-pager --property Id,ActiveState,SubState,MainPID,NRestarts "
+        "asterinas-desktop-m5.service asterinas-browser-web.service || true; "
+        "printf '%s\\n' '== Firefox process snapshot =='; if [ -n \"$_p\" ]; then "
+        "/usr/bin/timeout 6 /usr/lib/asterinas/firefox-diagnostic-snapshot "
+        '--root-pid "$_p" --max-seconds 3 --max-processes 16 --max-threads 128 '
+        "--max-fds 64 --max-scan 1024 --max-file-bytes 8192 "
+        "--max-total-bytes 32768; else printf '%s\\n' 'Firefox PID unavailable'; fi; "
+        '} 2>&1 | head -c 65536 >"$_d.02"',
+        "{ printf '%s\\n' '== validated Baidu DOM before screenshot =='; "
+        "for _f in /run/asterinas-browse-*/baidu-home.json; do "
+        '[ -f "$_f" ] || continue; printf \'path=%s\\n\' "$_f"; '
+        'head -c 49152 "$_f"; printf \'\\n\'; break; done; } >"$_d.03" 2>&1',
+        ': >"$_d"; for _f in "$_d".*; do [ -f "$_f" ] && cat "$_f" >>"$_d"; '
+        'done; _z=$(wc -c <"$_d"); '
+        f'if [ "$_z" -le {MAX_DIAGNOSTICS_BYTES} ]; then '
+        '_h=$(sha256sum "$_d" | cut -d\' \' -f1); else _h=' + zeros + "; fi",
+        f'if [ "$_z" -le {MAX_DIAGNOSTICS_BYTES} ]; then '
+        f"printf '__ASTERINAS_BOOT_DIAGNOSTICS_BEGIN__ nonce={nonce} "
+        "size=%s sha256=%s\\n' \"$_z\" \"$_h\"; base64 -w 0 \"$_d\"; "
+        "printf '\\n'; "
+        f"printf '__ASTERINAS_BOOT_DIAGNOSTICS_END__ nonce={nonce} status=0\\n'; "
+        "else "
+        f"printf '__ASTERINAS_BOOT_DIAGNOSTICS_BEGIN__ nonce={nonce} "
+        "size=%s sha256=%s\\n' \"$_z\" \"$_h\"; "
+        f"printf '__ASTERINAS_BOOT_DIAGNOSTICS_END__ nonce={nonce} status=1\\n'; "
+        'fi; rm -f -- "$_d" "$_d".*',
+    )
+
+
 def parse_evidence_frame(transcript: str | bytes, nonce: str, name: str) -> bytes:
     if _NONCE.fullmatch(nonce) is None or _FILE_NAME.fullmatch(name) is None:
         raise ValueError("Firefox browse evidence identity is invalid")
@@ -635,6 +681,12 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             evidence_frame_command(nonce, name), f"file-{name}", nonce, timeout
         )
         return parse_evidence_frame(self._step_payload(start), nonce, name)
+
+    def collect_diagnostics(self, timeout: float) -> bytes:
+        nonce = secrets.token_hex(8)
+        return self._collect_diagnostics_commands(
+            timeout, nonce, browse_diagnostics_commands(nonce)
+        )
 
 
 class RealFirefoxBrowsePublisher:

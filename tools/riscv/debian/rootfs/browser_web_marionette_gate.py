@@ -56,6 +56,7 @@ CHALLENGE_TOKENS = (
 CHALLENGE_HOSTS = frozenset({"wappass.baidu.com"})
 BV_RE = re.compile(r"^https://www\.bilibili\.com/video/(BV[0-9A-Za-z]+)/?(?:[?#].*)?$")
 MAX_RESOURCES = 256
+MAX_SCREENSHOT_COMMAND_SECONDS = 90.0
 DETAIL_DIAGNOSTIC_MARKER = Path("/run/asterinas-browser-web-detail-phase")
 
 
@@ -1205,12 +1206,22 @@ def _write_evidence(
     directory: Path,
     name: str,
     snapshot: dict[str, object],
+    deadline: float,
 ) -> None:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / f"{name}.json").write_text(
         json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    response = client.command("WebDriver:TakeScreenshot", {"full": False})
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("screenshot command started after the gate deadline")
+    client.set_timeout(min(remaining, MAX_SCREENSHOT_COMMAND_SECONDS))
+    try:
+        response = client.command("WebDriver:TakeScreenshot", {"full": False})
+    finally:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            client.set_timeout(remaining)
     encoded = _script_value(response)
     if not isinstance(encoded, str):
         raise GateError("Marionette screenshot response is malformed")
@@ -1316,7 +1327,9 @@ def _capture_baidu_home(
     _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
     run_phase(
         "evidence-baidu-home",
-        lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
+        lambda: _write_evidence(
+            client, evidence_dir, "baidu-home", baidu_home, deadline
+        ),
     )
     return baidu_home
 
@@ -1427,7 +1440,7 @@ def run_gate(
         run_phase(
             "evidence-fixture-search",
             lambda: _write_evidence(
-                client, evidence_dir, "fixture-search", fixture_search
+                client, evidence_dir, "fixture-search", fixture_search, deadline
             ),
         )
         run_phase("trigger-fixture-download", lambda: _trigger_fixture_download(client))
@@ -1451,7 +1464,7 @@ def run_gate(
         run_phase(
             "evidence-bilibili-home",
             lambda: _write_evidence(
-                client, evidence_dir, "bilibili-home", bilibili_home
+                client, evidence_dir, "bilibili-home", bilibili_home, deadline
             ),
         )
 
@@ -1481,7 +1494,7 @@ def run_gate(
         run_phase(
             "evidence-bilibili-detail",
             lambda: _write_evidence(
-                client, evidence_dir, "bilibili-detail", bilibili_detail
+                client, evidence_dir, "bilibili-detail", bilibili_detail, deadline
             ),
         )
         selected_bv = BV_RE.fullmatch(selected).group(1)  # type: ignore[union-attr]
@@ -1511,7 +1524,9 @@ def run_gate(
         _timeline("BOOT_DOM_READY", firefox_pid, "baidu-search")
         run_phase(
             "evidence-baidu-search",
-            lambda: _write_evidence(client, evidence_dir, "baidu-search", baidu_search),
+            lambda: _write_evidence(
+                client, evidence_dir, "baidu-search", baidu_search, deadline
+            ),
         )
         deleted = _script_value(client.command("WebDriver:DeleteSession"))
         if deleted is not None:

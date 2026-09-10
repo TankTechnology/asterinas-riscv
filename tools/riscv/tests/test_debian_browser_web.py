@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import inspect
@@ -21,6 +22,7 @@ import zlib
 from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
+    MAX_SCREENSHOT_COMMAND_SECONDS,
     _navigate,
     _clear_document,
     _probe,
@@ -32,6 +34,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     _wait_for_probe,
     _wait_across_windows,
     _wait_baidu_search_outcome,
+    _write_evidence,
     _probe_mapping,
     probe_baidu_home,
     probe_baidu_search,
@@ -367,6 +370,38 @@ def proxy_web_evidence() -> dict[str, bytes]:
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    def test_screenshot_command_has_an_independent_deadline(self) -> None:
+        client = mock.Mock()
+        client.command.return_value = {
+            "value": base64.b64encode(png()).decode("ascii")
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate.time.monotonic",
+                side_effect=(100.0, 101.0),
+            ),
+        ):
+            _write_evidence(
+                client,
+                Path(directory),
+                "baidu-home",
+                snapshot("https://www.baidu.com/"),
+                deadline=300.0,
+            )
+
+        self.assertEqual(MAX_SCREENSHOT_COMMAND_SECONDS, 90.0)
+        self.assertEqual(
+            client.set_timeout.call_args_list,
+            [
+                mock.call(MAX_SCREENSHOT_COMMAND_SECONDS),
+                mock.call(199.0),
+            ],
+        )
+        client.command.assert_called_once_with(
+            "WebDriver:TakeScreenshot", {"full": False}
+        )
+
     _BACKGROUND_STARTUP_PREFERENCES = {
         'user_pref("browser.newtabpage.enabled", false);',
         'user_pref("browser.pagethumbnails.capturing_disabled", true);',
@@ -1728,7 +1763,7 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("querySelector", ping_script)
         take_snapshot.assert_called_once_with(client)
         write_evidence.assert_called_once_with(
-            client, Path(directory), "baidu-home", ready
+            client, Path(directory), "baidu-home", ready, mock.ANY
         )
         fixture_url.assert_not_called()
         self.assertNotIn(
