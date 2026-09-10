@@ -410,19 +410,19 @@ git commit -m "Document the Megrez fast probe loop"
 **Files:**
 - Modify only files required by review findings.
 
-- [ ] **Step 1: Run formatting and static checks**
+- [x] **Step 1: Run formatting and static checks**
 
 Run `ruff format --check` and `ruff check` on changed Python files, `python3 -m py_compile` on them, `bash -n` on changed shell scripts, the Stage1 `-Wall -Wextra -Werror` build, and `git diff --check`. Expected: zero errors.
 
-- [ ] **Step 2: Run the complete relevant regression set**
+- [x] **Step 2: Run the complete relevant regression set**
 
 Run the new unit/QEMU gates, all Debian rootfs tests, existing Megrez debug/physical-graphics/boot-stability tests, Docker launcher tests, and the RISC-V kernel build in the persistent container. Expected: all pass without recreating the container or downloading `cargo-osdk`.
 
-- [ ] **Step 3: Review against Asterinas persona guidelines**
+- [x] **Step 3: Review against Asterinas persona guidelines**
 
 Review the diff normally for maintainability, development correctness, security, hardware contract compliance, and documentation. Resolve every Critical or Important finding and rerun the focused test.
 
-- [ ] **Step 4: Confirm repository and remote safety**
+- [x] **Step 4: Confirm repository and remote safety**
 
 Require a clean worktree, inspect every commit being published, run `git fetch origin`, and require `git merge-base --is-ancestor origin/main HEAD`. If `origin/main` advanced, integrate it without force and rerun the relevant gates.
 
