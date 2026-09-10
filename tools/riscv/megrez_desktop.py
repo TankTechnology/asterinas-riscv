@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import fcntl
 import hashlib
 import json
@@ -53,7 +54,9 @@ MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_FIREFOX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_SERIAL_COMMAND_BYTES = 768
 NEW_SESSION_HOST_GRACE_SECONDS = 15.0
-FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 5
+FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS = 45.0
+FIREFOX_STATUS_HOST_GRACE_SECONDS = 10.0
+FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 6
 MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
@@ -997,6 +1000,15 @@ def _validate_transport_sequence(
     last_positions: dict[tuple[int, int, str], int] = {}
     terminal: set[tuple[int, int, str]] = set()
 
+    def is_connect_retry(record: MarionetteTransportRecord) -> bool:
+        return (
+            record.command == "greeting"
+            and record.event == "failure"
+            and record.stage == "tcp_connect"
+            and record.error_type == "ConnectionRefusedError"
+            and record.errno == errno.ECONNREFUSED
+        )
+
     for position, record in enumerate(records):
         request_key = (record.pid, record.request_id)
         previous_command = request_commands.setdefault(request_key, record.command)
@@ -1021,9 +1033,14 @@ def _validate_transport_sequence(
             ):
                 raise HostGateError("Marionette transport progress is reordered")
         if record.command == "greeting":
-            if not stream and record.event not in {"frame_header", "failure"}:
-                raise HostGateError("Marionette greeting record order is invalid")
-            if stream and record.event != "failure":
+            retry_prefix = all(is_connect_retry(item) for item in stream)
+            if is_connect_retry(record):
+                if not retry_prefix:
+                    raise HostGateError("Marionette greeting record order is invalid")
+            elif retry_prefix:
+                if record.event not in {"frame_header", "failure"}:
+                    raise HostGateError("Marionette greeting record order is invalid")
+            elif not (stream[-1].event == "frame_header" and record.event == "failure"):
                 raise HostGateError("Marionette greeting record order is invalid")
         else:
             events = {item.event for item in stream}
@@ -1060,7 +1077,7 @@ def _validate_transport_sequence(
                     raise HostGateError("Marionette command record order is invalid")
         stream.append(record)
         last_positions[key] = position
-        if record.event in {"complete", "failure"}:
+        if record.event in {"complete", "failure"} and not is_connect_retry(record):
             terminal.add(key)
 
     command_keys: dict[str, list[tuple[int, int, str]]] = {
@@ -1279,6 +1296,7 @@ def firefox_diagnostic_commands(
     ):
         raise ValueError("Firefox selected-command timeout must be in (0, 300]")
     timeout = f"{selected_timeout:g}"
+    status_timeout = f"{FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS:g}"
     run_nonce = nonces[0]
     snapshot_tool = (
         "/usr/bin/timeout 5 /usr/lib/asterinas/firefox-diagnostic-snapshot "
@@ -1313,7 +1331,7 @@ def firefox_diagnostic_commands(
         '"$_asterinas_firefox_profile"; else false; fi',
         f'/usr/bin/nsenter -t "$_asterinas_firefox_pid" -n {environment} '
         "python3 -c 'from browser_m5_marionette_gate import status_once;"
-        'status_once("127.0.0.1",2828,30)\'; '
+        f'status_once("127.0.0.1",2828,{status_timeout})\'; '
         "_asterinas_firefox_status=$?; printf '__ASTERINAS_FIREFOX_STATUS__ "
         'status=%s\\n\' "$_asterinas_firefox_status"; :',
         '_asterinas_firefox_snapshot >"$_asterinas_firefox_base.before"; '
@@ -1536,6 +1554,10 @@ class FirefoxDiagnosticConfig:
             raise ValueError("Firefox diagnostic deadlines must be in (0, 1200]")
         if self.selected_command_timeout > 300 or self.total_timeout > 900:
             raise ValueError("Firefox diagnostic cost budget is exceeded")
+        if self.status_timeout < (
+            FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS + FIREFOX_STATUS_HOST_GRACE_SECONDS
+        ):
+            raise ValueError("Firefox diagnostic status deadline lacks guest headroom")
 
 
 @dataclass(frozen=True)
