@@ -1374,6 +1374,53 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
 
+    def test_cleanup_unmounts_only_private_workspace_descendants(self) -> None:
+        work_directory = self.directory / "cleanup-work"
+        (work_directory / "stage/proc").mkdir(parents=True)
+        fake_bin = self.directory / "cleanup-tools"
+        fake_bin.mkdir()
+        umount_log = self.directory / "umount.log"
+        (fake_bin / "findmnt").write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' / /root/asterinas "
+            '"$ASTERINAS_TEST_STAGE/proc" "$ASTERINAS_TEST_STAGE"\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "umount").write_text(
+            '#!/bin/sh\nprintf \'%s\\n\' "$3" >>"$ASTERINAS_TEST_UMOUNT_LOG"\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "findmnt").chmod(0o755)
+        (fake_bin / "umount").chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_TEST_STAGE=str(work_directory / "stage"),
+            ASTERINAS_TEST_UMOUNT_LOG=str(umount_log),
+        )
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; WORK_DIR="$2"; cleanup',
+                "builder-cleanup-test",
+                str(BUILD_SCRIPT),
+                str(work_directory),
+            ],
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            umount_log.read_text(encoding="utf-8").splitlines(),
+            [str(work_directory / "stage/proc"), str(work_directory / "stage")],
+        )
+
     def test_prints_exact_required_tool_contract(self) -> None:
         result = _run_builder("--print-tools", cwd=self.directory)
 
