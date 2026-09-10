@@ -44,6 +44,16 @@ writeback is not supported, so every boot is a cold-profile startup.  This is
 a material performance difference, but it is not yet a demonstrated root
 cause.
 
+Protocol-v6 evidence narrows the observer error further.  Firefox kept one PID
+with zero restarts, started its Marionette listener, completed the protocol
+greeting, completely received `WebDriver:Status`, and returned a complete
+662-byte error response.  Firefox ESR 140 has no `WebDriver:Status` entry in
+its Marionette command table; Mozilla's upstream discussion explicitly says
+that WebDriver HTTP status is not implemented in Marionette itself.  The
+former positive control was therefore invalid and prevented the selected
+`WebDriver:NewSession` command from ever running.  This is not evidence of an
+Asterinas network or Firefox correctness failure.
+
 ## Chosen architecture
 
 ### Configured desktop bundle
@@ -107,42 +117,58 @@ The diagnostic sequence fixes the kernel, root image, Firefox binary, tmpfs
 profile policy, screen geometry, and all deadlines.  It performs these steps:
 
 1. Record the Firefox PID, start identity, service restart count, profile
-   identity, X socket, framebuffer, and Marionette listener.
-2. Connect to the loopback Marionette endpoint and verify its greeting.
-3. Issue `WebDriver:Status` as a non-session positive control.
-4. Reconnect and issue exactly one `WebDriver:NewSession` with the physical
-   gate's existing parameters and 300-second absolute setup deadline.
-5. Capture at most three bounded Firefox-tree snapshots: immediately before
-   the selected command, while it remains outstanding, and after response or
-   timeout.  Collection runs outside the selected command's critical path.
-6. Export the bounded kernel ring-buffer interval, process-lifecycle records,
+   identity, X socket, and framebuffer.
+2. Capture the bounded pre-command Firefox-tree snapshot.
+3. Connect once to the loopback Marionette endpoint, verify its greeting, and
+   issue exactly one `WebDriver:NewSession` with the physical gate's existing
+   parameters and 300-second absolute setup deadline.  Connection readiness is
+   part of this selected command rather than a separate synthetic gate.
+4. Capture one bounded Firefox-tree snapshot while the selected command remains
+   outstanding and one after response or timeout.  Collection runs outside the
+   selected command's critical path, for three snapshots in total.
+5. Export the bounded kernel ring-buffer interval, process-lifecycle records,
    Marionette transport records, process/thread syscall snapshots, selected
    fd metadata, and service/Firefox logs before printing the terminal result.
-7. Recheck the Firefox PID identity and restart count, then recover the board.
+6. Recheck the Firefox PID identity and restart count, then recover the board.
 
 The existing transport format already records request ID, command, send
 completion, response-header bytes, expected response-body bytes, received
 body bytes, exception type, errno, and guest monotonic time without recording
 the payload, page URL, script, or nonce.  The diagnostic mode enables that
 format and uses the existing bounded `firefox-diagnostic-snapshot` collector.
-It does not enable payload-bearing Marionette error output.
+For the one fixed offline `NewSession` request, it also enables the already
+implemented Marionette error record so a complete semantic rejection cannot
+force another physical boot merely to reveal its reason.  The serial and
+publication byte caps remain authoritative.
 
 ### Classification and stopping rules
 
 The result classifier reports the earliest supported boundary, rather than a
 generic timeout:
 
-- `listener-not-ready`: no complete Marionette greeting;
-- `status-command-stalled`: greeting succeeds but the positive-control
-  response does not complete;
+- `listener-not-ready`: no complete Marionette greeting before the selected
+  command deadline;
 - `new-session-not-sent`: the selected command is not fully written;
 - `new-session-response-absent`: send completes but no response header byte
   arrives;
 - `new-session-response-partial`: a bounded header or body begins but does not
   complete;
+- `new-session-rejected`: a complete, correctly identified response contains
+  a Marionette error;
 - `new-session-complete`: a valid response and session ID arrive;
 - `evidence-incomplete`: required identity, snapshot, log, or recovery evidence
   is missing.
+
+Retained protocol-v6 data is classified separately as
+`status-command-rejected`; this historical label explains the invalid
+precondition but is not part of the protocol-v7 live sequence.  Protocol v7
+removes the Status phase and its timeout from the runtime identity rather than
+silently treating an unsupported command as success.
+
+The obsolete `status_complete` field is removed from boundary evidence.  This
+changes the canonical result shape, so new Firefox diagnostic results use
+schema version 2; previously published schema-version-1 evidence remains
+immutable and is consumed only through retained transcript replay.
 
 A timeout is never converted into success and the 300-second selected-command
 deadline is not extended.  Missing lifecycle records after a reported kernel
@@ -165,13 +191,19 @@ Both actions create a new mode-`0700` evidence directory and refuse to reuse a
 nonempty run directory.  Raw serial, process, syscall, and kernel-log evidence
 is mode `0600`.  `result.json` is atomically replaced last and binds the hashes
 of every retained input and evidence file.  Environment contents, credentials,
-Marionette payloads, page contents, and arbitrary user buffers are not
-captured.
+Marionette request and successful-response payloads, page contents, and
+arbitrary user buffers are not captured.  The bounded error object from the
+one fixed offline NewSession request is the only response-content exception.
 
 Failure after guest start still attempts bounded evidence collection and
 recovery.  Evidence collection has its own byte and time limits and cannot
 extend the selected Firefox deadline.  An oversized or malformed diagnostic
 frame fails closed while preserving the earlier raw serial transcript.
+Protocol-v6 generated a complete 43,068-byte diagnostic frame, but the
+60-second host phase expired while its serial bytes were still arriving and
+recovery input corrupted the frame.  Protocol v7 uses a measured 90-second
+diagnostic host budget; it does not widen the 300-second selected-command
+deadline or the 900-second total experiment budget.
 
 ## Investigation cost budget
 
@@ -232,6 +264,13 @@ prove that snapshot collection is bounded and outside the selected command's
 deadline.  Existing physical-graphics, boot-stability, Firefox diagnostic,
 Stage1, and probe tests must continue to pass.
 
+Retained-data regressions must prove that protocol-v6's complete Status error
+is `status-command-rejected`, that protocol v7 emits no `WebDriver:Status`, and
+that one successful greeting may directly precede NewSession.  Socket tests
+must cover a complete NewSession error separately from absent and partial
+responses.  The combined shell command remains within the existing 768-byte
+limit.
+
 The runtime sequence is cost-gated and simulation-first:
 
 1. Implement and run the diagnostic classifier against synthetic records and
@@ -266,3 +305,26 @@ existing three physical nonce interactions, renders the expected page,
 retains a fresh HDMI capture, keeps the same Firefox process with zero service
 restarts, and recovers as specified.  A QEMU pass, an active Firefox process,
 or a longer timeout cannot substitute for that physical result.
+
+## Network-stack handoff after the local Firefox milestone
+
+The local Firefox milestone deliberately boots with
+`asterinas-desktop-m5-network.service` masked and
+`ASTERINAS_BROWSER_WEB_BASIC_ONLY=1`.  Passing it proves the browser process,
+local X11 graphics, loopback Marionette transport, DOM execution, framebuffer,
+and input path without making network behavior a confounding variable.
+
+After that pass, the separately developed network stack can be merged without
+changing the local acceptance workload.  Online browsing is admitted in
+layers: first NIC/link and address assignment, then route and DNS, then HTTP to
+a controlled endpoint, then HTTPS with correct wall time, CA trust, SNI, and
+certificate verification, and finally an interactive public page.  Each layer
+must retain the preceding offline Firefox gate.
+
+Adding a network stack is therefore the correct next subsystem, but it does
+not by itself prove normal browsing.  Firefox also depends on socket readiness,
+nonblocking connect, `poll`/`epoll`, DNS, TCP close/error behavior, system time,
+the Debian CA store, and TLS.  The staged gates distinguish those failures
+without reopening graphics, process, or Marionette diagnosis.  External
+network success is never allowed to replace the deterministic local Firefox
+acceptance result.
