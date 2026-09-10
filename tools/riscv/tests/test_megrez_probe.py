@@ -6,10 +6,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
+import stat
+import tempfile
 import unittest
 import zlib
+from unittest import mock
 
 from tools.riscv import megrez_probe as probe
 from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan
@@ -318,6 +324,328 @@ class ProbeProtocolTests(unittest.TestCase):
             probe.classify_probe_transcript(
                 transcript, self.NONCE, ("boot", "syscall213")
             )
+
+
+class _LifecycleOperations:
+    def __init__(
+        self,
+        events: list[str],
+        exchange: probe.ProbeExchange,
+        *,
+        fail_exchange: bool = False,
+        recover: bool = True,
+    ) -> None:
+        self.events = events
+        self._exchange = exchange
+        self._fail_exchange = fail_exchange
+        self._recover = recover
+        self._guest_started = False
+        self._transcript = b"kernel\nASTERINAS_PROBE_READY v=1 pid=1\n"
+
+    @property
+    def guest_started(self) -> bool:
+        return self._guest_started
+
+    @property
+    def transcript(self) -> bytes:
+        return self._transcript
+
+    def open(self, timeout: float) -> None:
+        self.events.append(f"open:{timeout:.0f}")
+
+    def ensure_artifacts(self, timeout: float) -> tuple[str, ...]:
+        self.events.append(f"artifacts:{timeout:.0f}")
+        return ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc")
+
+    def boot(self, bootargs: str, timeout: float) -> None:
+        self.events.append(f"boot:{timeout:.0f}")
+        for forbidden in (
+            "asterinas.net=",
+            "asterinas.neighbor=",
+            "asterinas.mmc_write_partition2",
+            "systemd.",
+            "firefox",
+        ):
+            if forbidden in bootargs:
+                raise AssertionError(f"forbidden fast-probe bootarg: {forbidden}")
+        if not bootargs.endswith("asterinas.reboot_after=90 -- --root-init=probe"):
+            raise AssertionError(f"unexpected probe bootargs: {bootargs}")
+        self._guest_started = True
+
+    def exchange(
+        self,
+        nonce: str,
+        selected: tuple[probe.ProbeDefinition, ...],
+        shell: bool,
+        timeout: float,
+    ) -> probe.ProbeExchange:
+        self.events.append(
+            f"exchange:{','.join(item.name for item in selected)}:{int(shell)}:{timeout:.0f}"
+        )
+        if self._fail_exchange:
+            raise TimeoutError("injected exchange timeout")
+        return self._exchange
+
+    def request_reboot(self, nonce: str, timeout: float) -> None:
+        self.events.append(f"request-reboot:{len(nonce)}:{timeout:.0f}")
+
+    def await_recovery(self, timeout: float) -> None:
+        self.events.append(f"recovery:{timeout:.0f}")
+        if not self._recover:
+            raise TimeoutError("fresh U-Boot epoch not observed")
+
+    def close(self) -> None:
+        self.events.append("close")
+
+
+class _LifecyclePublisher:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.published = None
+
+    def invalidate(self) -> None:
+        self.events.append("invalidate")
+
+    def publish(self, result, transcript: bytes, dmesg: bytes) -> None:
+        self.events.append(f"publish:{result.passed}")
+        self.published = (result, transcript, dmesg)
+
+
+class ProbeLifecycleTests(unittest.TestCase):
+    def _bundle(self) -> probe.ProbeBundle:
+        return probe.ProbeBundle.from_bytes(_encoded(_bundle_mapping()))
+
+    @staticmethod
+    def _clock():
+        value = 100.0
+
+        def clock() -> float:
+            nonlocal value
+            current = value
+            value += 1.0
+            return current
+
+        return clock
+
+    def test_multiple_probes_use_one_boot_and_publish_after_recovery(self) -> None:
+        events: list[str] = []
+        exchange = probe.ProbeExchange(
+            outcomes=(
+                probe.ProbeOutcome(0, "boot", True, None, "boot-ok"),
+                probe.ProbeOutcome(1, "syscall213", True, None, "enosys"),
+            ),
+            passed=True,
+            dmesg=b"",
+        )
+        operations = _LifecycleOperations(events, exchange)
+        publisher = _LifecyclePublisher(events)
+
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot", "syscall213")),
+            probe.ProbeRunConfig(),
+            operations,
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertEqual(
+            [event.split(":", 1)[0] for event in events],
+            [
+                "invalidate",
+                "open",
+                "artifacts",
+                "boot",
+                "exchange",
+                "request-reboot",
+                "recovery",
+                "close",
+                "publish",
+            ],
+        )
+        self.assertEqual(result.selected_probes, ("boot", "syscall213"))
+        self.assertEqual(len(result.outcomes), 2)
+
+    def test_invalid_bundle_cannot_leave_a_stale_terminal_result(self) -> None:
+        events: list[str] = []
+        publisher = _LifecyclePublisher(events)
+        invalid = replace(self._bundle(), plan_sha256="f" * 64)
+
+        with self.assertRaises(probe.ProbeContractError):
+            probe.run_probe(
+                invalid,
+                probe.validate_probe_names(("boot",)),
+                probe.ProbeRunConfig(),
+                _LifecycleOperations(events, probe.ProbeExchange((), False, b"")),
+                publisher,
+            )
+
+        self.assertEqual(events, ["invalidate"])
+
+    def test_exchange_timeout_relies_on_deadline_then_recovers(self) -> None:
+        events: list[str] = []
+        operations = _LifecycleOperations(
+            events,
+            probe.ProbeExchange((), False, b""),
+            fail_exchange=True,
+        )
+        publisher = _LifecyclePublisher(events)
+
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot",)),
+            probe.ProbeRunConfig(),
+            operations,
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "probe-exchange-failed")
+        self.assertNotIn("request-reboot", [event.split(":", 1)[0] for event in events])
+        self.assertIn("recovery:30", events)
+
+    def test_missing_recovery_reports_manual_reset_required(self) -> None:
+        events: list[str] = []
+        operations = _LifecycleOperations(
+            events,
+            probe.ProbeExchange(
+                (probe.ProbeOutcome(0, "boot", True, None, "boot-ok"),),
+                True,
+                b"",
+            ),
+            recover=False,
+        )
+        publisher = _LifecyclePublisher(events)
+
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot",)),
+            probe.ProbeRunConfig(),
+            operations,
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.recovered)
+        self.assertEqual(result.reason, "manual-reset-required")
+        self.assertEqual(events[-1], "publish:False")
+
+
+class ProbePublisherTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name) / "probe-output"
+        self.bundle = probe.ProbeBundle.from_bytes(_encoded(_bundle_mapping()))
+
+    def _result(self, *, passed: bool = True) -> probe.ProbeRunResult:
+        return probe.ProbeRunResult(
+            schema_version=1,
+            passed=passed,
+            reason="probe-pass" if passed else "probe-failed",
+            bundle_sha256=self.bundle.bundle_sha256,
+            plan_sha256=self.bundle.plan_sha256,
+            selected_probes=("boot",),
+            outcomes=(
+                probe.ProbeOutcome(
+                    0,
+                    "boot",
+                    passed,
+                    None if passed else 5,
+                    "boot-ok" if passed else "uname-failed",
+                ),
+            ),
+            elapsed_seconds=2.5,
+            recovered=True,
+        )
+
+    def test_success_publishes_private_hash_valid_result_last(self) -> None:
+        publisher = probe.RealProbePublisher(self.directory)
+        publisher.invalidate()
+
+        publisher.publish(
+            self._result(),
+            b"context\nASTERINAS_PROBE_READY v=1 pid=1\n",
+            b"",
+        )
+
+        names = {path.name for path in self.directory.iterdir()}
+        self.assertEqual(names, {"result.json", "serial-summary.log", "sha256sums.txt"})
+        for path in self.directory.iterdir():
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        result = json.loads((self.directory / "result.json").read_bytes())
+        self.assertTrue(result["passed"])
+        for line in (self.directory / "sha256sums.txt").read_text().splitlines():
+            digest, name = line.split("  ", 1)
+            self.assertEqual(
+                hashlib.sha256((self.directory / name).read_bytes()).hexdigest(),
+                digest,
+            )
+
+    def test_failure_retains_only_bounded_dmesg_and_compact_serial(self) -> None:
+        publisher = probe.RealProbePublisher(self.directory)
+        publisher.invalidate()
+        transcript = b"x" * 10000 + b"\nASTERINAS_PROBE_READY v=1 pid=1\n"
+
+        publisher.publish(self._result(passed=False), transcript, b"failure\n")
+
+        self.assertEqual(
+            (self.directory / "failure.dmesg.log").read_bytes(), b"failure\n"
+        )
+        self.assertLessEqual(
+            (self.directory / "serial-summary.log").stat().st_size, 8 * 1024
+        )
+
+    def test_stale_result_is_invalidated_before_new_work(self) -> None:
+        self.directory.mkdir(mode=0o700)
+        for name in probe.RealProbePublisher.OUTPUT_NAMES:
+            (self.directory / name).write_text("stale")
+
+        probe.RealProbePublisher(self.directory).invalidate()
+
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_mid_publication_failure_never_leaves_terminal_result(self) -> None:
+        publisher = probe.RealProbePublisher(self.directory)
+        publisher.invalidate()
+        original = probe.PinnedOutputDirectory.atomic_write
+
+        def fail_on_manifest(output, name, contents, *, mode=0o600):
+            if name == "sha256sums.txt":
+                raise OSError("injected manifest failure")
+            return original(output, name, contents, mode=mode)
+
+        with (
+            mock.patch.object(
+                probe.PinnedOutputDirectory,
+                "atomic_write",
+                autospec=True,
+                side_effect=fail_on_manifest,
+            ),
+            self.assertRaisesRegex(OSError, "injected"),
+        ):
+            publisher.publish(self._result(), b"serial\n", b"")
+
+        self.assertFalse((self.directory / "result.json").exists())
+
+    def test_symlink_destination_is_replaced_without_following(self) -> None:
+        publisher = probe.RealProbePublisher(self.directory)
+        publisher.invalidate()
+        sentinel = Path(self.temporary_directory.name) / "sentinel"
+        sentinel.write_text("unchanged")
+        (self.directory / "serial-summary.log").symlink_to(sentinel)
+
+        publisher.publish(self._result(), b"serial\n", b"")
+
+        self.assertEqual(sentinel.read_text(), "unchanged")
+        self.assertFalse((self.directory / "serial-summary.log").is_symlink())
 
 
 if __name__ == "__main__":

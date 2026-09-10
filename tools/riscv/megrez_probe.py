@@ -8,10 +8,15 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
-from typing import Any, Sequence
+import secrets
+import stat
+import time
+from typing import Any, Callable, Protocol, Sequence
 
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
 
 
@@ -51,6 +56,7 @@ _PROTOCOL_PREFIX = b"ASTERINAS_PROBE_"
 _READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
 _MAX_TRANSCRIPT_BYTES = 256 * 1024
 _MAX_DMESG_BYTES = 32 * 1024
+_SERIAL_CONTEXT_BYTES = 2048
 
 
 class ProbeContractError(ValueError):
@@ -222,6 +228,109 @@ class ProbeExchange:
     outcomes: tuple[ProbeOutcome, ...]
     passed: bool
     dmesg: bytes
+
+
+@dataclass(frozen=True)
+class ProbeRunConfig:
+    """All bounded host and guest deadlines for one probe boot."""
+
+    session_seconds: int = 90
+    recovery_seconds: int = 30
+    open_seconds: int = 60
+    artifact_seconds: int = 60
+    shell: bool = False
+
+    def __post_init__(self) -> None:
+        validate_session_seconds(self.session_seconds)
+        if (
+            type(self.recovery_seconds) is not int
+            or not 1 <= self.recovery_seconds <= 120
+            or type(self.open_seconds) is not int
+            or not 1 <= self.open_seconds <= 120
+            or type(self.artifact_seconds) is not int
+            or not 1 <= self.artifact_seconds <= 300
+        ):
+            raise ProbeContractError("host deadlines are outside the bounded range")
+        if type(self.shell) is not bool:
+            raise ProbeContractError("shell selector must be boolean")
+
+
+@dataclass(frozen=True)
+class ProbeRunResult:
+    """One terminal result published only after recovery is classified."""
+
+    schema_version: int
+    passed: bool
+    reason: str
+    bundle_sha256: str
+    plan_sha256: str
+    selected_probes: tuple[str, ...]
+    outcomes: tuple[ProbeOutcome, ...]
+    elapsed_seconds: float
+    recovered: bool
+
+    def to_dict(self) -> dict[str, object]:
+        if self.schema_version != 1:
+            raise ProbeContractError("probe result schema must be 1")
+        return {
+            "schema_version": self.schema_version,
+            "passed": self.passed,
+            "reason": self.reason,
+            "bundle_sha256": self.bundle_sha256,
+            "plan_sha256": self.plan_sha256,
+            "selected_probes": list(self.selected_probes),
+            "outcomes": [
+                {
+                    "sequence": outcome.sequence,
+                    "name": outcome.name,
+                    "passed": outcome.passed,
+                    "errno": outcome.error_number,
+                    "detail": outcome.detail,
+                }
+                for outcome in self.outcomes
+            ],
+            "elapsed_seconds": self.elapsed_seconds,
+            "recovered": self.recovered,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json(self.to_dict())
+
+
+class ProbeOperations(Protocol):
+    @property
+    def guest_started(self) -> bool: ...
+
+    @property
+    def transcript(self) -> bytes: ...
+
+    def open(self, timeout: float) -> None: ...
+
+    def ensure_artifacts(self, timeout: float) -> tuple[str, ...]: ...
+
+    def boot(self, bootargs: str, timeout: float) -> None: ...
+
+    def exchange(
+        self,
+        nonce: str,
+        selected: tuple[ProbeDefinition, ...],
+        shell: bool,
+        timeout: float,
+    ) -> ProbeExchange: ...
+
+    def request_reboot(self, nonce: str, timeout: float) -> None: ...
+
+    def await_recovery(self, timeout: float) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class ProbePublisher(Protocol):
+    def invalidate(self) -> None: ...
+
+    def publish(
+        self, result: ProbeRunResult, transcript: bytes, dmesg: bytes
+    ) -> None: ...
 
 
 _PROBE_REGISTRY = {
@@ -443,3 +552,201 @@ def classify_probe_transcript(
                 "probe transcript contains replayed terminal records"
             )
     return ProbeExchange(tuple(outcomes), status, dmesg)
+
+
+def probe_bootargs(plan: DebugPlan, session_seconds: int) -> str:
+    """Derive the minimal probe boot without carrying external workloads."""
+
+    plan.validate()
+    session_seconds = validate_session_seconds(session_seconds)
+    tokens = plan.bootargs.split()
+    if "--" in tokens:
+        tokens = tokens[: tokens.index("--")]
+    removed_prefixes = (
+        "console=",
+        "loglevel=",
+        "asterinas.klog_capture=",
+        "asterinas.reboot_after=",
+        "asterinas.net=",
+        "asterinas.neighbor=",
+        "systemd.",
+    )
+    retained = [
+        token
+        for token in tokens
+        if token != "asterinas.mmc_write_partition2"
+        and token != "init=/init"
+        and not token.startswith(removed_prefixes)
+    ]
+    suffix = (
+        "console=ttyS0",
+        "loglevel=info",
+        "asterinas.klog_capture=info",
+        "init=/init",
+        f"asterinas.reboot_after={session_seconds}",
+        "--",
+        "--root-init=probe",
+    )
+    return " ".join((*retained, *suffix))
+
+
+def _remaining(deadline: float, clock: Callable[[], float]) -> float:
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise TimeoutError("probe guest deadline expired")
+    return remaining
+
+
+def run_probe(
+    bundle: ProbeBundle,
+    selected: tuple[ProbeDefinition, ...],
+    config: ProbeRunConfig,
+    operations: ProbeOperations,
+    publisher: ProbePublisher,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    nonce_factory: Callable[[], str] = lambda: secrets.token_hex(16),
+) -> ProbeRunResult:
+    """Run one probe batch and always classify post-boot recovery."""
+
+    publisher.invalidate()
+    bundle.validate()
+    config.__post_init__()
+    if tuple(validate_probe_names(tuple(item.name for item in selected))) != selected:
+        raise ProbeContractError("selected probes do not match the registry")
+    nonce = _validate_nonce(nonce_factory())
+    started = clock()
+    exchange: ProbeExchange | None = None
+    recovered = False
+    reason = "probe-not-started"
+    terminal_exchange = False
+    phase = "open"
+    try:
+        operations.open(config.open_seconds)
+        phase = "artifacts"
+        operations.ensure_artifacts(config.artifact_seconds)
+        guest_deadline = clock() + config.session_seconds
+        phase = "boot"
+        operations.boot(
+            probe_bootargs(bundle.plan, config.session_seconds),
+            _remaining(guest_deadline, clock),
+        )
+        phase = "exchange"
+        exchange = operations.exchange(
+            nonce,
+            selected,
+            config.shell,
+            _remaining(guest_deadline, clock),
+        )
+        terminal_exchange = True
+        reason = "probe-pass" if exchange.passed else "probe-failed"
+        phase = "reboot-request"
+        operations.request_reboot(nonce, _remaining(guest_deadline, clock))
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        reason = f"probe-{phase}-failed"
+    finally:
+        if operations.guest_started:
+            try:
+                operations.await_recovery(config.recovery_seconds)
+                recovered = True
+            except (OSError, RuntimeError, TimeoutError, ValueError):
+                recovered = False
+                reason = "manual-reset-required"
+        transcript = operations.transcript
+        operations.close()
+
+    outcomes = exchange.outcomes if exchange is not None else ()
+    dmesg = exchange.dmesg if exchange is not None else b""
+    result = ProbeRunResult(
+        schema_version=1,
+        passed=bool(terminal_exchange and exchange and exchange.passed and recovered),
+        reason=reason,
+        bundle_sha256=bundle.bundle_sha256,
+        plan_sha256=bundle.plan_sha256,
+        selected_probes=tuple(item.name for item in selected),
+        outcomes=outcomes,
+        elapsed_seconds=round(max(0.0, clock() - started), 3),
+        recovered=recovered,
+    )
+    publisher.publish(result, transcript, dmesg)
+    return result
+
+
+def _prepare_output_directory(path: Path) -> Path:
+    candidate = path.absolute()
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ProbeContractError("probe output path contains an unsafe component")
+    candidate.mkdir(mode=0o700, parents=True, exist_ok=True)
+    candidate.chmod(0o700)
+    return candidate
+
+
+def _serial_summary(transcript: bytes) -> bytes:
+    if not isinstance(transcript, bytes):
+        raise ProbeContractError("serial transcript must be bytes")
+    first = transcript.find(_PROTOCOL_PREFIX)
+    last = transcript.rfind(_PROTOCOL_PREFIX)
+    if first < 0:
+        return transcript[-2 * _SERIAL_CONTEXT_BYTES :]
+    line_end = transcript.find(b"\n", last)
+    if line_end < 0:
+        line_end = len(transcript)
+    else:
+        line_end += 1
+    start = max(0, first - _SERIAL_CONTEXT_BYTES)
+    end = min(len(transcript), line_end + _SERIAL_CONTEXT_BYTES)
+    summary = bytearray()
+    if start:
+        summary.extend(b"[serial context truncated]\n")
+    summary.extend(transcript[start:end])
+    if end < len(transcript):
+        summary.extend(b"[serial context truncated]\n")
+    return bytes(summary)
+
+
+class RealProbePublisher:
+    """Publish a compact private evidence set with the result last."""
+
+    OUTPUT_NAMES = (
+        "result.json",
+        "serial-summary.log",
+        "failure.dmesg.log",
+        "sha256sums.txt",
+    )
+
+    def __init__(self, output_directory: Path) -> None:
+        self.output_directory = _prepare_output_directory(output_directory)
+
+    def invalidate(self) -> None:
+        with PinnedOutputDirectory(self.output_directory) as output:
+            output.invalidate(*self.OUTPUT_NAMES)
+
+    def publish(self, result: ProbeRunResult, transcript: bytes, dmesg: bytes) -> None:
+        summary = _serial_summary(transcript)
+        if len(dmesg) > _MAX_DMESG_BYTES:
+            raise ProbeContractError("failure dmesg exceeds the byte cap")
+        retained: list[tuple[str, bytes]] = [("serial-summary.log", summary)]
+        if not result.passed:
+            retained.append(
+                (
+                    "failure.dmesg.log",
+                    dmesg or b"no guest dmesg frame was available\n",
+                )
+            )
+        with PinnedOutputDirectory(self.output_directory) as output:
+            output.invalidate("result.json")
+            for name, contents in retained:
+                output.atomic_write(name, contents, mode=0o600)
+            sums = "".join(
+                f"{hashlib.sha256(contents).hexdigest()}  {name}\n"
+                for name, contents in retained
+            ).encode()
+            output.atomic_write("sha256sums.txt", sums, mode=0o600)
+            output.atomic_write("result.json", result.canonical_bytes(), mode=0o600)
