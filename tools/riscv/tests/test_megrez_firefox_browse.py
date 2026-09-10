@@ -300,6 +300,14 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertEqual(home["scope"], "baidu-home")
         clock_command = operations._run_long_step.call_args_list[0].args[0]
         home_command = operations._run_long_step.call_args_list[1].args[0]
+        self.assertEqual(
+            operations._run_long_step.call_args_list[0].kwargs["accepted_statuses"],
+            ("0", "124"),
+        )
+        self.assertEqual(
+            operations._run_long_step.call_args_list[1].kwargs["accepted_statuses"],
+            ("0", "124"),
+        )
         self.assertIn("megrez-clock-sync", clock_command)
         self.assertIn("nsenter -t 116 -n", clock_command)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)
