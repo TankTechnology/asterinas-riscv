@@ -994,14 +994,6 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         "after": "3" * 16,
     }
 
-    def test_status_host_deadline_preserves_guest_runtime_headroom(self) -> None:
-        with self.assertRaisesRegex(ValueError, "status deadline lacks guest headroom"):
-            desktop.FirefoxDiagnosticConfig(
-                hypothesis="one bounded hypothesis",
-                contrary_outcome="one observation that rejects it",
-                status_timeout=54.999,
-            )
-
     def test_commands_are_short_ordered_read_only_and_payload_free(self) -> None:
         commands = desktop.firefox_diagnostic_commands(41, self.NONCES)
         joined = "\n".join(commands)
@@ -1039,32 +1031,15 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         )
         self.assertIn("/proc/$_asterinas_firefox_pid/stat", joined)
         self.assertIn("/home/asterinas/.mozilla/asterinas-browser-web", joined)
-        self.assertIn(
-            'status_once("127.0.0.1",2828,45)',
-            joined,
-        )
-        self.assertNotIn(
-            'status_once("127.0.0.1",2828,30)',
-            joined,
-        )
-        self.assertGreaterEqual(
-            desktop.FirefoxDiagnosticConfig(
-                hypothesis="one bounded hypothesis",
-                contrary_outcome="one observation that rejects it",
-            ).status_timeout,
-            desktop.FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS + 10,
-        )
-        status_index = next(
-            index for index, command in enumerate(commands) if "status_once" in command
-        )
+        self.assertNotIn("WebDriver:Status", joined)
+        self.assertNotIn("status_once", joined)
         new_session_index = next(
             index
             for index, command in enumerate(commands)
             if "WebDriver:NewSession" in command
         )
-        self.assertLess(status_index, new_session_index)
-        self.assertEqual(joined.count("ASTERINAS_MARIONETTE_DIAGNOSTICS=1"), 2)
-        self.assertNotIn("ASTERINAS_MARIONETTE_DEBUG_ERRORS", joined)
+        self.assertEqual(joined.count("ASTERINAS_MARIONETTE_DIAGNOSTICS=1"), 1)
+        self.assertEqual(joined.count("ASTERINAS_MARIONETTE_DEBUG_ERRORS=1"), 1)
         self.assertIn("time.monotonic()+300", joined)
         self.assertIn(
             '{"pageLoadStrategy":"none","strictFileInteractability":True}',
@@ -1075,6 +1050,10 @@ class FirefoxGuestCommandTests(unittest.TestCase):
             index
             for index, command in enumerate(commands)
             if "sleep 5" in command and "&" in command
+        )
+        self.assertLess(
+            joined.index("_asterinas_firefox_snapshot"),
+            joined.index("WebDriver:NewSession"),
         )
         self.assertLess(background_index, new_session_index)
         self.assertIn('wait "$_asterinas_firefox_during_job"', joined)
@@ -1125,17 +1104,6 @@ class FirefoxGuestCommandTests(unittest.TestCase):
                         pid, nonces, selected_timeout=timeout
                     )
 
-    def test_real_status_operation_rejects_a_nonzero_guest_status(self) -> None:
-        operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
-        marker = mock.Mock()
-        marker.group.return_value = "1"
-        with (
-            mock.patch.object(operations, "_run_diagnostic_command"),
-            mock.patch.object(operations, "_single_marker", return_value=marker),
-            self.assertRaisesRegex(desktop.HostGateError, "Status failed"),
-        ):
-            operations.run_firefox_status(30.0)
-
     def test_real_command_sends_payload_and_ack_as_one_shell_transaction(self) -> None:
         operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
         operations._firefox_commands = ("do_work",)
@@ -1184,6 +1152,49 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         self.assertEqual(
             [call.args[1] for call in run.call_args_list],
             [29.0, 28.0, 27.0, 26.0],
+        )
+        self.assertEqual([call.args[0] for call in run.call_args_list], [0, 1, 2, 3])
+
+    def test_real_adapter_uses_protocol_v7_command_indexes(self) -> None:
+        operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
+        operations._browser_pid = 41
+        operations._firefox_identity = desktop.FirefoxProcessIdentity(
+            pid=41,
+            start_time_ticks=100,
+            profile_identity="8:90",
+            browser_restarts=0,
+        )
+        marker = mock.Mock()
+        marker.group.side_effect = lambda index: {
+            1: "41",
+            2: "100",
+            3: "0",
+            4: "8:90",
+        }[index]
+        with (
+            mock.patch.object(operations, "_run_diagnostic_command") as run,
+            mock.patch.object(operations, "_single_marker", return_value=marker),
+            mock.patch.object(
+                desktop,
+                "parse_firefox_snapshot_frame",
+                return_value=self.snapshot(),
+            ),
+            mock.patch.object(
+                desktop.RealFirefoxDiagnosticOperations,
+                "transcript",
+                new_callable=mock.PropertyMock,
+                return_value=b"",
+            ),
+            mock.patch.object(desktop.time, "monotonic", return_value=100.0),
+        ):
+            operations.capture_firefox_snapshot("before", "1" * 16, 30.0)
+            operations.run_firefox_new_session(315.0)
+            operations.capture_firefox_snapshot("during", "2" * 16, 30.0)
+            operations.capture_firefox_snapshot("after", "3" * 16, 30.0)
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         )
 
     def frame(
@@ -1258,40 +1269,7 @@ class FirefoxGuestCommandTests(unittest.TestCase):
 
 
 def _diagnostic_transcript(boundary: str = "new-session-complete") -> bytes:
-    if boundary == "status-command-stalled":
-        lines = _greeting(11, 100)
-        lines.extend(
-            (
-                _transport_record(
-                    pid=11,
-                    monotonic_ns=200,
-                    request_id=1,
-                    command="WebDriver:Status",
-                    event="begin",
-                    stage="send",
-                ),
-                _transport_record(
-                    pid=11,
-                    monotonic_ns=205,
-                    request_id=1,
-                    command="WebDriver:Status",
-                    event="send_complete",
-                    stage="send",
-                    send_complete=True,
-                ),
-                _transport_record(
-                    pid=11,
-                    monotonic_ns=210,
-                    request_id=1,
-                    command="WebDriver:Status",
-                    event="failure",
-                    stage="response_header",
-                    send_complete=True,
-                ),
-            )
-        )
-        return "".join(lines).encode()
-    lines = _status_complete() + _greeting(22, 300)
+    lines = _greeting(22, 300)
     if boundary == "new-session-complete":
         lines.extend(_complete_command(22, "WebDriver:NewSession", 400))
     elif boundary == "new-session-response-absent":
@@ -1362,7 +1340,6 @@ class _DiagnosticOperations:
         invalid_snapshot: str | None = None,
         diagnostics_fail: bool = False,
         interrupt_new_session: bool = False,
-        status_fail: bool = False,
         recover: bool = True,
     ) -> None:
         self.events = events
@@ -1372,7 +1349,6 @@ class _DiagnosticOperations:
         self.invalid_snapshot = invalid_snapshot
         self.diagnostics_fail = diagnostics_fail
         self.interrupt_new_session = interrupt_new_session
-        self.status_fail = status_fail
         self.recover = recover
 
     @property
@@ -1429,11 +1405,6 @@ class _DiagnosticOperations:
             browser_restarts=0,
         )
 
-    def run_firefox_status(self, _timeout: float) -> None:
-        self.events.append("status")
-        if self.status_fail:
-            raise TimeoutError("Status did not complete")
-
     def capture_firefox_snapshot(
         self, phase: str, _nonce: str, _timeout: float
     ) -> dict[str, object]:
@@ -1475,7 +1446,6 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         "boot",
         "readiness",
         "firefox-preflight",
-        "status",
         "snapshot-before",
         "new-session",
         "snapshot-during",
@@ -1494,9 +1464,9 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         result = desktop.run_firefox_diagnosis(
             _start_plan(),
             desktop.FirefoxDiagnosticConfig(
-                hypothesis="Status completes and NewSession returns no header",
+                hypothesis="NewSession returns no header",
                 contrary_outcome=(
-                    "Status fails, send fails, response begins, or call completes"
+                    "listener fails, send fails, response begins, or call completes"
                 ),
             ),
             operations,
@@ -1517,9 +1487,7 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertTrue(result.recovered)
         self.assertEqual(result.boundary.boundary, "new-session-complete")
-        self.assertEqual(
-            result.hypothesis, "Status completes and NewSession returns no header"
-        )
+        self.assertEqual(result.hypothesis, "NewSession returns no header")
         self.assertEqual(result.artifact_transfer_bytes, 0)
         self.assertEqual(result.qemu_runs, 0)
         self.assertEqual(result.physical_boots, 1)
@@ -1531,6 +1499,20 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         self.assertEqual(len(result.snapshot_sha256), 3)
         self.assertEqual(publisher.published[1], _diagnostic_transcript())
 
+    def test_protocol_v7_removes_status_and_uses_schema_two(self) -> None:
+        result, events, _publisher = self.run_diagnosis()
+
+        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 7)
+        self.assertEqual(result.schema_version, 2)
+        self.assertNotIn("status", events)
+        self.assertEqual(
+            desktop.FirefoxDiagnosticConfig(
+                hypothesis="one hypothesis",
+                contrary_outcome="one contrary outcome",
+            ).diagnostics_timeout,
+            90.0,
+        )
+
     def test_selected_timeout_is_classified_and_still_recovers(self) -> None:
         result, events, _publisher = self.run_diagnosis(
             boundary="new-session-response-absent"
@@ -1539,20 +1521,6 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(result.boundary.boundary, "new-session-response-absent")
         self.assertEqual(events, self.EXPECTED_EVENTS)
-
-    def test_status_failure_skips_the_selected_new_session_cost(self) -> None:
-        result, events, _publisher = self.run_diagnosis(
-            boundary="status-command-stalled",
-            status_fail=True,
-        )
-
-        self.assertFalse(result.passed)
-        self.assertEqual(result.boundary.boundary, "status-command-stalled")
-        self.assertNotIn("new-session", events)
-        self.assertFalse(any(event.startswith("snapshot-") for event in events))
-        self.assertEqual(
-            events[-4:], ["request-reboot", "recovery", "publish", "close"]
-        )
 
     def test_missing_snapshot_malformed_transport_and_diagnostics_fail_closed(
         self,
@@ -1657,7 +1625,7 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
         )
 
     def test_serial_observer_change_uses_a_new_protocol_identity(self) -> None:
-        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 6)
+        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 7)
 
     def run_real_publisher(self, **operation_options):
         output = self.evidence / "run"
