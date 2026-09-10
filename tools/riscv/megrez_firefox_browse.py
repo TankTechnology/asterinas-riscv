@@ -39,10 +39,15 @@ MIN_BROWSER_VIEWPORT_WIDTH = 1024
 MIN_BROWSER_VIEWPORT_HEIGHT = 700
 MAX_SERIAL_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_BYTES = 256 * 1024
-# The first board trace reached Marionette after 244 guest seconds and completed
-# NewSession after another 156.  Keep 225 seconds for DOM/screenshot work while
-# remaining inside the kernel's fixed 900-second recovery lifetime.
-MAX_BAIDU_HOME_GATE_SECONDS = 625
+# The slowest useful board trace reached the completed Baidu DOM after 810 guest
+# seconds. Bound the page sub-gate at 650 seconds so that a run beginning around
+# guest second 300 still leaves roughly one minute before the host's 1020-second
+# deadline to export diagnostics. The kernel remains the terminal recovery owner.
+FIREFOX_BROWSE_REBOOT_AFTER_SECONDS = 1050
+MAX_BAIDU_HOME_GATE_SECONDS = 650
+CLOCK_SYNC_ATTEMPTS = 2
+CLOCK_SYNC_HTTP_TIMEOUT_SECONDS = 10
+CLOCK_SYNC_PROCESS_TIMEOUT_SECONDS = 20
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -82,7 +87,7 @@ def _transcript_bytes(value: str | bytes) -> bytes:
 
 
 def firefox_browse_bootargs(plan: Any) -> str:
-    """Keep the frozen network/proxy path and arm the 900-second safety reboot."""
+    """Keep the frozen web path and arm bounded recovery and TCP tracing."""
 
     bootargs = physical_bootargs(plan)
     tokens = bootargs.split()
@@ -98,11 +103,20 @@ def firefox_browse_bootargs(plan: Any) -> str:
         for prefix in required_prefixes
     ):
         raise HostGateError("Firefox browse plan lacks the frozen network/proxy path")
-    if "asterinas.reboot_after=900" not in tokens:
-        raise HostGateError("Firefox browse safety reboot is missing")
+    recovery_tokens = [
+        token for token in tokens if token.startswith("asterinas.reboot_after=")
+    ]
+    if recovery_tokens != ["asterinas.reboot_after=900"]:
+        raise HostGateError("Firefox browse safety reboot is missing or ambiguous")
+    tokens[tokens.index(recovery_tokens[0])] = (
+        f"asterinas.reboot_after={FIREFOX_BROWSE_REBOOT_AFTER_SECONDS}"
+    )
+    if any(token.startswith("asterinas.tcp_diagnostic_port=") for token in tokens):
+        raise HostGateError("Firefox browse TCP diagnostic port is ambiguous")
+    tokens.insert(tokens.index("--"), "asterinas.tcp_diagnostic_port=2828")
     if any("mmc_write_partition2" in token for token in tokens):
         raise HostGateError("Firefox browse must not write partition 2")
-    return bootargs
+    return " ".join(tokens)
 
 
 @dataclass(frozen=True)
@@ -112,7 +126,7 @@ class FirefoxBrowseConfig:
     boot_timeout: float = 180.0
     readiness_timeout: float = 300.0
     clock_timeout: float = 45.0
-    browse_timeout: float = 645.0
+    browse_timeout: float = 670.0
     transfer_timeout: float = 180.0
     diagnostics_timeout: float = 60.0
     reboot_timeout: float = 30.0
@@ -340,6 +354,11 @@ def run_firefox_browse(
             if operations.guest_started:
                 try:
                     operations.request_reboot(config.reboot_timeout)
+                except BaseException as reboot_error:
+                    failures.append("reboot-" + _failure_reason(reboot_error))
+                    if not isinstance(reboot_error, Exception) and interruption is None:
+                        interruption = reboot_error
+                try:
                     operations.await_recovery(config.recovery_timeout)
                     recovered = True
                 except BaseException as recovery_error:
@@ -495,6 +514,8 @@ def _single_json_marker(payload: bytes, expected_marker: str) -> dict[str, objec
 class RealFirefoxBrowseOperations(RealBootCycleOperations):
     """MMC-only serial adapter for the lightweight homepage transaction."""
 
+    GUEST_LIFETIME_SECONDS = FIREFOX_BROWSE_REBOOT_AFTER_SECONDS
+
     def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]:
         outcomes = super().ensure_artifacts(plan, timeout)
         if outcomes != ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc"):
@@ -546,25 +567,34 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
 
     def synchronize_clock(self, browser_pid: int, timeout: float) -> dict[str, object]:
         serial = self._require_serial()
-        start = serial.checkpoint()
         command = (
-            f"/usr/bin/timeout 30 /usr/bin/nsenter -t {browser_pid} -n "
+            f"/usr/bin/timeout {CLOCK_SYNC_PROCESS_TIMEOUT_SECONDS} "
+            f"/usr/bin/nsenter -t {browser_pid} -n "
             "/run/asterinas-tools/megrez-clock-sync "
-            "--proxy http://10.100.19.216:17893 --timeout 15"
+            "--proxy http://10.100.19.216:17893 "
+            f"--timeout {CLOCK_SYNC_HTTP_TIMEOUT_SECONDS}"
         )
         # CPython process teardown can outlive the outer timeout on Asterinas.
         # Status 124 is usable only when the unique post-operation marker below
         # proves that clock synchronization itself already completed.
-        self._run_long_step(
-            command,
-            "clock",
-            secrets.token_hex(8),
-            timeout,
-            accepted_statuses=("0", "124"),
-        )
-        return _single_json_marker(
-            self._step_payload(start), "ASTERINAS_CLOCK_SYNC_READY"
-        )
+        attempt_timeout = timeout / CLOCK_SYNC_ATTEMPTS
+        last_error: HostGateError | None = None
+        for attempt in range(1, CLOCK_SYNC_ATTEMPTS + 1):
+            start = serial.checkpoint()
+            self._run_long_step(
+                command,
+                f"clock-{attempt}",
+                secrets.token_hex(8),
+                attempt_timeout,
+                accepted_statuses=("0", "124"),
+            )
+            try:
+                return _single_json_marker(
+                    self._step_payload(start), "ASTERINAS_CLOCK_SYNC_READY"
+                )
+            except HostGateError as error:
+                last_error = error
+        raise last_error or HostGateError("clock synchronization evidence is missing")
 
     def run_baidu_home(
         self, browser_pid: int, nonce: str, timeout: float
@@ -579,6 +609,8 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             f"install -d -m 0700 {directory}; /usr/bin/timeout {guest_timeout + 10} "
             f"/usr/bin/nsenter -t {browser_pid} -n /usr/bin/env -i "
             "PATH=/usr/bin:/bin HOME=/home/asterinas PYTHONPATH=/usr/lib/asterinas "
+            "ASTERINAS_MARIONETTE_DIAGNOSTICS=1 "
+            "ASTERINAS_MARIONETTE_DEBUG_ERRORS=1 "
             "/run/asterinas-tools/browser-web-marionette-gate --scope baidu-home "
             f"--firefox-pid {browser_pid} --timeout {guest_timeout} "
             f"--evidence-dir {directory}"

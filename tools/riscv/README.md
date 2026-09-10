@@ -624,7 +624,12 @@ and verifies a fresh U-Boot prompt. The PNG is a Marionette content-viewport
 capture, not an HDMI framebuffer dump: it must be a complete decodable image of
 at least 1024x700, while the paired JSON and ready marker independently bind the
 same WebDriver session to Baidu HTTPS, verified TLS timing, and the required DOM.
-On a host with a different local proxy port, pass `--proxy-upstream-port PORT`.
+The real-web action has a 1050-second terminal recovery timer and stops its page
+gate early enough to export failure evidence. It records payload-free
+Marionette command boundaries plus at most 128 kernel TCP events for loopback
+port 2828; routine `start` keeps its existing non-diagnostic behavior.
+Increasing the terminal bound does not delay a successful page. On a host with
+a different local proxy port, pass `--proxy-upstream-port PORT`.
 
 The two experiment helpers are carried by the small Stage1 initramfs and
 bind-mounted into the ephemeral `/run/asterinas-tools` path. Updating this

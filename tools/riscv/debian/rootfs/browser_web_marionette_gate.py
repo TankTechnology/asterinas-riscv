@@ -113,6 +113,10 @@ return JSON.stringify({
   }
 });"""
 
+_PING_SCRIPT = (
+    "return JSON.stringify({url:location.href,readyState:document.readyState});"
+)
+
 _SNAPSHOT_SCRIPT = r"""const detailPage = location.hostname === 'www.bilibili.com' && location.pathname.startsWith('/video/');
 return JSON.stringify({
   url: location.href,
@@ -868,6 +872,36 @@ def _probe(client: Marionette) -> dict[str, object]:
     return _probe_mapping(parsed)
 
 
+def _ping_document(client: Marionette) -> dict[str, str] | None:
+    """Issue a layout-free actor round trip before the detailed DOM probe."""
+
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _PING_SCRIPT,
+            "args": [],
+            "line": 1,
+            "filename": "asterinas-browser-web-ping",
+        },
+    )
+    value = _script_value(response)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise GateError("web ping script returned an invalid response")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise GateError("web ping script returned malformed JSON") from error
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"url", "readyState"}
+        or not all(isinstance(item, str) for item in parsed.values())
+    ):
+        raise GateError("web ping script returned an invalid document identity")
+    return parsed
+
+
 def _script_value(response: object) -> object:
     """Normalize Marionette ExecuteScript responses across protocol variants.
 
@@ -1246,6 +1280,17 @@ def _capture_baidu_home(
     # completes while ExecuteScript below does not, the stall is in Firefox's
     # JS evaluation/sandbox path rather than navigation or socket transport.
     run_phase("title-baidu-home", lambda: client.command("WebDriver:GetTitle"))
+    ping = run_phase("ping-baidu-home", lambda: _ping_document(client))
+    if ping is None:
+        print("A_WEB_JS_PING state=no-document", file=sys.stderr, flush=True)
+    else:
+        print(
+            "A_WEB_JS_PING state=response "
+            f"url={json.dumps(ping['url'], ensure_ascii=True)} "
+            f"ready_state={json.dumps(ping['readyState'], ensure_ascii=True)}",
+            file=sys.stderr,
+            flush=True,
+        )
     run_phase(
         "probe-baidu-home",
         lambda: _wait_for_probe(client, probe_baidu_home, deadline),

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -105,6 +107,40 @@ class ScriptedSerial:
         raise TimeoutError(markers)
 
 
+class CorruptPid1BeginOnceSerial(ScriptedSerial):
+    def __init__(self) -> None:
+        super().__init__()
+        self.aborts = 0
+        self.nonces: list[str] = []
+        self.corrupted = False
+
+    def send(self, payload: bytes, deadline: float) -> None:
+        del deadline
+        if payload == b"\x03\n":
+            self.aborts += 1
+            self._transcript.extend(b"^C\r\r\n")
+            return
+        text = payload.decode().rstrip("\n")
+        match = re.search(r"__ASTERINAS_DEBUG_([0-9a-f]{32})_", text)
+        assert match is not None
+        nonce = match.group(1)
+        commands = debug_console_commands(nonce)
+        command = next(command for command in commands if command.payload == text)
+        self.nonces.append(nonce)
+        self._transcript.extend(payload.rstrip(b"\n") + b"\r\r\n")
+        begin = command.begin_marker
+        if command.name == "pid1" and not self.corrupted:
+            begin = begin.replace("_PID1_BEGIN__", "ID1_BEGIN__")
+            self.corrupted = True
+        for line in (
+            begin,
+            f"{command.value_prefix}{PASSING_OUTPUTS[command.name]}",
+            f"{command.status_prefix}0",
+            command.end_marker,
+        ):
+            self._transcript.extend(line.encode() + b"\r\r\n")
+
+
 class DebugConsoleProtocolTests(unittest.TestCase):
     def test_passing_transcript_yields_exact_evidence(self) -> None:
         self.assertEqual(
@@ -145,6 +181,17 @@ class DebugConsoleProtocolTests(unittest.TestCase):
         )
         self.assertEqual(evidence.uid, 0)
         self.assertEqual(evidence.desktop_state, "active")
+
+    def test_runtime_retries_a_corrupted_command_with_a_fresh_nonce(self) -> None:
+        serial = CorruptPid1BeginOnceSerial()
+
+        evidence = run_debug_console_phase(
+            serial, time.monotonic() + 123.0, NONCE, ready_seen=False
+        )
+
+        self.assertEqual(evidence.pid1, "systemd")
+        self.assertEqual(serial.aborts, 1)
+        self.assertEqual(len(set(serial.nonces)), 2)
 
     def assert_output_rejected(self, name: str, value: str) -> None:
         outputs = dict(PASSING_OUTPUTS)

@@ -1673,6 +1673,15 @@ generate_fontconfig_cache "$stage" "$3"
                 return {"value": ["window-1"]}
             if name in {"WebDriver:Navigate", "WebDriver:GetTitle"}:
                 return {"value": None}
+            if name == "WebDriver:ExecuteScript":
+                return {
+                    "value": json.dumps(
+                        {
+                            "url": "https://www.baidu.com/",
+                            "readyState": "interactive",
+                        }
+                    )
+                }
             self.fail(f"unexpected Marionette command: {name}")
 
         client.command.side_effect = command
@@ -1705,6 +1714,18 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertEqual(result, ready)
         connect.assert_called_once()
         wait_probe.assert_called_once()
+        command_names = [call.args[0] for call in client.command.call_args_list]
+        self.assertLess(
+            command_names.index("WebDriver:GetTitle"),
+            command_names.index("WebDriver:ExecuteScript"),
+        )
+        ping_script = next(
+            call.args[1]["script"]
+            for call in client.command.call_args_list
+            if call.args[0] == "WebDriver:ExecuteScript"
+        )
+        self.assertNotIn("document.body", ping_script)
+        self.assertNotIn("querySelector", ping_script)
         take_snapshot.assert_called_once_with(client)
         write_evidence.assert_called_once_with(
             client, Path(directory), "baidu-home", ready

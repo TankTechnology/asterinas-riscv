@@ -1414,6 +1414,8 @@ def _safe_output_directory(path: Path, repository: Path) -> Path:
 class RealPhysicalGraphicsOperations:
     """Descriptor-owned physical board, serial protocol, and evidence adapter."""
 
+    GUEST_LIFETIME_SECONDS = PHYSICAL_REBOOT_AFTER
+
     _OUTPUT_NAMES = (
         "result.json",
         "physical.serial.log",
@@ -1635,7 +1637,7 @@ class RealPhysicalGraphicsOperations:
         # The kernel's recovery timer is fixed, not renewed by a new cycle.
         # Start slightly earlier on the host and leave room to drain evidence.
         self._guest_deadline = (
-            time.monotonic() + PHYSICAL_REBOOT_AFTER - PHYSICAL_REBOOT_HEADROOM
+            time.monotonic() + self.GUEST_LIFETIME_SECONDS - PHYSICAL_REBOOT_HEADROOM
         )
         session.start_boot_attempt()
         session.send(
