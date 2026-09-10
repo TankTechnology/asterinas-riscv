@@ -313,6 +313,8 @@ def launch_process(
 class SerialConsole:
     """A capped serial transcript reader using caller-provided absolute deadlines."""
 
+    _TX_DEADLINE_HEADROOM = 2.0
+
     def __init__(
         self,
         fd: int,
@@ -350,6 +352,13 @@ class SerialConsole:
         if not payload:
             raise ValueError("serial command must not be empty")
         view = memoryview(payload)
+        if self.tx_delay:
+            paced_seconds = self.tx_delay * max(0, len(view) - 1)
+            required_seconds = paced_seconds + self._TX_DEADLINE_HEADROOM
+            if deadline - time.monotonic() <= required_seconds:
+                raise TimeoutError(
+                    "serial command deadline expired before transmission"
+                )
         sent = 0
         while sent < len(view):
             try:
