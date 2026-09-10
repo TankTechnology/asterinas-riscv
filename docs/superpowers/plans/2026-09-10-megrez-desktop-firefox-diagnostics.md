@@ -699,7 +699,7 @@ Firefox or Asterinas failure.  The failed fallback diagnostic did generate a
 serial output was still arriving and recovery input was interleaved; the
 published empty diagnostics file remains immutable.
 
-- [ ] **Step 4f: Run direct NewSession diagnostic protocol v7 once**
+- [x] **Step 4f: Run direct NewSession diagnostic protocol v7 once**
 
 Retain protocol-v6 experiment identity
 `1fe5e8849467bdfbed7280fe0b8b3fe5d325da527f662ab05d234475f4622524`
@@ -717,6 +717,29 @@ enables exact offline NewSession errors only for this bounded command, uses a
 90-second diagnostic-collection budget, requires zero transfer bytes, and admits
 each runtime identity only once. Run the new identity only after all host gates
 pass.
+
+Protocol-v7 experiment identity
+`000a14115c71d2e51719eb3fa7ada2c46f75612d454a0c51c33133d94ac3b917`
+ran exactly once in 550.942 host seconds with one physical boot, zero QEMU
+runs, zero transfer bytes, and recovery to a fresh U-Boot prompt. Firefox kept
+PID 115, start tick 81888, profile identity `11:45`, and zero service restarts.
+After retrying connection refusal until the listener became available, the
+Marionette greeting completed; direct `WebDriver:NewSession` was completely
+sent and returned a complete 753-byte response in 153.929525 seconds. The
+classifier therefore reports `new-session-complete`, disproving the no-response
+hypothesis and selecting no kernel semantic change.
+
+The overall result is deliberately `firefox-diagnosis-incomplete` because all
+three auxiliary snapshot collectors hit their five-second guest timeout with
+status 124. Their redirections left zero-byte files which the framing command
+misreported with status zero; the host correctly rejected each zero-byte frame,
+so no snapshot JSON was published. This observer defect does not alter the
+complete payload-free NewSession transport record or the stable terminal
+Firefox identity. Evidence directory
+`target/megrez-desktop/evidence-77d7e42c/firefox-007e3da13a995bd9` is mode 0700;
+all retained files are mode 0600 and every retained-file hash verifies. Do not
+repeat this identity. Stop Firefox diagnostics and proceed to the existing
+physical interaction and HDMI acceptance gate.
 
 - [ ] **Step 5: Implement a fix only after causal proof**
 
