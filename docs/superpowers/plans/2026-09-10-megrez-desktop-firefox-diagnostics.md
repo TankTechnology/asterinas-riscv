@@ -661,7 +661,7 @@ attempts reused request ID zero and were incorrectly treated as duplicate
 terminal records.  The corrected classifier reports `listener-not-ready`
 without changing the immutable experiment output.
 
-- [ ] **Step 4e: Align Status readiness with the measured cold-start boundary**
+- [x] **Step 4e: Align Status readiness with the measured cold-start boundary**
 
 The protocol-v5 guest Status timeout was hard-coded to 30 seconds even though
 its host phase budget was 60 seconds.  Status began about 88.056 seconds after
@@ -678,6 +678,26 @@ Protocol v6 gives the guest Status probe 45 seconds within the existing
 of host headroom.  Run the new identity once after all host gates pass.  This
 is an observer timing correction only: do not change kernel semantics before
 Status and NewSession select a smaller causal boundary.
+
+Protocol-v6 experiment `1fe5e884...` ran once in 391.518 seconds with one
+physical boot, zero QEMU runs, zero transfers, complete retained-file hashes,
+private file modes, and fresh-U-Boot recovery.  Firefox remained PID 111 with
+start tick 81560 and zero restarts.  The greeting completed at guest monotonic
+258.724 seconds.  `WebDriver:Status` was then completely sent and received a
+complete 662-byte response, but that response contained a Marionette error and
+was rejected at `response_identity`; NewSession was not issued.  The current
+coarse result label `status-command-stalled` is therefore inaccurate for the
+retained transport record.
+
+Source review explains this without a kernel hypothesis: Firefox ESR 140's
+Marionette command table contains `WebDriver:NewSession` but no
+`WebDriver:Status`.  Mozilla's upstream discussion also explicitly records
+that WebDriver HTTP status is not implemented in Marionette itself.  The v6
+Status failure is thus an invalid diagnostic precondition, not evidence of a
+Firefox or Asterinas failure.  The failed fallback diagnostic did generate a
+43,068-byte hash-framed payload, but its 60-second host budget expired while
+serial output was still arriving and recovery input was interleaved; the
+published empty diagnostics file remains immutable.
 
 - [ ] **Step 5: Implement a fix only after causal proof**
 
