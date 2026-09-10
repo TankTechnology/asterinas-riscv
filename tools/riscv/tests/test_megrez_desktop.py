@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -1323,6 +1324,135 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
         ledger = self.evidence / "experiments.jsonl"
         self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
         self.assertEqual(len(ledger.read_text().splitlines()), 1)
+
+
+class DesktopCliTests(unittest.TestCase):
+    def test_parser_exposes_only_configure_start_and_bounded_diagnosis(self) -> None:
+        configure = desktop.parse_args(
+            [
+                "configure",
+                "--plan",
+                "/work/plan.json",
+                "--device",
+                "/dev/serial/by-id/usb-test",
+                "--deployment-attestation",
+                "/work/deployment-attestation.json",
+                "--deployment-measurement-log",
+                "/work/deployment-measurement.serial.log",
+                "--mmc-kernel",
+                "asterinas-current.Image",
+                "--mmc-initramfs",
+                "asterinas-current-stage1.cpio",
+                "--mmc-dtb",
+                "dtbs/linux/eswin/eic7700-milkv-megrez.dtb",
+                "--evidence-root",
+                "/work/evidence",
+                "--output",
+                "/work/current.json",
+            ]
+        )
+        start = desktop.parse_args(["start", "--bundle", "/work/current.json"])
+        diagnose = desktop.parse_args(
+            [
+                "diagnose-firefox",
+                "--hypothesis",
+                "Status completes and NewSession returns no header",
+                "--contrary-outcome",
+                "Status fails, send fails, response begins, or call completes",
+                "--bundle",
+                "/work/current.json",
+            ]
+        )
+
+        self.assertEqual(configure.action, "configure")
+        self.assertEqual(start.action, "start")
+        self.assertEqual(diagnose.action, "diagnose-firefox")
+        self.assertEqual(desktop.parse_args(["start"]).bundle, desktop.DEFAULT_BUNDLE)
+        for forbidden in (
+            "--deployment-attestation",
+            "--root-image",
+            "--mmc-kernel",
+            "--password",
+        ):
+            with self.subTest(forbidden=forbidden):
+                with (
+                    self.assertRaises(SystemExit),
+                    mock.patch("sys.stderr", io.StringIO()),
+                ):
+                    desktop.parse_args(["start", forbidden, "/tmp/value"])
+
+    def test_start_main_validates_bundle_before_constructing_real_adapters(
+        self,
+    ) -> None:
+        bundle = SimpleNamespace(
+            device="/dev/serial/by-id/usb-test",
+            evidence_root="/work/evidence",
+            plan_path="/work/plan.json",
+            mmc_artifacts=MMC_ARTIFACTS,
+        )
+        plan = _start_plan()
+        result = SimpleNamespace(
+            passed=True,
+            canonical_bytes=lambda: b'{"passed":true}\n',
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                desktop.DesktopBundle, "from_path", return_value=bundle
+            ) as read_bundle,
+            mock.patch.object(desktop, "_read_plan", return_value=plan) as read_plan,
+            mock.patch.object(desktop, "RealDesktopStartPublisher") as publisher,
+            mock.patch.object(desktop, "RealBootCycleOperations") as operations,
+            mock.patch.object(desktop, "run_desktop_start", return_value=result) as run,
+            mock.patch("sys.stdout", output),
+        ):
+            status = desktop.main(["start", "--bundle", "/work/current.json"])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue(), '{"passed":true}\n')
+        read_bundle.assert_called_once_with(Path("/work/current.json"))
+        read_plan.assert_called_once_with(Path("/work/plan.json"))
+        publisher.assert_called_once()
+        operations.assert_called_once()
+        run.assert_called_once()
+
+    def test_diagnose_main_constructs_one_mmc_only_physical_run(self) -> None:
+        bundle = SimpleNamespace(
+            device="/dev/serial/by-id/usb-test",
+            evidence_root="/work/evidence",
+            plan_path="/work/plan.json",
+            mmc_artifacts=MMC_ARTIFACTS,
+        )
+        result = SimpleNamespace(
+            passed=False,
+            canonical_bytes=lambda: b'{"passed":false}\n',
+        )
+        with (
+            mock.patch.object(desktop.DesktopBundle, "from_path", return_value=bundle),
+            mock.patch.object(desktop, "_read_plan", return_value=_start_plan()),
+            mock.patch.object(desktop, "RealFirefoxDiagnosticPublisher"),
+            mock.patch.object(desktop, "RealFirefoxDiagnosticOperations") as operations,
+            mock.patch.object(
+                desktop, "run_firefox_diagnosis", return_value=result
+            ) as run,
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            status = desktop.main(
+                [
+                    "diagnose-firefox",
+                    "--hypothesis",
+                    "one hypothesis",
+                    "--contrary-outcome",
+                    "one contrary observation",
+                    "--bundle",
+                    "/work/current.json",
+                ]
+            )
+
+        self.assertEqual(status, 1)
+        operations.assert_called_once()
+        self.assertEqual(operations.call_args.kwargs["mmc_artifacts"], MMC_ARTIFACTS)
+        run.assert_called_once()
 
 
 if __name__ == "__main__":

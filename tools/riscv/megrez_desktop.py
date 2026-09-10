@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import sys
 import tempfile
 import time
 from types import MappingProxyType
@@ -527,7 +528,7 @@ def _failure_reason(error: BaseException) -> str:
     return f"{name}-{detail or 'unspecified'}"
 
 
-def run_desktop_start(
+def _run_desktop_start(
     plan: Any,
     config: DesktopStartConfig,
     operations: DesktopOperations,
@@ -635,13 +636,32 @@ def run_desktop_start(
         recovery_seconds=recovery_seconds,
         total_seconds=_elapsed_seconds(clock, total_start),
     )
-    try:
-        publisher.publish(result, serial, diagnostics)
-    finally:
-        operations.close()
+    publisher.publish(result, serial, diagnostics)
     if interruption is not None:
         raise interruption
     return result
+
+
+def run_desktop_start(
+    plan: Any,
+    config: DesktopStartConfig,
+    operations: DesktopOperations,
+    publisher: DesktopPublisher,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> DesktopStartResult:
+    """Close the host serial descriptor on every desktop-start path."""
+
+    try:
+        return _run_desktop_start(
+            plan,
+            config,
+            operations,
+            publisher,
+            clock=clock,
+        )
+    finally:
+        operations.close()
 
 
 @dataclass(frozen=True)
@@ -2284,3 +2304,201 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
         self._run_diagnostic_command(7, min(timeout, 15.0))
         self._run_diagnostic_command(8, timeout + 15.0)
         self._single_marker(_FIREFOX_NEW_SESSION_MARKER, "NewSession")
+
+
+class RealDesktopStartPublisher:
+    """Private atomic evidence publisher for a desktop left running."""
+
+    def __init__(
+        self,
+        bundle: DesktopBundle,
+        output_directory: Path,
+    ) -> None:
+        self._bundle = bundle
+        self._output_directory = output_directory
+        self._evidence_root = Path(bundle.evidence_root)
+        self._output: PinnedOutputDirectory | None = None
+
+    def invalidate(self) -> None:
+        if self._output is not None:
+            raise HostGateError("desktop-start output is already active")
+        if self._output_directory.parent != self._evidence_root:
+            raise HostGateError("desktop-start output must be under evidence root")
+        self._evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self._evidence_root.is_symlink() or not self._evidence_root.is_dir():
+            raise HostGateError("desktop-start evidence root is unsafe")
+        if self._evidence_root.stat().st_mode & 0o077:
+            raise HostGateError("desktop-start evidence root must be private")
+        if self._output_directory.exists():
+            raise HostGateError("desktop-start output directory already exists")
+        self._output_directory.mkdir(mode=0o700)
+        output = PinnedOutputDirectory(self._output_directory)
+        try:
+            output.lock_exclusive()
+        except BaseException:
+            output.close()
+            raise
+        self._output = output
+
+    def close(self) -> None:
+        if self._output is not None:
+            self._output.close()
+            self._output = None
+
+    def publish(
+        self, result: DesktopStartResult, serial: bytes, diagnostics: bytes
+    ) -> None:
+        if self._output is None:
+            raise HostGateError("desktop-start output is not pinned")
+        if (
+            result.plan_sha256 != self._bundle.plan_sha256
+            or not isinstance(serial, bytes)
+            or len(serial) > 8 * 1024 * 1024
+            or not isinstance(diagnostics, bytes)
+            or len(diagnostics) > 256 * 1024
+            or result.serial_sha256 != _sha256(serial)
+            or result.diagnostics_sha256 != _sha256(diagnostics)
+        ):
+            raise HostGateError("desktop-start publication identity is invalid")
+        output, self._output = self._output, None
+        try:
+            payloads = {
+                "bundle.json": self._bundle.canonical_bytes(),
+                "physical.serial.log": serial,
+                "diagnostics.log": diagnostics,
+            }
+            for name, payload in payloads.items():
+                output.atomic_write(name, payload, mode=0o600)
+            result_payload = result.canonical_bytes()
+            sums = [f"{_sha256(payload)}  {name}" for name, payload in payloads.items()]
+            sums.append(f"{_sha256(result_payload)}  result.json")
+            output.atomic_write(
+                "sha256sums.txt", ("\n".join(sums) + "\n").encode(), mode=0o600
+            )
+            output.atomic_write("result.json", result_payload, mode=0o600)
+        finally:
+            output.close()
+
+
+def parse_args(arguments: list[str] | tuple[str, ...]) -> argparse.Namespace:
+    """Parse the configure-once, start, and bounded diagnostic actions."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    actions = parser.add_subparsers(dest="action", required=True)
+
+    configure = actions.add_parser("configure")
+    configure.add_argument("--plan", required=True, type=Path)
+    configure.add_argument("--device", required=True)
+    configure.add_argument("--deployment-attestation", required=True, type=Path)
+    configure.add_argument("--deployment-measurement-log", required=True, type=Path)
+    configure.add_argument("--mmc-kernel", required=True, type=safe_artifact_name)
+    configure.add_argument("--mmc-initramfs", required=True, type=safe_artifact_name)
+    configure.add_argument("--mmc-dtb", required=True, type=safe_artifact_name)
+    configure.add_argument("--evidence-root", required=True, type=Path)
+    configure.add_argument("--output", required=True, type=Path)
+
+    start = actions.add_parser("start")
+    start.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
+
+    diagnose = actions.add_parser("diagnose-firefox")
+    diagnose.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
+    diagnose.add_argument("--hypothesis", required=True)
+    diagnose.add_argument("--contrary-outcome", required=True)
+    return parser.parse_args(arguments)
+
+
+def _resolved_bundle_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    repository = Path(__file__).resolve().parents[2]
+    return (repository / path).absolute()
+
+
+def _fresh_run_directory(bundle: DesktopBundle, action: str) -> Path:
+    if action not in {"start", "firefox"}:
+        raise ValueError("desktop run action is invalid")
+    return Path(bundle.evidence_root) / f"{action}-{secrets.token_hex(8)}"
+
+
+def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
+    """Run one local-only configured desktop action."""
+
+    values = parse_args(tuple(sys.argv[1:]) if arguments is None else arguments)
+    publisher: RealDesktopStartPublisher | RealFirefoxDiagnosticPublisher | None = None
+    try:
+        if values.action == "configure":
+            bundle = configure_bundle(
+                plan_path=values.plan,
+                device=values.device,
+                deployment_attestation_path=values.deployment_attestation,
+                deployment_measurement_log_path=values.deployment_measurement_log,
+                mmc_artifacts={
+                    "kernel": values.mmc_kernel,
+                    "initramfs": values.mmc_initramfs,
+                    "megrez_dtb": values.mmc_dtb,
+                },
+                evidence_root=values.evidence_root,
+                destination=values.output,
+            )
+            print(bundle.canonical_bytes().decode("ascii"), end="")
+            return 0
+
+        bundle_path = _resolved_bundle_path(values.bundle)
+        bundle = DesktopBundle.from_path(bundle_path)
+        plan = _read_plan(Path(bundle.plan_path))
+        plan.validate()
+        run_directory = _fresh_run_directory(
+            bundle, "start" if values.action == "start" else "firefox"
+        )
+        unused_hdmi = run_directory / ".unused-hdmi-capture"
+        if values.action == "start":
+            publisher = RealDesktopStartPublisher(bundle, run_directory)
+            operations = RealBootCycleOperations(
+                plan,
+                bundle.device,
+                run_directory,
+                unused_hdmi,
+                mmc_artifacts=bundle.mmc_artifacts,
+            )
+            result = run_desktop_start(
+                plan,
+                DesktopStartConfig(),
+                operations,
+                publisher,
+            )
+        else:
+            config = FirefoxDiagnosticConfig(
+                hypothesis=values.hypothesis,
+                contrary_outcome=values.contrary_outcome,
+            )
+            publisher = RealFirefoxDiagnosticPublisher(
+                bundle, plan, config, run_directory
+            )
+            operations = RealFirefoxDiagnosticOperations(
+                plan,
+                bundle.device,
+                run_directory,
+                unused_hdmi,
+                mmc_artifacts=bundle.mmc_artifacts,
+            )
+            result = run_firefox_diagnosis(
+                plan,
+                config,
+                operations,
+                publisher,
+                snapshot_nonces={
+                    phase: secrets.token_hex(8) for phase in _SNAPSHOT_PHASES
+                },
+            )
+    except (HostGateError, OSError, RuntimeError, ValueError) as error:
+        print(f"Megrez desktop action failed: {error}", file=sys.stderr)
+        return 2
+    finally:
+        if publisher is not None:
+            publisher.close()
+    print(result.canonical_bytes().decode("ascii"), end="")
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -380,7 +380,7 @@ git commit -m "feat(riscv): bound Megrez Firefox diagnosis"
 - Modify: `Makefile`
 - Modify: `tools/riscv/README.md`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Require these public forms and reject mixed/missing action arguments:
 
@@ -406,7 +406,7 @@ directory is a fresh nonce-suffixed child of the bundle's evidence root.
 or credential flags.  Patch real adapters in CLI tests; opening a real serial
 device is forbidden.
 
-- [ ] **Step 2: Run CLI tests and observe RED**
+- [x] **Step 2: Run CLI tests and observe RED**
 
 ```bash
 python3 -m unittest \
@@ -415,7 +415,7 @@ python3 -m unittest \
 
 Expected: parser/action failures.
 
-- [ ] **Step 3: Implement CLI and Make target**
+- [x] **Step 3: Implement CLI and Make target**
 
 Add a strict subparser per action, instantiate real publishers/adapters only
 after every local input validates, print the single canonical result to stdout,
@@ -428,7 +428,7 @@ test_riscv_megrez_desktop_unit:
 		tools.riscv.tests.test_megrez_desktop -v
 ```
 
-- [ ] **Step 4: Document exact stable commands**
+- [x] **Step 4: Document exact stable commands**
 
 Document one initial configure command using the existing
 `plan-isolated-resolved.json`, attestation, measurement log, stable FTDI path,
@@ -437,7 +437,7 @@ and three versioned MMC names.  Document the one-word `start` and bounded
 one-run identity ledger, private evidence location, no-transfer guarantee, and
 manual-reset boundary.
 
-- [ ] **Step 5: Run unit targets and formatting checks**
+- [x] **Step 5: Run unit targets and formatting checks**
 
 ```bash
 tools/docker/run_dev_container.sh -- \
@@ -457,7 +457,7 @@ git diff --check
 Expected: every command exits zero and the persistent container is reused
 without installing or downloading anything.
 
-- [ ] **Step 6: Commit the operator surface**
+- [x] **Step 6: Commit the operator surface**
 
 ```bash
 git add Makefile tools/riscv/megrez_desktop.py \
