@@ -827,6 +827,63 @@ class DebianStage1Tests(unittest.TestCase):
             ],
         )
 
+    def test_stage1_probe_disables_tty_input_echo_before_ready(self) -> None:
+        binary = self.directory / "stage1-probe-tty-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        master, slave = os.openpty()
+        process = subprocess.Popen(
+            [binary],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            close_fds=True,
+        )
+        os.close(slave)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        self.addCleanup(os.close, master)
+        transcript = bytearray()
+        ready = b"ASTERINAS_PROBE_READY v=1 pid=1"
+        deadline = time.monotonic() + 2
+        while ready not in transcript:
+            readable, _, _ = select.select(
+                [master], [], [], max(0, deadline - time.monotonic())
+            )
+            self.assertTrue(readable, bytes(transcript))
+            transcript.extend(os.read(master, 4096))
+        request = (
+            b"ASTERINAS_PROBE_RUN v=1 "
+            b"nonce=00112233445566778899aabbccddeeff probes=boot shell=0\n"
+        )
+        os.write(master, request)
+        process.wait(timeout=2)
+        while select.select([master], [], [], 0)[0]:
+            try:
+                transcript.extend(os.read(master, 4096))
+            except OSError:
+                break
+
+        self.assertNotIn(request.rstrip(b"\n"), transcript)
+        self.assertIn(b"ASTERINAS_PROBE_DONE", transcript)
+
     def test_stage1_probe_agent_rejects_noncanonical_requests(self) -> None:
         binary = self.directory / "stage1-probe-self-test"
         compilation = subprocess.run(
@@ -918,8 +975,12 @@ class DebianStage1Tests(unittest.TestCase):
             "ASTERINAS_PROBE_SHELL_COMMANDS help,dmesg,mounts,boot,syscall213,syscall272,ext2-writeback,systemd-compat,exit\n",
             result.stdout,
         )
-        self.assertIn("ASTERINAS_PROBE_SHELL_REJECT reason=unknown-command\n", result.stdout)
-        self.assertIn(f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n", result.stdout)
+        self.assertIn(
+            "ASTERINAS_PROBE_SHELL_REJECT reason=unknown-command\n", result.stdout
+        )
+        self.assertIn(
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n", result.stdout
+        )
 
     def test_stage1_probe_agent_stops_after_first_failure(self) -> None:
         binary = self.directory / "stage1-probe-failure-self-test"

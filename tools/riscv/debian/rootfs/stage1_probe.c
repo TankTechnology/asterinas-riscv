@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "stage1_probe.h"
@@ -52,6 +53,21 @@ struct ProbeResult {
 static void flush_line(void)
 {
     (void)fflush(stdout);
+}
+
+static int disable_input_echo(void)
+{
+    struct termios attributes;
+    if (tcgetattr(STDIN_FILENO, &attributes) != 0) {
+        return errno == ENOTTY ? 0 : -1;
+    }
+    attributes.c_lflag &= (tcflag_t) ~(ECHO | ECHONL);
+    while (tcsetattr(STDIN_FILENO, TCSANOW, &attributes) != 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int is_probe_name(const char *name)
@@ -480,6 +496,11 @@ int stage1_run_probe_agent(void)
 {
     char line[PROBE_REQUEST_MAX + 2];
     struct ProbeRequest request;
+    if (disable_input_echo() != 0) {
+        (void)printf("DEBIAN_STAGE1_FAIL reason=probe-console-echo\n");
+        flush_line();
+        return 2;
+    }
     (void)printf("ASTERINAS_PROBE_READY v=1 pid=1\n");
     flush_line();
     if (prepare_proc() != 0 || read_protocol_line(line) != 0 ||

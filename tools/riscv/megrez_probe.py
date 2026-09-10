@@ -1059,6 +1059,8 @@ class PhysicalProbeOperations:
     def await_recovery(self, timeout: float) -> None:
         serial = self._require_serial()
         deadline = _deadline(timeout)
+        serial.wait_for(b"U-Boot ", deadline, start=self._recovery_cursor)
+        serial.send(b"\n", deadline)
         serial.wait_for(b"=> ", deadline, start=self._recovery_cursor)
         recovery = serial.transcript[self._recovery_cursor :].decode(
             "utf-8", errors="replace"
