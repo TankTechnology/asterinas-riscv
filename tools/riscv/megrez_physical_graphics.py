@@ -66,7 +66,7 @@ _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
 PHYSICAL_EXTERNAL_MARKER = "__ASTERINAS_PHYSICAL_EXTERNAL__"
 _EXTERNAL_SERVICES_QUIESCED = re.compile(
-    rf"{PHYSICAL_EXTERNAL_MARKER} status=([0-9]+) "
+    rf"{PHYSICAL_EXTERNAL_MARKER} status=([0-9]+) setup_status=([0-9]+) "
     r"evidence_state=([a-z-]+) evidence_pid=([0-9]+) "
     r"network_state=([a-z-]+) network_pid=([0-9]+)"
 )
@@ -772,14 +772,18 @@ def physical_external_services_quiesce_command() -> str:
         "asterinas-desktop-m5-network.service 2>/dev/null || true); "
         "_asterinas_network_pid=$(/usr/bin/systemctl show --property MainPID "
         "--value asterinas-desktop-m5-network.service 2>/dev/null || true); "
+        "_asterinas_terminal_status=0; "
         '[ "$_asterinas_evidence_state" = inactive ] && '
         '[ "$_asterinas_evidence_pid" = 0 ] && '
         '[ "$_asterinas_network_state" = inactive ] && '
         '[ "$_asterinas_network_pid" = 0 ] '
-        "|| _asterinas_external_status=124; "
-        f"printf '{PHYSICAL_EXTERNAL_MARKER} status=%s "
+        "|| _asterinas_terminal_status=124; "
+        'case "$_asterinas_external_status" in 0|124) ;; *) '
+        '_asterinas_terminal_status="$_asterinas_external_status" ;; esac; '
+        f"printf '{PHYSICAL_EXTERNAL_MARKER} status=%s setup_status=%s "
         "evidence_state=%s evidence_pid=%s network_state=%s network_pid=%s\n' "
-        '"$_asterinas_external_status" "$_asterinas_evidence_state" '
+        '"$_asterinas_terminal_status" "$_asterinas_external_status" '
+        '"$_asterinas_evidence_state" '
         '"$_asterinas_evidence_pid" "$_asterinas_network_state" '
         '"$_asterinas_network_pid"'
     )
@@ -791,9 +795,17 @@ def validate_physical_external_services_quiesced(line: str) -> None:
     match = _EXTERNAL_SERVICES_QUIESCED.fullmatch(line)
     if match is None:
         raise HostGateError("external service state is malformed")
-    status, evidence_state, evidence_pid, network_state, network_pid = match.groups()
+    (
+        status,
+        setup_status,
+        evidence_state,
+        evidence_pid,
+        network_state,
+        network_pid,
+    ) = match.groups()
     if (
         status != "0"
+        or setup_status not in ("0", "124")
         or evidence_state != "inactive"
         or evidence_pid != "0"
         or network_state != "inactive"
