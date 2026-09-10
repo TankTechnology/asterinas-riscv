@@ -1194,9 +1194,7 @@ def classify_new_session_transcript(
     if not records:
         return _boundary_evidence("evidence-incomplete")
     status = tuple(r for r in records if r.command == "WebDriver:Status")
-    selected = tuple(
-        r for r in records if r.command == "WebDriver:NewSession"
-    )
+    selected = tuple(r for r in records if r.command == "WebDriver:NewSession")
     if status and not selected:
         last = status[-1]
         if (
@@ -1210,9 +1208,7 @@ def classify_new_session_transcript(
             return _boundary_evidence("status-command-stalled")
         return _boundary_evidence("new-session-not-sent")
     if not selected:
-        if any(
-            r.command == "greeting" and r.event == "frame_header" for r in records
-        ):
+        if any(r.command == "greeting" and r.event == "frame_header" for r in records):
             return _boundary_evidence("new-session-not-sent")
         return _boundary_evidence("listener-not-ready")
 

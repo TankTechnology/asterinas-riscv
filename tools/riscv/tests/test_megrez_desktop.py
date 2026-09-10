@@ -724,8 +724,7 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
 
     def test_retained_complete_status_error_is_rejected_not_stalled(self) -> None:
         evidence = self.classify(
-            _greeting(11, 100)
-            + _complete_error_command(11, "WebDriver:Status", 200)
+            _greeting(11, 100) + _complete_error_command(11, "WebDriver:Status", 200)
         )
 
         self.assertEqual(evidence.boundary, "status-command-rejected")
