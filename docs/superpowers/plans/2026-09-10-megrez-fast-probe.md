@@ -216,11 +216,11 @@ git commit -m "Validate the Megrez fast probe protocol"
 - Modify: `tools/riscv/megrez_probe.py`
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 
-- [ ] **Step 1: Write failing lifecycle tests with fake operations**
+- [x] **Step 1: Write failing lifecycle tests with fake operations**
 
 Define a `ProbeOperations` protocol with `open`, `ensure_artifacts`, `boot`, `exchange`, `request_reboot`, `await_recovery`, and `close`. Test that `run_probe()` invalidates stale `result.json` first, performs one artifact load and one boot for multiple probes, never includes network/systemd/partition-write/Firefox arguments, requests immediate reboot after terminal output, always attempts bounded recovery after guest start, and returns `manual-reset-required` when no fresh U-Boot epoch appears.
 
-- [ ] **Step 2: Run lifecycle tests and verify failure**
+- [x] **Step 2: Run lifecycle tests and verify failure**
 
 Run:
 
@@ -230,7 +230,7 @@ python3 -m unittest tools.riscv.tests.test_megrez_probe.ProbeLifecycleTests -v
 
 Expected: lifecycle symbols are missing.
 
-- [ ] **Step 3: Implement probe bootargs and lifecycle**
+- [x] **Step 3: Implement probe bootargs and lifecycle**
 
 Derive bootargs from the embedded plan only to retain its board/kernel parameters. Remove every `console=`, `loglevel=`, `asterinas.klog_capture=`, `asterinas.reboot_after=`, `asterinas.mmc_write_partition2`, `asterinas.net=`, `asterinas.neighbor=`, `systemd.*`, and existing Stage1 argument. Append exactly:
 
@@ -242,15 +242,15 @@ Use one monotonic absolute guest deadline; every operation receives only its rem
 
 For `--shell`, require a local TTY, forward newline-delimited built-in names without terminal escape translation, stop forwarding at the same fixed guest deadline, and never renew `asterinas.reboot_after`. Reject `--shell` in noninteractive automation before touching the board.
 
-- [ ] **Step 4: Implement private result publication**
+- [x] **Step 4: Implement private result publication**
 
 Use `PinnedOutputDirectory` and mode `0600`. Invalidate `result.json`, `serial-summary.log`, `failure.dmesg.log`, and `sha256sums.txt` before opening the bundle or board. Publish `serial-summary.log` with protocol lines plus at most 4 KiB surrounding context; publish `failure.dmesg.log` only on failure; publish `sha256sums.txt` over retained files; publish canonical `result.json` last with schema, bundle/plan hashes, selected probes, outcomes, elapsed seconds, recovery state, and terminal reason.
 
-- [ ] **Step 5: Add publisher fault-injection tests**
+- [x] **Step 5: Add publisher fault-injection tests**
 
 Assert a mid-publication exception leaves no `result.json`, a stale successful result cannot survive a later invalid bundle, output files reject symlink replacement, each retained hash verifies, and success has no `failure.dmesg.log`.
 
-- [ ] **Step 6: Run lifecycle and publisher tests and commit**
+- [x] **Step 6: Run lifecycle and publisher tests and commit**
 
 Run:
 
