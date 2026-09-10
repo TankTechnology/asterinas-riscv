@@ -33,7 +33,7 @@ not alter or reinstall it:
 - Create: `tools/riscv/megrez_desktop.py`
 - Create: `tools/riscv/tests/test_megrez_desktop.py`
 
-- [ ] **Step 1: Write failing bundle tests**
+- [x] **Step 1: Write failing bundle tests**
 
 Add tests that construct temporary plan, attestation, and measurement files and
 exercise this public API:
@@ -59,7 +59,7 @@ without serial I/O.  Add negative tests for a changed plan, measurement log,
 attestation, relative serial path, unsafe artifact name, Boolean schema value,
 unknown field, duplicate JSON key, symlink, and stale temporary file.
 
-- [ ] **Step 2: Run the bundle tests and observe RED**
+- [x] **Step 2: Run the bundle tests and observe RED**
 
 Run:
 
@@ -71,7 +71,7 @@ python3 -m unittest \
 Expected: import or attribute failures because `megrez_desktop` and
 `DesktopBundle` do not exist.
 
-- [ ] **Step 3: Implement the minimal strict bundle**
+- [x] **Step 3: Implement the minimal strict bundle**
 
 Implement the immutable `DesktopBundle` fields exercised in Step 1, its
 `from_path` and `canonical_bytes` methods, and `configure_bundle` with the
@@ -85,11 +85,11 @@ file reads rather than duplicating their contracts.  Parse JSON with an
 files, write a mode-`0600` temporary file in the destination directory, fsync,
 and replace atomically.
 
-- [ ] **Step 4: Run bundle tests and observe GREEN**
+- [x] **Step 4: Run bundle tests and observe GREEN**
 
 Run the command from Step 2.  Expected: all `DesktopBundleTests` pass.
 
-- [ ] **Step 5: Commit the bundle slice**
+- [x] **Step 5: Commit the bundle slice**
 
 ```bash
 git add tools/riscv/megrez_desktop.py tools/riscv/tests/test_megrez_desktop.py
