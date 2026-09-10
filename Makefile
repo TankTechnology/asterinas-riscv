@@ -308,7 +308,12 @@ MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT ?=
 MEGREZ_PHYSICAL_GRAPHICS_PLAN ?=
 MEGREZ_PHYSICAL_GRAPHICS_DEVICE ?=
+MEGREZ_PHYSICAL_GRAPHICS_DISPLAY ?= hdmi
+MEGREZ_PHYSICAL_GRAPHICS_CYCLES ?= 3
 MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB ?=
 MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= $(CURDIR)/target/current-main-physical-graphics/physical/evidence
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
@@ -499,19 +504,51 @@ prepare_riscv_megrez_physical_graphics:
 		{ echo "MEGREZ_PHYSICAL_GRAPHICS_PLAN is required" >&2; exit 2; }
 	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" || \
 		{ echo "MEGREZ_PHYSICAL_GRAPHICS_DEVICE is required" >&2; exit 2; }
-	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
-		{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE is required" >&2; exit 2; }
+	@test "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi -o \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = operator-attested || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_DISPLAY must be hdmi or operator-attested" >&2; exit 2; }
+	@test "$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)" = 1 -o \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)" = 3 || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_CYCLES must be 1 or 3" >&2; exit 2; }
+	@if [ "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi ]; then \
+		test -n "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
+			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE is required for hdmi" >&2; exit 2; }; \
+	else \
+		test -z "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
+			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE conflicts with operator-attested" >&2; exit 2; }; \
+	fi
+	@set -eu; count=0; \
+	for value in \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS)" \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB)"; do \
+		test -z "$$value" || count=$$((count + 1)); \
+	done; \
+	test "$$count" -eq 0 -o "$$count" -eq 3 || \
+		{ echo "all three MEGREZ_PHYSICAL_GRAPHICS_MMC_* values are required together" >&2; exit 2; }
 	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" || \
 		{ echo "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT is required" >&2; exit 2; }
 	@PYTHONPATH="$(CURDIR)" python3 -c \
 		'from pathlib import Path; import sys; from tools.riscv.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)"
-	@printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
+	@set -eu; printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
 		tools.riscv.megrez_physical_graphics \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" \
 		--plan "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" \
-		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" \
-		--hdmi-capture "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" \
+		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"; \
+	if [ "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi ]; then \
+		printf '%q ' --hdmi-capture "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)"; \
+	else \
+		printf '%q ' --operator-display-attestation; \
+	fi; \
+	printf '%q ' --cycles "$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)"; \
+	if [ -n "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" ]; then \
+		printf '%q ' \
+			--mmc-kernel "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" \
+			--mmc-initramfs "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS)" \
+			--mmc-dtb "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB)"; \
+	fi; \
+	printf '%q ' \
 		--open-timeout 60 --artifact-timeout 300 --boot-timeout 120 \
 		--cycle-timeout 180 --hdmi-timeout 60 --recovery-timeout 930; printf '\n'
 

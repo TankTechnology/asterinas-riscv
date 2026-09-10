@@ -332,9 +332,11 @@ It validates three nonce-bound browser cycles and captures pixels, but its
 result always records `"physical":false`: QEMU cannot satisfy the physical
 result or prove the Megrez display scanout and real USB xHCI/HID paths.
 
-The physical guest keeps its fixed 900-second safety reboot.
-Graphical setup, all three cycles, HDMI capture, and final verification share
-that lifetime, with 30 seconds reserved before reboot.
+The physical guest keeps its fixed 900-second safety reboot. The gate defaults
+to three cycles for release-grade repeatability, but accepts `--cycles 1` for
+one information-rich experimental interaction. Graphical setup, the requested
+cycles, display evidence, and final verification share that lifetime, with 30
+seconds reserved before reboot.
 Per-phase timeout settings are upper bounds, not extensions of the board's
 remaining lifetime; an exhausted budget fails closed and proceeds to recovery.
 
@@ -342,9 +344,9 @@ The real run consumes a schema-2 `debian-browser` debug plan. Its canonical
 order is `kernel`, `initramfs`, `qemu_dtb`, `megrez_dtb`, `u_boot`,
 `root_image`, `root_manifest`, `packages_lock`, `package_checksums`, and
 `in_release`; the prepare target recomputes every size, SHA-256, and CRC32.
-Use a stable `/dev/serial/by-id/...` path and arrange for the HDMI
+Use a stable `/dev/serial/by-id/...` path. The release-grade mode asks an HDMI
 capture program to atomically create or replace the `--hdmi-capture` file only
-after the gate asks for the cyan cycle-3 image. First validate every plan
+after the gate asks for the cyan final-cycle image. First validate every plan
 artifact and print the exact command, without opening the serial device or
 changing U-Boot state:
 
@@ -372,6 +374,32 @@ must be a complete 1-byte-to-64-MiB PNG or JPEG that remains unchanged for at
 least 0.5 seconds. A missing input record, DOM transition,
 screenshot, HDMI update, recovery prompt, or any panic/xHCI/framebuffer fatal
 marker produces `passed:false` while retaining the diagnostic evidence.
+
+When external capture hardware is unavailable during experimental development,
+select the explicitly weaker `operator-attested` mode. It preserves real USB
+evdev input, trusted Firefox DOM state, the serial guest PNG, final Firefox PID
+and restart checks, and recovery, but it does not claim that an HDMI image was
+captured. Existing versioned MMC files can be selected so this path performs no
+artifact transfer or image rebuild:
+
+```bash
+make prepare_riscv_megrez_physical_graphics \
+  MEGREZ_PHYSICAL_GRAPHICS_PLAN="$PWD/target/current-main-physical-graphics/physical/plan-firefox-77d7e42c.json" \
+  MEGREZ_PHYSICAL_GRAPHICS_DEVICE=/dev/serial/by-id/usb-REPLACE_ME \
+  MEGREZ_PHYSICAL_GRAPHICS_DISPLAY=operator-attested \
+  MEGREZ_PHYSICAL_GRAPHICS_CYCLES=1 \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL=asterinas-77d7e42c-220572e8.Image \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS=asterinas-78c4a36c-f4d9b349-stage1.cpio \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB=dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb \
+  MEGREZ_PHYSICAL_GRAPHICS_OUTPUT="$PWD/target/current-main-physical-graphics/physical/operator-attested-evidence"
+```
+
+After the single keyboard/mouse cycle reaches cyan PASS, visually inspect the
+physical monitor and enter exactly the printed nonce-bound line,
+`confirm-cyan-pass <suffix>`. A successful one-cycle result
+proves one complete interaction path. Such a result does not prove three-cycle repeatability.
+The evidence is published as `operator-display-attestation.json`, with `hdmi: null`; no file is
+presented as an HDMI capture.
 
 ## Megrez fast kernel probes
 
