@@ -173,6 +173,47 @@ recovery.  Evidence collection has its own byte and time limits and cannot
 extend the selected Firefox deadline.  An oversized or malformed diagnostic
 frame fails closed while preserving the earlier raw serial transcript.
 
+## Investigation cost budget
+
+The diagnostic workflow exists to prevent another sequence of low-information
+Firefox reruns.  Runtime cost and experimental count are part of the result,
+not informal operator notes.  Every diagnostic result records total host
+seconds, guest-selected-command seconds, QEMU runs, physical boots, artifact
+bytes transferred, the tested hypothesis, the expected contrary outcome, and
+the earliest classified boundary.
+
+An experiment is admitted only when its manifest states one hypothesis and one
+observation that would reject it.  Changing a deadline, adding unrelated
+instrumentation, replacing the root image, and modifying a kernel semantic in
+the same experiment is forbidden.  The following upper bounds apply:
+
+- retained transcript replay and host unit tests: two minutes;
+- one Linux or Asterinas kernel microtest boot: 90 seconds;
+- one selected-command QEMU Firefox experiment: 15 host minutes;
+- one physical Firefox diagnostic boot including evidence and recovery: 15
+  host minutes, followed by an independently bounded recovery wait;
+- artifact transfer during an unchanged-identity experiment: zero bytes.
+
+Only one live run with the same kernel, root, Firefox payload, profile policy,
+command sequence, and diagnostic flags is allowed.  A repeat is admitted only
+when the preceding evidence was incomplete because of a demonstrated tooling
+defect, that defect has a failing regression, and the repaired tool passes the
+regression before the repeat.  Waiting longer is a changed experiment and
+requires an explicit performance hypothesis; it is not a retry.
+
+If a live Firefox run does not classify a first missing boundary, work stops at
+the diagnostic layer.  The next action must improve and test evidence capture
+against retained data; another Firefox boot is forbidden.  If a boundary is
+classified, the next experiment is the smallest Linux-referenced reproducer
+for that boundary.  No production fix is attempted until that reproducer
+fails on Asterinas and passes on Linux, or until source and runtime evidence
+prove that the defect is Firefox-specific rather than a Linux ABI violation.
+
+After two causally distinct, well-formed micro-hypotheses are rejected without
+narrowing the boundary, the investigation pauses for an architecture review
+of the observer and experiment contract.  It does not proceed by adding a
+third broad trace or another unchanged browser run.
+
 ## Test and verification strategy
 
 All implementation changes use test-first development and the persistent
@@ -191,17 +232,20 @@ prove that snapshot collection is bounded and outside the selected command's
 deadline.  Existing physical-graphics, boot-stability, Firefox diagnostic,
 Stage1, and probe tests must continue to pass.
 
-The runtime sequence is simulation-first:
+The runtime sequence is cost-gated and simulation-first:
 
-1. Run focused native/unit tests.
-2. Run the diagnostic classifier against retained physical transcripts.
-3. Run one QEMU control using the exact current kernel and root inputs.
-4. Stage only a changed versioned kernel or Stage1 through RockOS, if their
+1. Implement and run the diagnostic classifier against synthetic records and
+   the retained `mmc-graphics-final-19` physical transcript.  No guest boots.
+2. Run focused native/unit tests and all applicable sub-minute microtests.
+3. Run at most one QEMU control using the exact current kernel and root inputs.
+4. Review the classification before authorizing physical execution.
+5. Stage only a changed versioned kernel or Stage1 through RockOS, if their
    identities changed; never reinstall partition 2.
-5. Run one physical `diagnose-firefox` experiment.
-6. Implement a kernel fix only after a Linux/Asterinas microtest isolates the
+6. Run at most one physical `diagnose-firefox` experiment for the recorded
+   identity and hypothesis.
+7. Implement a kernel fix only after a Linux/Asterinas microtest isolates the
    violated contract.
-7. Run the physical interaction and HDMI gate on the repaired exact release.
+8. Run the physical interaction and HDMI gate on the repaired exact release.
 
 ## Acceptance criteria
 
@@ -213,7 +257,9 @@ RockOS boot, build, upload, partition-2 write, or U-Boot environment change.
 The diagnostic milestone passes when one command produces a complete,
 hash-bound classification of the first missing `NewSession` boundary and
 returns the board to a fresh U-Boot epoch.  It does not require the Firefox bug
-to be fixed.
+to be fixed.  It also requires the run-count and time budgets above to be
+present and satisfied; an accurate classification reached through repeated
+unchanged Firefox boots does not pass this milestone.
 
 The Firefox milestone passes only when the exact current release completes the
 existing three physical nonce interactions, renders the expected page,
