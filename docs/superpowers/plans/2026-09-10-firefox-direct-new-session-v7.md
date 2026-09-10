@@ -346,7 +346,7 @@ git commit -m "Run Firefox NewSession without an invalid Status gate"
 - Modify: `tools/riscv/README.md:580-610`
 - Modify: `docs/superpowers/plans/2026-09-10-megrez-desktop-firefox-diagnostics.md:240-270, 680-715`
 
-- [ ] **Step 1: Replace the current README workflow**
+- [x] **Step 1: Replace the current README workflow**
 
 Use this operator-facing sequence:
 
@@ -360,11 +360,11 @@ command is not part of Firefox ESR 140's direct Marionette command table.
 
 List the v7 boundaries: listener unavailable, NewSession not sent, response absent, response partial, response rejected, response complete, and evidence incomplete.  State that exact offline NewSession error output is enabled only for this bounded diagnostic.
 
-- [ ] **Step 2: Add Step 4f to the investigation plan**
+- [x] **Step 2: Add Step 4f to the investigation plan**
 
 Record protocol-v6 identity `1fe5e884...`, one physical boot, 391.518 seconds, zero transfers, complete 662-byte Status error response, the upstream unsupported-command finding, the 43,068-byte diagnostic-frame timeout, and fresh-U-Boot recovery.  Add a pending protocol-v7 step with the direct NewSession sequence, result schema 2, 90-second diagnostic budget, zero-transfer requirement, and one-identity rule.  Keep Steps 4c-4e as immutable historical records.
 
-- [ ] **Step 3: Check and commit documentation**
+- [x] **Step 3: Check and commit documentation**
 
 ```bash
 git diff --check
