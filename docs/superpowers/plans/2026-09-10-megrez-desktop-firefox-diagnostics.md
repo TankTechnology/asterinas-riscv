@@ -242,7 +242,7 @@ git commit -m "test(riscv): classify Firefox NewSession progress"
 - Modify: `tools/riscv/megrez_desktop.py`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py`
 
-- [ ] **Step 1: Write failing command-contract tests**
+- [x] **Step 1: Write failing command-contract tests**
 
 Require a tuple of individually acknowledged commands, each at most the
 existing 768-byte serial-command limit.  Assert that it:
@@ -260,7 +260,7 @@ existing 768-byte serial-command limit.  Assert that it:
 - never contains credentials, page payload, a partition mount/write, package
   command, RockOS command, or U-Boot command.
 
-- [ ] **Step 2: Run command tests and observe RED**
+- [x] **Step 2: Run command tests and observe RED**
 
 ```bash
 python3 -m unittest \
@@ -269,7 +269,7 @@ python3 -m unittest \
 
 Expected: missing `firefox_diagnostic_commands` and frame parser failures.
 
-- [ ] **Step 3: Implement commands and bounded frame parsing**
+- [x] **Step 3: Implement commands and bounded frame parsing**
 
 Use short `python3 -c` invocations with
 `PYTHONPATH=/usr/lib/asterinas` to call the already installed
@@ -285,7 +285,7 @@ selected command, then collect the terminal snapshot.  Frame snapshots with
 fresh 16-hex nonces and verify declared size/SHA-256 on the host before JSON
 parsing.  Report unsupported/disabled proc fields explicitly.
 
-- [ ] **Step 4: Run guest-command, snapshot, and debug-console tests**
+- [x] **Step 4: Run guest-command, snapshot, and debug-console tests**
 
 ```bash
 python3 -m unittest \
@@ -296,7 +296,7 @@ python3 -m unittest \
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit the guest protocol**
+- [x] **Step 5: Commit the guest protocol**
 
 ```bash
 git add tools/riscv/megrez_desktop.py tools/riscv/tests/test_megrez_desktop.py
