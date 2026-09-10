@@ -89,6 +89,36 @@ class PhysicalMarkerTests(unittest.TestCase):
         self.assertEqual([cycle.cycle for cycle in cycles], [1, 2, 3])
         self.assertEqual([cycle.key_downs for cycle in cycles], [16, 16, 16])
 
+    def test_accepts_one_exact_nonce_bound_cycle(self) -> None:
+        gate = load_gate(self)
+        transcript = "\n".join(
+            [*self._cycle_lines(1), "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=1"]
+        )
+
+        cycles = gate.classify_interaction_transcript(transcript, self.NONCES[:1])
+
+        self.assertEqual([cycle.cycle for cycle in cycles], [1])
+        self.assertEqual(
+            cycles[0].nonce_sha256, hashlib.sha256(self.NONCES[0].encode()).hexdigest()
+        )
+
+    def test_rejects_two_cycle_nonce_and_hash_sequences(self) -> None:
+        gate = load_gate(self)
+        nonce_hashes = tuple(
+            hashlib.sha256(nonce.encode()).hexdigest() for nonce in self.NONCES[:2]
+        )
+        transcript = "\n".join(
+            [
+                *(line for cycle in range(1, 3) for line in self._cycle_lines(cycle)),
+                "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=2",
+            ]
+        )
+
+        with self.assertRaisesRegex(gate.HostGateError, "one or three"):
+            gate.classify_interaction_transcript(transcript, self.NONCES[:2])
+        with self.assertRaisesRegex(gate.HostGateError, "one or three"):
+            gate.classify_interaction_hash_transcript(transcript, nonce_hashes)
+
     def test_accepts_three_exact_nonce_hash_bound_cycles(self) -> None:
         gate = load_gate(self)
         self.assertTrue(
@@ -585,9 +615,11 @@ class PhysicalLifecycleTests(unittest.TestCase):
             if self.fail_final:
                 raise self.gate.HostGateError("terminal state changed")
 
-        def emit_complete(self, _timeout: float) -> None:
+        def emit_complete(self, cycles_requested: int, _timeout: float) -> None:
             self.events.append("complete")
-            self._transcript.append("ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3")
+            self._transcript.append(
+                f"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles={cycles_requested}"
+            )
 
         def await_recovery(self, _timeout: float) -> None:
             self.events.append("recovery")
@@ -798,6 +830,34 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    def test_one_cycle_final_command_and_completion_marker(self) -> None:
+        gate = load_gate(self)
+        command = gate.physical_final_command("0123456789abcdef", 41, 180.0, cycle=1)
+        self.assertIn("--cycle 1", command)
+        self.assertNotIn("--cycle 3", command)
+
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 0
+        operations._serial = serial
+        operations._guest_deadline = time.monotonic() + 60
+        with (
+            mock.patch.object(
+                operations,
+                "_next_line",
+                return_value=(
+                    "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=1",
+                    1,
+                ),
+            ),
+            mock.patch.object(operations, "_sync_serial_log"),
+        ):
+            operations.emit_complete(1, 30)
+        self.assertIn(
+            b"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=1",
+            serial.send.call_args.args[0],
+        )
+
     def test_three_slow_cycles_share_the_original_board_reboot_budget(self) -> None:
         gate = load_gate(self)
         operations = object.__new__(gate.RealPhysicalGraphicsOperations)

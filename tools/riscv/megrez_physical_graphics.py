@@ -92,13 +92,15 @@ _SCREENSHOT = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle=([1-3]) sha256=({_SHA256})"
 )
 _PASS = re.compile(r"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=([1-3])")
-_COMPLETE = re.compile(r"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3")
+_COMPLETE = re.compile(r"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=([13])")
 _SCREENSHOT_BEGIN = re.compile(
     rf"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle=([1-3]) "
     rf"size=([0-9]+) sha256=({_SHA256})"
 )
 _SCREENSHOT_END = re.compile(r"__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=([1-3])")
-_FINAL = re.compile(rf"__ASTERINAS_PHYSICAL_FINAL__ cycle=3 nonce_sha256=({_SHA256})")
+_FINAL = re.compile(
+    rf"__ASTERINAS_PHYSICAL_FINAL__ cycle=([13]) nonce_sha256=({_SHA256})"
+)
 _PREFLIGHT = re.compile(
     r"__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=([0-9]+) "
     r"input_nodes=([0-9]+) framebuffer=([01]) xorg_fbdev=([01]) "
@@ -319,7 +321,7 @@ class PhysicalGraphicsOperations(Protocol):
         timeout: float,
     ) -> None: ...
 
-    def emit_complete(self, timeout: float) -> None: ...
+    def emit_complete(self, cycles_requested: int, timeout: float) -> None: ...
 
     def await_recovery(self, timeout: float) -> None: ...
 
@@ -354,34 +356,36 @@ def _decode_transcript(transcript: str | bytes) -> str:
     return text
 
 
-def _validated_nonce_hashes(nonces: Sequence[str]) -> tuple[str, str, str]:
+def _validated_nonce_hashes(nonces: Sequence[str]) -> tuple[str, ...]:
     if (
         isinstance(nonces, (str, bytes))
-        or len(nonces) != 3
+        or len(nonces) not in (1, 3)
         or any(
             not isinstance(nonce, str) or not _NONCE.fullmatch(nonce)
             for nonce in nonces
         )
-        or len(set(nonces)) != 3
+        or len(set(nonces)) != len(nonces)
     ):
-        raise HostGateError("expected three distinct 16-digit lowercase hex nonces")
-    return tuple(hashlib.sha256(nonce.encode()).hexdigest() for nonce in nonces)  # type: ignore[return-value]
+        raise HostGateError(
+            "expected one or three distinct 16-digit lowercase hex nonces"
+        )
+    return tuple(hashlib.sha256(nonce.encode()).hexdigest() for nonce in nonces)
 
 
 def _validated_sha256_identities(
     nonce_hashes: Sequence[str],
-) -> tuple[str, str, str]:
+) -> tuple[str, ...]:
     if (
         isinstance(nonce_hashes, (str, bytes))
-        or len(nonce_hashes) != 3
+        or len(nonce_hashes) not in (1, 3)
         or any(
             not isinstance(identity, str) or re.fullmatch(_SHA256, identity) is None
             for identity in nonce_hashes
         )
-        or len(set(nonce_hashes)) != 3
+        or len(set(nonce_hashes)) != len(nonce_hashes)
     ):
-        raise HostGateError("expected three distinct SHA-256 nonce identities")
-    return tuple(nonce_hashes)  # type: ignore[return-value]
+        raise HostGateError("expected one or three distinct SHA-256 nonce identities")
+    return tuple(nonce_hashes)
 
 
 def _match(line: str, pattern: re.Pattern[str], label: str) -> re.Match[str]:
@@ -397,7 +401,7 @@ def classify_interaction_transcript(
     *,
     pointer_mode: PointerEvidenceMode = PointerEvidenceMode.PHYSICAL_RELATIVE,
 ) -> tuple[InteractionCycleEvidence, ...]:
-    """Require three exact, ordered, nonce-bound physical interaction cycles."""
+    """Require one or three exact, ordered, nonce-bound interaction cycles."""
 
     return _classify_interaction_hash_transcript(
         transcript,
@@ -423,7 +427,7 @@ def classify_interaction_hash_transcript(
 
 def _classify_interaction_hash_transcript(
     transcript: str | bytes,
-    nonce_hashes: tuple[str, str, str],
+    nonce_hashes: tuple[str, ...],
     *,
     pointer_mode: PointerEvidenceMode,
 ) -> tuple[InteractionCycleEvidence, ...]:
@@ -444,8 +448,11 @@ def _classify_interaction_hash_transcript(
     )
     if any(line.startswith(f"{_PROTOCOL_PREFIX}FAIL") for line in protocol_lines):
         raise HostGateError("guest physical graphics gate reported failure")
-    if len(protocol_lines) != 22:
-        raise HostGateError("expected exactly 22 physical graphics markers")
+    expected_markers = len(nonce_hashes) * 7 + 1
+    if len(protocol_lines) != expected_markers:
+        raise HostGateError(
+            f"expected exactly {expected_markers} physical graphics markers"
+        )
 
     evidence: list[InteractionCycleEvidence] = []
     offset = 0
@@ -509,7 +516,9 @@ def _classify_interaction_hash_transcript(
             )
         )
 
-    _match(protocol_lines[offset], _COMPLETE, "COMPLETE")
+    complete = _match(protocol_lines[offset], _COMPLETE, "COMPLETE")
+    if int(complete.group(1)) != len(nonce_hashes):
+        raise HostGateError("completion marker cycle count mismatch")
     if len({cycle.screenshot_sha256 for cycle in evidence}) != len(evidence):
         raise HostGateError("cycle screenshot digests are not distinct")
     return tuple(evidence)
@@ -799,6 +808,7 @@ def physical_final_command(
     browser_pid: int,
     timeout: float,
     *,
+    cycle: int = 3,
     setup_timeout: float = PHYSICAL_MARIONETTE_SETUP_TIMEOUT,
 ) -> str:
     """Return a read-only terminal-DOM check bound to the original Firefox PID."""
@@ -807,6 +817,8 @@ def physical_final_command(
         raise ValueError("physical nonce must be 16 lowercase hex digits")
     if type(browser_pid) is not int or browser_pid <= 1:
         raise ValueError("expected Firefox PID is outside the valid contract")
+    if type(cycle) is not int or cycle not in (1, 3):
+        raise ValueError("physical final cycle must be one or three")
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
@@ -828,7 +840,7 @@ def physical_final_command(
         f'if [ "$_asterinas_physical_pid" = {browser_pid} ]; then '
         f'nsenter -t "$_asterinas_physical_pid" -n '
         f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
-        '--cycle 3 --firefox-pid "$_asterinas_physical_pid" --verify-final '
+        f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" --verify-final '
         f"--timeout {timeout:g} --setup-timeout {setup_timeout:g}; "
         "_asterinas_physical_status=$?; fi; "
         "_asterinas_physical_current=$(systemctl show --property MainPID --value "
@@ -999,7 +1011,7 @@ def run_physical_graphics(
             operations.prove_final_state(
                 selected_nonces[-1], readiness, config.cycle_timeout
             )
-            operations.emit_complete(config.cycle_timeout)
+            operations.emit_complete(3, config.cycle_timeout)
         except Exception as error:
             failure = error
         except BaseException as error:
@@ -1695,7 +1707,11 @@ class RealPhysicalGraphicsOperations:
             line, cursor = self._next_line(serial, cursor, deadline)
             match = _FINAL.fullmatch(line)
             if match is not None:
-                if final_seen or match.group(1) != expected_hash:
+                if (
+                    final_seen
+                    or match.group(1) != "3"
+                    or match.group(2) != expected_hash
+                ):
                     raise HostGateError(
                         "terminal DOM marker is duplicated or mismatched"
                     )
@@ -1710,11 +1726,13 @@ class RealPhysicalGraphicsOperations:
             raise HostGateError("terminal DOM marker is missing")
         self._sync_serial_log()
 
-    def emit_complete(self, timeout: float) -> None:
+    def emit_complete(self, cycles_requested: int, timeout: float) -> None:
+        if type(cycles_requested) is not int or cycles_requested not in (1, 3):
+            raise ValueError("physical cycle count must be one or three")
         serial = self._require_serial()
         deadline = self._guest_phase_deadline(timeout)
         cursor = serial.checkpoint()
-        marker = "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3"
+        marker = f"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles={cycles_requested}"
         serial.send((f"printf '{marker}\\n'\n").encode(), deadline)
         while True:
             line, cursor = self._next_line(serial, cursor, deadline)
