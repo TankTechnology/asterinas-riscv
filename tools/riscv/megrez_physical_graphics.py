@@ -1382,7 +1382,7 @@ def _read_operator_confirmation(
         raise HostGateError("operator display confirmation reached EOF")
     if line != expected + "\n":
         raise HostGateError("operator display confirmation did not match exactly")
-    if wait_readable(selected_stream, 0.0):
+    if wait_readable(selected_stream, 0.0) and selected_stream.read(1) != "":
         raise HostGateError("operator display confirmation contained extra input")
 
 
