@@ -45,9 +45,7 @@ MAX_DIAGNOSTICS_BYTES = 256 * 1024
 # deadline to export diagnostics. The kernel remains the terminal recovery owner.
 FIREFOX_BROWSE_REBOOT_AFTER_SECONDS = 1050
 MAX_BAIDU_HOME_GATE_SECONDS = 650
-CLOCK_SYNC_ATTEMPTS = 2
-CLOCK_SYNC_HTTP_TIMEOUT_SECONDS = 10
-CLOCK_SYNC_PROCESS_TIMEOUT_SECONDS = 20
+HOST_CLOCK_MAX_SKEW_SECONDS = 5
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -634,35 +632,38 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         return bytes(serial.transcript[start:])
 
     def synchronize_clock(self, browser_pid: int, timeout: float) -> dict[str, object]:
+        del browser_pid
         serial = self._require_serial()
+        requested_unix_seconds = int(time.time())
         command = (
-            f"/usr/bin/timeout {CLOCK_SYNC_PROCESS_TIMEOUT_SECONDS} "
-            f"/usr/bin/nsenter -t {browser_pid} -n "
-            "/run/asterinas-tools/megrez-clock-sync "
-            "--proxy http://10.100.19.216:17893 "
-            f"--timeout {CLOCK_SYNC_HTTP_TIMEOUT_SECONDS}"
+            f"_r={requested_unix_seconds}; "
+            "/usr/bin/date --utc --set @$_r >/dev/null; "
+            "_g=$(/usr/bin/date --utc +%s); "
+            'case "$_g" in ""|*[!0-9]*) exit 1;; esac; '
+            f'[ "$_g" -ge "$_r" ] && [ "$_g" -le "$((_r + '
+            f'{HOST_CLOCK_MAX_SKEW_SECONDS}))" ] || exit 1; '
+            "printf '{\"guest_unix_seconds\":%s,"
+            "\"host_unix_seconds\":%s,"
+            "\"marker\":\"ASTERINAS_CLOCK_SYNC_READY\","
+            "\"source\":\"host-serial\"}\\n' \"$_g\" \"$_r\""
         )
-        # CPython process teardown can outlive the outer timeout on Asterinas.
-        # Status 124 is usable only when the unique post-operation marker below
-        # proves that clock synchronization itself already completed.
-        attempt_timeout = timeout / CLOCK_SYNC_ATTEMPTS
-        last_error: HostGateError | None = None
-        for attempt in range(1, CLOCK_SYNC_ATTEMPTS + 1):
-            start = serial.checkpoint()
-            self._run_long_step(
-                command,
-                f"clock-{attempt}",
-                secrets.token_hex(8),
-                attempt_timeout,
-                accepted_statuses=("0", "124"),
-            )
-            try:
-                return _single_json_marker(
-                    self._step_payload(start), "ASTERINAS_CLOCK_SYNC_READY"
-                )
-            except HostGateError as error:
-                last_error = error
-        raise last_error or HostGateError("clock synchronization evidence is missing")
+        start = serial.checkpoint()
+        self._run_long_step(command, "clock", secrets.token_hex(8), timeout)
+        evidence = _single_json_marker(
+            self._step_payload(start), "ASTERINAS_CLOCK_SYNC_READY"
+        )
+        guest_unix_seconds = evidence.get("guest_unix_seconds")
+        if (
+            evidence.get("source") != "host-serial"
+            or type(evidence.get("host_unix_seconds")) is not int
+            or evidence.get("host_unix_seconds") != requested_unix_seconds
+            or type(guest_unix_seconds) is not int
+            or not requested_unix_seconds
+            <= guest_unix_seconds
+            <= requested_unix_seconds + HOST_CLOCK_MAX_SKEW_SECONDS
+        ):
+            raise HostGateError("guest clock serial evidence is invalid")
+        return evidence
 
     def run_baidu_home(
         self, browser_pid: int, nonce: str, timeout: float

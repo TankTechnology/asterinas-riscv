@@ -124,8 +124,9 @@ class _Operations:
         assert browser_pid == 116
         return {
             "marker": "ASTERINAS_CLOCK_SYNC_READY",
-            "source": "http-date",
-            "unix_seconds": 1789099506,
+            "guest_unix_seconds": 1789099506,
+            "host_unix_seconds": 1789099506,
+            "source": "host-serial",
         }
 
     def run_baidu_home(
@@ -353,7 +354,12 @@ class FirefoxBrowseTests(unittest.TestCase):
         operations._run_long_step = mock.Mock()
         operations._step_payload = mock.Mock(
             side_effect=(
-                b'{"marker":"ASTERINAS_CLOCK_SYNC_READY"}\n',
+                (
+                    b'{"guest_unix_seconds":1789099507,'
+                    b'"host_unix_seconds":1789099506,'
+                    b'"marker":"ASTERINAS_CLOCK_SYNC_READY",'
+                    b'"source":"host-serial"}\n'
+                ),
                 (
                     b'{"marker":"DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",'
                     b'"scope":"baidu-home","title_sha256":"'
@@ -363,7 +369,8 @@ class FirefoxBrowseTests(unittest.TestCase):
             )
         )
 
-        clock = operations.synchronize_clock(116, 45)
+        with mock.patch.object(browse.time, "time", return_value=1789099506.75):
+            clock = operations.synchronize_clock(116, 45)
         home = operations.run_baidu_home(
             116,
             "0123456789abcdef",
@@ -374,16 +381,19 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertEqual(home["scope"], "baidu-home")
         clock_command = operations._run_long_step.call_args_list[0].args[0]
         home_command = operations._run_long_step.call_args_list[1].args[0]
-        self.assertEqual(
-            operations._run_long_step.call_args_list[0].kwargs["accepted_statuses"],
-            ("0", "124"),
+        self.assertNotIn(
+            "accepted_statuses",
+            operations._run_long_step.call_args_list[0].kwargs,
         )
         self.assertEqual(
             operations._run_long_step.call_args_list[1].kwargs["accepted_statuses"],
             ("0", "124"),
         )
-        self.assertIn("megrez-clock-sync", clock_command)
-        self.assertIn("nsenter -t 116 -n", clock_command)
+        self.assertIn("date --utc --set @$_r", clock_command)
+        self.assertIn('"source":"host-serial"', clock_command)
+        self.assertNotIn("megrez-clock-sync", clock_command)
+        self.assertNotIn("nsenter", clock_command)
+        self.assertLess(len((clock_command + "\n").encode()), 768)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)
         self.assertIn("--screenshot-backend framebuffer", home_command)
         self.assertIn("--firefox-pid 116", home_command)
@@ -403,34 +413,26 @@ class FirefoxBrowseTests(unittest.TestCase):
             "/proc/net/tcp", inspect.getsource(browse.RealFirefoxBrowseOperations)
         )
 
-    def test_clock_sync_retries_a_timeout_without_completion_evidence(self) -> None:
+    def test_clock_sync_rejects_guest_time_outside_the_serial_attestation(self) -> None:
         operations = object.__new__(browse.RealFirefoxBrowseOperations)
         serial = mock.Mock()
-        serial.checkpoint.side_effect = (10, 20)
+        serial.checkpoint.return_value = 10
         operations._require_serial = mock.Mock(return_value=serial)
         operations._run_long_step = mock.Mock()
         operations._step_payload = mock.Mock(
-            side_effect=(
-                b"",
-                b'{"marker":"ASTERINAS_CLOCK_SYNC_READY"}\n',
+            return_value=(
+                b'{"guest_unix_seconds":1789099512,'
+                b'"host_unix_seconds":1789099506,'
+                b'"marker":"ASTERINAS_CLOCK_SYNC_READY",'
+                b'"source":"host-serial"}\n'
             )
         )
 
-        with mock.patch.object(
-            browse.secrets, "token_hex", side_effect=("1" * 16, "2" * 16)
-        ):
-            evidence = operations.synchronize_clock(116, 45)
-
-        self.assertEqual(evidence["marker"], "ASTERINAS_CLOCK_SYNC_READY")
-        self.assertEqual(operations._run_long_step.call_count, 2)
-        self.assertEqual(
-            [call.args[1] for call in operations._run_long_step.call_args_list],
-            ["clock-1", "clock-2"],
-        )
-        self.assertEqual(
-            [call.args[2] for call in operations._run_long_step.call_args_list],
-            ["1" * 16, "2" * 16],
-        )
+        with mock.patch.object(browse.time, "time", return_value=1789099506.75):
+            with self.assertRaisesRegex(
+                browse.HostGateError, "guest clock serial evidence is invalid"
+            ):
+                operations.synchronize_clock(116, 45)
 
     def test_file_transfer_commands_fit_the_serial_canonical_line(self) -> None:
         for name in ("baidu-home.json", "baidu-home.png"):
