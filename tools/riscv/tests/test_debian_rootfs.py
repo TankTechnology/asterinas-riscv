@@ -827,6 +827,18 @@ class DebianStage1Tests(unittest.TestCase):
             ],
         )
 
+    def test_stage1_probe_reloads_uuid_on_the_same_descriptor(self) -> None:
+        source = STAGE1_PROBE_SOURCE.read_text(encoding="utf-8")
+        function = source.split(
+            "static struct ProbeResult probe_systemd_compat(void)", 1
+        )[1].split("static struct ProbeResult execute_probe", 1)[0]
+
+        self.assertEqual(function.count('open("/proc/sys/kernel/random/uuid"'), 1)
+        self.assertGreaterEqual(function.count("pread(uuid_fd"), 2)
+        self.assertIn("lseek(uuid_fd, 0, SEEK_SET)", function)
+        self.assertIn("memcmp(first_uuid, second_uuid", function)
+        self.assertIn("memcmp(first_uuid, seek_uuid", function)
+
     def test_stage1_probe_disables_tty_input_echo_before_ready(self) -> None:
         binary = self.directory / "stage1-probe-tty-self-test"
         compilation = subprocess.run(

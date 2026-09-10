@@ -285,16 +285,75 @@ static struct ProbeResult probe_ext2_writeback(void)
 
 static struct ProbeResult probe_systemd_compat(void)
 {
-    static const char *const paths[] = {
-        "/proc/sys/kernel/random/boot_id",
-        "/proc/sys/kernel/random/uuid",
-    };
     char contents[PROBE_FILE_MAX];
     size_t length;
-    for (size_t index = 0; index < sizeof(paths) / sizeof(paths[0]); ++index) {
-        if (read_small_file(paths[index], contents, &length) != 0 || length < 32) {
-            return (struct ProbeResult){ 0, errno, "random-interface-missing" };
-        }
+    if (read_small_file("/proc/sys/kernel/random/boot_id", contents, &length) !=
+            0 ||
+        length < 32) {
+        return (struct ProbeResult){ 0, errno, "random-interface-missing" };
+    }
+
+    int uuid_fd;
+    do {
+        uuid_fd = open("/proc/sys/kernel/random/uuid",
+                       O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    } while (uuid_fd < 0 && errno == EINTR);
+    if (uuid_fd < 0) {
+        return (struct ProbeResult){ 0, errno, "random-interface-missing" };
+    }
+
+    char first_uuid[64];
+    char second_uuid[64];
+    char seek_uuid[64];
+    ssize_t first_length;
+    ssize_t second_length;
+    ssize_t seek_length;
+    do {
+        first_length = pread(uuid_fd, first_uuid, sizeof(first_uuid), 0);
+    } while (first_length < 0 && errno == EINTR);
+    if (first_length < 0) {
+        const int error_number = errno;
+        (void)close(uuid_fd);
+        return (struct ProbeResult){ 0, error_number,
+                                     "random-interface-missing" };
+    }
+    do {
+        second_length = pread(uuid_fd, second_uuid, sizeof(second_uuid), 0);
+    } while (second_length < 0 && errno == EINTR);
+    if (second_length < 0) {
+        const int error_number = errno;
+        (void)close(uuid_fd);
+        return (struct ProbeResult){ 0, error_number,
+                                     "random-interface-missing" };
+    }
+    off_t seek_result;
+    do {
+        seek_result = lseek(uuid_fd, 0, SEEK_SET);
+    } while (seek_result < 0 && errno == EINTR);
+    if (seek_result < 0) {
+        const int error_number = errno;
+        (void)close(uuid_fd);
+        return (struct ProbeResult){ 0, error_number,
+                                     "random-interface-missing" };
+    }
+    do {
+        seek_length = read(uuid_fd, seek_uuid, sizeof(seek_uuid));
+    } while (seek_length < 0 && errno == EINTR);
+    if (seek_length < 0) {
+        const int error_number = errno;
+        (void)close(uuid_fd);
+        return (struct ProbeResult){ 0, error_number,
+                                     "random-interface-missing" };
+    }
+    if (close(uuid_fd) != 0) {
+        return (struct ProbeResult){ 0, errno, "random-interface-missing" };
+    }
+    if (first_length != 37 || second_length != 37 || seek_length != 37) {
+        return (struct ProbeResult){ 0, EIO, "random-interface-malformed" };
+    }
+    if (memcmp(first_uuid, second_uuid, (size_t)first_length) == 0 ||
+        memcmp(first_uuid, seek_uuid, (size_t)first_length) == 0) {
+        return (struct ProbeResult){ 0, EIO, "random-interface-stale" };
     }
     errno = 0;
     if (syscall(ASTERINAS_SYSLOG, SYSLOG_SIZE_BUFFER, 0, 0) <= 0) {
