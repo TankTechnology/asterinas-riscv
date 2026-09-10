@@ -39,9 +39,7 @@ def _plan() -> DebugPlan:
             sha256=hashlib.sha256(name.encode()).hexdigest(),
             crc32=f"{zlib.crc32(name.encode()):08x}",
         )
-        for index, name in enumerate(
-            ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
-        )
+        for index, name in enumerate(("kernel", "initramfs", "qemu_dtb", "megrez_dtb"))
     )
     return DebugPlan(
         schema_version=1,
@@ -87,9 +85,7 @@ class ProbeBundleTests(unittest.TestCase):
             bundle.bundle_sha256,
             hashlib.sha256(bundle.canonical_bytes()).hexdigest(),
         )
-        self.assertEqual(
-            probe.ProbeBundle.from_bytes(bundle.canonical_bytes()), bundle
-        )
+        self.assertEqual(probe.ProbeBundle.from_bytes(bundle.canonical_bytes()), bundle)
 
     def test_bundle_rejects_unknown_fields(self) -> None:
         mapping = _bundle_mapping()
@@ -170,7 +166,14 @@ class ProbeSelectionTests(unittest.TestCase):
             ("boot", "boot"),
             ("unknown",),
             (" boot",),
-            ("boot", "syscall213", "syscall272", "ext2-writeback", "systemd-compat", "x"),
+            (
+                "boot",
+                "syscall213",
+                "syscall272",
+                "ext2-writeback",
+                "systemd-compat",
+                "x",
+            ),
         ):
             with self.subTest(names=names), self.assertRaises(probe.ProbeContractError):
                 probe.validate_probe_names(names)
@@ -180,10 +183,141 @@ class ProbeSelectionTests(unittest.TestCase):
         self.assertEqual(probe.validate_session_seconds(30), 30)
         self.assertEqual(probe.validate_session_seconds(300), 300)
         for invalid in (True, 29, 301, 30.0):
-            with self.subTest(invalid=invalid), self.assertRaises(
-                probe.ProbeContractError
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaises(probe.ProbeContractError),
             ):
                 probe.validate_session_seconds(invalid)
+
+
+class ProbeProtocolTests(unittest.TestCase):
+    NONCE = "00112233445566778899aabbccddeeff"
+
+    def _success(self) -> bytes:
+        return (
+            "kernel boot noise\n"
+            "ASTERINAS_PROBE_READY v=1 pid=1\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={self.NONCE} seq=0 name=boot\n"
+            f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=0 name=boot detail=boot-ok\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={self.NONCE} seq=1 name=syscall213\n"
+            f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=1 name=syscall213 detail=enosys\n"
+            f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} count=2 status=pass\n"
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={self.NONCE}\n"
+        ).encode()
+
+    def test_classifies_one_complete_ordered_exchange(self) -> None:
+        exchange = probe.classify_probe_transcript(
+            self._success(), self.NONCE, ("boot", "syscall213")
+        )
+
+        self.assertTrue(exchange.passed)
+        self.assertEqual(
+            tuple(
+                (item.sequence, item.name, item.passed, item.detail)
+                for item in exchange.outcomes
+            ),
+            ((0, "boot", True, "boot-ok"), (1, "syscall213", True, "enosys")),
+        )
+        self.assertEqual(exchange.dmesg, b"")
+
+    def test_classifies_fail_fast_exchange_with_bounded_dmesg(self) -> None:
+        transcript = (
+            "ASTERINAS_PROBE_READY v=1 pid=1\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={self.NONCE} seq=0 name=boot\n"
+            f"ASTERINAS_PROBE_FAIL v=1 nonce={self.NONCE} seq=0 name=boot errno=5 detail=uname-failed\n"
+            f"ASTERINAS_PROBE_DMESG_BEGIN v=1 nonce={self.NONCE} bytes=12\n"
+            "hello dmesg\n"
+            f"ASTERINAS_PROBE_DMESG_END v=1 nonce={self.NONCE}\n"
+            f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} count=1 status=fail\n"
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={self.NONCE}\n"
+        ).encode()
+
+        exchange = probe.classify_probe_transcript(
+            transcript, self.NONCE, ("boot", "syscall213")
+        )
+
+        self.assertFalse(exchange.passed)
+        self.assertEqual(exchange.outcomes[0].error_number, 5)
+        self.assertEqual(exchange.dmesg, b"hello dmesg\n")
+
+    def test_request_encoding_is_exact_and_shell_is_preselected(self) -> None:
+        selected = probe.validate_probe_names(("boot", "syscall213"))
+
+        self.assertEqual(
+            probe.encode_probe_request(self.NONCE, selected),
+            (
+                f"ASTERINAS_PROBE_RUN v=1 nonce={self.NONCE} "
+                "probes=boot,syscall213 shell=0\n"
+            ).encode(),
+        )
+        self.assertEqual(
+            probe.encode_probe_request(self.NONCE, selected, shell=True),
+            (
+                f"ASTERINAS_PROBE_RUN v=1 nonce={self.NONCE} "
+                "probes=boot,syscall213 shell=1\n"
+            ).encode(),
+        )
+
+    def test_protocol_rejects_missing_or_replayed_terminal_records(self) -> None:
+        valid = self._success().decode()
+        variants = (
+            valid.replace(
+                f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} count=2 status=pass\n",
+                "",
+            ),
+            valid.replace(
+                f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=0 name=boot detail=boot-ok\n",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=0 name=boot detail=boot-ok\n"
+                f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=0 name=boot detail=boot-ok\n",
+            ),
+            valid.replace("seq=1 name=syscall213", "seq=0 name=syscall213"),
+        )
+        for transcript in variants:
+            with (
+                self.subTest(transcript=transcript[-200:]),
+                self.assertRaises(probe.ProbeProtocolError),
+            ):
+                probe.classify_probe_transcript(
+                    transcript.encode(), self.NONCE, ("boot", "syscall213")
+                )
+
+    def test_protocol_rejects_identity_substitution_and_unknown_markers(self) -> None:
+        valid = self._success().decode()
+        variants = (
+            valid.replace(self.NONCE, "f" * 32, 1),
+            valid.replace("seq=1 name=syscall213", "seq=1 name=syscall272", 1),
+            valid.replace("detail=enosys", "detail=unsafe/value"),
+            valid.replace(
+                f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE}",
+                f"ASTERINAS_PROBE_UNKNOWN v=1 nonce={self.NONCE}\n"
+                f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE}",
+            ),
+            valid.replace("count=2 status=pass", "count=1 status=pass"),
+        )
+        for transcript in variants:
+            with (
+                self.subTest(transcript=transcript[-200:]),
+                self.assertRaises(probe.ProbeProtocolError),
+            ):
+                probe.classify_probe_transcript(
+                    transcript.encode(), self.NONCE, ("boot", "syscall213")
+                )
+
+    def test_protocol_rejects_pass_after_failure(self) -> None:
+        transcript = (
+            "ASTERINAS_PROBE_READY v=1 pid=1\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={self.NONCE} seq=0 name=boot\n"
+            f"ASTERINAS_PROBE_FAIL v=1 nonce={self.NONCE} seq=0 name=boot errno=5 detail=uname-failed\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={self.NONCE} seq=1 name=syscall213\n"
+            f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} seq=1 name=syscall213 detail=enosys\n"
+            f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} count=2 status=fail\n"
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={self.NONCE}\n"
+        ).encode()
+
+        with self.assertRaises(probe.ProbeProtocolError):
+            probe.classify_probe_transcript(
+                transcript, self.NONCE, ("boot", "syscall213")
+            )
 
 
 if __name__ == "__main__":

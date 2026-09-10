@@ -171,11 +171,11 @@ git commit -m "Add a minimal Stage1 kernel probe mode"
 - Modify: `tools/riscv/megrez_probe.py`
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 
-- [ ] **Step 1: Write failing protocol-classifier tests**
+- [x] **Step 1: Write failing protocol-classifier tests**
 
 Create transcripts for two probes in one boot. Assert `classify_probe_transcript(transcript, nonce, selected)` returns ordered `ProbeOutcome` values and rejects stale nonces, replayed records, missing `DONE`, reordered sequence numbers, name substitution, duplicate terminal records, unknown protocol lines, unsafe detail fields, count mismatch, and a `PASS` after any `FAIL`.
 
-- [ ] **Step 2: Run the classifier tests and verify failure**
+- [x] **Step 2: Run the classifier tests and verify failure**
 
 Run:
 
@@ -185,15 +185,15 @@ python3 -m unittest tools.riscv.tests.test_megrez_probe.ProbeProtocolTests -v
 
 Expected: classifier symbols are missing.
 
-- [ ] **Step 3: Implement the strict line classifier**
+- [x] **Step 3: Implement the strict line classifier**
 
 Define frozen `ProbeOutcome(sequence, name, passed, errno, detail)` and `ProbeExchange(outcomes, passed, dmesg)`. Parse only exact anchored regular expressions, require one nonce throughout, enforce `START` immediately followed by one terminal record for the same sequence/name, require the selected count, and allow dmesg frames only after a failed outcome and before `DONE`.
 
-- [ ] **Step 4: Add and test request encoding**
+- [x] **Step 4: Add and test request encoding**
 
 `encode_probe_request(nonce, selected, shell=False)` must return one ASCII line ending in `\n`, fit within 512 bytes, contain the exact `shell=0|1` selector, and contain no shell metacharacter or user-controlled free text. Test exact byte equality for `boot,syscall213` in both modes.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run:
 
