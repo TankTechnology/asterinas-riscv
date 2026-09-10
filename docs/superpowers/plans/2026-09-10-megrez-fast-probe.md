@@ -426,7 +426,7 @@ Review the diff normally for maintainability, development correctness, security,
 
 Require a clean worktree, inspect every commit being published, run `git fetch origin`, and require `git merge-base --is-ancestor origin/main HEAD`. If `origin/main` advanced, integrate it without force and rerun the relevant gates.
 
-- [ ] **Step 5: Push only a verified fast-forward**
+- [x] **Step 5: Push only a verified fast-forward**
 
 Run:
 
