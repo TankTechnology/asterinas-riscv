@@ -28,11 +28,12 @@ from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import safe_artifact_name
 from tools.riscv.megrez_boot_stability import (
     BootReadinessEvidence,
+    DeploymentAttestation,
     RealBootCycleOperations,
-    _read_deployment_attestation,
     boot_stability_bootargs,
     contains_fatal_diagnostics,
 )
+from tools.riscv.megrez_debug_contract import DebugPlan
 from tools.riscv.megrez_physical_graphics import (
     HostGateError,
     _read_plan,
@@ -51,6 +52,7 @@ MAX_TRANSPORT_RECORD_BYTES = 2048
 MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_FIREFOX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_SERIAL_COMMAND_BYTES = 768
+NEW_SESSION_HOST_GRACE_SECONDS = 15.0
 MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
@@ -231,25 +233,55 @@ class DesktopBundle:
         bundle = cls(**value)
         if bundle.canonical_bytes() != payload:
             raise ValueError("desktop bundle JSON is not canonical")
-        for input_path, expected, label, maximum in (
-            (bundle.plan_path, bundle.plan_sha256, "plan", MAX_PLAN_BYTES),
-            (
-                bundle.deployment_attestation_path,
-                bundle.deployment_attestation_sha256,
-                "deployment attestation",
-                MAX_ATTESTATION_BYTES,
-            ),
-            (
-                bundle.deployment_measurement_log_path,
-                bundle.deployment_measurement_log_sha256,
-                "deployment measurement log",
-                MAX_MEASUREMENT_BYTES,
-            ),
-        ):
-            actual = _sha256(_read_bounded_regular(Path(input_path), label, maximum))
-            if actual != expected:
-                raise ValueError(f"{label} changed after bundle configuration")
+        _validated_bound_plan(bundle)
         return bundle
+
+
+def _validated_bound_plan(bundle: DesktopBundle) -> DebugPlan:
+    """Read, hash, parse, and cross-check every bundle input exactly once."""
+
+    payloads: dict[str, bytes] = {}
+    for input_path, expected, label, maximum in (
+        (bundle.plan_path, None, "plan", MAX_PLAN_BYTES),
+        (
+            bundle.deployment_attestation_path,
+            bundle.deployment_attestation_sha256,
+            "deployment attestation",
+            MAX_ATTESTATION_BYTES,
+        ),
+        (
+            bundle.deployment_measurement_log_path,
+            bundle.deployment_measurement_log_sha256,
+            "deployment measurement log",
+            MAX_MEASUREMENT_BYTES,
+        ),
+    ):
+        payload = _read_bounded_regular(Path(input_path), label, maximum)
+        if expected is not None and _sha256(payload) != expected:
+            raise ValueError(f"{label} changed after bundle configuration")
+        payloads[label] = payload
+    try:
+        plan = DebugPlan.from_bytes(payloads["plan"])
+    except ValueError as error:
+        raise ValueError(f"desktop bundle plan is invalid: {error}") from error
+    if plan.schema_version != 2 or plan.profile != "debian-browser":
+        raise ValueError("desktop bundle requires a Debian browser plan")
+    if plan.plan_sha256 != bundle.plan_sha256:
+        raise ValueError("plan changed after bundle configuration")
+    try:
+        attestation_value = json.loads(
+            payloads["deployment attestation"],
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        attestation = DeploymentAttestation.from_mapping(attestation_value)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("desktop bundle deployment attestation is invalid") from error
+    attestation.validate(
+        plan,
+        bundle.mmc_artifacts,
+        payloads["deployment measurement log"],
+    )
+    return plan
 
 
 def _publish_bundle(destination: Path, payload: bytes) -> None:
@@ -326,23 +358,18 @@ def configure_bundle(
         label: _read_bounded_regular(path, label, maximum)
         for path, label, maximum in paths
     }
-    plan = _read_plan(plan_path)
-    plan.validate()
-    attestation = _read_deployment_attestation(deployment_attestation_path)
-    plan_digest = _sha256(payloads["plan"])
-    if plan.plan_sha256 != plan_digest:
-        raise ValueError("plan identity does not match its canonical bytes")
-    if attestation.plan_sha256 != plan.plan_sha256:
-        raise ValueError("deployment attestation does not match the plan")
+    try:
+        plan = DebugPlan.from_bytes(payloads["plan"])
+    except ValueError as error:
+        raise ValueError(f"desktop bundle plan is invalid: {error}") from error
+    if plan.schema_version != 2 or plan.profile != "debian-browser":
+        raise ValueError("desktop bundle requires a Debian browser plan")
     measurement_digest = _sha256(payloads["deployment measurement log"])
-    attested_measurement = getattr(attestation, "measurement_log_sha256", None)
-    if attested_measurement is not None and attested_measurement != measurement_digest:
-        raise ValueError("deployment measurement log does not match the attestation")
     bundle = DesktopBundle(
         schema_version=BUNDLE_SCHEMA_VERSION,
         device=validated_device,
         plan_path=str(plan_path),
-        plan_sha256=plan_digest,
+        plan_sha256=plan.plan_sha256,
         deployment_attestation_path=str(deployment_attestation_path),
         deployment_attestation_sha256=_sha256(payloads["deployment attestation"]),
         deployment_measurement_log_path=str(deployment_measurement_log_path),
@@ -350,6 +377,7 @@ def configure_bundle(
         mmc_artifacts=validated_mmc,
         evidence_root=str(evidence_root),
     )
+    _validated_bound_plan(bundle)
     _publish_bundle(destination, bundle.canonical_bytes())
     return bundle
 
@@ -586,6 +614,11 @@ def _run_desktop_start(
         except Exception as error:
             diagnostics = b""
             failure_details.append(f"diagnostics-{_failure_reason(error)}")
+        except BaseException as error:
+            diagnostics = b""
+            if interruption is None:
+                interruption = error
+            failure_details.append(f"diagnostics-{_failure_reason(error)}")
         diagnostics_seconds = _elapsed_seconds(clock, diagnostics_start)
 
         recovery_start = clock()
@@ -593,11 +626,20 @@ def _run_desktop_start(
             operations.request_reboot(config.reboot_timeout)
         except Exception as error:
             failure_details.append(f"reboot-{_failure_reason(error)}")
+        except BaseException as error:
+            if interruption is None:
+                interruption = error
+            failure_details.append(f"reboot-{_failure_reason(error)}")
         try:
             operations.await_recovery(config.recovery_timeout)
             recovered = True
         except Exception as error:
             recovery_failed = True
+            failure_details.append(f"recovery-{_failure_reason(error)}")
+        except BaseException as error:
+            recovery_failed = True
+            if interruption is None:
+                interruption = error
             failure_details.append(f"recovery-{_failure_reason(error)}")
         recovery_seconds = _elapsed_seconds(clock, recovery_start)
 
@@ -893,6 +935,7 @@ def _parse_transport_record(value: object) -> MarionetteTransportRecord:
             or (
                 stage == "send"
                 and command != "greeting"
+                and not send_complete
                 and header_bytes == 0
                 and body_expected is None
                 and body_received == 0
@@ -950,6 +993,7 @@ def _validate_transport_sequence(
     streams: dict[tuple[int, int, str], list[MarionetteTransportRecord]] = {}
     request_commands: dict[tuple[int, int], str] = {}
     first_positions: dict[tuple[int, int, str], int] = {}
+    last_positions: dict[tuple[int, int, str], int] = {}
     terminal: set[tuple[int, int, str]] = set()
 
     for position, record in enumerate(records):
@@ -984,6 +1028,8 @@ def _validate_transport_sequence(
             events = {item.event for item in stream}
             if not stream and record.event != "begin":
                 raise HostGateError("Marionette command record order is invalid")
+            if record.event in events:
+                raise HostGateError("Marionette command record order is invalid")
             if record.event == "begin" and stream:
                 raise HostGateError("Marionette command record order is invalid")
             if record.event == "send_complete" and "begin" not in events:
@@ -999,7 +1045,20 @@ def _validate_transport_sequence(
                 "frame_header",
             }.issubset(events):
                 raise HostGateError("Marionette command record order is invalid")
+            if record.event == "failure":
+                required = {"begin"}
+                if record.stage != "send":
+                    required.add("send_complete")
+                if record.stage in {
+                    "response_body",
+                    "response_json",
+                    "response_identity",
+                }:
+                    required.add("frame_header")
+                if not required.issubset(events):
+                    raise HostGateError("Marionette command record order is invalid")
         stream.append(record)
+        last_positions[key] = position
         if record.event in {"complete", "failure"}:
             terminal.add(key)
 
@@ -1017,7 +1076,12 @@ def _validate_transport_sequence(
     if new_session_keys and not status_keys:
         raise HostGateError("Marionette transport request order is invalid")
     if status_keys and new_session_keys:
-        if first_positions[new_session_keys[0]] <= first_positions[status_keys[0]]:
+        status_key = status_keys[0]
+        new_session_key = new_session_keys[0]
+        if (
+            streams[status_key][-1].event != "complete"
+            or first_positions[new_session_key] <= last_positions[status_key]
+        ):
             raise HostGateError("Marionette transport request order is invalid")
     for keys in command_keys.values():
         for key in keys:
@@ -1677,7 +1741,7 @@ def experiment_identity(
         raise HostGateError("desktop bundle and Firefox plan identity differ")
     value = {
         "schema_version": 1,
-        "diagnostic_protocol_version": 1,
+        "diagnostic_protocol_version": 2,
         "plan_sha256": plan.plan_sha256,
         "deployment_attestation_sha256": bundle.deployment_attestation_sha256,
         "deployment_measurement_log_sha256": (bundle.deployment_measurement_log_sha256),
@@ -1710,6 +1774,7 @@ def experiment_identity(
             "pageLoadStrategy": "none",
             "strictFileInteractability": True,
         },
+        "new_session_host_grace_seconds": NEW_SESSION_HOST_GRACE_SECONDS,
     }
     return _sha256(_canonical_json(value))
 
@@ -1812,17 +1877,20 @@ def _run_firefox_diagnosis(
             interruption = error
             failures.append(_failure_reason(error))
 
+    status_complete = False
     if firefox is not None and interruption is None:
         try:
             operations.run_firefox_status(
                 _phase_budget(clock, total_deadline, config.status_timeout)
             )
+            status_complete = True
         except Exception as error:
             failures.append(f"status-{_failure_reason(error)}")
         except BaseException as error:
             interruption = error
             failures.append(_failure_reason(error))
 
+    if status_complete and firefox is not None and interruption is None:
         try:
             value = operations.capture_firefox_snapshot(
                 "before",
@@ -1842,7 +1910,7 @@ def _run_firefox_diagnosis(
                 _phase_budget(
                     clock,
                     total_deadline,
-                    config.selected_command_timeout,
+                    config.selected_command_timeout + NEW_SESSION_HOST_GRACE_SECONDS,
                 )
             )
         except Exception as error:
@@ -2245,8 +2313,11 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
             selected_timeout=selected_timeout,
         )
         self._firefox_command_index = 0
+        deadline = time.monotonic() + timeout
         for index in range(4):
-            self._run_diagnostic_command(index, timeout)
+            self._run_diagnostic_command(
+                index, _phase_budget(time.monotonic, deadline, timeout)
+            )
         marker = self._single_marker(_FIREFOX_PREFLIGHT_MARKER, "preflight")
         identity = FirefoxProcessIdentity(
             pid=int(marker.group(1)),
@@ -2261,7 +2332,11 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
 
     def run_firefox_status(self, timeout: float) -> None:
         self._run_diagnostic_command(4, timeout)
-        self._single_marker(_FIREFOX_STATUS_MARKER, "Status")
+        marker = self._single_marker(_FIREFOX_STATUS_MARKER, "Status")
+        if marker.group(1) != "0":
+            raise HostGateError(
+                f"Firefox Status failed with guest status {marker.group(1)}"
+            )
 
     def capture_firefox_snapshot(
         self, phase: str, nonce: str, timeout: float
@@ -2274,8 +2349,11 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
             indexes = (11, 12, 13, 14, 15, 16)
         else:
             raise ValueError("Firefox snapshot phase is invalid")
+        deadline = time.monotonic() + timeout
         for index in indexes:
-            self._run_diagnostic_command(index, timeout)
+            self._run_diagnostic_command(
+                index, _phase_budget(time.monotonic, deadline, timeout)
+            )
         browser_pid = int(getattr(self, "_browser_pid", 0) or 0)
         snapshot = parse_firefox_snapshot_frame(
             self.transcript,
@@ -2301,8 +2379,14 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
         return snapshot
 
     def run_firefox_new_session(self, timeout: float) -> None:
-        self._run_diagnostic_command(7, min(timeout, 15.0))
-        self._run_diagnostic_command(8, timeout + 15.0)
+        deadline = time.monotonic() + timeout
+        self._run_diagnostic_command(
+            7,
+            _phase_budget(time.monotonic, deadline, NEW_SESSION_HOST_GRACE_SECONDS),
+        )
+        self._run_diagnostic_command(
+            8, _phase_budget(time.monotonic, deadline, timeout)
+        )
         self._single_marker(_FIREFOX_NEW_SESSION_MARKER, "NewSession")
 
 
@@ -2447,6 +2531,8 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
         bundle = DesktopBundle.from_path(bundle_path)
         plan = _read_plan(Path(bundle.plan_path))
         plan.validate()
+        if plan.plan_sha256 != bundle.plan_sha256:
+            raise HostGateError("desktop plan changed after bundle validation")
         run_directory = _fresh_run_directory(
             bundle, "start" if values.action == "start" else "firefox"
         )

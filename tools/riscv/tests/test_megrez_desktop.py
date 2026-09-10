@@ -39,12 +39,12 @@ class DesktopBundleTests(unittest.TestCase):
         self.plan.write_bytes(b'{"schema_version":2}\n')
         self.attestation.write_bytes(b'{"schema_version":2}\n')
         self.measurement.write_bytes(b"measured deployment\n")
-        plan_digest = hashlib.sha256(self.plan.read_bytes()).hexdigest()
         self.plan_value = SimpleNamespace(
-            plan_sha256=plan_digest,
+            schema_version=2,
+            profile="debian-browser",
+            plan_sha256="c" * 64,
             validate=lambda: None,
         )
-        self.attestation_value = SimpleNamespace(plan_sha256=plan_digest)
 
     def configure(self, **overrides):
         arguments = {
@@ -59,23 +59,30 @@ class DesktopBundleTests(unittest.TestCase):
         arguments.update(overrides)
         with (
             mock.patch.object(
-                desktop, "_read_plan", return_value=self.plan_value
-            ) as read_plan,
+                desktop.DebugPlan, "from_bytes", return_value=self.plan_value
+            ),
             mock.patch.object(
                 desktop,
-                "_read_deployment_attestation",
-                return_value=self.attestation_value,
-            ) as read_attestation,
+                "_validated_bound_plan",
+                return_value=self.plan_value,
+                create=True,
+            ) as validate_bound_plan,
         ):
             bundle = desktop.configure_bundle(**arguments)
-        read_plan.assert_called_once_with(self.plan)
-        read_attestation.assert_called_once_with(self.attestation)
+        validate_bound_plan.assert_called_once()
+        self.assertEqual(validate_bound_plan.call_args.args[0], bundle)
         return bundle
 
     def test_configure_round_trips_one_private_strict_bundle(self) -> None:
         bundle = self.configure()
 
-        self.assertEqual(desktop.DesktopBundle.from_path(self.destination), bundle)
+        with mock.patch.object(
+            desktop,
+            "_validated_bound_plan",
+            return_value=self.plan_value,
+            create=True,
+        ):
+            self.assertEqual(desktop.DesktopBundle.from_path(self.destination), bundle)
         self.assertEqual(self.destination.stat().st_mode & 0o777, 0o600)
         self.assertEqual(bundle.schema_version, 1)
         self.assertEqual(bundle.device, "/dev/serial/by-id/usb-test")
@@ -83,13 +90,62 @@ class DesktopBundleTests(unittest.TestCase):
         self.assertEqual(bundle.evidence_root, str(self.evidence))
         self.assertEqual(self.destination.read_bytes(), bundle.canonical_bytes())
 
+    def test_configure_uses_the_canonical_plan_identity(self) -> None:
+        raw_digest = hashlib.sha256(self.plan.read_bytes()).hexdigest()
+
+        bundle = self.configure()
+
+        self.assertEqual(bundle.plan_sha256, self.plan_value.plan_sha256)
+        self.assertNotEqual(bundle.plan_sha256, raw_digest)
+
     def test_bundle_detects_changed_bound_inputs(self) -> None:
         self.configure()
 
         self.plan.write_bytes(b'{"schema_version":3}\n')
 
-        with self.assertRaisesRegex(ValueError, "plan.*changed"):
+        with self.assertRaisesRegex(ValueError, "plan"):
             desktop.DesktopBundle.from_path(self.destination)
+
+    def test_bound_inputs_require_complete_attestation_validation(self) -> None:
+        plan_payload = self.plan.read_bytes()
+        attestation_payload = self.attestation.read_bytes()
+        measurement_payload = self.measurement.read_bytes()
+        bundle = desktop.DesktopBundle(
+            schema_version=1,
+            device="/dev/serial/by-id/usb-test",
+            plan_path=str(self.plan),
+            plan_sha256=hashlib.sha256(plan_payload).hexdigest(),
+            deployment_attestation_path=str(self.attestation),
+            deployment_attestation_sha256=hashlib.sha256(
+                attestation_payload
+            ).hexdigest(),
+            deployment_measurement_log_path=str(self.measurement),
+            deployment_measurement_log_sha256=hashlib.sha256(
+                measurement_payload
+            ).hexdigest(),
+            mmc_artifacts=MMC_ARTIFACTS,
+            evidence_root=str(self.evidence),
+        )
+        plan = mock.Mock(
+            schema_version=2,
+            profile="debian-browser",
+            plan_sha256=bundle.plan_sha256,
+        )
+        attestation = mock.Mock()
+        with (
+            mock.patch.object(desktop.DebugPlan, "from_bytes", return_value=plan),
+            mock.patch.object(
+                desktop.DeploymentAttestation,
+                "from_mapping",
+                return_value=attestation,
+            ),
+        ):
+            selected = desktop._validated_bound_plan(bundle)
+
+        self.assertIs(selected, plan)
+        attestation.validate.assert_called_once_with(
+            plan, bundle.mmc_artifacts, measurement_payload
+        )
 
     def test_bundle_rejects_unknown_duplicate_and_boolean_schema_fields(self) -> None:
         bundle = self.configure()
@@ -174,10 +230,12 @@ class _StartOperations:
         *,
         fail_at: str | None = None,
         recover: bool = True,
+        interrupt_cleanup_at: str | None = None,
     ) -> None:
         self.events = events
         self.fail_at = fail_at
         self.recover = recover
+        self.interrupt_cleanup_at = interrupt_cleanup_at
         self._guest_started = False
         self._transcript = b"Asterinas desktop serial\n"
 
@@ -224,6 +282,8 @@ class _StartOperations:
 
     def collect_diagnostics(self, _timeout: float) -> bytes:
         self.events.append("collect-diagnostics")
+        if self.interrupt_cleanup_at == "collect-diagnostics":
+            raise KeyboardInterrupt("diagnostic collection interrupted")
         if self.fail_at == "readiness-invalid-diagnostics":
             return "not bytes"
         return b"bounded failure diagnostics\n"
@@ -371,6 +431,34 @@ class DesktopStartLifecycleTests(unittest.TestCase):
         self.assertIn("fresh-u-boot-prompt", result.failure)
         self.assertIn("request-reboot", events)
         self.assertIn("recovery", events)
+
+    def test_cleanup_interruption_still_recovers_publishes_and_closes(self) -> None:
+        events: list[str] = []
+        operations = _StartOperations(
+            events,
+            fail_at="readiness",
+            interrupt_cleanup_at="collect-diagnostics",
+        )
+        publisher = _StartPublisher(events)
+
+        with self.assertRaises(KeyboardInterrupt):
+            desktop.run_desktop_start(
+                _start_plan(),
+                desktop.DesktopStartConfig(),
+                operations,
+                publisher,
+                clock=lambda: 10.0,
+            )
+
+        self.assertEqual(
+            events[-4:],
+            [
+                "request-reboot",
+                "recovery",
+                "publish:desktop-start-timeout-error-desktop-readiness-timed-out",
+                "close",
+            ],
+        )
 
     def test_deadlines_reject_boolean_nonfinite_and_unbounded_values(self) -> None:
         for value in (True, 0, float("inf"), 1200.1):
@@ -522,6 +610,15 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
                 ),
                 _transport_record(
                     pid=11,
+                    monotonic_ns=205,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="send_complete",
+                    stage="send",
+                    send_complete=True,
+                ),
+                _transport_record(
+                    pid=11,
                     monotonic_ns=210,
                     request_id=1,
                     command="WebDriver:Status",
@@ -635,15 +732,31 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
                             stage="send",
                             send_complete=True,
                         ),
+                    )
+                )
+                if progress["stage"] == "response_body":
+                    lines.append(
                         _transport_record(
                             pid=22,
-                            monotonic_ns=500,
+                            monotonic_ns=420,
                             request_id=1,
                             command="WebDriver:NewSession",
-                            event="failure",
+                            event="frame_header",
+                            stage="response_body",
                             send_complete=True,
-                            **progress,
-                        ),
+                            header_bytes=3,
+                            body_expected=50,
+                        )
+                    )
+                lines.append(
+                    _transport_record(
+                        pid=22,
+                        monotonic_ns=500,
+                        request_id=1,
+                        command="WebDriver:NewSession",
+                        event="failure",
+                        send_complete=True,
+                        **progress,
                     )
                 )
 
@@ -681,6 +794,13 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         complete_new_session = _complete_command(22, "WebDriver:NewSession", 400)
         invalid_cases = {
             "request order": _greeting(22, 300) + complete_new_session,
+            ".*request order": (
+                _status_complete()[:-1]
+                + _greeting(22, 300)
+                + complete_new_session[:1]
+                + _status_complete()[-1:]
+                + complete_new_session[1:]
+            ),
             "duplicate terminal": (
                 _status_complete()
                 + _greeting(22, 300)
@@ -715,6 +835,52 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
                     body_received=1,
                 )
             ],
+            "command record order": (
+                _status_complete()
+                + _greeting(22, 300)
+                + [
+                    _transport_record(
+                        pid=22,
+                        monotonic_ns=400,
+                        request_id=1,
+                        command="WebDriver:NewSession",
+                        event="begin",
+                        stage="send",
+                    ),
+                    _transport_record(
+                        pid=22,
+                        monotonic_ns=500,
+                        request_id=1,
+                        command="WebDriver:NewSession",
+                        event="failure",
+                        stage="response_header",
+                        send_complete=True,
+                    ),
+                ]
+            ),
+            "progress is contradictory": (
+                _status_complete()
+                + _greeting(22, 300)
+                + [
+                    _transport_record(
+                        pid=22,
+                        monotonic_ns=400,
+                        request_id=1,
+                        command="WebDriver:NewSession",
+                        event="begin",
+                        stage="send",
+                    ),
+                    _transport_record(
+                        pid=22,
+                        monotonic_ns=500,
+                        request_id=1,
+                        command="WebDriver:NewSession",
+                        event="failure",
+                        stage="send",
+                        send_complete=True,
+                    ),
+                ]
+            ),
         }
         for message, lines in invalid_cases.items():
             with self.subTest(message=message):
@@ -827,6 +993,42 @@ class FirefoxGuestCommandTests(unittest.TestCase):
                         pid, nonces, selected_timeout=timeout
                     )
 
+    def test_real_status_operation_rejects_a_nonzero_guest_status(self) -> None:
+        operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
+        marker = mock.Mock()
+        marker.group.return_value = "1"
+        with (
+            mock.patch.object(operations, "_run_diagnostic_command"),
+            mock.patch.object(operations, "_single_marker", return_value=marker),
+            self.assertRaisesRegex(desktop.HostGateError, "Status failed"),
+        ):
+            operations.run_firefox_status(30.0)
+
+    def test_real_preflight_commands_share_one_phase_deadline(self) -> None:
+        operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
+        marker = mock.Mock()
+        marker.group.side_effect = lambda index: {
+            1: "41",
+            2: "100",
+            3: "0",
+            4: "8:90",
+        }[index]
+        with (
+            mock.patch.object(operations, "_run_diagnostic_command") as run,
+            mock.patch.object(operations, "_single_marker", return_value=marker),
+            mock.patch.object(
+                desktop.time,
+                "monotonic",
+                side_effect=(100.0, 101.0, 102.0, 103.0, 104.0),
+            ),
+        ):
+            operations.firefox_preflight(41, self.NONCES, 300.0, 30.0)
+
+        self.assertEqual(
+            [call.args[1] for call in run.call_args_list],
+            [29.0, 28.0, 27.0, 26.0],
+        )
+
     def frame(
         self,
         value: object,
@@ -899,6 +1101,39 @@ class FirefoxGuestCommandTests(unittest.TestCase):
 
 
 def _diagnostic_transcript(boundary: str = "new-session-complete") -> bytes:
+    if boundary == "status-command-stalled":
+        lines = _greeting(11, 100)
+        lines.extend(
+            (
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=200,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="begin",
+                    stage="send",
+                ),
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=205,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="send_complete",
+                    stage="send",
+                    send_complete=True,
+                ),
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=210,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="failure",
+                    stage="response_header",
+                    send_complete=True,
+                ),
+            )
+        )
+        return "".join(lines).encode()
     lines = _status_complete() + _greeting(22, 300)
     if boundary == "new-session-complete":
         lines.extend(_complete_command(22, "WebDriver:NewSession", 400))
@@ -970,6 +1205,7 @@ class _DiagnosticOperations:
         invalid_snapshot: str | None = None,
         diagnostics_fail: bool = False,
         interrupt_new_session: bool = False,
+        status_fail: bool = False,
         recover: bool = True,
     ) -> None:
         self.events = events
@@ -979,6 +1215,7 @@ class _DiagnosticOperations:
         self.invalid_snapshot = invalid_snapshot
         self.diagnostics_fail = diagnostics_fail
         self.interrupt_new_session = interrupt_new_session
+        self.status_fail = status_fail
         self.recover = recover
 
     @property
@@ -1037,6 +1274,8 @@ class _DiagnosticOperations:
 
     def run_firefox_status(self, _timeout: float) -> None:
         self.events.append("status")
+        if self.status_fail:
+            raise TimeoutError("Status did not complete")
 
     def capture_firefox_snapshot(
         self, phase: str, _nonce: str, _timeout: float
@@ -1143,6 +1382,20 @@ class FirefoxDiagnosticLifecycleTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(result.boundary.boundary, "new-session-response-absent")
         self.assertEqual(events, self.EXPECTED_EVENTS)
+
+    def test_status_failure_skips_the_selected_new_session_cost(self) -> None:
+        result, events, _publisher = self.run_diagnosis(
+            boundary="status-command-stalled",
+            status_fail=True,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.boundary.boundary, "status-command-stalled")
+        self.assertNotIn("new-session", events)
+        self.assertFalse(any(event.startswith("snapshot-") for event in events))
+        self.assertEqual(
+            events[-4:], ["request-reboot", "recovery", "publish", "close"]
+        )
 
     def test_missing_snapshot_malformed_transport_and_diagnostics_fail_closed(
         self,
@@ -1326,6 +1579,53 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
         self.assertEqual(len(ledger.read_text().splitlines()), 1)
 
 
+class DesktopStartPublisherTests(unittest.TestCase):
+    def test_publication_closes_the_pinned_output_once(self) -> None:
+        bundle = SimpleNamespace(
+            plan_sha256="a" * 64,
+            evidence_root="/work/evidence",
+            canonical_bytes=lambda: b'{"bundle":true}\n',
+        )
+        publisher = desktop.RealDesktopStartPublisher(
+            bundle, Path("/work/evidence/run")
+        )
+        output = mock.Mock()
+        publisher._output = output
+        serial = b"serial\n"
+        diagnostics = b""
+        result = desktop.DesktopStartResult(
+            schema_version=1,
+            passed=True,
+            physical=True,
+            reason="desktop-ready",
+            failure="",
+            plan_sha256="a" * 64,
+            bootargs_sha256="b" * 64,
+            recovered=False,
+            readiness=desktop.BootReadinessEvidence(
+                browser_pid=41,
+                framebuffer=True,
+                xorg_fbdev=True,
+                openbox=True,
+                firefox=True,
+                browser_service="active",
+                browser_restarts=0,
+            ),
+            transport=("kernel:mmc",),
+            serial_sha256=hashlib.sha256(serial).hexdigest(),
+            diagnostics_sha256=hashlib.sha256(diagnostics).hexdigest(),
+            artifact_seconds=1.0,
+            readiness_seconds=2.0,
+            diagnostics_seconds=0.0,
+            recovery_seconds=0.0,
+            total_seconds=3.0,
+        )
+
+        publisher.publish(result, serial, diagnostics)
+
+        output.close.assert_called_once_with()
+
+
 class DesktopCliTests(unittest.TestCase):
     def test_parser_exposes_only_configure_start_and_bounded_diagnosis(self) -> None:
         configure = desktop.parse_args(
@@ -1388,6 +1688,7 @@ class DesktopCliTests(unittest.TestCase):
             device="/dev/serial/by-id/usb-test",
             evidence_root="/work/evidence",
             plan_path="/work/plan.json",
+            plan_sha256="a" * 64,
             mmc_artifacts=MMC_ARTIFACTS,
         )
         plan = _start_plan()
@@ -1416,11 +1717,31 @@ class DesktopCliTests(unittest.TestCase):
         operations.assert_called_once()
         run.assert_called_once()
 
+    def test_start_main_rejects_a_plan_changed_after_bundle_validation(self) -> None:
+        bundle = SimpleNamespace(
+            device="/dev/serial/by-id/usb-test",
+            evidence_root="/work/evidence",
+            plan_path="/work/plan.json",
+            plan_sha256="b" * 64,
+            mmc_artifacts=MMC_ARTIFACTS,
+        )
+        with (
+            mock.patch.object(desktop.DesktopBundle, "from_path", return_value=bundle),
+            mock.patch.object(desktop, "_read_plan", return_value=_start_plan()),
+            mock.patch.object(desktop, "RealBootCycleOperations") as operations,
+            mock.patch("sys.stderr", io.StringIO()),
+        ):
+            status = desktop.main(["start", "--bundle", "/work/current.json"])
+
+        self.assertEqual(status, 2)
+        operations.assert_not_called()
+
     def test_diagnose_main_constructs_one_mmc_only_physical_run(self) -> None:
         bundle = SimpleNamespace(
             device="/dev/serial/by-id/usb-test",
             evidence_root="/work/evidence",
             plan_path="/work/plan.json",
+            plan_sha256="a" * 64,
             mmc_artifacts=MMC_ARTIFACTS,
         )
         result = SimpleNamespace(

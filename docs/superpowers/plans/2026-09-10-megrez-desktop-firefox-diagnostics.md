@@ -472,14 +472,14 @@ git commit -m "docs(riscv): add one-command Megrez desktop workflow"
 - Evidence only: `target/megrez-desktop/replay-*`,
   `target/megrez-desktop/qemu-*`
 
-- [ ] **Step 1: Replay the retained physical failure without booting**
+- [x] **Step 1: Replay the retained physical failure without booting**
 
 Run the classifier against
 `target/current-main-physical-graphics/physical/mmc-graphics-final-19/physical.serial.log`.
 Expected: `evidence-incomplete`, because that immutable run predates the
 transport records.  Record elapsed time below two minutes and zero guest runs.
 
-- [ ] **Step 2: Build no artifacts unless identity checks require it**
+- [x] **Step 2: Build no artifacts unless identity checks require it**
 
 Verify the current kernel, old immutable root, Stage1, DTB, U-Boot, and package
 metadata hashes.  If the current tracked source kernel is not already built,
@@ -493,14 +493,14 @@ tools/docker/run_dev_container.sh --offline -- \
 Do not rebuild the rootfs and do not run apt, Nix downloads, Cargo installation,
 or Docker image/container deletion.
 
-- [ ] **Step 3: Run one exact-current QEMU control**
+- [x] **Step 3: Run one exact-current QEMU control**
 
 Use the existing physical-graphics QEMU gate with the current kernel and the
 frozen browser-web root.  Set one 15-minute host deadline and a new private
 output directory.  Expected: either the existing three-cycle QEMU pass or one
 retained first-failure result; do not repeat unchanged inputs.
 
-- [ ] **Step 4: Perform normal review**
+- [x] **Step 4: Perform normal review**
 
 Review `git diff "$(git merge-base origin/main HEAD)" HEAD` for lifecycle cleanup, fail-open result
 paths, unbounded reads/waits, path traversal, secret leakage, ambiguous clock
@@ -508,7 +508,7 @@ domains, repeated-run admission races, and accidental partition/network/build
 operations.  Add a failing regression before correcting each confirmed defect.
 Do not invoke the deleted repository review skill.
 
-- [ ] **Step 5: Rerun only affected focused tests and commit fixes**
+- [x] **Step 5: Rerun only affected focused tests and commit fixes**
 
 Run the Task 6 checks plus any directly affected existing test module.
 Expected: all pass.  Commit confirmed fixes as one normal-review hardening
@@ -521,7 +521,7 @@ commit; make no commit when review finds no defect.
 - Possible later regression: the exact kernel subsystem selected by the
   `diagnose-firefox` boundary; do not choose it in advance.
 
-- [ ] **Step 1: Configure the exact deployed bundle once**
+- [x] **Step 1: Configure the exact deployed bundle once**
 
 Run `configure` with the current plan, stable FTDI path, RockOS attestation and
 measurement log, versioned MMC kernel/Stage1/DTB names, and a private evidence
