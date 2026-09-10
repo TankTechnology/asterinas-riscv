@@ -767,6 +767,12 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
             raise HostGateError("debug console transcript is not UTF-8") from error
         validate_debug_console_readiness(transcript)
         self._quiesce_external_services(deadline)
+        run_debug_console_phase(
+            serial,
+            deadline,
+            secrets.token_hex(16),
+            ready_seen=True,
+        )
 
         last_error: HostGateError | None = None
         while True:
@@ -787,12 +793,6 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
                     except HostGateError as error:
                         last_error = error
                     else:
-                        run_debug_console_phase(
-                            serial,
-                            deadline,
-                            secrets.token_hex(16),
-                            ready_seen=True,
-                        )
                         self._browser_pid = evidence.browser_pid
                         self._sync_serial_log()
                         return evidence
