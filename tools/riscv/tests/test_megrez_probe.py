@@ -8,11 +8,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 import stat
 import tempfile
+import time
 import unittest
 import zlib
 from unittest import mock
@@ -646,6 +647,243 @@ class ProbePublisherTests(unittest.TestCase):
 
         self.assertEqual(sentinel.read_text(), "unchanged")
         self.assertFalse((self.directory / "serial-summary.log").is_symlink())
+
+
+class _PhysicalSerial:
+    def __init__(self, _fd, *, max_bytes, tx_delay):
+        self.max_bytes = max_bytes
+        self.tx_delay = tx_delay
+        self.sent: list[bytes] = []
+        self._transcript = bytearray(b"kernel noise\nASTERINAS_PROBE_READY v=1 pid=1\n")
+
+    @property
+    def transcript(self) -> bytes:
+        return bytes(self._transcript)
+
+    def checkpoint(self) -> int:
+        return len(self._transcript)
+
+    def send(self, payload: bytes, deadline: float) -> None:
+        if deadline <= time.monotonic():
+            raise AssertionError("expired serial deadline")
+        self.sent.append(payload)
+        if payload.startswith(b"ASTERINAS_PROBE_RUN"):
+            fields = dict(
+                token.split("=", 1) for token in payload.decode().strip().split()[2:]
+            )
+            nonce = fields["nonce"]
+            names = fields["probes"].split(",")
+            for sequence, name in enumerate(names):
+                detail = "boot-ok" if name == "boot" else "enosys"
+                self._transcript.extend(
+                    (
+                        f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq={sequence} name={name}\n"
+                        f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq={sequence} name={name} detail={detail}\n"
+                    ).encode()
+                )
+            self._transcript.extend(
+                (
+                    f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count={len(names)} status=pass\n"
+                    f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n"
+                ).encode()
+            )
+        elif payload.startswith(b"ASTERINAS_PROBE_REBOOT"):
+            self._transcript.extend(b"OpenSBI v1.5\nU-Boot 2024.01\n=> ")
+
+    def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
+        if deadline <= time.monotonic() or self.transcript.find(marker, start) < 0:
+            raise TimeoutError(f"missing marker: {marker!r}")
+        return self.transcript
+
+
+class PhysicalProbeOperationsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bundle = probe.ProbeBundle.from_bytes(_encoded(_bundle_mapping()))
+        self.session = mock.Mock()
+        self.session.wait_for_uboot_prompt.return_value = "U-Boot 2024.01\n=> "
+        identities = {item.name: item for item in self.bundle.plan.artifacts}
+        self.session.load_artifact.side_effect = lambda name, *_args: identities[
+            name
+        ].size
+        self.serial_instances: list[_PhysicalSerial] = []
+        self.closed: list[int] = []
+
+        def serial_factory(*args, **kwargs):
+            serial = _PhysicalSerial(*args, **kwargs)
+            self.serial_instances.append(serial)
+            return serial
+
+        self.operations = probe.PhysicalProbeOperations(
+            self.bundle,
+            open_device=lambda _device: 41,
+            lock_device=lambda fd: self.assertEqual(fd, 41),
+            close_device=self.closed.append,
+            session_factory=lambda *args, **kwargs: self.session,
+            serial_factory=serial_factory,
+        )
+
+    def test_physical_adapter_loads_only_three_mmc_artifacts_and_recovers(self) -> None:
+        self.operations.open(10)
+        self.operations.ensure_artifacts(10)
+        bootargs = probe.probe_bootargs(self.bundle.plan, 90)
+        self.operations.boot(bootargs, 10)
+        selected = probe.validate_probe_names(("boot", "syscall213"))
+        nonce = "0" * 32
+        exchange = self.operations.exchange(nonce, selected, False, 10)
+        self.operations.request_reboot(nonce, 10)
+        self.operations.await_recovery(10)
+        self.operations.close()
+
+        self.assertTrue(exchange.passed)
+        self.assertEqual(
+            self.session.load_artifact.call_args_list,
+            [
+                mock.call(
+                    item.name,
+                    MMC_PATHS[item.name],
+                    item.load_address,
+                    item.crc32,
+                )
+                for item in self.bundle.plan.artifacts
+                if item.name in ("kernel", "initramfs", "megrez_dtb")
+            ],
+        )
+        commands = [call.args[0] for call in self.session.command.call_args_list]
+        command_text = "\n".join(commands)
+        self.assertIn("mmc dev 1", commands)
+        self.assertIn("mmc rescan", commands)
+        self.assertNotIn("saveenv", command_text)
+        self.assertNotIn("simple-framebuffer", command_text)
+        self.assertNotIn("asterinas,usb-host", command_text)
+        self.assertNotIn("asterinas.net=", command_text)
+        self.session.start_boot_attempt.assert_called_once_with()
+        self.assertTrue(
+            any(
+                call.args[0].startswith("booti ")
+                for call in self.session.send.call_args_list
+            )
+        )
+        self.assertEqual(self.closed, [41])
+
+    def test_artifact_size_mismatch_fails_before_boot(self) -> None:
+        self.operations.open(10)
+        self.session.load_artifact.side_effect = lambda *_args: 1
+
+        with self.assertRaisesRegex(probe.ProbeContractError, "size mismatch"):
+            self.operations.ensure_artifacts(10)
+
+
+class ProbeCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        self.plan_path = self.directory / "plan.json"
+        self.plan_path.write_bytes(_plan().canonical_bytes())
+        self.bundle_path = self.directory / "current.json"
+
+    def test_normal_cli_needs_only_probe_names(self) -> None:
+        values = probe.parse_args(("boot", "syscall213"))
+
+        self.assertEqual(values.action, "run")
+        self.assertEqual(values.probes, ("boot", "syscall213"))
+        self.assertEqual(values.session_seconds, 90)
+        self.assertEqual(values.bundle, Path("target/megrez-probe/current.json"))
+        self.assertEqual(values.output_directory, Path("target/megrez-probe/latest"))
+
+    def test_cli_rejects_unbounded_shell_before_operations_exist(self) -> None:
+        for seconds in (29, 301):
+            with (
+                self.subTest(seconds=seconds),
+                redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                probe.parse_args(("boot", "--shell", "--session-seconds", str(seconds)))
+
+    def test_configure_atomically_writes_private_current_bundle(self) -> None:
+        with redirect_stdout(io.StringIO()):
+            result = probe.main(
+                (
+                    "configure",
+                    "--plan",
+                    str(self.plan_path),
+                    "--device",
+                    SERIAL_DEVICE,
+                    "--mmc-kernel",
+                    MMC_PATHS["kernel"],
+                    "--mmc-initramfs",
+                    MMC_PATHS["initramfs"],
+                    "--mmc-dtb",
+                    MMC_PATHS["megrez_dtb"],
+                    "--bundle",
+                    str(self.bundle_path),
+                )
+            )
+
+        self.assertEqual(result, 0)
+        bundle = probe.ProbeBundle.from_bytes(self.bundle_path.read_bytes())
+        self.assertEqual(bundle.plan_sha256, _plan().plan_sha256)
+        self.assertEqual(stat.S_IMODE(self.bundle_path.stat().st_mode), 0o600)
+
+    def test_configure_does_not_change_an_existing_parent_mode(self) -> None:
+        parent = self.directory / "existing-parent"
+        parent.mkdir(mode=0o755)
+        parent.chmod(0o755)
+        bundle_path = parent / "current.json"
+
+        with redirect_stdout(io.StringIO()):
+            result = probe.main(
+                (
+                    "configure",
+                    "--plan",
+                    str(self.plan_path),
+                    "--device",
+                    SERIAL_DEVICE,
+                    "--mmc-kernel",
+                    MMC_PATHS["kernel"],
+                    "--mmc-initramfs",
+                    MMC_PATHS["initramfs"],
+                    "--mmc-dtb",
+                    MMC_PATHS["megrez_dtb"],
+                    "--bundle",
+                    str(bundle_path),
+                )
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o755)
+
+    def test_run_cli_uses_one_operations_instance(self) -> None:
+        bundle = probe.ProbeBundle.from_bytes(_encoded(_bundle_mapping()))
+        self.bundle_path.write_bytes(bundle.canonical_bytes())
+        output = self.directory / "result"
+        events: list[str] = []
+        operations = _LifecycleOperations(
+            events,
+            probe.ProbeExchange(
+                (probe.ProbeOutcome(0, "boot", True, None, "boot-ok"),),
+                True,
+                b"",
+            ),
+        )
+        factory = mock.Mock(return_value=operations)
+
+        with redirect_stdout(io.StringIO()):
+            result = probe.main(
+                (
+                    "boot",
+                    "--bundle",
+                    str(self.bundle_path),
+                    "--output-directory",
+                    str(output),
+                ),
+                operations_factory=factory,
+                stdin_isatty=lambda: False,
+            )
+
+        self.assertEqual(result, 0)
+        factory.assert_called_once_with(bundle)
+        self.assertTrue(json.loads((output / "result.json").read_text())["passed"])
 
 
 if __name__ == "__main__":

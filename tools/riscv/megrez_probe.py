@@ -5,18 +5,28 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import io
 import json
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 import secrets
+import select
 import stat
+import sys
 import time
 from typing import Any, Callable, Protocol, Sequence
 
-from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory, SerialConsole
+from tools.riscv.megrez_board_session import (
+    BoardSession,
+    open_serial,
+    validate_recovery_epoch,
+)
+from tools.riscv.megrez_debug_board import _lock_serial, _uboot_bootargs_commands
 from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
 
 
@@ -57,6 +67,22 @@ _READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
 _MAX_TRANSCRIPT_BYTES = 256 * 1024
 _MAX_DMESG_BYTES = 32 * 1024
 _SERIAL_CONTEXT_BYTES = 2048
+_PHYSICAL_TRANSCRIPT_BYTES = 256 * 1024
+_PROBE_READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
+_SHELL_READY_PREFIX = b"ASTERINAS_PROBE_SHELL_READY v=1 nonce="
+_SHELL_COMMANDS = frozenset(
+    (
+        "help",
+        "dmesg",
+        "mounts",
+        "boot",
+        "syscall213",
+        "syscall272",
+        "ext2-writeback",
+        "systemd-compat",
+        "exit",
+    )
+)
 
 
 class ProbeContractError(ValueError):
@@ -688,6 +714,22 @@ def _prepare_output_directory(path: Path) -> Path:
     return candidate
 
 
+def _prepare_bundle_directory(path: Path) -> Path:
+    candidate = path.absolute()
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ProbeContractError("probe bundle path contains an unsafe component")
+    if not candidate.exists():
+        candidate.mkdir(mode=0o700, parents=True)
+    return candidate
+
+
 def _serial_summary(transcript: bytes) -> bytes:
     if not isinstance(transcript, bytes):
         raise ProbeContractError("serial transcript must be bytes")
@@ -750,3 +792,369 @@ class RealProbePublisher:
             ).encode()
             output.atomic_write("sha256sums.txt", sums, mode=0o600)
             output.atomic_write("result.json", result.canonical_bytes(), mode=0o600)
+
+
+def _deadline(timeout: float) -> float:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+    ):
+        raise ProbeContractError("operation timeout must be positive")
+    return time.monotonic() + timeout
+
+
+class PhysicalProbeOperations:
+    """One descriptor-owned minimal U-Boot and Stage1 probe session."""
+
+    def __init__(
+        self,
+        bundle: ProbeBundle,
+        *,
+        open_device: Callable[[str], int] = open_serial,
+        lock_device: Callable[[int], None] = _lock_serial,
+        close_device: Callable[[int], None] = os.close,
+        session_factory: Callable[..., BoardSession] = BoardSession.from_fd,
+        serial_factory: Callable[..., SerialConsole] = SerialConsole,
+    ) -> None:
+        bundle.validate()
+        self._bundle = bundle
+        self._open_device = open_device
+        self._lock_device = lock_device
+        self._close_device = close_device
+        self._session_factory = session_factory
+        self._serial_factory = serial_factory
+        self._fd: int | None = None
+        self._session: BoardSession | None = None
+        self._serial: SerialConsole | None = None
+        self._log = io.StringIO()
+        self._guest_started = False
+        self._recovery_cursor = 0
+
+    @property
+    def guest_started(self) -> bool:
+        return self._guest_started
+
+    @property
+    def transcript(self) -> bytes:
+        serial = self._serial.transcript if self._serial is not None else b""
+        return self._log.getvalue().encode("utf-8", errors="replace") + serial
+
+    def _require_session(self) -> BoardSession:
+        if self._session is None:
+            raise ProbeContractError("physical probe session is not open")
+        return self._session
+
+    def _require_serial(self) -> SerialConsole:
+        if self._serial is None:
+            raise ProbeContractError("physical probe guest is not running")
+        return self._serial
+
+    def open(self, timeout: float) -> None:
+        deadline = _deadline(timeout)
+        fd = self._open_device(self._bundle.device)
+        try:
+            self._lock_device(fd)
+            session = self._session_factory(
+                fd,
+                None,
+                confirm=False,
+                log_stream=self._log,
+            )
+            session.send("")
+            session.wait_for_uboot_prompt(
+                timeout=max(0.001, deadline - time.monotonic())
+            )
+        except BaseException:
+            self._close_device(fd)
+            raise
+        self._fd = fd
+        self._session = session
+
+    def ensure_artifacts(self, timeout: float) -> tuple[str, ...]:
+        session = self._require_session()
+        deadline = _deadline(timeout)
+        session.command("mmc dev 1", timeout=max(0.001, deadline - time.monotonic()))
+        session.command("mmc rescan", timeout=max(0.001, deadline - time.monotonic()))
+        identities = {item.name: item for item in self._bundle.plan.artifacts}
+        outcomes = []
+        for artifact in self._bundle.mmc_artifacts:
+            identity = identities[artifact.name]
+            actual_size = session.load_artifact(
+                artifact.name,
+                artifact.path,
+                identity.load_address,
+                identity.crc32,
+            )
+            if actual_size != identity.size:
+                raise ProbeContractError(
+                    f"{artifact.name}: MMC size mismatch: expected "
+                    f"{identity.size}, got {actual_size}"
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("MMC artifact verification deadline expired")
+            outcomes.append(f"{artifact.name}:mmc")
+        return tuple(outcomes)
+
+    def boot(self, bootargs: str, timeout: float) -> None:
+        session = self._require_session()
+        if self._fd is None:
+            raise ProbeContractError("physical serial descriptor is unavailable")
+        deadline = _deadline(timeout)
+        identities = {item.name: item for item in self._bundle.plan.artifacts}
+        initramfs = identities["initramfs"]
+        commands = (
+            "fdt addr 0xf0000000",
+            f"setenv initrd_size 0x{initramfs.size:x}",
+            *_uboot_bootargs_commands(bootargs),
+        )
+        for command in commands:
+            session.command(command, timeout=max(0.001, deadline - time.monotonic()))
+        kernel = identities["kernel"]
+        dtb = identities["megrez_dtb"]
+        session.start_boot_attempt()
+        self._guest_started = True
+        session.send(
+            f"booti 0x{kernel.load_address:x} "
+            f"0x{initramfs.load_address:x}:0x{initramfs.size:x} "
+            f"0x{dtb.load_address:x}"
+        )
+        self._serial = self._serial_factory(
+            self._fd,
+            max_bytes=_PHYSICAL_TRANSCRIPT_BYTES,
+            tx_delay=0.005,
+        )
+
+    def _interactive_shell(self, serial: SerialConsole, deadline: float) -> None:
+        serial.wait_for(_SHELL_READY_PREFIX, deadline)
+        input_fd = sys.stdin.fileno()
+        response_markers = (
+            b"ASTERINAS_PROBE_SHELL_COMMANDS ",
+            b"ASTERINAS_PROBE_SHELL_RESULT ",
+            b"ASTERINAS_PROBE_SHELL_REJECT ",
+            b"ASTERINAS_PROBE_DMESG_END ",
+            b"ASTERINAS_PROBE_SHELL_MOUNTS_END",
+            b"ASTERINAS_PROBE_SHELL_MOUNTS proc ",
+            b"ASTERINAS_PROBE_REBOOT_READY ",
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bounded probe shell expired")
+            sys.stdout.write("probe> ")
+            sys.stdout.flush()
+            readable, _, _ = select.select([input_fd], [], [], remaining)
+            if not readable:
+                raise TimeoutError("bounded probe shell expired")
+            line = sys.stdin.readline(514)
+            if not line:
+                line = "exit\n"
+            if len(line) > 513 or not line.endswith("\n"):
+                print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
+                continue
+            command = line.rstrip("\r\n")
+            if command not in _SHELL_COMMANDS:
+                print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
+                continue
+            cursor = serial.checkpoint()
+            serial.send((command + "\n").encode(), deadline)
+            serial.wait_for_any(response_markers, deadline, start=cursor)
+            if command == "exit":
+                return
+
+    @staticmethod
+    def _classification_transcript(transcript: bytes, nonce: str) -> bytes:
+        done_prefix = f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} ".encode()
+        done_start = transcript.find(done_prefix)
+        if done_start < 0:
+            return transcript
+        done_end = transcript.find(b"\n", done_start)
+        if done_end < 0:
+            return transcript
+        reboot = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n".encode()
+        reboot_start = transcript.find(reboot, done_end + 1)
+        if reboot_start < 0:
+            return transcript
+        return (
+            transcript[: done_end + 1]
+            + transcript[reboot_start : reboot_start + len(reboot)]
+        )
+
+    def exchange(
+        self,
+        nonce: str,
+        selected: tuple[ProbeDefinition, ...],
+        shell: bool,
+        timeout: float,
+    ) -> ProbeExchange:
+        serial = self._require_serial()
+        deadline = _deadline(timeout)
+        serial.wait_for(_PROBE_READY, deadline)
+        cursor = serial.checkpoint()
+        serial.send(encode_probe_request(nonce, selected, shell=shell), deadline)
+        if shell:
+            self._interactive_shell(serial, deadline)
+        reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
+        serial.wait_for(reboot_ready, deadline, start=cursor)
+        evidence = self._classification_transcript(serial.transcript, nonce)
+        return classify_probe_transcript(
+            evidence, nonce, tuple(item.name for item in selected)
+        )
+
+    def request_reboot(self, nonce: str, timeout: float) -> None:
+        serial = self._require_serial()
+        deadline = _deadline(timeout)
+        self._recovery_cursor = serial.checkpoint()
+        serial.send(
+            f"ASTERINAS_PROBE_REBOOT v=1 nonce={_validate_nonce(nonce)}\n".encode(),
+            deadline,
+        )
+
+    def await_recovery(self, timeout: float) -> None:
+        serial = self._require_serial()
+        deadline = _deadline(timeout)
+        serial.wait_for(b"=> ", deadline, start=self._recovery_cursor)
+        recovery = serial.transcript[self._recovery_cursor :].decode(
+            "utf-8", errors="replace"
+        )
+        validate_recovery_epoch(recovery)
+
+    def close(self) -> None:
+        if self._fd is not None:
+            self._close_device(self._fd)
+            self._fd = None
+        self._session = None
+        self._serial = None
+        self._log.close()
+
+
+def _read_bounded_regular(path: Path, maximum: int, label: str) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum:
+            raise ProbeContractError(f"{label} is not a bounded regular file")
+        payload = bytearray()
+        while len(payload) <= maximum:
+            chunk = os.read(descriptor, maximum + 1 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) != metadata.st_size:
+            raise ProbeContractError(f"{label} changed while being read")
+        return bytes(payload)
+    finally:
+        os.close(descriptor)
+
+
+def _session_seconds_argument(value: str) -> int:
+    if not re.fullmatch(r"0|[1-9][0-9]*", value):
+        raise argparse.ArgumentTypeError("session seconds must be a canonical integer")
+    try:
+        return validate_session_seconds(int(value))
+    except ProbeContractError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
+    """Parse the one-time configure path or the normal name-only probe path."""
+
+    if list(arguments[:1]) == ["configure"]:
+        parser = argparse.ArgumentParser(
+            description="Select the current Megrez probe bundle"
+        )
+        parser.add_argument("action", choices=("configure",))
+        parser.add_argument("--plan", required=True, type=Path)
+        parser.add_argument("--device", required=True)
+        parser.add_argument("--mmc-kernel", required=True)
+        parser.add_argument("--mmc-initramfs", required=True)
+        parser.add_argument("--mmc-dtb", required=True)
+        parser.add_argument(
+            "--bundle", type=Path, default=Path("target/megrez-probe/current.json")
+        )
+        return parser.parse_args(arguments)
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("probes", nargs="+", choices=tuple(_PROBE_REGISTRY))
+    parser.add_argument(
+        "--bundle", type=Path, default=Path("target/megrez-probe/current.json")
+    )
+    parser.add_argument(
+        "--output-directory",
+        type=Path,
+        default=Path("target/megrez-probe/latest"),
+    )
+    parser.add_argument("--session-seconds", type=_session_seconds_argument, default=90)
+    parser.add_argument("--recovery-seconds", type=int, default=30)
+    parser.add_argument("--shell", action="store_true")
+    values = parser.parse_args(arguments)
+    values.action = "run"
+    values.probes = tuple(values.probes)
+    return values
+
+
+def _configure(values: argparse.Namespace) -> ProbeBundle:
+    plan = DebugPlan.from_bytes(_read_bounded_regular(values.plan, 64 * 1024, "plan"))
+    bundle = ProbeBundle(
+        schema_version=1,
+        plan=plan,
+        plan_sha256=plan.plan_sha256,
+        device=values.device,
+        mmc_artifacts=(
+            MmcArtifact("kernel", values.mmc_kernel),
+            MmcArtifact("initramfs", values.mmc_initramfs),
+            MmcArtifact("megrez_dtb", values.mmc_dtb),
+        ),
+    )
+    bundle.validate()
+    directory = _prepare_bundle_directory(values.bundle.parent)
+    with PinnedOutputDirectory(directory) as output:
+        output.atomic_write(values.bundle.name, bundle.canonical_bytes(), mode=0o600)
+    return bundle
+
+
+def main(
+    arguments: Sequence[str] | None = None,
+    *,
+    operations_factory: Callable[
+        [ProbeBundle], ProbeOperations
+    ] = PhysicalProbeOperations,
+    stdin_isatty: Callable[[], bool] = sys.stdin.isatty,
+) -> int:
+    """Configure or execute the current one-command physical probe loop."""
+
+    values = parse_args(tuple(sys.argv[1:] if arguments is None else arguments))
+    try:
+        if values.action == "configure":
+            bundle = _configure(values)
+            print(f"MEGREZ_PROBE_CONFIGURED bundle_sha256={bundle.bundle_sha256}")
+            return 0
+        publisher = RealProbePublisher(values.output_directory)
+        publisher.invalidate()
+        if values.shell and not stdin_isatty():
+            raise ProbeContractError("--shell requires an interactive terminal")
+        bundle = ProbeBundle.from_bytes(
+            _read_bounded_regular(values.bundle, 128 * 1024, "probe bundle")
+        )
+        selected = validate_probe_names(values.probes)
+        config = ProbeRunConfig(
+            session_seconds=values.session_seconds,
+            recovery_seconds=values.recovery_seconds,
+            shell=values.shell,
+        )
+        result = run_probe(
+            bundle,
+            selected,
+            config,
+            operations_factory(bundle),
+            publisher,
+        )
+    except (DebugContractError, OSError, ProbeContractError, RuntimeError) as error:
+        print(f"megrez-probe: {error}", file=sys.stderr)
+        return 2
+    print(result.canonical_bytes().decode(), end="")
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
