@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -41,6 +43,8 @@ MAX_MEASUREMENT_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_BYTES = 64 * 1024
 MAX_TRANSPORT_RECORD_BYTES = 2048
 MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
+MAX_FIREFOX_SNAPSHOT_BYTES = 1024 * 1024
+MAX_SERIAL_COMMAND_BYTES = 768
 MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
@@ -1113,3 +1117,265 @@ def classify_new_session_transcript(
         status_complete=True,
         records=selected,
     )
+
+
+_SNAPSHOT_PHASES = ("before", "during", "after")
+_SNAPSHOT_NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
+_SNAPSHOT_BEGIN = re.compile(
+    r"\A__ASTERINAS_FIREFOX_SNAPSHOT_BEGIN__ "
+    r"phase=(before|during|after) nonce=([0-9a-f]{16}) "
+    r"size=([0-9]+) sha256=([0-9a-f]{64})\Z"
+)
+_SNAPSHOT_END = re.compile(
+    r"\A__ASTERINAS_FIREFOX_SNAPSHOT_END__ "
+    r"phase=(before|during|after) nonce=([0-9a-f]{16}) status=([0-9]+)\Z"
+)
+_SNAPSHOT_FIELDS = frozenset(
+    {
+        "version",
+        "physical",
+        "root_pid",
+        "root_identity",
+        "duration_seconds",
+        "bytes_read",
+        "complete",
+        "limitations",
+        "processes",
+    }
+)
+
+
+def _snapshot_frame_command(phase: str, nonce: str) -> str:
+    zeros = "0" * 64
+    return (
+        f'_f="$_asterinas_firefox_base.{phase}"; _z=0; '
+        '[ -f "$_f" ] && _z=$(wc -c <"$_f"); _s=1; '
+        f'case "$_z" in ""|*[!0-9]*) _z=0;; esac; [ "$_z" -le {MAX_FIREFOX_SNAPSHOT_BYTES} ] '
+        '&& [ -f "$_f" ] && _s=0; '
+        f'if [ "$_s" -eq 0 ]; then _h=$(sha256sum "$_f" | cut -d\' \' -f1); '
+        f"else _h={zeros}; fi; printf '__ASTERINAS_FIREFOX_SNAPSHOT_BEGIN__ "
+        f'phase={phase} nonce={nonce} size=%s sha256=%s\\n\' "$_z" "$_h"; '
+        'if [ "$_s" -eq 0 ]; then base64 -w 0 "$_f"; printf \'\\n\'; fi; '
+        f"printf '__ASTERINAS_FIREFOX_SNAPSHOT_END__ phase={phase} nonce={nonce} "
+        'status=%s\\n\' "$_s"; rm -f -- "$_f"'
+    )
+
+
+def firefox_diagnostic_commands(
+    browser_pid: int,
+    snapshot_nonces: Mapping[str, str],
+    *,
+    selected_timeout: float = 300.0,
+) -> tuple[str, ...]:
+    """Return short acknowledged commands for one payload-free diagnosis."""
+
+    if type(browser_pid) is not int or not 1 < browser_pid <= (1 << 31) - 1:
+        raise ValueError("Firefox PID is outside the valid contract")
+    if not isinstance(snapshot_nonces, Mapping) or set(snapshot_nonces) != set(
+        _SNAPSHOT_PHASES
+    ):
+        raise ValueError("Firefox snapshot nonces must cover exactly three phases")
+    nonces = tuple(snapshot_nonces[phase] for phase in _SNAPSHOT_PHASES)
+    if any(
+        not isinstance(nonce, str) or _SNAPSHOT_NONCE.fullmatch(nonce) is None
+        for nonce in nonces
+    ) or len(set(nonces)) != len(nonces):
+        raise ValueError("Firefox snapshot nonces must be unique lowercase hex")
+    if (
+        isinstance(selected_timeout, bool)
+        or not isinstance(selected_timeout, (int, float))
+        or not math.isfinite(selected_timeout)
+        or not 0 < selected_timeout <= 300
+    ):
+        raise ValueError("Firefox selected-command timeout must be in (0, 300]")
+    timeout = f"{selected_timeout:g}"
+    run_nonce = nonces[0]
+    snapshot_tool = (
+        "/usr/bin/timeout 5 /usr/lib/asterinas/firefox-diagnostic-snapshot "
+        '--root-pid "$_asterinas_firefox_pid" --max-seconds 3 '
+        "--max-processes 16 --max-threads 128 --max-fds 64 --max-scan 1024 "
+        "--max-file-bytes 8192 --max-total-bytes 262144"
+    )
+    environment = (
+        "env -i PATH=/usr/bin:/bin PYTHONPATH=/usr/lib/asterinas "
+        "ASTERINAS_MARIONETTE_DIAGNOSTICS=1"
+    )
+    commands = (
+        f"_asterinas_firefox_pid={browser_pid}; "
+        f"_asterinas_firefox_base=/run/asterinas-firefox-diagnostic-{run_nonce}; "
+        'rm -f -- "$_asterinas_firefox_base".*; '
+        f"_asterinas_firefox_snapshot() {{ {snapshot_tool}; }}",
+        "_asterinas_firefox_current=$(systemctl show --property MainPID --value "
+        "asterinas-browser-web.service 2>/dev/null); "
+        "_asterinas_firefox_restarts=$(systemctl show --property NRestarts --value "
+        "asterinas-browser-web.service 2>/dev/null)",
+        "_asterinas_firefox_start=$(cut -d' ' -f22 "
+        '"/proc/$_asterinas_firefox_pid/stat" 2>/dev/null); '
+        "_asterinas_firefox_profile=$(stat -Lc '%d:%i' "
+        "/home/asterinas/.mozilla/asterinas-browser-web 2>/dev/null)",
+        'if [ "$_asterinas_firefox_current" = "$_asterinas_firefox_pid" ] && '
+        '[ "$_asterinas_firefox_restarts" = 0 ] && '
+        '[ -n "$_asterinas_firefox_start" ] && '
+        '[ -n "$_asterinas_firefox_profile" ]; then '
+        "printf '__ASTERINAS_FIREFOX_PREFLIGHT__ pid=%s start=%s restarts=%s "
+        'profile=%s\\n\' "$_asterinas_firefox_pid" '
+        '"$_asterinas_firefox_start" "$_asterinas_firefox_restarts" '
+        '"$_asterinas_firefox_profile"; else false; fi',
+        f'/usr/bin/nsenter -t "$_asterinas_firefox_pid" -n {environment} '
+        "python3 -c 'from browser_m5_marionette_gate import status_once;"
+        'status_once("127.0.0.1",2828,30)\'; '
+        "_asterinas_firefox_status=$?; printf '__ASTERINAS_FIREFOX_STATUS__ "
+        'status=%s\\n\' "$_asterinas_firefox_status"; :',
+        '_asterinas_firefox_snapshot >"$_asterinas_firefox_base.before"; '
+        "_asterinas_firefox_before_status=$?; "
+        "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=before status=%s\\n' "
+        '"$_asterinas_firefox_before_status"; :',
+        "( /usr/bin/sleep 5; _asterinas_firefox_snapshot "
+        '>"$_asterinas_firefox_base.during"; printf \'%s\\n\' "$?" '
+        '>"$_asterinas_firefox_base.during.status" ) & '
+        "_asterinas_firefox_during_job=$!; :",
+        f'/usr/bin/nsenter -t "$_asterinas_firefox_pid" -n {environment} '
+        "python3 -c 'import time;from browser_m5_marionette_gate import _connect;"
+        f'c=_connect("127.0.0.1",2828,time.monotonic()+{timeout});'
+        'r=c.command("WebDriver:NewSession",'
+        '{"pageLoadStrategy":"none","strictFileInteractability":True});'
+        'c.close();assert isinstance(r,dict) and isinstance(r.get("sessionId"),str)\'; '
+        "_asterinas_firefox_new_status=$?; printf '__ASTERINAS_FIREFOX_NEW_SESSION__ "
+        'status=%s\\n\' "$_asterinas_firefox_new_status"; :',
+        'wait "$_asterinas_firefox_during_job"; '
+        "_asterinas_firefox_during_status=$(cat "
+        '"$_asterinas_firefox_base.during.status" 2>/dev/null || printf 125); '
+        "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=during status=%s\\n' "
+        '"$_asterinas_firefox_during_status"; :',
+        '_asterinas_firefox_snapshot >"$_asterinas_firefox_base.after"; '
+        "_asterinas_firefox_after_status=$?; "
+        "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=after status=%s\\n' "
+        '"$_asterinas_firefox_after_status"; :',
+        "_asterinas_firefox_terminal=$(systemctl show --property MainPID --value "
+        "asterinas-browser-web.service 2>/dev/null); "
+        "_asterinas_firefox_terminal_restarts=$(systemctl show --property NRestarts "
+        "--value asterinas-browser-web.service 2>/dev/null); "
+        "_asterinas_firefox_terminal_start=$(cut -d' ' -f22 "
+        '"/proc/$_asterinas_firefox_pid/stat" 2>/dev/null); '
+        'if [ "$_asterinas_firefox_terminal" = "$_asterinas_firefox_pid" ] && '
+        '[ "$_asterinas_firefox_terminal_restarts" = 0 ] && '
+        '[ "$_asterinas_firefox_terminal_start" = "$_asterinas_firefox_start" ]; '
+        "then printf '__ASTERINAS_FIREFOX_TERMINAL__ pid=%s start=%s restarts=%s\\n' "
+        '"$_asterinas_firefox_pid" "$_asterinas_firefox_terminal_start" '
+        '"$_asterinas_firefox_terminal_restarts"; else false; fi',
+        *(
+            _snapshot_frame_command(phase, snapshot_nonces[phase])
+            for phase in _SNAPSHOT_PHASES
+        ),
+        'rm -f -- "$_asterinas_firefox_base.during.status"; '
+        "unset -f _asterinas_firefox_snapshot; :",
+    )
+    oversized = [
+        index
+        for index, command in enumerate(commands, start=1)
+        if len((command + "\n").encode()) > MAX_SERIAL_COMMAND_BYTES
+    ]
+    if oversized:
+        raise HostGateError(
+            f"Firefox serial commands exceed the safe size: {oversized}"
+        )
+    return commands
+
+
+def parse_firefox_snapshot_frame(
+    transcript: str | bytes,
+    phase: str,
+    nonce: str,
+    *,
+    expected_root_pid: int,
+) -> dict[str, object]:
+    """Verify one nonce-bound snapshot frame before parsing its JSON payload."""
+
+    if phase not in _SNAPSHOT_PHASES:
+        raise ValueError("Firefox snapshot phase is invalid")
+    if not isinstance(nonce, str) or _SNAPSHOT_NONCE.fullmatch(nonce) is None:
+        raise ValueError("Firefox snapshot nonce is invalid")
+    if type(expected_root_pid) is not int or not 1 < expected_root_pid <= (1 << 31) - 1:
+        raise ValueError("Firefox snapshot root PID is invalid")
+    try:
+        text = _transcript_bytes(transcript).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HostGateError("Firefox snapshot frame is not UTF-8") from error
+    lines = tuple(line.rstrip("\r") for line in text.split("\n"))
+    begins = [
+        (index, match)
+        for index, line in enumerate(lines)
+        if (match := _SNAPSHOT_BEGIN.fullmatch(line)) is not None
+        and match.group(1) == phase
+        and match.group(2) == nonce
+    ]
+    ends = [
+        (index, match)
+        for index, line in enumerate(lines)
+        if (match := _SNAPSHOT_END.fullmatch(line)) is not None
+        and match.group(1) == phase
+        and match.group(2) == nonce
+    ]
+    if len(begins) != 1 or len(ends) != 1:
+        raise HostGateError("Firefox snapshot frame is missing or duplicated")
+    begin_index, begin = begins[0]
+    end_index, end = ends[0]
+    if end_index != begin_index + 2 or end.group(3) != "0":
+        raise HostGateError("Firefox snapshot frame status or ordering is invalid")
+    expected_size = int(begin.group(3))
+    if not 0 < expected_size <= MAX_FIREFOX_SNAPSHOT_BYTES:
+        raise HostGateError("Firefox snapshot frame size is outside the contract")
+    try:
+        payload = base64.b64decode(lines[begin_index + 1], validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise HostGateError("Firefox snapshot frame is not canonical base64") from error
+    if len(payload) != expected_size:
+        raise HostGateError("Firefox snapshot frame size identity mismatch")
+    if _sha256(payload) != begin.group(4):
+        raise HostGateError("Firefox snapshot frame identity mismatch")
+    try:
+        value = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+    except json.JSONDecodeError as error:
+        raise HostGateError("Firefox snapshot frame JSON is invalid") from error
+    except (UnicodeDecodeError, RecursionError) as error:
+        raise HostGateError("Firefox snapshot frame JSON is invalid") from error
+    except ValueError as error:
+        if "duplicate JSON key" in str(error):
+            raise HostGateError(
+                "Firefox snapshot frame has duplicate JSON key"
+            ) from error
+        raise HostGateError("Firefox snapshot frame JSON is invalid") from error
+    if not isinstance(value, dict) or set(value) != _SNAPSHOT_FIELDS:
+        raise HostGateError("Firefox snapshot frame JSON schema is invalid")
+    root_identity = value["root_identity"]
+    if (
+        type(value["version"]) is not int
+        or value["version"] != 1
+        or value["physical"] is not False
+        or type(value["root_pid"]) is not int
+        or value["root_pid"] != expected_root_pid
+        or (
+            root_identity is not None
+            and (
+                not isinstance(root_identity, dict)
+                or set(root_identity) != {"pid", "ppid", "start_time_ticks"}
+                or any(
+                    type(item) is not int or item < 0 for item in root_identity.values()
+                )
+                or root_identity["pid"] != expected_root_pid
+            )
+        )
+        or isinstance(value["duration_seconds"], bool)
+        or not isinstance(value["duration_seconds"], (int, float))
+        or not math.isfinite(value["duration_seconds"])
+        or not 0 <= value["duration_seconds"] <= 30
+        or type(value["bytes_read"]) is not int
+        or not 0 <= value["bytes_read"] <= 262144
+        or not isinstance(value["complete"], bool)
+        or not isinstance(value["limitations"], list)
+        or not all(isinstance(item, str) and item for item in value["limitations"])
+        or not isinstance(value["processes"], list)
+        or len(value["processes"]) > 16
+    ):
+        raise HostGateError("Firefox snapshot frame JSON values are invalid")
+    return value

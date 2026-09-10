@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -719,6 +721,180 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
                     self.classify(lines)
         with self.assertRaisesRegex(desktop.HostGateError, "truncated"):
             desktop.classify_new_session_transcript(_greeting(11, 100)[0].rstrip("\n"))
+
+
+class FirefoxGuestCommandTests(unittest.TestCase):
+    NONCES = {
+        "before": "1" * 16,
+        "during": "2" * 16,
+        "after": "3" * 16,
+    }
+
+    def test_commands_are_short_ordered_read_only_and_payload_free(self) -> None:
+        commands = desktop.firefox_diagnostic_commands(41, self.NONCES)
+        joined = "\n".join(commands)
+
+        self.assertTrue(commands)
+        self.assertTrue(
+            all(len((command + "\n").encode()) <= 768 for command in commands)
+        )
+        for command in commands:
+            subprocess.run(
+                ["/bin/sh", "-n", "-c", command],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertIn(
+            "systemctl show --property MainPID --value asterinas-browser-web.service",
+            joined,
+        )
+        self.assertIn(
+            "systemctl show --property NRestarts --value asterinas-browser-web.service",
+            joined,
+        )
+        self.assertIn("/proc/$_asterinas_firefox_pid/stat", joined)
+        self.assertIn("/home/asterinas/.mozilla/asterinas-browser-web", joined)
+        status_index = next(
+            index for index, command in enumerate(commands) if "status_once" in command
+        )
+        new_session_index = next(
+            index
+            for index, command in enumerate(commands)
+            if "WebDriver:NewSession" in command
+        )
+        self.assertLess(status_index, new_session_index)
+        self.assertEqual(joined.count("ASTERINAS_MARIONETTE_DIAGNOSTICS=1"), 2)
+        self.assertNotIn("ASTERINAS_MARIONETTE_DEBUG_ERRORS", joined)
+        self.assertIn("time.monotonic()+300", joined)
+        self.assertIn(
+            '{"pageLoadStrategy":"none","strictFileInteractability":True}',
+            joined,
+        )
+        self.assertNotIn("acceptInsecureCerts", joined)
+        background_index = next(
+            index
+            for index, command in enumerate(commands)
+            if "sleep 5" in command and "&" in command
+        )
+        self.assertLess(background_index, new_session_index)
+        self.assertIn('wait "$_asterinas_firefox_during_job"', joined)
+        for phase, nonce in self.NONCES.items():
+            self.assertIn(f".{phase}", joined)
+            self.assertIn(f"phase={phase} nonce={nonce}", joined)
+        for expected in (
+            "/usr/lib/asterinas/firefox-diagnostic-snapshot",
+            "--max-seconds 3",
+            "--max-processes 16",
+            "--max-threads 128",
+            "--max-fds 64",
+            "--max-file-bytes 8192",
+            "--max-total-bytes 262144",
+            "base64 -w 0",
+            "sha256sum",
+            "rm -f --",
+        ):
+            self.assertIn(expected, joined)
+        lowered = joined.lower()
+        for forbidden in (
+            "password",
+            "credential",
+            "apt ",
+            "cargo ",
+            "nix ",
+            "rockos",
+            "u-boot",
+            "fw_setenv",
+            "mount ",
+            "mmc write",
+        ):
+            self.assertNotIn(forbidden, lowered)
+
+    def test_commands_reject_bad_pid_nonce_identity_and_deadline(self) -> None:
+        invalid_nonces = dict(self.NONCES)
+        invalid_nonces["during"] = invalid_nonces["before"]
+        for pid, nonces, timeout in (
+            (1, self.NONCES, 300),
+            (True, self.NONCES, 300),
+            (41, invalid_nonces, 300),
+            (41, {"before": "1" * 16}, 300),
+            (41, self.NONCES, 300.1),
+        ):
+            with self.subTest(pid=pid, nonces=nonces, timeout=timeout):
+                with self.assertRaises((ValueError, desktop.HostGateError)):
+                    desktop.firefox_diagnostic_commands(
+                        pid, nonces, selected_timeout=timeout
+                    )
+
+    def frame(
+        self,
+        value: object,
+        *,
+        phase: str = "before",
+        nonce: str = "1" * 16,
+    ) -> str:
+        payload = json.dumps(value, separators=(",", ":")).encode()
+        return self.frame_payload(payload, phase=phase, nonce=nonce)
+
+    def frame_payload(
+        self,
+        payload: bytes,
+        *,
+        phase: str = "before",
+        nonce: str = "1" * 16,
+    ) -> str:
+        digest = hashlib.sha256(payload).hexdigest()
+        return (
+            "serial preface\n"
+            f"__ASTERINAS_FIREFOX_SNAPSHOT_BEGIN__ phase={phase} nonce={nonce} "
+            f"size={len(payload)} sha256={digest}\n"
+            + base64.b64encode(payload).decode()
+            + "\n"
+            f"__ASTERINAS_FIREFOX_SNAPSHOT_END__ phase={phase} nonce={nonce} status=0\n"
+        )
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "version": 1,
+            "physical": False,
+            "root_pid": 41,
+            "root_identity": {"pid": 41, "ppid": 1, "start_time_ticks": 100},
+            "duration_seconds": 0.25,
+            "bytes_read": 128,
+            "complete": True,
+            "limitations": [],
+            "processes": [],
+        }
+
+    def test_snapshot_frame_verifies_identity_before_parsing_json(self) -> None:
+        value = self.snapshot()
+
+        parsed = desktop.parse_firefox_snapshot_frame(
+            self.frame(value), "before", "1" * 16, expected_root_pid=41
+        )
+
+        self.assertEqual(parsed, value)
+
+    def test_snapshot_frame_rejects_bad_hash_size_json_and_duplicate_key(self) -> None:
+        payload = json.dumps(self.snapshot(), separators=(",", ":")).encode()
+        valid = self.frame_payload(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        duplicate = payload.replace(b'"version":1', b'"version":1,"version":1')
+        invalid = {
+            "identity": valid.replace(digest, "0" * 64),
+            "size": valid.replace(f"size={len(payload)}", "size=999999"),
+            "JSON": self.frame("not an object"),
+            "duplicate": self.frame_payload(duplicate),
+        }
+        for message, transcript in invalid.items():
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(desktop.HostGateError, message):
+                    desktop.parse_firefox_snapshot_frame(
+                        transcript,
+                        "before",
+                        "1" * 16,
+                        expected_root_pid=41,
+                    )
 
 
 if __name__ == "__main__":
