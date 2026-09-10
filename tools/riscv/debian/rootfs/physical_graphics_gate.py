@@ -689,8 +689,8 @@ def validate_png_screenshot(
         EXPECTED_SCREENSHOT_WIDTH,
         EXPECTED_SCREENSHOT_HEIGHT,
     ),
-) -> None:
-    """Require one complete, bounded, non-interlaced PNG."""
+) -> tuple[int, int]:
+    """Require one complete, bounded, non-interlaced PNG and report its size."""
 
     if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         raise GateError("screenshot-not-png")
@@ -763,6 +763,7 @@ def validate_png_screenshot(
     row_size = 1 + width * channels
     if any(pixels[row * row_size] > 4 for row in range(height)):
         raise GateError("screenshot-filter-invalid")
+    return width, height
 
 
 def _emit_screenshot_frame(

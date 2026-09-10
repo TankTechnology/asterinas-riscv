@@ -423,7 +423,7 @@ class ScreenshotValidationTests(unittest.TestCase):
     def test_accepts_only_complete_1920_by_1080_png(self) -> None:
         gate = load_gate(self)
         payload = png_payload()
-        gate.validate_png_screenshot(payload)
+        self.assertEqual(gate.validate_png_screenshot(payload), (1920, 1080))
         variants = (
             png_payload(width=1280, height=1024),
             payload[:-12],
@@ -433,6 +433,15 @@ class ScreenshotValidationTests(unittest.TestCase):
         for variant in variants:
             with self.subTest(size=len(variant)), self.assertRaises(gate.GateError):
                 gate.validate_png_screenshot(variant)
+
+    def test_reports_a_valid_content_viewport_without_framebuffer_binding(self) -> None:
+        gate = load_gate(self)
+        payload = png_payload(width=1280, height=887)
+
+        self.assertEqual(
+            gate.validate_png_screenshot(payload, expected_dimensions=None),
+            (1280, 887),
+        )
 
 
 class PhysicalGraphicsRunTests(unittest.TestCase):

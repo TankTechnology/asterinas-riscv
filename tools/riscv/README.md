@@ -620,8 +620,11 @@ and uses one WebDriver session to validate and capture only the Baidu homepage.
 It does not run the 20-request fixture stress test, rewrite partition 2, or use
 `/proc/net/tcp` as a readiness oracle. The JSON and PNG are transferred with
 nonce, byte-count, and SHA-256 framing, after which the action requests a reboot
-and verifies a fresh U-Boot prompt. On a host with a different local proxy port,
-pass `--proxy-upstream-port PORT`.
+and verifies a fresh U-Boot prompt. The PNG is a Marionette content-viewport
+capture, not an HDMI framebuffer dump: it must be a complete decodable image of
+at least 1024x700, while the paired JSON and ready marker independently bind the
+same WebDriver session to Baidu HTTPS, verified TLS timing, and the required DOM.
+On a host with a different local proxy port, pass `--proxy-upstream-port PORT`.
 
 The two experiment helpers are carried by the small Stage1 initramfs and
 bind-mounted into the ephemeral `/run/asterinas-tools` path. Updating this
