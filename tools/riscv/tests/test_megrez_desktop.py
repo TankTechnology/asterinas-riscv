@@ -596,6 +596,46 @@ class FirefoxBoundaryClassifierTests(unittest.TestCase):
         self.assertFalse(evidence.status_complete)
         self.assertIsNone(evidence.new_session_request_id)
 
+    def test_connection_refused_retries_are_distinct_greeting_attempts(self) -> None:
+        retries = [
+            _transport_record(
+                pid=11,
+                monotonic_ns=monotonic_ns,
+                request_id=0,
+                command="greeting",
+                event="failure",
+                stage="tcp_connect",
+                error_type="ConnectionRefusedError",
+                errno=111,
+            )
+            for monotonic_ns in (100, 200, 300)
+        ]
+
+        evidence = self.classify(retries)
+
+        self.assertEqual(evidence.boundary, "listener-not-ready")
+        self.assertFalse(evidence.status_complete)
+
+    def test_connection_refused_retries_may_precede_a_successful_greeting(self) -> None:
+        retries = [
+            _transport_record(
+                pid=11,
+                monotonic_ns=monotonic_ns,
+                request_id=0,
+                command="greeting",
+                event="failure",
+                stage="tcp_connect",
+                error_type="ConnectionRefusedError",
+                errno=111,
+            )
+            for monotonic_ns in (50, 75)
+        ]
+
+        evidence = self.classify(retries + _status_complete())
+
+        self.assertEqual(evidence.boundary, "new-session-not-sent")
+        self.assertTrue(evidence.status_complete)
+
     def test_status_failure_is_status_command_stalled(self) -> None:
         lines = _greeting(11, 100)
         lines.extend(
@@ -897,6 +937,14 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         "after": "3" * 16,
     }
 
+    def test_status_host_deadline_preserves_guest_runtime_headroom(self) -> None:
+        with self.assertRaisesRegex(ValueError, "status deadline lacks guest headroom"):
+            desktop.FirefoxDiagnosticConfig(
+                hypothesis="one bounded hypothesis",
+                contrary_outcome="one observation that rejects it",
+                status_timeout=54.999,
+            )
+
     def test_commands_are_short_ordered_read_only_and_payload_free(self) -> None:
         commands = desktop.firefox_diagnostic_commands(41, self.NONCES)
         joined = "\n".join(commands)
@@ -934,6 +982,21 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         )
         self.assertIn("/proc/$_asterinas_firefox_pid/stat", joined)
         self.assertIn("/home/asterinas/.mozilla/asterinas-browser-web", joined)
+        self.assertIn(
+            'status_once("127.0.0.1",2828,45)',
+            joined,
+        )
+        self.assertNotIn(
+            'status_once("127.0.0.1",2828,30)',
+            joined,
+        )
+        self.assertGreaterEqual(
+            desktop.FirefoxDiagnosticConfig(
+                hypothesis="one bounded hypothesis",
+                contrary_outcome="one observation that rejects it",
+            ).status_timeout,
+            desktop.FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS + 10,
+        )
         status_index = next(
             index for index, command in enumerate(commands) if "status_once" in command
         )
@@ -1537,7 +1600,7 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
         )
 
     def test_serial_observer_change_uses_a_new_protocol_identity(self) -> None:
-        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 5)
+        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 6)
 
     def run_real_publisher(self, **operation_options):
         output = self.evidence / "run"

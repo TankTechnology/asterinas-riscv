@@ -640,7 +640,7 @@ the separately transmitted ACK command was echoed while command 3 printed its
 identity, prefixing that protocol line with one interleaved byte.  This is a
 second observer boundary; Firefox Status and NewSession were still not issued.
 
-- [ ] **Step 4d: Serialize each diagnostic command and ACK in protocol v5**
+- [x] **Step 4d: Serialize each diagnostic command and ACK in protocol v5**
 
 A local regression proves that `_run_diagnostic_command` formerly performed
 two independent serial sends.  Send `command; printf ACK` as one canonical-mode
@@ -649,6 +649,35 @@ command output.  Require every combined transaction to stay below the existing
 768-byte cap, run all host gates, admit only the new protocol-v5 identity, and
 perform one physical classification with zero transfers and recovery.  Do not
 change the kernel or Firefox unless that run reaches a causal boundary.
+
+Protocol-v5 experiment `700cc010...` ran once in 324.765 seconds with one
+physical boot, zero QEMU runs, zero transfers, complete private hashes, and
+fresh-U-Boot recovery.  Firefox remained PID 109 with start tick 86248 and
+zero restarts.  The Status probe made 172 monotonically ordered connection
+attempts from guest monotonic 174.560 through 204.257 seconds; every attempt
+received `ECONNREFUSED`, so NewSession was not issued.  Retained-data replay
+also exposed and repaired a classifier defect: independent retryable greeting
+attempts reused request ID zero and were incorrectly treated as duplicate
+terminal records.  The corrected classifier reports `listener-not-ready`
+without changing the immutable experiment output.
+
+- [ ] **Step 4e: Align Status readiness with the measured cold-start boundary**
+
+The protocol-v5 guest Status timeout was hard-coded to 30 seconds even though
+its host phase budget was 60 seconds.  Status began about 88.056 seconds after
+Firefox process start and expired at about 118.009 seconds.  In the same run,
+Firefox reached its GLX fallback milestone at 117.862 seconds.  A retained
+Asterinas QEMU success reached the same milestone at 115.448 seconds and
+started Marionette at 115.486 seconds, whereas retained Linux user-mode runs
+reached it in about 22--24 seconds.  `ManageChildProcess failed` is therefore
+not itself fatal; the protocol-v5 result landed on the measured Asterinas cold
+startup boundary.
+
+Protocol v6 gives the guest Status probe 45 seconds within the existing
+60-second host budget and rejects configurations without at least 10 seconds
+of host headroom.  Run the new identity once after all host gates pass.  This
+is an observer timing correction only: do not change kernel semantics before
+Status and NewSession select a smaller causal boundary.
 
 - [ ] **Step 5: Implement a fix only after causal proof**
 
