@@ -28,11 +28,11 @@
 - Create: `tools/riscv/megrez_probe.py`
 - Create: `tools/riscv/tests/test_megrez_probe.py`
 
-- [ ] **Step 1: Write failing bundle validation tests**
+- [x] **Step 1: Write failing bundle validation tests**
 
 Add `ProbeBundleTests` that constructs a schema-1 JSON bundle containing an exact `DebugPlan.to_dict()`, the by-id serial device, and canonical `kernel`/`initramfs`/`megrez_dtb` MMC paths. Assert that `ProbeBundle.from_bytes()` accepts the canonical form and rejects unknown fields, a non-by-id device, absolute or traversal MMC paths, artifact-name mismatch, bad size/CRC/load address, and a plan digest mismatch.
 
-- [ ] **Step 2: Run the bundle tests and observe the missing module**
+- [x] **Step 2: Run the bundle tests and observe the missing module**
 
 Run:
 
@@ -42,7 +42,7 @@ python3 -m unittest tools.riscv.tests.test_megrez_probe.ProbeBundleTests -v
 
 Expected: `ImportError` for `tools.riscv.megrez_probe`.
 
-- [ ] **Step 3: Implement the immutable bundle types**
+- [x] **Step 3: Implement the immutable bundle types**
 
 Define frozen `MmcArtifact` and `ProbeBundle` dataclasses. `ProbeBundle.from_bytes()` must use exact field sets, reconstruct `DebugPlan` through `DebugPlan.from_bytes()`, require canonical artifact order, compare every MMC identity with the embedded plan, and expose canonical bytes plus `bundle_sha256`. Use this exact top-level shape:
 
@@ -60,15 +60,15 @@ Define frozen `MmcArtifact` and `ProbeBundle` dataclasses. `ProbeBundle.from_byt
 }
 ```
 
-- [ ] **Step 4: Add failing probe-selection and duration tests**
+- [x] **Step 4: Add failing probe-selection and duration tests**
 
 Assert that `validate_probe_names()` preserves the requested order, accepts only `boot`, `syscall213`, `syscall272`, `ext2-writeback`, and `systemd-compat`, and rejects an empty list, duplicates, unknown names, whitespace, and more than five names. Assert that `validate_session_seconds()` accepts integer values 30 through 300, defaults to 90, and rejects booleans, fractions, and boundary violations.
 
-- [ ] **Step 5: Implement the fixed host registry and validators**
+- [x] **Step 5: Implement the fixed host registry and validators**
 
 Use a frozen `ProbeDefinition(name, timeout_seconds)` registry with limits `boot=5`, `syscall213=5`, `syscall272=5`, `ext2-writeback=15`, and `systemd-compat=10`. Return a tuple of definitions and fail before any serial or filesystem mutation.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run:
 
