@@ -527,21 +527,24 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
     separator = tokens.index("--")
     if tokens[separator + 1 :] != ["--root-init=systemd"]:
         raise HostGateError("plan root-init arguments are not canonical")
-    retained = [
-        token
-        for token in tokens[:separator]
-        if not token.startswith(
+    replaced_kernel_parameters = {
+        "console",
+        "loglevel",
+        "asterinas.klog_capture",
+        "asterinas.mmc_write_partition2",
+        "asterinas.reboot_after",
+    }
+    retained = []
+    for token in tokens[:separator]:
+        normalized_name = token.partition("=")[0].replace("-", "_")
+        if normalized_name in replaced_kernel_parameters or token.startswith(
             (
-                "console=",
-                "loglevel=",
-                "asterinas.klog_capture=",
-                "asterinas.mmc_write_partition2",
-                "asterinas.reboot_after=",
                 "systemd.unit=",
                 "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
             )
-        )
-    ]
+        ):
+            continue
+        retained.append(token)
     if retained.count("init=/init") != 1:
         raise HostGateError("plan must contain one stage1 init selector")
     physical = (

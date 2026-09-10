@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import io
 import json
@@ -838,6 +839,11 @@ def run_probe(
             reason = "manual-reset-required"
             recovered = False
 
+    if reason == "probe-pass" and any(
+        marker in transcript.lower() for marker in _FATAL_REBOOT_MARKERS
+    ):
+        reason = "probe-fatal-diagnostics"
+
     outcomes = exchange.outcomes if exchange is not None else ()
     dmesg = exchange.dmesg if exchange is not None else b""
     result = ProbeRunResult(
@@ -1163,84 +1169,145 @@ class PhysicalProbeOperations:
     def _interactive_shell(
         self, serial: SerialConsole, deadline: float, nonce: str | None = None
     ) -> None:
-        serial.wait_for(_SHELL_READY_PREFIX, deadline)
+        if nonce is not None:
+            ready_record = (
+                f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={_validate_nonce(nonce)}"
+            ).encode()
+            serial.wait_for(ready_record, deadline)
+        else:
+            serial.wait_for(_SHELL_READY_PREFIX, deadline)
         if nonce is None:
-            matches = _SHELL_READY.findall(serial.transcript)
+            matches = tuple(_SHELL_READY.finditer(serial.transcript))
             if len(matches) != 1:
                 raise ProbeProtocolError("probe shell nonce is ambiguous")
-            nonce = matches[0].decode()
+            nonce = matches[0].group(1).decode()
+            recovery_cursor = matches[0].end()
+        else:
+            ready_position = serial.transcript.find(ready_record)
+            if ready_position < 0:
+                raise ProbeProtocolError("probe shell readiness is invalid")
+            recovery_cursor = ready_position + len(ready_record)
         input_fd = sys.stdin.fileno()
-        recovery_cursor = serial.checkpoint()
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("bounded probe shell expired")
-            sys.stdout.write("probe> ")
-            sys.stdout.flush()
-            watched = [input_fd]
-            serial_fd = getattr(serial, "fd", None)
-            if isinstance(serial_fd, int) and serial_fd >= 0:
-                watched.append(serial_fd)
-            readable, _, _ = select.select(watched, [], [], remaining)
-            if not readable:
-                raise TimeoutError("bounded probe shell expired")
-            if serial_fd in readable:
-                try:
-                    serial.wait_for_any(
-                        (b"OpenSBI v", b"U-Boot "),
-                        min(deadline, time.monotonic() + 0.05),
-                        start=recovery_cursor,
-                    )
-                except TimeoutError:
-                    continue
+        input_flags = fcntl.fcntl(input_fd, fcntl.F_GETFL)
+        fcntl.fcntl(input_fd, fcntl.F_SETFL, input_flags | os.O_NONBLOCK)
+        input_buffer = bytearray()
+        discard_input = False
+
+        def reject_recovered_guest() -> None:
+            if any(
+                serial.transcript.find(marker, recovery_cursor) >= 0
+                for marker in (b"OpenSBI v", b"U-Boot ")
+            ):
                 self._recovery_cursor = recovery_cursor
                 self._guest_recovered_early = True
                 raise ProbeProtocolError("guest rebooted during probe shell")
-            line = sys.stdin.readline(514)
-            if not line:
-                line = "exit\n"
-            if len(line) > 513 or not line.endswith("\n"):
-                print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
-                continue
-            command = line.rstrip("\r\n")
-            if command not in _SHELL_COMMANDS:
-                print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
-                continue
-            cursor = serial.checkpoint()
-            serial.send((command + "\n").encode(), deadline)
-            if command == "help":
-                terminals = (_SHELL_COMMANDS_RECORD,)
-            elif command == "dmesg":
-                terminals = (f"ASTERINAS_PROBE_DMESG_END v=1 nonce={nonce}".encode(),)
-            elif command == "mounts":
-                terminals = (
-                    _SHELL_MOUNTS_END,
-                    b"ASTERINAS_PROBE_SHELL_MOUNTS proc /proc proc",
-                    b"ASTERINAS_PROBE_SHELL_REJECT reason=mounts-unavailable",
+
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("bounded probe shell expired")
+                reject_recovered_guest()
+                if b"\n" not in input_buffer:
+                    sys.stdout.write("probe> ")
+                    sys.stdout.flush()
+                    watched = [input_fd]
+                    serial_fd = getattr(serial, "fd", None)
+                    if isinstance(serial_fd, int) and serial_fd >= 0:
+                        watched.append(serial_fd)
+                    readable, _, _ = select.select(watched, [], [], remaining)
+                    if not readable:
+                        raise TimeoutError("bounded probe shell expired")
+                    if serial_fd in readable:
+                        try:
+                            serial.wait_for_any(
+                                (b"OpenSBI v", b"U-Boot "),
+                                min(deadline, time.monotonic() + 0.05),
+                                start=recovery_cursor,
+                            )
+                        except TimeoutError:
+                            continue
+                        reject_recovered_guest()
+                    if input_fd not in readable:
+                        continue
+                    try:
+                        chunk = os.read(input_fd, 514)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        input_buffer.clear()
+                        input_buffer.extend(b"exit\n")
+                    else:
+                        input_buffer.extend(chunk)
+
+                if discard_input:
+                    newline = input_buffer.find(b"\n")
+                    if newline < 0:
+                        input_buffer.clear()
+                    else:
+                        del input_buffer[: newline + 1]
+                        discard_input = False
+                    continue
+                newline = input_buffer.find(b"\n")
+                if newline < 0:
+                    if len(input_buffer) > 512:
+                        input_buffer.clear()
+                        discard_input = True
+                        print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
+                    continue
+                raw_line = bytes(input_buffer[:newline]).removesuffix(b"\r")
+                del input_buffer[: newline + 1]
+                try:
+                    command = raw_line.decode("ascii")
+                except UnicodeDecodeError:
+                    command = ""
+                if len(raw_line) > 512 or command not in _SHELL_COMMANDS:
+                    print("allowed commands: " + ", ".join(sorted(_SHELL_COMMANDS)))
+                    continue
+                reject_recovered_guest()
+                cursor = serial.checkpoint()
+                serial.send((command + "\n").encode(), deadline)
+                if command == "help":
+                    terminals = (_SHELL_COMMANDS_RECORD,)
+                elif command == "dmesg":
+                    terminals = (
+                        f"ASTERINAS_PROBE_DMESG_END v=1 nonce={nonce}".encode(),
+                    )
+                elif command == "mounts":
+                    terminals = (
+                        _SHELL_MOUNTS_END,
+                        b"ASTERINAS_PROBE_SHELL_MOUNTS proc /proc proc",
+                        b"ASTERINAS_PROBE_SHELL_REJECT reason=mounts-unavailable",
+                    )
+                elif command == "exit":
+                    terminals = (
+                        f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode(),
+                    )
+                else:
+                    terminals = (
+                        f"ASTERINAS_PROBE_SHELL_RESULT name={command} ".encode(),
+                    )
+                serial.wait_for_any(terminals, deadline, start=cursor)
+                terminal_positions = tuple(
+                    (position, marker)
+                    for marker in terminals
+                    if (position := serial.transcript.find(marker, cursor)) >= 0
                 )
-            elif command == "exit":
-                terminals = (
-                    f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode(),
+                if not terminal_positions:
+                    raise ProbeProtocolError("probe shell response disappeared")
+                terminal_index, terminal = min(
+                    terminal_positions, key=lambda item: item[0]
                 )
-            else:
-                terminals = (f"ASTERINAS_PROBE_SHELL_RESULT name={command} ".encode(),)
-            serial.wait_for_any(terminals, deadline, start=cursor)
-            terminal_positions = tuple(
-                (position, marker)
-                for marker in terminals
-                if (position := serial.transcript.find(marker, cursor)) >= 0
-            )
-            if not terminal_positions:
-                raise ProbeProtocolError("probe shell response disappeared")
-            terminal_index, terminal = min(terminal_positions, key=lambda item: item[0])
-            _wait_for_complete_record(serial, terminal, deadline, start=cursor)
-            end = serial.transcript.find(b"\n", terminal_index) + 1
-            sys.stdout.write(
-                serial.transcript[cursor:end].decode("utf-8", errors="replace")
-            )
-            sys.stdout.flush()
-            if command == "exit":
-                return
+                _wait_for_complete_record(serial, terminal, deadline, start=cursor)
+                end = serial.transcript.find(b"\n", terminal_index) + 1
+                sys.stdout.write(
+                    serial.transcript[cursor:end].decode("utf-8", errors="replace")
+                )
+                sys.stdout.flush()
+                if command == "exit":
+                    return
+        finally:
+            fcntl.fcntl(input_fd, fcntl.F_SETFL, input_flags)
 
     @staticmethod
     def _classification_transcript(transcript: bytes, nonce: str) -> bytes:
@@ -1509,8 +1576,15 @@ class QemuProbeOperations:
         if self._process is None:
             raise ProbeContractError("QEMU probe process is unavailable")
         deadline = _deadline(timeout)
+        serial = self._require_serial()
+        while self._process.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                raise TimeoutError("QEMU probe recovery deadline expired")
+            serial.drain(min(deadline, now + 0.05))
         returncode = self._process.wait(deadline)
-        self._require_serial().drain(min(deadline, time.monotonic() + 1.0))
+        if time.monotonic() < deadline:
+            serial.drain(min(deadline, time.monotonic() + 1.0))
         if returncode != 0:
             raise RuntimeError(f"QEMU probe exited with status {returncode}")
 
@@ -1564,15 +1638,33 @@ def run_qemu_deadline_gate(
         ):
             raise ProbeProtocolError("QEMU exit did not prove the reboot deadline")
         reason = "deadline-reboot-pass"
-    except (OSError, RuntimeError, TimeoutError, ValueError):
+    except (
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        ValueError,
+        BufferError,
+        EOFError,
+    ):
         reason = (
             "deadline-failed"
             if recovered or not operations.guest_started
             else "manual-reset-required"
         )
     finally:
-        transcript = operations.transcript
-        operations.close()
+        try:
+            transcript = operations.transcript
+        except (OSError, RuntimeError, ValueError, BufferError, EOFError) as error:
+            transcript = f"serial transcript unavailable: {error}\n".encode(
+                "utf-8", errors="replace"
+            )
+            reason = "manual-reset-required"
+            recovered = False
+        try:
+            operations.close()
+        except (OSError, RuntimeError, ValueError, BufferError, EOFError):
+            reason = "manual-reset-required"
+            recovered = False
     result = ProbeRunResult(
         schema_version=1,
         passed=ready and recovered and reason == "deadline-reboot-pass",

@@ -137,6 +137,30 @@ class RockOsAttestationTests(unittest.TestCase):
             hashlib.sha256(measurement).hexdigest(),
         )
 
+    def test_measurement_failure_still_attempts_normal_recovery(self) -> None:
+        class FailedMeasurementOperations(_Operations):
+            def measure(self, *_args) -> None:
+                self.events.append("measure-failed")
+                raise TimeoutError("measurement timed out")
+
+        operations = FailedMeasurementOperations(b"")
+        with self.assertRaisesRegex(TimeoutError, "measurement timed out"):
+            rockos.run_rockos_attestation(
+                _plan(),
+                MMC_ARTIFACTS,
+                "debian",
+                "secret",
+                rockos.RockOsAttestationConfig(),
+                operations,
+                lambda *_args: self.fail("failed measurement was published"),
+                nonce="4" * 32,
+            )
+
+        self.assertEqual(
+            operations.events,
+            ["open", "boot", "login:debian:6", "measure-failed", "recover:6", "close"],
+        )
+
     def test_atomic_publisher_retains_receipt_raw_log_and_hashes(self) -> None:
         plan = _plan()
         measurement = _measurement_log(plan)
@@ -173,6 +197,24 @@ class RockOsAttestationTests(unittest.TestCase):
                 hashlib.sha256(measurement).hexdigest(),
                 (output / "sha256sums.txt").read_text(),
             )
+
+    def test_publisher_locks_the_output_directory_for_the_complete_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            output = (
+                repository
+                / "target/current-main-physical-graphics/physical/rockos-attestation"
+            )
+            first = rockos.RealRockOsAttestationPublisher(output, repository=repository)
+            second = rockos.RealRockOsAttestationPublisher(
+                output, repository=repository
+            )
+            self.addCleanup(first.close)
+            self.addCleanup(second.close)
+
+            first.invalidate()
+            with self.assertRaisesRegex(rockos.HostGateError, "already active"):
+                second.invalidate()
 
     def test_cli_accepts_password_fd_but_no_password_argument(self) -> None:
         parser = rockos.argument_parser()
