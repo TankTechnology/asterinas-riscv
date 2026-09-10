@@ -104,7 +104,7 @@ class _Operations:
 
     def boot(self, _plan, bootargs: str, _timeout: float) -> None:
         self.events.append("boot")
-        assert "asterinas.reboot_after=900" in bootargs
+        assert "asterinas.reboot_after=1050" in bootargs
         self._guest_started = True
 
     def prove_boot_readiness(self, _timeout: float) -> BootReadinessEvidence:
@@ -155,6 +155,8 @@ class _Operations:
 
     def request_reboot(self, _timeout: float) -> None:
         self.events.append("request-reboot")
+        if self.fail_at == "request-reboot":
+            raise TimeoutError("guest command deadline expired")
 
     def await_recovery(self, _timeout: float) -> None:
         self.events.append("recovery")
@@ -176,7 +178,9 @@ class FirefoxBrowseTests(unittest.TestCase):
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
             tokens,
         )
-        self.assertIn("asterinas.reboot_after=900", tokens)
+        self.assertIn("asterinas.reboot_after=1050", tokens)
+        self.assertNotIn("asterinas.reboot_after=900", tokens)
+        self.assertEqual(tokens.count("asterinas.tcp_diagnostic_port=2828"), 1)
         self.assertFalse(any("mmc_write_partition2" in token for token in tokens))
 
     @mock.patch.object(browse, "validate_baidu_home")
@@ -272,6 +276,27 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertLess(events.index("recovery"), events.index("proxy-close"))
         self.assertEqual(events[-1], "close")
 
+    def test_expired_reboot_request_still_waits_for_kernel_recovery(self) -> None:
+        events: list[str] = []
+        operations = _Operations(events, fail_at="request-reboot")
+
+        result = browse.run_firefox_browse(
+            _plan(),
+            browse.FirefoxBrowseConfig(),
+            operations,
+            _Publisher(events),
+            _Proxy(events),
+            nonce="0123456789abcdef",
+            clock=lambda: 10.0,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertEqual(result.reason, "baidu-home-incomplete")
+        self.assertIn("reboot-timeout-error-guest-command-deadline-expired", result.failure)
+        self.assertNotIn("recovery-incomplete", result.failure)
+        self.assertLess(events.index("request-reboot"), events.index("recovery"))
+
     def test_serial_evidence_frame_is_nonce_size_hash_bound(self) -> None:
         payload = _png()
         nonce = "0123456789abcdef"
@@ -333,16 +358,49 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertIn("nsenter -t 116 -n", clock_command)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)
         self.assertIn("--firefox-pid 116", home_command)
-        # The first physical trace consumed about 400 guest seconds reaching
-        # the first DOM probe.  Preserve a bounded 225-second content window
-        # without changing the 900-second kernel recovery timer.
-        self.assertIn("/usr/bin/timeout 635 ", home_command)
-        self.assertIn("--timeout 625 ", home_command)
+        self.assertIn("ASTERINAS_MARIONETTE_DIAGNOSTICS=1", home_command)
+        self.assertIn("ASTERINAS_MARIONETTE_DEBUG_ERRORS=1", home_command)
+        # Leave about one minute before the host's 1020-second guest deadline
+        # so a failed page gate can still export its bounded diagnostics.
+        self.assertIn("/usr/bin/timeout 660 ", home_command)
+        self.assertIn("--timeout 650 ", home_command)
+        self.assertEqual(
+            browse.RealFirefoxBrowseOperations.GUEST_LIFETIME_SECONDS, 1050
+        )
         self.assertNotIn("/proc/net/tcp", home_command)
         self.assertNotIn("DeleteSession", home_command)
         self.assertLess(len((home_command + "\n").encode()), 768)
         self.assertNotIn(
             "/proc/net/tcp", inspect.getsource(browse.RealFirefoxBrowseOperations)
+        )
+
+    def test_clock_sync_retries_a_timeout_without_completion_evidence(self) -> None:
+        operations = object.__new__(browse.RealFirefoxBrowseOperations)
+        serial = mock.Mock()
+        serial.checkpoint.side_effect = (10, 20)
+        operations._require_serial = mock.Mock(return_value=serial)
+        operations._run_long_step = mock.Mock()
+        operations._step_payload = mock.Mock(
+            side_effect=(
+                b"",
+                b'{"marker":"ASTERINAS_CLOCK_SYNC_READY"}\n',
+            )
+        )
+
+        with mock.patch.object(
+            browse.secrets, "token_hex", side_effect=("1" * 16, "2" * 16)
+        ):
+            evidence = operations.synchronize_clock(116, 45)
+
+        self.assertEqual(evidence["marker"], "ASTERINAS_CLOCK_SYNC_READY")
+        self.assertEqual(operations._run_long_step.call_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in operations._run_long_step.call_args_list],
+            ["clock-1", "clock-2"],
+        )
+        self.assertEqual(
+            [call.args[2] for call in operations._run_long_step.call_args_list],
+            ["1" * 16, "2" * 16],
         )
 
     def test_file_transfer_commands_fit_the_serial_canonical_line(self) -> None:

@@ -4,13 +4,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 
 MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 DEBUG_CONSOLE_READY = "ASTERINAS_DEBUG_CONSOLE_READY uid=0"
+DEBUG_CONSOLE_ATTEMPTS = 2
+DEBUG_CONSOLE_COMMAND_TIMEOUT = 15.0
+DEBUG_CONSOLE_GRAPHICAL_TIMEOUT = 60.0
+DEBUG_CONSOLE_ABORT_TIMEOUT = 3.0
 
 _NONCE_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 _ROOT_DEVICE_RE = re.compile(r"\A(?:/dev/vd[a-z]|/dev/mmcblk0p2)\Z")
@@ -240,7 +246,6 @@ def run_debug_console_phase(
 ) -> DebugConsoleEvidence:
     """Run the fixed probes on an already booting serial console."""
 
-    commands = debug_console_commands(nonce)
     if not ready_seen:
         serial.wait_for(DEBUG_CONSOLE_READY.encode(), deadline)
         ready_lines = tuple(
@@ -252,24 +257,46 @@ def run_debug_console_phase(
                 "root-console readiness marker is missing or duplicated"
             )
 
-    phase_start = serial.checkpoint()
-    for command in commands:
-        command_start = serial.checkpoint()
-        serial.send(f"{command.payload}\n".encode(), deadline)
-        serial.wait_for_any(
-            (
-                f"{command.begin_marker}\r".encode(),
-                f"{command.begin_marker}\n".encode(),
-            ),
-            deadline,
-            start=command_start,
-        )
-        serial.wait_for_any(
-            (
-                f"{command.end_marker}\r".encode(),
-                f"{command.end_marker}\n".encode(),
-            ),
-            deadline,
-            start=command_start,
-        )
-    return classify_debug_console(serial.transcript[phase_start:], nonce)
+    attempt_nonce = nonce
+    for attempt in range(DEBUG_CONSOLE_ATTEMPTS):
+        commands = debug_console_commands(attempt_nonce)
+        phase_start = serial.checkpoint()
+        try:
+            for command in commands:
+                command_start = serial.checkpoint()
+                command_timeout = (
+                    DEBUG_CONSOLE_GRAPHICAL_TIMEOUT
+                    if command.name == "graphical"
+                    else DEBUG_CONSOLE_COMMAND_TIMEOUT
+                )
+                command_deadline = min(deadline, time.monotonic() + command_timeout)
+                serial.send(f"{command.payload}\n".encode(), command_deadline)
+                serial.wait_for_any(
+                    (
+                        f"{command.begin_marker}\r".encode(),
+                        f"{command.begin_marker}\n".encode(),
+                    ),
+                    command_deadline,
+                    start=command_start,
+                )
+                serial.wait_for_any(
+                    (
+                        f"{command.end_marker}\r".encode(),
+                        f"{command.end_marker}\n".encode(),
+                    ),
+                    command_deadline,
+                    start=command_start,
+                )
+        except TimeoutError:
+            if attempt + 1 == DEBUG_CONSOLE_ATTEMPTS:
+                raise
+            now = time.monotonic()
+            if now >= deadline:
+                raise
+            serial.send(b"\x03\n", min(deadline, now + DEBUG_CONSOLE_ABORT_TIMEOUT))
+            attempt_nonce = hashlib.sha256(
+                f"{nonce}:{attempt + 1}".encode()
+            ).hexdigest()[:32]
+            continue
+        return classify_debug_console(serial.transcript[phase_start:], attempt_nonce)
+    raise AssertionError("debug-console attempts exhausted")
