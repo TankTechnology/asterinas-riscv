@@ -734,7 +734,6 @@ class FirefoxBoundaryEvidence:
     """Earliest supported boundary in the selected NewSession transport."""
 
     boundary: str
-    status_complete: bool
     new_session_request_id: int | None
     send_complete: bool
     response_header_bytes: int
@@ -748,13 +747,14 @@ class FirefoxBoundaryEvidence:
             not in {
                 "listener-not-ready",
                 "status-command-stalled",
+                "status-command-rejected",
                 "new-session-not-sent",
                 "new-session-response-absent",
                 "new-session-response-partial",
+                "new-session-rejected",
                 "new-session-complete",
                 "evidence-incomplete",
             }
-            or not isinstance(self.status_complete, bool)
             or (
                 self.new_session_request_id is not None
                 and (
@@ -1091,8 +1091,6 @@ def _validate_transport_sequence(
         raise HostGateError("Marionette transport request order is invalid")
     status_keys = command_keys["WebDriver:Status"]
     new_session_keys = command_keys["WebDriver:NewSession"]
-    if new_session_keys and not status_keys:
-        raise HostGateError("Marionette transport request order is invalid")
     if status_keys and new_session_keys:
         status_key = status_keys[0]
         new_session_key = new_session_keys[0]
@@ -1156,13 +1154,11 @@ def parse_marionette_transport_records(
 def _boundary_evidence(
     boundary: str,
     *,
-    status_complete: bool = False,
     records: tuple[MarionetteTransportRecord, ...] = (),
 ) -> FirefoxBoundaryEvidence:
     if not records:
         return FirefoxBoundaryEvidence(
             boundary=boundary,
-            status_complete=status_complete,
             new_session_request_id=None,
             send_complete=False,
             response_header_bytes=0,
@@ -1182,7 +1178,6 @@ def _boundary_evidence(
     )
     return FirefoxBoundaryEvidence(
         boundary=boundary,
-        status_complete=status_complete,
         new_session_request_id=first.request_id,
         send_complete=any(record.send_complete for record in records),
         response_header_bytes=max(record.header_bytes for record in records),
@@ -1200,30 +1195,46 @@ def classify_new_session_transcript(
     records = parse_marionette_transport_records(transcript)
     if not records:
         return _boundary_evidence("evidence-incomplete")
-    status = tuple(record for record in records if record.command == "WebDriver:Status")
-    if not status:
-        return _boundary_evidence("listener-not-ready")
-    status_complete = status[-1].event == "complete"
-    if not status_complete:
-        return _boundary_evidence("status-command-stalled")
+    status = tuple(r for r in records if r.command == "WebDriver:Status")
     selected = tuple(
-        record for record in records if record.command == "WebDriver:NewSession"
+        r for r in records if r.command == "WebDriver:NewSession"
     )
+    if status and not selected:
+        last = status[-1]
+        if (
+            last.event == "failure"
+            and last.stage == "response_identity"
+            and last.body_expected is not None
+            and last.body_received == last.body_expected
+        ):
+            return _boundary_evidence("status-command-rejected")
+        if last.event != "complete":
+            return _boundary_evidence("status-command-stalled")
+        return _boundary_evidence("new-session-not-sent")
     if not selected:
-        return _boundary_evidence("new-session-not-sent", status_complete=True)
-    if selected[-1].event == "complete":
+        if any(
+            r.command == "greeting" and r.event == "frame_header" for r in records
+        ):
+            return _boundary_evidence("new-session-not-sent")
+        return _boundary_evidence("listener-not-ready")
+
+    last = selected[-1]
+    if last.event == "complete":
         boundary = "new-session-complete"
-    elif not any(record.send_complete for record in selected):
+    elif (
+        last.event == "failure"
+        and last.stage == "response_identity"
+        and last.body_expected is not None
+        and last.body_received == last.body_expected
+    ):
+        boundary = "new-session-rejected"
+    elif not any(r.send_complete for r in selected):
         boundary = "new-session-not-sent"
-    elif max(record.header_bytes for record in selected) == 0:
+    elif max(r.header_bytes for r in selected) == 0:
         boundary = "new-session-response-absent"
     else:
         boundary = "new-session-response-partial"
-    return _boundary_evidence(
-        boundary,
-        status_complete=True,
-        records=selected,
-    )
+    return _boundary_evidence(boundary, records=selected)
 
 
 _SNAPSHOT_PHASES = ("before", "during", "after")

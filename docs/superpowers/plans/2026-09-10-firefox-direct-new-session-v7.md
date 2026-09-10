@@ -26,7 +26,7 @@ The later network-stack merge is deliberately excluded.  It receives a separate 
 - Modify: `tools/riscv/megrez_desktop.py:733-1228`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py:500-920`
 
-- [ ] **Step 1: Write failing boundary-model tests**
+- [x] **Step 1: Write failing boundary-model tests**
 
 Remove all `status_complete` assertions from live NewSession cases.  Add a complete response-identity failure helper and these three regressions:
 
@@ -100,7 +100,7 @@ def test_retained_complete_status_error_is_rejected_not_stalled(self) -> None:
 
 Keep the existing malformed, reordered, duplicate, partial-header, partial-body, retry-prefix, and no-record cases.  A greeting-only transcript must produce `new-session-not-sent`; a retry-only transcript must produce `listener-not-ready`; no transport records remain `evidence-incomplete`.
 
-- [ ] **Step 2: Run the classifier tests and verify RED**
+- [x] **Step 2: Run the classifier tests and verify RED**
 
 Run:
 
@@ -111,7 +111,7 @@ tools/docker/run_dev_container.sh -- python3 -m unittest \
 
 Expected: direct NewSession is rejected by the old Status ordering rule, complete errors are reported as stalled/partial, and the obsolete `status_complete` field remains present.
 
-- [ ] **Step 3: Implement the minimal boundary and ordering change**
+- [x] **Step 3: Implement the minimal boundary and ordering change**
 
 Change `FirefoxBoundaryEvidence` to:
 
@@ -192,7 +192,7 @@ return _boundary_evidence(boundary, records=selected)
 
 Remove the `status_complete` parameter and assignments from `_boundary_evidence`.
 
-- [ ] **Step 4: Run the classifier tests and retained-v6 replay**
+- [x] **Step 4: Run the classifier tests and retained-v6 replay**
 
 Run the classifier test from Step 2, then:
 
