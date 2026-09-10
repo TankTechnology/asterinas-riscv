@@ -30,7 +30,14 @@ if (( $# == 1 )); then
             exit 0
             ;;
         --print-entries)
-            printf '.\ninit\n'
+            printf '%s\n' \
+                . \
+                init \
+                usr \
+                usr/lib \
+                usr/lib/asterinas \
+                usr/lib/asterinas/browser-web-marionette-gate \
+                usr/lib/asterinas/megrez-clock-sync
             exit 0
             ;;
         -h | --help)
@@ -48,6 +55,8 @@ REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd)"
 SOURCE="$SCRIPT_DIR/stage1_init.c"
 DEBUG_CONSOLE_SOURCE="$SCRIPT_DIR/stage1_debug_console.c"
 PROBE_SOURCE="$SCRIPT_DIR/stage1_probe.c"
+BROWSER_GATE_SOURCE="$SCRIPT_DIR/browser_web_marionette_gate.py"
+CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-0}"
@@ -138,12 +147,30 @@ trap 'exit 143' TERM
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
     "$SOURCE" "$DEBUG_CONSOLE_SOURCE" "$PROBE_SOURCE" -o "$STAGE/init"
 chmod 0755 "$STAGE" "$STAGE/init"
-touch -d "@$SOURCE_DATE_EPOCH" "$STAGE" "$STAGE/init"
+install -D -m 0755 -- "$BROWSER_GATE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser-web-marionette-gate"
+install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
+    "$STAGE/usr/lib/asterinas/megrez-clock-sync"
+touch -d "@$SOURCE_DATE_EPOCH" \
+    "$STAGE" \
+    "$STAGE/init" \
+    "$STAGE/usr" \
+    "$STAGE/usr/lib" \
+    "$STAGE/usr/lib/asterinas" \
+    "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
+    "$STAGE/usr/lib/asterinas/megrez-clock-sync"
 
 ARCHIVE="$STAGE/initramfs.cpio"
 : >"$ARCHIVE"
 touch -d "@$SOURCE_DATE_EPOCH" "$STAGE"
-printf '.\ninit\n' |
+printf '%s\n' \
+    . \
+    init \
+    usr \
+    usr/lib \
+    usr/lib/asterinas \
+    usr/lib/asterinas/browser-web-marionette-gate \
+    usr/lib/asterinas/megrez-clock-sync |
     cpio --quiet --reproducible --owner=0:0 --create --format=newc \
         --directory="$STAGE" >"$ARCHIVE"
 if [[ ! -s "$ARCHIVE" ]]; then
@@ -152,7 +179,7 @@ if [[ ! -s "$ARCHIVE" ]]; then
 fi
 
 ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
-if [[ "$ARCHIVE_ENTRIES" != $'.\ninit' ]]; then
+if [[ "$ARCHIVE_ENTRIES" != $'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\nusr/lib/asterinas/browser-web-marionette-gate\nusr/lib/asterinas/megrez-clock-sync' ]]; then
     printf 'error: generated initramfs has unexpected entries\n' >&2
     exit 1
 fi

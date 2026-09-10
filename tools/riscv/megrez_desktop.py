@@ -2466,7 +2466,7 @@ class RealDesktopStartPublisher:
 
 
 def parse_args(arguments: list[str] | tuple[str, ...]) -> argparse.Namespace:
-    """Parse the configure-once, start, and bounded diagnostic actions."""
+    """Parse configured desktop, diagnostic, and unattended browse actions."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
@@ -2489,7 +2489,16 @@ def parse_args(arguments: list[str] | tuple[str, ...]) -> argparse.Namespace:
     diagnose.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
     diagnose.add_argument("--hypothesis", required=True)
     diagnose.add_argument("--contrary-outcome", required=True)
-    return parser.parse_args(arguments)
+    browse = actions.add_parser("browse-firefox")
+    browse.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
+    browse.add_argument("--proxy-upstream-port", type=int, default=7890)
+    values = parser.parse_args(arguments)
+    if (
+        values.action == "browse-firefox"
+        and not 1 <= values.proxy_upstream_port <= 65535
+    ):
+        parser.error("--proxy-upstream-port must be between 1 and 65535")
+    return values
 
 
 def _resolved_bundle_path(path: Path) -> Path:
@@ -2500,7 +2509,7 @@ def _resolved_bundle_path(path: Path) -> Path:
 
 
 def _fresh_run_directory(bundle: DesktopBundle, action: str) -> Path:
-    if action not in {"start", "firefox"}:
+    if action not in {"start", "firefox", "browse"}:
         raise ValueError("desktop run action is invalid")
     return Path(bundle.evidence_root) / f"{action}-{secrets.token_hex(8)}"
 
@@ -2509,7 +2518,7 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
     """Run one local-only configured desktop action."""
 
     values = parse_args(tuple(sys.argv[1:]) if arguments is None else arguments)
-    publisher: RealDesktopStartPublisher | RealFirefoxDiagnosticPublisher | None = None
+    publisher: Any | None = None
     try:
         if values.action == "configure":
             bundle = configure_bundle(
@@ -2534,9 +2543,12 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
         plan.validate()
         if plan.plan_sha256 != bundle.plan_sha256:
             raise HostGateError("desktop plan changed after bundle validation")
-        run_directory = _fresh_run_directory(
-            bundle, "start" if values.action == "start" else "firefox"
-        )
+        run_action = {
+            "start": "start",
+            "diagnose-firefox": "firefox",
+            "browse-firefox": "browse",
+        }[values.action]
+        run_directory = _fresh_run_directory(bundle, run_action)
         unused_hdmi = run_directory / ".unused-hdmi-capture"
         if values.action == "start":
             publisher = RealDesktopStartPublisher(bundle, run_directory)
@@ -2553,7 +2565,7 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
                 operations,
                 publisher,
             )
-        else:
+        elif values.action == "diagnose-firefox":
             config = FirefoxDiagnosticConfig(
                 hypothesis=values.hypothesis,
                 contrary_outcome=values.contrary_outcome,
@@ -2576,6 +2588,33 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
                 snapshot_nonces={
                     phase: secrets.token_hex(8) for phase in _SNAPSHOT_PHASES
                 },
+            )
+        else:
+            from tools.riscv.megrez_firefox_browse import (
+                FirefoxBrowseConfig,
+                RealFirefoxBrowseOperations,
+                RealFirefoxBrowsePublisher,
+                run_firefox_browse,
+            )
+            from tools.riscv.megrez_proxy_bridge import ProxyBridge, ProxyBridgeConfig
+
+            publisher = RealFirefoxBrowsePublisher(bundle, run_directory)
+            operations = RealFirefoxBrowseOperations(
+                plan,
+                bundle.device,
+                run_directory,
+                unused_hdmi,
+                mmc_artifacts=bundle.mmc_artifacts,
+            )
+            proxy = ProxyBridge(
+                ProxyBridgeConfig(upstream_port=values.proxy_upstream_port)
+            )
+            result = run_firefox_browse(
+                plan,
+                FirefoxBrowseConfig(),
+                operations,
+                publisher,
+                proxy,
             )
     except (HostGateError, OSError, RuntimeError, ValueError) as error:
         print(f"Megrez desktop action failed: {error}", file=sys.stderr)

@@ -605,6 +605,30 @@ collects bounded `dmesg`, systemd, process, Xorg, and Firefox evidence, requests
 reported as `manual-reset-required`; without an independent reset controller,
 software cannot recover that state remotely.
 
+For one unattended real-web check, use the same configured bundle:
+
+```bash
+python3 -m tools.riscv.megrez_desktop browse-firefox
+```
+
+`browse-firefox` owns a temporary host bridge from `10.100.19.216:17893` to
+the local proxy (port `7890` by default), boots the existing three MMC files
+once, and retains the frozen network and static-neighbor boot arguments. It
+synchronizes the guest clock from a validated plain-HTTP `Date` header before
+any HTTPS request, waits for Marionette with a real loopback TCP connection,
+and uses one WebDriver session to validate and capture only the Baidu homepage.
+It does not run the 20-request fixture stress test, rewrite partition 2, or use
+`/proc/net/tcp` as a readiness oracle. The JSON and PNG are transferred with
+nonce, byte-count, and SHA-256 framing, after which the action requests a reboot
+and verifies a fresh U-Boot prompt. On a host with a different local proxy port,
+pass `--proxy-upstream-port PORT`.
+
+The two experiment helpers are carried by the small Stage1 initramfs and
+bind-mounted into the ephemeral `/run/asterinas-tools` path. Updating this
+workflow therefore replaces only the versioned Stage1 file on MMC partition 1
+(about 650 KiB); deployment does not rewrite the Debian root image on
+partition 2.
+
 Use the heavier action only for one explicitly falsifiable Firefox experiment:
 
 ```bash

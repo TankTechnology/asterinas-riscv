@@ -1546,6 +1546,8 @@ configure_desktop() {
         if [[ "$browser_mode" == online ]]; then
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
+            install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
+                "$stage/usr/lib/asterinas/megrez-clock-sync"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
@@ -2006,6 +2008,7 @@ browser_web_runtime_digest() {
         desktop_m5_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
+        megrez_clock_sync.py
         browser_m5_marionette_gate.py
         browser_web_evidence.sh
         browser_web.service
