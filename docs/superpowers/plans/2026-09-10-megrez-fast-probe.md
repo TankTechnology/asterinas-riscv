@@ -368,19 +368,19 @@ git commit -m "Add the Megrez probe QEMU gate"
 - Generated, not committed: `target/megrez-probe/current.json`
 - Generated, not committed: `target/megrez-probe/physical/result.json`
 
-- [ ] **Step 1: Build and identify the exact Stage1 artifact**
+- [x] **Step 1: Build and identify the exact Stage1 artifact**
 
 Build in the persistent container, compute size/SHA-256/CRC32, and create a new immutable debug plan that retains the current kernel and DTB identities but names the rebuilt Stage1 artifact. Confirm the plan contains the 90-second probe recovery parameter only in the derived bootargs, not by weakening the browser-plan validation contract.
 
-- [ ] **Step 2: Place the versioned Stage1 file on partition 1 using RockOS**
+- [x] **Step 2: Place the versioned Stage1 file on partition 1 using RockOS**
 
 Boot the existing RockOS installation, transfer the small versioned Stage1 file over the already configured network path, write it to `/boot` with a temporary name, `fsync`, verify size and SHA-256, atomically rename it, and reboot normally to fresh U-Boot. Do not modify partition 2 or erase any existing boot artifact.
 
-- [ ] **Step 3: Create the current bundle once**
+- [x] **Step 3: Create the current bundle once**
 
 Run `python3 -m tools.riscv.megrez_probe configure` with the new plan, the known by-id FTDI device, current versioned kernel/DTB paths, and new Stage1 path. Re-open `current.json`, verify its canonical hash, and confirm permissions are private.
 
-- [ ] **Step 4: Execute the physical acceptance run**
+- [x] **Step 4: Execute the physical acceptance run**
 
 Run:
 
@@ -390,11 +390,11 @@ python3 -m tools.riscv.megrez_probe boot syscall213 --output-directory target/me
 
 Expected: three MMC loads with byte-count/CRC evidence, one Asterinas boot, two ordered passing probes, immediate reboot, fresh OpenSBI/U-Boot/prompt evidence, `passed=true`, and no RockOS/Firefox/systemd/network/partition-2 activity during the probe run.
 
-- [ ] **Step 5: Verify the retained evidence**
+- [x] **Step 5: Verify the retained evidence**
 
 Recompute every line in `sha256sums.txt`, confirm `result.json` was published last and is mode `0600`, inspect the bounded serial summary, and record elapsed time versus the previous 175–220 second Firefox readiness baseline.
 
-- [ ] **Step 6: Document the one-line loop and commit**
+- [x] **Step 6: Document the one-line loop and commit**
 
 Document `configure` as deployment-only and `python3 -m tools.riscv.megrez_probe <names>` as the routine loop. State that timer/SBI hard locks still require manual reset and that RockOS/SHA attestation remains the release workflow.
 

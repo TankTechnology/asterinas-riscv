@@ -373,6 +373,150 @@ least 0.5 seconds. A missing input record, DOM transition,
 screenshot, HDMI update, recovery prompt, or any panic/xHCI/framebuffer fatal
 marker produces `passed:false` while retaining the diagnostic evidence.
 
+## Megrez fast kernel probes
+
+Use the fast probe path for routine kernel work that does not need Debian,
+systemd, Firefox, network access, or partition 2. Build and deploy a versioned
+kernel, Stage1 initramfs, and DTB only when their identity changes, then select
+them once with `configure`. Routine runs use only the immutable bundle and the
+files already on MMC partition 1:
+
+```bash
+python3 -m tools.riscv.megrez_probe boot syscall213
+```
+
+The default bundle is `target/megrez-probe/current.json`; private evidence is
+written below `target/megrez-probe/physical`. The guest has one 90-second
+timer, recovery is independently bounded, and the host sends one newline after
+the new U-Boot banner to stop its autoboot countdown before requiring the
+prompt. The normal probe registry is fixed and read-only. A bounded shell is
+available only when explicitly requested for a physical diagnostic run.
+
+Run the host and Stage1 regression tests in the persistent container:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_unit
+```
+
+The same lifecycle has two QEMU gates: one executes `boot syscall213`, and one
+sends no request so the Stage1 kernel timer must reboot the guest. Override the
+three artifact variables only when testing a non-default build:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_qemu \
+  MEGREZ_PROBE_BUNDLE=target/megrez-probe/current.json \
+  MEGREZ_PROBE_KERNEL=target/osdk/aster-kernel-osdk-bin.Image \
+  MEGREZ_PROBE_INITRAMFS=target/megrez-probe/build/initramfs.cpio
+```
+
+Deployment is a separate maintenance operation. Boot RockOS only to transfer a
+changed artifact, verify its exact size and SHA-256, atomically install its
+versioned filename on partition 1, and reboot normally. The schema-2 RockOS
+attestation below remains the full Debian/browser release workflow; the
+schema-1 probe bundle is instead bound to the selected SHA-256 identities and
+to U-Boot's observed byte counts and CRC32 values on every run. A firmware or
+SBI hard lock that prevents all serial progress still requires a manual board
+reset.
+
+## Megrez unattended boot stability
+
+The unattended gate separates deployment from acceptance. The schema-2
+`DebugPlan` is the immutable deployment manifest; its sizes, SHA-256 values,
+CRC32 values, and versioned MMC paths identify one release. A routine gate run
+loads only the existing kernel, Stage1 initramfs, and DTB from MMC partition 1.
+It does not build, upload, or fall back to serial transfer; partition 2 is never written.
+
+Keep compilation and all unit tests in the persistent development container:
+
+```bash
+tools/docker/run_dev_container.sh -- \
+  make test_riscv_megrez_boot_stability_unit
+```
+
+Boot RockOS only when the next `DebugPlan` names a kernel or initramfs that is
+not already present on partition 1. Transfer only changed, versioned files,
+then verify them with the controlled measurement tool below. It boots RockOS,
+uses native `stat` and `sha256sum`, binds every output to a fresh random nonce
+and the plan identity, performs a normal reboot, and requires a new
+OpenSBI/U-Boot epoch before publishing. The private raw serial source is kept
+as `deployment-measurement.serial.log`; the derived schema-2
+`deployment-attestation.json` binds its SHA-256, RockOS boot ID,
+`/dev/mmcblk1p1`, filenames, sizes, and observed SHA-256 values.
+
+With the board at a fresh U-Boot prompt, generate the receipt once. The
+password prompt is read from the terminal and is never placed in argv, an
+environment variable, or the retained transcript:
+
+```bash
+python3 -m tools.riscv.megrez_rockos_attestation \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/rockos-attestation" \
+  --mmc-kernel asterinas-COMMIT-CRC.Image \
+  --mmc-initramfs asterinas-COMMIT-CRC-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-VERSION/eswin/eic7700-milkv-megrez.dtb
+```
+
+The receipt and raw log are reused by every later boot of the same immutable
+deployment. Retain the preceding plan, files, receipt, and log for rollback. A
+kernel update does not require rebuilding or reinstalling the partition-2
+Debian root. This is an auditable maintenance receipt, not a hardware root of
+trust: the host controlling the exclusive serial port, this tool, and RockOS
+remain inside the deployment trust boundary.
+
+Run the gate directly on the host as the `dialout` user. The routine gate
+validates the frozen plan and RockOS SHA-256 receipt, then observes the MMC
+size/CRC32 at U-Boot. It does not reread local build outputs or require the
+plan's original container paths to exist.
+This keeps serial ownership and the private evidence files with the host user.
+With the board at a fresh U-Boot prompt, run three unattended Asterinas boot
+and recovery epochs using the frozen plan and the filenames already verified
+on MMC:
+
+```bash
+python3 -m tools.riscv.megrez_boot_stability \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/boot-stability" \
+  --deployment-attestation "$PWD/target/current-main-physical-graphics/physical/rockos-attestation/deployment-attestation.json" \
+  --deployment-measurement-log "$PWD/target/current-main-physical-graphics/physical/rockos-attestation/deployment-measurement.serial.log" \
+  --mmc-kernel asterinas-COMMIT-CRC.Image \
+  --mmc-initramfs asterinas-COMMIT-CRC-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-VERSION/eswin/eic7700-milkv-megrez.dtb
+```
+
+Each cycle verifies the MMC byte count and CRC32, reaches the isolated root
+debug console, masks the external network-evidence workload, and bind-mounts
+the volatile `/run/asterinas-physical-home` over `/home/asterinas`. Xorg,
+Openbox, and Firefox therefore keep logs, profiles, and caches on tmpfs instead
+of relying on unsupported partition-2 writeback. The gate then requires
+systemd, `/dev/fb0`, Xorg using that framebuffer, Openbox, and an active Firefox
+service with zero restarts. It has no keyboard, mouse, HDMI, or network-success
+requirement.
+
+Serial shell work is split into short, idempotent, acknowledged steps. A lost
+acknowledgement is detected after 15 seconds; the host sends Control-C and a
+newline to restore the shell boundary before retrying. Before an immediate
+`reboot -f`, the gate retains a bounded snapshot of the kernel ring buffer,
+mounts, failed systemd units, graphical unit state, process tree, full service
+status, journal, and Xorg/Firefox logs. An oversized diagnostic snapshot fails
+closed instead of dropping the earlier kernel log. `cycle-1.diagnostics.log`
+and its peers contain those snapshots; `deployment-measurement.serial.log`,
+`deployment-attestation.json`, `deployment.json`, `sha256sums.txt`, and the
+per-cycle serial logs bind them to the release.
+
+`result.json` is replaced last and reports pass only after all three cycles
+return to distinct fresh U-Boot epochs without a panic, oops, fatal exception,
+out-of-memory event, ext2 error, or block I/O error. To roll back, select the
+previous plan and its retained versioned filenames, then run the same gate.
+
+The default 240-second readiness deadline covers the measured cold-start
+variance; it is an upper bound and does not delay a successful cycle. Remaining
+`systemd-random-seed`/`systemd-sysctl` failures, read-only block writeback
+attempts, syscalls 213/272, and `SA_NOCLDSTOP` warnings are retained as kernel
+compatibility work. They are not hidden by the deployment gate and are not
+treated as proof of a fatal graphics failure.
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
