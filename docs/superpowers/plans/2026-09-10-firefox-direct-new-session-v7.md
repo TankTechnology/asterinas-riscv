@@ -383,7 +383,7 @@ Expected: Status appears only in historical explanations and the explicit statem
 **Files:**
 - Review only; do not use the deleted `aster-code-review` skill.
 
-- [ ] **Step 1: Run formatting, lint, syntax, and diff checks**
+- [x] **Step 1: Run formatting, lint, syntax, and diff checks**
 
 ```bash
 /home/ubuntu/miniconda3/envs/mcp_robot/bin/ruff format \
@@ -397,7 +397,7 @@ git diff --check
 
 Expected: all commands exit 0 without installing or downloading anything.
 
-- [ ] **Step 2: Run the complete related suites in the persistent container**
+- [x] **Step 2: Run the complete related suites in the persistent container**
 
 ```bash
 tools/docker/run_dev_container.sh -- make \
@@ -409,7 +409,7 @@ tools/docker/run_dev_container.sh -- make \
 
 Expected: all desktop, stability/physical, and probe/Stage1 tests pass with the existing persistent Cargo, Rustup, and Nix caches; no image is deleted and no dependency is downloaded.
 
-- [ ] **Step 3: Review the final diff against the approved design**
+- [x] **Step 3: Review the final diff against the approved design**
 
 Verify directly that:
 
@@ -422,7 +422,7 @@ Verify directly that:
 - historical v6 replay remains `status-command-rejected`;
 - all failure paths still publish and recover.
 
-- [ ] **Step 4: Commit formatting or review corrections**
+- [x] **Step 4: Commit formatting or review corrections**
 
 If Step 1 changed formatting, commit only those verified corrections:
 
