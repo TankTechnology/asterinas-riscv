@@ -184,6 +184,7 @@ class FirefoxBrowseTests(unittest.TestCase):
     def test_success_is_one_boot_one_session_evidence_and_safe_recovery(
         self, validate_png: mock.Mock, validate_page: mock.Mock
     ) -> None:
+        validate_png.return_value = (1280, 887)
         events: list[str] = []
         operations = _Operations(events)
         publisher = _Publisher(events)
@@ -223,9 +224,29 @@ class FirefoxBrowseTests(unittest.TestCase):
             ],
         )
         validate_page.assert_called_once()
-        validate_png.assert_called_once_with(_png(), expected_dimensions=(1920, 1080))
+        validate_png.assert_called_once_with(_png(), expected_dimensions=None)
         self.assertEqual(publisher.published[3], _page())
         self.assertEqual(publisher.published[4], _png())
+
+    @mock.patch.object(browse, "validate_baidu_home")
+    @mock.patch.object(browse, "validate_png_screenshot", return_value=(800, 600))
+    def test_rejects_a_tiny_browser_content_viewport(
+        self, _validate_png: mock.Mock, _validate_page: mock.Mock
+    ) -> None:
+        events: list[str] = []
+        result = browse.run_firefox_browse(
+            _plan(),
+            browse.FirefoxBrowseConfig(),
+            _Operations(events),
+            _Publisher(events),
+            _Proxy(events),
+            nonce="0123456789abcdef",
+            clock=lambda: 10.0,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertIn("browser-content-viewport-is-too-small", result.failure)
 
     def test_failure_collects_diagnostics_then_recovers_and_closes_proxy(self) -> None:
         events: list[str] = []

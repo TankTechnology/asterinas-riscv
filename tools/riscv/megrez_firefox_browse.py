@@ -35,6 +35,8 @@ from tools.riscv.megrez_physical_graphics import HostGateError, physical_bootarg
 
 MAX_PAGE_JSON_BYTES = 1024 * 1024
 MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024
+MIN_BROWSER_VIEWPORT_WIDTH = 1024
+MIN_BROWSER_VIEWPORT_HEIGHT = 700
 MAX_SERIAL_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_BYTES = 256 * 1024
 # The first board trace reached Marionette after 244 guest seconds and completed
@@ -303,9 +305,19 @@ def run_firefox_browse(
             )
             _validated_page(page_payload, page_marker)
             try:
-                validate_png_screenshot(screenshot, expected_dimensions=(1920, 1080))
+                viewport_width, viewport_height = validate_png_screenshot(
+                    screenshot, expected_dimensions=None
+                )
             except GuestGateError as error:
                 raise HostGateError(f"Baidu screenshot is invalid: {error}") from error
+            if (
+                viewport_width < MIN_BROWSER_VIEWPORT_WIDTH
+                or viewport_height < MIN_BROWSER_VIEWPORT_HEIGHT
+            ):
+                raise HostGateError(
+                    "browser content viewport is too small: "
+                    f"{viewport_width}x{viewport_height}"
+                )
         except BaseException as error:
             if not isinstance(error, Exception):
                 interruption = error
