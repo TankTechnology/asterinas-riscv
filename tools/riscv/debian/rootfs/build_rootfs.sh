@@ -398,6 +398,10 @@ cleanup() {
         # the original diagnostic or leave a stale mount in the build runner.
         while read -r mount_target; do
             [[ -n "$mount_target" ]] || continue
+            # `findmnt --target` also reports the enclosing host/container
+            # mount. Never detach anything outside this private stage tree.
+            [[ "$mount_target" == "$WORK_DIR/stage" ||
+                "$mount_target" == "$WORK_DIR/stage/"* ]] || continue
             umount -l -- "$mount_target" 2>/dev/null || true
         done < <(findmnt -R -n -o TARGET --target "$WORK_DIR/stage" 2>/dev/null | sort -r)
         chmod -R u+w -- "$WORK_DIR" 2>/dev/null || true
