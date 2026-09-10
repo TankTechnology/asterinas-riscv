@@ -94,7 +94,7 @@ git commit -m "Add Megrez fast probe contracts"
 - Modify: `tools/riscv/debian/rootfs/build_stage1.sh`
 - Modify: `tools/riscv/tests/test_debian_rootfs.py`
 
-- [ ] **Step 1: Write failing parser and native-agent tests**
+- [x] **Step 1: Write failing parser and native-agent tests**
 
 Extend the Stage1 native self-test list with `root-init-probe`, `root-init-probe-debug-conflict`, and `root-init-probe-duplicate`. Add a native probe harness that feeds this exact request to stdin and checks ordered terminal records:
 
@@ -104,21 +104,21 @@ ASTERINAS_PROBE_RUN v=1 nonce=00112233445566778899aabbccddeeff probes=boot,sysca
 
 The harness must require one `READY`, ordered `START`/`PASS` records, one `DONE status=pass`, and rejection of a replayed nonce, duplicate names, or malformed input. A second request with `shell=1` must enter the bounded built-in diagnostic console after `DONE`, accept only `help`, `dmesg`, `mounts`, the five registered probe names, and `exit`, and reject every other token without invoking a shell interpreter.
 
-- [ ] **Step 2: Run the Stage1 tests and verify the new cases fail**
+- [x] **Step 2: Run the Stage1 tests and verify the new cases fail**
 
 Run:
 
 ```bash
-python3 -m unittest tools.riscv.tests.test_debian_rootfs.DebianRootfsTests.test_native_self_test_covers_discovery_and_handoff_failures tools.riscv.tests.test_debian_rootfs.DebianRootfsTests.test_stage1_probe_agent_protocol -v
+python3 -m unittest tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_native_self_test_covers_discovery_and_handoff_failures tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_stage1_probe_agent_protocol -v
 ```
 
 Expected: the probe-mode cases or harness symbols are missing.
 
-- [ ] **Step 3: Implement explicit probe-mode parsing**
+- [x] **Step 3: Implement explicit probe-mode parsing**
 
 Add `ROOT_INIT_PROBE` to `enum RootInitMode`. Accept exactly one `--root-init=probe`; reject all `--debug-console=*` arguments in probe mode. In production `main`, configure `/dev/console`, report `DEBIAN_STAGE1_PROGRESS step=start mode=probe`, call `stage1_run_probe_agent()` immediately, and never call `discover_root()` or mount the Debian root.
 
-- [ ] **Step 4: Implement the fail-closed probe protocol**
+- [x] **Step 4: Implement the fail-closed probe protocol**
 
 `stage1_run_probe_agent()` must print and flush:
 
@@ -132,7 +132,7 @@ ASTERINAS_PROBE_REBOOT_READY v=1 nonce=<nonce>
 
 On failure it prints `ASTERINAS_PROBE_FAIL` with `errno=<decimal>` and one safe detail token, emits at most 32 KiB between `ASTERINAS_PROBE_DMESG_BEGIN/END`, then prints `DONE status=fail`. Cap the request at 512 bytes, require exactly 32 lowercase hexadecimal nonce characters, require canonical comma-separated names, and execute no text as a shell command.
 
-- [ ] **Step 5: Implement the five fixed probes**
+- [x] **Step 5: Implement the five fixed probes**
 
 Use direct libc/syscall interfaces only:
 
@@ -144,16 +144,16 @@ Use direct libc/syscall interfaces only:
 
 After `DONE`, print `REBOOT_READY` and accept only `ASTERINAS_PROBE_REBOOT v=1 nonce=<same-nonce>` when `shell=0`. Then call `sync()` and `reboot(RB_AUTOBOOT)`. When `shell=1`, print `ASTERINAS_PROBE_SHELL_READY`, expose only the bounded built-ins listed in Step 1, and leave the fixed kernel reboot timer armed; `exit` requests reboot. A missing or malformed reboot request cannot disable the kernel deadline. If the reboot syscall returns, remain in `pause()` so `asterinas.reboot_after` remains the recovery authority.
 
-- [ ] **Step 6: Compile the agent into Stage1 and keep the archive minimal**
+- [x] **Step 6: Compile the agent into Stage1 and keep the archive minimal**
 
 Add `stage1_probe.c` to the static compile command and keep `--print-entries` plus the newc archive entries exactly `.` and `init`. Update test compile helpers to link the new source.
 
-- [ ] **Step 7: Run Stage1 tests and commit**
+- [x] **Step 7: Run Stage1 tests and commit**
 
 Run:
 
 ```bash
-python3 -m unittest tools.riscv.tests.test_debian_rootfs.DebianRootfsTests.test_native_self_test_covers_discovery_and_handoff_failures tools.riscv.tests.test_debian_rootfs.DebianRootfsTests.test_stage1_probe_agent_protocol tools.riscv.tests.test_debian_rootfs.DebianRootfsTests.test_stage1_builder_is_reproducible -v
+python3 -m unittest tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
 ```
 
 Expected: all tests pass and the generated archive still lists only `.` and `init`.

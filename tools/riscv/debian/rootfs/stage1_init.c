@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "stage1_debug_console.h"
+#include "stage1_probe.h"
 
 #if !defined(DEBIAN_STAGE1_SELF_TEST) && \
     !defined(DEBIAN_STAGE1_LIFECYCLE_TEST)
@@ -88,6 +89,7 @@ static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
     ROOT_INIT_SYSTEMD,
+    ROOT_INIT_PROBE,
 };
 
 struct RootInitConfig {
@@ -196,6 +198,8 @@ static int parse_root_init(int argc, char **argv,
             selected_mode = ROOT_INIT_INTERACTIVE;
         } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
             selected_mode = ROOT_INIT_SYSTEMD;
+        } else if (strcmp(argv[index], "--root-init=probe") == 0) {
+            selected_mode = ROOT_INIT_PROBE;
         } else if (strcmp(argv[index], "--debug-console=root") == 0 ||
                    strcmp(argv[index],
                           "--debug-console=isolated-root") == 0) {
@@ -673,6 +677,13 @@ static int run_root_init_self_test(const char *case_name)
     char *default_argv[] = { "init", NULL };
     char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *probe_argv[] = { "init", "--root-init=probe", NULL };
+    char *probe_debug_argv[] = {
+        "init", "--root-init=probe", "--debug-console=root", NULL,
+    };
+    char *duplicate_probe_argv[] = {
+        "init", "--root-init=probe", "--root-init=probe", NULL,
+    };
     char *systemd_debug_argv[] = {
         "init", "--root-init=systemd", "--debug-console=root", NULL,
     };
@@ -715,6 +726,21 @@ static int run_root_init_self_test(const char *case_name)
         if (parse_root_init(2, systemd_argv, &config) != 0 ||
             config.mode != ROOT_INIT_SYSTEMD || config.debug_root_console) {
             return fail_self_test(case_name, "systemd mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-probe") == 0) {
+        if (parse_root_init(2, probe_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_PROBE || config.debug_root_console) {
+            return fail_self_test(case_name, "probe mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-probe-debug-conflict") == 0) {
+        if (parse_root_init(3, probe_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "probe debug console conflict was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-probe-duplicate") == 0) {
+        if (parse_root_init(3, duplicate_probe_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "duplicate probe selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-systemd-debug-root") == 0) {
         if (parse_root_init(3, systemd_debug_argv, &config) != 0 ||
@@ -1182,9 +1208,19 @@ int main(int argc, char **argv)
     if (root_init_result != 0) {
         fail_and_hold("root-init-argument");
     }
-    report_progress("start", "mode",
-                    context.root_init.mode == ROOT_INIT_SYSTEMD ? "systemd"
-                                                               : "interactive");
+    const char *mode = "interactive";
+    if (context.root_init.mode == ROOT_INIT_SYSTEMD) {
+        mode = "systemd";
+    } else if (context.root_init.mode == ROOT_INIT_PROBE) {
+        mode = "probe";
+    }
+    report_progress("start", "mode", mode);
+    if (context.root_init.mode == ROOT_INIT_PROBE) {
+        if (stage1_run_probe_agent() != 0) {
+            fail_and_hold("probe-agent");
+        }
+        fail_and_hold("probe-agent-returned");
+    }
 
     struct Stage1Ops ops = {
         .context = &context,

@@ -124,6 +124,7 @@ STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 STAGE1_DEBUG_CONSOLE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_debug_console.c"
 )
+STAGE1_PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_probe.c"
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
@@ -509,6 +510,7 @@ class DebianStage1Tests(unittest.TestCase):
             (
                 str(STAGE1_SOURCE),
                 str(STAGE1_DEBUG_CONSOLE_SOURCE),
+                str(STAGE1_PROBE_SOURCE),
                 "-o",
                 str(output),
             )
@@ -731,6 +733,9 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-systemd",
             "root-init-systemd-debug-root",
             "root-init-systemd-debug-isolated-root",
+            "root-init-probe",
+            "root-init-probe-debug-conflict",
+            "root-init-probe-duplicate",
             "root-init-debug-with-interactive",
             "root-init-debug-duplicate",
             "root-init-debug-unknown",
@@ -763,6 +768,158 @@ class DebianStage1Tests(unittest.TestCase):
                     result.stdout,
                     f"DEBIAN_STAGE1_SELF_TEST PASS case={case}\n",
                 )
+
+    def test_stage1_probe_agent_protocol(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        request = (
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} "
+            "probes=boot,syscall213,syscall272 shell=0\n"
+        )
+
+        result = subprocess.run(
+            [binary],
+            input=request,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        protocol = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("ASTERINAS_PROBE_")
+        ]
+        self.assertEqual(
+            protocol,
+            [
+                "ASTERINAS_PROBE_READY v=1 pid=1",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=0 name=boot",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=0 name=boot detail=boot-ok",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=1 name=syscall213",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=1 name=syscall213 detail=enosys",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=2 name=syscall272",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=2 name=syscall272 detail=enosys",
+                f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=3 status=pass",
+                f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}",
+            ],
+        )
+
+    def test_stage1_probe_agent_rejects_noncanonical_requests(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        invalid_requests = (
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot,boot shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=unknown shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce.upper()} probes=boot shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=2\n",
+            "x" * 513 + "\n",
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request[:80]):
+                result = subprocess.run(
+                    [binary],
+                    input=request,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [
+                        "ASTERINAS_PROBE_READY v=1 pid=1",
+                        "ASTERINAS_PROBE_REQUEST_FAIL v=1 reason=invalid-request",
+                    ],
+                )
+
+    def test_stage1_probe_shell_is_fixed_and_bounded_by_kernel_timer(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        result = subprocess.run(
+            [binary],
+            input=(
+                f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=1\n"
+                "help\n"
+                "uname -a\n"
+                "exit\n"
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n", result.stdout)
+        self.assertIn(
+            "ASTERINAS_PROBE_SHELL_COMMANDS help,dmesg,mounts,boot,syscall213,syscall272,ext2-writeback,systemd-compat,exit\n",
+            result.stdout,
+        )
+        self.assertIn("ASTERINAS_PROBE_SHELL_REJECT reason=unknown-command\n", result.stdout)
+        self.assertIn(f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n", result.stdout)
 
     def test_normal_failure_lifecycle_flushes_one_marker_and_holds(self) -> None:
         binary = self.directory / "stage1-lifecycle-test"
@@ -832,6 +989,7 @@ int main(int argc, char **argv)
                 "-Wno-return-type",
                 harness_source,
                 STAGE1_DEBUG_CONSOLE_SOURCE,
+                STAGE1_PROBE_SOURCE,
                 "-o",
                 binary,
             ],
@@ -876,6 +1034,7 @@ int main(void)
                 "-Wno-return-type",
                 harness_source,
                 STAGE1_DEBUG_CONSOLE_SOURCE,
+                STAGE1_PROBE_SOURCE,
                 "-o",
                 binary,
             ],
@@ -4099,11 +4258,31 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         console = SerialConsole(writer, max_bytes=128, tx_delay=0.005)
 
         with mock.patch("tools.riscv.debian.rootfs.gate_runtime.time.sleep") as sleep:
-            console.send(b"abc", self._deadline())
+            console.send(b"abc", self._deadline(3.0))
 
         self.assertEqual(os.read(reader, 128), b"abc")
         self.assertEqual(sleep.call_count, 2)
         sleep.assert_has_calls([mock.call(0.005), mock.call(0.005)])
+
+    def test_serial_console_rejects_paced_command_before_partial_transmission(
+        self,
+    ) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(writer, max_bytes=128, tx_delay=0.005)
+
+        with (
+            mock.patch(
+                "tools.riscv.debian.rootfs.gate_runtime.time.monotonic",
+                return_value=10.0,
+            ),
+            self.assertRaisesRegex(TimeoutError, "before transmission"),
+        ):
+            console.send(b"abcdef", 10.01)
+
+        readable, _, _ = select.select([reader], [], [], 0)
+        self.assertEqual(readable, [])
 
     def test_serial_console_bounds_prompt_boot_and_drain_deadlines(self) -> None:
         master, slave = os.openpty()
