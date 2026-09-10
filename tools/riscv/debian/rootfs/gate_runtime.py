@@ -348,6 +348,8 @@ class SerialConsole:
         self.process = process
         self.max_bytes = max_bytes
         self.tx_delay = float(tx_delay)
+        access_mode = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
+        self._can_read_during_send = access_mode != os.O_WRONLY
         self._transcript = bytearray()
         os.set_blocking(fd, False)
 
@@ -388,7 +390,27 @@ class SerialConsole:
                 remaining = deadline - time.monotonic()
                 if remaining <= self.tx_delay:
                     raise TimeoutError("serial command deadline expired")
-                time.sleep(self.tx_delay)
+                if not self._can_read_during_send:
+                    time.sleep(self.tx_delay)
+                    continue
+                # A physical shell may echo and redraw a long line faster than
+                # paced TX. Drain full-duplex RX during the mandatory delay so
+                # completion markers do not queue behind unread terminal output.
+                pace_deadline = time.monotonic() + self.tx_delay
+                while True:
+                    pace_remaining = pace_deadline - time.monotonic()
+                    if pace_remaining <= 0:
+                        break
+                    readable, _, _ = select.select([self.fd], [], [], pace_remaining)
+                    if not readable:
+                        break
+                    try:
+                        chunk = os.read(self.fd, 4096)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        break
+                    self._append(chunk)
 
     def _read(self, deadline: float) -> bytes | None:
         ready, _, _ = select.select([self.fd], [], [], _remaining(deadline))
