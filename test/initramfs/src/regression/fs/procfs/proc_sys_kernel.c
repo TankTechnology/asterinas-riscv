@@ -69,6 +69,26 @@ static unsigned long long read_tainted(void)
 	return strtoull(value, NULL, 10);
 }
 
+static int is_uuid_v4(const char *value)
+{
+	size_t i;
+
+	if (strlen(value) != 37 || value[8] != '-' || value[13] != '-' ||
+	    value[18] != '-' || value[23] != '-' || value[36] != '\n' ||
+	    value[14] != '4' || !strchr("89ab", value[19])) {
+		return 0;
+	}
+	for (i = 0; i < 36; ++i) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			continue;
+		}
+		if (!isdigit(value[i]) && !(value[i] >= 'a' && value[i] <= 'f')) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
 {
 	char first[64];
@@ -95,6 +115,20 @@ FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
 		}
 		TEST_RES(first[i], isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
 	}
+}
+END_TEST()
+
+FN_TEST(proc_sys_kernel_random_uuid_is_fresh)
+{
+	char first[64];
+	char second[64];
+
+	read_file_checked("/proc/sys/kernel/random/uuid", first, sizeof(first));
+	read_file_checked("/proc/sys/kernel/random/uuid", second, sizeof(second));
+
+	TEST_RES(is_uuid_v4(first), _ret == 1);
+	TEST_RES(is_uuid_v4(second), _ret == 1);
+	TEST_RES(strcmp(first, second), _ret != 0);
 }
 END_TEST()
 
