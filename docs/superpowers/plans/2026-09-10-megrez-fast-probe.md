@@ -329,15 +329,15 @@ git commit -m "Add the one-command Megrez probe runner"
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 - Modify: `Makefile`
 
-- [ ] **Step 1: Add a failing QEMU command-construction test**
+- [x] **Step 1: Add a failing QEMU command-construction test**
 
 Require `qemu-system-riscv64 -machine virt -m 2G -smp 4 -nographic -no-reboot`, the selected Asterinas kernel and Stage1 initramfs, and the same probe bootargs/protocol classifier used by the physical adapter. Reject paths that are not pinned regular files.
 
-- [ ] **Step 2: Implement `--qemu` as an adapter, not a second lifecycle**
+- [x] **Step 2: Implement `--qemu` as an adapter, not a second lifecycle**
 
 Start QEMU in its own process group with stdin/stdout on a PTY, wait for `ASTERINAS_PROBE_READY`, run the same exchange, and require process exit after the guest reboot. A `--qemu-deadline-only` test variant sends no request and proves `asterinas.reboot_after=30` terminates the guest within 45 seconds.
 
-- [ ] **Step 3: Build through the persistent container**
+- [x] **Step 3: Build through the persistent container**
 
 Run:
 
@@ -348,11 +348,11 @@ tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATU
 
 Expected: cached container reuse, one Stage1 initramfs, and one RISC-V kernel image; no image/container deletion or Cargo OSDK download.
 
-- [ ] **Step 4: Run the two-probe and deadline QEMU gates**
+- [x] **Step 4: Run the two-probe and deadline QEMU gates**
 
 Run the normal gate with `boot syscall213`, then the 30-second deadline-only variant. Expected: normal `DONE status=pass` in one boot; both runs terminate through guest reboot; no Debian root disk is attached.
 
-- [ ] **Step 5: Add the reproducible QEMU Make target and commit**
+- [x] **Step 5: Add the reproducible QEMU Make target and commit**
 
 Add `test_riscv_megrez_probe_qemu` with explicit kernel/initramfs inputs and commit:
 
