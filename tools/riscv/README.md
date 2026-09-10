@@ -412,14 +412,28 @@ tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_qemu \
   MEGREZ_PROBE_INITRAMFS=target/megrez-probe/build/initramfs.cpio
 ```
 
-Deployment is a separate maintenance operation. Boot RockOS only to transfer a
-changed artifact, verify its exact size and SHA-256, atomically install its
-versioned filename on partition 1, and reboot normally. The schema-2 RockOS
+Deployment is a separate maintenance operation.
+Boot RockOS only to transfer a changed artifact, verify its exact size and
+SHA-256, atomically install its versioned filename on partition 1, and reboot
+normally.
+The schema-2 RockOS
 attestation below remains the full Debian/browser release workflow; the
 schema-1 probe bundle is instead bound to the selected SHA-256 identities and
-to U-Boot's observed byte counts and CRC32 values on every run. A firmware or
+to U-Boot's observed byte counts and CRC32 values on every run.
+A firmware or
 SBI hard lock that prevents all serial progress still requires a manual board
 reset.
+
+### Review policy for the experimental RISC-V fork
+
+This RISC-V support is experimental development in the `asterinas-riscv` fork.
+The fork intentionally does not carry or invoke the former repository-local
+`aster-code-review` skill, its automation, or its compatibility symlink.
+Use normal human-readable diff review plus the existing tests and hardware
+gates instead.
+When integrating future upstream changes, keep this removal as an explicit
+fork policy unless the project owner decides to adopt a replacement review
+workflow.
 
 ## Megrez unattended boot stability
 
@@ -427,7 +441,8 @@ The unattended gate separates deployment from acceptance. The schema-2
 `DebugPlan` is the immutable deployment manifest; its sizes, SHA-256 values,
 CRC32 values, and versioned MMC paths identify one release. A routine gate run
 loads only the existing kernel, Stage1 initramfs, and DTB from MMC partition 1.
-It does not build, upload, or fall back to serial transfer; partition 2 is never written.
+It does not build, upload, or fall back to serial transfer;
+partition 2 is never written.
 
 Keep compilation and all unit tests in the persistent development container:
 
@@ -437,7 +452,8 @@ tools/docker/run_dev_container.sh -- \
 ```
 
 Boot RockOS only when the next `DebugPlan` names a kernel or initramfs that is
-not already present on partition 1. Transfer only changed, versioned files,
+not already present on partition 1.
+Transfer only changed, versioned files,
 then verify them with the controlled measurement tool below. It boots RockOS,
 uses native `stat` and `sha256sum`, binds every output to a fresh random nonce
 and the plan identity, performs a normal reboot, and requires a new

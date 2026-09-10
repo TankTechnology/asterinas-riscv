@@ -602,7 +602,7 @@ Expected: all checks exit 0 and status is clean. Re-run `make test_riscv_xhci_in
 
 - [ ] **Step 2: Review against Asterinas personas**
 
-Use `aster-code-review` in diff mode against the branch base. Review maintainability, development correctness, security boundaries, hardware contracts, and documentation. Pay special attention to signature provenance, untrusted paths, descriptor pinning, ext2 parsing, process groups, signal races, bounded buffers/deadlines, evidence publication, and the separation of immutable base from writable run copy.
+Perform a normal diff review against the branch base. Review maintainability, development correctness, security boundaries, hardware contracts, and documentation. Pay special attention to signature provenance, untrusted paths, descriptor pinning, ext2 parsing, process groups, signal races, bounded buffers/deadlines, evidence publication, and the separation of immutable base from writable run copy.
 
 - [ ] **Step 3: Resolve confirmed findings with tests**
 

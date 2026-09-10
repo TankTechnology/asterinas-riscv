@@ -420,7 +420,7 @@ Run the new unit/QEMU gates, all Debian rootfs tests, existing Megrez debug/phys
 
 - [ ] **Step 3: Review against Asterinas persona guidelines**
 
-Review the diff for maintainability, development correctness, security, hardware contract compliance, and documentation. Resolve every Critical or Important finding, rerun the focused test, and retain the Markdown review artifact required by `aster-code-review`.
+Review the diff normally for maintainability, development correctness, security, hardware contract compliance, and documentation. Resolve every Critical or Important finding and rerun the focused test.
 
 - [ ] **Step 4: Confirm repository and remote safety**
 
