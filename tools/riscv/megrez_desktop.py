@@ -53,7 +53,7 @@ MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_FIREFOX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_SERIAL_COMMAND_BYTES = 768
 NEW_SESSION_HOST_GRACE_SECONDS = 15.0
-FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 4
+FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 5
 MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
@@ -2281,8 +2281,14 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
         )
         cursor = serial.checkpoint()
         try:
-            self._send_bounded(serial, commands[expected_index], deadline)
-            self._send_bounded(serial, f"printf '{marker}\\n'", deadline)
+            # Send the command and its ACK as one canonical-mode input line.
+            # A second write can be echoed while the first command is already
+            # producing output, corrupting an otherwise valid protocol line.
+            self._send_bounded(
+                serial,
+                f"{commands[expected_index]}; printf '{marker}\\n'",
+                deadline,
+            )
             while True:
                 line, cursor = self._next_line(serial, cursor, deadline)
                 if line == marker:

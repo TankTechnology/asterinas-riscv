@@ -623,13 +623,32 @@ absolute deadline and transcript cap, and leaves write-only descriptors on
 the original pacing path.  The regression failed before the repair and passes
 after it.
 
-- [ ] **Step 4c: Run one protocol-v4 classification after host verification**
+- [x] **Step 4c: Run one protocol-v4 classification after host verification**
 
 Protocol version 4 identifies the changed serial observer; its otherwise
 unchanged experiment identity is `a255f297...`.  Run it only after all serial,
 desktop, stability, and physical protocol tests pass.  It must again transfer
 zero bytes and recover.  Do not change the kernel or Firefox until the run
 reaches a valid Status/NewSession boundary.
+
+Protocol-v4 experiment `a255f297...` ran once in 288.422 seconds with one
+physical boot, zero transfers, complete private hashes, and fresh-U-Boot
+recovery.  Desktop readiness and Firefox commands 0-3 all completed, and the
+guest printed a valid stable identity (PID 112, start tick 88525, zero
+restarts, profile `11:45`).  The host nevertheless rejected preflight because
+the separately transmitted ACK command was echoed while command 3 printed its
+identity, prefixing that protocol line with one interleaved byte.  This is a
+second observer boundary; Firefox Status and NewSession were still not issued.
+
+- [ ] **Step 4d: Serialize each diagnostic command and ACK in protocol v5**
+
+A local regression proves that `_run_diagnostic_command` formerly performed
+two independent serial sends.  Send `command; printf ACK` as one canonical-mode
+shell line so Bash receives the entire transaction before it begins producing
+command output.  Require every combined transaction to stay below the existing
+768-byte cap, run all host gates, admit only the new protocol-v5 identity, and
+perform one physical classification with zero transfers and recovery.  Do not
+change the kernel or Firefox unless that run reaches a causal boundary.
 
 - [ ] **Step 5: Implement a fix only after causal proof**
 

@@ -905,6 +905,18 @@ class FirefoxGuestCommandTests(unittest.TestCase):
         self.assertTrue(
             all(len((command + "\n").encode()) <= 768 for command in commands)
         )
+        self.assertTrue(
+            all(
+                len(
+                    (
+                        f"{command}; printf '__ASTERINAS_FIREFOX_COMMAND__ "
+                        f"nonce={'4' * 16} step={index} done=1\\n'\n"
+                    ).encode()
+                )
+                <= desktop.MAX_SERIAL_COMMAND_BYTES
+                for index, command in enumerate(commands)
+            )
+        )
         for command in commands:
             subprocess.run(
                 ["/bin/sh", "-n", "-c", command],
@@ -1003,6 +1015,31 @@ class FirefoxGuestCommandTests(unittest.TestCase):
             self.assertRaisesRegex(desktop.HostGateError, "Status failed"),
         ):
             operations.run_firefox_status(30.0)
+
+    def test_real_command_sends_payload_and_ack_as_one_shell_transaction(self) -> None:
+        operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
+        operations._firefox_commands = ("do_work",)
+        operations._firefox_command_index = 0
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 0
+        marker = "__ASTERINAS_FIREFOX_COMMAND__ nonce=1111111111111111 step=0 done=1"
+        with (
+            mock.patch.object(operations, "_require_serial", return_value=serial),
+            mock.patch.object(operations, "_guest_phase_deadline", return_value=20.0),
+            mock.patch.object(operations, "_send_bounded") as send,
+            mock.patch.object(operations, "_next_line", return_value=(marker, 1)),
+            mock.patch.object(operations, "_sync_serial_log"),
+            mock.patch.object(desktop.secrets, "token_hex", return_value="1" * 16),
+        ):
+            operations._run_diagnostic_command(0, 30.0)
+
+        send.assert_called_once_with(
+            serial,
+            "do_work; printf '__ASTERINAS_FIREFOX_COMMAND__ "
+            "nonce=1111111111111111 step=0 done=1\\n'",
+            20.0,
+        )
+        self.assertEqual(operations._firefox_command_index, 1)
 
     def test_real_preflight_commands_share_one_phase_deadline(self) -> None:
         operations = object.__new__(desktop.RealFirefoxDiagnosticOperations)
@@ -1500,7 +1537,7 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
         )
 
     def test_serial_observer_change_uses_a_new_protocol_identity(self) -> None:
-        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 4)
+        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 5)
 
     def run_real_publisher(self, **operation_options):
         output = self.evidence / "run"
