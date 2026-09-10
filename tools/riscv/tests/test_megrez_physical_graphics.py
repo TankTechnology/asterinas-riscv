@@ -362,6 +362,49 @@ class HdmiEvidenceTests(unittest.TestCase):
             self.assertEqual(evidence.sha256, hashlib.sha256(payload).hexdigest())
 
 
+class OperatorDisplayEvidenceTests(unittest.TestCase):
+    def test_accepts_only_nonce_bound_confirmed_final_cycle_state(self) -> None:
+        gate = load_gate(self)
+        nonce_sha256 = hashlib.sha256(b"0123456789abcdef").hexdigest()
+
+        evidence = gate.OperatorDisplayEvidence(
+            kind="operator-attested",
+            nonce_sha256=nonce_sha256,
+            state="cyan-final-cycle-pass",
+            confirmed=True,
+        )
+
+        self.assertEqual(evidence.nonce_sha256, nonce_sha256)
+        for mutation in (
+            {"kind": "hdmi"},
+            {"nonce_sha256": "0"},
+            {"state": "cyan-cycle-3-pass"},
+            {"confirmed": False},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(gate.HostGateError):
+                gate.OperatorDisplayEvidence(
+                    kind=mutation.get("kind", "operator-attested"),
+                    nonce_sha256=mutation.get("nonce_sha256", nonce_sha256),
+                    state=mutation.get("state", "cyan-final-cycle-pass"),
+                    confirmed=mutation.get("confirmed", True),
+                )
+
+    def test_configuration_accepts_only_one_or_three_cycles_and_typed_mode(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        one = gate.PhysicalGraphicsConfig(
+            cycles_requested=1,
+            display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+        )
+        self.assertEqual(one.cycles_requested, 1)
+        self.assertIs(one.display_mode, gate.DisplayEvidenceMode.OPERATOR_ATTESTED)
+        with self.assertRaises(ValueError):
+            gate.PhysicalGraphicsConfig(cycles_requested=2)
+        with self.assertRaises(ValueError):
+            gate.PhysicalGraphicsConfig(display_mode="operator-attested")
+
+
 class PhysicalCliTests(unittest.TestCase):
     BASE_ARGUMENTS = (
         "/dev/serial/by-id/test",
@@ -605,13 +648,24 @@ class PhysicalLifecycleTests(unittest.TestCase):
                 format="png",
             )
 
-        def prove_final_state(self, nonce, readiness, _timeout: float) -> None:
+        def retain_operator_display(self, nonce: str, _timeout: float):
+            self.events.append("operator-display")
+            return self.gate.OperatorDisplayEvidence(
+                kind="operator-attested",
+                nonce_sha256=hashlib.sha256(nonce.encode()).hexdigest(),
+                state="cyan-final-cycle-pass",
+                confirmed=True,
+            )
+
+        def prove_final_state(
+            self, cycle: int, nonce: str, readiness, _timeout: float
+        ) -> None:
             self.events.append("final-state")
             if (
-                nonce != PhysicalLifecycleTests.NONCES[-1]
+                nonce != PhysicalLifecycleTests.NONCES[cycle - 1]
                 or readiness.browser_pid != 41
             ):
-                raise AssertionError("terminal state was not bound to cycle 3")
+                raise AssertionError("terminal state was not bound to final cycle")
             if self.fail_final:
                 raise self.gate.HostGateError("terminal state changed")
 
@@ -714,6 +768,55 @@ class PhysicalLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(operations.events.count("publish:True"), 1)
         self.assertEqual(operations.events[-1], "close")
+
+    def test_one_cycle_operator_attestation_preserves_terminal_checks(self) -> None:
+        gate = load_gate(self)
+        operations = self.Operations(gate)
+        result = gate.run_physical_graphics(
+            self._plan(),
+            gate.PhysicalGraphicsConfig(
+                cycles_requested=1,
+                display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            ),
+            operations,
+            nonces=self.NONCES[:1],
+            artifact_validator=lambda _plan: {},
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.schema_version, 2)
+        self.assertEqual(result.cycles_requested, 1)
+        self.assertEqual(result.reason, "physical-graphics-operator-attested-pass")
+        self.assertEqual([cycle.cycle for cycle in result.cycles], [1])
+        self.assertIsNone(result.hdmi)
+        self.assertIsNotNone(result.operator_display)
+        self.assertEqual(
+            result.operator_display.nonce_sha256, result.cycles[0].nonce_sha256
+        )
+        self.assertIn("operator-display", operations.events)
+        self.assertNotIn("hdmi", operations.events)
+        self.assertLess(
+            operations.events.index("operator-display"),
+            operations.events.index("final-state"),
+        )
+        self.assertLess(
+            operations.events.index("final-state"), operations.events.index("complete")
+        )
+
+    def test_rejects_nonce_count_that_does_not_match_requested_cycles(self) -> None:
+        gate = load_gate(self)
+        operations = self.Operations(gate)
+
+        with self.assertRaisesRegex(gate.HostGateError, "requested cycle count"):
+            gate.run_physical_graphics(
+                self._plan(),
+                gate.PhysicalGraphicsConfig(cycles_requested=3),
+                operations,
+                nonces=self.NONCES[:1],
+                artifact_validator=lambda _plan: {},
+            )
+
+        self.assertEqual(operations.events, [])
 
     def test_recovery_failure_and_late_fatal_marker_cannot_publish_pass(self) -> None:
         gate = load_gate(self)
@@ -1346,6 +1449,50 @@ class ScreenshotTransferTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_result_requires_schema_two_and_mutually_exclusive_display_evidence(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        operator_display = gate.OperatorDisplayEvidence(
+            kind="operator-attested",
+            nonce_sha256="c" * 64,
+            state="cyan-final-cycle-pass",
+            confirmed=True,
+        )
+        hdmi = gate.FileEvidence(
+            path=Path("/retained/hdmi-evidence.png"),
+            size=9,
+            sha256="d" * 64,
+            format="png",
+        )
+        common = {
+            "cycles_requested": 1,
+            "passed": False,
+            "physical": True,
+            "reason": "diagnostic",
+            "plan_sha256": "a" * 64,
+            "bootargs_sha256": "b" * 64,
+            "recovered": False,
+            "readiness": None,
+            "cycles": (),
+            "transport": (),
+        }
+
+        with self.assertRaisesRegex(gate.HostGateError, "schema version"):
+            gate.PhysicalGraphicsResult(
+                schema_version=1,
+                hdmi=None,
+                operator_display=None,
+                **common,
+            )
+        with self.assertRaisesRegex(gate.HostGateError, "conflicting"):
+            gate.PhysicalGraphicsResult(
+                schema_version=2,
+                hdmi=hdmi,
+                operator_display=operator_display,
+                **common,
+            )
+
     def test_result_is_the_last_commit_marker_and_is_listed_in_hashes(self) -> None:
         gate = load_gate(self)
 
@@ -1379,7 +1526,8 @@ class PublicationTests(unittest.TestCase):
         output = Output()
         operations._output = output
         result = gate.PhysicalGraphicsResult(
-            schema_version=1,
+            schema_version=2,
+            cycles_requested=3,
             passed=False,
             physical=True,
             reason="diagnostic",
@@ -1389,6 +1537,7 @@ class PublicationTests(unittest.TestCase):
             readiness=None,
             cycles=(),
             hdmi=None,
+            operator_display=None,
             transport=(),
         )
         operations.publish(result, (), None, ())
@@ -1403,7 +1552,8 @@ class PublicationTests(unittest.TestCase):
         gate = load_gate(self)
         with self.assertRaisesRegex(gate.HostGateError, "simulated"):
             gate.PhysicalGraphicsResult(
-                schema_version=1,
+                schema_version=2,
+                cycles_requested=3,
                 passed=False,
                 physical=False,
                 reason="diagnostic",
@@ -1413,6 +1563,7 @@ class PublicationTests(unittest.TestCase):
                 readiness=None,
                 cycles=(),
                 hdmi=None,
+                operator_display=None,
                 transport=(),
             )
 

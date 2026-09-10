@@ -150,6 +150,13 @@ class PointerEvidenceMode(str, Enum):
     QEMU_TABLET = "qemu-tablet"
 
 
+class DisplayEvidenceMode(str, Enum):
+    """Select the independent physical-display evidence source."""
+
+    EXTERNAL_HDMI = "external-hdmi"
+    OPERATOR_ATTESTED = "operator-attested"
+
+
 @dataclass(frozen=True)
 class InteractionCycleEvidence:
     """Nonce-bound evidence for one real keyboard and pointer cycle."""
@@ -184,6 +191,25 @@ class FileEvidence:
             or self.format not in ("png", "jpg")
         ):
             raise HostGateError("file evidence identity is invalid")
+
+
+@dataclass(frozen=True)
+class OperatorDisplayEvidence:
+    """Nonce-bound live operator observation of the physical final display."""
+
+    kind: str
+    nonce_sha256: str
+    state: str
+    confirmed: bool
+
+    def __post_init__(self) -> None:
+        if (
+            self.kind != "operator-attested"
+            or re.fullmatch(_SHA256, self.nonce_sha256) is None
+            or self.state != "cyan-final-cycle-pass"
+            or self.confirmed is not True
+        ):
+            raise HostGateError("operator display evidence is invalid")
 
 
 @dataclass(frozen=True)
@@ -238,6 +264,8 @@ class PhysicalGraphicsConfig:
     cycle_timeout: float = 180.0
     hdmi_timeout: float = 180.0
     recovery_timeout: float = 930.0
+    cycles_requested: int = 3
+    display_mode: DisplayEvidenceMode = DisplayEvidenceMode.EXTERNAL_HDMI
 
     def __post_init__(self) -> None:
         values = (
@@ -258,6 +286,13 @@ class PhysicalGraphicsConfig:
             raise ValueError("physical graphics deadlines must be in (0, 1200]")
         if self.cycle_timeout > 300:
             raise ValueError("guest cycle timeout must be at most 300 seconds")
+        if type(self.cycles_requested) is not int or self.cycles_requested not in (
+            1,
+            3,
+        ):
+            raise ValueError("physical cycle count must be one or three")
+        if not isinstance(self.display_mode, DisplayEvidenceMode):
+            raise ValueError("display evidence mode is invalid")
 
 
 @dataclass(frozen=True)
@@ -265,6 +300,7 @@ class PhysicalGraphicsResult:
     """Canonical result published only after the board lifecycle terminates."""
 
     schema_version: int
+    cycles_requested: int
     passed: bool
     physical: bool
     reason: str
@@ -274,11 +310,42 @@ class PhysicalGraphicsResult:
     readiness: GraphicalReadinessEvidence | None
     cycles: tuple[InteractionCycleEvidence, ...]
     hdmi: FileEvidence | None
+    operator_display: OperatorDisplayEvidence | None
     transport: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.physical is not True:
             raise HostGateError("physical result cannot describe a simulated run")
+        if self.schema_version != 2:
+            raise HostGateError("physical result schema version must be two")
+        if type(self.cycles_requested) is not int or self.cycles_requested not in (
+            1,
+            3,
+        ):
+            raise HostGateError("physical result cycle count must be one or three")
+        if len(self.cycles) > self.cycles_requested:
+            raise HostGateError("physical result has excess interaction cycles")
+        if self.hdmi is not None and self.operator_display is not None:
+            raise HostGateError("physical result has conflicting display evidence")
+        if self.passed:
+            if len(self.cycles) != self.cycles_requested:
+                raise HostGateError("passing result has an incomplete cycle set")
+            if self.reason == "physical-graphics-pass":
+                valid_display = self.hdmi is not None and self.operator_display is None
+            elif self.reason == "physical-graphics-operator-attested-pass":
+                valid_display = self.hdmi is None and self.operator_display is not None
+                if valid_display and (
+                    not self.cycles
+                    or self.operator_display.nonce_sha256
+                    != self.cycles[-1].nonce_sha256
+                ):
+                    raise HostGateError(
+                        "operator display evidence is not bound to the final cycle"
+                    )
+            else:
+                valid_display = False
+            if not valid_display:
+                raise HostGateError("passing result lacks matching display evidence")
 
     def canonical_bytes(self) -> bytes:
         document = asdict(self)
@@ -314,8 +381,13 @@ class PhysicalGraphicsOperations(Protocol):
 
     def retain_hdmi(self, timeout: float) -> FileEvidence: ...
 
+    def retain_operator_display(
+        self, nonce: str, timeout: float
+    ) -> OperatorDisplayEvidence: ...
+
     def prove_final_state(
         self,
+        cycle: int,
         nonce: str,
         readiness: GraphicalReadinessEvidence,
         timeout: float,
@@ -925,18 +997,34 @@ def _result(
     readiness: GraphicalReadinessEvidence | None,
     cycles: tuple[InteractionCycleEvidence, ...],
     hdmi: FileEvidence | None,
+    operator_display: OperatorDisplayEvidence | None,
     transport: tuple[str, ...],
+    cycles_requested: int,
+    display_mode: DisplayEvidenceMode,
 ) -> PhysicalGraphicsResult:
+    expected_reason = (
+        "physical-graphics-pass"
+        if display_mode is DisplayEvidenceMode.EXTERNAL_HDMI
+        else "physical-graphics-operator-attested-pass"
+    )
     if passed and (
-        reason != "physical-graphics-pass"
+        reason != expected_reason
         or not recovered
         or readiness is None
-        or len(cycles) != 3
-        or hdmi is None
+        or len(cycles) != cycles_requested
+        or (
+            display_mode is DisplayEvidenceMode.EXTERNAL_HDMI
+            and (hdmi is None or operator_display is not None)
+        )
+        or (
+            display_mode is DisplayEvidenceMode.OPERATOR_ATTESTED
+            and (operator_display is None or hdmi is not None)
+        )
     ):
         raise HostGateError("passing result lacks terminal physical evidence")
     return PhysicalGraphicsResult(
-        schema_version=1,
+        schema_version=2,
+        cycles_requested=cycles_requested,
         passed=passed,
         physical=True,
         reason=reason,
@@ -946,6 +1034,7 @@ def _result(
         readiness=readiness,
         cycles=cycles,
         hdmi=hdmi,
+        operator_display=operator_display,
         transport=transport,
     )
 
@@ -960,23 +1049,26 @@ def run_physical_graphics(
         [DebugPlan | Any], object
     ] = _validate_current_artifacts,
 ) -> PhysicalGraphicsResult:
-    """Execute three real-input cycles and accept only after fresh U-Boot recovery."""
+    """Execute the requested real-input cycles and require fresh U-Boot recovery."""
 
     plan.validate()
     artifact_validator(plan)
     bootargs = physical_bootargs(plan)
     selected_nonces = (
-        tuple(secrets.token_hex(8) for _ in range(3))
+        tuple(secrets.token_hex(8) for _ in range(config.cycles_requested))
         if nonces is None
         else tuple(nonces)
     )
     _validated_nonce_hashes(selected_nonces)
+    if len(selected_nonces) != config.cycles_requested:
+        raise HostGateError("nonce count does not match requested cycle count")
 
     outcomes: tuple[str, ...] = ()
     readiness: GraphicalReadinessEvidence | None = None
     retained_screenshots: list[bytes] = []
     cycles: tuple[InteractionCycleEvidence, ...] = ()
     hdmi: FileEvidence | None = None
+    operator_display: OperatorDisplayEvidence | None = None
     recovered = False
     failure: BaseException | None = None
     interruption: BaseException | None = None
@@ -1003,15 +1095,23 @@ def run_physical_graphics(
                     ) from error
                 retained_screenshots.append(payload)
 
-            hdmi = operations.retain_hdmi(config.hdmi_timeout)
+            if config.display_mode is DisplayEvidenceMode.EXTERNAL_HDMI:
+                hdmi = operations.retain_hdmi(config.hdmi_timeout)
+            else:
+                operator_display = operations.retain_operator_display(
+                    selected_nonces[-1], config.hdmi_timeout
+                )
             if readiness is None:
                 raise HostGateError(
                     "graphical readiness disappeared before final check"
                 )
             operations.prove_final_state(
-                selected_nonces[-1], readiness, config.cycle_timeout
+                config.cycles_requested,
+                selected_nonces[-1],
+                readiness,
+                config.cycle_timeout,
             )
-            operations.emit_complete(3, config.cycle_timeout)
+            operations.emit_complete(config.cycles_requested, config.cycle_timeout)
         except Exception as error:
             failure = error
         except BaseException as error:
@@ -1055,12 +1155,19 @@ def run_physical_graphics(
                 plan,
                 bootargs,
                 passed=True,
-                reason="physical-graphics-pass",
+                reason=(
+                    "physical-graphics-pass"
+                    if config.display_mode is DisplayEvidenceMode.EXTERNAL_HDMI
+                    else "physical-graphics-operator-attested-pass"
+                ),
                 recovered=recovered,
                 readiness=readiness,
                 cycles=cycles,
                 hdmi=hdmi,
+                operator_display=operator_display,
                 transport=outcomes,
+                cycles_requested=config.cycles_requested,
+                display_mode=config.display_mode,
             )
         else:
             result = _result(
@@ -1072,7 +1179,10 @@ def run_physical_graphics(
                 readiness=readiness,
                 cycles=cycles,
                 hdmi=hdmi,
+                operator_display=operator_display,
                 transport=outcomes,
+                cycles_requested=config.cycles_requested,
+                display_mode=config.display_mode,
             )
         operations.publish(result, screenshots, hdmi, outcomes)
         return result
@@ -1682,6 +1792,7 @@ class RealPhysicalGraphicsOperations:
 
     def prove_final_state(
         self,
+        cycle: int,
         nonce: str,
         readiness: GraphicalReadinessEvidence,
         timeout: float,
@@ -1696,7 +1807,10 @@ class RealPhysicalGraphicsOperations:
         cursor = serial.checkpoint()
         serial.send(
             (
-                physical_final_command(nonce, readiness.browser_pid, timeout) + "\n"
+                physical_final_command(
+                    nonce, readiness.browser_pid, timeout, cycle=cycle
+                )
+                + "\n"
             ).encode(),
             deadline,
         )
@@ -1709,7 +1823,7 @@ class RealPhysicalGraphicsOperations:
             if match is not None:
                 if (
                     final_seen
-                    or match.group(1) != "3"
+                    or match.group(1) != str(cycle)
                     or match.group(2) != expected_hash
                 ):
                     raise HostGateError(

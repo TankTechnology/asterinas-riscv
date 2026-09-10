@@ -72,7 +72,7 @@ closed and retains bounded evidence.
 
 - `hdmi`: the existing `FileEvidence`, with `operator_display=null`; or
 - `operator_display`: an immutable object with kind `operator-attested`, final
-  nonce SHA-256, state `cyan-cycle-3-pass`, and `confirmed=true`, with `hdmi`
+  nonce SHA-256, state `cyan-final-cycle-pass`, and `confirmed=true`, with `hdmi`
   set to null.
 
 An external image pass keeps reason `physical-graphics-pass`. An operator pass
