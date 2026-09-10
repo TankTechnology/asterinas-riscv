@@ -470,19 +470,19 @@ def browse_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         'dmesg --color=never; } 2>&1 | tail -c 131072 >"$_d.01"',
         "{ printf '%s\\n' '== graphical services =='; /usr/bin/timeout 3 "
         "systemctl show --no-pager --property Id,ActiveState,SubState,MainPID,NRestarts "
-        "asterinas-desktop-m5.service asterinas-browser-web.service || true; "
-        "printf '%s\\n' '== Firefox process snapshot =='; if [ -n \"$_p\" ]; then "
+        "asterinas-desktop-m5.service asterinas-browser-web.service || true; } "
+        '>"$_d.02" 2>&1',
+        "{ printf '%s\\n' '== Firefox process snapshot =='; if [ -n \"$_p\" ]; then "
         "/usr/bin/timeout 6 /usr/lib/asterinas/firefox-diagnostic-snapshot "
         '--root-pid "$_p" --max-seconds 3 --max-processes 16 --max-threads 128 '
         "--max-fds 64 --max-scan 1024 --max-file-bytes 8192 "
         "--max-total-bytes 32768; else printf '%s\\n' 'Firefox PID unavailable'; fi; "
-        '} 2>&1 | head -c 65536 >"$_d.02"',
-        "{ printf '%s\\n' '== validated Baidu DOM before screenshot =='; "
+        '} 2>&1 | head -c 65536 >"$_d.03"',
+        'cat "$_d.01" "$_d.02" "$_d.03" >"$_d"; '
+        "printf '%s\\n' '== validated Baidu DOM before screenshot ==' >>\"$_d\"; "
         "for _f in /run/asterinas-browse-*/baidu-home.json; do "
-        '[ -f "$_f" ] || continue; printf \'path=%s\\n\' "$_f"; '
-        'head -c 49152 "$_f"; printf \'\\n\'; break; done; } >"$_d.03" 2>&1',
-        ': >"$_d"; for _f in "$_d".*; do [ -f "$_f" ] && cat "$_f" >>"$_d"; '
-        'done; _z=$(wc -c <"$_d"); '
+        '[ -f "$_f" ] || continue; head -c 49152 "$_f" >>"$_d"; break; done; '
+        '_z=$(wc -c <"$_d"); '
         f'if [ "$_z" -le {MAX_DIAGNOSTICS_BYTES} ]; then '
         '_h=$(sha256sum "$_d" | cut -d\' \' -f1); else _h=' + zeros + "; fi",
         f'if [ "$_z" -le {MAX_DIAGNOSTICS_BYTES} ]; then '

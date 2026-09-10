@@ -413,7 +413,12 @@ class FirefoxBrowseTests(unittest.TestCase):
         commands = browse.browse_diagnostics_commands("0123456789abcdef")
 
         self.assertLessEqual(len(commands), 6)
-        self.assertTrue(all(len((command + "\n").encode()) < 768 for command in commands))
+        # Non-final commands receive the acknowledged-shell wrapper before
+        # the 768-byte serial limit is enforced.
+        self.assertTrue(
+            all(len(command.encode()) < 480 for command in commands[:-1])
+        )
+        self.assertLess(len((commands[-1] + "\n").encode()), 768)
         self.assertLess(sum(len(command.encode()) for command in commands), 2400)
         joined = "\n".join(commands)
         self.assertIn("dmesg --color=never", joined)
