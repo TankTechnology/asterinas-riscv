@@ -251,9 +251,28 @@ class RealRockOsAttestationPublisher:
         self._output: PinnedOutputDirectory | None = None
 
     def invalidate(self) -> None:
+        if self._output is not None:
+            raise HostGateError("RockOS attestation output run is already active")
         output_path = _safe_output_directory(self._output_directory, self._repository)
-        self._output = PinnedOutputDirectory(output_path)
-        self._output.invalidate(*self._OUTPUT_NAMES)
+        output = PinnedOutputDirectory(output_path)
+        try:
+            output.lock_exclusive()
+        except RuntimeError as error:
+            output.close()
+            raise HostGateError(
+                "RockOS attestation output run is already active"
+            ) from error
+        try:
+            output.invalidate(*self._OUTPUT_NAMES)
+        except BaseException:
+            output.close()
+            raise
+        self._output = output
+
+    def close(self) -> None:
+        if self._output is not None:
+            self._output.close()
+            self._output = None
 
     def __call__(
         self, attestation: gate.DeploymentAttestation, measurement: bytes
@@ -302,8 +321,12 @@ def run_rockos_attestation(
         operations.open(config.open_timeout)
         operations.boot_rockos(config.boot_timeout)
         operations.login(username, password, config.login_timeout)
-        operations.measure(plan, artifacts, selected_nonce, config.measurement_timeout)
-        operations.reboot_and_recover(password, config.recovery_timeout)
+        try:
+            operations.measure(
+                plan, artifacts, selected_nonce, config.measurement_timeout
+            )
+        finally:
+            operations.reboot_and_recover(password, config.recovery_timeout)
         transcript = operations.measurement_transcript
         attestation = gate.DeploymentAttestation.from_measurement_log(transcript)
         if attestation.measurement_nonce != selected_nonce:
@@ -384,6 +407,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except (HostGateError, OSError, RuntimeError, TimeoutError, ValueError) as error:
         print(f"RockOS attestation failed: {error}", file=sys.stderr)
         return 2
+    finally:
+        publisher.close()
     print(attestation.canonical_bytes().decode(), end="")
     return 0
 

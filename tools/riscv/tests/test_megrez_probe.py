@@ -13,6 +13,7 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -555,6 +556,31 @@ class ProbeLifecycleTests(unittest.TestCase):
         self.assertEqual(result.selected_probes, ("boot", "syscall213"))
         self.assertEqual(len(result.outcomes), 2)
 
+    def test_fatal_transcript_cannot_publish_a_successful_probe(self) -> None:
+        events: list[str] = []
+        exchange = probe.ProbeExchange(
+            (probe.ProbeOutcome(0, "boot", True, None, "boot-ok"),),
+            True,
+            b"",
+        )
+        operations = _LifecycleOperations(events, exchange)
+        operations._transcript += b"Kernel panic - not syncing\n"
+        publisher = _LifecyclePublisher(events)
+
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot",)),
+            probe.ProbeRunConfig(),
+            operations,
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertEqual(result.reason, "probe-fatal-diagnostics")
+
     def test_invalid_bundle_cannot_leave_a_stale_terminal_result(self) -> None:
         events: list[str] = []
         publisher = _LifecyclePublisher(events)
@@ -1049,6 +1075,74 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
         self.assertTrue(self.operations._guest_recovered_early)
         self.assertGreaterEqual(self.operations._recovery_cursor, 0)
 
+    def test_interactive_shell_detects_an_already_buffered_reboot(self) -> None:
+        nonce = "0" * 32
+        serial_read, serial_write = os.pipe()
+        serial = probe.SerialConsole(serial_read, max_bytes=4096)
+        serial._append(
+            (
+                f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n"
+                "OpenSBI v1.5\nU-Boot 2024.01\n=> "
+            ).encode()
+        )
+        sent: list[bytes] = []
+        serial.send = lambda payload, _deadline: sent.append(payload)
+        try:
+            with tempfile.TemporaryFile(mode="w+") as input_file:
+                input_file.write("boot\n")
+                input_file.seek(0)
+                with (
+                    mock.patch.object(probe.sys, "stdin", input_file),
+                    redirect_stdout(io.StringIO()),
+                    self.assertRaisesRegex(
+                        probe.ProbeProtocolError, "rebooted during probe shell"
+                    ),
+                ):
+                    self.operations._interactive_shell(
+                        serial, time.monotonic() + 1.0, nonce
+                    )
+        finally:
+            os.close(serial_read)
+            os.close(serial_write)
+
+        self.assertEqual(sent, [])
+        self.assertTrue(self.operations._guest_recovered_early)
+
+    def test_interactive_shell_partial_input_cannot_bypass_deadline(self) -> None:
+        nonce = "0" * 32
+        serial_read, serial_write = os.pipe()
+        input_read, input_write = os.pipe()
+        serial = probe.SerialConsole(serial_read, max_bytes=4096)
+        serial._append(f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n".encode())
+        errors: list[BaseException] = []
+
+        def run_shell() -> None:
+            try:
+                with os.fdopen(input_read, "r", closefd=False) as input_file:
+                    with (
+                        mock.patch.object(probe.sys, "stdin", input_file),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        self.operations._interactive_shell(
+                            serial, time.monotonic() + 0.1, nonce
+                        )
+            except BaseException as error:
+                errors.append(error)
+
+        os.write(input_write, b"bo")
+        worker = threading.Thread(target=run_shell)
+        worker.start()
+        worker.join(timeout=0.5)
+        blocked = worker.is_alive()
+        os.close(input_write)
+        worker.join(timeout=1.0)
+        os.close(input_read)
+        os.close(serial_read)
+        os.close(serial_write)
+
+        self.assertFalse(blocked, "partial shell input bypassed the deadline")
+        self.assertTrue(any(isinstance(error, TimeoutError) for error in errors))
+
     def test_complete_transcript_rejects_records_hidden_after_done(self) -> None:
         nonce = "0" * 32
         transcript = (
@@ -1396,6 +1490,30 @@ class QemuProbeOperationsTests(unittest.TestCase):
         self.assertEqual(len(kwargs["pass_fds"]), 2)
         self.assertTrue(process.terminated)
 
+    def test_qemu_recovery_drains_the_pty_while_waiting_for_exit(self) -> None:
+        master, slave = os.openpty()
+        process = probe.launch_process(
+            (
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'x' * 131072)",
+            ),
+            stdio_fd=slave,
+        )
+        os.close(slave)
+        operations = object.__new__(probe.QemuProbeOperations)
+        operations._process = process
+        operations._serial = probe.SerialConsole(
+            master, process=process, max_bytes=256 * 1024
+        )
+        try:
+            operations.await_recovery(2.0)
+            self.assertEqual(len(operations.transcript), 131072)
+        finally:
+            if process.poll() is None:
+                process.terminate_group(time.monotonic() + 1, time.monotonic() + 2)
+            os.close(master)
+
     def test_qemu_adapter_rejects_changed_artifact_before_launch(self) -> None:
         kernel = self.directory / "kernel"
         kernel.write_bytes(b"changed")
@@ -1452,6 +1570,27 @@ class QemuProbeOperationsTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.reason, "deadline-failed")
         self.assertTrue(result.recovered)
+
+    def test_deadline_gate_publishes_serial_overflow_as_failure(self) -> None:
+        clock = SimpleNamespace(now=100.0)
+
+        class OverflowOperations(_DeadlineOperations):
+            def await_recovery(self, _timeout):
+                raise BufferError("serial transcript exceeds byte cap")
+
+        operations = OverflowOperations(clock)
+        publisher = _LifecyclePublisher([])
+
+        result = probe.run_qemu_deadline_gate(
+            self.bundle,
+            operations,
+            publisher,
+            clock=lambda: clock.now,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "manual-reset-required")
+        self.assertIsNotNone(publisher.published)
 
 
 if __name__ == "__main__":

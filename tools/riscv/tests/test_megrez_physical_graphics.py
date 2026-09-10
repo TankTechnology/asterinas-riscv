@@ -645,6 +645,24 @@ class PhysicalLifecycleTests(unittest.TestCase):
             ["--", "--root-init=systemd", "--debug-console=isolated-root"],
         )
 
+    def test_physical_bootargs_remove_partition_write_aliases(self) -> None:
+        gate = load_gate(self)
+        for spelling in (
+            "asterinas.mmc_write_partition2",
+            "asterinas.mmc_write_partition2=1",
+            "asterinas.mmc-write-partition2=yes",
+        ):
+            with self.subTest(spelling=spelling):
+                plan = self._plan()
+                plan.bootargs = self.PLAN_BOOTARGS.replace(
+                    "asterinas.mmc_write_partition2", spelling
+                )
+                normalized_names = {
+                    token.partition("=")[0].replace("-", "_")
+                    for token in gate.physical_bootargs(plan).split()
+                }
+                self.assertNotIn("asterinas.mmc_write_partition2", normalized_names)
+
     def test_publishes_pass_only_after_three_cycles_hdmi_and_recovery(self) -> None:
         gate = load_gate(self)
         operations = self.Operations(gate)
