@@ -173,7 +173,7 @@ git commit -m "feat(riscv): add bounded Megrez desktop startup"
 - Modify: `tools/riscv/megrez_desktop.py`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py`
 
-- [ ] **Step 1: Write failing classifier tests using real frame semantics**
+- [x] **Step 1: Write failing classifier tests using real frame semantics**
 
 Create scalar records matching the existing
 `A_WEB_MARIONETTE_TRANSPORT` format.  Cover greeting absence, successful
@@ -196,7 +196,7 @@ Add a sanitized replay representing `mmc-graphics-final-19`; because that old
 run lacks transport records, it must classify as `evidence-incomplete`, never
 as a TCP, poll, or Firefox deadlock.
 
-- [ ] **Step 2: Run classifier tests and observe RED**
+- [x] **Step 2: Run classifier tests and observe RED**
 
 ```bash
 python3 -m unittest \
@@ -205,7 +205,7 @@ python3 -m unittest \
 
 Expected: missing classifier/type failures.
 
-- [ ] **Step 3: Implement strict record parsing and classification**
+- [x] **Step 3: Implement strict record parsing and classification**
 
 Add immutable `FirefoxBoundaryEvidence` fields for `boundary`, Status
 completion, NewSession request ID, send completion, header byte count,
@@ -219,7 +219,7 @@ reject reordered or contradictory progress.  Derive durations only from guest
 monotonic values in the records.  Do not infer scheduler, TCP, poll, or Firefox
 causality from a transport boundary.
 
-- [ ] **Step 4: Run classifier and existing Marionette tests**
+- [x] **Step 4: Run classifier and existing Marionette tests**
 
 ```bash
 python3 -m unittest \
@@ -229,7 +229,7 @@ python3 -m unittest \
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit the classifier**
+- [x] **Step 5: Commit the classifier**
 
 ```bash
 git add tools/riscv/megrez_desktop.py tools/riscv/tests/test_megrez_desktop.py

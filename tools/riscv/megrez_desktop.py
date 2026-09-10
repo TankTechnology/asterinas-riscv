@@ -39,6 +39,9 @@ MAX_PLAN_BYTES = 2 * 1024 * 1024
 MAX_ATTESTATION_BYTES = 2 * 1024 * 1024
 MAX_MEASUREMENT_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_BYTES = 64 * 1024
+MAX_TRANSPORT_RECORD_BYTES = 2048
+MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
+MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
     {
@@ -630,3 +633,483 @@ def run_desktop_start(
     if interruption is not None:
         raise interruption
     return result
+
+
+@dataclass(frozen=True)
+class MarionetteTransportRecord:
+    """One payload-free progress record emitted by the frozen guest client."""
+
+    version: int
+    event: str
+    pid: int
+    monotonic_ns: int
+    request_id: int
+    command: str
+    stage: str
+    send_complete: bool
+    header_bytes: int
+    body_expected: int | None
+    body_received: int
+    error_type: str | None = None
+    errno: int | None = None
+
+
+@dataclass(frozen=True)
+class FirefoxBoundaryEvidence:
+    """Earliest supported boundary in the selected NewSession transport."""
+
+    boundary: str
+    status_complete: bool
+    new_session_request_id: int | None
+    send_complete: bool
+    response_header_bytes: int
+    response_body_expected: int | None
+    response_body_received: int
+    selected_command_seconds: float | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.boundary
+            not in {
+                "listener-not-ready",
+                "status-command-stalled",
+                "new-session-not-sent",
+                "new-session-response-absent",
+                "new-session-response-partial",
+                "new-session-complete",
+                "evidence-incomplete",
+            }
+            or not isinstance(self.status_complete, bool)
+            or (
+                self.new_session_request_id is not None
+                and (
+                    type(self.new_session_request_id) is not int
+                    or self.new_session_request_id <= 0
+                )
+            )
+            or not isinstance(self.send_complete, bool)
+            or type(self.response_header_bytes) is not int
+            or not 0 <= self.response_header_bytes <= 11
+            or (
+                self.response_body_expected is not None
+                and (
+                    type(self.response_body_expected) is not int
+                    or self.response_body_expected < 0
+                )
+            )
+            or type(self.response_body_received) is not int
+            or self.response_body_received < 0
+            or (
+                self.response_body_expected is not None
+                and self.response_body_received > self.response_body_expected
+            )
+            or (
+                self.selected_command_seconds is not None
+                and (
+                    isinstance(self.selected_command_seconds, bool)
+                    or not isinstance(self.selected_command_seconds, (int, float))
+                    or not math.isfinite(self.selected_command_seconds)
+                    or self.selected_command_seconds < 0
+                )
+            )
+        ):
+            raise HostGateError("Firefox boundary evidence is invalid")
+
+
+_TRANSPORT_BASE_FIELDS = frozenset(
+    {
+        "version",
+        "event",
+        "pid",
+        "monotonic_ns",
+        "request_id",
+        "command",
+        "stage",
+        "send_complete",
+        "header_bytes",
+        "body_expected",
+        "body_received",
+    }
+)
+_TRANSPORT_FAILURE_FIELDS = _TRANSPORT_BASE_FIELDS | {"error_type", "errno"}
+_TRANSPORT_COMMANDS = {
+    "greeting",
+    "WebDriver:Status",
+    "WebDriver:NewSession",
+}
+_TRANSPORT_STAGES = {
+    "tcp_connect",
+    "response_header",
+    "response_body",
+    "response_json",
+    "response_identity",
+    "send",
+    "complete",
+}
+
+
+def _parse_transport_record(value: object) -> MarionetteTransportRecord:
+    if not isinstance(value, dict):
+        raise HostGateError("Marionette transport record must be an object")
+    event = value.get("event")
+    if not isinstance(event, str) or event not in {
+        "begin",
+        "send_complete",
+        "frame_header",
+        "complete",
+        "failure",
+    }:
+        raise HostGateError("Marionette transport record values are invalid")
+    expected_fields = (
+        _TRANSPORT_FAILURE_FIELDS if event == "failure" else _TRANSPORT_BASE_FIELDS
+    )
+    if set(value) != expected_fields:
+        raise HostGateError("Marionette transport record fields are invalid")
+    command = value["command"]
+    if not isinstance(command, str) or command not in _TRANSPORT_COMMANDS:
+        raise HostGateError("Marionette transport record has wrong command")
+    stage = value["stage"]
+    if not isinstance(stage, str) or stage not in _TRANSPORT_STAGES:
+        raise HostGateError("Marionette transport record values are invalid")
+    body_expected = value["body_expected"]
+    errno_value = value.get("errno")
+    if (
+        type(value["version"]) is not int
+        or value["version"] != 1
+        or type(value["pid"]) is not int
+        or not 1 < value["pid"] <= (1 << 31) - 1
+        or type(value["monotonic_ns"]) is not int
+        or not 0 <= value["monotonic_ns"] <= (1 << 63) - 1
+        or type(value["request_id"]) is not int
+        or not 0 <= value["request_id"] <= (1 << 31) - 1
+        or not isinstance(value["send_complete"], bool)
+        or type(value["header_bytes"]) is not int
+        or not 0 <= value["header_bytes"] <= 11
+        or (
+            body_expected is not None
+            and (
+                type(body_expected) is not int
+                or not 0 <= body_expected <= MAX_MARIONETTE_MESSAGE_BYTES
+            )
+        )
+        or type(value["body_received"]) is not int
+        or value["body_received"] < 0
+        or (body_expected is not None and value["body_received"] > body_expected)
+        or (
+            event == "failure"
+            and (
+                not isinstance(value["error_type"], str)
+                or not value["error_type"]
+                or len(value["error_type"]) > 128
+                or (
+                    errno_value is not None
+                    and (type(errno_value) is not int or errno_value < 0)
+                )
+            )
+        )
+    ):
+        raise HostGateError("Marionette transport record values are invalid")
+    request_id = value["request_id"]
+    if (command == "greeting") != (request_id == 0):
+        raise HostGateError("Marionette transport request order is invalid")
+
+    send_complete = value["send_complete"]
+    header_bytes = value["header_bytes"]
+    body_received = value["body_received"]
+    if event == "begin" and not (
+        command != "greeting"
+        and stage == "send"
+        and not send_complete
+        and header_bytes == 0
+        and body_expected is None
+        and body_received == 0
+    ):
+        raise HostGateError("Marionette begin progress is contradictory")
+    if event == "send_complete" and not (
+        command != "greeting"
+        and stage == "send"
+        and send_complete
+        and header_bytes == 0
+        and body_expected is None
+        and body_received == 0
+    ):
+        raise HostGateError("Marionette send progress is contradictory")
+    if event == "frame_header" and not (
+        stage == "response_body"
+        and send_complete == (command != "greeting")
+        and header_bytes >= 2
+        and body_expected is not None
+        and body_received == 0
+    ):
+        raise HostGateError("Marionette header progress is contradictory")
+    if event == "complete" and not (
+        command != "greeting"
+        and stage == "complete"
+        and send_complete
+        and header_bytes >= 2
+        and body_expected is not None
+        and body_received == body_expected
+    ):
+        raise HostGateError("Marionette completion progress is contradictory")
+    if event == "failure":
+        valid_failure_progress = (
+            (
+                stage == "tcp_connect"
+                and command == "greeting"
+                and not send_complete
+                and header_bytes == 0
+                and body_expected is None
+                and body_received == 0
+            )
+            or (
+                stage == "send"
+                and command != "greeting"
+                and header_bytes == 0
+                and body_expected is None
+                and body_received == 0
+            )
+            or (
+                stage == "response_header"
+                and send_complete == (command != "greeting")
+                and body_expected is None
+                and body_received == 0
+            )
+            or (
+                stage == "response_body"
+                and send_complete == (command != "greeting")
+                and header_bytes >= 2
+                and body_expected is not None
+            )
+            or (
+                stage == "response_json"
+                and send_complete == (command != "greeting")
+                and header_bytes >= 2
+                and body_expected is not None
+                and body_received == body_expected
+            )
+            or (
+                stage == "response_identity"
+                and command != "greeting"
+                and send_complete
+                and header_bytes >= 2
+                and body_expected is not None
+                and body_received == body_expected
+            )
+        )
+        if not valid_failure_progress:
+            raise HostGateError("Marionette failure progress is contradictory")
+    return MarionetteTransportRecord(
+        version=value["version"],
+        event=event,
+        pid=value["pid"],
+        monotonic_ns=value["monotonic_ns"],
+        request_id=request_id,
+        command=command,
+        stage=stage,
+        send_complete=send_complete,
+        header_bytes=header_bytes,
+        body_expected=body_expected,
+        body_received=body_received,
+        error_type=value.get("error_type"),
+        errno=errno_value,
+    )
+
+
+def _validate_transport_sequence(
+    records: tuple[MarionetteTransportRecord, ...],
+) -> None:
+    streams: dict[tuple[int, int, str], list[MarionetteTransportRecord]] = {}
+    request_commands: dict[tuple[int, int], str] = {}
+    first_positions: dict[tuple[int, int, str], int] = {}
+    terminal: set[tuple[int, int, str]] = set()
+
+    for position, record in enumerate(records):
+        request_key = (record.pid, record.request_id)
+        previous_command = request_commands.setdefault(request_key, record.command)
+        if previous_command != record.command:
+            raise HostGateError("Marionette transport request order is invalid")
+        key = (record.pid, record.request_id, record.command)
+        first_positions.setdefault(key, position)
+        stream = streams.setdefault(key, [])
+        if key in terminal:
+            raise HostGateError("Marionette transport has duplicate terminal record")
+        if stream:
+            previous = stream[-1]
+            if (
+                record.monotonic_ns < previous.monotonic_ns
+                or (previous.send_complete and not record.send_complete)
+                or record.header_bytes < previous.header_bytes
+                or record.body_received < previous.body_received
+                or (
+                    previous.body_expected is not None
+                    and record.body_expected != previous.body_expected
+                )
+            ):
+                raise HostGateError("Marionette transport progress is reordered")
+        if record.command == "greeting":
+            if not stream and record.event not in {"frame_header", "failure"}:
+                raise HostGateError("Marionette greeting record order is invalid")
+            if stream and record.event != "failure":
+                raise HostGateError("Marionette greeting record order is invalid")
+        else:
+            events = {item.event for item in stream}
+            if not stream and record.event != "begin":
+                raise HostGateError("Marionette command record order is invalid")
+            if record.event == "begin" and stream:
+                raise HostGateError("Marionette command record order is invalid")
+            if record.event == "send_complete" and "begin" not in events:
+                raise HostGateError("Marionette command record order is invalid")
+            if record.event == "frame_header" and not {
+                "begin",
+                "send_complete",
+            }.issubset(events):
+                raise HostGateError("Marionette command record order is invalid")
+            if record.event == "complete" and not {
+                "begin",
+                "send_complete",
+                "frame_header",
+            }.issubset(events):
+                raise HostGateError("Marionette command record order is invalid")
+        stream.append(record)
+        if record.event in {"complete", "failure"}:
+            terminal.add(key)
+
+    command_keys: dict[str, list[tuple[int, int, str]]] = {
+        "WebDriver:Status": [],
+        "WebDriver:NewSession": [],
+    }
+    for key in streams:
+        if key[2] in command_keys:
+            command_keys[key[2]].append(key)
+    if any(len(keys) > 1 for keys in command_keys.values()):
+        raise HostGateError("Marionette transport request order is invalid")
+    status_keys = command_keys["WebDriver:Status"]
+    new_session_keys = command_keys["WebDriver:NewSession"]
+    if new_session_keys and not status_keys:
+        raise HostGateError("Marionette transport request order is invalid")
+    if status_keys and new_session_keys:
+        if first_positions[new_session_keys[0]] <= first_positions[status_keys[0]]:
+            raise HostGateError("Marionette transport request order is invalid")
+    for keys in command_keys.values():
+        for key in keys:
+            if key[1] != 1:
+                raise HostGateError("Marionette transport request order is invalid")
+            greeting_key = (key[0], 0, "greeting")
+            greeting = streams.get(greeting_key)
+            if (
+                not greeting
+                or first_positions[greeting_key] >= first_positions[key]
+                or greeting[-1].event == "failure"
+            ):
+                raise HostGateError("Marionette transport request order is invalid")
+
+
+def parse_marionette_transport_records(
+    transcript: str | bytes,
+) -> tuple[MarionetteTransportRecord, ...]:
+    """Parse strict, bounded payload-free records from an arbitrary serial log."""
+
+    if isinstance(transcript, bytes):
+        try:
+            text = transcript.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise HostGateError(
+                "Marionette transport transcript is not UTF-8"
+            ) from error
+    elif isinstance(transcript, str):
+        text = transcript
+    else:
+        raise HostGateError("Marionette transport transcript must be text or bytes")
+    records: list[MarionetteTransportRecord] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        if not stripped.startswith(MARIONETTE_TRANSPORT_PREFIX):
+            continue
+        if not line.endswith("\n"):
+            raise HostGateError("Marionette transport record is truncated")
+        encoded = stripped.removeprefix(MARIONETTE_TRANSPORT_PREFIX).encode("utf-8")
+        if len(encoded) > MAX_TRANSPORT_RECORD_BYTES:
+            raise HostGateError("Marionette transport record is oversized")
+        try:
+            value = json.loads(encoded, object_pairs_hook=_reject_duplicate_keys)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise HostGateError(
+                "Marionette transport record has malformed JSON"
+            ) from error
+        records.append(_parse_transport_record(value))
+    parsed = tuple(records)
+    _validate_transport_sequence(parsed)
+    return parsed
+
+
+def _boundary_evidence(
+    boundary: str,
+    *,
+    status_complete: bool = False,
+    records: tuple[MarionetteTransportRecord, ...] = (),
+) -> FirefoxBoundaryEvidence:
+    if not records:
+        return FirefoxBoundaryEvidence(
+            boundary=boundary,
+            status_complete=status_complete,
+            new_session_request_id=None,
+            send_complete=False,
+            response_header_bytes=0,
+            response_body_expected=None,
+            response_body_received=0,
+            selected_command_seconds=None,
+        )
+    first = records[0]
+    last = records[-1]
+    expected = next(
+        (
+            record.body_expected
+            for record in reversed(records)
+            if record.body_expected is not None
+        ),
+        None,
+    )
+    return FirefoxBoundaryEvidence(
+        boundary=boundary,
+        status_complete=status_complete,
+        new_session_request_id=first.request_id,
+        send_complete=any(record.send_complete for record in records),
+        response_header_bytes=max(record.header_bytes for record in records),
+        response_body_expected=expected,
+        response_body_received=max(record.body_received for record in records),
+        selected_command_seconds=(last.monotonic_ns - first.monotonic_ns) / 1e9,
+    )
+
+
+def classify_new_session_transcript(
+    transcript: str | bytes,
+) -> FirefoxBoundaryEvidence:
+    """Classify only the first transport boundary supported by retained records."""
+
+    records = parse_marionette_transport_records(transcript)
+    if not records:
+        return _boundary_evidence("evidence-incomplete")
+    status = tuple(record for record in records if record.command == "WebDriver:Status")
+    if not status:
+        return _boundary_evidence("listener-not-ready")
+    status_complete = status[-1].event == "complete"
+    if not status_complete:
+        return _boundary_evidence("status-command-stalled")
+    selected = tuple(
+        record for record in records if record.command == "WebDriver:NewSession"
+    )
+    if not selected:
+        return _boundary_evidence("new-session-not-sent", status_complete=True)
+    if selected[-1].event == "complete":
+        boundary = "new-session-complete"
+    elif not any(record.send_complete for record in selected):
+        boundary = "new-session-not-sent"
+    elif max(record.header_bytes for record in selected) == 0:
+        boundary = "new-session-response-absent"
+    else:
+        boundary = "new-session-response-partial"
+    return _boundary_evidence(
+        boundary,
+        status_complete=True,
+        records=selected,
+    )
