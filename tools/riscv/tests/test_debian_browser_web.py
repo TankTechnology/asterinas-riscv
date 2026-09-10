@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 import zlib
 
+from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
 from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
@@ -370,6 +371,210 @@ def proxy_web_evidence() -> dict[str, bytes]:
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    @staticmethod
+    def _framebuffer_metadata(
+        *, width: int = 2, height: int = 2, stride: int = 12
+    ) -> tuple[bytes, bytes]:
+        variable = bytearray(160)
+        fixed = bytearray(80)
+        struct.pack_into(
+            "=7I", variable, 0, width, height, width, height, 0, 0, 32
+        )
+        struct.pack_into("=3I", variable, 32, 16, 8, 0)
+        struct.pack_into("=3I", variable, 44, 8, 8, 0)
+        struct.pack_into("=3I", variable, 56, 0, 8, 0)
+        struct.pack_into("=3I", variable, 68, 24, 8, 0)
+        struct.pack_into("=I", fixed, 24, stride * height)
+        struct.pack_into("=I", fixed, 36, 2)
+        struct.pack_into("=I", fixed, 48, stride)
+        return bytes(variable), bytes(fixed)
+
+    def test_bgr_reserved_framebuffer_encodes_a_bounded_rgb_png(self) -> None:
+        # Two visible BGRX pixels followed by four padding bytes per row.
+        raw = (
+            b"\x10\x20\x30\0\x40\x50\x60\0pad!"
+            b"\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
+        )
+
+        payload = web_gate._encode_bgr_reserved_framebuffer_png(
+            raw, width=2, height=2, stride=12
+        )
+
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(struct.unpack(">II", payload[16:24]), (2, 2))
+        offset = 8
+        compressed = bytearray()
+        while offset < len(payload):
+            length = struct.unpack(">I", payload[offset : offset + 4])[0]
+            kind = payload[offset + 4 : offset + 8]
+            contents = payload[offset + 8 : offset + 8 + length]
+            if kind == b"IDAT":
+                compressed.extend(contents)
+            offset += 12 + length
+        self.assertEqual(
+            zlib.decompress(compressed),
+            b"\0\x30\x20\x10\x60\x50\x40"
+            b"\0\x90\x80\x70\xc0\xb0\xa0",
+        )
+
+    def test_framebuffer_png_rejects_a_uniform_or_short_scanout(self) -> None:
+        with self.assertRaisesRegex(GateError, "framebuffer image is blank"):
+            web_gate._encode_bgr_reserved_framebuffer_png(
+                b"\x20\x20\x20\0" * 4, width=2, height=2, stride=8
+            )
+        with self.assertRaisesRegex(GateError, "framebuffer read is incomplete"):
+            web_gate._encode_bgr_reserved_framebuffer_png(
+                b"\0" * 31, width=2, height=4, stride=8
+            )
+
+    def test_framebuffer_layout_accepts_only_current_true_color_abi(self) -> None:
+        variable, fixed = self._framebuffer_metadata()
+        layout = web_gate._parse_framebuffer_layout(variable, fixed)
+        self.assertEqual((layout.width, layout.height), (2, 2))
+        self.assertEqual(layout.stride, 12)
+        self.assertEqual(layout.buffer_bytes, 24)
+
+        unsupported = bytearray(variable)
+        struct.pack_into("=I", unsupported, 24, 24)
+        with self.assertRaisesRegex(GateError, "framebuffer layout is unsupported"):
+            web_gate._parse_framebuffer_layout(bytes(unsupported), fixed)
+
+    def test_framebuffer_capture_uses_fbdev_metadata_and_private_output(self) -> None:
+        raw = (
+            b"\x10\x20\x30\0\x40\x50\x60\0pad!"
+            b"\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
+        )
+        variable, fixed = self._framebuffer_metadata()
+
+        def ioctl(
+            _descriptor: int, request: int, output: bytearray, mutate: bool
+        ) -> int:
+            self.assertTrue(mutate)
+            output[:] = (
+                variable if request == web_gate.FBIOGET_VSCREENINFO else fixed
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            device = root / "fb0"
+            output = root / "capture.png"
+            device.write_bytes(raw)
+            with (
+                mock.patch.object(web_gate, "FRAMEBUFFER_DEVICE", device),
+                mock.patch.object(web_gate.stat, "S_ISCHR", return_value=True),
+                mock.patch.object(web_gate.fcntl, "ioctl", side_effect=ioctl) as call,
+            ):
+                dimensions = web_gate._capture_framebuffer_png(output)
+
+            self.assertEqual(dimensions, (2, 2))
+            self.assertEqual(call.call_count, 2)
+            self.assertTrue(output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_framebuffer_home_capture_runs_after_marionette_transport_closes(
+        self,
+    ) -> None:
+        client = mock.Mock()
+        home = snapshot("https://www.baidu.com/")
+        home["title"] = "百度一下，你就知道"
+        events: list[str] = []
+        client.close.side_effect = lambda: events.append("close")
+
+        def capture(_path: Path) -> tuple[int, int]:
+            self.assertEqual(events, ["close"])
+            events.append("framebuffer")
+            return (1920, 1080)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(web_gate, "_connect", return_value=client),
+            mock.patch.object(web_gate, "_start_webdriver_session"),
+            mock.patch.object(web_gate, "_capture_baidu_home", return_value=home),
+            mock.patch.object(
+                web_gate, "_capture_framebuffer_png", side_effect=capture
+            ) as capture_framebuffer,
+        ):
+            evidence = Path(directory)
+            result = run_baidu_home_gate(
+                "127.0.0.1",
+                2828,
+                30,
+                evidence,
+                firefox_pid=116,
+                screenshot_backend="framebuffer",
+            )
+
+        self.assertEqual(result, home)
+        self.assertEqual(events, ["close", "framebuffer"])
+        capture_framebuffer.assert_called_once_with(evidence / "baidu-home.png")
+
+    def test_framebuffer_cli_marker_binds_source_dimensions_and_hash(self) -> None:
+        home = snapshot("https://www.baidu.com/")
+        home["title"] = "百度一下，你就知道"
+        screenshot = png(1920, 1080)
+
+        def run_home(
+            _host: str,
+            _port: int,
+            _timeout: float,
+            evidence: Path,
+            _firefox_pid: int,
+            *,
+            screenshot_backend: str,
+        ) -> dict[str, object]:
+            self.assertEqual(screenshot_backend, "framebuffer")
+            (evidence / "baidu-home.png").write_bytes(screenshot)
+            return home
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(web_gate, "validate_network_namespace"),
+            mock.patch.object(web_gate, "run_baidu_home_gate", side_effect=run_home),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            status = marionette_gate_main(
+                [
+                    "--scope",
+                    "baidu-home",
+                    "--screenshot-backend",
+                    "framebuffer",
+                    "--firefox-pid",
+                    "116",
+                    "--timeout",
+                    "30",
+                    "--evidence-dir",
+                    directory,
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        marker = json.loads(stdout.getvalue())
+        self.assertEqual(marker["screenshot_source"], "framebuffer")
+        self.assertEqual(marker["screenshot_width"], 1920)
+        self.assertEqual(marker["screenshot_height"], 1080)
+        self.assertEqual(marker["screenshot_sha256"], hashlib.sha256(screenshot).hexdigest())
+
+    def test_full_scope_rejects_the_framebuffer_screenshot_backend(self) -> None:
+        with (
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            marionette_gate_main(
+                [
+                    "--scope",
+                    "full",
+                    "--screenshot-backend",
+                    "framebuffer",
+                    "--firefox-pid",
+                    "116",
+                ]
+            )
+        self.assertIn(
+            "framebuffer screenshot backend requires baidu-home scope",
+            stderr.getvalue(),
+        )
+
     def test_screenshot_command_has_an_independent_deadline(self) -> None:
         client = mock.Mock()
         client.command.return_value = {

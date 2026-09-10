@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import os
@@ -14,10 +16,12 @@ from pathlib import Path
 import re
 import socket
 import stat
+import struct
 import sys
 import time
 from collections.abc import Callable, Sequence
 from urllib.parse import parse_qs, quote_plus, urlparse
+import zlib
 
 if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
     sys.path.insert(0, "/usr/lib/asterinas")
@@ -57,7 +61,200 @@ CHALLENGE_HOSTS = frozenset({"wappass.baidu.com"})
 BV_RE = re.compile(r"^https://www\.bilibili\.com/video/(BV[0-9A-Za-z]+)/?(?:[?#].*)?$")
 MAX_RESOURCES = 256
 MAX_SCREENSHOT_COMMAND_SECONDS = 90.0
+MAX_FRAMEBUFFER_BYTES = 64 * 1024 * 1024
+MAX_FRAMEBUFFER_PNG_BYTES = 2 * 1024 * 1024
+FBIOGET_VSCREENINFO = 0x4600
+FBIOGET_FSCREENINFO = 0x4602
+FRAMEBUFFER_DEVICE = Path("/dev/fb0")
 DETAIL_DIAGNOSTIC_MARKER = Path("/run/asterinas-browser-web-detail-phase")
+
+
+@dataclass(frozen=True)
+class FramebufferLayout:
+    width: int
+    height: int
+    stride: int
+    buffer_bytes: int
+
+
+def _parse_framebuffer_layout(
+    variable: bytes, fixed: bytes
+) -> FramebufferLayout:
+    """Validate the Linux fbdev ABI used by the Megrez firmware scanout."""
+
+    if len(variable) != 160 or len(fixed) != 80:
+        raise GateError("framebuffer metadata size is invalid")
+    width, height, virtual_width, virtual_height, xoffset, yoffset, bpp, grayscale = (
+        struct.unpack_from("=8I", variable)
+    )
+    red = struct.unpack_from("=3I", variable, 32)
+    green = struct.unpack_from("=3I", variable, 44)
+    blue = struct.unpack_from("=3I", variable, 56)
+    transparency = struct.unpack_from("=3I", variable, 68)
+    nonstandard = struct.unpack_from("=I", variable, 80)[0]
+    memory_bytes = struct.unpack_from("=I", fixed, 24)[0]
+    visual = struct.unpack_from("=I", fixed, 36)[0]
+    stride = struct.unpack_from("=I", fixed, 48)[0]
+    if (
+        not 0 < width <= 8192
+        or not 0 < height <= 8192
+        or virtual_width != width
+        or virtual_height != height
+        or xoffset != 0
+        or yoffset != 0
+        or bpp != 32
+        or grayscale != 0
+        or nonstandard != 0
+        or red != (16, 8, 0)
+        or green != (8, 8, 0)
+        or blue != (0, 8, 0)
+        or transparency != (24, 8, 0)
+        or visual != 2
+        or stride < width * 4
+        or stride > width * 4 + 65536
+    ):
+        raise GateError("framebuffer layout is unsupported")
+    buffer_bytes = stride * height
+    if buffer_bytes > MAX_FRAMEBUFFER_BYTES or memory_bytes < buffer_bytes:
+        raise GateError("framebuffer size is outside the bounded contract")
+    return FramebufferLayout(width, height, stride, buffer_bytes)
+
+
+def _png_chunk(kind: bytes, contents: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(contents))
+        + kind
+        + contents
+        + struct.pack(">I", zlib.crc32(kind + contents) & 0xFFFFFFFF)
+    )
+
+
+def _encode_bgr_reserved_framebuffer_png(
+    raw: bytes, *, width: int, height: int, stride: int
+) -> bytes:
+    """Encode bounded B,G,R,reserved scanout rows as an RGB PNG."""
+
+    if (
+        not 0 < width <= 8192
+        or not 0 < height <= 8192
+        or stride < width * 4
+        or stride * height > MAX_FRAMEBUFFER_BYTES
+        or len(raw) != stride * height
+    ):
+        raise GateError("framebuffer read is incomplete")
+    pixels = width * height
+    sample_count = min(4096, pixels)
+    colors: set[bytes] = set()
+    for sample in range(sample_count):
+        pixel = sample * (pixels - 1) // max(1, sample_count - 1)
+        row, column = divmod(pixel, width)
+        offset = row * stride + column * 4
+        colors.add(raw[offset : offset + 3])
+    if len(colors) < min(8, pixels):
+        raise GateError("framebuffer image is blank or insufficiently diverse")
+
+    compressor = zlib.compressobj(6)
+    compressed = bytearray()
+    view = memoryview(raw)
+    for row in range(height):
+        source = view[row * stride : row * stride + width * 4]
+        scanline = bytearray(1 + width * 3)
+        scanline[1::3] = source[2::4]
+        scanline[2::3] = source[1::4]
+        scanline[3::3] = source[0::4]
+        compressed.extend(compressor.compress(scanline))
+    compressed.extend(compressor.flush())
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    payload = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", bytes(compressed))
+        + _png_chunk(b"IEND", b"")
+    )
+    if len(payload) > MAX_FRAMEBUFFER_PNG_BYTES:
+        raise GateError("framebuffer PNG is outside the bounded contract")
+    return payload
+
+
+def _read_exact_fd(descriptor: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+        if not chunk:
+            raise GateError("framebuffer read is incomplete")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _capture_framebuffer_png(output: Path) -> tuple[int, int]:
+    """Read the live fbdev scanout once and publish a private PNG."""
+
+    if not output.is_absolute() or output.exists() or output.is_symlink():
+        raise GateError("framebuffer output path is unsafe")
+    descriptor = os.open(
+        FRAMEBUFFER_DEVICE,
+        os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISCHR(os.fstat(descriptor).st_mode):
+            raise GateError("framebuffer device is not a character device")
+        variable = bytearray(160)
+        fixed = bytearray(80)
+        fcntl.ioctl(descriptor, FBIOGET_VSCREENINFO, variable, True)
+        fcntl.ioctl(descriptor, FBIOGET_FSCREENINFO, fixed, True)
+        layout = _parse_framebuffer_layout(bytes(variable), bytes(fixed))
+        raw = _read_exact_fd(descriptor, layout.buffer_bytes)
+    finally:
+        os.close(descriptor)
+    payload = _encode_bgr_reserved_framebuffer_png(
+        raw,
+        width=layout.width,
+        height=layout.height,
+        stride=layout.stride,
+    )
+    output_descriptor = os.open(
+        output,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_CLOEXEC
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(output_descriptor, view)
+            if written <= 0:
+                raise GateError("framebuffer PNG write is incomplete")
+            view = view[written:]
+    finally:
+        os.close(output_descriptor)
+    return layout.width, layout.height
+
+
+def _screenshot_identity(path: Path) -> tuple[str, int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise GateError("homepage screenshot is missing") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or not 24 <= metadata.st_size <= MAX_FRAMEBUFFER_PNG_BYTES
+    ):
+        raise GateError("homepage screenshot is unsafe")
+    payload = path.read_bytes()
+    if (
+        not payload.startswith(b"\x89PNG\r\n\x1a\n")
+        or payload[12:16] != b"IHDR"
+    ):
+        raise GateError("homepage screenshot is not PNG")
+    width, height = struct.unpack(">II", payload[16:24])
+    if not 0 < width <= 8192 or not 0 < height <= 8192:
+        raise GateError("homepage screenshot dimensions are invalid")
+    return hashlib.sha256(payload).hexdigest(), width, height
 
 
 def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
@@ -1207,11 +1404,17 @@ def _write_evidence(
     name: str,
     snapshot: dict[str, object],
     deadline: float,
+    *,
+    screenshot_backend: str = "marionette",
 ) -> None:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / f"{name}.json").write_text(
         json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if screenshot_backend == "framebuffer":
+        return
+    if screenshot_backend != "marionette":
+        raise GateError("screenshot backend is unsupported")
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("screenshot command started after the gate deadline")
@@ -1280,6 +1483,8 @@ def _capture_baidu_home(
     deadline: float,
     evidence_dir: Path,
     firefox_pid: int,
+    *,
+    screenshot_backend: str = "marionette",
 ) -> dict[str, object]:
     run_phase(
         "navigate-baidu-home",
@@ -1325,17 +1530,36 @@ def _capture_baidu_home(
             flush=True,
         )
     _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
+    def write_home_evidence() -> None:
+        if screenshot_backend == "marionette":
+            _write_evidence(
+                client, evidence_dir, "baidu-home", baidu_home, deadline
+            )
+            return
+        _write_evidence(
+            client,
+            evidence_dir,
+            "baidu-home",
+            baidu_home,
+            deadline,
+            screenshot_backend=screenshot_backend,
+        )
+
     run_phase(
         "evidence-baidu-home",
-        lambda: _write_evidence(
-            client, evidence_dir, "baidu-home", baidu_home, deadline
-        ),
+        write_home_evidence,
     )
     return baidu_home
 
 
 def run_baidu_home_gate(
-    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+    host: str,
+    port: int,
+    timeout: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+    *,
+    screenshot_backend: str = "marionette",
 ) -> dict[str, object]:
     """Capture one verified Baidu homepage without running the heavy web suite."""
 
@@ -1363,16 +1587,29 @@ def run_baidu_home_gate(
         return result
 
     _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
+    home: dict[str, object] | None = None
     try:
         _start_webdriver_session(client, run_phase, firefox_pid)
-        return _capture_baidu_home(
-            client, run_phase, deadline, evidence_dir, firefox_pid
+        home = _capture_baidu_home(
+            client,
+            run_phase,
+            deadline,
+            evidence_dir,
+            firefox_pid,
+            screenshot_backend=screenshot_backend,
         )
     finally:
         # Closing only the transport leaves Firefox alive and avoids the
         # DeleteSession behavior that can stop the listener before the host has
         # copied evidence or requested a safe reboot.
         client.close()
+    if screenshot_backend == "framebuffer":
+        _capture_framebuffer_png(evidence_dir / "baidu-home.png")
+    elif screenshot_backend != "marionette":
+        raise GateError("screenshot backend is unsupported")
+    if home is None:
+        raise GateError("Baidu homepage evidence is missing")
+    return home
 
 
 def run_gate(
@@ -1539,6 +1776,11 @@ def run_gate(
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser_web_marionette_gate")
     parser.add_argument("--scope", choices=("full", "baidu-home"), default="full")
+    parser.add_argument(
+        "--screenshot-backend",
+        choices=("marionette", "framebuffer"),
+        default="marionette",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--timeout", type=float, default=900.0)
@@ -1553,29 +1795,50 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error("Marionette endpoint is outside the loopback contract")
     if not 0 < values.timeout <= 1200 or not values.evidence_dir.is_absolute():
         parser.error("timeout or evidence directory is outside the bounded contract")
+    if values.scope != "baidu-home" and values.screenshot_backend != "marionette":
+        parser.error("framebuffer screenshot backend requires baidu-home scope")
     try:
         validate_network_namespace(values.firefox_pid)
         if values.scope == "baidu-home":
-            home = run_baidu_home_gate(
+            home_arguments = (
                 values.host,
                 values.port,
                 values.timeout,
                 values.evidence_dir,
                 values.firefox_pid,
             )
+            if values.screenshot_backend == "marionette":
+                home = run_baidu_home_gate(*home_arguments)
+            else:
+                home = run_baidu_home_gate(
+                    *home_arguments, screenshot_backend=values.screenshot_backend
+                )
             title = home.get("title")
             url = home.get("url")
             if not isinstance(title, str) or not isinstance(url, str):
                 raise GateError("Baidu homepage identity is malformed")
+            marker: dict[str, object] = {
+                "marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",
+                "scope": "baidu-home",
+                "title_sha256": hashlib.sha256(title.encode()).hexdigest(),
+                "tls": "verified",
+                "url": url,
+            }
+            if values.screenshot_backend == "framebuffer":
+                digest, width, height = _screenshot_identity(
+                    values.evidence_dir / "baidu-home.png"
+                )
+                marker.update(
+                    {
+                        "screenshot_height": height,
+                        "screenshot_sha256": digest,
+                        "screenshot_source": "framebuffer",
+                        "screenshot_width": width,
+                    }
+                )
             print(
                 json.dumps(
-                    {
-                        "marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",
-                        "scope": "baidu-home",
-                        "title_sha256": hashlib.sha256(title.encode()).hexdigest(),
-                        "tls": "verified",
-                        "url": url,
-                    },
+                    marker,
                     sort_keys=True,
                     separators=(",", ":"),
                 )
