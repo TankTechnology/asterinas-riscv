@@ -422,6 +422,13 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
             )
 
         read(expected + "\n")
+        piped = io.StringIO(expected + "\n")
+        gate._read_operator_confirmation(
+            expected,
+            1.0,
+            stream=piped,
+            wait_readable=lambda _stream, _timeout: True,
+        )
         for payload in (
             "",
             "confirm-cyan-pass 01234567\n",
