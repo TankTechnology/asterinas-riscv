@@ -365,7 +365,7 @@ button. The guest is booted with `asterinas.reboot_after=900`; the host uses a
 930-second recovery wait so it can retain the final HDMI image and still
 observe the fresh U-Boot prompt. The printed command makes every deadline
 explicit: opening the serial link is bounded at 60 seconds, artifact
-preparation at 300 seconds, graphical readiness at 120 seconds, each cycle at
+preparation at 300 seconds, graphical readiness at 300 seconds, each cycle at
 180 seconds, and the post-cycle HDMI update at 60 seconds. The post-boot
 success-path caps total 720 seconds, leaving 180 seconds of the guest's single
 900-second lifetime for serial transfer and phase transitions. These are caps,
