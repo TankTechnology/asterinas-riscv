@@ -490,7 +490,13 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         return outcomes
 
     def _run_long_step(
-        self, command: str, step: str, nonce: str, timeout: float
+        self,
+        command: str,
+        step: str,
+        nonce: str,
+        timeout: float,
+        *,
+        accepted_statuses: tuple[str, ...] = ("0",),
     ) -> None:
         serial = self._require_serial()
         deadline = self._guest_phase_deadline(timeout)
@@ -508,7 +514,11 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
                 if not line.startswith(marker_prefix):
                     continue
                 status = line.removeprefix(marker_prefix)
-                if status != "0":
+                if re.fullmatch(r"[0-9]+", status) is None:
+                    raise HostGateError(
+                        f"Firefox browse {step} returned a malformed status"
+                    )
+                if status not in accepted_statuses:
                     raise HostGateError(
                         f"Firefox browse {step} failed with status {status}"
                     )
@@ -530,7 +540,16 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             "/run/asterinas-tools/megrez-clock-sync "
             "--proxy http://10.100.19.216:17893 --timeout 15"
         )
-        self._run_long_step(command, "clock", secrets.token_hex(8), timeout)
+        # CPython process teardown can outlive the outer timeout on Asterinas.
+        # Status 124 is usable only when the unique post-operation marker below
+        # proves that clock synchronization itself already completed.
+        self._run_long_step(
+            command,
+            "clock",
+            secrets.token_hex(8),
+            timeout,
+            accepted_statuses=("0", "124"),
+        )
         return _single_json_marker(
             self._step_payload(start), "ASTERINAS_CLOCK_SYNC_READY"
         )
@@ -552,7 +571,15 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             f"--firefox-pid {browser_pid} --timeout {guest_timeout} "
             f"--evidence-dir {directory}"
         )
-        self._run_long_step(command, "baidu-home", nonce, timeout)
+        # As above, a timeout is accepted only if the gate printed its unique
+        # marker after TLS/DOM/screenshot validation completed.
+        self._run_long_step(
+            command,
+            "baidu-home",
+            nonce,
+            timeout,
+            accepted_statuses=("0", "124"),
+        )
         return _single_json_marker(
             self._step_payload(start), "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY"
         )
