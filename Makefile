@@ -415,6 +415,38 @@ test_riscv_physical_graphics_unit:
 		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_physical_graphics_qemu_gate -v
 
+.PHONY: test_riscv_megrez_boot_stability_unit
+test_riscv_megrez_boot_stability_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_boot_stability \
+		tools.riscv.tests.test_megrez_rockos_attestation \
+		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_debian_rootfs.DebianRootfsGateRuntimeTests -v
+
+.PHONY: test_riscv_megrez_probe_unit
+test_riscv_megrez_probe_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_probe \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
+MEGREZ_PROBE_BUNDLE ?= target/megrez-probe/current.json
+MEGREZ_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
+MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
+
+.PHONY: test_riscv_megrez_probe_qemu
+test_riscv_megrez_probe_qemu:
+	@python3 -m tools.riscv.megrez_probe boot syscall213 \
+		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
+		--output-directory target/megrez-probe/qemu-normal \
+		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
+		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)"
+	@python3 -m tools.riscv.megrez_probe boot \
+		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
+		--output-directory target/megrez-probe/qemu-deadline \
+		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
+		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)" \
+		--qemu-deadline-only
+
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
