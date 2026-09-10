@@ -73,12 +73,31 @@ _DONE = re.compile(
     rb"status=(pass|fail)"
 )
 _REBOOT_READY = re.compile(rb"ASTERINAS_PROBE_REBOOT_READY v=1 nonce=([0-9a-f]{32})")
+_SHELL_READY = re.compile(rb"ASTERINAS_PROBE_SHELL_READY v=1 nonce=([0-9a-f]{32})")
+_SHELL_COMMANDS_RECORD = (
+    b"ASTERINAS_PROBE_SHELL_COMMANDS "
+    b"help,dmesg,mounts,boot,syscall213,syscall272,"
+    b"ext2-writeback,systemd-compat,exit"
+)
+_SHELL_RESULT = re.compile(
+    rb"ASTERINAS_PROBE_SHELL_RESULT name=([a-z0-9-]+) "
+    rb"status=(pass|fail) errno=([0-9]+) detail=(" + _SAFE_DETAIL.encode() + rb")"
+)
+_SHELL_REJECT = re.compile(
+    rb"ASTERINAS_PROBE_SHELL_REJECT reason=(" + _SAFE_DETAIL.encode() + rb")"
+)
+_SHELL_MOUNTS_LINE = re.compile(
+    rb"ASTERINAS_PROBE_SHELL_MOUNTS [^\r\n ]+ [^\r\n ]+ [^\r\n ]+"
+)
+_SHELL_MOUNTS_BEGIN = b"ASTERINAS_PROBE_SHELL_MOUNTS_BEGIN"
+_SHELL_MOUNTS_END = b"ASTERINAS_PROBE_SHELL_MOUNTS_END"
 _PROTOCOL_NONCE = re.compile(rb"ASTERINAS_PROBE_[^\r\n]*nonce=([0-9a-f]{32})")
 _PROTOCOL_PREFIX = b"ASTERINAS_PROBE_"
 _READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
 _MAX_TRANSCRIPT_BYTES = 256 * 1024
 _MAX_DMESG_BYTES = 32 * 1024
 _SERIAL_CONTEXT_BYTES = 2048
+_SERIAL_SUMMARY_BYTES = 8 * 1024
 _PHYSICAL_TRANSCRIPT_BYTES = 256 * 1024
 _PROBE_READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
 _SHELL_READY_PREFIX = b"ASTERINAS_PROBE_SHELL_READY v=1 nonce="
@@ -457,7 +476,11 @@ def _require_nonce(match: re.Match[bytes], nonce: bytes) -> None:
 
 
 def classify_probe_transcript(
-    transcript: bytes, nonce: str, selected: Sequence[str]
+    transcript: bytes,
+    nonce: str,
+    selected: Sequence[str],
+    *,
+    shell: bool = False,
 ) -> ProbeExchange:
     """Validate exactly one ordered exchange from noisy serial output."""
 
@@ -487,12 +510,18 @@ def classify_probe_transcript(
         _DMESG_END,
         _DONE,
         _REBOOT_READY,
+        _SHELL_READY,
+        _SHELL_RESULT,
+        _SHELL_REJECT,
+        _SHELL_MOUNTS_LINE,
     )
     for line in lines:
         record = line.removesuffix(b"\n")
         if (
             record.startswith(_PROTOCOL_PREFIX)
             and record != _READY
+            and record
+            not in (_SHELL_COMMANDS_RECORD, _SHELL_MOUNTS_BEGIN, _SHELL_MOUNTS_END)
             and not any(pattern.fullmatch(record) for pattern in known_patterns)
         ):
             unknown.append(record)
@@ -502,6 +531,11 @@ def classify_probe_transcript(
     ready_index = next(
         index for index, line in enumerate(lines) if line.removesuffix(b"\n") == _READY
     )
+    if any(
+        line.removesuffix(b"\n").startswith(_PROTOCOL_PREFIX)
+        for line in lines[:ready_index]
+    ):
+        raise ProbeProtocolError("probe protocol preceded the readiness marker")
     cursor = ready_index + 1
     run_indexes = [
         index
@@ -519,6 +553,8 @@ def classify_probe_transcript(
         _require_nonce(request_echo, nonce_bytes)
         if request_echo.group(2).decode() != ",".join(names):
             raise ProbeProtocolError("probe request echo changed the selection")
+        if request_echo.group(3) != (b"1" if shell else b"0"):
+            raise ProbeProtocolError("probe request echo changed the shell selector")
         cursor = run_index + 1
     outcomes: list[ProbeOutcome] = []
     failed = False
@@ -597,7 +633,65 @@ def classify_probe_transcript(
         raise ProbeProtocolError("probe DONE count or status is inconsistent")
     if status and len(outcomes) != len(names):
         raise ProbeProtocolError("successful exchange omitted a requested probe")
-    reboot_index, reboot_record = _next_protocol_line(lines, done_index + 1)
+    cursor = done_index + 1
+    if shell:
+        shell_index, shell_record = _next_protocol_line(lines, cursor)
+        shell_ready = _SHELL_READY.fullmatch(shell_record)
+        if shell_ready is None:
+            raise ProbeProtocolError("probe shell readiness is missing")
+        _require_nonce(shell_ready, nonce_bytes)
+        cursor = shell_index + 1
+        while True:
+            record_index, record = _next_protocol_line(lines, cursor)
+            if _REBOOT_READY.fullmatch(record) is not None:
+                break
+            if record == _SHELL_COMMANDS_RECORD:
+                cursor = record_index + 1
+                continue
+            if _SHELL_RESULT.fullmatch(record) or _SHELL_REJECT.fullmatch(record):
+                cursor = record_index + 1
+                continue
+            if _SHELL_MOUNTS_LINE.fullmatch(record):
+                cursor = record_index + 1
+                continue
+            if record == _SHELL_MOUNTS_BEGIN:
+                end_index = record_index + 1
+                while end_index < len(lines):
+                    candidate = lines[end_index].removesuffix(b"\n")
+                    if candidate == _SHELL_MOUNTS_END:
+                        break
+                    if candidate.startswith(_PROTOCOL_PREFIX):
+                        raise ProbeProtocolError("invalid protocol inside mounts frame")
+                    end_index += 1
+                if end_index == len(lines):
+                    raise ProbeProtocolError("probe mounts end marker is missing")
+                cursor = end_index + 1
+                continue
+            begin = _DMESG_BEGIN.fullmatch(record)
+            if begin is not None:
+                _require_nonce(begin, nonce_bytes)
+                announced = int(begin.group(2))
+                if announced > _MAX_DMESG_BYTES:
+                    raise ProbeProtocolError("probe dmesg frame exceeds the byte cap")
+                end_index = record_index + 1
+                while end_index < len(lines):
+                    candidate = lines[end_index].removesuffix(b"\n")
+                    if _DMESG_END.fullmatch(candidate) is not None:
+                        break
+                    if candidate.startswith(_PROTOCOL_PREFIX):
+                        raise ProbeProtocolError("invalid protocol inside dmesg frame")
+                    end_index += 1
+                if end_index == len(lines):
+                    raise ProbeProtocolError("probe dmesg end marker is missing")
+                end = _DMESG_END.fullmatch(lines[end_index].removesuffix(b"\n"))
+                assert end is not None
+                _require_nonce(end, nonce_bytes)
+                if len(b"".join(lines[record_index + 1 : end_index])) != announced:
+                    raise ProbeProtocolError("probe dmesg byte count does not match")
+                cursor = end_index + 1
+                continue
+            raise ProbeProtocolError("probe shell record is out of order")
+    reboot_index, reboot_record = _next_protocol_line(lines, cursor)
     reboot = _REBOOT_READY.fullmatch(reboot_record)
     if reboot is None:
         raise ProbeProtocolError("probe reboot readiness is missing")
@@ -630,7 +724,7 @@ def probe_bootargs(plan: DebugPlan, session_seconds: int) -> str:
     retained = [
         token
         for token in tokens
-        if token != "asterinas.mmc_write_partition2"
+        if token.partition("=")[0].replace("-", "_") != "asterinas.mmc_write_partition2"
         and token != "init=/init"
         and not token.startswith(removed_prefixes)
     ]
@@ -677,6 +771,7 @@ def run_probe(
     reason = "probe-not-started"
     terminal_exchange = False
     phase = "open"
+    guest_deadline: float | None = None
     try:
         operations.open(config.open_seconds)
         phase = "artifacts"
@@ -698,24 +793,53 @@ def run_probe(
         reason = "probe-pass" if exchange.passed else "probe-failed"
         phase = "reboot-request"
         operations.request_reboot(nonce, _remaining(guest_deadline, clock))
-    except (OSError, RuntimeError, TimeoutError, ValueError):
+    except (OSError, RuntimeError, TimeoutError, ValueError, BufferError, EOFError):
         reason = f"probe-{phase}-failed"
     finally:
         if operations.guest_started:
             try:
-                operations.await_recovery(config.recovery_seconds)
+                remaining_guest = (
+                    max(0.0, guest_deadline - clock())
+                    if guest_deadline is not None
+                    else 0.0
+                )
+                operations.await_recovery(config.recovery_seconds + remaining_guest)
                 recovered = True
-            except (OSError, RuntimeError, TimeoutError, ValueError):
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                ValueError,
+                BufferError,
+                EOFError,
+            ):
                 recovered = False
                 reason = "manual-reset-required"
-        transcript = operations.transcript
-        operations.close()
+        try:
+            transcript = operations.transcript
+        except (OSError, RuntimeError, ValueError, BufferError, EOFError) as error:
+            transcript = f"serial transcript unavailable: {error}\n".encode(
+                "utf-8", errors="replace"
+            )
+            reason = "manual-reset-required"
+            recovered = False
+        try:
+            operations.close()
+        except (OSError, RuntimeError, ValueError, BufferError, EOFError):
+            reason = "manual-reset-required"
+            recovered = False
 
     outcomes = exchange.outcomes if exchange is not None else ()
     dmesg = exchange.dmesg if exchange is not None else b""
     result = ProbeRunResult(
         schema_version=1,
-        passed=bool(terminal_exchange and exchange and exchange.passed and recovered),
+        passed=bool(
+            terminal_exchange
+            and exchange
+            and exchange.passed
+            and recovered
+            and reason == "probe-pass"
+        ),
         reason=reason,
         bundle_sha256=bundle.bundle_sha256,
         plan_sha256=bundle.plan_sha256,
@@ -763,24 +887,27 @@ def _prepare_bundle_directory(path: Path) -> Path:
 def _serial_summary(transcript: bytes) -> bytes:
     if not isinstance(transcript, bytes):
         raise ProbeContractError("serial transcript must be bytes")
-    first = transcript.find(_PROTOCOL_PREFIX)
-    last = transcript.rfind(_PROTOCOL_PREFIX)
-    if first < 0:
-        return transcript[-2 * _SERIAL_CONTEXT_BYTES :]
-    line_end = transcript.find(b"\n", last)
-    if line_end < 0:
-        line_end = len(transcript)
-    else:
-        line_end += 1
-    start = max(0, first - _SERIAL_CONTEXT_BYTES)
-    end = min(len(transcript), line_end + _SERIAL_CONTEXT_BYTES)
-    summary = bytearray()
-    if start:
-        summary.extend(b"[serial context truncated]\n")
-    summary.extend(transcript[start:end])
-    if end < len(transcript):
-        summary.extend(b"[serial context truncated]\n")
-    return bytes(summary)
+    protocol = b"".join(
+        line
+        for line in transcript.splitlines(keepends=True)
+        if line.lstrip(b"\r").startswith(_PROTOCOL_PREFIX)
+    )
+    context = (
+        transcript
+        if len(transcript) <= 2 * _SERIAL_CONTEXT_BYTES
+        else (
+            transcript[:_SERIAL_CONTEXT_BYTES]
+            + b"\n[serial context truncated]\n"
+            + transcript[-_SERIAL_CONTEXT_BYTES:]
+        )
+    )
+    summary = context + (b"\n[protocol records]\n" + protocol if protocol else b"")
+    if len(summary) <= _SERIAL_SUMMARY_BYTES:
+        return summary
+    marker = b"\n[serial summary truncated]\n"
+    head = (_SERIAL_SUMMARY_BYTES - len(marker)) // 2
+    tail = _SERIAL_SUMMARY_BYTES - len(marker) - head
+    return summary[:head] + marker + summary[-tail:]
 
 
 class RealProbePublisher:
@@ -795,10 +922,18 @@ class RealProbePublisher:
 
     def __init__(self, output_directory: Path) -> None:
         self.output_directory = _prepare_output_directory(output_directory)
+        self._output = PinnedOutputDirectory(self.output_directory)
+        try:
+            self._output.lock_exclusive()
+        except RuntimeError as error:
+            self._output.close()
+            raise ProbeContractError("probe output run is already active") from error
+
+    def close(self) -> None:
+        self._output.close()
 
     def invalidate(self) -> None:
-        with PinnedOutputDirectory(self.output_directory) as output:
-            output.invalidate(*self.OUTPUT_NAMES)
+        self._output.invalidate(*self.OUTPUT_NAMES)
 
     def publish(self, result: ProbeRunResult, transcript: bytes, dmesg: bytes) -> None:
         summary = _serial_summary(transcript)
@@ -812,16 +947,18 @@ class RealProbePublisher:
                     dmesg or b"no guest dmesg frame was available\n",
                 )
             )
-        with PinnedOutputDirectory(self.output_directory) as output:
-            output.invalidate("result.json")
-            for name, contents in retained:
-                output.atomic_write(name, contents, mode=0o600)
-            sums = "".join(
-                f"{hashlib.sha256(contents).hexdigest()}  {name}\n"
-                for name, contents in retained
-            ).encode()
-            output.atomic_write("sha256sums.txt", sums, mode=0o600)
-            output.atomic_write("result.json", result.canonical_bytes(), mode=0o600)
+        output = self._output
+        output.invalidate("result.json")
+        for name, contents in retained:
+            output.atomic_write(name, contents, mode=0o600)
+        result_payload = result.canonical_bytes()
+        summed = (*retained, ("result.json", result_payload))
+        sums = "".join(
+            f"{hashlib.sha256(contents).hexdigest()}  {name}\n"
+            for name, contents in summed
+        ).encode()
+        output.atomic_write("sha256sums.txt", sums, mode=0o600)
+        output.atomic_write("result.json", result_payload, mode=0o600)
 
 
 def _deadline(timeout: float) -> float:
@@ -848,6 +985,48 @@ def _wait_for_complete_record(
     if record_start < 0:
         raise ProbeProtocolError("serial marker disappeared from the transcript")
     serial.wait_for(b"\n", deadline, start=record_start + len(record))
+
+
+def _wait_for_probe_terminals(
+    serial: SerialConsole,
+    nonce: str,
+    selected: tuple[ProbeDefinition, ...],
+    cursor: int,
+    deadline: float,
+) -> int:
+    """Apply each registry deadline while retaining the global guest deadline."""
+
+    for sequence, definition in enumerate(selected):
+        probe_deadline = min(deadline, time.monotonic() + definition.timeout_seconds)
+        start_record = (
+            f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq={sequence} "
+            f"name={definition.name}"
+        ).encode()
+        _wait_for_complete_record(serial, start_record, probe_deadline, start=cursor)
+        start_index = serial.transcript.find(start_record, cursor)
+        cursor = serial.transcript.find(b"\n", start_index) + 1
+        passed = (
+            f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq={sequence} "
+            f"name={definition.name} detail="
+        ).encode()
+        failed = (
+            f"ASTERINAS_PROBE_FAIL v=1 nonce={nonce} seq={sequence} "
+            f"name={definition.name} errno="
+        ).encode()
+        serial.wait_for_any((passed, failed), probe_deadline, start=cursor)
+        candidates = tuple(
+            (position, marker)
+            for marker in (passed, failed)
+            if (position := serial.transcript.find(marker, cursor)) >= 0
+        )
+        if not candidates:
+            raise ProbeProtocolError("probe terminal marker disappeared")
+        terminal_index, terminal = min(candidates, key=lambda item: item[0])
+        _wait_for_complete_record(serial, terminal, probe_deadline, start=cursor)
+        cursor = serial.transcript.find(b"\n", terminal_index) + 1
+        if terminal == failed:
+            break
+    return cursor
 
 
 class PhysicalProbeOperations:
@@ -949,15 +1128,15 @@ class PhysicalProbeOperations:
         deadline = _deadline(timeout)
         identities = {item.name: item for item in self._bundle.plan.artifacts}
         initramfs = identities["initramfs"]
+        dtb = identities["megrez_dtb"]
         commands = (
-            "fdt addr 0xf0000000",
+            f"fdt addr 0x{dtb.load_address:x}",
             f"setenv initrd_size 0x{initramfs.size:x}",
             *_uboot_bootargs_commands(bootargs),
         )
         for command in commands:
             session.command(command, timeout=max(0.001, deadline - time.monotonic()))
         kernel = identities["kernel"]
-        dtb = identities["megrez_dtb"]
         session.start_boot_attempt()
         self._guest_started = True
         session.send(
@@ -971,18 +1150,16 @@ class PhysicalProbeOperations:
             tx_delay=0.005,
         )
 
-    def _interactive_shell(self, serial: SerialConsole, deadline: float) -> None:
+    def _interactive_shell(
+        self, serial: SerialConsole, deadline: float, nonce: str | None = None
+    ) -> None:
         serial.wait_for(_SHELL_READY_PREFIX, deadline)
+        if nonce is None:
+            matches = _SHELL_READY.findall(serial.transcript)
+            if len(matches) != 1:
+                raise ProbeProtocolError("probe shell nonce is ambiguous")
+            nonce = matches[0].decode()
         input_fd = sys.stdin.fileno()
-        response_markers = (
-            b"ASTERINAS_PROBE_SHELL_COMMANDS ",
-            b"ASTERINAS_PROBE_SHELL_RESULT ",
-            b"ASTERINAS_PROBE_SHELL_REJECT ",
-            b"ASTERINAS_PROBE_DMESG_END ",
-            b"ASTERINAS_PROBE_SHELL_MOUNTS_END",
-            b"ASTERINAS_PROBE_SHELL_MOUNTS proc ",
-            b"ASTERINAS_PROBE_REBOOT_READY ",
-        )
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1004,27 +1181,44 @@ class PhysicalProbeOperations:
                 continue
             cursor = serial.checkpoint()
             serial.send((command + "\n").encode(), deadline)
-            serial.wait_for_any(response_markers, deadline, start=cursor)
+            if command == "help":
+                terminals = (_SHELL_COMMANDS_RECORD,)
+            elif command == "dmesg":
+                terminals = (f"ASTERINAS_PROBE_DMESG_END v=1 nonce={nonce}".encode(),)
+            elif command == "mounts":
+                terminals = (
+                    _SHELL_MOUNTS_END,
+                    b"ASTERINAS_PROBE_SHELL_MOUNTS proc /proc proc",
+                    b"ASTERINAS_PROBE_SHELL_REJECT reason=mounts-unavailable",
+                )
+            elif command == "exit":
+                terminals = (
+                    f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode(),
+                )
+            else:
+                terminals = (f"ASTERINAS_PROBE_SHELL_RESULT name={command} ".encode(),)
+            serial.wait_for_any(terminals, deadline, start=cursor)
+            terminal_positions = tuple(
+                (position, marker)
+                for marker in terminals
+                if (position := serial.transcript.find(marker, cursor)) >= 0
+            )
+            if not terminal_positions:
+                raise ProbeProtocolError("probe shell response disappeared")
+            terminal_index, terminal = min(terminal_positions, key=lambda item: item[0])
+            _wait_for_complete_record(serial, terminal, deadline, start=cursor)
+            end = serial.transcript.find(b"\n", terminal_index) + 1
+            sys.stdout.write(
+                serial.transcript[cursor:end].decode("utf-8", errors="replace")
+            )
+            sys.stdout.flush()
             if command == "exit":
                 return
 
     @staticmethod
     def _classification_transcript(transcript: bytes, nonce: str) -> bytes:
-        done_prefix = f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} ".encode()
-        done_start = transcript.find(done_prefix)
-        if done_start < 0:
-            return transcript
-        done_end = transcript.find(b"\n", done_start)
-        if done_end < 0:
-            return transcript
-        reboot = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n".encode()
-        reboot_start = transcript.find(reboot, done_end + 1)
-        if reboot_start < 0:
-            return transcript
-        return (
-            transcript[: done_end + 1]
-            + transcript[reboot_start : reboot_start + len(reboot)]
-        )
+        _validate_nonce(nonce)
+        return transcript
 
     def exchange(
         self,
@@ -1038,13 +1232,17 @@ class PhysicalProbeOperations:
         serial.wait_for(_PROBE_READY, deadline)
         cursor = serial.checkpoint()
         serial.send(encode_probe_request(nonce, selected, shell=shell), deadline)
+        cursor = _wait_for_probe_terminals(serial, nonce, selected, cursor, deadline)
         if shell:
-            self._interactive_shell(serial, deadline)
+            self._interactive_shell(serial, deadline, nonce)
         reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
         _wait_for_complete_record(serial, reboot_ready, deadline, start=cursor)
         evidence = self._classification_transcript(serial.transcript, nonce)
         return classify_probe_transcript(
-            evidence, nonce, tuple(item.name for item in selected)
+            evidence,
+            nonce,
+            tuple(item.name for item in selected),
+            shell=shell,
         )
 
     def request_reboot(self, nonce: str, timeout: float) -> None:
@@ -1157,7 +1355,11 @@ class QemuProbeOperations:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("QEMU artifact open deadline expired")
                 descriptor = os.open(
-                    self._paths[name], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                    self._paths[name],
+                    os.O_RDONLY
+                    | os.O_NOFOLLOW
+                    | os.O_CLOEXEC
+                    | getattr(os, "O_NONBLOCK", 0),
                 )
                 metadata = os.fstat(descriptor)
                 if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
@@ -1257,6 +1459,7 @@ class QemuProbeOperations:
         serial.wait_for(_PROBE_READY, deadline)
         cursor = serial.checkpoint()
         serial.send(encode_probe_request(nonce, selected), deadline)
+        cursor = _wait_for_probe_terminals(serial, nonce, selected, cursor, deadline)
         reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
         _wait_for_complete_record(serial, reboot_ready, deadline, start=cursor)
         return classify_probe_transcript(
@@ -1342,7 +1545,10 @@ def run_qemu_deadline_gate(
 
 
 def _read_bounded_regular(path: Path, maximum: int, label: str) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0),
+    )
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum:
@@ -1455,6 +1661,7 @@ def main(
     """Configure or execute the current one-command physical probe loop."""
 
     values = parse_args(tuple(sys.argv[1:] if arguments is None else arguments))
+    publisher: RealProbePublisher | None = None
     try:
         if values.action == "configure":
             bundle = _configure(values)
@@ -1502,6 +1709,9 @@ def main(
     except (DebugContractError, OSError, ProbeContractError, RuntimeError) as error:
         print(f"megrez-probe: {error}", file=sys.stderr)
         return 2
+    finally:
+        if publisher is not None:
+            publisher.close()
     print(result.canonical_bytes().decode(), end="")
     return 0 if result.passed else 1
 

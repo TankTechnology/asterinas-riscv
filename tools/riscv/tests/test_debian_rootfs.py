@@ -912,6 +912,8 @@ class DebianStage1Tests(unittest.TestCase):
             f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=unknown shell=0\n",
             f"ASTERINAS_PROBE_RUN v=1 nonce={nonce.upper()} probes=boot shell=0\n",
             f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=2\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=0 extra\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=0 \n",
             "x" * 513 + "\n",
         )
         for request in invalid_requests:

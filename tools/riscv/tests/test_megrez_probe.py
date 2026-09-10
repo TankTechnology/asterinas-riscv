@@ -10,6 +10,7 @@ import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -196,6 +197,21 @@ class ProbeSelectionTests(unittest.TestCase):
             ):
                 probe.validate_session_seconds(invalid)
 
+    def test_probe_bootargs_remove_every_partition_write_flag_spelling(self) -> None:
+        for token in (
+            "asterinas.mmc_write_partition2",
+            "asterinas.mmc_write_partition2=1",
+            "asterinas.mmc-write-partition2=yes",
+        ):
+            with self.subTest(token=token):
+                plan = replace(_plan(), bootargs=f"{_plan().bootargs} {token}")
+                bootargs = probe.probe_bootargs(plan, 90)
+                normalized_keys = {
+                    item.partition("=")[0].replace("-", "_")
+                    for item in bootargs.split()
+                }
+                self.assertNotIn("asterinas.mmc_write_partition2", normalized_keys)
+
 
 class ProbeProtocolTests(unittest.TestCase):
     NONCE = "00112233445566778899aabbccddeeff"
@@ -297,6 +313,12 @@ class ProbeProtocolTests(unittest.TestCase):
         valid = self._success().decode()
         variants = (
             valid.replace(
+                "kernel boot noise\n",
+                "kernel boot noise\n"
+                f"ASTERINAS_PROBE_PASS v=1 nonce={self.NONCE} "
+                "seq=0 name=boot detail=boot-ok\n",
+            ),
+            valid.replace(
                 f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} count=2 status=pass\n",
                 "",
             ),
@@ -315,6 +337,39 @@ class ProbeProtocolTests(unittest.TestCase):
                 probe.classify_probe_transcript(
                     transcript.encode(), self.NONCE, ("boot", "syscall213")
                 )
+
+    def test_shell_protocol_accepts_crlf_without_discarding_batch_records(self) -> None:
+        valid = (
+            self._success()
+            .replace(
+                f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={self.NONCE}\n".encode(),
+                (
+                    f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={self.NONCE}\n"
+                    "ASTERINAS_PROBE_SHELL_COMMANDS "
+                    "help,dmesg,mounts,boot,syscall213,syscall272,"
+                    "ext2-writeback,systemd-compat,exit\n"
+                    f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={self.NONCE}\n"
+                ).encode(),
+            )
+            .replace(b"\n", b"\r\n")
+        )
+
+        exchange = probe.classify_probe_transcript(
+            valid, self.NONCE, ("boot", "syscall213"), shell=True
+        )
+
+        self.assertTrue(exchange.passed)
+        replay = valid.replace(
+            b"ASTERINAS_PROBE_SHELL_READY",
+            (
+                f"ASTERINAS_PROBE_DONE v=1 nonce={self.NONCE} "
+                "count=2 status=pass\r\nASTERINAS_PROBE_SHELL_READY"
+            ).encode(),
+        )
+        with self.assertRaises(probe.ProbeProtocolError):
+            probe.classify_probe_transcript(
+                replay, self.NONCE, ("boot", "syscall213"), shell=True
+            )
 
     def test_protocol_rejects_identity_substitution_and_unknown_markers(self) -> None:
         valid = self._success().decode()
@@ -536,7 +591,59 @@ class ProbeLifecycleTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.reason, "probe-exchange-failed")
         self.assertNotIn("request-reboot", [event.split(":", 1)[0] for event in events])
-        self.assertIn("recovery:30", events)
+        self.assertIn("recovery:117", events)
+
+    def test_serial_overflow_still_closes_and_publishes_failure(self) -> None:
+        events: list[str] = []
+
+        class OverflowOperations(_LifecycleOperations):
+            def exchange(self, *_args):
+                raise BufferError("serial transcript exceeds byte cap")
+
+            def await_recovery(self, _timeout: float) -> None:
+                raise EOFError("serial console closed")
+
+        publisher = _LifecyclePublisher(events)
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot",)),
+            probe.ProbeRunConfig(),
+            OverflowOperations(events, probe.ProbeExchange((), False, b"")),
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "manual-reset-required")
+        self.assertLess(events.index("close"), events.index("publish:False"))
+
+    def test_failed_immediate_reboot_request_cannot_publish_pass(self) -> None:
+        events: list[str] = []
+
+        class RebootFailureOperations(_LifecycleOperations):
+            def request_reboot(self, _nonce: str, _timeout: float) -> None:
+                raise TimeoutError("reboot request was not accepted")
+
+        exchange = probe.ProbeExchange(
+            (probe.ProbeOutcome(0, "boot", True, None, "boot-ok"),),
+            True,
+            b"",
+        )
+        publisher = _LifecyclePublisher(events)
+        result = probe.run_probe(
+            self._bundle(),
+            probe.validate_probe_names(("boot",)),
+            probe.ProbeRunConfig(),
+            RebootFailureOperations(events, exchange),
+            publisher,
+            clock=self._clock(),
+            nonce_factory=lambda: "0" * 32,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertEqual(result.reason, "probe-reboot-request-failed")
 
     def test_missing_recovery_reports_manual_reset_required(self) -> None:
         events: list[str] = []
@@ -597,6 +704,7 @@ class ProbePublisherTests(unittest.TestCase):
 
     def test_success_publishes_private_hash_valid_result_last(self) -> None:
         publisher = probe.RealProbePublisher(self.directory)
+        self.addCleanup(publisher.close)
         publisher.invalidate()
 
         publisher.publish(
@@ -617,11 +725,22 @@ class ProbePublisherTests(unittest.TestCase):
                 hashlib.sha256((self.directory / name).read_bytes()).hexdigest(),
                 digest,
             )
+        self.assertIn(
+            "  result.json\n", (self.directory / "sha256sums.txt").read_text()
+        )
 
     def test_failure_retains_only_bounded_dmesg_and_compact_serial(self) -> None:
         publisher = probe.RealProbePublisher(self.directory)
+        self.addCleanup(publisher.close)
         publisher.invalidate()
-        transcript = b"x" * 10000 + b"\nASTERINAS_PROBE_READY v=1 pid=1\n"
+        transcript = (
+            b"x" * 10000
+            + b"\nASTERINAS_PROBE_READY v=1 pid=1\n"
+            + b"ordinary kernel noise\n" * 10000
+            + b"ASTERINAS_PROBE_REBOOT_READY v=1 nonce="
+            + b"0" * 32
+            + b"\n"
+        )
 
         publisher.publish(self._result(passed=False), transcript, b"failure\n")
 
@@ -637,12 +756,15 @@ class ProbePublisherTests(unittest.TestCase):
         for name in probe.RealProbePublisher.OUTPUT_NAMES:
             (self.directory / name).write_text("stale")
 
-        probe.RealProbePublisher(self.directory).invalidate()
+        publisher = probe.RealProbePublisher(self.directory)
+        self.addCleanup(publisher.close)
+        publisher.invalidate()
 
         self.assertEqual(list(self.directory.iterdir()), [])
 
     def test_mid_publication_failure_never_leaves_terminal_result(self) -> None:
         publisher = probe.RealProbePublisher(self.directory)
+        self.addCleanup(publisher.close)
         publisher.invalidate()
         original = probe.PinnedOutputDirectory.atomic_write
 
@@ -666,6 +788,7 @@ class ProbePublisherTests(unittest.TestCase):
 
     def test_symlink_destination_is_replaced_without_following(self) -> None:
         publisher = probe.RealProbePublisher(self.directory)
+        self.addCleanup(publisher.close)
         publisher.invalidate()
         sentinel = Path(self.temporary_directory.name) / "sentinel"
         sentinel.write_text("unchanged")
@@ -676,12 +799,21 @@ class ProbePublisherTests(unittest.TestCase):
         self.assertEqual(sentinel.read_text(), "unchanged")
         self.assertFalse((self.directory / "serial-summary.log").is_symlink())
 
+    def test_output_directory_is_exclusively_locked_for_one_run(self) -> None:
+        first = probe.RealProbePublisher(self.directory)
+        self.addCleanup(first.close)
+        first.invalidate()
+
+        with self.assertRaisesRegex(probe.ProbeContractError, "already active"):
+            probe.RealProbePublisher(self.directory)
+
 
 class _PhysicalSerial:
     def __init__(self, _fd, *, max_bytes, tx_delay):
         self.max_bytes = max_bytes
         self.tx_delay = tx_delay
         self.sent: list[bytes] = []
+        self.wait_for_any_calls: list[tuple[tuple[bytes, ...], float, int]] = []
         self._transcript = bytearray(b"kernel noise\nASTERINAS_PROBE_READY v=1 pid=1\n")
 
     @property
@@ -726,6 +858,17 @@ class _PhysicalSerial:
         if deadline <= time.monotonic() or self.transcript.find(marker, start) < 0:
             raise TimeoutError(f"missing marker: {marker!r}")
         return self.transcript
+
+    def wait_for_any(self, markers, deadline: float, *, start: int = 0) -> bytes:
+        candidates = tuple(markers)
+        self.wait_for_any_calls.append((candidates, deadline, start))
+        if deadline <= time.monotonic() or not any(
+            self.transcript.find(marker, start) >= 0 for marker in candidates
+        ):
+            raise TimeoutError(f"missing markers: {candidates!r}")
+        return next(
+            marker for marker in candidates if self.transcript.find(marker, start) >= 0
+        )
 
 
 class PhysicalProbeOperationsTests(unittest.TestCase):
@@ -796,6 +939,7 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
             )
         )
         self.assertEqual(self.serial_instances[0].sent[-1], b"\n")
+        self.assertEqual(len(self.serial_instances[0].wait_for_any_calls), 2)
         self.assertEqual(self.closed, [41])
 
     def test_artifact_size_mismatch_fails_before_boot(self) -> None:
@@ -804,6 +948,97 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(probe.ProbeContractError, "size mismatch"):
             self.operations.ensure_artifacts(10)
+
+    def test_interactive_shell_prints_complete_guest_responses(self) -> None:
+        nonce = "0" * 32
+
+        class ShellSerial:
+            def __init__(self) -> None:
+                self._transcript = bytearray(
+                    f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n".encode()
+                )
+
+            @property
+            def transcript(self) -> bytes:
+                return bytes(self._transcript)
+
+            def checkpoint(self) -> int:
+                return len(self._transcript)
+
+            def send(self, payload: bytes, _deadline: float) -> None:
+                if payload == b"help\n":
+                    self._transcript.extend(
+                        b"ASTERINAS_PROBE_SHELL_COMMANDS help,dmesg,mounts,boot,"
+                        b"syscall213,syscall272,ext2-writeback,systemd-compat,exit\n"
+                    )
+                elif payload == b"exit\n":
+                    self._transcript.extend(
+                        f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n".encode()
+                    )
+
+            def wait_for(
+                self, marker: bytes, _deadline: float, *, start: int = 0
+            ) -> bytes:
+                if self.transcript.find(marker, start) < 0:
+                    raise TimeoutError(marker)
+                return self.transcript
+
+            def wait_for_any(
+                self, markers, _deadline: float, *, start: int = 0
+            ) -> bytes:
+                if not any(
+                    self.transcript.find(marker, start) >= 0 for marker in markers
+                ):
+                    raise TimeoutError(markers)
+                return self.transcript
+
+        self.operations._serial = ShellSerial()
+        with tempfile.TemporaryFile(mode="w+") as input_file:
+            input_file.write("help\nexit\n")
+            input_file.seek(0)
+            output = io.StringIO()
+            with (
+                mock.patch.object(probe.sys, "stdin", input_file),
+                redirect_stdout(output),
+            ):
+                self.operations._interactive_shell(
+                    self.operations._serial, time.monotonic() + 10
+                )
+
+        self.assertIn("ASTERINAS_PROBE_SHELL_COMMANDS", output.getvalue())
+
+    def test_complete_transcript_rejects_records_hidden_after_done(self) -> None:
+        nonce = "0" * 32
+        transcript = (
+            "ASTERINAS_PROBE_READY v=1 pid=1\n"
+            f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=0 name=boot\n"
+            f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=0 name=boot detail=boot-ok\n"
+            f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=1 status=pass\n"
+            f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=1 status=pass\n"
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n"
+        ).encode()
+
+        evidence = self.operations._classification_transcript(transcript, nonce)
+        with self.assertRaises(probe.ProbeProtocolError):
+            probe.classify_probe_transcript(evidence, nonce, ("boot",))
+
+    def test_boot_uses_the_bundle_dtb_load_address(self) -> None:
+        artifacts = tuple(
+            replace(item, load_address=0xF1000000)
+            if item.name == "megrez_dtb"
+            else item
+            for item in self.bundle.plan.artifacts
+        )
+        plan = replace(self.bundle.plan, artifacts=artifacts)
+        bundle = replace(self.bundle, plan=plan, plan_sha256=plan.plan_sha256)
+        self.operations._bundle = bundle
+        self.operations.open(10)
+        self.operations.ensure_artifacts(10)
+
+        self.operations.boot(probe.probe_bootargs(plan, 90), 10)
+
+        commands = [call.args[0] for call in self.session.command.call_args_list]
+        self.assertIn("fdt addr 0xf1000000", commands)
 
 
 class ProbeCliTests(unittest.TestCase):
@@ -941,6 +1176,24 @@ class ProbeCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         factory.assert_called_once_with(bundle)
         self.assertTrue(json.loads((output / "result.json").read_text())["passed"])
+
+    def test_bounded_reader_rejects_fifo_without_waiting_for_a_writer(self) -> None:
+        fifo = self.directory / "bundle.fifo"
+        os.mkfifo(fifo)
+        script = (
+            "from pathlib import Path; "
+            "from tools.riscv.megrez_probe import _read_bounded_regular; "
+            f"_read_bounded_regular(Path({str(fifo)!r}), 1024, 'bundle')"
+        )
+        process = __import__("subprocess").Popen(
+            ["python3", "-c", script], cwd=Path(__file__).resolve().parents[3]
+        )
+        try:
+            self.assertNotEqual(process.wait(timeout=1), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
 
 
 class _QemuProcess:

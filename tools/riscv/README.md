@@ -386,7 +386,7 @@ python3 -m tools.riscv.megrez_probe boot syscall213
 ```
 
 The default bundle is `target/megrez-probe/current.json`; private evidence is
-written below `target/megrez-probe/physical`. The guest has one 90-second
+written below `target/megrez-probe/latest` by default. The guest has one 90-second
 timer, recovery is independently bounded, and the host sends one newline after
 the new U-Boot banner to stop its autoboot countdown before requiring the
 prompt. The normal probe registry is fixed and read-only. A bounded shell is

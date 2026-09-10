@@ -390,6 +390,13 @@ class BootStabilityProtocolTests(unittest.TestCase):
         self.assertIn("/home/asterinas/desktop-m5-session.log", command)
         self.assertIn("/home/asterinas/firefox-web-stderr.log", command)
         self.assertNotIn("tail -c", command)
+        self.assertNotIn(
+            'dmesg --color=never >>"$_asterinas_boot_diag" 2>&1 || true',
+            command,
+        )
+        self.assertTrue(
+            all(' >"$_asterinas_boot_diag.' in item for item in commands[1:-2])
+        )
         self.assertIn(f"-le {gate.MAX_DIAGNOSTICS_BYTES}", command)
         for item in commands:
             syntax = subprocess.run(
@@ -474,6 +481,19 @@ class BootStabilityProtocolTests(unittest.TestCase):
         sent = [call.args[0] for call in operations._serial.send.call_args_list]
         self.assertEqual(sent.count(b"\x03\n"), 1)
         self.assertEqual(sum(marker.encode() in payload for payload in sent), 2)
+
+    def test_guest_step_rejects_an_explicit_command_failure(self) -> None:
+        operations = self._operations()
+        marker = (
+            f"__ASTERINAS_BOOT_STEP__ nonce={self.NONCE} step=diagnostics-4 status=1"
+        )
+
+        with (
+            mock.patch.object(operations, "_next_line", return_value=(marker, 1)),
+            mock.patch.object(gate.time, "monotonic", return_value=10.0),
+            self.assertRaisesRegex(gate.HostGateError, "diagnostics-4 failed"),
+        ):
+            operations._send_guest_step("false", "diagnostics-4", self.NONCE, 100.0)
 
     def test_collect_diagnostics_returns_only_nonce_delimited_payload(self) -> None:
         operations = self._operations()
@@ -597,6 +617,23 @@ class BootStabilityProtocolTests(unittest.TestCase):
         self.assertIn(b"sync;", command)
         self.assertIn(b"reboot -f", command)
         self.assertIn(marker.encode(), command)
+
+    def test_recovery_uses_opensbi_bytes_already_buffered_after_ack(self) -> None:
+        operations = self._operations()
+        operations._fd = 41
+        operations._session = mock.Mock()
+        operations._recovery_cursor = 0
+        operations._serial.transcript = (
+            b"__ASTERINAS_BOOT_REBOOT__ nonce=0011223344556677\n"
+            b"OpenSBI v1.5\nU-Boot 2024.01\n"
+            b"Hit any key to stop autoboot: 30\n=> "
+        )
+        operations._serial.wait_for.return_value = operations._serial.transcript
+
+        operations.await_recovery(30)
+
+        operations._serial.send.assert_called_once()
+        self.assertEqual(operations._serial.send.call_args.args[0], b"\n")
 
 
 class BootStabilityCliTests(unittest.TestCase):

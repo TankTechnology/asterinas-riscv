@@ -125,6 +125,9 @@ static int split_request_fields(char *line, char *fields[5])
         if (space == NULL) {
             break;
         }
+        if (count == 5) {
+            return -1;
+        }
         *space = '\0';
         cursor = space + 1;
     }
@@ -207,17 +210,31 @@ static int read_small_file(const char *path, char buffer[PROBE_FILE_MAX],
     return 0;
 }
 
-static int cmdline_has_token(const char *cmdline, const char *token)
+static int cmdline_has_parameter(const char *cmdline, const char *parameter)
 {
-    const size_t token_length = strlen(token);
-    const char *match = cmdline;
-    while ((match = strstr(match, token)) != NULL) {
-        const int left_ok = match == cmdline || match[-1] == ' ';
-        const char right = match[token_length];
-        if (left_ok && (right == '\0' || right == ' ' || right == '\n')) {
+    const size_t parameter_length = strlen(parameter);
+    const char *cursor = cmdline;
+    while (*cursor != '\0') {
+        while (*cursor == ' ' || *cursor == '\n') {
+            ++cursor;
+        }
+        size_t length = 0;
+        while (cursor[length] != '\0' && cursor[length] != ' ' &&
+               cursor[length] != '\n' && cursor[length] != '=') {
+            const char actual = cursor[length] == '-' ? '_' : cursor[length];
+            if (length >= parameter_length || actual != parameter[length]) {
+                break;
+            }
+            ++length;
+        }
+        if (length == parameter_length &&
+            (cursor[length] == '\0' || cursor[length] == ' ' ||
+             cursor[length] == '\n' || cursor[length] == '=')) {
             return 1;
         }
-        match += token_length;
+        while (*cursor != '\0' && *cursor != ' ' && *cursor != '\n') {
+            ++cursor;
+        }
     }
     return 0;
 }
@@ -260,7 +277,7 @@ static struct ProbeResult probe_ext2_writeback(void)
         return (struct ProbeResult){ 0, errno, "cmdline-unavailable" };
     }
     (void)length;
-    if (cmdline_has_token(cmdline, "asterinas.mmc_write_partition2")) {
+    if (cmdline_has_parameter(cmdline, "asterinas.mmc_write_partition2")) {
         return (struct ProbeResult){ 0, EPERM, "write-gate-open" };
     }
     return (struct ProbeResult){ 1, 0, "write-gate-closed" };
