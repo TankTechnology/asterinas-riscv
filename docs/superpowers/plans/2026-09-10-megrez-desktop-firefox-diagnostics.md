@@ -699,6 +699,25 @@ Firefox or Asterinas failure.  The failed fallback diagnostic did generate a
 serial output was still arriving and recovery input was interleaved; the
 published empty diagnostics file remains immutable.
 
+- [ ] **Step 4f: Run direct NewSession diagnostic protocol v7 once**
+
+Retain protocol-v6 experiment identity
+`1fe5e8849467bdfbed7280fe0b8b3fe5d325da527f662ab05d234475f4622524`
+as immutable historical evidence: it used one physical boot, zero QEMU runs,
+zero transfer bytes, 391.518 host seconds, and recovered to a fresh U-Boot
+prompt. Its complete 662-byte Status error response proves that the old Status
+gate was rejected, while the separately generated 43,068-byte diagnostic frame
+exposed the too-short host collection budget.
+
+Protocol v7 removes that unsupported precondition. It verifies the stable
+Firefox PID and profile, captures the before snapshot, then lets exactly one
+direct NewSession operation own the loopback connection, greeting, request, and
+response under the fixed 300-second guest deadline. It uses result schema 2,
+enables exact offline NewSession errors only for this bounded command, uses a
+90-second diagnostic-collection budget, requires zero transfer bytes, and admits
+each runtime identity only once. Run the new identity only after all host gates
+pass.
+
 - [ ] **Step 5: Implement a fix only after causal proof**
 
 For a kernel result, first run one common executable on Linux and Asterinas;

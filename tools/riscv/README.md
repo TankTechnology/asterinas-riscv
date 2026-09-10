@@ -581,13 +581,17 @@ Use the heavier action only for one explicitly falsifiable Firefox experiment:
 
 ```bash
 python3 -m tools.riscv.megrez_desktop diagnose-firefox \
-  --hypothesis "Status completes and NewSession returns no header" \
-  --contrary-outcome "Status fails, send fails, response begins, or call completes"
+  --hypothesis "The physical Firefox Marionette greeting completes and WebDriver:NewSession is fully sent but produces no response-header byte before the fixed 300-second deadline." \
+  --contrary-outcome "The listener does not become ready, NewSession is not fully sent, a response is partial or rejected, or NewSession returns a valid session."
 ```
 
-The diagnostic runs `WebDriver:Status` first, then exactly one
-`WebDriver:NewSession` with a 300-second absolute deadline. It captures bounded
-before/during/after Firefox-tree and syscall snapshots, kernel/service logs,
+The diagnostic records a stable Firefox identity, captures the before snapshot,
+then lets the one selected `WebDriver:NewSession` operation perform the loopback
+connection, Marionette greeting, request, and response under one 300-second
+absolute deadline. It does not send `WebDriver:Status` because that command is
+not part of Firefox ESR 140's direct Marionette command table. Exact offline
+NewSession error output is enabled only for this bounded diagnostic. It also
+captures during/after Firefox-tree and syscall snapshots, kernel/service logs,
 and payload-free Marionette transport counters, then always requests recovery.
 The complete physical experiment is capped at 15 host minutes before the
 independent recovery wait. It records zero QEMU runs, exactly one physical boot,
@@ -604,12 +608,13 @@ The frozen partition-2 image is not reinstalled. Because
 starts with a cold profile on every boot; current measured graphical readiness
 is approximately 175–220 seconds, not an instant warm resume.
 
-The classifier reports only the first observed boundary: listener unavailable,
-Status stalled, NewSession not sent, no response bytes, partial response, or
-complete session. Older `mmc-graphics-final-19` evidence predates transport
-records and therefore classifies only as `evidence-incomplete`; it is not proof
-of a TCP, `poll`, scheduler, or Firefox deadlock. If a new run is also
-incomplete, fix and replay the observer before any further live Firefox boot.
+Protocol v7 writes result schema version 2. Its classifier reports only the first
+observed boundary: listener unavailable, NewSession not sent, response absent,
+response partial, response rejected, response complete, or evidence incomplete.
+Older `mmc-graphics-final-19` evidence predates transport records and therefore
+classifies only as `evidence-incomplete`; it is not proof of a TCP, `poll`,
+scheduler, or Firefox deadlock. If a new run is also incomplete, fix and replay
+the observer before any further live Firefox boot.
 
 Run the focused host tests in the persistent development container. The tests
 use local loopback sockets, so do not pass the container launcher's `--offline`
