@@ -78,9 +78,7 @@ class DesktopBundleTests(unittest.TestCase):
         self.assertEqual(bundle.device, "/dev/serial/by-id/usb-test")
         self.assertEqual(bundle.mmc_artifacts, MMC_ARTIFACTS)
         self.assertEqual(bundle.evidence_root, str(self.evidence))
-        self.assertEqual(
-            self.destination.read_bytes(), bundle.canonical_bytes()
-        )
+        self.assertEqual(self.destination.read_bytes(), bundle.canonical_bytes())
 
     def test_bundle_detects_changed_bound_inputs(self) -> None:
         self.configure()
@@ -134,6 +132,248 @@ class DesktopBundleTests(unittest.TestCase):
             self.configure()
 
         self.assertEqual(self.destination.read_bytes(), original)
+
+
+def _start_plan():
+    return SimpleNamespace(
+        bootargs=(
+            "console=ttyS0 console=hvc0 loglevel=debug init=/init "
+            "asterinas.mmc-write-partition2 "
+            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+            "asterinas.neighbor=eic7700-rj45,10.100.16.1,00:11:22:33:44:55 "
+            "asterinas.reboot_after=15 "
+            "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://example.test/ "
+            "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=0 "
+            "-- --root-init=systemd"
+        ),
+        plan_sha256="a" * 64,
+        validate=lambda: None,
+    )
+
+
+class _StartPublisher:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.published = None
+
+    def invalidate(self) -> None:
+        self.events.append("invalidate")
+
+    def publish(self, result, serial: bytes, diagnostics: bytes) -> None:
+        self.events.append(f"publish:{result.reason}")
+        self.published = (result, serial, diagnostics)
+
+
+class _StartOperations:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        fail_at: str | None = None,
+        recover: bool = True,
+    ) -> None:
+        self.events = events
+        self.fail_at = fail_at
+        self.recover = recover
+        self._guest_started = False
+        self._transcript = b"Asterinas desktop serial\n"
+
+    @property
+    def guest_started(self) -> bool:
+        return self._guest_started
+
+    @property
+    def transcript(self) -> bytes:
+        return self._transcript
+
+    def open(self, _timeout: float) -> None:
+        self.events.append("open")
+        if self.fail_at == "open":
+            raise OSError("serial device unavailable")
+
+    def ensure_artifacts(self, _plan, _timeout: float) -> tuple[str, ...]:
+        self.events.append("ensure-artifacts")
+        if self.fail_at == "ensure-artifacts":
+            raise RuntimeError("artifact identity mismatch")
+        return ("kernel:mmc", "initramfs:mmc", "megrez_dtb:mmc")
+
+    def boot(self, _plan, bootargs: str, _timeout: float) -> None:
+        self.events.append("boot")
+        if "asterinas.reboot_after" in bootargs:
+            raise AssertionError("desktop start must not arm a recovery timer")
+        self._guest_started = True
+        if self.fail_at == "boot":
+            raise TimeoutError("boot marker timed out")
+
+    def prove_boot_readiness(self, _timeout: float):
+        self.events.append("readiness")
+        if self.fail_at in {"readiness", "readiness-invalid-diagnostics"}:
+            raise TimeoutError("desktop readiness timed out")
+        return desktop.BootReadinessEvidence(
+            browser_pid=41,
+            framebuffer=True,
+            xorg_fbdev=True,
+            openbox=True,
+            firefox=True,
+            browser_service="active",
+            browser_restarts=0,
+        )
+
+    def collect_diagnostics(self, _timeout: float) -> bytes:
+        self.events.append("collect-diagnostics")
+        if self.fail_at == "readiness-invalid-diagnostics":
+            return "not bytes"
+        return b"bounded failure diagnostics\n"
+
+    def request_reboot(self, _timeout: float) -> None:
+        self.events.append("request-reboot")
+
+    def await_recovery(self, _timeout: float) -> None:
+        self.events.append("recovery")
+        if not self.recover:
+            raise TimeoutError("fresh U-Boot prompt not observed")
+        self._transcript += b"OpenSBI\nU-Boot\n=> \n"
+
+    def close(self) -> None:
+        self.events.append("close")
+
+
+class DesktopStartLifecycleTests(unittest.TestCase):
+    def run_start(
+        self,
+        *,
+        fail_at: str | None = None,
+        recover: bool = True,
+    ):
+        events: list[str] = []
+        operations = _StartOperations(events, fail_at=fail_at, recover=recover)
+        publisher = _StartPublisher(events)
+        result = desktop.run_desktop_start(
+            _start_plan(),
+            desktop.DesktopStartConfig(),
+            operations,
+            publisher,
+            clock=lambda: 10.0,
+        )
+        return result, events, publisher
+
+    def test_success_publishes_readiness_and_leaves_guest_running(self) -> None:
+        result, events, publisher = self.run_start()
+
+        self.assertEqual(
+            events,
+            [
+                "invalidate",
+                "open",
+                "ensure-artifacts",
+                "boot",
+                "readiness",
+                "publish:desktop-ready",
+                "close",
+            ],
+        )
+        self.assertTrue(result.passed)
+        self.assertFalse(result.recovered)
+        self.assertNotIn("request-reboot", events)
+        self.assertEqual(result.readiness.browser_pid, 41)
+        self.assertEqual(publisher.published[1], b"Asterinas desktop serial\n")
+        self.assertEqual(publisher.published[2], b"")
+
+    def test_start_bootargs_are_local_read_only_and_leave_desktop_running(self) -> None:
+        bootargs = desktop.desktop_start_bootargs(_start_plan())
+        tokens = bootargs.split()
+
+        self.assertEqual(tokens.count("console=tty0"), 1)
+        self.assertEqual(tokens.count("loglevel=off"), 1)
+        self.assertEqual(tokens.count("asterinas.klog_capture=info"), 1)
+        self.assertEqual(tokens.count("--"), 1)
+        self.assertEqual(
+            tokens[tokens.index("--") + 1 :],
+            ["--root-init=systemd", "--debug-console=isolated-root"],
+        )
+        self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", tokens)
+        self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", tokens)
+        self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", tokens)
+        forbidden = (
+            "asterinas.mmc_write_partition2",
+            "asterinas.mmc-write-partition2",
+            "asterinas.net=",
+            "asterinas.neighbor=",
+            "asterinas.reboot_after=",
+            "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_",
+        )
+        self.assertFalse(any(token.startswith(forbidden) for token in tokens))
+        self.assertFalse(
+            any(token in {"console=ttyS0", "console=hvc0"} for token in tokens)
+        )
+
+    def test_post_boot_failure_collects_diagnostics_and_recovers(self) -> None:
+        result, events, publisher = self.run_start(fail_at="readiness")
+
+        self.assertEqual(
+            events,
+            [
+                "invalidate",
+                "open",
+                "ensure-artifacts",
+                "boot",
+                "readiness",
+                "collect-diagnostics",
+                "request-reboot",
+                "recovery",
+                f"publish:{result.reason}",
+                "close",
+            ],
+        )
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertIn("readiness", result.failure)
+        self.assertEqual(publisher.published[2], b"bounded failure diagnostics\n")
+
+    def test_preboot_failure_never_sends_guest_recovery_commands(self) -> None:
+        result, events, _publisher = self.run_start(fail_at="open")
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.recovered)
+        self.assertEqual(
+            events,
+            ["invalidate", "open", f"publish:{result.reason}", "close"],
+        )
+        self.assertNotIn("collect-diagnostics", events)
+        self.assertNotIn("request-reboot", events)
+        self.assertNotIn("recovery", events)
+
+    def test_invalid_diagnostics_cannot_skip_recovery_publication_or_close(
+        self,
+    ) -> None:
+        result, events, publisher = self.run_start(
+            fail_at="readiness-invalid-diagnostics"
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertIn("diagnostics", result.failure)
+        self.assertEqual(publisher.published[2], b"")
+        self.assertEqual(
+            events[-4:],
+            ["request-reboot", "recovery", f"publish:{result.reason}", "close"],
+        )
+
+    def test_firmware_recovery_loss_requires_manual_reset(self) -> None:
+        result, events, _publisher = self.run_start(fail_at="readiness", recover=False)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.recovered)
+        self.assertEqual(result.reason, "manual-reset-required")
+        self.assertIn("fresh-u-boot-prompt", result.failure)
+        self.assertIn("request-reboot", events)
+        self.assertIn("recovery", events)
+
+    def test_deadlines_reject_boolean_nonfinite_and_unbounded_values(self) -> None:
+        for value in (True, 0, float("inf"), 1200.1):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "deadlines"):
+                    desktop.DesktopStartConfig(open_timeout=value)
 
 
 if __name__ == "__main__":
