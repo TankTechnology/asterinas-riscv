@@ -691,42 +691,48 @@ def boot_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         raise HostGateError("diagnostic nonce is invalid")
     diagnostic_path = f"/run/asterinas-boot-diag-{nonce}"
     return (
-        f'_asterinas_boot_diag={diagnostic_path}; : >"$_asterinas_boot_diag"',
-        "printf '%s\\n' '== cmdline ==' >>\"$_asterinas_boot_diag\"; "
-        'cat /proc/cmdline >>"$_asterinas_boot_diag" 2>&1',
-        "printf '%s\\n' '== uptime ==' >>\"$_asterinas_boot_diag\"; "
-        'cat /proc/uptime >>"$_asterinas_boot_diag" 2>&1; '
-        "printf '%s\\n' '== mounts ==' >>\"$_asterinas_boot_diag\"; "
-        'cat /proc/mounts >>"$_asterinas_boot_diag" 2>&1',
-        "printf '%s\\n' '== dmesg ==' >>\"$_asterinas_boot_diag\"; "
-        'dmesg --color=never >>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== failed units ==' >>\"$_asterinas_boot_diag\"; "
-        "systemctl --failed --no-legend --no-pager "
-        '>>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== graphical units ==' >>\"$_asterinas_boot_diag\"; "
+        f"_asterinas_boot_diag={diagnostic_path}; "
+        'rm -f -- "$_asterinas_boot_diag" "$_asterinas_boot_diag".*; '
+        ': >"$_asterinas_boot_diag"',
+        "{ printf '%s\\n' '== cmdline =='; cat /proc/cmdline; } "
+        '>"$_asterinas_boot_diag.01" 2>&1',
+        "{ printf '%s\\n' '== uptime =='; cat /proc/uptime; "
+        "printf '%s\\n' '== mounts =='; cat /proc/mounts; } "
+        '>"$_asterinas_boot_diag.02" 2>&1',
+        "{ printf '%s\\n' '== dmesg =='; dmesg --color=never; } "
+        '>"$_asterinas_boot_diag.03" 2>&1',
+        "{ printf '%s\\n' '== failed units =='; "
+        "systemctl --failed --no-legend --no-pager || true; } "
+        '>"$_asterinas_boot_diag.04" 2>&1',
+        "{ printf '%s\\n' '== graphical units =='; "
         "systemctl show --no-pager "
         "--property Id,ActiveState,SubState,MainPID,NRestarts "
         "asterinas-desktop-m4.service asterinas-desktop-m5.service "
-        'asterinas-browser-web.service >>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== process tree ==' >>\"$_asterinas_boot_diag\"; "
-        "ps -eo pid,ppid,stat,wchan:24,comm,args "
-        '>>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== graphical service status ==' "
-        '>>"$_asterinas_boot_diag"; '
+        "asterinas-browser-web.service || true; } "
+        '>"$_asterinas_boot_diag.05" 2>&1',
+        "{ printf '%s\\n' '== process tree =='; "
+        "ps -eo pid,ppid,stat,wchan:24,comm,args || true; } "
+        '>"$_asterinas_boot_diag.06" 2>&1',
+        "{ printf '%s\\n' '== graphical service status =='; "
         "systemctl status --no-pager --full asterinas-desktop-m5.service "
-        'asterinas-browser-web.service >>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== graphical journal ==' >>\"$_asterinas_boot_diag\"; "
+        "asterinas-browser-web.service || true; } "
+        '>"$_asterinas_boot_diag.07" 2>&1',
+        "{ printf '%s\\n' '== graphical journal =='; "
         "journalctl -b --no-pager -n 200 -u asterinas-desktop-m5.service "
-        '-u asterinas-browser-web.service >>"$_asterinas_boot_diag" 2>&1 || true',
-        "printf '%s\\n' '== graphical logs ==' >>\"$_asterinas_boot_diag\"; "
+        "-u asterinas-browser-web.service || true; } "
+        '>"$_asterinas_boot_diag.08" 2>&1',
+        "{ printf '%s\\n' '== graphical logs =='; "
         "for _asterinas_boot_log in /home/asterinas/Xorg.0.log "
         "/home/asterinas/desktop-m5-session.log "
         "/home/asterinas/firefox-web-stderr.log "
         "/home/asterinas/firefox-web-mozilla.log; do "
-        "printf '%s\\n' \"--- $_asterinas_boot_log ---\" "
-        '>>"$_asterinas_boot_diag"; '
-        'tail -n 200 "$_asterinas_boot_log" '
-        '>>"$_asterinas_boot_diag" 2>&1 || true; done',
+        "printf '%s\\n' \"--- $_asterinas_boot_log ---\"; "
+        'tail -n 200 "$_asterinas_boot_log" 2>&1 || true; done; } '
+        '>"$_asterinas_boot_diag.09" 2>&1',
+        ': >"$_asterinas_boot_diag"; '
+        'for _asterinas_boot_part in "$_asterinas_boot_diag".*; do '
+        '[ -f "$_asterinas_boot_part" ] && '
+        'cat "$_asterinas_boot_part" >>"$_asterinas_boot_diag"; done; '
         '_asterinas_boot_diag_size=$(wc -c <"$_asterinas_boot_diag"); '
         f'if [ "$_asterinas_boot_diag_size" -le {MAX_DIAGNOSTICS_BYTES} ]; then '
         '_asterinas_boot_diag_sha=$(sha256sum "$_asterinas_boot_diag" | '
@@ -742,7 +748,8 @@ def boot_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         f"{nonce} size=%s sha256=%s\\n' "
         '"$_asterinas_boot_diag_size" "$_asterinas_boot_diag_sha"; '
         "printf '__ASTERINAS_BOOT_DIAGNOSTICS_END__ nonce="
-        f'{nonce} status=1\\n\'; fi; rm -f -- "$_asterinas_boot_diag"',
+        f'{nonce} status=1\\n\'; fi; rm -f -- "$_asterinas_boot_diag" '
+        '"$_asterinas_boot_diag".*',
     )
 
 
@@ -850,7 +857,8 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
         deadline: float,
     ) -> None:
         serial = self._require_serial()
-        marker = f"__ASTERINAS_BOOT_STEP__ nonce={nonce} step={step} status=0"
+        marker_prefix = f"__ASTERINAS_BOOT_STEP__ nonce={nonce} step={step} status="
+        success_marker = marker_prefix + "0"
         while True:
             now = time.monotonic()
             full_step_window = now + GUEST_STEP_TIMEOUT <= deadline
@@ -858,12 +866,24 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
             cursor = serial.checkpoint()
             try:
                 self._send_bounded(
-                    serial, f"{command}; printf '{marker}\\n'", step_deadline
+                    serial,
+                    f"{command}; _asterinas_boot_status=$?; "
+                    'if [ "$_asterinas_boot_status" -eq 0 ]; then '
+                    f"printf '{success_marker}\\n'; else "
+                    f"printf '{marker_prefix}%s\\n' "
+                    '"$_asterinas_boot_status"; fi',
+                    step_deadline,
                 )
                 while True:
                     line, cursor = self._next_line(serial, cursor, step_deadline)
-                    if line == marker:
-                        return
+                    if not line.startswith(marker_prefix):
+                        continue
+                    status = line.removeprefix(marker_prefix)
+                    if re.fullmatch(r"[0-9]+", status) is None:
+                        raise HostGateError(f"{step} status is malformed")
+                    if status != "0":
+                        raise HostGateError(f"{step} failed with status {status}")
+                    return
             except TimeoutError:
                 self._abort_guest_shell()
                 if not full_step_window:
@@ -888,12 +908,24 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
         nonce = secrets.token_hex(8)
         marker = f"__ASTERINAS_BOOT_REBOOT__ nonce={nonce}"
         cursor = serial.checkpoint()
+        self._recovery_cursor = cursor
         self._send_bounded(serial, f"sync; printf '{marker}\\n'; reboot -f", deadline)
         while True:
             line, cursor = self._next_line(serial, cursor, deadline)
             if line == marker:
                 self._sync_serial_log()
                 return
+
+    def await_recovery(self, timeout: float) -> None:
+        serial = self._require_serial()
+        cursor = getattr(self, "_recovery_cursor", 0)
+        deadline = time.monotonic() + timeout
+        serial.wait_for(b"U-Boot ", deadline, start=cursor)
+        serial.send(b"\n", deadline)
+        serial.wait_for(b"=> ", deadline, start=cursor)
+        recovery = serial.transcript[cursor:].decode("utf-8", errors="replace")
+        validate_recovery_epoch(recovery)
+        self._sync_serial_log()
 
 
 class RealBootStabilityPublisher:

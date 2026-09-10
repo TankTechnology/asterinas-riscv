@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import math
 import os
@@ -98,6 +99,17 @@ class PinnedOutputDirectory:
             if fd >= 0:
                 os.close(fd)
                 setattr(self, attribute, -1)
+
+    def lock_exclusive(self) -> None:
+        """Fail unless this process owns the directory for one complete run."""
+
+        try:
+            fcntl.flock(
+                self._operation_fd,
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError as error:
+            raise RuntimeError("output directory is already active") from error
 
     def invalidate(self, *names: str) -> None:
         for candidate in names:

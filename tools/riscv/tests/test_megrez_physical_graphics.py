@@ -975,6 +975,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "ln -sfn /dev/null",
             "systemctl daemon-reload",
             "systemctl stop",
+            "systemctl start --no-block asterinas-desktop-m5.service",
             "systemctl start asterinas-browser-web-timeline-basic.service",
             "systemctl start --no-block asterinas-browser-web.service",
             "systemctl start --no-block graphical.target",
@@ -1009,6 +1010,14 @@ class PhysicalCommandTests(unittest.TestCase):
         )
         self.assertLess(
             command.index("systemctl stop"),
+            command.index("mount --bind"),
+        )
+        self.assertLess(
+            command.index("mount --bind"),
+            command.index("systemctl start --no-block asterinas-desktop-m5.service"),
+        )
+        self.assertLess(
+            command.index("systemctl start --no-block asterinas-desktop-m5.service"),
             command.index(
                 "systemctl start asterinas-browser-web-timeline-basic.service"
             ),
