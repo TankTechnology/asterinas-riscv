@@ -1754,7 +1754,7 @@ class DesktopStartPublisherTests(unittest.TestCase):
 
 
 class DesktopCliTests(unittest.TestCase):
-    def test_parser_exposes_only_configure_start_and_bounded_diagnosis(self) -> None:
+    def test_parser_exposes_configure_start_diagnosis_and_bounded_browse(self) -> None:
         configure = desktop.parse_args(
             [
                 "configure",
@@ -1790,10 +1790,15 @@ class DesktopCliTests(unittest.TestCase):
                 "/work/current.json",
             ]
         )
+        browse = desktop.parse_args(
+            ["browse-firefox", "--bundle", "/work/current.json"]
+        )
 
         self.assertEqual(configure.action, "configure")
         self.assertEqual(start.action, "start")
         self.assertEqual(diagnose.action, "diagnose-firefox")
+        self.assertEqual(browse.action, "browse-firefox")
+        self.assertEqual(browse.proxy_upstream_port, 7890)
         self.assertEqual(desktop.parse_args(["start"]).bundle, desktop.DEFAULT_BUNDLE)
         for forbidden in (
             "--deployment-attestation",
@@ -1842,6 +1847,55 @@ class DesktopCliTests(unittest.TestCase):
         read_plan.assert_called_once_with(Path("/work/plan.json"))
         publisher.assert_called_once()
         operations.assert_called_once()
+        run.assert_called_once()
+
+    def test_browse_main_constructs_one_mmc_only_owned_proxy_transaction(self) -> None:
+        bundle = SimpleNamespace(
+            device="/dev/serial/by-id/usb-test",
+            evidence_root="/work/evidence",
+            plan_path="/work/plan.json",
+            plan_sha256="a" * 64,
+            mmc_artifacts=MMC_ARTIFACTS,
+        )
+        result = SimpleNamespace(
+            passed=True,
+            canonical_bytes=lambda: b'{"passed":true}\n',
+        )
+        with (
+            mock.patch.object(desktop.DesktopBundle, "from_path", return_value=bundle),
+            mock.patch.object(desktop, "_read_plan", return_value=_start_plan()),
+            mock.patch(
+                "tools.riscv.megrez_firefox_browse.RealFirefoxBrowsePublisher"
+            ) as publisher,
+            mock.patch(
+                "tools.riscv.megrez_firefox_browse.RealFirefoxBrowseOperations"
+            ) as operations,
+            mock.patch(
+                "tools.riscv.megrez_firefox_browse.run_firefox_browse",
+                return_value=result,
+            ) as run,
+            mock.patch("tools.riscv.megrez_proxy_bridge.ProxyBridge") as bridge,
+            mock.patch(
+                "tools.riscv.megrez_proxy_bridge.ProxyBridgeConfig"
+            ) as bridge_config,
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            status = desktop.main(
+                [
+                    "browse-firefox",
+                    "--bundle",
+                    "/work/current.json",
+                    "--proxy-upstream-port",
+                    "7890",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        operations.assert_called_once()
+        self.assertEqual(operations.call_args.kwargs["mmc_artifacts"], MMC_ARTIFACTS)
+        publisher.assert_called_once()
+        bridge_config.assert_called_once_with(upstream_port=7890)
+        bridge.assert_called_once_with(bridge_config.return_value)
         run.assert_called_once()
 
     def test_start_main_rejects_a_plan_changed_after_bundle_validation(self) -> None:

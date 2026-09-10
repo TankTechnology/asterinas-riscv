@@ -431,7 +431,9 @@ test_riscv_megrez_boot_stability_unit:
 .PHONY: test_riscv_megrez_desktop_unit
 test_riscv_megrez_desktop_unit:
 	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_megrez_desktop -v
+		tools.riscv.tests.test_megrez_desktop \
+		tools.riscv.tests.test_megrez_firefox_browse \
+		tools.riscv.tests.test_megrez_clock_sync -v
 
 .PHONY: test_riscv_megrez_probe_unit
 test_riscv_megrez_probe_unit:

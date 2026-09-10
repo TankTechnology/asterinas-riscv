@@ -37,9 +37,7 @@ FIXTURE_INDEX_PATH = "/browser-quality/index.html"
 FIXTURE_IMAGE_PATH = "/browser-quality/pattern.png"
 FIXTURE_SOURCE_PATH = "/asterinas-network-probe.bin"
 FIXTURE_DOWNLOAD_PATH = "/browser-quality/download.bin"
-FIXTURE_DOWNLOAD_FILE = Path(
-    "/home/asterinas/Downloads/asterinas-browser-quality.bin"
-)
+FIXTURE_DOWNLOAD_FILE = Path("/home/asterinas/Downloads/asterinas-browser-quality.bin")
 FIXTURE_DOWNLOAD_BYTES = 256 * 1024
 FIXTURE_DOWNLOAD_SHA256 = (
     "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
@@ -73,6 +71,7 @@ def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
     if page is not None:
         line += f" page={page}"
     print(line, file=sys.stderr, flush=True)
+
 
 _PROBE_SCRIPT = r"""const host = location.hostname;
 return JSON.stringify({
@@ -235,9 +234,16 @@ _DOM_FIELDS = {
 
 def _mapping(snapshot: object) -> dict[str, object]:
     expected = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
-        "links", "navigation", "resources",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
+        "links",
+        "navigation",
+        "resources",
     }
     if not isinstance(snapshot, dict) or set(snapshot) != expected:
         raise GateError("web snapshot has unexpected fields")
@@ -246,8 +252,13 @@ def _mapping(snapshot: object) -> dict[str, object]:
 
 def _probe_mapping(probe: object) -> dict[str, object]:
     expected = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
     }
     probe_keys = set(probe) if isinstance(probe, dict) else set()
     if probe_keys != expected and probe_keys != expected | {"apiTypes"}:
@@ -378,10 +389,21 @@ def _validate_common(
     if not isinstance(navigation, dict):
         raise GateError("NavigationTiming evidence is missing")
     required_timing = {
-        "name", "entryType", "startTime", "duration", "domainLookupStart",
-        "domainLookupEnd", "connectStart", "secureConnectionStart", "connectEnd",
-        "requestStart", "responseStart", "responseEnd", "domContentLoadedEventEnd",
-        "loadEventEnd", "nextHopProtocol",
+        "name",
+        "entryType",
+        "startTime",
+        "duration",
+        "domainLookupStart",
+        "domainLookupEnd",
+        "connectStart",
+        "secureConnectionStart",
+        "connectEnd",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+        "domContentLoadedEventEnd",
+        "loadEventEnd",
+        "nextHopProtocol",
     }
     if set(navigation) != required_timing or navigation["entryType"] != "navigation":
         raise GateError("NavigationTiming evidence is malformed")
@@ -397,7 +419,10 @@ def _validate_common(
         raise GateError("ResourceTiming evidence is missing or oversized")
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("ResourceTiming evidence is malformed")
         name = resource["name"]
@@ -410,7 +435,9 @@ def _validate_common(
 
 
 def validate_baidu_home(snapshot: object) -> None:
-    result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=True)
+    result = _validate_common(
+        snapshot, host="www.baidu.com", require_tls_handshake=True
+    )
     dom = result["dom"]
     assert isinstance(dom, dict)
     if (
@@ -422,7 +449,9 @@ def validate_baidu_home(snapshot: object) -> None:
 
 
 def validate_baidu_search(snapshot: object) -> None:
-    result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=False)
+    result = _validate_common(
+        snapshot, host="www.baidu.com", require_tls_handshake=False
+    )
     parsed = urlparse(str(result["url"]))
     if parsed.path != "/s" or parse_qs(parsed.query).get("wd") != ["Asterinas"]:
         raise GateError("Baidu search URL does not contain the exact query")
@@ -460,10 +489,17 @@ def fixture_index_url_from_environment() -> str:
     return f"http://10.0.2.2:{port}{FIXTURE_INDEX_PATH}"
 
 
-def _validate_fixture_document(document: object, expected_url: str) -> dict[str, object]:
+def _validate_fixture_document(
+    document: object, expected_url: str
+) -> dict[str, object]:
     probe_fields = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
     }
     result = (
         _probe_mapping(document)
@@ -494,9 +530,9 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
         raise GateError("fixture search lost its exact Latin/CJK content")
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if not all(dom[name] is True for name in (
-        "fixtureQuery", "fixtureImage", "fixtureSecond"
-    )):
+    if not all(
+        dom[name] is True for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
         raise GateError("fixture form, PNG, or navigation link is not ready")
     _validate_fixture_capabilities(result["browserCapabilities"], "search")
     return result
@@ -504,11 +540,22 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
 
 def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
     expected_checks = {
-        "audio", "canvas", "cookie", "fetch", "indexedDb",
-        "localStorage", "sessionStorage", "wasm", "worker",
+        "audio",
+        "canvas",
+        "cookie",
+        "fetch",
+        "indexedDb",
+        "localStorage",
+        "sessionStorage",
+        "wasm",
+        "worker",
     }
     if not isinstance(capabilities, dict) or set(capabilities) != {
-        "version", "phase", "state", "checks", "error"
+        "version",
+        "phase",
+        "state",
+        "checks",
+        "error",
     }:
         raise GateError("fixture browser capability evidence is malformed")
     if (
@@ -552,9 +599,9 @@ def probe_fixture_home(probe: object, expected_url: str) -> None:
         raise GateError("fixture home lost its exact Latin/CJK content")
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if not all(dom[name] is True for name in (
-        "fixtureQuery", "fixtureImage", "fixtureSecond"
-    )):
+    if not all(
+        dom[name] is True for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
         raise GateError("fixture home form, PNG, or navigation link is not ready")
     _validate_fixture_capabilities(result["browserCapabilities"], "home")
 
@@ -589,7 +636,10 @@ def validate_fixture_search(snapshot: object, expected_url: str) -> None:
     image_seen = False
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("fixture ResourceTiming evidence is malformed")
         name = resource["name"]
@@ -598,7 +648,11 @@ def validate_fixture_search(snapshot: object, expected_url: str) -> None:
         parsed = urlparse(name)
         if parsed.scheme == "data":
             continue
-        if parsed.scheme != "http" or parsed.hostname != "10.0.2.2" or parsed.port != 17894:
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != "10.0.2.2"
+            or parsed.port != 17894
+        ):
             raise GateError("fixture loaded a resource outside its frozen origin")
         image_seen = image_seen or name == expected_image
     if not image_seen:
@@ -642,7 +696,10 @@ def validate_baidu_challenge(snapshot: object) -> None:
         raise GateError("Baidu challenge ResourceTiming evidence is malformed")
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("Baidu challenge ResourceTiming record is malformed")
         name = resource["name"]
@@ -660,7 +717,9 @@ def validate_baidu_search_outcome(snapshot: object) -> str:
 
 
 def select_bilibili_video(snapshot: object) -> str:
-    result = _validate_common(snapshot, host="www.bilibili.com", require_tls_handshake=True)
+    result = _validate_common(
+        snapshot, host="www.bilibili.com", require_tls_handshake=True
+    )
     dom = result["dom"]
     assert isinstance(dom, dict)
     if dom["bilibiliHome"] is not True:
@@ -683,7 +742,9 @@ def select_bilibili_video(snapshot: object) -> str:
 
 
 def validate_bilibili_detail(snapshot: object, expected_url: str) -> None:
-    result = _validate_common(snapshot, host="www.bilibili.com", require_tls_handshake=False)
+    result = _validate_common(
+        snapshot, host="www.bilibili.com", require_tls_handshake=False
+    )
     expected = BV_RE.fullmatch(expected_url)
     actual = BV_RE.fullmatch(str(result["url"]))
     if expected is None or actual is None or actual.group(1) != expected.group(1):
@@ -698,12 +759,19 @@ def validate_network_namespace(firefox_pid: int) -> None:
     if firefox_pid <= 1:
         raise GateError("Firefox PID is outside the valid contract")
     try:
-        if os.readlink("/proc/self/ns/net") != os.readlink(f"/proc/{firefox_pid}/ns/net"):
-            raise GateError("web gate and Firefox do not share the host network namespace")
+        if os.readlink("/proc/self/ns/net") != os.readlink(
+            f"/proc/{firefox_pid}/ns/net"
+        ):
+            raise GateError(
+                "web gate and Firefox do not share the host network namespace"
+            )
         interfaces = [name for _, name in socket.if_nameindex()]
     except OSError as error:
         raise GateError("cannot inspect Firefox network namespace") from error
-    if "lo" not in interfaces or len([name for name in interfaces if name != "lo"]) != 1:
+    if (
+        "lo" not in interfaces
+        or len([name for name in interfaces if name != "lo"]) != 1
+    ):
         raise GateError("web workload does not have exactly one non-loopback NIC")
 
 
@@ -740,23 +808,24 @@ def validate_gecko_profiler_environment(firefox_pid: int) -> None:
         key, separator, value = entry.partition(b"=")
         if not separator:
             continue
-        environment[key.decode("utf-8", "replace")] = value.decode(
-            "utf-8", "replace"
-        )
+        environment[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
     for name, value in expected.items():
         if environment.get(name) != value:
             raise GateError(f"Firefox profiler environment mismatch: {name}")
 
 
 def _snapshot(client: Marionette, *, lightweight: bool = False) -> dict[str, object]:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _SNAPSHOT_SCRIPT,
-        "args": [{"lightweight": lightweight}],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-browser-web-gate",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _SNAPSHOT_SCRIPT,
+            "args": [{"lightweight": lightweight}],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-browser-web-gate",
+        },
+    )
     value = _script_value(response)
     if not isinstance(value, str):
         detail = repr(response)
@@ -774,12 +843,15 @@ def _snapshot(client: Marionette, *, lightweight: bool = False) -> dict[str, obj
 
 
 def _probe(client: Marionette) -> dict[str, object]:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _PROBE_SCRIPT,
-        "args": [],
-        "line": 1,
-        "filename": "asterinas-browser-web-readiness",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _PROBE_SCRIPT,
+            "args": [],
+            "line": 1,
+            "filename": "asterinas-browser-web-readiness",
+        },
+    )
     value = _script_value(response)
     if not isinstance(value, str):
         detail = repr(response)
@@ -839,42 +911,51 @@ def _clear_document(client: Marionette, deadline: float) -> None:
     # and remove the live DOM in-place; this is a bounded unload barrier that
     # does not ask Marionette to synchronously commit a second navigation.
     # The next controlled navigation then installs a fresh document.
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": "window.stop(); const root = document.documentElement; "
-        "if (root !== null) root.replaceChildren(); return 'document-stopped';",
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-public-unload",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": "window.stop(); const root = document.documentElement; "
+            "if (root !== null) root.replaceChildren(); return 'document-stopped';",
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-public-unload",
+        },
+    )
     if _script_value(response) != "document-stopped":
         raise GateError("public document could not be stopped")
 
 
 def _submit_baidu_search(client: Marionette) -> None:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _BAIDU_SUBMIT_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-baidu-search-submit",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _BAIDU_SUBMIT_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-baidu-search-submit",
+        },
+    )
     value = _script_value(response)
     if value != "search-click-scheduled":
         raise GateError("Baidu homepage search form could not be submitted")
 
 
 def _submit_fixture_search(client: Marionette) -> None:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _FIXTURE_SUBMIT_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-fixture-search-submit",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _FIXTURE_SUBMIT_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-fixture-search-submit",
+        },
+    )
     value = _script_value(response)
     if value != "fixture-search-scheduled":
         raise GateError("controlled fixture search form could not be submitted")
@@ -883,14 +964,17 @@ def _submit_fixture_search(client: Marionette) -> None:
 def _trigger_fixture_download(client: Marionette) -> None:
     if FIXTURE_DOWNLOAD_FILE.exists() or FIXTURE_DOWNLOAD_FILE.is_symlink():
         raise GateError("controlled fixture download has stale state")
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _FIXTURE_DOWNLOAD_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-fixture-download",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _FIXTURE_DOWNLOAD_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-fixture-download",
+        },
+    )
     if _script_value(response) != "fixture-download-scheduled":
         raise GateError("controlled fixture download link could not be activated")
 
@@ -904,10 +988,7 @@ def _wait_for_fixture_download(
         except FileNotFoundError:
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             continue
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != expected_owner_uid
-        ):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != expected_owner_uid:
             raise GateError("controlled fixture download is not a safe regular file")
         if metadata.st_size != FIXTURE_DOWNLOAD_BYTES:
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
@@ -956,7 +1037,9 @@ def _wait_for_probe(
             # instead of reducing a long-running readiness timeout to a vague
             # protocol error.  This remains diagnostic-only: validators stay
             # fail-closed and the marker is emitted at most once per wait.
-            capabilities = probe.get("browserCapabilities") if isinstance(probe, dict) else None
+            capabilities = (
+                probe.get("browserCapabilities") if isinstance(probe, dict) else None
+            )
             if (
                 not capability_reported
                 and isinstance(capabilities, dict)
@@ -973,7 +1056,11 @@ def _wait_for_probe(
                     file=sys.stderr,
                     flush=True,
                 )
-            if "challenge" in str(error) or "403" in str(error) or "access denial" in str(error):
+            if (
+                "challenge" in str(error)
+                or "403" in str(error)
+                or "access denial" in str(error)
+            ):
                 raise
             if last_error is None:
                 print(
@@ -1058,7 +1145,10 @@ def _wait_baidu_search_outcome(
                 probe = _probe(client)
                 url = probe.get("url")
                 if isinstance(url, str) and urlparse(url).hostname in CHALLENGE_HOSTS:
-                    if probe["readyState"] != "complete" or probe["jsComplete"] is not True:
+                    if (
+                        probe["readyState"] != "complete"
+                        or probe["jsComplete"] is not True
+                    ):
                         raise GateError("Baidu challenge readiness is incomplete")
                     # A challenge page only needs URL/navigation/DOM proof;
                     # enumerating its full ResourceTiming list can itself
@@ -1099,10 +1189,100 @@ def _write_evidence(
     (directory / f"{name}.png").write_bytes(screenshot)
 
 
-def run_gate(
+def _start_webdriver_session(
+    client: Marionette,
+    run_phase: Callable[[str, Callable[[], object]], object],
+    firefox_pid: int,
+) -> None:
+    session = run_phase(
+        "new-session",
+        lambda: _script_value(
+            client.command(
+                "WebDriver:NewSession",
+                {
+                    "acceptInsecureCerts": False,
+                    "pageLoadStrategy": "none",
+                    "strictFileInteractability": True,
+                },
+            )
+        ),
+    )
+    _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
+    if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
+        raise GateError("Marionette did not create a web session")
+    capabilities = session.get("capabilities", {})
+    if (
+        not isinstance(capabilities, dict)
+        or capabilities.get("acceptInsecureCerts") is not False
+    ):
+        raise GateError("Firefox did not preserve certificate verification")
+    handles = run_phase(
+        "window-handles",
+        lambda: _script_value(client.command("WebDriver:GetWindowHandles")),
+    )
+    if (
+        not isinstance(handles, list)
+        or not handles
+        or not all(isinstance(handle, str) for handle in handles)
+    ):
+        raise GateError("Firefox created no first browser window")
+    _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
+
+
+def _capture_baidu_home(
+    client: Marionette,
+    run_phase: Callable[[str, Callable[[], object]], object],
+    deadline: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+) -> dict[str, object]:
+    run_phase(
+        "navigate-baidu-home",
+        lambda: _script_value(
+            client.command("WebDriver:Navigate", {"url": BAIDU_HOME})
+        ),
+    )
+    # Native WebDriver metadata is a cheap control probe.  If this phase
+    # completes while ExecuteScript below does not, the stall is in Firefox's
+    # JS evaluation/sandbox path rather than navigation or socket transport.
+    run_phase("title-baidu-home", lambda: client.command("WebDriver:GetTitle"))
+    run_phase(
+        "probe-baidu-home",
+        lambda: _wait_for_probe(client, probe_baidu_home, deadline),
+    )
+    baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
+    if not isinstance(baidu_home, dict):
+        raise GateError("Baidu homepage snapshot is malformed")
+    validate_baidu_home(baidu_home)
+    api_types = baidu_home.get("apiTypes")
+    if isinstance(api_types, dict) and all(
+        isinstance(api_types.get(name), str)
+        for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
+    ):
+        print(
+            "A_WEB_CAPABILITY_TYPES "
+            + " ".join(
+                f"{name}={api_types[name]}"
+                for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+    _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
+    run_phase(
+        "evidence-baidu-home",
+        lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
+    )
+    return baidu_home
+
+
+def run_baidu_home_gate(
     host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
-) -> tuple[str, str]:
+) -> dict[str, object]:
+    """Capture one verified Baidu homepage without running the heavy web suite."""
+
     deadline = time.monotonic() + timeout
+
     def phase(name: str, state: str, error: BaseException | None = None) -> None:
         line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
         if error is not None:
@@ -1113,6 +1293,46 @@ def run_gate(
         print(line, file=sys.stderr, flush=True)
 
     client = _connect(host, port, deadline, phase=phase)
+
+    def run_phase(name: str, operation: Callable[[], object]) -> object:
+        phase(name, "start")
+        try:
+            result = operation()
+        except BaseException as error:
+            phase(name, "exception", error)
+            raise
+        phase(name, "done")
+        return result
+
+    _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
+    try:
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        return _capture_baidu_home(
+            client, run_phase, deadline, evidence_dir, firefox_pid
+        )
+    finally:
+        # Closing only the transport leaves Firefox alive and avoids the
+        # DeleteSession behavior that can stop the listener before the host has
+        # copied evidence or requested a safe reboot.
+        client.close()
+
+
+def run_gate(
+    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+) -> tuple[str, str]:
+    deadline = time.monotonic() + timeout
+
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
+        if error is not None:
+            line += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(line, file=sys.stderr, flush=True)
+
+    client = _connect(host, port, deadline, phase=phase)
+
     def run_phase(name: str, operation: Callable[[], object]) -> object:
         phase(name, "start")
         try:
@@ -1124,64 +1344,13 @@ def run_gate(
         return result
 
     def command(stage: str, name: str, parameters: object | None = None) -> object:
-        return run_phase(
-            stage, lambda: _script_value(client.command(name, parameters))
-        )
-    firefox_uid = firefox_process_uid(firefox_pid)
+        return run_phase(stage, lambda: _script_value(client.command(name, parameters)))
+
     _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
     try:
-        session = command("new-session", "WebDriver:NewSession", {
-            "acceptInsecureCerts": False,
-            "pageLoadStrategy": "none",
-            "strictFileInteractability": True,
-        })
-        _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
-        if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
-            raise GateError("Marionette did not create a web session")
-        capabilities = session.get("capabilities", {})
-        if not isinstance(capabilities, dict) or capabilities.get("acceptInsecureCerts") is not False:
-            raise GateError("Firefox did not preserve certificate verification")
-        handles = command("window-handles", "WebDriver:GetWindowHandles")
-        if not isinstance(handles, list) or not handles or not all(
-            isinstance(handle, str) for handle in handles
-        ):
-            raise GateError("Firefox created no first browser window")
-        _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
-
-        command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
-        # Native WebDriver metadata is a cheap control probe.  If this phase
-        # completes while ExecuteScript below does not, the stall is in
-        # Firefox's JS evaluation/sandbox path rather than navigation or the
-        # kernel's socket transport.
-        run_phase(
-            "title-baidu-home",
-            lambda: client.command("WebDriver:GetTitle"),
-        )
-        run_phase(
-            "probe-baidu-home",
-            lambda: _wait_for_probe(client, probe_baidu_home, deadline),
-        )
-        baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
-        assert isinstance(baidu_home, dict)
-        validate_baidu_home(baidu_home)
-        api_types = baidu_home.get("apiTypes")
-        if isinstance(api_types, dict) and all(
-            isinstance(api_types.get(name), str)
-            for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
-        ):
-            print(
-                "A_WEB_CAPABILITY_TYPES "
-                + " ".join(f"{name}={api_types[name]}" for name in (
-                    "wasm", "worker", "indexedDb", "audio", "fetch"
-                )),
-                file=sys.stderr,
-                flush=True,
-            )
-        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
-        run_phase(
-            "evidence-baidu-home",
-            lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
-        )
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        _capture_baidu_home(client, run_phase, deadline, evidence_dir, firefox_pid)
+        firefox_uid = firefox_process_uid(firefox_pid)
 
         fixture_index = fixture_index_url_from_environment()
         fixture_search_url = f"{fixture_index}?q=asterinas"
@@ -1190,9 +1359,7 @@ def run_gate(
         # here: a busy public page can starve the Marionette main thread and
         # make the cleanup command itself unbounded.  Navigation replaces the
         # document and the fixture probes below remain fail-closed.
-        run_phase(
-            "navigate-fixture-home", lambda: _navigate(client, fixture_index)
-        )
+        run_phase("navigate-fixture-home", lambda: _navigate(client, fixture_index))
         run_phase(
             "probe-fixture-home",
             lambda: _wait_for_probe(
@@ -1208,9 +1375,7 @@ def run_gate(
                 deadline,
             ),
         )
-        fixture_search = run_phase(
-            "snapshot-fixture-search", lambda: _snapshot(client)
-        )
+        fixture_search = run_phase("snapshot-fixture-search", lambda: _snapshot(client))
         assert isinstance(fixture_search, dict)
         validate_fixture_search(fixture_search, fixture_search_url)
         _timeline("BOOT_DOM_READY", firefox_pid, "fixture-search")
@@ -1220,9 +1385,7 @@ def run_gate(
                 client, evidence_dir, "fixture-search", fixture_search
             ),
         )
-        run_phase(
-            "trigger-fixture-download", lambda: _trigger_fixture_download(client)
-        )
+        run_phase("trigger-fixture-download", lambda: _trigger_fixture_download(client))
         run_phase(
             "verify-fixture-download",
             lambda: _wait_for_fixture_download(
@@ -1235,9 +1398,7 @@ def run_gate(
             "probe-bilibili-home",
             lambda: _wait_for_probe(client, probe_bilibili_home, deadline),
         )
-        bilibili_home = run_phase(
-            "snapshot-bilibili-home", lambda: _snapshot(client)
-        )
+        bilibili_home = run_phase("snapshot-bilibili-home", lambda: _snapshot(client))
         assert isinstance(bilibili_home, dict)
         selected = select_bilibili_video(bilibili_home)
         assert isinstance(selected, str)
@@ -1317,12 +1478,14 @@ def run_gate(
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser_web_marionette_gate")
+    parser.add_argument("--scope", choices=("full", "baidu-home"), default="full")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--firefox-pid", type=int, required=True)
     parser.add_argument(
-        "--evidence-dir", type=Path,
+        "--evidence-dir",
+        type=Path,
         default=Path("/home/asterinas/browser-web-evidence"),
     )
     values = parser.parse_args(arguments)
@@ -1332,6 +1495,32 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error("timeout or evidence directory is outside the bounded contract")
     try:
         validate_network_namespace(values.firefox_pid)
+        if values.scope == "baidu-home":
+            home = run_baidu_home_gate(
+                values.host,
+                values.port,
+                values.timeout,
+                values.evidence_dir,
+                values.firefox_pid,
+            )
+            title = home.get("title")
+            url = home.get("url")
+            if not isinstance(title, str) or not isinstance(url, str):
+                raise GateError("Baidu homepage identity is malformed")
+            print(
+                json.dumps(
+                    {
+                        "marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",
+                        "scope": "baidu-home",
+                        "title_sha256": hashlib.sha256(title.encode()).hexdigest(),
+                        "tls": "verified",
+                        "url": url,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
         bv, baidu_outcome = run_gate(
             values.host,
             values.port,

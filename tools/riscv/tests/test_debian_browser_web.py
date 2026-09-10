@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import inspect
+import io
 import json
 import os
 import struct
@@ -38,6 +39,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     probe_fixture_search,
     probe_fixture_home,
     probe_fixture_capabilities,
+    run_baidu_home_gate,
     select_bilibili_video,
     validate_gecko_profiler_environment,
     validate_baidu_home,
@@ -47,6 +49,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     validate_bilibili_detail,
     validate_fixture_search,
     fixture_index_url_from_environment,
+    main as marionette_gate_main,
 )
 from tools.riscv.debian.rootfs.browser_web_online_rootfs_check import (
     CheckFailure as OnlineCheckFailure,
@@ -724,6 +727,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "desktop_m5_network_gate.py",
             "browser_web_firefox.sh",
             "browser_web_marionette_gate.py",
+            "megrez_clock_sync.py",
             "browser_m5_marionette_gate.py",
             "browser_web_evidence.sh",
             "browser_web.service",
@@ -1647,6 +1651,113 @@ generate_fontconfig_cache "$stage" "$3"
         client.command.return_value = {"value": "missing-controls"}
         with self.assertRaisesRegex(GateError, "could not be submitted"):
             _submit_baidu_search(client)
+
+    def test_baidu_home_scope_uses_one_session_and_stops_after_evidence(self) -> None:
+        ready = snapshot("https://www.baidu.com/")
+        ready["title"] = "百度一下，你就知道"
+        ready["bodyText"] = "百度一下，你就知道 新闻 地图 视频 学术 更多产品"
+        ready["dom"]["baiduLogo"] = True
+        ready["dom"]["baiduKeyword"] = True
+        ready["dom"]["baiduSubmit"] = True
+        client = mock.Mock()
+
+        def command(name: str, _parameters: object | None = None) -> object:
+            if name == "WebDriver:NewSession":
+                return {
+                    "value": {
+                        "sessionId": "session-1",
+                        "capabilities": {"acceptInsecureCerts": False},
+                    }
+                }
+            if name == "WebDriver:GetWindowHandles":
+                return {"value": ["window-1"]}
+            if name in {"WebDriver:Navigate", "WebDriver:GetTitle"}:
+                return {"value": None}
+            self.fail(f"unexpected Marionette command: {name}")
+
+        client.command.side_effect = command
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._connect",
+                return_value=client,
+            ) as connect,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._wait_for_probe",
+                return_value=(ready, None),
+            ) as wait_probe,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._snapshot",
+                return_value=ready,
+            ) as take_snapshot,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._write_evidence"
+            ) as write_evidence,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "fixture_index_url_from_environment"
+            ) as fixture_url,
+        ):
+            result = run_baidu_home_gate(
+                "127.0.0.1", 2828, 30, Path(directory), firefox_pid=116
+            )
+
+        self.assertEqual(result, ready)
+        connect.assert_called_once()
+        wait_probe.assert_called_once()
+        take_snapshot.assert_called_once_with(client)
+        write_evidence.assert_called_once_with(
+            client, Path(directory), "baidu-home", ready
+        )
+        fixture_url.assert_not_called()
+        self.assertNotIn(
+            "WebDriver:DeleteSession",
+            [call.args[0] for call in client.command.call_args_list],
+        )
+        client.close.assert_called_once_with()
+
+    def test_baidu_home_cli_selects_only_the_lightweight_scope(self) -> None:
+        result = snapshot("https://www.baidu.com/")
+        result["title"] = "百度一下，你就知道"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "validate_network_namespace"
+            ) as validate_namespace,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "run_baidu_home_gate",
+                return_value=result,
+            ) as run_home,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate.run_gate"
+            ) as run_full,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            evidence = Path(directory)
+            status = marionette_gate_main(
+                [
+                    "--scope",
+                    "baidu-home",
+                    "--firefox-pid",
+                    "116",
+                    "--timeout",
+                    "30",
+                    "--evidence-dir",
+                    str(evidence),
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        validate_namespace.assert_called_once_with(116)
+        run_home.assert_called_once_with("127.0.0.1", 2828, 30.0, evidence, 116)
+        run_full.assert_not_called()
+        marker = json.loads(stdout.getvalue())
+        self.assertEqual(marker["scope"], "baidu-home")
+        self.assertEqual(marker["url"], "https://www.baidu.com/")
+        self.assertRegex(marker["title_sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertEqual(marker["tls"], "verified")
 
     def test_controlled_fixture_search_is_submitted_from_the_real_form(self) -> None:
         client = mock.Mock()

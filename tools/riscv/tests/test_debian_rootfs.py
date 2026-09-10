@@ -125,6 +125,10 @@ STAGE1_DEBUG_CONSOLE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_debug_console.c"
 )
 STAGE1_PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_probe.c"
+STAGE1_BROWSER_GATE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_web_marionette_gate.py"
+)
+STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
@@ -1186,7 +1190,34 @@ int main(void)
             ["riscv64-linux-gnu-gcc", "cpio", "python3"],
         )
         self.assertEqual(entries.returncode, 0, entries.stderr)
-        self.assertEqual(entries.stdout.splitlines(), [".", "init"])
+        self.assertEqual(
+            entries.stdout.splitlines(),
+            [
+                ".",
+                "init",
+                "usr",
+                "usr/lib",
+                "usr/lib/asterinas",
+                "usr/lib/asterinas/browser-web-marionette-gate",
+                "usr/lib/asterinas/megrez-clock-sync",
+            ],
+        )
+
+    def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
+        self,
+    ) -> None:
+        source = STAGE1_SOURCE.read_text()
+        normalized = " ".join(source.split())
+        self.assertIn('ensure_directory("/newroot/run/asterinas-tools")', source)
+        self.assertIn(
+            'mount("/usr/lib/asterinas", "/newroot/run/asterinas-tools", '
+            "NULL, MS_BIND, NULL)",
+            normalized,
+        )
+        mount_run = source[source.index("case HANDOFF_MOUNT_RUN:") :]
+        mount_run = mount_run[: mount_run.index("case HANDOFF_PREPARE_DEBUG_CONSOLE:")]
+        self.assertNotIn("O_WRONLY", mount_run)
+        self.assertNotIn("/newroot/usr", mount_run)
 
     def test_builder_rejects_unknown_arguments(self) -> None:
         result = self.run_builder("--unknown")
@@ -1223,10 +1254,29 @@ int main(void)
             [
                 (".", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
                 ("init", stat.S_IFREG | 0o755, 0, 0, 1700000000),
+                ("usr", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                ("usr/lib", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                ("usr/lib/asterinas", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                (
+                    "usr/lib/asterinas/browser-web-marionette-gate",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/megrez-clock-sync",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
             ],
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
         self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
+        self.assertEqual(entries[5][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[6][5], STAGE1_CLOCK_SYNC.read_bytes())
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

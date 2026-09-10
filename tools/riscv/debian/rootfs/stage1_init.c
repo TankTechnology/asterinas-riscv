@@ -1111,6 +1111,15 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        if (result == 0 &&
+            ensure_directory("/newroot/run/asterinas-tools") != 0) {
+            result = -1;
+        }
+        if (result == 0) {
+            result = mount("/usr/lib/asterinas",
+                           "/newroot/run/asterinas-tools", NULL, MS_BIND,
+                           NULL);
+        }
         break;
     case HANDOFF_PREPARE_DEBUG_CONSOLE:
         result = production_context->root_init.debug_console_isolated
