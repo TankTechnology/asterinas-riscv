@@ -1898,7 +1898,7 @@ class DocumentationTests(unittest.TestCase):
         for option in (
             "--open-timeout 60",
             "--artifact-timeout 300",
-            "--boot-timeout 120",
+            "--boot-timeout 300",
             "--cycle-timeout 180",
             "--hdmi-timeout 60",
             "--recovery-timeout 930",

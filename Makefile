@@ -549,7 +549,7 @@ prepare_riscv_megrez_physical_graphics:
 			--mmc-dtb "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB)"; \
 	fi; \
 	printf '%q ' \
-		--open-timeout 60 --artifact-timeout 300 --boot-timeout 120 \
+		--open-timeout 60 --artifact-timeout 300 --boot-timeout 300 \
 		--cycle-timeout 180 --hdmi-timeout 60 --recovery-timeout 930; printf '\n'
 
 .PHONY: test_riscv_debian_rootfs_gate
