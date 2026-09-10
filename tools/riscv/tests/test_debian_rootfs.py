@@ -4432,6 +4432,31 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 2)
         sleep.assert_has_calls([mock.call(0.005), mock.call(0.005)])
 
+    def test_paced_transmission_drains_concurrent_serial_output(self) -> None:
+        local, remote = socket.socketpair()
+        descriptor = local.detach()
+        self.addCleanup(os.close, descriptor)
+        self.addCleanup(remote.close)
+        console = SerialConsole(descriptor, max_bytes=128, tx_delay=0.005)
+        payload = b"abcdefgh"
+
+        def echo_during_send() -> None:
+            remote.recv(1)
+            remote.sendall(b"readline-redraw\n")
+            remaining = len(payload) - 1
+            while remaining:
+                remaining -= len(remote.recv(remaining))
+
+        echo = threading.Thread(target=echo_during_send, daemon=True)
+        echo.start()
+        self.addCleanup(echo.join, 1.0)
+
+        console.send(payload, self._deadline(3.0))
+        echo.join(1.0)
+
+        self.assertFalse(echo.is_alive())
+        self.assertIn(b"readline-redraw\n", console.transcript)
+
     def test_serial_console_rejects_paced_command_before_partial_transmission(
         self,
     ) -> None:

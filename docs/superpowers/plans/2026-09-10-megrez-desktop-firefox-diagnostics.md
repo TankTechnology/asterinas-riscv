@@ -596,6 +596,41 @@ is now version 3 (`20e9d192...` for the otherwise unchanged configured
 experiment), so the consumed version-2 identity cannot be silently repeated.
 No second physical Firefox boot is authorized by this observer repair.
 
+- [x] **Step 4a: Run one newly authorized protocol-v3 classification**
+
+After reviewing the observer repair and its retained-data regression, the
+operator explicitly authorized continued diagnosis.  Admit exactly the new
+protocol-v3 identity `20e9d192...`, reuse the unchanged attested MMC artifacts,
+transfer zero bytes, and retain one complete result plus fresh-U-Boot recovery.
+Do not admit another physical identity until this result selects one smaller
+Linux/Asterinas reproducer or a measured Firefox-only experiment.
+
+Protocol-v3 experiment `20e9d192...` ran once in 316.838 seconds with one
+physical boot, zero transfers, complete hashes, and fresh-U-Boot recovery.  It
+passed desktop readiness and acknowledged Firefox preflight commands 0, 1,
+and 2.  During command 3, the serial transcript retained only a truncated Bash
+readline redraw and no completion marker, so Status and NewSession were not
+issued.
+
+- [x] **Step 4b: Prove and repair the host serial transport boundary**
+
+A local full-duplex socket regression proved that paced `SerialConsole.send`
+ignored all serial output arriving while it transmitted.  That behavior can
+overflow the host receive queue under Bash long-line echo/redraw and lose a
+completion marker even though the guest received the command.  The minimal
+repair drains bounded RX data during each paced TX interval, preserves the
+absolute deadline and transcript cap, and leaves write-only descriptors on
+the original pacing path.  The regression failed before the repair and passes
+after it.
+
+- [ ] **Step 4c: Run one protocol-v4 classification after host verification**
+
+Protocol version 4 identifies the changed serial observer; its otherwise
+unchanged experiment identity is `a255f297...`.  Run it only after all serial,
+desktop, stability, and physical protocol tests pass.  It must again transfer
+zero bytes and recover.  Do not change the kernel or Firefox until the run
+reaches a valid Status/NewSession boundary.
+
 - [ ] **Step 5: Implement a fix only after causal proof**
 
 For a kernel result, first run one common executable on Linux and Asterinas;
