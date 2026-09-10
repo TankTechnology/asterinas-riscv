@@ -1316,6 +1316,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "console-getty.service",
             "evidence_state=%s",
             "network_state=%s",
+            "setup_status=%s",
             "__ASTERINAS_PHYSICAL_EXTERNAL__",
         ):
             self.assertIn(fragment, command)
@@ -1380,7 +1381,7 @@ class PhysicalCommandTests(unittest.TestCase):
             operations,
             "_next_line",
             return_value=(
-                "__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 "
+                "__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 setup_status=124 "
                 "evidence_state=inactive evidence_pid=0 "
                 "network_state=inactive network_pid=0",
                 8,
