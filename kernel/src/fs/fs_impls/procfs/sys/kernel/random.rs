@@ -4,20 +4,18 @@ use aster_util::printer::VmPrinter;
 use spin::Once;
 
 use crate::{
-    events::IoEvents,
     fs::{
-        file::{AccessMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
+        file::{InodeType, mkmod},
         procfs::{
             ProcDir, StaticEntry,
             template::{
-                ProcDirOps, ProcFile, ProcFileOps, ProcFileOpsByHandle, ReaddirEntry,
-                listed_entries_from_table, lookup_child_from_table, visit_listed_entries,
+                ProcDirOps, ProcFile, ProcFileOps, ReaddirEntry, listed_entries_from_table,
+                lookup_child_from_table, visit_listed_entries,
             },
         },
-        vfs::inode::{FileOps, Inode},
+        vfs::inode::Inode,
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
     util::random::getrandom,
 };
 
@@ -108,56 +106,10 @@ impl UuidFileOps {
     }
 }
 
-impl ProcFileOpsByHandle for UuidFileOps {
-    fn open(
-        &self,
-        _access_mode: AccessMode,
-        _status_flags: StatusFlags,
-    ) -> Result<Box<dyn PerOpenFileOps>> {
-        Ok(Box::new(UuidFileHandle(uuid_text(&new_uuid()))))
-    }
-}
-
-struct UuidFileHandle([u8; 37]);
-
-impl Pollable for UuidFileHandle {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        (IoEvents::IN | IoEvents::OUT) & mask
-    }
-}
-
-impl FileOps for UuidFileHandle {
-    fn read_at(
-        &self,
-        offset: usize,
-        writer: &mut VmWriter,
-        _status_flags: StatusFlags,
-    ) -> Result<usize> {
-        if offset >= self.0.len() {
-            return Ok(0);
-        }
-        let mut reader = VmReader::from(&self.0[offset..]);
-        Ok(writer
-            .write_fallible(&mut reader)
-            .map_err(|(error, _)| error)?)
-    }
-
-    fn write_at(
-        &self,
-        _offset: usize,
-        _reader: &mut VmReader,
-        _status_flags: StatusFlags,
-    ) -> Result<usize> {
-        return_errno_with_message!(Errno::EPERM, "the file is not writable");
-    }
-}
-
-impl PerOpenFileOps for UuidFileHandle {
-    fn check_seekable(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn is_offset_aware(&self) -> bool {
-        true
+impl ProcFileOps for UuidFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        printer.write_bytes(&uuid_text(&new_uuid()))?;
+        Ok(printer.bytes_written())
     }
 }

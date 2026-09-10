@@ -14,7 +14,9 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import threading
 import time
+from types import SimpleNamespace
 import unittest
 import zlib
 from unittest import mock
@@ -1007,6 +1009,46 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
 
         self.assertIn("ASTERINAS_PROBE_SHELL_COMMANDS", output.getvalue())
 
+    def test_interactive_shell_detects_an_idle_reboot_before_forwarding_input(
+        self,
+    ) -> None:
+        nonce = "0" * 32
+        serial_read, serial_write = os.pipe()
+        input_read, input_write = os.pipe()
+        serial = probe.SerialConsole(serial_read, max_bytes=4096)
+        os.write(
+            serial_write,
+            f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n".encode(),
+        )
+
+        def emit_recovery() -> None:
+            time.sleep(0.02)
+            os.write(serial_write, b"OpenSBI v1.5\n")
+
+        writer = threading.Thread(target=emit_recovery)
+        writer.start()
+        try:
+            with os.fdopen(input_read, "r", closefd=False) as input_file:
+                with (
+                    mock.patch.object(probe.sys, "stdin", input_file),
+                    redirect_stdout(io.StringIO()),
+                    self.assertRaisesRegex(
+                        probe.ProbeProtocolError, "rebooted during probe shell"
+                    ),
+                ):
+                    self.operations._interactive_shell(
+                        serial, time.monotonic() + 1.0, nonce
+                    )
+        finally:
+            writer.join(timeout=1)
+            os.close(serial_read)
+            os.close(serial_write)
+            os.close(input_read)
+            os.close(input_write)
+
+        self.assertTrue(self.operations._guest_recovered_early)
+        self.assertGreaterEqual(self.operations._recovery_cursor, 0)
+
     def test_complete_transcript_rejects_records_hidden_after_done(self) -> None:
         nonce = "0" * 32
         transcript = (
@@ -1091,6 +1133,20 @@ class ProbeCliTests(unittest.TestCase):
             with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     probe.parse_args(arguments)
+
+    def test_qemu_cli_rejects_the_physical_only_shell_before_launch(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            probe.parse_args(
+                (
+                    "boot",
+                    "--qemu",
+                    "--qemu-kernel",
+                    "/kernel",
+                    "--qemu-initramfs",
+                    "/initramfs",
+                    "--shell",
+                )
+            )
 
     def test_configure_atomically_writes_private_current_bundle(self) -> None:
         with redirect_stdout(io.StringIO()):
@@ -1214,9 +1270,11 @@ class _QemuProcess:
 
 
 class _DeadlineOperations:
-    def __init__(self) -> None:
+    def __init__(self, clock, *, fatal: bool = False) -> None:
         self.events = []
         self._guest_started = False
+        self.clock = clock
+        self.fatal = fatal
 
     @property
     def guest_started(self):
@@ -1224,7 +1282,11 @@ class _DeadlineOperations:
 
     @property
     def transcript(self):
-        return b"ASTERINAS_PROBE_READY v=1 pid=1\n"
+        fatal = b"Kernel panic - not syncing\n" if self.fatal else b""
+        return (
+            b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=30\n"
+            b"ASTERINAS_PROBE_READY v=1 pid=1\n" + fatal
+        )
 
     def open(self, _timeout):
         self.events.append("open")
@@ -1242,6 +1304,7 @@ class _DeadlineOperations:
 
     def await_recovery(self, _timeout):
         self.events.append("recovered")
+        self.clock.now += 1.0 if self.fatal else 30.0
 
     def close(self):
         self.events.append("close")
@@ -1350,13 +1413,15 @@ class QemuProbeOperationsTests(unittest.TestCase):
     def test_deadline_gate_sends_no_probe_request_and_requires_process_exit(
         self,
     ) -> None:
-        operations = _DeadlineOperations()
+        clock = SimpleNamespace(now=100.0)
+        operations = _DeadlineOperations(clock)
         publisher = _LifecyclePublisher([])
 
         result = probe.run_qemu_deadline_gate(
             self.bundle,
             operations,
             publisher,
+            clock=lambda: clock.now,
         )
 
         self.assertTrue(result.passed)
@@ -1371,6 +1436,22 @@ class QemuProbeOperationsTests(unittest.TestCase):
         bootargs = operations.events[2][1]
         self.assertIn("asterinas.reboot_after=30", bootargs)
         self.assertNotIn("ASTERINAS_PROBE_RUN", operations.transcript.decode())
+
+    def test_deadline_gate_rejects_an_immediate_fatal_restart(self) -> None:
+        clock = SimpleNamespace(now=100.0)
+        operations = _DeadlineOperations(clock, fatal=True)
+        publisher = _LifecyclePublisher([])
+
+        result = probe.run_qemu_deadline_gate(
+            self.bundle,
+            operations,
+            publisher,
+            clock=lambda: clock.now,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "deadline-failed")
+        self.assertTrue(result.recovered)
 
 
 if __name__ == "__main__":
