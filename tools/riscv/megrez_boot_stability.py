@@ -35,6 +35,7 @@ from tools.riscv.megrez_board_session import (
 )
 from tools.riscv.megrez_physical_graphics import (
     HostGateError,
+    PHYSICAL_REBOOT_AFTER,
     RealPhysicalGraphicsOperations,
     _positive_seconds,
     _read_plan,
@@ -974,9 +975,25 @@ class RealBootStabilityPublisher:
         self._output: PinnedOutputDirectory | None = None
 
     def invalidate(self) -> None:
-        output_path = _safe_output_directory(self._output_directory, self._repository)
-        self._output = PinnedOutputDirectory(output_path)
+        if self._output is None:
+            output_path = _safe_output_directory(
+                self._output_directory, self._repository
+            )
+            output = PinnedOutputDirectory(output_path)
+            try:
+                output.lock_exclusive()
+            except RuntimeError as error:
+                output.close()
+                raise HostGateError(
+                    "boot-stability output run is already active"
+                ) from error
+            self._output = output
         self._output.invalidate(*self._OUTPUT_NAMES)
+
+    def close(self) -> None:
+        if self._output is not None:
+            self._output.close()
+            self._output = None
 
     def publish(
         self, result: BootStabilityResult, records: tuple[BootCycleRecord, ...]
@@ -1103,6 +1120,12 @@ def _invalidate_boot_stability_output(output_directory: Path) -> None:
     repository = Path(__file__).resolve().parents[2]
     output_path = _safe_output_directory(output_directory, repository)
     with PinnedOutputDirectory(output_path) as output:
+        try:
+            output.lock_exclusive()
+        except RuntimeError as error:
+            raise HostGateError(
+                "boot-stability output run is already active"
+            ) from error
         output.invalidate(*RealBootStabilityPublisher._OUTPUT_NAMES)
 
 
@@ -1132,6 +1155,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     """Runs the physical gate and prints its canonical terminal result."""
 
     values = parse_args(sys.argv[1:] if arguments is None else arguments)
+    publisher: RealBootStabilityPublisher | None = None
     try:
         _invalidate_boot_stability_output(values.output_directory)
         plan = _read_plan(values.plan)
@@ -1182,6 +1206,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    finally:
+        if publisher is not None:
+            publisher.close()
     print(result.canonical_bytes().decode(), end="")
     return 0 if result.passed else 1
 
@@ -1220,6 +1247,7 @@ def run_boot_stability(
         readiness_seconds = 0.0
         diagnostics_seconds = 0.0
         recovery_seconds = 0.0
+        guest_deadline: float | None = None
 
         try:
             artifact_start = clock()
@@ -1229,6 +1257,7 @@ def run_boot_stability(
 
             readiness_start = clock()
             operations.boot(plan, bootargs, config.boot_timeout)
+            guest_deadline = clock() + PHYSICAL_REBOOT_AFTER
             readiness = operations.prove_boot_readiness(config.readiness_timeout)
             readiness_seconds = _elapsed_seconds(clock, readiness_start)
 
@@ -1260,7 +1289,12 @@ def run_boot_stability(
             except Exception as reboot_error:
                 recovery_failure = reboot_error
             try:
-                operations.await_recovery(config.recovery_timeout)
+                remaining_guest = (
+                    max(0.0, guest_deadline - clock())
+                    if guest_deadline is not None
+                    else 0.0
+                )
+                operations.await_recovery(config.recovery_timeout + remaining_guest)
                 recovered = True
             except Exception as recovery_error:
                 if recovery_failure is None:

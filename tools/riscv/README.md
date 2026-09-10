@@ -376,21 +376,24 @@ marker produces `passed:false` while retaining the diagnostic evidence.
 ## Megrez fast kernel probes
 
 Use the fast probe path for routine kernel work that does not need Debian,
-systemd, Firefox, network access, or partition 2. Build and deploy a versioned
-kernel, Stage1 initramfs, and DTB only when their identity changes, then select
-them once with `configure`. Routine runs use only the immutable bundle and the
-files already on MMC partition 1:
+systemd, Firefox, network access, or partition 2.
+Build and deploy a versioned kernel, Stage1 initramfs, and DTB only when their
+identity changes, then select them once with `configure`.
+Routine runs use only the immutable bundle and the files already on MMC
+partition 1:
 
 ```bash
 python3 -m tools.riscv.megrez_probe boot syscall213
 ```
 
 The default bundle is `target/megrez-probe/current.json`; private evidence is
-written below `target/megrez-probe/latest` by default. The guest has one 90-second
-timer, recovery is independently bounded, and the host sends one newline after
-the new U-Boot banner to stop its autoboot countdown before requiring the
-prompt. The normal probe registry is fixed and read-only. A bounded shell is
-available only when explicitly requested for a physical diagnostic run.
+written below `target/megrez-probe/latest` by default.
+The guest has one 90-second timer, recovery is independently bounded, and the
+host sends one newline after the new U-Boot banner to stop its autoboot
+countdown before requiring the prompt.
+The normal probe registry is fixed and read-only.
+A bounded shell is available only when explicitly requested for a physical
+diagnostic run.
 
 Run the host and Stage1 regression tests in the persistent container:
 

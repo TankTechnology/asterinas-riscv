@@ -100,6 +100,15 @@ _SERIAL_CONTEXT_BYTES = 2048
 _SERIAL_SUMMARY_BYTES = 8 * 1024
 _PHYSICAL_TRANSCRIPT_BYTES = 256 * 1024
 _PROBE_READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
+_SOFTWARE_REBOOT_ARMED_30 = b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=30"
+_FATAL_REBOOT_MARKERS = (
+    b"kernel panic",
+    b"uncaught panic:",
+    b"not syncing",
+    b"oops:",
+    b"fatal exception",
+)
+_MIN_DEADLINE_REBOOT_SECONDS = 29.0
 _SHELL_READY_PREFIX = b"ASTERINAS_PROBE_SHELL_READY v=1 nonce="
 _SHELL_COMMANDS = frozenset(
     (
@@ -1054,6 +1063,7 @@ class PhysicalProbeOperations:
         self._serial: SerialConsole | None = None
         self._log = io.StringIO()
         self._guest_started = False
+        self._guest_recovered_early = False
         self._recovery_cursor = 0
 
     @property
@@ -1160,15 +1170,32 @@ class PhysicalProbeOperations:
                 raise ProbeProtocolError("probe shell nonce is ambiguous")
             nonce = matches[0].decode()
         input_fd = sys.stdin.fileno()
+        recovery_cursor = serial.checkpoint()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("bounded probe shell expired")
             sys.stdout.write("probe> ")
             sys.stdout.flush()
-            readable, _, _ = select.select([input_fd], [], [], remaining)
+            watched = [input_fd]
+            serial_fd = getattr(serial, "fd", None)
+            if isinstance(serial_fd, int) and serial_fd >= 0:
+                watched.append(serial_fd)
+            readable, _, _ = select.select(watched, [], [], remaining)
             if not readable:
                 raise TimeoutError("bounded probe shell expired")
+            if serial_fd in readable:
+                try:
+                    serial.wait_for_any(
+                        (b"OpenSBI v", b"U-Boot "),
+                        min(deadline, time.monotonic() + 0.05),
+                        start=recovery_cursor,
+                    )
+                except TimeoutError:
+                    continue
+                self._recovery_cursor = recovery_cursor
+                self._guest_recovered_early = True
+                raise ProbeProtocolError("guest rebooted during probe shell")
             line = sys.stdin.readline(514)
             if not line:
                 line = "exit\n"
@@ -1246,6 +1273,8 @@ class PhysicalProbeOperations:
         )
 
     def request_reboot(self, nonce: str, timeout: float) -> None:
+        if self._guest_recovered_early:
+            return
         serial = self._require_serial()
         deadline = _deadline(timeout)
         self._recovery_cursor = serial.checkpoint()
@@ -1479,7 +1508,9 @@ class QemuProbeOperations:
     def await_recovery(self, timeout: float) -> None:
         if self._process is None:
             raise ProbeContractError("QEMU probe process is unavailable")
-        returncode = self._process.wait(_deadline(timeout))
+        deadline = _deadline(timeout)
+        returncode = self._process.wait(deadline)
+        self._require_serial().drain(min(deadline, time.monotonic() + 1.0))
         if returncode != 0:
             raise RuntimeError(f"QEMU probe exited with status {returncode}")
 
@@ -1513,25 +1544,38 @@ def run_qemu_deadline_gate(
     ready = False
     recovered = False
     reason = "deadline-not-started"
+    boot_started: float | None = None
     try:
         operations.open(_remaining(deadline, clock))
         operations.ensure_artifacts(_remaining(deadline, clock))
+        boot_started = clock()
         operations.boot(probe_bootargs(bundle.plan, 30), _remaining(deadline, clock))
         operations.await_ready(_remaining(deadline, clock))
         ready = True
         operations.await_recovery(_remaining(deadline, clock))
         recovered = True
+        transcript = operations.transcript
+        lowered = transcript.lower()
+        elapsed_from_boot = clock() - boot_started
+        if (
+            transcript.count(_SOFTWARE_REBOOT_ARMED_30) != 1
+            or any(marker in lowered for marker in _FATAL_REBOOT_MARKERS)
+            or elapsed_from_boot < _MIN_DEADLINE_REBOOT_SECONDS
+        ):
+            raise ProbeProtocolError("QEMU exit did not prove the reboot deadline")
         reason = "deadline-reboot-pass"
     except (OSError, RuntimeError, TimeoutError, ValueError):
         reason = (
-            "manual-reset-required" if operations.guest_started else "deadline-failed"
+            "deadline-failed"
+            if recovered or not operations.guest_started
+            else "manual-reset-required"
         )
     finally:
         transcript = operations.transcript
         operations.close()
     result = ProbeRunResult(
         schema_version=1,
-        passed=ready and recovered,
+        passed=ready and recovered and reason == "deadline-reboot-pass",
         reason=reason,
         bundle_sha256=bundle.bundle_sha256,
         plan_sha256=bundle.plan_sha256,
@@ -1620,8 +1664,8 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
         or values.qemu_deadline_only
     ):
         parser.error("QEMU options require --qemu")
-    if values.qemu_deadline_only and values.shell:
-        parser.error("--qemu-deadline-only cannot be combined with --shell")
+    if values.qemu and values.shell:
+        parser.error("--qemu cannot be combined with the physical-only --shell")
     values.action = "run"
     values.probes = tuple(values.probes)
     return values

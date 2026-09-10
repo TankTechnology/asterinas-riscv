@@ -328,6 +328,54 @@ class BootStabilityLifecycleTests(unittest.TestCase):
         self.assertEqual(len(result.attempts), 1)
         self.assertFalse(result.attempts[0].recovered)
 
+    def test_early_failure_waits_through_the_software_reboot_deadline(self) -> None:
+        class Clock:
+            now = 100.0
+
+            def __call__(self) -> float:
+                return self.now
+
+        clock = Clock()
+        recovery_timeouts: list[float] = []
+
+        class DeadlineRecoveryOperations(_Operations):
+            def prove_boot_readiness(self, _timeout: float):
+                clock.now += 60.0
+                raise gate.HostGateError("injected early readiness failure")
+
+            def request_reboot(self, _timeout: float) -> None:
+                raise TimeoutError("guest shell stopped responding")
+
+            def await_recovery(self, timeout: float) -> None:
+                recovery_timeouts.append(timeout)
+                remaining = gate.PHYSICAL_REBOOT_AFTER - 60.0
+                if timeout < remaining + 180.0:
+                    raise TimeoutError("host stopped before the kernel deadline")
+                clock.now += remaining
+                self._transcript += b"OpenSBI\nU-Boot\n=> \n"
+
+        events: list[str] = []
+        operations = DeadlineRecoveryOperations(
+            1,
+            events,
+            fail_readiness=None,
+            diagnostics={},
+            recover=True,
+        )
+        publisher = _Publisher()
+
+        result = gate.run_boot_stability(
+            _plan(),
+            gate.BootStabilityConfig(),
+            lambda _cycle: operations,
+            publisher,
+            clock=clock,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(result.attempts[0].recovered)
+        self.assertGreaterEqual(recovery_timeouts[0], 1020.0)
+
 
 class BootStabilityProtocolTests(unittest.TestCase):
     NONCE = "0011223344556677"
@@ -762,6 +810,37 @@ class BootStabilityPublicationTests(unittest.TestCase):
             sums = (output / "sha256sums.txt").read_text()
             self.assertIn("cycle-1.diagnostics.log", sums)
             self.assertIn("result.json", sums)
+
+    def test_output_directory_is_exclusively_locked_for_one_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            output = (
+                repository
+                / "target"
+                / "current-main-physical-graphics"
+                / "physical"
+                / "boot-stability"
+            )
+            plan = _deployment_plan()
+
+            def new_publisher():
+                return gate.RealBootStabilityPublisher(
+                    plan,
+                    output,
+                    self.MMC_ARTIFACTS,
+                    _deployment_attestation(plan),
+                    _deployment_measurement_log(plan),
+                    repository=repository,
+                )
+
+            first = new_publisher()
+            second = new_publisher()
+            self.addCleanup(lambda: getattr(first, "close", lambda: None)())
+            self.addCleanup(lambda: getattr(second, "close", lambda: None)())
+            first.invalidate()
+
+            with self.assertRaisesRegex(gate.HostGateError, "already active"):
+                second.invalidate()
 
     def test_attestation_must_match_plan_partition_and_mmc_names(self) -> None:
         plan = _deployment_plan()
