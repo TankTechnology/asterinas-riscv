@@ -15,6 +15,7 @@ import math
 import os
 import re
 import secrets
+import select
 import stat
 import sys
 import time
@@ -1346,6 +1347,45 @@ def _remaining(deadline: float, *, phase: str) -> float:
     return remaining
 
 
+def _wait_text_readable(stream: TextIO, timeout: float) -> bool:
+    """Wait until a text stream can provide input without blocking."""
+
+    readable, _writable, _exceptional = select.select((stream,), (), (), timeout)
+    return bool(readable)
+
+
+def _read_operator_confirmation(
+    expected: str,
+    timeout: float,
+    *,
+    stream: TextIO | None = None,
+    wait_readable: Callable[[TextIO, float], bool] = _wait_text_readable,
+) -> None:
+    """Accept one exact, newline-terminated operator confirmation."""
+
+    if re.fullmatch(r"confirm-cyan-pass [0-9a-f]{8}", expected) is None:
+        raise ValueError("operator confirmation challenge is invalid")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or not 0 < timeout <= 1200
+    ):
+        raise ValueError("operator confirmation timeout must be in (0, 1200]")
+    selected_stream = sys.stdin if stream is None else stream
+    deadline = time.monotonic() + timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not wait_readable(selected_stream, remaining):
+        raise TimeoutError("operator display confirmation timed out")
+    line = selected_stream.readline(len(expected) + 2)
+    if line == "":
+        raise HostGateError("operator display confirmation reached EOF")
+    if line != expected + "\n":
+        raise HostGateError("operator display confirmation did not match exactly")
+    if wait_readable(selected_stream, 0.0):
+        raise HostGateError("operator display confirmation contained extra input")
+
+
 def _safe_output_directory(path: Path, repository: Path) -> Path:
     repository = repository.absolute()
     allowed = repository / "target" / "current-main-physical-graphics" / "physical"
@@ -1384,6 +1424,7 @@ class RealPhysicalGraphicsOperations:
         "physical-graphics-cycle-3.png",
         "hdmi-evidence.png",
         "hdmi-evidence.jpg",
+        "operator-display-attestation.json",
     )
 
     def __init__(
@@ -1391,8 +1432,11 @@ class RealPhysicalGraphicsOperations:
         plan: DebugPlan,
         device: str,
         output_directory: Path,
-        hdmi_capture: Path,
+        hdmi_capture: Path | None,
         *,
+        display_mode: DisplayEvidenceMode = DisplayEvidenceMode.EXTERNAL_HDMI,
+        cycles_requested: int = 3,
+        confirmation_reader: Callable[[str, float], None] = _read_operator_confirmation,
         repository: Path | None = None,
         open_device: Callable[[str], int] = open_serial,
         lock_device: Callable[[int], None] = _lock_serial,
@@ -1404,6 +1448,18 @@ class RealPhysicalGraphicsOperations:
         self._device = device
         self._output_path = output_directory
         self._hdmi_capture = hdmi_capture
+        if not isinstance(display_mode, DisplayEvidenceMode):
+            raise ValueError("display evidence mode is invalid")
+        if type(cycles_requested) is not int or cycles_requested not in (1, 3):
+            raise ValueError("physical cycle count must be one or three")
+        if display_mode is DisplayEvidenceMode.EXTERNAL_HDMI:
+            if not isinstance(hdmi_capture, Path):
+                raise ValueError("external HDMI mode requires a capture path")
+        elif hdmi_capture is not None:
+            raise ValueError("operator-attested mode cannot accept an HDMI path")
+        self._display_mode = display_mode
+        self._cycles_requested = cycles_requested
+        self._confirmation_reader = confirmation_reader
         self._repository = (
             repository.absolute()
             if repository is not None
@@ -1437,14 +1493,15 @@ class RealPhysicalGraphicsOperations:
         self._guest_started = False
         self._guest_deadline = None
         output_path = _safe_output_directory(self._output_path, self._repository)
-        try:
-            self._hdmi_capture.absolute().relative_to(output_path)
-        except ValueError:
-            pass
-        else:
-            raise HostGateError(
-                "HDMI capture source must be outside the output directory"
-            )
+        if self._hdmi_capture is not None:
+            try:
+                self._hdmi_capture.absolute().relative_to(output_path)
+            except ValueError:
+                pass
+            else:
+                raise HostGateError(
+                    "HDMI capture source must be outside the output directory"
+                )
         self._output = PinnedOutputDirectory(output_path)
         self._output.invalidate(*self._OUTPUT_NAMES)
 
@@ -1698,7 +1755,8 @@ class RealPhysicalGraphicsOperations:
                     raise HostGateError(f"cycle {cycle} duplicated READY")
                 ready_seen = True
                 print(
-                    f"[physical cycle {cycle}/3] type nonce {nonce}, then move "
+                    f"[physical cycle {cycle}/{self._cycles_requested}] "
+                    f"type nonce {nonce}, then move "
                     "the USB mouse and click the amber button",
                     flush=True,
                 )
@@ -1722,6 +1780,11 @@ class RealPhysicalGraphicsOperations:
         return payload
 
     def retain_hdmi(self, timeout: float) -> FileEvidence:
+        if (
+            self._display_mode is not DisplayEvidenceMode.EXTERNAL_HDMI
+            or self._hdmi_capture is None
+        ):
+            raise HostGateError("external HDMI evidence mode is not selected")
         output = self._require_output()
         deadline = self._guest_phase_deadline(timeout)
         try:
@@ -1731,7 +1794,7 @@ class RealPhysicalGraphicsOperations:
         else:
             initial_identity = self._hdmi_identity(before_prompt)
         print(
-            f"[physical HDMI] capture the cyan cycle-3 page to {self._hdmi_capture}",
+            f"[physical HDMI] capture the cyan final-cycle page to {self._hdmi_capture}",
             flush=True,
         )
         candidate_identity: tuple[int, ...] | None = None
@@ -1788,6 +1851,31 @@ class RealPhysicalGraphicsOperations:
             size=len(payload),
             sha256=hashlib.sha256(payload).hexdigest(),
             format=image_format,
+        )
+
+    def retain_operator_display(
+        self, nonce: str, timeout: float
+    ) -> OperatorDisplayEvidence:
+        if self._display_mode is not DisplayEvidenceMode.OPERATOR_ATTESTED:
+            raise HostGateError("operator-attested display mode is not selected")
+        if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
+            raise ValueError("physical nonce must be 16 lowercase hex digits")
+        deadline = self._guest_phase_deadline(timeout)
+        expected = f"confirm-cyan-pass {nonce[-8:]}"
+        print(
+            "[physical display] confirm that the physical monitor shows the "
+            f"cyan final-cycle PASS page; type exactly: {expected}",
+            flush=True,
+        )
+        self._confirmation_reader(
+            expected,
+            _remaining(deadline, phase="operator display confirmation"),
+        )
+        return OperatorDisplayEvidence(
+            kind="operator-attested",
+            nonce_sha256=hashlib.sha256(nonce.encode()).hexdigest(),
+            state="cyan-final-cycle-pass",
+            confirmed=True,
         )
 
     def prove_final_state(
@@ -1897,6 +1985,19 @@ class RealPhysicalGraphicsOperations:
             if output.sha256(hdmi.path.name) != hdmi.sha256:
                 raise HostGateError("retained HDMI digest changed before publication")
             output_names.append(hdmi.path.name)
+        if result.operator_display is not None:
+            attestation = (
+                json.dumps(
+                    asdict(result.operator_display),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode()
+            output.atomic_write(
+                "operator-display-attestation.json", attestation, mode=0o600
+            )
+            output_names.append("operator-display-attestation.json")
 
         result_payload = result.canonical_bytes()
 
@@ -1971,7 +2072,10 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("device")
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
-    parser.add_argument("--hdmi-capture", required=True, type=Path)
+    display = parser.add_mutually_exclusive_group(required=True)
+    display.add_argument("--hdmi-capture", type=Path)
+    display.add_argument("--operator-display-attestation", action="store_true")
+    parser.add_argument("--cycles", type=int, choices=(1, 3), default=3)
     parser.add_argument("--mmc-kernel", type=safe_artifact_name)
     parser.add_argument("--mmc-initramfs", type=safe_artifact_name)
     parser.add_argument("--mmc-dtb", type=safe_artifact_name)
@@ -2003,6 +2107,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
             cycle_timeout=values.cycle_timeout,
             hdmi_timeout=values.hdmi_timeout,
             recovery_timeout=values.recovery_timeout,
+            cycles_requested=values.cycles,
+            display_mode=(
+                DisplayEvidenceMode.OPERATOR_ATTESTED
+                if values.operator_display_attestation
+                else DisplayEvidenceMode.EXTERNAL_HDMI
+            ),
         )
         mmc_artifacts = (
             None
@@ -2018,6 +2128,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             values.device,
             values.output_directory,
             values.hdmi_capture,
+            display_mode=config.display_mode,
+            cycles_requested=config.cycles_requested,
             mmc_artifacts=mmc_artifacts,
         )
         result = run_physical_graphics(plan, config, operations)

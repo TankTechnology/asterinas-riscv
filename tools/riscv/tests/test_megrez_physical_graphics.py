@@ -8,7 +8,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import base64
+import io
+import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 import struct
 import tempfile
@@ -404,6 +407,73 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.PhysicalGraphicsConfig(display_mode="operator-attested")
 
+    def test_confirmation_reader_accepts_only_one_exact_nonce_bound_line(self) -> None:
+        gate = load_gate(self)
+        expected = "confirm-cyan-pass 89abcdef"
+
+        def read(payload: str) -> None:
+            stream = io.StringIO(payload)
+            gate._read_operator_confirmation(
+                expected,
+                1.0,
+                stream=stream,
+                wait_readable=lambda candidate, _timeout: candidate.tell()
+                < len(payload),
+            )
+
+        read(expected + "\n")
+        for payload in (
+            "",
+            "confirm-cyan-pass 01234567\n",
+            expected,
+            expected + "\n" + expected + "\n",
+        ):
+            with (
+                self.subTest(payload=payload),
+                self.assertRaises((gate.HostGateError, TimeoutError)),
+            ):
+                read(payload)
+
+        with self.assertRaisesRegex(TimeoutError, "timed out"):
+            gate._read_operator_confirmation(
+                expected,
+                0.01,
+                stream=io.StringIO(expected + "\n"),
+                wait_readable=lambda _stream, _timeout: False,
+            )
+        with self.assertRaisesRegex(gate.HostGateError, "EOF"):
+            gate._read_operator_confirmation(
+                expected,
+                1.0,
+                stream=io.StringIO(""),
+                wait_readable=lambda _stream, _timeout: True,
+            )
+
+    def test_real_adapter_binds_confirmation_to_final_nonce_suffix(self) -> None:
+        gate = load_gate(self)
+        reader = mock.Mock()
+        operations = gate.RealPhysicalGraphicsOperations(
+            SimpleNamespace(artifacts=(), plan_sha256="a" * 64),
+            "/dev/null",
+            Path("/unused"),
+            None,
+            display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            cycles_requested=1,
+            confirmation_reader=reader,
+        )
+        operations._guest_deadline = time.monotonic() + 60
+
+        evidence = operations.retain_operator_display("0123456789abcdef", 30)
+
+        self.assertEqual(evidence.kind, "operator-attested")
+        self.assertEqual(
+            evidence.nonce_sha256,
+            hashlib.sha256(b"0123456789abcdef").hexdigest(),
+        )
+        self.assertEqual(reader.call_args.args[0], "confirm-cyan-pass 89abcdef")
+        self.assertGreater(reader.call_args.args[1], 0)
+        self.assertLessEqual(reader.call_args.args[1], 30)
+
 
 class PhysicalCliTests(unittest.TestCase):
     BASE_ARGUMENTS = (
@@ -415,6 +485,40 @@ class PhysicalCliTests(unittest.TestCase):
         "--hdmi-capture",
         "/tmp/capture.png",
     )
+
+    def test_cli_selects_exactly_one_display_mode_and_one_or_three_cycles(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        common = (
+            "/dev/serial/by-id/test",
+            "--plan",
+            "/tmp/plan.json",
+            "--output-directory",
+            "/tmp/evidence",
+        )
+        external = gate.parse_args(common + ("--hdmi-capture", "/tmp/capture.png"))
+        operator = gate.parse_args(
+            common + ("--operator-display-attestation", "--cycles", "1")
+        )
+        self.assertEqual(external.cycles, 3)
+        self.assertIsNotNone(external.hdmi_capture)
+        self.assertFalse(external.operator_display_attestation)
+        self.assertEqual(operator.cycles, 1)
+        self.assertIsNone(operator.hdmi_capture)
+        self.assertTrue(operator.operator_display_attestation)
+
+        for variant in (
+            (),
+            (
+                "--hdmi-capture",
+                "/tmp/capture.png",
+                "--operator-display-attestation",
+            ),
+            ("--operator-display-attestation", "--cycles", "2"),
+        ):
+            with self.subTest(variant=variant), self.assertRaises(SystemExit):
+                gate.parse_args(common + variant)
 
     def test_cli_accepts_one_complete_mmc_artifact_mapping(self) -> None:
         gate = load_gate(self)
@@ -933,6 +1037,41 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    def test_one_cycle_real_prompt_uses_one_as_the_denominator(self) -> None:
+        gate = load_gate(self)
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._browser_pid = 42
+        operations._cycles_requested = 1
+        operations._guest_deadline = time.monotonic() + 900
+        serial = mock.Mock(transcript=b"")
+        serial.checkpoint.return_value = 0
+        operations._serial = serial
+        nonce = "0123456789abcdef"
+        nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
+        lines = iter(
+            (
+                f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256={nonce_hash}",
+                "ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=1",
+                "__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle=1 status=0",
+            )
+        )
+        with (
+            mock.patch.object(
+                operations,
+                "_next_line",
+                side_effect=lambda _serial, cursor, _deadline: (
+                    next(lines),
+                    cursor + 1,
+                ),
+            ),
+            mock.patch.object(operations, "_sync_serial_log"),
+            mock.patch.object(gate, "extract_screenshot_frame", return_value=b"png"),
+            mock.patch("builtins.print") as printed,
+        ):
+            operations.run_cycle(1, nonce, 30)
+
+        self.assertIn("[physical cycle 1/1]", printed.call_args.args[0])
+
     def test_one_cycle_final_command_and_completion_marker(self) -> None:
         gate = load_gate(self)
         command = gate.physical_final_command("0123456789abcdef", 41, 180.0, cycle=1)
@@ -965,6 +1104,7 @@ class PhysicalCommandTests(unittest.TestCase):
         gate = load_gate(self)
         operations = object.__new__(gate.RealPhysicalGraphicsOperations)
         operations._browser_pid = 42
+        operations._cycles_requested = 3
         operations._guest_deadline = 970.0
         serial = mock.Mock(transcript=b"")
         serial.checkpoint.return_value = 0
@@ -1024,6 +1164,7 @@ class PhysicalCommandTests(unittest.TestCase):
                     operations = object.__new__(gate.RealPhysicalGraphicsOperations)
                     operations._serial = serial
                     operations._browser_pid = 42
+                    operations._cycles_requested = 3
                     operations._guest_deadline = time.monotonic() + 900
                     lines = iter(
                         [*prefix, "__ASTERINAS_PHYSICAL_COMMAND_STATUS__" + status]
@@ -1449,6 +1590,70 @@ class ScreenshotTransferTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_operator_publication_has_private_hashed_attestation_and_no_hdmi(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+
+        class Output:
+            path = Path("/retained")
+
+            def __init__(self) -> None:
+                self.payloads: dict[str, bytes] = {}
+
+            def atomic_write(self, name: str, payload: bytes, *, mode: int) -> None:
+                self_test.assertEqual(mode, 0o600)
+                self.payloads[name] = payload
+
+            def sha256(self, name: str) -> str:
+                return hashlib.sha256(self.payloads[name]).hexdigest()
+
+        self_test = self
+        operator_display = gate.OperatorDisplayEvidence(
+            kind="operator-attested",
+            nonce_sha256="c" * 64,
+            state="cyan-final-cycle-pass",
+            confirmed=True,
+        )
+        result = gate.PhysicalGraphicsResult(
+            schema_version=2,
+            cycles_requested=1,
+            passed=False,
+            physical=True,
+            reason="diagnostic",
+            plan_sha256="a" * 64,
+            bootargs_sha256="b" * 64,
+            recovered=False,
+            readiness=None,
+            cycles=(),
+            hdmi=None,
+            operator_display=operator_display,
+            transport=(),
+        )
+        operations = gate.RealPhysicalGraphicsOperations(
+            SimpleNamespace(artifacts=(), plan_sha256="a" * 64),
+            "/dev/null",
+            Path("/unused"),
+            None,
+            display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            cycles_requested=1,
+        )
+        output = Output()
+        operations._output = output
+
+        operations.publish(result, (), None, ())
+
+        self.assertIn("operator-display-attestation.json", output.payloads)
+        self.assertNotIn("hdmi-evidence.png", output.payloads)
+        self.assertNotIn("hdmi-evidence.jpg", output.payloads)
+        attestation = output.payloads["operator-display-attestation.json"]
+        self.assertEqual(json.loads(attestation), asdict(operator_display))
+        self.assertIn(
+            hashlib.sha256(attestation).hexdigest()
+            + "  operator-display-attestation.json",
+            output.payloads["sha256sums.txt"].decode(),
+        )
+
     def test_result_requires_schema_two_and_mutually_exclusive_display_evidence(
         self,
     ) -> None:
@@ -1605,6 +1810,35 @@ class OutputDirectoryTests(unittest.TestCase):
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_prepare_and_operator_guide_cover_one_cycle_attested_mmc_run(self) -> None:
+        makefile = MAKEFILE_PATH.read_text()
+        recipe = makefile.split("prepare_riscv_megrez_physical_graphics:", 1)[1].split(
+            ".PHONY:", 1
+        )[0]
+        readme = README_PATH.read_text()
+        section = readme.split("## Current-main Megrez physical graphics", 1)[1]
+        for fragment in (
+            "MEGREZ_PHYSICAL_GRAPHICS_DISPLAY",
+            "MEGREZ_PHYSICAL_GRAPHICS_CYCLES",
+            "MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL",
+            "MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS",
+            "MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB",
+            "--operator-display-attestation",
+            "--cycles",
+            "--mmc-kernel",
+            "--mmc-initramfs",
+            "--mmc-dtb",
+        ):
+            self.assertIn(fragment, makefile + recipe)
+        for phrase in (
+            "operator-attested",
+            "confirm-cyan-pass",
+            "one complete interaction path",
+            "does not prove three-cycle repeatability",
+            "operator-display-attestation.json",
+        ):
+            self.assertIn(phrase, section)
+
     def test_makefile_exposes_unit_qemu_and_non_mutating_prepare_targets(self) -> None:
         makefile = MAKEFILE_PATH.read_text()
         for target in (
