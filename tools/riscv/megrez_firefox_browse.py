@@ -37,6 +37,10 @@ MAX_PAGE_JSON_BYTES = 1024 * 1024
 MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024
 MAX_SERIAL_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_BYTES = 256 * 1024
+# The first board trace reached Marionette after 244 guest seconds and completed
+# NewSession after another 156.  Keep 225 seconds for DOM/screenshot work while
+# remaining inside the kernel's fixed 900-second recovery lifetime.
+MAX_BAIDU_HOME_GATE_SECONDS = 625
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -106,7 +110,7 @@ class FirefoxBrowseConfig:
     boot_timeout: float = 180.0
     readiness_timeout: float = 300.0
     clock_timeout: float = 45.0
-    browse_timeout: float = 420.0
+    browse_timeout: float = 645.0
     transfer_timeout: float = 180.0
     diagnostics_timeout: float = 60.0
     reboot_timeout: float = 30.0
@@ -536,7 +540,7 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
     ) -> dict[str, object]:
         if _NONCE.fullmatch(nonce) is None:
             raise ValueError("Firefox browse nonce is invalid")
-        guest_timeout = max(1, min(int(timeout) - 15, 400))
+        guest_timeout = max(1, min(int(timeout) - 15, MAX_BAIDU_HOME_GATE_SECONDS))
         directory = f"/run/asterinas-browse-{nonce}"
         serial = self._require_serial()
         start = serial.checkpoint()

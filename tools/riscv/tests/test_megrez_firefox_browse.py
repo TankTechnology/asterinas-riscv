@@ -290,7 +290,11 @@ class FirefoxBrowseTests(unittest.TestCase):
         )
 
         clock = operations.synchronize_clock(116, 45)
-        home = operations.run_baidu_home(116, "0123456789abcdef", 420)
+        home = operations.run_baidu_home(
+            116,
+            "0123456789abcdef",
+            browse.FirefoxBrowseConfig().browse_timeout,
+        )
 
         self.assertEqual(clock["marker"], "ASTERINAS_CLOCK_SYNC_READY")
         self.assertEqual(home["scope"], "baidu-home")
@@ -300,6 +304,11 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertIn("nsenter -t 116 -n", clock_command)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)
         self.assertIn("--firefox-pid 116", home_command)
+        # The first physical trace consumed about 400 guest seconds reaching
+        # the first DOM probe.  Preserve a bounded 225-second content window
+        # without changing the 900-second kernel recovery timer.
+        self.assertIn("/usr/bin/timeout 635 ", home_command)
+        self.assertIn("--timeout 625 ", home_command)
         self.assertNotIn("/proc/net/tcp", home_command)
         self.assertNotIn("DeleteSession", home_command)
         self.assertLess(len((home_command + "\n").encode()), 768)
