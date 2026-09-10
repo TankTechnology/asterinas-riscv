@@ -716,7 +716,11 @@ class _PhysicalSerial:
                 ).encode()
             )
         elif payload.startswith(b"ASTERINAS_PROBE_REBOOT"):
-            self._transcript.extend(b"OpenSBI v1.5\nU-Boot 2024.01\n=> ")
+            self._transcript.extend(
+                b"OpenSBI v1.5\nU-Boot 2024.01\nHit any key to stop autoboot: 30"
+            )
+        elif payload == b"\n":
+            self._transcript.extend(b"\n=> ")
 
     def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
         if deadline <= time.monotonic() or self.transcript.find(marker, start) < 0:
@@ -791,6 +795,7 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
                 for call in self.session.send.call_args_list
             )
         )
+        self.assertEqual(self.serial_instances[0].sent[-1], b"\n")
         self.assertEqual(self.closed, [41])
 
     def test_artifact_size_mismatch_fails_before_boot(self) -> None:
