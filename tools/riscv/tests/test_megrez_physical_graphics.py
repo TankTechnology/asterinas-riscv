@@ -989,6 +989,16 @@ class PhysicalCommandTests(unittest.TestCase):
             "__ASTERINAS_PHYSICAL_EXTERNAL__",
         ):
             self.assertIn(fragment, command)
+        self.assertIn('mount --bind "$_asterinas_home" /home/asterinas', command)
+        self.assertNotIn(
+            'mount --bind "$_asterinas_home/browser-web-timeline.log"', command
+        )
+        self.assertLess(
+            command.index('mount --bind "$_asterinas_home" /home/asterinas'),
+            command.index(
+                "systemctl start asterinas-browser-web-timeline-basic.service"
+            ),
+        )
         self.assertLess(
             command.index("ln -sfn /dev/null"),
             command.index("systemctl daemon-reload"),
@@ -999,10 +1009,14 @@ class PhysicalCommandTests(unittest.TestCase):
         )
         self.assertLess(
             command.index("systemctl stop"),
-            command.index("systemctl start asterinas-browser-web-timeline-basic.service"),
+            command.index(
+                "systemctl start asterinas-browser-web-timeline-basic.service"
+            ),
         )
         self.assertLess(
-            command.index("systemctl start asterinas-browser-web-timeline-basic.service"),
+            command.index(
+                "systemctl start asterinas-browser-web-timeline-basic.service"
+            ),
             command.index("systemctl start --no-block asterinas-browser-web.service"),
         )
         self.assertLess(

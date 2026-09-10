@@ -572,14 +572,14 @@ def physical_preflight_command() -> str:
         "_asterinas_physical_framebuffer=0; [ -c /dev/fb0 ] && "
         "_asterinas_physical_framebuffer=1; "
         "set -- $(/usr/bin/python3 -c 'import fcntl,glob,struct;"
-        "q=lambda p,c,n:(lambda b:(fcntl.ioctl(open(p,\"rb\",buffering=0),c,b),"
+        'q=lambda p,c,n:(lambda b:(fcntl.ioctl(open(p,"rb",buffering=0),c,b),'
         "bytes(b))[1])(bytearray(n));"
-        "d=[(struct.unpack(\"=HHHH\",q(p,0x80084502,8))[0],"
-        "q(p,0x81004506,256).split(b\"\\0\",1)[0],"
-        "q(p,0x81004507,256).split(b\"\\0\",1)[0]) for p in "
-        "glob.glob(\"/dev/input/event*\")];"
-        "k=(3,b\"usb_boot_keyboard\",b\"xhci/input0\");"
-        "m=(3,b\"usb_boot_mouse\",b\"xhci/input1\");"
+        'd=[(struct.unpack("=HHHH",q(p,0x80084502,8))[0],'
+        'q(p,0x81004506,256).split(b"\\0",1)[0],'
+        'q(p,0x81004507,256).split(b"\\0",1)[0]) for p in '
+        'glob.glob("/dev/input/event*")];'
+        'k=(3,b"usb_boot_keyboard",b"xhci/input0");'
+        'm=(3,b"usb_boot_mouse",b"xhci/input1");'
         "print(sum(x in (k,m) for x in d),int(k in d),int(m in d))' "
         "2>/dev/null || printf '0 0 0'); "
         "_asterinas_physical_usb_inputs=${1:-0}; "
@@ -617,26 +617,23 @@ def physical_preflight_command() -> str:
 
 
 def physical_external_services_quiesce_command() -> str:
-    """Stop network workloads that compete with the offline interaction gate."""
+    """Prepare volatile graphics state and stop competing external workloads."""
 
     return (
         "_asterinas_external_status=0; "
         "_asterinas_control=/run/systemd/system.control; "
         "_asterinas_home=/run/asterinas-physical-home; "
         "_asterinas_browser=asterinas-browser-web.service; "
-        "/usr/bin/install -d -m 0755 \"$_asterinas_control\" "
+        '/usr/bin/install -d -m 0755 "$_asterinas_control" '
         "|| _asterinas_external_status=$?; "
         "/usr/bin/install -d -m 0700 -o 1000 -g 1000 "
         '"$_asterinas_home" "$_asterinas_home/.mozilla" '
         '"$_asterinas_home/.mozilla/asterinas-browser-web" '
-        '"$_asterinas_home/.cache" "$_asterinas_home/Downloads" '
+        '"$_asterinas_home/.cache" "$_asterinas_home/.config" '
+        '"$_asterinas_home/Downloads" '
         "|| _asterinas_external_status=$?; "
         "/usr/bin/install -m 0600 -o 1000 -g 1000 /dev/null "
         '"$_asterinas_home/browser-web-timeline.log" '
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/mountpoint -q /home/asterinas/browser-web-timeline.log || "
-        "/usr/bin/mount --bind \"$_asterinas_home/browser-web-timeline.log\" "
-        "/home/asterinas/browser-web-timeline.log "
         "|| _asterinas_external_status=$?; "
         "/usr/bin/install -d -m 0755 "
         '"$_asterinas_control/$_asterinas_browser.d" '
@@ -661,6 +658,9 @@ def physical_external_services_quiesce_command() -> str:
         "asterinas-browser-web-evidence.service "
         "asterinas-desktop-m5-network.service "
         "serial-getty@ttyS0.service console-getty.service >/dev/null 2>&1 "
+        "|| _asterinas_external_status=$?; "
+        "/usr/bin/mountpoint -q /home/asterinas || "
+        '/usr/bin/mount --bind "$_asterinas_home" /home/asterinas '
         "|| _asterinas_external_status=$?; "
         "/usr/bin/systemctl reset-failed "
         "asterinas-browser-web-timeline-basic.service "
