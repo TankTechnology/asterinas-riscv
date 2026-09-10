@@ -376,5 +376,350 @@ class DesktopStartLifecycleTests(unittest.TestCase):
                     desktop.DesktopStartConfig(open_timeout=value)
 
 
+def _transport_record(
+    *,
+    pid: int,
+    monotonic_ns: int,
+    request_id: int,
+    command: str,
+    event: str,
+    stage: str,
+    send_complete: bool = False,
+    header_bytes: int = 0,
+    body_expected: int | None = None,
+    body_received: int = 0,
+    error_type: str | None = None,
+    errno: int | None = None,
+) -> str:
+    value = {
+        "version": 1,
+        "event": event,
+        "pid": pid,
+        "monotonic_ns": monotonic_ns,
+        "request_id": request_id,
+        "command": command,
+        "stage": stage,
+        "send_complete": send_complete,
+        "header_bytes": header_bytes,
+        "body_expected": body_expected,
+        "body_received": body_received,
+    }
+    if event == "failure":
+        value.update(error_type=error_type or "TimeoutError", errno=errno)
+    return (
+        "A_WEB_MARIONETTE_TRANSPORT " + json.dumps(value, separators=(",", ":")) + "\n"
+    )
+
+
+def _greeting(pid: int, monotonic_ns: int) -> list[str]:
+    return [
+        _transport_record(
+            pid=pid,
+            monotonic_ns=monotonic_ns,
+            request_id=0,
+            command="greeting",
+            event="frame_header",
+            stage="response_body",
+            header_bytes=3,
+            body_expected=52,
+        )
+    ]
+
+
+def _complete_command(
+    pid: int,
+    command: str,
+    start_ns: int,
+    *,
+    body_bytes: int = 24,
+) -> list[str]:
+    return [
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns,
+            request_id=1,
+            command=command,
+            event="begin",
+            stage="send",
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 10,
+            request_id=1,
+            command=command,
+            event="send_complete",
+            stage="send",
+            send_complete=True,
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 20,
+            request_id=1,
+            command=command,
+            event="frame_header",
+            stage="response_body",
+            send_complete=True,
+            header_bytes=3,
+            body_expected=body_bytes,
+        ),
+        _transport_record(
+            pid=pid,
+            monotonic_ns=start_ns + 50,
+            request_id=1,
+            command=command,
+            event="complete",
+            stage="complete",
+            send_complete=True,
+            header_bytes=3,
+            body_expected=body_bytes,
+            body_received=body_bytes,
+        ),
+    ]
+
+
+def _status_complete() -> list[str]:
+    return [*_greeting(11, 100), *_complete_command(11, "WebDriver:Status", 200)]
+
+
+class FirefoxBoundaryClassifierTests(unittest.TestCase):
+    def classify(self, lines: list[str]):
+        return desktop.classify_new_session_transcript(
+            "serial preface\n" + "".join(lines) + "shell trailer\n"
+        )
+
+    def test_explicit_greeting_failure_is_listener_not_ready(self) -> None:
+        evidence = self.classify(
+            [
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=100,
+                    request_id=0,
+                    command="greeting",
+                    event="failure",
+                    stage="response_header",
+                )
+            ]
+        )
+
+        self.assertEqual(evidence.boundary, "listener-not-ready")
+        self.assertFalse(evidence.status_complete)
+        self.assertIsNone(evidence.new_session_request_id)
+
+    def test_status_failure_is_status_command_stalled(self) -> None:
+        lines = _greeting(11, 100)
+        lines.extend(
+            (
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=200,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="begin",
+                    stage="send",
+                ),
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=210,
+                    request_id=1,
+                    command="WebDriver:Status",
+                    event="failure",
+                    stage="response_header",
+                    send_complete=True,
+                ),
+            )
+        )
+
+        evidence = self.classify(lines)
+
+        self.assertEqual(evidence.boundary, "status-command-stalled")
+        self.assertFalse(evidence.status_complete)
+
+    def test_status_complete_without_new_session_is_not_sent(self) -> None:
+        evidence = self.classify(_status_complete())
+
+        self.assertEqual(evidence.boundary, "new-session-not-sent")
+        self.assertTrue(evidence.status_complete)
+        self.assertFalse(evidence.send_complete)
+
+    def test_new_session_begin_without_send_is_not_sent(self) -> None:
+        lines = _status_complete() + _greeting(22, 300)
+        lines.append(
+            _transport_record(
+                pid=22,
+                monotonic_ns=400,
+                request_id=1,
+                command="WebDriver:NewSession",
+                event="begin",
+                stage="send",
+            )
+        )
+
+        evidence = self.classify(lines)
+
+        self.assertEqual(evidence.boundary, "new-session-not-sent")
+        self.assertEqual(evidence.new_session_request_id, 1)
+
+    def test_send_complete_with_zero_header_bytes_is_response_absent(self) -> None:
+        lines = _status_complete() + _greeting(22, 300)
+        lines.extend(
+            (
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=400,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="begin",
+                    stage="send",
+                ),
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=410,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="send_complete",
+                    stage="send",
+                    send_complete=True,
+                ),
+                _transport_record(
+                    pid=22,
+                    monotonic_ns=500,
+                    request_id=1,
+                    command="WebDriver:NewSession",
+                    event="failure",
+                    stage="response_header",
+                    send_complete=True,
+                ),
+            )
+        )
+
+        evidence = self.classify(lines)
+
+        self.assertEqual(evidence.boundary, "new-session-response-absent")
+        self.assertEqual(evidence.new_session_request_id, 1)
+        self.assertTrue(evidence.send_complete)
+        self.assertEqual(evidence.response_header_bytes, 0)
+        self.assertEqual(evidence.selected_command_seconds, 0.0000001)
+
+    def test_partial_header_and_partial_body_are_response_partial(self) -> None:
+        cases = (
+            dict(stage="response_header", header_bytes=2),
+            dict(
+                stage="response_body",
+                header_bytes=3,
+                body_expected=50,
+                body_received=3,
+            ),
+        )
+        for progress in cases:
+            with self.subTest(progress=progress):
+                lines = _status_complete() + _greeting(22, 300)
+                lines.extend(
+                    (
+                        _transport_record(
+                            pid=22,
+                            monotonic_ns=400,
+                            request_id=1,
+                            command="WebDriver:NewSession",
+                            event="begin",
+                            stage="send",
+                        ),
+                        _transport_record(
+                            pid=22,
+                            monotonic_ns=410,
+                            request_id=1,
+                            command="WebDriver:NewSession",
+                            event="send_complete",
+                            stage="send",
+                            send_complete=True,
+                        ),
+                        _transport_record(
+                            pid=22,
+                            monotonic_ns=500,
+                            request_id=1,
+                            command="WebDriver:NewSession",
+                            event="failure",
+                            send_complete=True,
+                            **progress,
+                        ),
+                    )
+                )
+
+                evidence = self.classify(lines)
+
+                self.assertEqual(evidence.boundary, "new-session-response-partial")
+                self.assertEqual(
+                    evidence.response_body_received,
+                    progress.get("body_received", 0),
+                )
+
+    def test_complete_response_reports_guest_selected_duration(self) -> None:
+        lines = _status_complete() + _greeting(22, 300)
+        lines.extend(_complete_command(22, "WebDriver:NewSession", 400, body_bytes=80))
+
+        evidence = self.classify(lines)
+
+        self.assertEqual(evidence.boundary, "new-session-complete")
+        self.assertTrue(evidence.status_complete)
+        self.assertEqual(evidence.response_body_expected, 80)
+        self.assertEqual(evidence.response_body_received, 80)
+        self.assertEqual(evidence.selected_command_seconds, 0.00000005)
+
+    def test_old_failure_without_transport_records_is_only_incomplete(self) -> None:
+        evidence = desktop.classify_new_session_transcript(
+            "ASTERINAS_PHYSICAL_SETUP cycle=1 phase=WebDriver:NewSession state=start\n"
+            "physical graphics gate failed: timeout\n"
+        )
+
+        self.assertEqual(evidence.boundary, "evidence-incomplete")
+        self.assertFalse(evidence.send_complete)
+        self.assertEqual(evidence.response_header_bytes, 0)
+
+    def test_reordered_duplicate_malformed_and_wrong_records_are_rejected(self) -> None:
+        complete_new_session = _complete_command(22, "WebDriver:NewSession", 400)
+        invalid_cases = {
+            "request order": _greeting(22, 300) + complete_new_session,
+            "duplicate terminal": (
+                _status_complete()
+                + _greeting(22, 300)
+                + complete_new_session
+                + [complete_new_session[-1]]
+            ),
+            "malformed JSON": ['A_WEB_MARIONETTE_TRANSPORT {"version":1\n'],
+            "oversized": [
+                "A_WEB_MARIONETTE_TRANSPORT "
+                + " " * (desktop.MAX_TRANSPORT_RECORD_BYTES + 1)
+                + "\n"
+            ],
+            "wrong command": [
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=100,
+                    request_id=1,
+                    command="WebDriver:GetTitle",
+                    event="begin",
+                    stage="send",
+                )
+            ],
+            "contradictory": [
+                _transport_record(
+                    pid=11,
+                    monotonic_ns=100,
+                    request_id=0,
+                    command="greeting",
+                    event="failure",
+                    stage="response_header",
+                    header_bytes=2,
+                    body_received=1,
+                )
+            ],
+        }
+        for message, lines in invalid_cases.items():
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(desktop.HostGateError, message):
+                    self.classify(lines)
+        with self.assertRaisesRegex(desktop.HostGateError, "truncated"):
+            desktop.classify_new_session_transcript(_greeting(11, 100)[0].rstrip("\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
