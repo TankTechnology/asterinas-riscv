@@ -292,7 +292,11 @@ static struct ProbeResult execute_probe(const char *name)
 static struct ProbeResult execute_probe(const char *name)
 {
     if (strcmp(name, "boot") == 0) {
+#if defined(DEBIAN_STAGE1_PROBE_SELF_TEST_FAIL_BOOT)
+        return (struct ProbeResult){ 0, EIO, "uname-failed" };
+#else
         return (struct ProbeResult){ 1, 0, "boot-ok" };
+#endif
     }
     if (strcmp(name, "syscall213") == 0 ||
         strcmp(name, "syscall272") == 0) {
@@ -335,6 +339,7 @@ static void emit_dmesg(const char *nonce)
 static int run_batch(const struct ProbeRequest *request)
 {
     int passed = 1;
+    size_t attempted = 0;
     for (size_t index = 0; index < request->count; ++index) {
         const char *name = request->names[index];
         (void)printf(
@@ -342,6 +347,7 @@ static int run_batch(const struct ProbeRequest *request)
             request->nonce, index, name);
         flush_line();
         const struct ProbeResult result = execute_probe(name);
+        attempted = index + 1;
         if (result.passed) {
             (void)printf(
                 "ASTERINAS_PROBE_PASS v=1 nonce=%s seq=%zu name=%s detail=%s\n",
@@ -354,13 +360,16 @@ static int run_batch(const struct ProbeRequest *request)
                 result.detail);
         }
         flush_line();
+        if (!result.passed) {
+            break;
+        }
     }
     if (!passed) {
         emit_dmesg(request->nonce);
     }
     (void)printf(
         "ASTERINAS_PROBE_DONE v=1 nonce=%s count=%zu status=%s\n",
-        request->nonce, request->count, passed ? "pass" : "fail");
+        request->nonce, attempted, passed ? "pass" : "fail");
     flush_line();
     return passed;
 }

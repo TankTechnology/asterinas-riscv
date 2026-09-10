@@ -921,6 +921,52 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertIn("ASTERINAS_PROBE_SHELL_REJECT reason=unknown-command\n", result.stdout)
         self.assertIn(f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n", result.stdout)
 
+    def test_stage1_probe_agent_stops_after_first_failure(self) -> None:
+        binary = self.directory / "stage1-probe-failure-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST_FAIL_BOOT",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        result = subprocess.run(
+            [binary],
+            input=(
+                f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} "
+                "probes=boot,syscall213 shell=0\n"
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"ASTERINAS_PROBE_FAIL v=1 nonce={nonce} seq=0 name=boot errno=5 detail=uname-failed\n",
+            result.stdout,
+        )
+        self.assertNotIn("name=syscall213", result.stdout)
+        self.assertIn(
+            f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=1 status=fail\n",
+            result.stdout,
+        )
+
     def test_normal_failure_lifecycle_flushes_one_marker_and_holds(self) -> None:
         binary = self.directory / "stage1-lifecycle-test"
         compilation = self.compile_stage1(binary, "DEBIAN_STAGE1_LIFECYCLE_TEST")
