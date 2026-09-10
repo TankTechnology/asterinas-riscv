@@ -1499,6 +1499,9 @@ class FirefoxDiagnosticPublisherTests(unittest.TestCase):
             contrary_outcome="one observation that rejects it",
         )
 
+    def test_readiness_observer_change_uses_a_new_protocol_identity(self) -> None:
+        self.assertEqual(desktop.FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION, 3)
+
     def run_real_publisher(self, **operation_options):
         output = self.evidence / "run"
         publisher = desktop.RealFirefoxDiagnosticPublisher(

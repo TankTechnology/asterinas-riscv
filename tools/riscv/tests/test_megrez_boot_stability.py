@@ -491,6 +491,7 @@ class BootStabilityProtocolTests(unittest.TestCase):
             mock.patch.object(gate.secrets, "token_hex", return_value=self.NONCE),
             mock.patch.object(gate, "validate_debug_console_readiness"),
             mock.patch.object(operations, "_quiesce_external_services"),
+            mock.patch.object(gate, "run_debug_console_phase"),
             mock.patch.object(
                 operations,
                 "_send_guest_step",
@@ -509,6 +510,52 @@ class BootStabilityProtocolTests(unittest.TestCase):
 
         sent = b"".join(call.args[0] for call in operations._serial.send.call_args_list)
         self.assertIn(b"\x03\n", sent)
+
+    def test_console_identity_does_not_mask_a_later_complete_snapshot(self) -> None:
+        operations = self._operations()
+        second_nonce = "8899aabbccddeeff"
+        markers = iter(
+            (
+                f"__ASTERINAS_BOOT_PREFLIGHT__ nonce={self.NONCE} "
+                "browser_pid=116 framebuffer=1 xorg_fbdev=1 openbox=0 "
+                "firefox=1 browser_service=active browser_restarts=0",
+                f"__ASTERINAS_BOOT_PREFLIGHT__ nonce={second_nonce} "
+                "browser_pid=116 framebuffer=1 xorg_fbdev=1 openbox=1 "
+                "firefox=1 browser_service=active browser_restarts=0",
+            )
+        )
+        readiness_nonces = iter((self.NONCE, second_nonce))
+
+        def nonce(length: int) -> str:
+            return "0" * 32 if length == 16 else next(readiness_nonces)
+
+        def prove_console_identity(*_args, **_kwargs) -> None:
+            if operations._send_guest_step.call_count:
+                raise TimeoutError("console identity was deferred until budget expiry")
+
+        with (
+            mock.patch.object(gate.secrets, "token_hex", side_effect=nonce),
+            mock.patch.object(gate, "validate_debug_console_readiness"),
+            mock.patch.object(operations, "_quiesce_external_services"),
+            mock.patch.object(operations, "_send_guest_step"),
+            mock.patch.object(
+                operations,
+                "_next_line",
+                side_effect=lambda *_args: (next(markers), 1),
+            ),
+            mock.patch.object(
+                gate,
+                "run_debug_console_phase",
+                side_effect=prove_console_identity,
+            ),
+            mock.patch.object(operations, "_sync_serial_log"),
+            mock.patch.object(gate.time, "monotonic", return_value=10.0),
+            mock.patch.object(gate.time, "sleep"),
+        ):
+            evidence = operations.prove_boot_readiness(30)
+
+        self.assertEqual(evidence.browser_pid, 116)
+        self.assertTrue(evidence.openbox)
 
     def test_guest_step_aborts_and_retries_after_a_lost_acknowledgement(
         self,

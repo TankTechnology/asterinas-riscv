@@ -527,7 +527,7 @@ Run `configure` with the current plan, stable FTDI path, RockOS attestation and
 measurement log, versioned MMC kernel/Stage1/DTB names, and a private evidence
 root.  Expected: local validation and a mode-`0600` bundle; no serial I/O.
 
-- [ ] **Step 2: Stage only changed boot artifacts if needed**
+- [x] **Step 2: Stage only changed boot artifacts if needed**
 
 If and only if the current plan names a new kernel or Stage1 identity, boot
 RockOS once, transfer just those versioned files over the existing network
@@ -535,7 +535,13 @@ path, verify size and SHA-256, publish a fresh attestation, and reboot.  Do not
 touch partition 2.  If identities already match, transfer zero bytes and skip
 RockOS.
 
-- [ ] **Step 3: Run exactly one physical diagnostic identity**
+The current kernel (`62ed08fe...`, 15,483,184 bytes) was the only changed
+artifact.  RockOS transferred it once over HTTP, installed it read-only under
+a versioned partition-1 name, measured all three boot artifacts with
+`sha256sum`, and recovered to a fresh U-Boot prompt.  Stage1, the DTB, and
+partition 2 were unchanged.
+
+- [x] **Step 3: Run exactly one physical diagnostic identity**
 
 Use the hypothesis:
 
@@ -557,7 +563,15 @@ three bounded snapshots, full hashes, physical boot count 1, QEMU run count 0,
 unchanged-identity transfer bytes 0, and fresh-U-Boot recovery.  Do not rerun
 the same experiment identity.
 
-- [ ] **Step 4: Select the next smallest experiment from the result**
+Experiment `76aa189f...` ran once with one physical boot, zero QEMU runs, zero
+artifact-transfer bytes, complete private output hashes, and fresh-U-Boot
+recovery.  It returned `evidence-incomplete` before issuing Firefox Status or
+NewSession, so it is an observer failure rather than evidence for or against
+the selected Firefox hypothesis.  The retained serial transcript nevertheless
+shows Firefox PID 116 active with zero restarts and Marionette listening on
+port 2828.
+
+- [x] **Step 4: Select the next smallest experiment from the result**
 
 - `new-session-response-absent` plus one stable outstanding syscall: write one
   Linux/Asterinas microtest for that exact wait/wakeup path.
@@ -570,6 +584,17 @@ the same experiment identity.
   and HDMI acceptance gate.
 - `evidence-incomplete`: repair the observer with a failing retained-data
   regression; do not boot Firefox again.
+
+The retained-data regression reproduced the exact transition from the first
+snapshot (`openbox=0`) to the second complete snapshot (`openbox=1`, all other
+fields already valid).  The observer then started an additional debug-console
+identity phase with almost no readiness budget left; its timeout was caught
+and incorrectly reported as the first snapshot's stale error.  The minimal
+repair keeps the full UID/PID1/rootfs/graphical identity contract but runs it
+before retryable readiness sampling.  The Firefox diagnostic protocol identity
+is now version 3 (`20e9d192...` for the otherwise unchanged configured
+experiment), so the consumed version-2 identity cannot be silently repeated.
+No second physical Firefox boot is authorized by this observer repair.
 
 - [ ] **Step 5: Implement a fix only after causal proof**
 
