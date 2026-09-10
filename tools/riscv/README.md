@@ -544,6 +544,10 @@ measurement log, then writes one private bundle. It does not open the serial
 device, build an image, transfer a file, boot RockOS, or write either MMC
 partition:
 
+The bundle records the plan's canonical semantic SHA-256 identity. The receipt
+and measurement-log fields record their exact byte SHA-256 identities; loading
+the bundle cross-validates all three before opening the serial device.
+
 ```bash
 python3 -m tools.riscv.megrez_desktop configure \
   --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
