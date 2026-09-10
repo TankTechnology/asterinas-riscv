@@ -79,4 +79,3 @@
 4. Verify schema version 2, `cycles_requested: 1`, one interaction cycle, nonce-bound operator evidence, no HDMI evidence/file, MMC-only transport, stable Firefox identity, recovery, file modes, and every published hash.
 5. Record the command, identities, limitations, and result in the evidence document. State explicitly that one cycle proves one complete physical path but is not three-cycle repeatability evidence.
 6. Re-run the relevant checks, review the final diff, and commit the evidence. Do not push remote `main` until final branch review and user-approved integration.
-
