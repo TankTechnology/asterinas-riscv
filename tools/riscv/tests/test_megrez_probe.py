@@ -227,6 +227,34 @@ class ProbeProtocolTests(unittest.TestCase):
         )
         self.assertEqual(exchange.dmesg, b"")
 
+    def test_classifies_one_exact_tty_echo_before_the_first_start(self) -> None:
+        request = (
+            f"ASTERINAS_PROBE_RUN v=1 nonce={self.NONCE} "
+            "probes=boot,syscall213 shell=0\n"
+        )
+        transcript = self._success().replace(
+            b"ASTERINAS_PROBE_READY v=1 pid=1\n",
+            b"ASTERINAS_PROBE_READY v=1 pid=1\n" + request.encode(),
+        )
+
+        exchange = probe.classify_probe_transcript(
+            transcript, self.NONCE, ("boot", "syscall213")
+        )
+
+        self.assertTrue(exchange.passed)
+        for replacement in (
+            request.replace("syscall213", "syscall272"),
+            request + request,
+        ):
+            invalid = self._success().replace(
+                b"ASTERINAS_PROBE_READY v=1 pid=1\n",
+                b"ASTERINAS_PROBE_READY v=1 pid=1\n" + replacement.encode(),
+            )
+            with self.assertRaises(probe.ProbeProtocolError):
+                probe.classify_probe_transcript(
+                    invalid, self.NONCE, ("boot", "syscall213")
+                )
+
     def test_classifies_fail_fast_exchange_with_bounded_dmesg(self) -> None:
         transcript = (
             "ASTERINAS_PROBE_READY v=1 pid=1\n"
@@ -800,6 +828,30 @@ class ProbeCliTests(unittest.TestCase):
             ):
                 probe.parse_args(("boot", "--shell", "--session-seconds", str(seconds)))
 
+    def test_qemu_cli_requires_both_explicit_artifact_paths(self) -> None:
+        values = probe.parse_args(
+            (
+                "boot",
+                "--qemu",
+                "--qemu-kernel",
+                "/kernel",
+                "--qemu-initramfs",
+                "/initramfs",
+            )
+        )
+
+        self.assertTrue(values.qemu)
+        self.assertEqual(values.qemu_kernel, Path("/kernel"))
+        self.assertEqual(values.qemu_initramfs, Path("/initramfs"))
+        for arguments in (
+            ("boot", "--qemu"),
+            ("boot", "--qemu-kernel", "/kernel"),
+            ("boot", "--qemu-deadline-only"),
+        ):
+            with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    probe.parse_args(arguments)
+
     def test_configure_atomically_writes_private_current_bundle(self) -> None:
         with redirect_stdout(io.StringIO()):
             result = probe.main(
@@ -884,6 +936,183 @@ class ProbeCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         factory.assert_called_once_with(bundle)
         self.assertTrue(json.loads((output / "result.json").read_text())["passed"])
+
+
+class _QemuProcess:
+    def __init__(self) -> None:
+        self.returncode = None
+        self.terminated = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, _deadline):
+        self.returncode = 0
+        return 0
+
+    def terminate_group(self, _term_deadline, _kill_deadline):
+        self.terminated = True
+        self.returncode = -15
+
+
+class _DeadlineOperations:
+    def __init__(self) -> None:
+        self.events = []
+        self._guest_started = False
+
+    @property
+    def guest_started(self):
+        return self._guest_started
+
+    @property
+    def transcript(self):
+        return b"ASTERINAS_PROBE_READY v=1 pid=1\n"
+
+    def open(self, _timeout):
+        self.events.append("open")
+
+    def ensure_artifacts(self, _timeout):
+        self.events.append("artifacts")
+        return ("kernel:qemu", "initramfs:qemu")
+
+    def boot(self, bootargs, _timeout):
+        self.events.append(("boot", bootargs))
+        self._guest_started = True
+
+    def await_ready(self, _timeout):
+        self.events.append("ready")
+
+    def await_recovery(self, _timeout):
+        self.events.append("recovered")
+
+    def close(self):
+        self.events.append("close")
+
+
+class QemuProbeOperationsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+        addresses = {
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "qemu_dtb": 0xF0000000,
+            "megrez_dtb": 0xF0000000,
+        }
+        artifacts = []
+        for name in ("kernel", "initramfs", "qemu_dtb", "megrez_dtb"):
+            path = self.directory / name
+            path.write_bytes((name + "-bytes").encode())
+            artifacts.append(ArtifactIdentity.from_path(name, path, addresses[name]))
+        plan = DebugPlan(
+            schema_version=1,
+            profile="tcp-probe",
+            artifacts=tuple(artifacts),
+            bootargs="loglevel=info init=/init asterinas.reboot_after=180",
+            smp=4,
+            sv39=True,
+            markers=("Enter riscv_boot", "ASTERINAS_GMAC_TCP_PROBE_READY"),
+            reboot_after=180,
+        )
+        self.bundle = probe.ProbeBundle(
+            schema_version=1,
+            plan=plan,
+            plan_sha256=plan.plan_sha256,
+            device=SERIAL_DEVICE,
+            mmc_artifacts=tuple(
+                probe.MmcArtifact(name, MMC_PATHS[name])
+                for name in ("kernel", "initramfs", "megrez_dtb")
+            ),
+        )
+
+    def test_qemu_argv_is_minimal_sv39_and_has_no_external_device(self) -> None:
+        argv = probe.qemu_probe_argv(
+            Path("/proc/self/fd/10"),
+            Path("/proc/self/fd/11"),
+            probe.probe_bootargs(self.bundle.plan, 90),
+        )
+
+        self.assertEqual(argv[0], "qemu-system-riscv64")
+        self.assertEqual(argv[argv.index("-machine") + 1], "virt")
+        self.assertEqual(argv[argv.index("-m") + 1], "2G")
+        self.assertEqual(argv[argv.index("-smp") + 1], "4")
+        self.assertIn("-nographic", argv)
+        self.assertIn("-no-reboot", argv)
+        self.assertIn("-kernel", argv)
+        self.assertIn("-initrd", argv)
+        self.assertNotIn("-drive", argv)
+        self.assertNotIn("-netdev", argv)
+        self.assertNotIn("-device", argv)
+
+    def test_qemu_adapter_pins_identities_and_launches_the_same_probe_bootargs(
+        self,
+    ) -> None:
+        launched = []
+        process = _QemuProcess()
+
+        def launcher(argv, **kwargs):
+            launched.append((tuple(argv), kwargs))
+            return process
+
+        operations = probe.QemuProbeOperations(
+            self.bundle,
+            self.directory / "kernel",
+            self.directory / "initramfs",
+            launch=launcher,
+        )
+        operations.open(5)
+        self.assertEqual(
+            operations.ensure_artifacts(5), ("kernel:qemu", "initramfs:qemu")
+        )
+        bootargs = probe.probe_bootargs(self.bundle.plan, 90)
+        operations.boot(bootargs, 5)
+        operations.close()
+
+        self.assertEqual(len(launched), 1)
+        argv, kwargs = launched[0]
+        self.assertEqual(argv[argv.index("-append") + 1], bootargs)
+        self.assertEqual(len(kwargs["pass_fds"]), 2)
+        self.assertTrue(process.terminated)
+
+    def test_qemu_adapter_rejects_changed_artifact_before_launch(self) -> None:
+        kernel = self.directory / "kernel"
+        kernel.write_bytes(b"changed")
+        operations = probe.QemuProbeOperations(
+            self.bundle,
+            kernel,
+            self.directory / "initramfs",
+        )
+        operations.open(5)
+        self.addCleanup(operations.close)
+
+        with self.assertRaisesRegex(probe.ProbeContractError, "identity mismatch"):
+            operations.ensure_artifacts(5)
+
+    def test_deadline_gate_sends_no_probe_request_and_requires_process_exit(
+        self,
+    ) -> None:
+        operations = _DeadlineOperations()
+        publisher = _LifecyclePublisher([])
+
+        result = probe.run_qemu_deadline_gate(
+            self.bundle,
+            operations,
+            publisher,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "deadline-reboot-pass")
+        self.assertEqual(
+            [
+                event if isinstance(event, str) else event[0]
+                for event in operations.events
+            ],
+            ["open", "artifacts", "boot", "ready", "recovered", "close"],
+        )
+        bootargs = operations.events[2][1]
+        self.assertIn("asterinas.reboot_after=30", bootargs)
+        self.assertNotIn("ASTERINAS_PROBE_RUN", operations.transcript.decode())
 
 
 if __name__ == "__main__":

@@ -19,8 +19,16 @@ import stat
 import sys
 import time
 from typing import Any, Callable, Protocol, Sequence
+import tty
+import zlib
 
-from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory, SerialConsole
+from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
+from tools.riscv.debian.rootfs.gate_runtime import (
+    GateProcess,
+    PinnedOutputDirectory,
+    SerialConsole,
+    launch_process,
+)
 from tools.riscv.megrez_board_session import (
     BoardSession,
     open_serial,
@@ -43,6 +51,10 @@ _SAFE_DETAIL = r"[a-z0-9][a-z0-9-]*"
 _START = re.compile(
     rb"ASTERINAS_PROBE_START v=1 nonce=([0-9a-f]{32}) seq=([0-9]+) "
     rb"name=([a-z0-9-]+)"
+)
+_RUN = re.compile(
+    rb"ASTERINAS_PROBE_RUN v=1 nonce=([0-9a-f]{32}) "
+    rb"probes=([a-z0-9,-]+) shell=([01])"
 )
 _PASS = re.compile(
     rb"ASTERINAS_PROBE_PASS v=1 nonce=([0-9a-f]{32}) seq=([0-9]+) "
@@ -467,6 +479,7 @@ def classify_probe_transcript(
         raise ProbeProtocolError("probe protocol contains a stale nonce")
     unknown = []
     known_patterns = (
+        _RUN,
         _START,
         _PASS,
         _FAIL,
@@ -490,6 +503,23 @@ def classify_probe_transcript(
         index for index, line in enumerate(lines) if line.removesuffix(b"\n") == _READY
     )
     cursor = ready_index + 1
+    run_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if _RUN.fullmatch(line.removesuffix(b"\n")) is not None
+    ]
+    if len(run_indexes) > 1:
+        raise ProbeProtocolError("probe request echo was replayed")
+    if run_indexes:
+        run_index, run_record = _next_protocol_line(lines, cursor)
+        if run_index != run_indexes[0]:
+            raise ProbeProtocolError("probe request echo is out of order")
+        request_echo = _RUN.fullmatch(run_record)
+        assert request_echo is not None
+        _require_nonce(request_echo, nonce_bytes)
+        if request_echo.group(2).decode() != ",".join(names):
+            raise ProbeProtocolError("probe request echo changed the selection")
+        cursor = run_index + 1
     outcomes: list[ProbeOutcome] = []
     failed = False
     while len(outcomes) < len(names):
@@ -804,6 +834,22 @@ def _deadline(timeout: float) -> float:
     return time.monotonic() + timeout
 
 
+def _wait_for_complete_record(
+    serial: SerialConsole,
+    record: bytes,
+    deadline: float,
+    *,
+    start: int = 0,
+) -> None:
+    """Wait through the line ending so classification never sees a partial record."""
+
+    serial.wait_for(record, deadline, start=start)
+    record_start = serial.transcript.find(record, start)
+    if record_start < 0:
+        raise ProbeProtocolError("serial marker disappeared from the transcript")
+    serial.wait_for(b"\n", deadline, start=record_start + len(record))
+
+
 class PhysicalProbeOperations:
     """One descriptor-owned minimal U-Boot and Stage1 probe session."""
 
@@ -995,7 +1041,7 @@ class PhysicalProbeOperations:
         if shell:
             self._interactive_shell(serial, deadline)
         reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
-        serial.wait_for(reboot_ready, deadline, start=cursor)
+        _wait_for_complete_record(serial, reboot_ready, deadline, start=cursor)
         evidence = self._classification_transcript(serial.transcript, nonce)
         return classify_probe_transcript(
             evidence, nonce, tuple(item.name for item in selected)
@@ -1026,6 +1072,271 @@ class PhysicalProbeOperations:
         self._session = None
         self._serial = None
         self._log.close()
+
+
+def qemu_probe_argv(
+    kernel: Path,
+    initramfs: Path,
+    bootargs: str,
+) -> tuple[str, ...]:
+    """Build the device-free QEMU command for one Stage1 probe boot."""
+
+    if not isinstance(kernel, Path) or not isinstance(initramfs, Path):
+        raise ProbeContractError("QEMU artifact paths must be Path values")
+    if not isinstance(bootargs, str) or not bootargs:
+        raise ProbeContractError("QEMU probe bootargs must be nonempty")
+    return (
+        "qemu-system-riscv64",
+        "-machine",
+        "virt",
+        "-cpu",
+        GENERIC_SV39_CPU,
+        "-m",
+        "2G",
+        "-smp",
+        "4",
+        "-nographic",
+        "-nic",
+        "none",
+        "-no-reboot",
+        "-kernel",
+        str(kernel),
+        "-initrd",
+        str(initramfs),
+        "-append",
+        bootargs,
+    )
+
+
+class QemuProbeOperations:
+    """Run the same Stage1 protocol in QEMU without disks or network devices."""
+
+    def __init__(
+        self,
+        bundle: ProbeBundle,
+        kernel: Path,
+        initramfs: Path,
+        *,
+        launch: Callable[..., GateProcess] = launch_process,
+        serial_factory: Callable[..., SerialConsole] = SerialConsole,
+        openpty: Callable[[], tuple[int, int]] = os.openpty,
+    ) -> None:
+        bundle.validate()
+        self._bundle = bundle
+        self._paths = {"kernel": Path(kernel), "initramfs": Path(initramfs)}
+        self._launch = launch
+        self._serial_factory = serial_factory
+        self._openpty = openpty
+        self._artifact_fds: dict[str, int] = {}
+        self._master_fd = -1
+        self._process: GateProcess | None = None
+        self._serial: SerialConsole | None = None
+        self._guest_started = False
+
+    @property
+    def guest_started(self) -> bool:
+        return self._guest_started
+
+    @property
+    def transcript(self) -> bytes:
+        return self._serial.transcript if self._serial is not None else b""
+
+    def _require_serial(self) -> SerialConsole:
+        if self._serial is None:
+            raise ProbeContractError("QEMU probe guest is not running")
+        return self._serial
+
+    def open(self, timeout: float) -> None:
+        deadline = _deadline(timeout)
+        if self._artifact_fds:
+            raise ProbeContractError("QEMU probe session is already open")
+        try:
+            for name in ("kernel", "initramfs"):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("QEMU artifact open deadline expired")
+                descriptor = os.open(
+                    self._paths[name], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                )
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+                    os.close(descriptor)
+                    raise ProbeContractError(
+                        f"{name}: QEMU artifact must be a nonempty regular file"
+                    )
+                self._artifact_fds[name] = descriptor
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _identity_from_fd(descriptor: int, maximum: int) -> tuple[int, str, str]:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum:
+            raise ProbeContractError("QEMU artifact is outside the bounded size")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        crc = 0
+        size = 0
+        while chunk := os.read(descriptor, min(1024 * 1024, maximum + 1 - size)):
+            size += len(chunk)
+            if size > maximum:
+                raise ProbeContractError("QEMU artifact exceeds the size cap")
+            digest.update(chunk)
+            crc = zlib.crc32(chunk, crc)
+        if size != metadata.st_size:
+            raise ProbeContractError("QEMU artifact changed while being verified")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return size, digest.hexdigest(), f"{crc:08x}"
+
+    def ensure_artifacts(self, timeout: float) -> tuple[str, ...]:
+        deadline = _deadline(timeout)
+        identities = {item.name: item for item in self._bundle.plan.artifacts}
+        if set(self._artifact_fds) != {"kernel", "initramfs"}:
+            raise ProbeContractError("QEMU probe session is not open")
+        outcomes = []
+        for name in ("kernel", "initramfs"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("QEMU artifact verification deadline expired")
+            identity = identities[name]
+            observed = self._identity_from_fd(
+                self._artifact_fds[name], 64 * 1024 * 1024
+            )
+            expected = (identity.size, identity.sha256, identity.crc32)
+            if observed != expected:
+                raise ProbeContractError(f"{name}: QEMU artifact identity mismatch")
+            outcomes.append(f"{name}:qemu")
+        return tuple(outcomes)
+
+    def boot(self, bootargs: str, timeout: float) -> None:
+        _deadline(timeout)
+        if self._process is not None or self._serial is not None:
+            raise ProbeContractError("QEMU probe guest is already running")
+        if set(self._artifact_fds) != {"kernel", "initramfs"}:
+            raise ProbeContractError("QEMU probe session is not open")
+        kernel = Path(f"/proc/self/fd/{self._artifact_fds['kernel']}")
+        initramfs = Path(f"/proc/self/fd/{self._artifact_fds['initramfs']}")
+        master, slave = self._openpty()
+        process: GateProcess | None = None
+        try:
+            tty.setraw(slave)
+            process = self._launch(
+                qemu_probe_argv(kernel, initramfs, bootargs),
+                stdio_fd=slave,
+                pass_fds=tuple(self._artifact_fds.values()),
+            )
+            os.close(slave)
+            slave = -1
+            self._master_fd = master
+            self._process = process
+            self._serial = self._serial_factory(
+                master, process=process, max_bytes=_MAX_TRANSCRIPT_BYTES
+            )
+            self._guest_started = True
+        except BaseException:
+            if slave >= 0:
+                os.close(slave)
+            if process is not None:
+                now = time.monotonic()
+                process.terminate_group(now + 1, now + 2)
+            os.close(master)
+            raise
+
+    def exchange(
+        self,
+        nonce: str,
+        selected: tuple[ProbeDefinition, ...],
+        shell: bool,
+        timeout: float,
+    ) -> ProbeExchange:
+        if shell:
+            raise ProbeContractError("the bounded diagnostic shell is physical-only")
+        serial = self._require_serial()
+        deadline = _deadline(timeout)
+        serial.wait_for(_PROBE_READY, deadline)
+        cursor = serial.checkpoint()
+        serial.send(encode_probe_request(nonce, selected), deadline)
+        reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
+        _wait_for_complete_record(serial, reboot_ready, deadline, start=cursor)
+        return classify_probe_transcript(
+            serial.transcript, nonce, tuple(item.name for item in selected)
+        )
+
+    def await_ready(self, timeout: float) -> None:
+        self._require_serial().wait_for(_PROBE_READY, _deadline(timeout))
+
+    def request_reboot(self, nonce: str, timeout: float) -> None:
+        serial = self._require_serial()
+        serial.send(
+            f"ASTERINAS_PROBE_REBOOT v=1 nonce={_validate_nonce(nonce)}\n".encode(),
+            _deadline(timeout),
+        )
+
+    def await_recovery(self, timeout: float) -> None:
+        if self._process is None:
+            raise ProbeContractError("QEMU probe process is unavailable")
+        returncode = self._process.wait(_deadline(timeout))
+        if returncode != 0:
+            raise RuntimeError(f"QEMU probe exited with status {returncode}")
+
+    def close(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            now = time.monotonic()
+            self._process.terminate_group(now + 1, now + 2)
+        self._process = None
+        self._serial = None
+        if self._master_fd >= 0:
+            os.close(self._master_fd)
+            self._master_fd = -1
+        for descriptor in self._artifact_fds.values():
+            os.close(descriptor)
+        self._artifact_fds.clear()
+
+
+def run_qemu_deadline_gate(
+    bundle: ProbeBundle,
+    operations: QemuProbeOperations,
+    publisher: ProbePublisher,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> ProbeRunResult:
+    """Prove that the fixed 30-second kernel timer exits QEMU without input."""
+
+    publisher.invalidate()
+    bundle.validate()
+    started = clock()
+    deadline = started + 45
+    ready = False
+    recovered = False
+    reason = "deadline-not-started"
+    try:
+        operations.open(_remaining(deadline, clock))
+        operations.ensure_artifacts(_remaining(deadline, clock))
+        operations.boot(probe_bootargs(bundle.plan, 30), _remaining(deadline, clock))
+        operations.await_ready(_remaining(deadline, clock))
+        ready = True
+        operations.await_recovery(_remaining(deadline, clock))
+        recovered = True
+        reason = "deadline-reboot-pass"
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        reason = (
+            "manual-reset-required" if operations.guest_started else "deadline-failed"
+        )
+    finally:
+        transcript = operations.transcript
+        operations.close()
+    result = ProbeRunResult(
+        schema_version=1,
+        passed=ready and recovered,
+        reason=reason,
+        bundle_sha256=bundle.bundle_sha256,
+        plan_sha256=bundle.plan_sha256,
+        selected_probes=(),
+        outcomes=(),
+        elapsed_seconds=round(max(0.0, clock() - started), 3),
+        recovered=recovered,
+    )
+    publisher.publish(result, transcript, b"")
+    return result
 
 
 def _read_bounded_regular(path: Path, maximum: int, label: str) -> bytes:
@@ -1087,7 +1398,22 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--session-seconds", type=_session_seconds_argument, default=90)
     parser.add_argument("--recovery-seconds", type=int, default=30)
     parser.add_argument("--shell", action="store_true")
+    parser.add_argument("--qemu", action="store_true")
+    parser.add_argument("--qemu-kernel", type=Path)
+    parser.add_argument("--qemu-initramfs", type=Path)
+    parser.add_argument("--qemu-deadline-only", action="store_true")
     values = parser.parse_args(arguments)
+    qemu_paths = values.qemu_kernel is not None and values.qemu_initramfs is not None
+    if values.qemu and not qemu_paths:
+        parser.error("--qemu requires --qemu-kernel and --qemu-initramfs")
+    if not values.qemu and (
+        values.qemu_kernel is not None
+        or values.qemu_initramfs is not None
+        or values.qemu_deadline_only
+    ):
+        parser.error("QEMU options require --qemu")
+    if values.qemu_deadline_only and values.shell:
+        parser.error("--qemu-deadline-only cannot be combined with --shell")
     values.action = "run"
     values.probes = tuple(values.probes)
     return values
@@ -1119,6 +1445,9 @@ def main(
     operations_factory: Callable[
         [ProbeBundle], ProbeOperations
     ] = PhysicalProbeOperations,
+    qemu_operations_factory: Callable[
+        [ProbeBundle, Path, Path], QemuProbeOperations
+    ] = QemuProbeOperations,
     stdin_isatty: Callable[[], bool] = sys.stdin.isatty,
 ) -> int:
     """Configure or execute the current one-command physical probe loop."""
@@ -1136,19 +1465,38 @@ def main(
         bundle = ProbeBundle.from_bytes(
             _read_bounded_regular(values.bundle, 128 * 1024, "probe bundle")
         )
-        selected = validate_probe_names(values.probes)
-        config = ProbeRunConfig(
-            session_seconds=values.session_seconds,
-            recovery_seconds=values.recovery_seconds,
-            shell=values.shell,
-        )
-        result = run_probe(
-            bundle,
-            selected,
-            config,
-            operations_factory(bundle),
-            publisher,
-        )
+        if values.qemu:
+            operations = qemu_operations_factory(
+                bundle, values.qemu_kernel, values.qemu_initramfs
+            )
+            if values.qemu_deadline_only:
+                result = run_qemu_deadline_gate(bundle, operations, publisher)
+            else:
+                result = run_probe(
+                    bundle,
+                    validate_probe_names(values.probes),
+                    ProbeRunConfig(
+                        session_seconds=values.session_seconds,
+                        recovery_seconds=values.recovery_seconds,
+                        shell=values.shell,
+                    ),
+                    operations,
+                    publisher,
+                )
+        else:
+            selected = validate_probe_names(values.probes)
+            config = ProbeRunConfig(
+                session_seconds=values.session_seconds,
+                recovery_seconds=values.recovery_seconds,
+                shell=values.shell,
+            )
+            result = run_probe(
+                bundle,
+                selected,
+                config,
+                operations_factory(bundle),
+                publisher,
+            )
     except (DebugContractError, OSError, ProbeContractError, RuntimeError) as error:
         print(f"megrez-probe: {error}", file=sys.stderr)
         return 2
