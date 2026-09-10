@@ -54,9 +54,7 @@ MAX_MARIONETTE_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_FIREFOX_SNAPSHOT_BYTES = 1024 * 1024
 MAX_SERIAL_COMMAND_BYTES = 768
 NEW_SESSION_HOST_GRACE_SECONDS = 15.0
-FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS = 45.0
-FIREFOX_STATUS_HOST_GRACE_SECONDS = 10.0
-FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 6
+FIREFOX_DIAGNOSTIC_PROTOCOL_VERSION = 7
 MARIONETTE_TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _BUNDLE_FIELDS = frozenset(
@@ -1307,7 +1305,6 @@ def firefox_diagnostic_commands(
     ):
         raise ValueError("Firefox selected-command timeout must be in (0, 300]")
     timeout = f"{selected_timeout:g}"
-    status_timeout = f"{FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS:g}"
     run_nonce = nonces[0]
     snapshot_tool = (
         "/usr/bin/timeout 5 /usr/lib/asterinas/firefox-diagnostic-snapshot "
@@ -1317,7 +1314,8 @@ def firefox_diagnostic_commands(
     )
     environment = (
         "env -i PATH=/usr/bin:/bin PYTHONPATH=/usr/lib/asterinas "
-        "ASTERINAS_MARIONETTE_DIAGNOSTICS=1"
+        "ASTERINAS_MARIONETTE_DIAGNOSTICS=1 "
+        "ASTERINAS_MARIONETTE_DEBUG_ERRORS=1"
     )
     commands = (
         f"_asterinas_firefox_pid={browser_pid}; "
@@ -1340,11 +1338,6 @@ def firefox_diagnostic_commands(
         'profile=%s\\n\' "$_asterinas_firefox_pid" '
         '"$_asterinas_firefox_start" "$_asterinas_firefox_restarts" '
         '"$_asterinas_firefox_profile"; else false; fi',
-        f'/usr/bin/nsenter -t "$_asterinas_firefox_pid" -n {environment} '
-        "python3 -c 'from browser_m5_marionette_gate import status_once;"
-        f'status_once("127.0.0.1",2828,{status_timeout})\'; '
-        "_asterinas_firefox_status=$?; printf '__ASTERINAS_FIREFOX_STATUS__ "
-        'status=%s\\n\' "$_asterinas_firefox_status"; :',
         '_asterinas_firefox_snapshot >"$_asterinas_firefox_base.before"; '
         "_asterinas_firefox_before_status=$?; "
         "printf '__ASTERINAS_FIREFOX_SNAPSHOT_STATUS__ phase=before status=%s\\n' "
@@ -1523,9 +1516,8 @@ class FirefoxDiagnosticConfig:
     boot_timeout: float = 180.0
     readiness_timeout: float = 240.0
     firefox_preflight_timeout: float = 30.0
-    status_timeout: float = 60.0
     snapshot_timeout: float = 60.0
-    diagnostics_timeout: float = 60.0
+    diagnostics_timeout: float = 90.0
     reboot_timeout: float = 30.0
     recovery_timeout: float = 180.0
 
@@ -1549,7 +1541,6 @@ class FirefoxDiagnosticConfig:
             self.boot_timeout,
             self.readiness_timeout,
             self.firefox_preflight_timeout,
-            self.status_timeout,
             self.snapshot_timeout,
             self.diagnostics_timeout,
             self.reboot_timeout,
@@ -1565,10 +1556,6 @@ class FirefoxDiagnosticConfig:
             raise ValueError("Firefox diagnostic deadlines must be in (0, 1200]")
         if self.selected_command_timeout > 300 or self.total_timeout > 900:
             raise ValueError("Firefox diagnostic cost budget is exceeded")
-        if self.status_timeout < (
-            FIREFOX_STATUS_GUEST_TIMEOUT_SECONDS + FIREFOX_STATUS_HOST_GRACE_SECONDS
-        ):
-            raise ValueError("Firefox diagnostic status deadline lacks guest headroom")
 
 
 @dataclass(frozen=True)
@@ -1661,7 +1648,7 @@ class FirefoxDiagnosticResult:
         )
         if (
             type(self.schema_version) is not int
-            or self.schema_version != 1
+            or self.schema_version != 2
             or not isinstance(self.passed, bool)
             or self.physical is not True
             or not isinstance(self.reason, str)
@@ -1731,8 +1718,6 @@ class FirefoxDiagnosticOperations(Protocol):
         timeout: float,
     ) -> FirefoxProcessIdentity: ...
 
-    def run_firefox_status(self, timeout: float) -> None: ...
-
     def capture_firefox_snapshot(
         self, phase: str, nonce: str, timeout: float
     ) -> dict[str, object]: ...
@@ -1789,13 +1774,15 @@ def experiment_identity(
             "boot": config.boot_timeout,
             "readiness": config.readiness_timeout,
             "firefox_preflight": config.firefox_preflight_timeout,
-            "status": config.status_timeout,
             "snapshot": config.snapshot_timeout,
             "diagnostics": config.diagnostics_timeout,
             "reboot": config.reboot_timeout,
             "recovery": config.recovery_timeout,
         },
-        "diagnostic_environment": ["ASTERINAS_MARIONETTE_DIAGNOSTICS=1"],
+        "diagnostic_environment": [
+            "ASTERINAS_MARIONETTE_DIAGNOSTICS=1",
+            "ASTERINAS_MARIONETTE_DEBUG_ERRORS=1",
+        ],
         "snapshot_limits": {
             "max_seconds": 3,
             "max_processes": 16,
@@ -1911,20 +1898,7 @@ def _run_firefox_diagnosis(
             interruption = error
             failures.append(_failure_reason(error))
 
-    status_complete = False
     if firefox is not None and interruption is None:
-        try:
-            operations.run_firefox_status(
-                _phase_budget(clock, total_deadline, config.status_timeout)
-            )
-            status_complete = True
-        except Exception as error:
-            failures.append(f"status-{_failure_reason(error)}")
-        except BaseException as error:
-            interruption = error
-            failures.append(_failure_reason(error))
-
-    if status_complete and firefox is not None and interruption is None:
         try:
             value = operations.capture_firefox_snapshot(
                 "before",
@@ -2029,7 +2003,7 @@ def _run_firefox_diagnosis(
     else:
         reason = "firefox-diagnosis-incomplete"
     result = FirefoxDiagnosticResult(
-        schema_version=1,
+        schema_version=2,
         passed=passed,
         physical=True,
         reason=reason,
@@ -2276,7 +2250,6 @@ _FIREFOX_PREFLIGHT_MARKER = re.compile(
     r"\A__ASTERINAS_FIREFOX_PREFLIGHT__ pid=([0-9]+) start=([0-9]+) "
     r"restarts=([0-9]+) profile=([0-9]+:[0-9]+)\Z"
 )
-_FIREFOX_STATUS_MARKER = re.compile(r"\A__ASTERINAS_FIREFOX_STATUS__ status=([0-9]+)\Z")
 _FIREFOX_NEW_SESSION_MARKER = re.compile(
     r"\A__ASTERINAS_FIREFOX_NEW_SESSION__ status=([0-9]+)\Z"
 )
@@ -2370,23 +2343,15 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
         self._firefox_identity = identity
         return identity
 
-    def run_firefox_status(self, timeout: float) -> None:
-        self._run_diagnostic_command(4, timeout)
-        marker = self._single_marker(_FIREFOX_STATUS_MARKER, "Status")
-        if marker.group(1) != "0":
-            raise HostGateError(
-                f"Firefox Status failed with guest status {marker.group(1)}"
-            )
-
     def capture_firefox_snapshot(
         self, phase: str, nonce: str, timeout: float
     ) -> dict[str, object]:
         if phase == "before":
-            indexes = (5, 6)
+            indexes = (4, 5)
         elif phase == "during":
-            indexes = (9, 10)
+            indexes = (8, 9)
         elif phase == "after":
-            indexes = (11, 12, 13, 14, 15, 16)
+            indexes = (10, 11, 12, 13, 14, 15)
         else:
             raise ValueError("Firefox snapshot phase is invalid")
         deadline = time.monotonic() + timeout
@@ -2421,11 +2386,11 @@ class RealFirefoxDiagnosticOperations(RealBootCycleOperations):
     def run_firefox_new_session(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         self._run_diagnostic_command(
-            7,
+            6,
             _phase_budget(time.monotonic, deadline, NEW_SESSION_HOST_GRACE_SECONDS),
         )
         self._run_diagnostic_command(
-            8, _phase_budget(time.monotonic, deadline, timeout)
+            7, _phase_budget(time.monotonic, deadline, timeout)
         )
         self._single_marker(_FIREFOX_NEW_SESSION_MARKER, "NewSession")
 

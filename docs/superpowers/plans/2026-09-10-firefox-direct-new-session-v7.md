@@ -225,7 +225,7 @@ git commit -m "Classify direct Firefox NewSession responses"
 - Modify: `tools/riscv/megrez_desktop.py:45-60, 1274-1385, 1501-1562, 1611-1800, 1827-2045, 2260-2440`
 - Modify: `tools/riscv/tests/test_megrez_desktop.py:930-1110, 1180-1668, 1735-1880`
 
-- [ ] **Step 1: Write failing command, lifecycle, identity, and schema tests**
+- [x] **Step 1: Write failing command, lifecycle, identity, and schema tests**
 
 Update `FirefoxGuestCommandTests` to require:
 
@@ -269,7 +269,7 @@ def test_protocol_v7_removes_status_and_uses_schema_two(self) -> None:
 
 Update `_diagnostic_transcript` so every live boundary begins with `_greeting(22, 300)` and then the NewSession records; retain a separate Status transcript only in Task 1's historical classifier test.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -282,7 +282,7 @@ tools/docker/run_dev_container.sh -- python3 -m unittest \
 
 Expected: failures show the old Status command/event, protocol version 6, result schema 1, old adapter indexes, and 60-second diagnostic budget.
 
-- [ ] **Step 3: Implement the protocol-v7 command sequence**
+- [x] **Step 3: Implement the protocol-v7 command sequence**
 
 Set:
 
@@ -302,7 +302,7 @@ environment = (
 
 Keep all remaining shell commands byte-for-byte except for the one-position index shift caused by removing Status.  Update `RealFirefoxDiagnosticOperations` to the exact index mapping asserted in Step 1.  Delete `_FIREFOX_STATUS_MARKER` and `run_firefox_status`.
 
-- [ ] **Step 4: Implement the lifecycle, config, identity, and schema change**
+- [x] **Step 4: Implement the lifecycle, config, identity, and schema change**
 
 Delete `status_timeout` from `FirefoxDiagnosticConfig`, its deadline tuple, and `experiment_identity`.  Set:
 
@@ -327,7 +327,7 @@ if firefox is not None and interruption is None:
 
 The guarded sequence remains snapshot-before, NewSession, snapshot-during, snapshot-after.  Construct `FirefoxDiagnosticResult(schema_version=2, ...)` and require version 2 in its validator.
 
-- [ ] **Step 5: Run focused tests to GREEN**
+- [x] **Step 5: Run focused tests to GREEN**
 
 Run the exact command from Step 2.
 
