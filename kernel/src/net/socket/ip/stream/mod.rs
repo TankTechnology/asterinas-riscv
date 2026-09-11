@@ -480,6 +480,10 @@ impl SocketPrivate for StreamSocket {
 }
 
 impl Socket for StreamSocket {
+    fn is_stream_socket(&self) -> bool {
+        true
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
         self.check_endpoint_family(&endpoint)?;

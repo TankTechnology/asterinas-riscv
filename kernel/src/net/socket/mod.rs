@@ -71,6 +71,11 @@ mod private {
 
 /// Operations defined on a socket.
 pub trait Socket: private::SocketPrivate + Send + Sync {
+    /// Returns whether a send may report progress before a later user-buffer fault.
+    fn is_stream_socket(&self) -> bool {
+        false
+    }
+
     /// Assigns the specified address to the socket.
     fn bind(&self, _socket_addr: SocketAddr) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "bind() is not supported");

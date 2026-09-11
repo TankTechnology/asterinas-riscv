@@ -73,6 +73,7 @@ FOCUSED_NETWORK_AUTO_TESTS := \
 	ipv6_dual_stack \
 	ipv6_dual_stack_udp \
 	ipv6_udp \
+	tcp_user_buffer_prefault \
 	udp_user_buffer_prefault
 ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
 REGRESSION_TEST_DIRS := [ "network" ]
