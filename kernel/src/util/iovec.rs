@@ -197,6 +197,16 @@ impl<'a> VmReaderArray<'a> {
         }
     }
 
+    /// Makes a previously prefaulted valid prefix a complete short input.
+    ///
+    /// Stream sends report progress instead of a later user-buffer fault, so
+    /// their transport must not observe the deferred fault after the array has
+    /// already been limited to the accessible prefix.
+    pub(crate) fn accept_prefaulted_prefix(&mut self) {
+        debug_assert!(self.has_deferred_fault);
+        self.has_deferred_fault = false;
+    }
+
     /// Creates a new `VmReaderArray`.
     #[cfg(ktest)]
     pub const fn new(readers: Box<[VmReader<'a>]>) -> Self {

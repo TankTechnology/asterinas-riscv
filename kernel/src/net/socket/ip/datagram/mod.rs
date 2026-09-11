@@ -320,7 +320,8 @@ impl Socket for DatagramSocket {
                 match options.ip.set_option(option, &*inner) {
                     Err(err) if err.error() == Errno::ENOPROTOOPT => {
                         if self.family == IpAddressFamily::IPv6 {
-                            options.ipv6.set_option(option)?;
+                            let is_socket_bound = matches!(&*inner, Inner::Bound(_));
+                            options.ipv6.set_option(option, is_socket_bound)?;
                             NeedIfacePoll::FALSE
                         } else {
                             return Err(err);

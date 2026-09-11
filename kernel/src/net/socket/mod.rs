@@ -72,7 +72,7 @@ mod private {
 /// Operations defined on a socket.
 pub trait Socket: private::SocketPrivate + Send + Sync {
     /// Returns whether a send may report progress before a later user-buffer fault.
-    fn is_stream_socket(&self) -> bool {
+    fn supports_partial_send(&self) -> bool {
         false
     }
 

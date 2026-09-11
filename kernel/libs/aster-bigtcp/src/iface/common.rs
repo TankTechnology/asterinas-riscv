@@ -34,6 +34,7 @@ use crate::{
     ext::Ext,
     socket::{TcpListenerBg, UdpSocketBg},
     socket_table::{SocketRegistries, SocketTable, TcpSocketRegistry, UdpSocketRegistry},
+    wire::PortNum,
 };
 
 /// Configuration shared by all concrete interface constructors.
@@ -235,18 +236,42 @@ impl<E: Ext> IfaceCommon<E> {
     ) -> Result<BoundPort<E>, BindError> {
         let addr = config.addr();
         let socket_registries = self.socket_registries.clone();
-        let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |port| {
-            matches!(addr, IpAddress::Ipv4(_))
-                && match protocol {
-                    PortProtocol::Tcp => socket_registries.tcp().has_dual_port(port),
-                    PortProtocol::Udp => socket_registries.udp().has_dual_port(port),
-                }
-        })?;
+        let (port, can_reuse, registration) = if config.is_backlog() {
+            let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |_| false)?;
+            (port, can_reuse, PortRegistration::None)
+        } else if config.is_dual_stack() {
+            debug_assert!(matches!(addr, IpAddress::Ipv6(addr) if addr.is_unspecified()));
+            let bind = |ipv4_ports: &BTreeMap<PortNum, usize>, dual_ports: &[PortNum]| {
+                self.used_ports.lock().bind(config, protocol, |port| {
+                    ipv4_ports.contains_key(&port) || dual_ports.contains(&port)
+                })
+            };
+            let (port, can_reuse) = match protocol {
+                PortProtocol::Tcp => socket_registries.tcp().bind_dual_stack_port(bind),
+                PortProtocol::Udp => socket_registries.udp().bind_dual_stack_port(bind),
+            }?;
+            (port, can_reuse, PortRegistration::DualStack)
+        } else if matches!(addr, IpAddress::Ipv4(_)) {
+            let bind = |dual_ports: &[PortNum]| {
+                self.used_ports
+                    .lock()
+                    .bind(config, protocol, |port| dual_ports.contains(&port))
+            };
+            let (port, can_reuse) = match protocol {
+                PortProtocol::Tcp => socket_registries.tcp().bind_ipv4_port(bind),
+                PortProtocol::Udp => socket_registries.udp().bind_ipv4_port(bind),
+            }?;
+            (port, can_reuse, PortRegistration::Ipv4)
+        } else {
+            let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |_| false)?;
+            (port, can_reuse, PortRegistration::None)
+        };
         Ok(BoundPort {
             iface,
             addr,
             port,
             protocol,
+            registration,
             can_reuse: AtomicBool::new(can_reuse),
         })
     }
@@ -339,7 +364,15 @@ pub struct BoundPort<E: Ext> {
     addr: IpAddress,
     port: u16,
     protocol: PortProtocol,
+    registration: PortRegistration,
     can_reuse: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+enum PortRegistration {
+    None,
+    Ipv4,
+    DualStack,
 }
 
 impl<E: Ext> BoundPort<E> {
@@ -386,6 +419,25 @@ impl<E: Ext> BoundPort<E> {
 
 impl<E: Ext> Drop for BoundPort<E> {
     fn drop(&mut self) {
+        let common = self.iface.common();
+        match (self.protocol, self.registration) {
+            (_, PortRegistration::None) => {}
+            (PortProtocol::Tcp, PortRegistration::Ipv4) => {
+                common.tcp_registry().unregister_ipv4_port(self.port)
+            }
+            (PortProtocol::Tcp, PortRegistration::DualStack) => {
+                common.tcp_registry().unregister_dual_stack_port(self.port)
+            }
+            (PortProtocol::Udp, PortRegistration::Ipv4) => {
+                common.udp_registry().unregister_ipv4_port(self.port)
+            }
+            (PortProtocol::Udp, PortRegistration::DualStack) => {
+                common.udp_registry().unregister_dual_stack_port(self.port)
+            }
+        }
+
+        // Keep the namespace registry -> interface port table lock order used
+        // during bind.
         self.iface.common().release_port(
             self.addr,
             self.port,

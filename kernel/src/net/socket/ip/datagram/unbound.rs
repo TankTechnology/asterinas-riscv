@@ -43,7 +43,7 @@ impl datagram_common::Unbound for UnboundDatagram {
         pollee: &Pollee,
         options: BindOptions,
     ) -> Result<Self::Bound> {
-        let bound_port = bind_port(endpoint, options.can_reuse)?;
+        let bound_port = bind_port(endpoint, options.can_reuse, options.v6only)?;
 
         let bound_socket = match UdpSocket::new_bind(
             bound_port,
@@ -79,7 +79,9 @@ impl datagram_common::Unbound for UnboundDatagram {
     }
 }
 
-fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundUdpPort> {
-    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse)?;
+fn bind_port(endpoint: &IpEndpoint, can_reuse: bool, v6only: bool) -> Result<BoundUdpPort> {
+    let dual_stack = matches!(endpoint.addr, aster_bigtcp::wire::IpAddress::Ipv6(addr) if addr.is_unspecified())
+        && !v6only;
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack)?;
     Ok(iface.bind_udp(config)?)
 }

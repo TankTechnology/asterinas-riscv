@@ -250,6 +250,10 @@ impl SocketPrivate for VsockStreamSocket {
 }
 
 impl Socket for VsockStreamSocket {
+    fn supports_partial_send(&self) -> bool {
+        true
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let addr = VsockSocketAddr::try_from(socket_addr)?;
 

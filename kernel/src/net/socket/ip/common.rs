@@ -94,6 +94,7 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
 pub(super) fn resolve_bind_iface_and_config(
     endpoint: &IpEndpoint,
     can_reuse: bool,
+    dual_stack: bool,
 ) -> Result<(Arc<Iface>, BindPortConfig)> {
     check_port_privilege(endpoint.port)?;
 
@@ -107,7 +108,11 @@ pub(super) fn resolve_bind_iface_and_config(
         }
     };
 
-    let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
+    let bind_port_config = if dual_stack {
+        BindPortConfig::new_dual_stack(*endpoint, can_reuse)
+    } else {
+        BindPortConfig::new(*endpoint, can_reuse)
+    };
 
     Ok((iface, bind_port_config))
 }

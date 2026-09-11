@@ -69,6 +69,12 @@ int main(void)
 	assert(IN6_IS_ADDR_LOOPBACK(&receiver_address.sin6_addr));
 	assert(receiver_address.sin6_port != 0);
 
+	v6only = 1;
+	errno = 0;
+	assert(setsockopt(receiver, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
+			  sizeof(v6only)) == -1);
+	assert(errno == EINVAL);
+
 	int sender = socket(AF_INET6, SOCK_DGRAM, 0);
 	assert(sender >= 0);
 
