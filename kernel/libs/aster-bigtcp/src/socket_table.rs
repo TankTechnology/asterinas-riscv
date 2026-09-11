@@ -25,6 +25,40 @@ use crate::{
 
 pub type SocketHash = u32;
 
+/// Socket registries shared by every interface in one network environment.
+pub struct SocketRegistries<E: Ext> {
+    udp: UdpSocketRegistry<E>,
+    tcp: TcpSocketRegistry<E>,
+}
+
+impl<E: Ext> SocketRegistries<E> {
+    pub fn new() -> Self {
+        Self {
+            udp: UdpSocketRegistry::new(),
+            tcp: TcpSocketRegistry::new(),
+        }
+    }
+
+    /// Registers an interface in this registry's network environment.
+    pub fn register_iface(&self, iface: &Arc<dyn Iface<E>>) {
+        self.tcp.register_iface(iface);
+    }
+
+    pub(crate) const fn udp(&self) -> &UdpSocketRegistry<E> {
+        &self.udp
+    }
+
+    pub(crate) const fn tcp(&self) -> &TcpSocketRegistry<E> {
+        &self.tcp
+    }
+}
+
+impl<E: Ext> Default for SocketRegistries<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// UDP socket registry shared by all interfaces in one network environment.
 ///
 /// Socket ownership and egress scheduling remain local to an interface. The
@@ -240,8 +274,7 @@ impl<E: Ext> TcpSocketRegistry<E> {
         }
     }
 
-    /// Registers an interface in this registry's network environment.
-    pub fn register_iface(&self, iface: &Arc<dyn Iface<E>>) {
+    fn register_iface(&self, iface: &Arc<dyn Iface<E>>) {
         self.state
             .lock()
             .ifaces
