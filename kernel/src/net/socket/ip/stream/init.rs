@@ -206,6 +206,7 @@ impl InitStream {
         backlog: usize,
         option: &RawTcpOption,
         observer: StreamObserver,
+        v6only: bool,
     ) -> Result<ListenStream, (Error, Self)> {
         if !self.is_connect_done {
             // See the comments of `is_connect_done`.
@@ -222,9 +223,16 @@ impl InitStream {
         let bound_port = match self.bound_port.take() {
             Some(bound_port) => bound_port,
             None => {
-                // Auto-bind to INADDR_ANY (0.0.0.0) with an ephemeral port when
-                // listen() is called without a prior bind().
-                let endpoint = IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0);
+                // Auto-bind to the wildcard address for this protocol family
+                // when listen() is called without a prior bind().
+                let endpoint = match self.family {
+                    IpAddressFamily::IPv4 => {
+                        IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0)
+                    }
+                    IpAddressFamily::IPv6 => {
+                        IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0)
+                    }
+                };
                 match bind_port(&endpoint, false) {
                     Ok(bound_port) => bound_port,
                     Err(err) => return Err((err, self)),
@@ -232,7 +240,7 @@ impl InitStream {
             }
         };
 
-        match ListenStream::new(bound_port, backlog, option, observer) {
+        match ListenStream::new(bound_port, backlog, option, observer, v6only) {
             Ok(listen_stream) => Ok(listen_stream),
             Err((bound_port, error)) => Err((error, Self::new_bound(bound_port, self.family))),
         }

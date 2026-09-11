@@ -369,7 +369,7 @@ git commit -m "feat(net): support IPv4-mapped UDP sockets" -m "Adapted from sour
 - Modify: `kernel/src/net/socket/ip/stream/listen.rs`
 - Modify: `kernel/src/net/socket/ip/stream/mod.rs`
 
-- [ ] **Step 1: Add the failing mapped-TCP regression**
+- [x] **Step 1: Add the failing mapped-TCP regression**
 
 Adapt `ipv6_dual_stack.c` from `22a15cb99`. Bind an AF_INET6 listener to `[::]:0` with `IPV6_V6ONLY=0`, assert that an AF_INET wildcard bind to the same port fails with `EADDRINUSE`, connect via `127.0.0.1`, verify the accepted peer is `::ffff:127.0.0.1`, exchange data in both directions, and emit one success line beginning:
 
@@ -379,19 +379,19 @@ ASTERINAS_IPV6_DUAL_STACK_TCP_OK peer=
 
 Add a second case proving `IPV6_V6ONLY=1` allows the separate IPv4 bind and does not accept the IPv4 connection.
 
-- [ ] **Step 2: Run the bounded x86 gate and confirm TCP is the remaining failure**
+- [x] **Step 2: Run the bounded x86 gate and confirm TCP is the remaining failure**
 
 Run the x86 dual-stack command. Expected: the first TCP guest assertion fails and the full-transcript validator rejects the run because the TCP fact is absent; retain that transcript as the red test.
 
-- [ ] **Step 3: Reserve ports and normalize connection keys**
+- [x] **Step 3: Reserve ports and normalize connection keys**
 
 For an IPv6 wildcard TCP listener with `v6only=false`, reserve the corresponding IPv4 wildcard port and release it with the listener. Normalize IPv4 TCP connection keys to IPv4-mapped IPv6 keys for dual sockets while preserving ordinary IPv4 socket behavior. Lookup order must be exact endpoint, same-family wildcard, then IPv6 dual wildcard fallback.
 
-- [ ] **Step 4: Map TCP ingress and demap replies**
+- [x] **Step 4: Map TCP ingress and demap replies**
 
 When an IPv4 SYN targets a dual IPv6 wildcard listener, present local and remote endpoints as mapped IPv6 inside the socket. When that connection transmits, demap both endpoints into an IPv4 representation before routing and packet emission. Carry `v6only` from `StreamSocket` through `InitStream::listen`; accepted sockets inherit family and IPv6 options from the listener.
 
-- [ ] **Step 5: Pass the complete dual-stack gate on both architectures**
+- [x] **Step 5: Pass the complete dual-stack gate on both architectures**
 
 Run:
 
@@ -403,7 +403,9 @@ tools/docker/run_dev_container.sh -- bash -lc 'ASTERINAS_QEMU_LOG_DIR="$PWD/targ
 
 Expected for each QEMU transcript: exactly one TCP mapped fact, one native IPv6 fact, one UDP mapped fact, no fatal pattern, and process exit status zero.
 
-- [ ] **Step 6: Commit TCP dual-stack support**
+Execution note: the plain `cargo test -p aster-bigtcp` command is not supported by this no_std/OSDK crate on current main because architecture dependencies are injected by OSDK. The equivalent offline `cargo osdk test --target-arch x86_64` gate passed, including the focused TCP representation and connection-key tests.
+
+- [x] **Step 6: Commit TCP dual-stack support**
 
 ```bash
 git add kernel/libs/aster-bigtcp/src/iface/common.rs kernel/libs/aster-bigtcp/src/iface/poll.rs kernel/libs/aster-bigtcp/src/socket/bound/tcp_listen.rs kernel/libs/aster-bigtcp/src/socket_table.rs kernel/src/net/socket/ip/stream test/initramfs/src/regression/network/ipv6_dual_stack.c

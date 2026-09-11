@@ -7,7 +7,7 @@ use ostd::sync::SpinLock;
 use smoltcp::{
     socket::PollAt,
     time::Duration,
-    wire::{IpEndpoint, IpRepr, TcpRepr},
+    wire::{IpEndpoint, IpListenEndpoint, IpRepr, TcpRepr},
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     errors::tcp::ListenError,
     ext::Ext,
-    iface::{BindPortConfig, BoundTcpPort, PollableIfaceMut},
+    iface::{BindPortConfig, BoundTcpPort, Iface, PollableIfaceMut},
     socket::{
         option::{RawTcpOption, RawTcpSetOption},
         unbound::{RawTcpSocket, new_tcp_socket},
@@ -38,13 +38,25 @@ pub struct TcpBacklog<E: Ext> {
 pub struct TcpListenerInner<E: Ext> {
     pub(super) backlog: SpinLock<TcpBacklog<E>, BottomHalfDisabled>,
     listener_key: ListenerKey,
+    accepts_ipv4: bool,
+    // A dual-stack IPv6 listener also reserves the corresponding IPv4
+    // wildcard port on its owning interface. The namespace registry extends
+    // that reservation to ephemeral allocations on other interfaces.
+    _ipv4_bound: Option<BoundTcpPort<E>>,
 }
 
 impl<E: Ext> TcpListenerInner<E> {
-    fn new(backlog: TcpBacklog<E>, listener_key: ListenerKey) -> Self {
+    fn new(
+        backlog: TcpBacklog<E>,
+        listener_key: ListenerKey,
+        accepts_ipv4: bool,
+        ipv4_bound: Option<BoundTcpPort<E>>,
+    ) -> Self {
         Self {
             backlog: SpinLock::new(backlog),
             listener_key,
+            accepts_ipv4,
+            _ipv4_bound: ipv4_bound,
         }
     }
 }
@@ -59,6 +71,12 @@ impl<E: Ext> Inner<E> for TcpListenerInner<E> {
             1,
             "a listener must be closed before dropping"
         );
+
+        let registry = this.bound.iface().common().tcp_registry();
+        registry.unregister_listener(this);
+        if this.inner.accepts_ipv4 {
+            registry.unregister_dual_port(this.bound.port());
+        }
     }
 }
 
@@ -73,6 +91,7 @@ impl<E: Ext> TcpListener<E> {
         max_conn: usize,
         option: &RawTcpOption,
         observer: E::TcpEventObserver,
+        v6only: bool,
     ) -> Result<Self, (BoundTcpPort<E>, ListenError)> {
         let local_endpoint = bound.endpoint();
 
@@ -80,8 +99,20 @@ impl<E: Ext> TcpListener<E> {
         let mut sockets = iface.common().sockets();
 
         let listener_key = ListenerKey::new(local_endpoint.addr, local_endpoint.port);
+        let accepts_ipv4 = matches!(
+            local_endpoint.addr,
+            smoltcp::wire::IpAddress::Ipv6(addr) if addr.is_unspecified()
+        ) && !v6only;
 
-        if sockets.lookup_listener(&listener_key).is_some() {
+        let has_conflict = sockets.lookup_listener(&listener_key).is_some()
+            || (accepts_ipv4
+                && sockets
+                    .lookup_listener(&ListenerKey::new(
+                        smoltcp::wire::IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED),
+                        local_endpoint.port,
+                    ))
+                    .is_some());
+        if has_conflict {
             return Err((bound, ListenError::AddressInUse));
         }
 
@@ -90,12 +121,45 @@ impl<E: Ext> TcpListener<E> {
 
             option.apply(&mut socket);
 
-            if let Err(err) = socket.listen(local_endpoint) {
+            let listen_endpoint = if local_endpoint.addr.is_unspecified() {
+                IpListenEndpoint {
+                    addr: None,
+                    port: local_endpoint.port,
+                }
+            } else {
+                IpListenEndpoint {
+                    addr: Some(local_endpoint.addr),
+                    port: local_endpoint.port,
+                }
+            };
+            if let Err(err) = socket.listen(listen_endpoint) {
                 return Err((bound, err.into()));
             }
 
             socket
         };
+
+        let ipv4_bound = if accepts_ipv4 {
+            let ipv4_endpoint = IpEndpoint::new(
+                smoltcp::wire::IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED),
+                local_endpoint.port,
+            );
+            let Ok(ipv4_bound) = iface.bind_tcp(BindPortConfig::new(ipv4_endpoint, false)) else {
+                return Err((bound, ListenError::AddressInUse));
+            };
+            Some(ipv4_bound)
+        } else {
+            None
+        };
+
+        if accepts_ipv4
+            && !iface
+                .common()
+                .tcp_registry()
+                .register_dual_port(local_endpoint.port)
+        {
+            return Err((bound, ListenError::AddressInUse));
+        }
 
         let inner = {
             let backlog = TcpBacklog {
@@ -105,13 +169,17 @@ impl<E: Ext> TcpListener<E> {
                 connected: Vec::new(),
             };
 
-            TcpListenerInner::new(backlog, listener_key)
+            TcpListenerInner::new(backlog, listener_key, accepts_ipv4, ipv4_bound)
         };
 
         let listener = Self::new(bound, inner);
         listener.init_observer(observer);
         let res = sockets.insert_listener(listener.inner().clone());
         debug_assert!(res.is_ok());
+        iface
+            .common()
+            .tcp_registry()
+            .register_listener(listener.inner());
 
         Ok(listener)
     }
@@ -187,6 +255,10 @@ impl<E: Ext> TcpListenerBg<E> {
     pub(crate) const fn listener_key(&self) -> &ListenerKey {
         &self.inner.listener_key
     }
+
+    pub(crate) const fn accepts_ipv4(&self) -> bool {
+        self.inner.accepts_ipv4
+    }
 }
 
 impl<E: Ext> TcpListenerBg<E> {
@@ -194,6 +266,7 @@ impl<E: Ext> TcpListenerBg<E> {
     pub(crate) fn process(
         self: &Arc<Self>,
         iface: &mut PollableIfaceMut<E>,
+        connection_iface: &Arc<dyn Iface<E>>,
         ip_repr: &IpRepr,
         tcp_repr: &TcpRepr,
     ) -> (TcpProcessResult, Option<Arc<TcpConnectionBg<E>>>) {
@@ -233,8 +306,7 @@ impl<E: Ext> TcpListenerBg<E> {
         };
 
         let conn = TcpConnection::new_cyclic(
-            self.bound
-                .iface()
+            connection_iface
                 .bind_tcp(BindPortConfig::new_backlog(self.bound.endpoint()))
                 .unwrap(),
             |weak| {
