@@ -17,6 +17,13 @@ SUCCESS_MARKERS = {
     "regression": "All regression tests passed.",
     "vsock": "Vsock test passed.",
 }
+MULTI_FACT_MARKERS = {
+    "ipv6-dual-stack": (
+        "ASTERINAS_IPV6_DUAL_STACK_TCP_OK",
+        "ipv6_udp: PASS",
+        "ASTERINAS_IPV6_DUAL_STACK_UDP_OK",
+    ),
+}
 FATAL_PATTERNS = (
     re.compile(r"uncaught panic", re.IGNORECASE),
     re.compile(r"kernel panic", re.IGNORECASE),
@@ -34,13 +41,22 @@ class ValidationError(ValueError):
     """The transcript does not prove the requested acceptance result."""
 
 
+def _is_logical_marker(line: str, marker: str) -> bool:
+    return line == marker or line.startswith(f"{marker} ")
+
+
 def validate_transcript(
     transcript: str, *, mode: str, require_riscv_icache_smp4: bool = False
 ) -> None:
-    marker = SUCCESS_MARKERS[mode]
     lines = transcript.splitlines()
-    if sum(line == marker for line in lines) != 1:
-        raise ValidationError(f"expected exactly one terminal marker: {marker}")
+    if mode in MULTI_FACT_MARKERS:
+        for marker in MULTI_FACT_MARKERS[mode]:
+            if sum(_is_logical_marker(line, marker) for line in lines) != 1:
+                raise ValidationError(f"expected exactly one success fact: {marker}")
+    else:
+        marker = SUCCESS_MARKERS[mode]
+        if sum(line == marker for line in lines) != 1:
+            raise ValidationError(f"expected exactly one terminal marker: {marker}")
 
     for line in lines:
         for pattern in FATAL_PATTERNS:
@@ -66,7 +82,11 @@ def validate_transcript(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log", type=Path, required=True)
-    parser.add_argument("--mode", choices=tuple(SUCCESS_MARKERS), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=tuple((*SUCCESS_MARKERS, *MULTI_FACT_MARKERS)),
+        required=True,
+    )
     parser.add_argument("--require-riscv-icache-smp4", action="store_true")
     return parser.parse_args()
 
