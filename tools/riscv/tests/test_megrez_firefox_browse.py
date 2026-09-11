@@ -451,10 +451,15 @@ class FirefoxBrowseTests(unittest.TestCase):
             "/usr/bin/grep -c 'phase=tcp-connect state=exception' $l",
             command,
         )
-        self.assertIn("/usr/bin/grep -v 'phase=tcp-connect'", command)
-        self.assertIn("/usr/bin/tail -n 64", command)
+        self.assertIn("/usr/bin/tail -n 64 $l >&2", command)
+        self.assertNotIn("/usr/bin/grep -E", command)
         self.assertTrue(command.endswith('(exit "$q")'))
         self.assertLess(len((command + "\n").encode()), 768)
+        transmitted = (
+            f"{command}; _s=$?; printf '__ASTERINAS_BROWSE_STEP__ "
+            "nonce=0123456789abcdef step=baidu-home status=%s\\n' \"$_s\""
+        )
+        self.assertLessEqual(len((transmitted + "\n").encode()), 768)
 
     def test_clock_sync_rejects_guest_time_outside_the_serial_attestation(self) -> None:
         operations = object.__new__(browse.RealFirefoxBrowseOperations)
