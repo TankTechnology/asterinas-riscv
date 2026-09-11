@@ -11,9 +11,75 @@ from tools.riscv.validate_run_kernel_log import ValidationError, validate_transc
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DUAL_STACK_FACTS = (
+    "ASTERINAS_IPV6_DUAL_STACK_TCP_OK peer=::ffff:127.0.0.1",
+    "ipv6_udp: PASS",
+    "ASTERINAS_IPV6_DUAL_STACK_UDP_OK peer=::ffff:127.0.0.1",
+)
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_accepts_complete_ipv6_dual_stack_transcript(self) -> None:
+        try:
+            validate_transcript(
+                "\n".join(("boot output", *DUAL_STACK_FACTS)),
+                mode="ipv6-dual-stack",
+            )
+        except KeyError:
+            self.fail("ipv6-dual-stack validation mode is not implemented")
+
+    def test_rejects_missing_or_duplicate_ipv6_dual_stack_fact(self) -> None:
+        cases = []
+        for index in range(len(DUAL_STACK_FACTS)):
+            cases.append(DUAL_STACK_FACTS[:index] + DUAL_STACK_FACTS[index + 1 :])
+            cases.append(
+                DUAL_STACK_FACTS[:index]
+                + (DUAL_STACK_FACTS[index], DUAL_STACK_FACTS[index])
+                + DUAL_STACK_FACTS[index + 1 :]
+            )
+
+        for facts in cases:
+            with self.subTest(facts=facts):
+                try:
+                    validate_transcript("\n".join(facts), mode="ipv6-dual-stack")
+                except ValidationError:
+                    continue
+                except KeyError:
+                    self.fail("ipv6-dual-stack validation mode is not implemented")
+                self.fail("invalid dual-stack transcript was accepted")
+
+    def test_rejects_fatal_after_ipv6_dual_stack_facts(self) -> None:
+        transcript = "\n".join((*DUAL_STACK_FACTS, "Kernel panic - not syncing"))
+        try:
+            validate_transcript(transcript, mode="ipv6-dual-stack")
+        except ValidationError:
+            return
+        except KeyError:
+            self.fail("ipv6-dual-stack validation mode is not implemented")
+        self.fail("fatal dual-stack transcript was accepted")
+
+    def test_ipv6_dual_stack_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/network/run_dual_stack_test.sh"
+        )
+
+        self.assertIn("else ifeq ($(AUTO_TEST), ipv6_dual_stack)", makefile)
+        self.assertIn('/test/network/run_dual_stack_test.sh', makefile)
+        self.assertIn('--mode "ipv6-dual-stack"', makefile)
+        self.assertTrue(runner_path.is_file(), "dual-stack guest runner is missing")
+        runner = runner_path.read_text()
+        commands = tuple(
+            line.strip()
+            for line in runner.splitlines()
+            if line.strip().startswith("./")
+        )
+        self.assertEqual(
+            commands,
+            ("./ipv6_dual_stack", "./ipv6_udp", "./ipv6_dual_stack_udp"),
+        )
+
     def test_accepts_complete_smp4_icache_regression(self) -> None:
         validate_transcript(
             "\n".join(

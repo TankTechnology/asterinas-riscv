@@ -74,7 +74,7 @@
 - Modify: `Makefile`
 - Add: `test/initramfs/src/regression/network/run_dual_stack_test.sh`
 
-- [ ] **Step 1: Add failing validator tests**
+- [x] **Step 1: Add failing validator tests**
 
 Add tests that call `validate_transcript(..., mode="ipv6-dual-stack")` with these logical facts:
 
@@ -93,7 +93,7 @@ Cover all of these cases:
 5. the Makefile selects `/test/network/run_dual_stack_test.sh` and invokes `--mode "ipv6-dual-stack"`;
 6. the guest runner invokes `ipv6_dual_stack`, `ipv6_udp`, and `ipv6_dual_stack_udp` exactly once.
 
-- [ ] **Step 2: Run the test and confirm it fails for the missing mode**
+- [x] **Step 2: Run the test and confirm it fails for the missing mode**
 
 Run:
 
@@ -103,7 +103,7 @@ tools/docker/run_dev_container.sh -- python3 -W error::ResourceWarning -m unitte
 
 Expected: the new tests fail because `ipv6-dual-stack` is not an accepted validator mode and the Makefile/runner are not wired.
 
-- [ ] **Step 3: Implement multi-fact validation**
+- [x] **Step 3: Implement multi-fact validation**
 
 In `tools/riscv/validate_run_kernel_log.py`, add:
 
@@ -123,7 +123,7 @@ def _is_logical_marker(line: str, marker: str) -> bool:
 
 For a multi-fact mode, require exactly one matching line for every marker. Keep the existing fatal-pattern scan over the complete transcript and keep the SMP4 contract restricted to regression mode. Set argparse choices to the union of `SUCCESS_MARKERS` and `MULTI_FACT_MARKERS`.
 
-- [ ] **Step 4: Add the bounded guest and Makefile entry**
+- [x] **Step 4: Add the bounded guest and Makefile entry**
 
 Create an executable `run_dual_stack_test.sh` with `set -e`, `cd "$(dirname "$0")"`, and these commands in order:
 
@@ -135,7 +135,7 @@ Create an executable `run_dual_stack_test.sh` with `set -e`, `cd "$(dirname "$0"
 
 In the option-selection section of `Makefile`, set `ENABLE_REGRESSION_TEST := true` and `--init-args="/test/network/run_dual_stack_test.sh"` for `AUTO_TEST=ipv6_dual_stack`. In the `run_kernel` validation section, invoke the full-transcript validator with `--mode "ipv6-dual-stack"`.
 
-- [ ] **Step 5: Run the validator tests and static checks**
+- [x] **Step 5: Run the validator tests and static checks**
 
 Run:
 
@@ -147,7 +147,7 @@ git diff --check
 
 Expected: validator tests pass; `git diff --check` prints nothing.
 
-- [ ] **Step 6: Commit the gate separately**
+- [x] **Step 6: Commit the gate separately**
 
 ```bash
 git add Makefile tools/riscv/validate_run_kernel_log.py tools/riscv/tests/test_validate_run_kernel_log.py test/initramfs/src/regression/network/run_dual_stack_test.sh
