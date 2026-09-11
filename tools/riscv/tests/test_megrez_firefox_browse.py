@@ -67,17 +67,23 @@ class _Proxy:
     def __init__(self, events: list[str], *, fail: bool = False) -> None:
         self.events = events
         self.fail = fail
+        self.ready = False
 
     def start(self) -> None:
         self.events.append("proxy-start")
         if self.fail:
             raise RuntimeError("proxy unavailable")
+        self.ready = True
 
     def close(self) -> None:
         self.events.append("proxy-close")
 
     def summary(self) -> dict[str, object]:
-        return {"schema_version": 1, "upstream": "127.0.0.1:7890"}
+        return {
+            "schema_version": 1,
+            "upstream": "127.0.0.1:7890",
+            "ready": self.ready,
+        }
 
 
 class _Operations:
@@ -119,9 +125,8 @@ class _Operations:
             browser_restarts=0,
         )
 
-    def synchronize_clock(self, browser_pid: int, _timeout: float) -> dict[str, object]:
+    def synchronize_clock(self, _timeout: float) -> dict[str, object]:
         self.events.append("clock")
-        assert browser_pid == 116
         return {
             "marker": "ASTERINAS_CLOCK_SYNC_READY",
             "guest_unix_seconds": 1789099506,
@@ -370,7 +375,7 @@ class FirefoxBrowseTests(unittest.TestCase):
         )
 
         with mock.patch.object(browse.time, "time", return_value=1789099506.75):
-            clock = operations.synchronize_clock(116, 45)
+            clock = operations.synchronize_clock(45)
         home = operations.run_baidu_home(
             116,
             "0123456789abcdef",
@@ -432,7 +437,81 @@ class FirefoxBrowseTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 browse.HostGateError, "guest clock serial evidence is invalid"
             ):
-                operations.synchronize_clock(116, 45)
+                operations.synchronize_clock(45)
+
+    def test_clock_sync_rejects_an_out_of_range_host_epoch_before_serial(self) -> None:
+        for host_epoch in (1704067199.9, 4133980800.0):
+            with self.subTest(host_epoch=host_epoch):
+                operations = object.__new__(browse.RealFirefoxBrowseOperations)
+                serial = mock.Mock()
+                serial.checkpoint.return_value = 10
+                operations._require_serial = mock.Mock(return_value=serial)
+                operations._run_long_step = mock.Mock()
+                operations._step_payload = mock.Mock(
+                    return_value=(
+                        b'{"guest_unix_seconds":1704067200,'
+                        b'"host_unix_seconds":1704067200,'
+                        b'"marker":"ASTERINAS_CLOCK_SYNC_READY",'
+                        b'"source":"host-serial"}\n'
+                    )
+                )
+
+                with mock.patch.object(browse.time, "time", return_value=host_epoch):
+                    with self.assertRaisesRegex(
+                        browse.HostGateError, "host clock is outside"
+                    ):
+                        operations.synchronize_clock(45)
+
+                operations._run_long_step.assert_not_called()
+
+    def test_passing_result_requires_latched_proxy_readiness(self) -> None:
+        values = {
+            "schema_version": 1,
+            "passed": True,
+            "physical": True,
+            "reason": "baidu-home-ready",
+            "failure": "",
+            "plan_sha256": "a" * 64,
+            "bootargs_sha256": "b" * 64,
+            "recovered": True,
+            "physical_boots": 1,
+            "readiness": BootReadinessEvidence(
+                browser_pid=116,
+                framebuffer=True,
+                xorg_fbdev=True,
+                openbox=True,
+                firefox=True,
+                browser_service="active",
+                browser_restarts=0,
+            ),
+            "clock_evidence": {"marker": "ASTERINAS_CLOCK_SYNC_READY"},
+            "page_marker": {"marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY"},
+            "transport": ("kernel:mmc",),
+            "serial_sha256": "c" * 64,
+            "diagnostics_sha256": "d" * 64,
+            "page_json_sha256": "e" * 64,
+            "screenshot_sha256": "f" * 64,
+            "total_seconds": 1.0,
+        }
+        for proxy_summary in ({"schema_version": 1}, {"ready": False}):
+            with self.subTest(proxy_summary=proxy_summary), self.assertRaisesRegex(
+                browse.HostGateError, "passing Firefox browse result is incomplete"
+            ):
+                browse.FirefoxBrowseResult(
+                    **values,
+                    proxy_bridge=proxy_summary,
+                )
+
+        failed = browse.FirefoxBrowseResult(
+            **{
+                **values,
+                "passed": False,
+                "reason": "baidu-home-incomplete",
+                "failure": "proxy-start-failed",
+                "proxy_bridge": {"schema_version": 1, "ready": False},
+            }
+        )
+        self.assertFalse(failed.passed)
 
     def test_file_transfer_commands_fit_the_serial_canonical_line(self) -> None:
         for name in ("baidu-home.json", "baidu-home.png"):

@@ -46,6 +46,8 @@ MAX_DIAGNOSTICS_BYTES = 256 * 1024
 FIREFOX_BROWSE_REBOOT_AFTER_SECONDS = 1050
 MAX_BAIDU_HOME_GATE_SECONDS = 650
 HOST_CLOCK_MAX_SKEW_SECONDS = 5
+MIN_HOST_CLOCK_UNIX_SECONDS = 1704067200
+MAX_HOST_CLOCK_UNIX_SECONDS = 4133980799
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -179,6 +181,7 @@ class FirefoxBrowseResult:
             or not isinstance(self.recovered, bool)
             or self.physical_boots not in (0, 1)
             or not self.reason
+            or not isinstance(self.proxy_bridge, Mapping)
             or any(_SHA256.fullmatch(value) is None for value in digests)
             or not math.isfinite(self.total_seconds)
             or self.total_seconds < 0
@@ -191,6 +194,7 @@ class FirefoxBrowseResult:
             or self.readiness is None
             or self.clock_evidence is None
             or self.page_marker is None
+            or self.proxy_bridge.get("ready") is not True
             or not self.transport
         ):
             raise HostGateError("passing Firefox browse result is incomplete")
@@ -210,9 +214,7 @@ class FirefoxBrowseOperations(Protocol):
     def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]: ...
     def boot(self, plan: Any, bootargs: str, timeout: float) -> None: ...
     def prove_boot_readiness(self, timeout: float) -> BootReadinessEvidence: ...
-    def synchronize_clock(
-        self, browser_pid: int, timeout: float
-    ) -> dict[str, object]: ...
+    def synchronize_clock(self, timeout: float) -> dict[str, object]: ...
     def run_baidu_home(
         self, browser_pid: int, nonce: str, timeout: float
     ) -> dict[str, object]: ...
@@ -317,9 +319,7 @@ def run_firefox_browse(
                 raise HostGateError("Firefox browse attempted a non-MMC transport")
             operations.boot(plan, bootargs, config.boot_timeout)
             readiness = operations.prove_boot_readiness(config.readiness_timeout)
-            clock_evidence = operations.synchronize_clock(
-                readiness.browser_pid, config.clock_timeout
-            )
+            clock_evidence = operations.synchronize_clock(config.clock_timeout)
             if clock_evidence.get("marker") != "ASTERINAS_CLOCK_SYNC_READY":
                 raise HostGateError("guest clock synchronization evidence is invalid")
             page_marker = operations.run_baidu_home(
@@ -631,10 +631,22 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         serial = self._require_serial()
         return bytes(serial.transcript[start:])
 
-    def synchronize_clock(self, browser_pid: int, timeout: float) -> dict[str, object]:
-        del browser_pid
+    def synchronize_clock(self, timeout: float) -> dict[str, object]:
+        host_time = time.time()
+        if (
+            isinstance(host_time, bool)
+            or not isinstance(host_time, (int, float))
+            or not math.isfinite(host_time)
+        ):
+            raise HostGateError("host clock is outside the browser TLS contract")
+        requested_unix_seconds = int(host_time)
+        if not (
+            MIN_HOST_CLOCK_UNIX_SECONDS
+            <= requested_unix_seconds
+            <= MAX_HOST_CLOCK_UNIX_SECONDS
+        ):
+            raise HostGateError("host clock is outside the browser TLS contract")
         serial = self._require_serial()
-        requested_unix_seconds = int(time.time())
         command = (
             f"_r={requested_unix_seconds}; "
             "/usr/bin/date --utc --set @$_r >/dev/null; "
