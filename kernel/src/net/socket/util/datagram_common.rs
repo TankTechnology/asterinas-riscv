@@ -24,6 +24,7 @@ pub trait Unbound {
         &mut self,
         remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
+        options: Self::BindOptions,
     ) -> Result<Self::Bound>;
 
     fn check_io_events(&self) -> IoEvents;
@@ -87,13 +88,14 @@ where
         &mut self,
         remote_endpoint: &UnboundSocket::Endpoint,
         pollee: &Pollee,
+        options: UnboundSocket::BindOptions,
     ) -> Result<()> {
         let unbound_datagram = match self {
             Inner::Unbound(unbound_datagram) => unbound_datagram,
             Inner::Bound(_) => return Ok(()),
         };
 
-        let bound_datagram = unbound_datagram.bind_ephemeral(remote_endpoint, pollee)?;
+        let bound_datagram = unbound_datagram.bind_ephemeral(remote_endpoint, pollee, options)?;
         *self = Inner::Bound(bound_datagram);
 
         Ok(())
@@ -103,8 +105,9 @@ where
         &mut self,
         remote_endpoint: &UnboundSocket::Endpoint,
         pollee: &Pollee,
+        options: UnboundSocket::BindOptions,
     ) -> Result<()> {
-        self.bind_ephemeral(remote_endpoint, pollee)?;
+        self.bind_ephemeral(remote_endpoint, pollee, options)?;
 
         let bound_datagram = match self {
             Inner::Unbound(_) => {

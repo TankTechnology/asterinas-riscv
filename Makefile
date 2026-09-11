@@ -145,6 +145,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_dual_stack_udp_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_udp)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
@@ -1050,6 +1053,10 @@ else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-dual-stack"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-dual-stack-udp"
 else ifeq ($(AUTO_TEST), ipv6_udp)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

@@ -39,6 +39,7 @@ sleep 0.2
 ./unix_scm_rights_acyclic
 ./unix_stream_err
 ./ipv6_udp
+./ipv6_dual_stack_udp
 ./udp_user_buffer_prefault
 
 ./netlink_route
