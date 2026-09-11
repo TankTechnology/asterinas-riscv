@@ -16,6 +16,7 @@ SUCCESS_MARKERS = {
     "conformance": "All conformance tests passed.",
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
+    "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
     "vsock": "Vsock test passed.",
 }
 MULTI_FACT_MARKERS = {
