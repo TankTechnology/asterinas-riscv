@@ -105,9 +105,14 @@ impl DatagramSocket {
                         "the destination address is not specified",
                     )
                 })?;
-                self.inner
-                    .write()
-                    .bind_ephemeral(remote_endpoint, &self.pollee)
+                self.inner.write().bind_ephemeral(
+                    remote_endpoint,
+                    &self.pollee,
+                    BindOptions {
+                        can_reuse: false,
+                        v6only: self.options.read().ipv6.v6only(),
+                    },
+                )
             },
             |bound_datagram, remote_endpoint| {
                 let sent_bytes = bound_datagram.try_send(reader, remote_endpoint, flags, ())?;
@@ -149,9 +154,14 @@ impl Socket for DatagramSocket {
         let endpoint = socket_addr.try_into()?;
         let can_reuse = self.options.read().socket.reuse_addr();
 
-        self.inner
-            .write()
-            .bind(&endpoint, &self.pollee, BindOptions { can_reuse })
+        self.inner.write().bind(
+            &endpoint,
+            &self.pollee,
+            BindOptions {
+                can_reuse,
+                v6only: self.options.read().ipv6.v6only(),
+            },
+        )
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
@@ -164,7 +174,14 @@ impl Socket for DatagramSocket {
             );
         }
 
-        self.inner.write().connect(&endpoint, &self.pollee)
+        self.inner.write().connect(
+            &endpoint,
+            &self.pollee,
+            BindOptions {
+                can_reuse: false,
+                v6only: self.options.read().ipv6.v6only(),
+            },
+        )
     }
 
     fn addr(&self) -> Result<SocketAddr> {

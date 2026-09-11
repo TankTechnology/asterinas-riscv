@@ -3,11 +3,17 @@
 //! This module defines the socket table, which manages all TCP and UDP sockets,
 //! for efficiently inserting, looking up, and removing sockets.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::btree_map::BTreeMap,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::net::Ipv4Addr;
 
+use aster_softirq::BottomHalfDisabled;
 use jhash::{jhash_1vals, jhash_3vals, jhash_u32_array};
-use ostd::const_assert;
+use ostd::{const_assert, sync::SpinLock};
 use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 
 use crate::{
@@ -17,6 +23,102 @@ use crate::{
 };
 
 pub type SocketHash = u32;
+
+/// UDP socket registry shared by all interfaces in one network environment.
+///
+/// Socket ownership and egress scheduling remain local to an interface. The
+/// registry only provides weak-reference lookup for wildcard sockets when a
+/// packet arrives through another interface.
+pub struct UdpSocketRegistry<E: Ext> {
+    state: SpinLock<UdpSocketRegistryState<E>, BottomHalfDisabled>,
+}
+
+struct UdpSocketRegistryState<E: Ext> {
+    dual_ports: Vec<PortNum>,
+    sockets: BTreeMap<PortNum, Vec<Weak<UdpSocketBg<E>>>>,
+}
+
+impl<E: Ext> UdpSocketRegistry<E> {
+    pub fn new() -> Self {
+        Self {
+            state: SpinLock::new(UdpSocketRegistryState {
+                dual_ports: Vec::new(),
+                sockets: BTreeMap::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn register_socket(&self, socket: &Arc<UdpSocketBg<E>>) {
+        self.state
+            .lock()
+            .sockets
+            .entry(socket.local_port())
+            .or_default()
+            .push(Arc::downgrade(socket));
+    }
+
+    pub(crate) fn unregister_socket(&self, socket: &Arc<UdpSocketBg<E>>) {
+        let port = socket.local_port();
+        let mut state = self.state.lock();
+        let Some(entries) = state.sockets.get_mut(&port) else {
+            return;
+        };
+        entries.retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|existing| !Arc::ptr_eq(&existing, socket))
+        });
+        if entries.is_empty() {
+            state.sockets.remove(&port);
+        }
+    }
+
+    pub(crate) fn sockets_for_port(&self, port: PortNum) -> Vec<Arc<UdpSocketBg<E>>> {
+        let mut state = self.state.lock();
+        let mut sockets = Vec::new();
+        let mut remove_port = false;
+        if let Some(entries) = state.sockets.get_mut(&port) {
+            entries.retain(|entry| {
+                let Some(socket) = entry.upgrade() else {
+                    return false;
+                };
+                sockets.push(socket);
+                true
+            });
+            remove_port = entries.is_empty();
+        }
+        if remove_port {
+            state.sockets.remove(&port);
+        }
+        sockets
+    }
+
+    pub(crate) fn register_dual_port(&self, port: PortNum) -> bool {
+        let mut state = self.state.lock();
+        if state.dual_ports.contains(&port) {
+            return false;
+        }
+        state.dual_ports.push(port);
+        true
+    }
+
+    pub(crate) fn unregister_dual_port(&self, port: PortNum) {
+        let mut state = self.state.lock();
+        if let Some(index) = state.dual_ports.iter().position(|value| *value == port) {
+            state.dual_ports.swap_remove(index);
+        }
+    }
+
+    pub(crate) fn has_dual_port(&self, port: PortNum) -> bool {
+        self.state.lock().dual_ports.contains(&port)
+    }
+}
+
+impl<E: Ext> Default for UdpSocketRegistry<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A unique key for identifying a `TcpListener`.
 ///

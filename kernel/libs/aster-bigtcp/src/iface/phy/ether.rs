@@ -41,6 +41,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
         name: InterfaceName,
         sched_poll: E::ScheduleNextPoll,
         flags: InterfaceFlags,
+        udp_registry: Arc<crate::socket_table::UdpSocketRegistry<E>>,
     ) -> Arc<Self> {
         let interface = driver.with(|device| {
             let config = Config::new(wire::HardwareAddress::Ethernet(ether_addr));
@@ -58,7 +59,14 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             interface
         });
 
-        let common = IfaceCommon::new(name, InterfaceType::ETHER, flags, interface, sched_poll);
+        let common = IfaceCommon::new(
+            name,
+            InterfaceType::ETHER,
+            flags,
+            interface,
+            sched_poll,
+            udp_registry,
+        );
 
         Arc::new(Self {
             driver,
