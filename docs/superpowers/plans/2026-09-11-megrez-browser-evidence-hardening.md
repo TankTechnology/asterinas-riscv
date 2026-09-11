@@ -125,3 +125,33 @@ deadline with three explicit bounded budgets: page/DOM execution, guest
 framebuffer and wrapper finalization, and host serial ACK drain.  All three must
 remain below the kernel-owned 1050-second recovery timer; simply retrying or
 unboundedly increasing the page timeout is not acceptable.
+
+### Task 4: Split the physical page deadline into three bounded stages
+
+**Files:**
+
+- Modify: `tools/riscv/tests/test_megrez_firefox_browse.py`
+- Modify: `tools/riscv/megrez_firefox_browse.py`
+
+- [ ] Add a failing orchestration test requiring `run_firefox_browse` to pass
+  `page_timeout=650`, `finalize_timeout=120`, and `ack_timeout=60` as separate
+  `run_baidu_home` arguments.
+- [ ] Run the focused Firefox test and verify it fails because the production
+  protocol still exposes one `browse_timeout`.
+- [ ] Add a failing real-command test requiring `--timeout 650`, outer
+  `/usr/bin/timeout 770`, and a host `_run_long_step` timeout of 830 seconds.
+- [ ] Run the focused real-command test and verify it fails because the outer
+  guest and host deadlines still have only ten seconds of headroom.
+- [ ] Update `FirefoxBrowseConfig`, `FirefoxBrowseOperations`, and the fake
+  operation to use the three named budgets without changing the evidence
+  retrieval or recovery interfaces.
+- [ ] Implement the minimal command arithmetic, retain status 124 as failure,
+  and keep the wrapper-expanded command at no more than 768 bytes.
+- [ ] Run the focused Firefox tests, then all selected 425-test modules in the
+  persistent development container with `ResourceWarning` promoted to an
+  error.  Also run Python bytecode compilation, generated-command `bash -n`,
+  Stage-1 `bash -n`, and `git diff --check`.
+- [ ] Commit the deadline split, then run exactly one unattended physical
+  Firefox transaction using the existing attested MMC artifacts.  Require the
+  strict URL/TLS/DOM/framebuffer hashes, latched proxy readiness, one boot, zero
+  Firefox restarts, and automatic recovery to U-Boot before publishing.
