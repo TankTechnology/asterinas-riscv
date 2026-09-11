@@ -110,6 +110,8 @@ impl_socket_options!(
     pub struct Ttl(IpTtl);
     pub struct Hdrincl(bool);
     pub struct Recverr(bool);
+    /// Whether an IPv6 socket accepts only IPv6 traffic.
+    pub struct V6Only(bool);
 );
 
 #[derive(Clone, Copy, Debug)]
@@ -131,4 +133,41 @@ impl IpTtl {
 
 pub(super) trait SetIpLevelOption {
     fn set_hdrincl(&self, _hdrincl: bool) -> Result<()>;
+}
+
+/// IPv6-level socket options.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Ipv6OptionSet {
+    v6only: bool,
+}
+
+impl Ipv6OptionSet {
+    pub(super) const fn new() -> Self {
+        // Linux enables IPv4-mapped IPv6 addresses by default.
+        Self { v6only: false }
+    }
+
+    pub(super) const fn v6only(&self) -> bool {
+        self.v6only
+    }
+
+    pub(super) fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
+        sock_option_mut!(match option {
+            v6only @ V6Only => {
+                v6only.set(self.v6only);
+            }
+            _ => return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option is unknown"),
+        });
+        Ok(())
+    }
+
+    pub(super) fn set_option(&mut self, option: &dyn SocketOption) -> Result<()> {
+        sock_option_ref!(match option {
+            v6only @ V6Only => {
+                self.v6only = *v6only.get().unwrap();
+            }
+            _ => return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option is unknown"),
+        });
+        Ok(())
+    }
 }

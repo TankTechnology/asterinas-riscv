@@ -7,6 +7,7 @@ ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
 CONFORMANCE_TEST_WORKDIR ?= /tmp
 ENABLE_REGRESSION_TEST ?= false
+REGRESSION_TEST_DIRS ?= null
 # Specify platform macros when building regression tests (supported: asterinas, linux).
 # - asterinas: Define both `__asterinas__` and `__linux__`. Tests may fail in Linux.
 # - linux: Define only `__linux__`. Tests may fail in Asterinas.
@@ -76,6 +77,7 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
@@ -93,6 +95,7 @@ $(INITRAMFS):
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \

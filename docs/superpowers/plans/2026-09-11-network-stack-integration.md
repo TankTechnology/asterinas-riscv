@@ -171,7 +171,7 @@ git commit -m "test(net): add bounded dual-stack QEMU gate" -m "Adapted from sou
 - Modify: `Makefile`
 - Add: `test/initramfs/src/regression/scripts/run_ipv6_udp_test.sh`
 
-- [ ] **Step 1: Add the native IPv6 regression first**
+- [x] **Step 1: Add the native IPv6 regression first**
 
 Adapt `ipv6_udp.c` from `3ef0ef594`, with these assertions tightened for the approved contract:
 
@@ -193,7 +193,7 @@ Then bind receiver and sender to `::1`, send one datagram, verify payload and IP
 
 Add `"ipv6-udp": "ipv6_udp: PASS"` to `SUCCESS_MARKERS`, cover acceptance/missing/duplicate/fatal-after behavior in the validator unit tests, and add `AUTO_TEST=ipv6_udp` using `/test/run_ipv6_udp_test.sh` plus full-transcript validation mode `ipv6-udp`.
 
-- [ ] **Step 2: Run the bounded gate and record the expected API failure**
+- [x] **Step 2: Run the bounded gate and record the expected API failure**
 
 Run:
 
@@ -204,15 +204,15 @@ tools/docker/run_dev_container.sh -- bash -lc 'ASTERINAS_QEMU_LOG_DIR="$PWD/targ
 
 Expected: the guest fails before `ipv6_udp: PASS` because AF_INET6/SOCK_DGRAM or `IPV6_V6ONLY` is unsupported. Preserve `qemu.log` as the red-test evidence.
 
-- [ ] **Step 3: Wire the raw IPv6 option**
+- [x] **Step 3: Wire the raw IPv6 option**
 
 Add `V6Only(bool)` in `kernel/src/util/net/options/ipv6.rs`. Dispatch level `SOL_IPV6` in the raw option layer and return `ENOPROTOOPT` for unknown IPv6 options. Add `IpV6OptionSet { v6only: bool }` to UDP and TCP option sets, defaulting `v6only` to `false`, and route get/set operations through it.
 
-- [ ] **Step 4: Carry the address family in both socket types**
+- [x] **Step 4: Carry the address family in both socket types**
 
 Make `DatagramSocket::new` take `IpAddressFamily`, store it, and construct AF_INET6 UDP sockets in `sys_socket`. Store `IpAddressFamily` directly in `StreamSocket` as well so accepted sockets inherit the listener family rather than reconstructing it from an endpoint. Reject native address-family mismatches with `EAFNOSUPPORT`; when `v6only` is true, reject mapped IPv4 endpoints before bind/connect/send.
 
-- [ ] **Step 5: Run native IPv6 on x86-64 and RISC-V**
+- [x] **Step 5: Run native IPv6 on x86-64 and RISC-V**
 
 Run the dedicated native-IPv6 gate and both architecture builds:
 
@@ -226,7 +226,7 @@ git diff --check
 
 Expected: both gates exit zero, each transcript contains `ipv6_udp: PASS` exactly once with no fatal signature, and both kernels build.
 
-- [ ] **Step 6: Commit the API slice**
+- [x] **Step 6: Commit the API slice**
 
 ```bash
 git add Makefile tools/riscv/validate_run_kernel_log.py tools/riscv/tests/test_validate_run_kernel_log.py kernel/src/syscall/socket.rs kernel/src/net/socket/ip/datagram/mod.rs kernel/src/net/socket/ip/stream/mod.rs kernel/src/net/socket/ip/options.rs kernel/src/util/net/options/ipv6.rs kernel/src/util/net/options/mod.rs test/initramfs/src/regression/network/ipv6_udp.c test/initramfs/src/regression/network/run_test.sh test/initramfs/src/regression/scripts/run_ipv6_udp_test.sh

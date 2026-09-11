@@ -19,6 +19,83 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_accepts_native_ipv6_udp_transcript(self) -> None:
+        try:
+            validate_transcript("ipv6_udp: PASS\n", mode="ipv6-udp")
+        except KeyError:
+            self.fail("ipv6-udp validation mode is not implemented")
+
+    def test_rejects_invalid_native_ipv6_udp_transcript(self) -> None:
+        for transcript in (
+            "boot output\n",
+            "ipv6_udp: PASS\nipv6_udp: PASS\n",
+            "ipv6_udp: PASS\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                try:
+                    validate_transcript(transcript, mode="ipv6-udp")
+                except ValidationError:
+                    continue
+                except KeyError:
+                    self.fail("ipv6-udp validation mode is not implemented")
+                self.fail("invalid native IPv6 UDP transcript was accepted")
+
+    def test_native_ipv6_udp_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ipv6_udp_test.sh"
+        )
+
+        self.assertIn("else ifeq ($(AUTO_TEST), ipv6_udp)", makefile)
+        self.assertIn('/test/run_ipv6_udp_test.sh', makefile)
+        self.assertIn('--mode "ipv6-udp"', makefile)
+        self.assertEqual(
+            tuple(
+                line.strip()
+                for line in runner_path.read_text().splitlines()
+                if line.strip().startswith("/test/")
+            ),
+            ("/test/network/ipv6_udp",),
+        )
+
+    def test_focused_network_gates_build_only_network_regressions(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        initramfs_makefile = (
+            REPOSITORY_ROOT / "test/initramfs/Makefile"
+        ).read_text()
+        nix_default = (
+            REPOSITORY_ROOT / "test/initramfs/nix/default.nix"
+        ).read_text()
+        nix_regression = (
+            REPOSITORY_ROOT / "test/initramfs/nix/regression/default.nix"
+        ).read_text()
+
+        self.assertTrue(
+            "FOCUSED_NETWORK_AUTO_TESTS" in makefile,
+            "top-level focused network test set is missing",
+        )
+        self.assertTrue(
+            'REGRESSION_TEST_DIRS := [ "network" ]' in makefile,
+            "focused gates do not select only the network regression package",
+        )
+        self.assertTrue(
+            "--arg regressionTestDirs" in initramfs_makefile,
+            "initramfs Makefile does not forward the package selection",
+        )
+        self.assertTrue(
+            "regressionTestDirs ? null" in nix_default,
+            "initramfs Nix entry point does not accept the package selection",
+        )
+        self.assertTrue(
+            "testDirs = regressionTestDirs" in nix_default,
+            "initramfs Nix entry point does not forward the package selection",
+        )
+        self.assertTrue(
+            "selectedNames" in nix_regression,
+            "regression package does not select named subpackages",
+        )
+
     def test_accepts_complete_ipv6_dual_stack_transcript(self) -> None:
         try:
             validate_transcript(
