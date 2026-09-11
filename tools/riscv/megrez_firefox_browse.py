@@ -650,16 +650,20 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             raise HostGateError("host clock is outside the browser TLS contract")
         serial = self._require_serial()
         command = (
-            f"_r={requested_unix_seconds}; "
-            "/usr/bin/date --utc --set @$_r >/dev/null; "
-            "_g=$(/usr/bin/date --utc +%s); "
-            'case "$_g" in ""|*[!0-9]*) exit 1;; esac; '
-            f'[ "$_g" -ge "$_r" ] && [ "$_g" -le "$((_r + '
-            f'{HOST_CLOCK_MAX_SKEW_SECONDS}))" ] || exit 1; '
-            "printf '{\"guest_unix_seconds\":%s,"
+            f"_r={requested_unix_seconds}; _c=0; "
+            "/usr/bin/date --utc --set @$_r >/dev/null || _c=$?; "
+            "_g=$(/usr/bin/date --utc +%s) || _c=$?; "
+            'case "$_g" in ""|*[!0-9]*) _v=invalid; _c=1;; '
+            f'*) _v=$_g; [ "$_g" -ge "$_r" ] && [ "$_g" -le "$((_r + '
+            f'{HOST_CLOCK_MAX_SKEW_SECONDS}))" ] || _c=1;; esac; '
+            'if [ "$_c" -eq 0 ]; then printf '
+            "'{\"guest_unix_seconds\":%s,"
             "\"host_unix_seconds\":%s,"
             "\"marker\":\"ASTERINAS_CLOCK_SYNC_READY\","
-            "\"source\":\"host-serial\"}\\n' \"$_g\" \"$_r\""
+            "\"source\":\"host-serial\"}\\n' \"$_g\" \"$_r\"; "
+            "else printf 'ASTERINAS_CLOCK_SYNC_FAILED requested=%s "
+            "observed=%s status=%s\\n' \"$_r\" \"$_v\" \"$_c\" >&2; "
+            '(exit "$_c"); fi'
         )
         start = serial.checkpoint()
         self._run_long_step(command, "clock", secrets.token_hex(8), timeout)
