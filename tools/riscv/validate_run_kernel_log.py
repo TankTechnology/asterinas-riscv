@@ -14,6 +14,7 @@ from pathlib import Path
 SUCCESS_MARKERS = {
     "boot": "Successfully booted.",
     "conformance": "All conformance tests passed.",
+    "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
     "vsock": "Vsock test passed.",
 }

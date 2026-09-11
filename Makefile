@@ -66,7 +66,17 @@ XFSTESTS_TEST_DEV ?= /dev/vdd
 XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
+REGRESSION_TEST_DIRS ?= null
 # End of auto test features.
+
+FOCUSED_NETWORK_AUTO_TESTS := \
+	ipv6_dual_stack \
+	ipv6_dual_stack_udp \
+	ipv6_udp \
+	udp_user_buffer_prefault
+ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
+REGRESSION_TEST_DIRS := [ "network" ]
+endif
 
 # Network settings
 # NETDEV possible values are user,tap
@@ -135,6 +145,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
@@ -1034,6 +1047,10 @@ else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-dual-stack"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-udp"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Dynamic clock regression passed." \
