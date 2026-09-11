@@ -8,9 +8,9 @@ socket(
     protocol = 0
 );
 
-// Create an IPv4 socket (TCP or UDP)
+// Create an IPv4 or IPv6 socket (TCP or UDP)
 socket(
-    family = AF_INET,
+    family = AF_INET | AF_INET6,
     type = SOCK_STREAM | SOCK_DGRAM | <opt_type_flags>,
     protocol = IPPROTO_IP | IPPROTO_TCP | IPPROTO_UDP
 );
