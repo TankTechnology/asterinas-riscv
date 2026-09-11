@@ -48,6 +48,8 @@ MAX_BAIDU_HOME_GATE_SECONDS = 650
 HOST_CLOCK_MAX_SKEW_SECONDS = 5
 MIN_HOST_CLOCK_UNIX_SECONDS = 1704067200
 MAX_HOST_CLOCK_UNIX_SECONDS = 4133980799
+MAX_GATE_DIAGNOSTIC_LINES = 64
+MAX_GATE_TRANSPORT_LINES = 8
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -687,7 +689,8 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         serial = self._require_serial()
         start = serial.checkpoint()
         command = (
-            f"install -d -m 0700 {directory}; /usr/bin/timeout {guest_timeout + 10} "
+            f"d={directory}; install -d -m 0700 $d; l=$d/g.log; "
+            f"/usr/bin/timeout {guest_timeout + 10} "
             f"/usr/bin/nsenter -t {browser_pid} -n /usr/bin/env -i "
             "PATH=/usr/bin:/bin HOME=/home/asterinas PYTHONPATH=/usr/lib/asterinas "
             "ASTERINAS_MARIONETTE_DIAGNOSTICS=1 "
@@ -695,17 +698,21 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             "/run/asterinas-tools/browser-web-marionette-gate --scope baidu-home "
             "--screenshot-backend framebuffer "
             f"--firefox-pid {browser_pid} --timeout {guest_timeout} "
-            f"--evidence-dir {directory}"
+            "--evidence-dir $d 2>$l; q=$?; "
+            "printf 'A_WEB_CONNECT_RETRIES count=%s\\n' "
+            '"$(/usr/bin/grep -c \'phase=tcp-connect state=exception\' $l)" '
+            ">&2; /usr/bin/grep -E "
+            "'^A_WEB_(TIMELINE|JS_PING|PROBE_|PHASE)' $l | "
+            "/usr/bin/grep -v 'phase=tcp-connect' | "
+            f"/usr/bin/tail -n {MAX_GATE_DIAGNOSTIC_LINES} >&2; "
+            "/usr/bin/grep '^A_WEB_MARIONETTE_TRANSPORT' $l | "
+            f"/usr/bin/tail -n {MAX_GATE_TRANSPORT_LINES} >&2; "
+            '(exit "$q")'
         )
-        # As above, a timeout is accepted only if the gate printed its unique
-        # marker after TLS/DOM/screenshot validation completed.
-        self._run_long_step(
-            command,
-            "baidu-home",
-            nonce,
-            timeout,
-            accepted_statuses=("0", "124"),
-        )
+        # A guest timeout cannot carry the TLS/DOM/screenshot success marker,
+        # so preserve status 124 as the direct failure instead of waiting for
+        # evidence that the terminated gate cannot produce.
+        self._run_long_step(command, "baidu-home", nonce, timeout)
         return _single_json_marker(
             self._step_payload(start), "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY"
         )

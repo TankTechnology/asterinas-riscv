@@ -390,9 +390,9 @@ class FirefoxBrowseTests(unittest.TestCase):
             "accepted_statuses",
             operations._run_long_step.call_args_list[0].kwargs,
         )
-        self.assertEqual(
-            operations._run_long_step.call_args_list[1].kwargs["accepted_statuses"],
-            ("0", "124"),
+        self.assertNotIn(
+            "accepted_statuses",
+            operations._run_long_step.call_args_list[1].kwargs,
         )
         self.assertIn("date --utc --set @$_r", clock_command)
         self.assertIn('"source":"host-serial"', clock_command)
@@ -417,6 +417,42 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertNotIn(
             "/proc/net/tcp", inspect.getsource(browse.RealFirefoxBrowseOperations)
         )
+
+    def test_baidu_gate_buffers_retry_noise_and_replays_a_bounded_summary(self) -> None:
+        operations = object.__new__(browse.RealFirefoxBrowseOperations)
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 10
+        operations._require_serial = mock.Mock(return_value=serial)
+        operations._run_long_step = mock.Mock()
+        operations._step_payload = mock.Mock(
+            return_value=(
+                b'{"marker":"DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",'
+                b'"scope":"baidu-home"}\n'
+            )
+        )
+
+        operations.run_baidu_home(
+            116,
+            "0123456789abcdef",
+            browse.FirefoxBrowseConfig().browse_timeout,
+        )
+
+        command = operations._run_long_step.call_args.args[0]
+        self.assertEqual(
+            getattr(browse, "MAX_GATE_DIAGNOSTIC_LINES", None),
+            64,
+        )
+        self.assertIn("l=$d/g.log", command)
+        self.assertIn("2>$l", command)
+        self.assertIn("A_WEB_CONNECT_RETRIES count=%s", command)
+        self.assertIn(
+            "/usr/bin/grep -c 'phase=tcp-connect state=exception' $l",
+            command,
+        )
+        self.assertIn("/usr/bin/grep -v 'phase=tcp-connect'", command)
+        self.assertIn("/usr/bin/tail -n 64", command)
+        self.assertTrue(command.endswith('(exit "$q")'))
+        self.assertLess(len((command + "\n").encode()), 768)
 
     def test_clock_sync_rejects_guest_time_outside_the_serial_attestation(self) -> None:
         operations = object.__new__(browse.RealFirefoxBrowseOperations)
