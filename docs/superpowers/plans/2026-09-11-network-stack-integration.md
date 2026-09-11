@@ -416,7 +416,7 @@ git commit -m "feat(net): support IPv4-mapped TCP listeners" -m "Adapted from so
 
 **Files:** all files changed by Tasks 1-5.
 
-- [ ] **Step 1: Check the source boundary**
+- [x] **Step 1: Check the source boundary**
 
 Run:
 
@@ -427,7 +427,7 @@ git diff --stat origin/main...HEAD
 
 Expected: only the design/plan, socket/network implementation, bounded test infrastructure, and selected guest regressions appear. No frozen rootfs/browser fixture, DWMAC, block/MMC, or deployment file appears.
 
-- [ ] **Step 2: Run formatting and compile checks without broad mechanical rewrites**
+- [x] **Step 2: Run formatting and compile checks without broad mechanical rewrites**
 
 Run checks first:
 
@@ -442,17 +442,24 @@ git diff --check
 
 If formatting fails, run the repository formatter only on the changed Rust/C files, inspect its diff, and rerun the checks. Do not accept unrelated formatting churn.
 
-- [ ] **Step 3: Re-run every focused automated gate from clean log directories**
+- [x] **Step 3: Re-run every focused automated gate from clean log directories**
 
 Remove only the task-specific QEMU log directories under `target/network-stack-integration`, recreate them, then run both architecture commands for native IPv6, UDP prefault, mapped UDP, and the complete dual-stack gate from Tasks 2-5. Never remove Cargo/Rustup/Nix/Docker caches.
 
 Expected: all eight commands exit zero; each transcript satisfies its exact marker contract.
 
-- [ ] **Step 4: Run the broader network regression where bounded**
+- [x] **Step 4: Run the broader network regression where bounded**
 
 Run x86-64 network/regression coverage through the existing project target. On RISC-V, retain the bounded dual-stack gate if the unrelated full regression is known to block on the existing SCM-rights limitation; do not weaken or skip any dual-stack assertion to make it pass.
 
-- [ ] **Step 5: Commit any test-only correction**
+Execution notes (2026-09-11):
+
+- The source boundary contains 38 intended design, plan, socket/network, and regression files. It contains no frozen graphics/rootfs fixture, DWMAC, MMC/block, or deployment path.
+- Rust/C formatting, `git diff --check`, x86-64 and RISC-V kernel builds, the OSDK `aster-bigtcp` clippy gate with `--no-deps -D warnings`, all eight focused QEMU gates, and all 20 transcript-validator tests passed. Plain host `cargo clippy` is not a valid substitute because OSTD requires the OSDK target environment.
+- The broad x86-64 network run exposed a current-main prefault regression: eager whole-iovec validation discarded valid-prefix TCP progress. The scoped correction now defers faults beyond a validated prefix for stream/receive I/O while preserving datagram-send atomicity. Its focused gate passes on x86-64 and RISC-V.
+- After that correction, the broad x86-64 run passed the IP socket coverage through the pre-existing Unix `SCM_RIGHTS` security-policy boundary. That policy was not weakened; RISC-V remains covered by the bounded network gates.
+
+- [x] **Step 5: Commit any test-only correction**
 
 If Step 1-4 required a scoped correction, stage only those files and commit it with a message describing the actual correction. If the tree is unchanged, do not create an empty commit.
 
@@ -460,7 +467,7 @@ If Step 1-4 required a scoped correction, stage only those files and commit it w
 
 **Files:** no source modifications expected.
 
-- [ ] **Step 1: Satisfy the known local fixture precondition**
+- [x] **Step 1: Satisfy the known local fixture precondition**
 
 ```bash
 mkdir -p target/current-main-physical-graphics/physical
@@ -468,7 +475,7 @@ mkdir -p target/current-main-physical-graphics/physical
 
 This directory is ignored and disposable. Do not change tests to hide the precondition during the network integration.
 
-- [ ] **Step 2: Run the exact 427-test baseline matrix**
+- [x] **Step 2: Run the exact 427-test baseline matrix**
 
 ```bash
 tools/docker/run_dev_container.sh -- python3 -W error::ResourceWarning -m unittest \
@@ -484,13 +491,20 @@ tools/docker/run_dev_container.sh -- python3 -W error::ResourceWarning -m unitte
 
 Expected: `Ran 427 tests` and `OK`, with ResourceWarning promoted to an error.
 
-- [ ] **Step 3: Perform a normal code review**
+- [x] **Step 3: Perform a normal code review**
 
 Review `git diff origin/main...HEAD` directly against the repository's maintainability, development, security, hardware, and documentation guidelines. Verify lock ordering, weak-reference cleanup, namespace isolation, port release on every error/drop path, endpoint-family checks, and absence of `unsafe` in `kernel/`. Do not invoke the retired `aster-code-review` skill and do not generate its report artifact.
 
-- [ ] **Step 4: Fix findings with regression coverage**
+- [x] **Step 4: Fix findings with regression coverage**
 
 For each real defect, first add or tighten the smallest failing unit/guest test, then apply the fix, rerun the affected focused gate, and commit the fix separately. If there are no findings, leave the branch unchanged.
+
+Execution notes (2026-09-11):
+
+- The exact frozen desktop/browser matrix passed all 427 tests with `ResourceWarning` promoted to an error.
+- Direct review against all five repository guideline indexes found and corrected three defects: partial `sendmsg` progress was limited to IP streams instead of all stream transports; `IPV6_V6ONLY` could be changed after bind even though the bound data path retained the old policy; and cross-interface IPv4/dual-stack port ownership was one-directional and registered too late. The review also replaced a listener strong-count assumption with explicit close state so a registry lookup racing with close cannot accept a new SYN.
+- The port correction is atomic at bind time and released by `BoundPort` RAII. Reverse-order TCP/UDP guest regressions and registry kernel tests cover both ownership directions and multiple IPv4 owners.
+- The corrected complete dual-stack and partial-iovec gates pass on x86-64 and RISC-V. The final diff adds no `unsafe` under `kernel/` and changes no graphics fixture, root image, DWMAC, MMC/block, or deployment path.
 
 ## Task 8: Qualify the New Kernel on Megrez Without MMC Redeployment
 
