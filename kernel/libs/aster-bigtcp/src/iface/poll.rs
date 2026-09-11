@@ -10,8 +10,8 @@ use smoltcp::{
     phy::{ChecksumCapabilities, Device, RxToken, TxToken},
     wire::{
         IPV4_HEADER_LEN, IPV4_MIN_MTU, Icmpv4DstUnreachable, Icmpv4Repr, IpAddress, IpProtocol,
-        IpRepr, Ipv4Address, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr, TcpControl, TcpPacket,
-        TcpRepr, UdpPacket, UdpRepr,
+        IpRepr, Ipv4Address, Ipv4Packet, Ipv4Repr, Ipv6Address, Ipv6Packet, Ipv6Repr, TcpControl,
+        TcpPacket, TcpRepr, UdpPacket, UdpRepr,
     },
 };
 
@@ -26,7 +26,7 @@ use super::{
 use crate::{
     ext::Ext,
     socket::{TcpConnectionBg, TcpProcessResult},
-    socket_table::{ConnectionKey, ListenerKey, SocketTable},
+    socket_table::{ConnectionKey, ListenerKey, SocketTable, UdpSocketRegistry},
 };
 
 static TCP_SYN_ACK_TRACE: SynAckTrace = SynAckTrace::new();
@@ -37,9 +37,61 @@ fn record_syn_ack_stage(stage: SynAckStage) {
     }
 }
 
+fn map_ipv4_repr(repr: &IpRepr) -> Option<IpRepr> {
+    let IpRepr::Ipv4(repr) = repr else {
+        return None;
+    };
+    Some(IpRepr::Ipv6(Ipv6Repr {
+        src_addr: repr.src_addr.to_ipv6_mapped(),
+        dst_addr: repr.dst_addr.to_ipv6_mapped(),
+        next_header: repr.next_header,
+        payload_len: repr.payload_len,
+        hop_limit: repr.hop_limit,
+    }))
+}
+
+fn mapped_ipv4(addr: Ipv6Address) -> Option<Ipv4Address> {
+    let bits = addr.to_bits();
+    (bits >> 32 == 0xffff).then(|| Ipv4Address::from_bits(bits as u32))
+}
+
+fn demap_udp_repr(repr: IpRepr, iface_ipv4_addr: Option<Ipv4Address>) -> IpRepr {
+    let IpRepr::Ipv6(repr6) = repr else {
+        return repr;
+    };
+    let Some(dst_addr) = mapped_ipv4(repr6.dst_addr) else {
+        return IpRepr::Ipv6(repr6);
+    };
+    let src_addr = mapped_ipv4(repr6.src_addr).or_else(|| {
+        // smoltcp may select an IPv6 source for an IPv4-mapped destination
+        // (for example `::1` on the loopback interface). A mapped packet must
+        // leave through the IPv4 path, so translate unspecified/loopback
+        // sources to the corresponding IPv4 source and otherwise fall back to
+        // the interface's IPv4 address.
+        if dst_addr.is_loopback()
+            && (repr6.src_addr.is_unspecified() || repr6.src_addr.is_loopback())
+        {
+            Some(Ipv4Address::new(127, 0, 0, 1))
+        } else {
+            iface_ipv4_addr
+        }
+    });
+    let Some(src_addr) = src_addr else {
+        return IpRepr::Ipv6(repr6);
+    };
+    IpRepr::Ipv4(Ipv4Repr {
+        src_addr,
+        dst_addr,
+        next_header: repr6.next_header,
+        payload_len: repr6.payload_len,
+        hop_limit: repr6.hop_limit,
+    })
+}
+
 pub(super) struct PollContext<'a, E: Ext> {
     iface: PollableIfaceMut<'a, E>,
     sockets: &'a SocketTable<E>,
+    udp_registry: &'a UdpSocketRegistry<E>,
     actions: &'a mut Vec<SocketTableAction<E>>,
 }
 
@@ -56,11 +108,13 @@ impl<'a, E: Ext> PollContext<'a, E> {
     pub(super) fn new(
         iface: PollableIfaceMut<'a, E>,
         sockets: &'a SocketTable<E>,
+        udp_registry: &'a UdpSocketRegistry<E>,
         actions: &'a mut Vec<SocketTableAction<E>>,
     ) -> Self {
         Self {
             iface,
             sockets,
+            udp_registry,
             actions,
         }
     }
@@ -334,9 +388,32 @@ impl<E: Ext> PollContext<'_, E> {
                 continue;
             }
 
-            processed |= socket.process(self.iface.context_mut(), ip_repr, udp_repr, udp_payload);
+            let mapped_ip_repr = (socket.accepts_ipv4() && matches!(ip_repr, IpRepr::Ipv4(_)))
+                .then(|| map_ipv4_repr(ip_repr).unwrap());
+            processed |= socket.process(
+                self.iface.context_mut(),
+                mapped_ip_repr.as_ref().unwrap_or(ip_repr),
+                udp_repr,
+                udp_payload,
+            );
             if processed && ip_repr.dst_addr().is_unicast() {
                 break;
+            }
+        }
+
+        if !processed {
+            for socket in self.udp_registry.sockets_for_port(udp_repr.dst_port) {
+                let mapped_ip_repr = (socket.accepts_ipv4() && matches!(ip_repr, IpRepr::Ipv4(_)))
+                    .then(|| map_ipv4_repr(ip_repr).unwrap());
+                processed |= socket.process(
+                    self.iface.context_mut(),
+                    mapped_ip_repr.as_ref().unwrap_or(ip_repr),
+                    udp_repr,
+                    udp_payload,
+                );
+                if processed && ip_repr.dst_addr().is_unicast() {
+                    break;
+                }
             }
         }
 
@@ -410,6 +487,110 @@ impl<E: Ext> PollContext<'_, E> {
     }
 }
 
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::*;
+
+    use super::*;
+
+    fn mapped_udp_repr(src_addr: Ipv6Address, dst_addr: Ipv4Address) -> IpRepr {
+        IpRepr::Ipv6(Ipv6Repr {
+            src_addr,
+            dst_addr: dst_addr.to_ipv6_mapped(),
+            next_header: IpProtocol::Udp,
+            payload_len: 0,
+            hop_limit: 64,
+        })
+    }
+
+    #[ktest]
+    fn mapped_dual_stack_udp_source_is_preserved() {
+        let src_addr = Ipv4Address::new(10, 0, 2, 15);
+        let dst_addr = Ipv4Address::new(192, 0, 2, 1);
+        let repr = demap_udp_repr(mapped_udp_repr(src_addr.to_ipv6_mapped(), dst_addr), None);
+        let IpRepr::Ipv4(repr) = repr else {
+            panic!("IPv4-mapped UDP destination must produce an IPv4 packet");
+        };
+        assert_eq!(repr.src_addr, src_addr);
+        assert_eq!(repr.dst_addr, dst_addr);
+    }
+
+    #[ktest]
+    fn unspecified_dual_stack_udp_source_uses_ipv4_loopback() {
+        let loopback = Ipv4Address::new(127, 0, 0, 1);
+        let repr = demap_udp_repr(
+            mapped_udp_repr(Ipv6Address::UNSPECIFIED, loopback),
+            Some(Ipv4Address::new(10, 0, 2, 15)),
+        );
+        let IpRepr::Ipv4(repr) = repr else {
+            panic!("IPv4-mapped UDP destination must produce an IPv4 packet");
+        };
+        assert_eq!(repr.src_addr, loopback);
+        assert_eq!(repr.dst_addr, loopback);
+    }
+
+    #[ktest]
+    fn unspecified_dual_stack_udp_source_uses_iface_address() {
+        let iface_addr = Ipv4Address::new(10, 0, 2, 15);
+        let dst_addr = Ipv4Address::new(192, 0, 2, 1);
+        let repr = demap_udp_repr(
+            mapped_udp_repr(Ipv6Address::UNSPECIFIED, dst_addr),
+            Some(iface_addr),
+        );
+        let IpRepr::Ipv4(repr) = repr else {
+            panic!("IPv4-mapped UDP destination must produce an IPv4 packet");
+        };
+        assert_eq!(repr.src_addr, iface_addr);
+        assert_eq!(repr.dst_addr, dst_addr);
+    }
+
+    #[ktest]
+    fn loopback_dual_stack_udp_source_uses_ipv4_source() {
+        let loopback = Ipv4Address::new(127, 0, 0, 1);
+        let repr = demap_udp_repr(
+            mapped_udp_repr(Ipv6Address::LOCALHOST, loopback),
+            Some(Ipv4Address::new(10, 0, 2, 15)),
+        );
+        let IpRepr::Ipv4(repr) = repr else {
+            panic!("IPv4-mapped UDP destination must produce an IPv4 packet");
+        };
+        assert_eq!(repr.src_addr, loopback);
+        assert_eq!(repr.dst_addr, loopback);
+    }
+
+    #[ktest]
+    fn loopback_dual_stack_udp_source_uses_iface_for_external_destination() {
+        let iface_addr = Ipv4Address::new(10, 0, 2, 15);
+        let dst_addr = Ipv4Address::new(192, 0, 2, 1);
+        let repr = demap_udp_repr(
+            mapped_udp_repr(Ipv6Address::LOCALHOST, dst_addr),
+            Some(iface_addr),
+        );
+        let IpRepr::Ipv4(repr) = repr else {
+            panic!("IPv4-mapped UDP destination must produce an IPv4 packet");
+        };
+        assert_eq!(repr.src_addr, iface_addr);
+        assert_eq!(repr.dst_addr, dst_addr);
+    }
+
+    #[ktest]
+    fn native_ipv6_udp_representation_is_unchanged() {
+        let repr = IpRepr::Ipv6(Ipv6Repr {
+            src_addr: Ipv6Address::LOCALHOST,
+            dst_addr: Ipv6Address::LOCALHOST,
+            next_header: IpProtocol::Udp,
+            payload_len: 0,
+            hop_limit: 64,
+        });
+        let IpRepr::Ipv6(result) = demap_udp_repr(repr, Some(Ipv4Address::new(127, 0, 0, 1)))
+        else {
+            panic!("native IPv6 UDP representation must stay IPv6");
+        };
+        assert_eq!(result.src_addr, Ipv6Address::LOCALHOST);
+        assert_eq!(result.dst_addr, Ipv6Address::LOCALHOST);
+    }
+}
+
 impl<E: Ext> PollContext<'_, E> {
     pub(super) fn poll_egress<D, Q>(&mut self, device: &mut D, dispatch_phy: &mut Q)
     where
@@ -468,7 +649,8 @@ impl<E: Ext> PollContext<'_, E> {
 
             let (reply, became_dead) =
                 TcpConnectionBg::dispatch(&socket, &mut self.iface, |iface, ip_repr, tcp_repr| {
-                    let mut this = PollContext::new(iface, self.sockets, self.actions);
+                    let mut this =
+                        PollContext::new(iface, self.sockets, self.udp_registry, self.actions);
 
                     if !tcp_repr.payload.is_empty() {
                         record_tcp_diagnostic(
@@ -586,15 +768,24 @@ impl<E: Ext> PollContext<'_, E> {
             let (cx, pending) = self.iface.inner_mut();
             socket.dispatch(cx, |cx, ip_repr, udp_repr, udp_payload| {
                 let iface = PollableIfaceMut::new(cx, pending);
-                let mut this = PollContext::new(iface, self.sockets, &mut actions);
+                let mut this =
+                    PollContext::new(iface, self.sockets, self.udp_registry, &mut actions);
+                let wire_ip_repr =
+                    demap_udp_repr(ip_repr.clone(), this.iface.context().ipv4_addr());
 
-                if ip_repr.dst_addr().is_broadcast() || !this.is_unicast_local(ip_repr.dst_addr()) {
+                let is_broadcast = wire_ip_repr.dst_addr().is_broadcast();
+                let is_loopback = match wire_ip_repr.dst_addr() {
+                    IpAddress::Ipv4(addr) => addr.is_loopback(),
+                    IpAddress::Ipv6(addr) => addr.is_loopback(),
+                };
+                if is_broadcast || (!this.is_unicast_local(wire_ip_repr.dst_addr()) && !is_loopback)
+                {
                     dispatch_phy(
-                        &Packet::new(ip_repr.clone(), IpPayload::Udp(*udp_repr, udp_payload)),
+                        &Packet::new(wire_ip_repr.clone(), IpPayload::Udp(*udp_repr, udp_payload)),
                         this.iface.context_mut(),
                         tx_token.take().unwrap(),
                     );
-                    if !ip_repr.dst_addr().is_broadcast() {
+                    if !is_broadcast {
                         return;
                     }
                 }
@@ -602,18 +793,18 @@ impl<E: Ext> PollContext<'_, E> {
                 if !socket.can_process(udp_repr.dst_port) {
                     // TODO: Generate the ICMP message here once we're able to handle incoming ICMP
                     // messages.
-                    let _ = this.process_udp(ip_repr, udp_repr, udp_payload);
+                    let _ = this.process_udp(&wire_ip_repr, udp_repr, udp_payload);
                     return;
                 }
 
                 // We cannot call `process_udp` now because it may cause deadlocks. We will copy
                 // the packet and call `process_udp` after releasing the socket lock.
-                deferred = Some((ip_repr.clone(), {
+                deferred = Some((wire_ip_repr.clone(), {
                     let mut data = vec![0; udp_repr.header_len() + udp_payload.len()];
                     udp_repr.emit(
                         &mut UdpPacket::new_unchecked(&mut data),
-                        &ip_repr.src_addr(),
-                        &ip_repr.dst_addr(),
+                        &wire_ip_repr.src_addr(),
+                        &wire_ip_repr.dst_addr(),
                         udp_payload.len(),
                         |payload| payload.copy_from_slice(udp_payload),
                         &ChecksumCapabilities::ignored(),

@@ -6,6 +6,7 @@ use core::{net::Ipv4Addr, slice::Iter, str::FromStr};
 use aster_bigtcp::{
     device::WithDevice,
     iface::{InterfaceFlags, InterfaceType},
+    socket_table::UdpSocketRegistry,
     wire::{EthernetAddress, Ipv4Address, Ipv4Cidr},
 };
 use aster_softirq::BottomHalfDisabled;
@@ -252,9 +253,10 @@ pub fn init() {
             }
         };
         let mut ifaces = Vec::with_capacity(devices.len() + 1);
+        let udp_registry = Arc::new(UdpSocketRegistry::new());
 
         // Keep loopback first so physical interface indexes are deterministic.
-        ifaces.push(new_loopback(true));
+        ifaces.push(new_loopback(true, udp_registry.clone()));
 
         for (index, registration) in devices.into_iter().enumerate() {
             let profile = profiles
@@ -270,7 +272,13 @@ pub fn init() {
                     )
                 })
                 .collect();
-            let iface = new_ethernet(&registration, index, profile, &static_neighbors);
+            let iface = new_ethernet(
+                &registration,
+                index,
+                profile,
+                &static_neighbors,
+                udp_registry.clone(),
+            );
             let recv_iface = iface.clone();
             aster_network::register_recv_callback(registration.key(), move || recv_iface.poll());
             let send_iface = iface.clone();
@@ -291,10 +299,13 @@ pub fn init() {
 /// The interface starts down, as in Linux; it can be brought up from inside
 /// the namespace (e.g., `ip link set lo up`).
 pub(in crate::net) fn new_ns_loopback() -> Arc<Iface> {
-    new_loopback(false)
+    new_loopback(false, Arc::new(UdpSocketRegistry::new()))
 }
 
-fn new_loopback(up: bool) -> Arc<Iface> {
+fn new_loopback(
+    up: bool,
+    udp_registry: Arc<UdpSocketRegistry<crate::net::iface::ext::BigtcpExt>>,
+) -> Arc<Iface> {
     use aster_bigtcp::{
         device::{Loopback, Medium},
         iface::IpIface,
@@ -340,6 +351,7 @@ fn new_loopback(up: bool) -> Arc<Iface> {
         PollScheduler::new(),
         InterfaceType::LOOPBACK,
         flags,
+        udp_registry,
     ) as Arc<Iface>
 }
 
@@ -348,6 +360,7 @@ fn new_ethernet(
     index: usize,
     profile: Option<&BootNetworkProfile>,
     static_neighbors: &[(Ipv4Address, EthernetAddress)],
+    udp_registry: Arc<UdpSocketRegistry<crate::net::iface::ext::BigtcpExt>>,
 ) -> Arc<Iface> {
     use aster_bigtcp::iface::EtherIface;
     use aster_network::AnyNetworkDevice;
@@ -398,6 +411,7 @@ fn new_ethernet(
         CString::new(format!("eth{}", index)).unwrap(),
         PollScheduler::new(),
         flags,
+        udp_registry,
     )
 }
 

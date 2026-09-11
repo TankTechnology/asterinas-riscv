@@ -33,7 +33,7 @@ use crate::{
     errors::BindError,
     ext::Ext,
     socket::{TcpListenerBg, UdpSocketBg},
-    socket_table::SocketTable,
+    socket_table::{SocketTable, UdpSocketRegistry},
 };
 
 pub struct IfaceCommon<E: Ext> {
@@ -45,6 +45,7 @@ pub struct IfaceCommon<E: Ext> {
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
+    udp_registry: Arc<UdpSocketRegistry<E>>,
     sched_poll: E::ScheduleNextPoll,
 }
 
@@ -87,6 +88,7 @@ impl<E: Ext> IfaceCommon<E> {
         flags: InterfaceFlags,
         interface: smoltcp::iface::Interface,
         sched_poll: E::ScheduleNextPoll,
+        udp_registry: Arc<UdpSocketRegistry<E>>,
     ) -> Self {
         // Linux reserves interface index 1 for the loopback device in every
         // network namespace.  In particular, systemd configures a freshly
@@ -111,6 +113,7 @@ impl<E: Ext> IfaceCommon<E> {
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
+            udp_registry,
             sched_poll,
         }
     }
@@ -166,6 +169,10 @@ impl<E: Ext> IfaceCommon<E> {
     pub(crate) fn sockets(&self) -> SpinLockGuard<'_, SocketTable<E>, BottomHalfDisabled> {
         self.sockets.lock()
     }
+
+    pub(crate) fn udp_registry(&self) -> &Arc<UdpSocketRegistry<E>> {
+        &self.udp_registry
+    }
 }
 
 const IP_LOCAL_PORT_START: u16 = 32768;
@@ -197,7 +204,12 @@ impl<E: Ext> IfaceCommon<E> {
         protocol: PortProtocol,
     ) -> Result<BoundPort<E>, BindError> {
         let addr = config.addr();
-        let (port, can_reuse) = self.used_ports.lock().bind(config, protocol)?;
+        let udp_registry = self.udp_registry.clone();
+        let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |port| {
+            protocol == PortProtocol::Udp
+                && matches!(addr, IpAddress::Ipv4(_))
+                && udp_registry.has_dual_port(port)
+        })?;
         Ok(BoundPort {
             iface,
             addr,
@@ -257,7 +269,12 @@ impl<E: Ext> IfaceCommon<E> {
         let mut sockets = self.sockets.lock();
         let mut socket_actions = Vec::new();
 
-        let mut context = PollContext::new(interface.as_mut(), &sockets, &mut socket_actions);
+        let mut context = PollContext::new(
+            interface.as_mut(),
+            &sockets,
+            &self.udp_registry,
+            &mut socket_actions,
+        );
         context.poll_ingress(device, &mut process_phy, &mut dispatch_phy);
         context.poll_egress(device, &mut dispatch_phy);
 
@@ -409,14 +426,18 @@ impl PortTable {
         &mut self,
         config: BindPortConfig,
         protocol: PortProtocol,
+        external_conflict: impl Fn(u16) -> bool,
     ) -> Result<(u16, bool), BindError> {
         let config_can_reuse = config.can_reuse();
         let addr = NormalizedAddress::from(config.addr());
 
         let port = if let Some(port) = config.port() {
+            if !config.is_backlog() && external_conflict(port) {
+                return Err(BindError::InUse);
+            }
             port
         } else {
-            match self.alloc_ephemeral_port(addr, protocol, config_can_reuse) {
+            match self.alloc_ephemeral_port(addr, protocol, config_can_reuse, external_conflict) {
                 Some(port) => port,
                 None => return Err(BindError::Exhausted),
             }
@@ -468,6 +489,7 @@ impl PortTable {
         addr: NormalizedAddress,
         protocol: PortProtocol,
         _can_reuse: bool,
+        external_conflict: impl Fn(u16) -> bool,
     ) -> Option<u16> {
         const fn next_ephemeral_port_after(port: u16) -> u16 {
             if port >= IP_LOCAL_PORT_END {
@@ -486,7 +508,7 @@ impl PortTable {
         let mut port = start_port;
         loop {
             key.port = port;
-            if !self.used_ports.contains_key(&key) {
+            if !external_conflict(port) && !self.used_ports.contains_key(&key) {
                 self.next_ephemeral_port = next_ephemeral_port_after(port);
                 return Some(port);
             }

@@ -19,6 +19,56 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_accepts_ipv6_dual_stack_udp_transcript(self) -> None:
+        try:
+            validate_transcript(
+                "ASTERINAS_IPV6_DUAL_STACK_UDP_OK "
+                "peer=::ffff:127.0.0.1 dual-port-reserved=1 v6only-isolated=1\n",
+                mode="ipv6-dual-stack-udp",
+            )
+        except KeyError:
+            self.fail("ipv6-dual-stack-udp validation mode is not implemented")
+
+    def test_rejects_invalid_ipv6_dual_stack_udp_transcript(self) -> None:
+        marker = "ASTERINAS_IPV6_DUAL_STACK_UDP_OK peer=::ffff:127.0.0.1"
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                try:
+                    validate_transcript(transcript, mode="ipv6-dual-stack-udp")
+                except ValidationError:
+                    continue
+                except KeyError:
+                    self.fail("ipv6-dual-stack-udp validation mode is not implemented")
+                self.fail("invalid IPv6 dual-stack UDP transcript was accepted")
+
+    def test_ipv6_dual_stack_udp_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/"
+            "run_ipv6_dual_stack_udp_test.sh"
+        )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
+        self.assertIn("else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)", makefile)
+        self.assertIn('/test/run_ipv6_dual_stack_udp_test.sh', makefile)
+        self.assertIn('--mode "ipv6-dual-stack-udp"', makefile)
+        self.assertEqual(
+            tuple(
+                line.strip()
+                for line in runner_path.read_text().splitlines()
+                if line.strip().startswith("/test/")
+            ),
+            ("/test/network/ipv6_dual_stack_udp",),
+        )
+        self.assertEqual(general_runner.count("./ipv6_dual_stack_udp"), 1)
+
     def test_accepts_udp_user_buffer_prefault_transcript(self) -> None:
         try:
             validate_transcript(

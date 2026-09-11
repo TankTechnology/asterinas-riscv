@@ -28,6 +28,7 @@ impl UnboundDatagram {
 
 pub(super) struct BindOptions {
     pub(super) can_reuse: bool,
+    pub(super) v6only: bool,
 }
 
 impl datagram_common::Unbound for UnboundDatagram {
@@ -44,13 +45,16 @@ impl datagram_common::Unbound for UnboundDatagram {
     ) -> Result<Self::Bound> {
         let bound_port = bind_port(endpoint, options.can_reuse)?;
 
-        let bound_socket =
-            match UdpSocket::new_bind(bound_port, DatagramObserver::new(pollee.clone())) {
-                Ok(bound_socket) => bound_socket,
-                Err((_, err)) => {
-                    unreachable!("`new_bind` fails with {:?}, which should not happen", err)
-                }
-            };
+        let bound_socket = match UdpSocket::new_bind(
+            bound_port,
+            DatagramObserver::new(pollee.clone()),
+            options.v6only,
+        ) {
+            Ok(bound_socket) => bound_socket,
+            Err((_, err)) => {
+                unreachable!("`new_bind` fails with {:?}, which should not happen", err)
+            }
+        };
 
         Ok(BoundDatagram::new(bound_socket))
     }
@@ -59,6 +63,7 @@ impl datagram_common::Unbound for UnboundDatagram {
         &mut self,
         remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
+        options: BindOptions,
     ) -> Result<Self::Bound> {
         let endpoint = get_ephemeral_endpoint(remote_endpoint).ok_or_else(|| {
             Error::with_message(
@@ -66,7 +71,7 @@ impl datagram_common::Unbound for UnboundDatagram {
                 "no interface has an address for the specified family",
             )
         })?;
-        self.bind(&endpoint, pollee, BindOptions { can_reuse: false })
+        self.bind(&endpoint, pollee, options)
     }
 
     fn check_io_events(&self) -> IoEvents {

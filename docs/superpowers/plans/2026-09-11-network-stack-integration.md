@@ -299,7 +299,7 @@ git commit -m "test(net): cover UDP user buffer prefault"
 - Modify: `Makefile`
 - Add: `test/initramfs/src/regression/scripts/run_ipv6_dual_stack_udp_test.sh`
 
-- [ ] **Step 1: Add the failing mapped-UDP regression**
+- [x] **Step 1: Add the failing mapped-UDP regression**
 
 Adapt the final version from `94b099ca5`. The AF_INET6 receiver must bind `[::]:0` with `IPV6_V6ONLY=0`; an AF_INET sender must send from `127.0.0.1`; the receiver must observe peer `::ffff:127.0.0.1`, reply to that mapped address, and the IPv4 sender must receive and verify the reply. Add a second case where `IPV6_V6ONLY=1` prevents IPv4 delivery and allows a separate IPv4 wildcard bind to the same port. Emit one success line beginning:
 
@@ -309,7 +309,7 @@ ASTERINAS_IPV6_DUAL_STACK_UDP_OK peer=
 
 Add validator mode `ipv6-dual-stack-udp` for the logical marker `ASTERINAS_IPV6_DUAL_STACK_UDP_OK`, cover its single/missing/duplicate/fatal cases, and add `AUTO_TEST=ipv6_dual_stack_udp` with a runner that executes only this binary.
 
-- [ ] **Step 2: Run the x86 mapped-UDP gate and confirm it is red**
+- [x] **Step 2: Run the x86 mapped-UDP gate and confirm it is red**
 
 Run:
 
@@ -320,15 +320,15 @@ tools/docker/run_dev_container.sh -- bash -lc 'ASTERINAS_QEMU_LOG_DIR="$PWD/targ
 
 Expected: the mapped UDP fact is absent or the guest reports its assertion failure.
 
-- [ ] **Step 3: Add a network-namespace-scoped UDP registry**
+- [x] **Step 3: Add a network-namespace-scoped UDP registry**
 
 Implement `UdpSocketRegistry<E>` in `aster-bigtcp` with weak references and a dual-stack port set. Every interface inside one `NetNamespace` must receive the same `Arc<UdpSocketRegistry<_>>`; `new_ns_loopback()` must receive a fresh registry. Clean dead weak references during lookup. Do not use a process-global registry.
 
-- [ ] **Step 4: Reserve the matching IPv4 namespace for dual wildcard binds**
+- [x] **Step 4: Reserve the matching IPv4 namespace for dual wildcard binds**
 
 Extend UDP bind options with `v6only`. For an AF_INET6 wildcard bind to `::` with `v6only=false`, set `accepts_ipv4`, reserve the IPv4 wildcard port in the registry, and release it in `Drop`. Include registry conflicts in ephemeral selection and explicit bind. Keep IPv6-only sockets independent from IPv4 ownership.
 
-- [ ] **Step 5: Map ingress and demap egress**
+- [x] **Step 5: Map ingress and demap egress**
 
 At IPv4 UDP ingress, try the normal IPv4 table first, then query the namespace UDP registry and present the peer to a dual IPv6 socket as an IPv4-mapped IPv6 address. At egress, recognize mapped IPv4 destinations, construct an IPv4 UDP/IP representation, choose an IPv4 source from the socket's bound endpoint or the selected interface, and preserve checksums/ports. Add lower-layer unit tests for:
 
@@ -337,7 +337,7 @@ At IPv4 UDP ingress, try the normal IPv4 table first, then query the namespace U
 - mapped loopback destination, selecting `127.0.0.1`;
 - non-mapped IPv6 destination, leaving the representation unchanged.
 
-- [ ] **Step 6: Run focused lower-layer and QEMU tests**
+- [x] **Step 6: Run focused lower-layer and QEMU tests**
 
 Run:
 
@@ -349,7 +349,7 @@ tools/docker/run_dev_container.sh -- bash -lc 'mkdir -p target/network-stack-int
 
 Expected: lower-layer tests pass and both mapped-UDP gates exit zero with exactly one mapped UDP fact and no fatal signature.
 
-- [ ] **Step 7: Commit UDP dual-stack support**
+- [x] **Step 7: Commit UDP dual-stack support**
 
 ```bash
 git add Makefile tools/riscv/validate_run_kernel_log.py tools/riscv/tests/test_validate_run_kernel_log.py kernel/libs/aster-bigtcp kernel/src/net/iface/init.rs kernel/src/net/socket/ip/datagram kernel/src/net/socket/util/datagram_common.rs kernel/src/net/socket/netlink/common test/initramfs/src/regression/network/ipv6_dual_stack_udp.c test/initramfs/src/regression/scripts/run_ipv6_dual_stack_udp_test.sh

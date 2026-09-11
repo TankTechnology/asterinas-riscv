@@ -25,6 +25,7 @@ MULTI_FACT_MARKERS = {
         "ipv6_udp: PASS",
         "ASTERINAS_IPV6_DUAL_STACK_UDP_OK",
     ),
+    "ipv6-dual-stack-udp": ("ASTERINAS_IPV6_DUAL_STACK_UDP_OK",),
 }
 FATAL_PATTERNS = (
     re.compile(r"uncaught panic", re.IGNORECASE),

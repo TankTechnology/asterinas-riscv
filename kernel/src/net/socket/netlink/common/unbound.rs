@@ -88,6 +88,7 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
         &mut self,
         _remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
+        _options: Self::BindOptions,
     ) -> Result<Self::Bound> {
         self.bind_common(NetlinkSocketAddr::new_unspecified(), pollee)
     }
