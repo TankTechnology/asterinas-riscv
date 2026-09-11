@@ -538,6 +538,7 @@ impl Socket for StreamSocket {
                 backlog,
                 &raw_option,
                 StreamObserver::new(self.pollee.clone()),
+                options.ipv6.v6only(),
             ) {
                 Ok(listen_stream) => listen_stream,
                 Err((err, init_stream)) => {
