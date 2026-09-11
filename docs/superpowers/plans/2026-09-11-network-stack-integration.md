@@ -244,7 +244,7 @@ git commit -m "feat(net): add AF_INET6 UDP sockets and v6only" -m "Adapted from 
 - Modify: `tools/riscv/validate_run_kernel_log.py`
 - Modify: `tools/riscv/tests/test_validate_run_kernel_log.py`
 
-- [ ] **Step 1: Add a page-fault-sensitive UDP regression**
+- [x] **Step 1: Add a page-fault-sensitive UDP regression**
 
 Create a loopback UDP receiver and sender. Allocate a `4 * 4096 + 137` byte anonymous mapping for send and receive buffers and do not touch either mapping before the syscall. Send the zero-filled mapping with `sendto`, receive it with `recvfrom`, verify the complete byte count and zero contents, enforce a ten-second alarm, and print exactly:
 
@@ -254,11 +254,11 @@ UDP user buffer prefault regression passed.
 
 This exercises both read-prefault and write-prefault paths while the actual copy still occurs below the syscall layer.
 
-- [ ] **Step 2: Add a single-test runner and Makefile gate**
+- [x] **Step 2: Add a single-test runner and Makefile gate**
 
 The runner executes only `/test/network/udp_user_buffer_prefault`. Add `"udp-user-buffer-prefault": "UDP user buffer prefault regression passed."` to `SUCCESS_MARKERS`, add validator unit tests for acceptance/missing/duplicate/fatal-after behavior, and add `AUTO_TEST=udp_user_buffer_prefault` using full-transcript validation mode `udp-user-buffer-prefault`. Also append the binary to the general network runner.
 
-- [ ] **Step 3: Run the focused test before importing bounce-buffer code**
+- [x] **Step 3: Run the focused test before importing bounce-buffer code**
 
 Run on both architectures:
 
@@ -270,7 +270,7 @@ tools/docker/run_dev_container.sh -- bash -lc 'ASTERINAS_QEMU_LOG_DIR="$PWD/targ
 
 Expected: both commands exit zero and the full-line marker appears once. If they pass, explicitly keep `a94151c6e` out of the branch. If either fails with a page fault or atomic-context panic, stop this task, capture the full transcript, and make the smallest prefault correction at the syscall boundary before reconsidering any copy buffer.
 
-- [ ] **Step 4: Commit the characterization test**
+- [x] **Step 4: Commit the characterization test**
 
 ```bash
 git add Makefile tools/riscv/validate_run_kernel_log.py tools/riscv/tests/test_validate_run_kernel_log.py test/initramfs/src/regression/network/udp_user_buffer_prefault.c test/initramfs/src/regression/network/run_test.sh test/initramfs/src/regression/scripts/run_udp_user_buffer_prefault_test.sh

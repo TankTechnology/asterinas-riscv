@@ -19,6 +19,60 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_accepts_udp_user_buffer_prefault_transcript(self) -> None:
+        try:
+            validate_transcript(
+                "UDP user buffer prefault regression passed.\n",
+                mode="udp-user-buffer-prefault",
+            )
+        except KeyError:
+            self.fail("udp-user-buffer-prefault validation mode is not implemented")
+
+    def test_rejects_invalid_udp_user_buffer_prefault_transcript(self) -> None:
+        marker = "UDP user buffer prefault regression passed."
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                try:
+                    validate_transcript(
+                        transcript,
+                        mode="udp-user-buffer-prefault",
+                    )
+                except ValidationError:
+                    continue
+                except KeyError:
+                    self.fail(
+                        "udp-user-buffer-prefault validation mode is not implemented"
+                    )
+                self.fail("invalid UDP prefault transcript was accepted")
+
+    def test_udp_user_buffer_prefault_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/"
+            "run_udp_user_buffer_prefault_test.sh"
+        )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
+        self.assertIn("else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)", makefile)
+        self.assertIn('/test/run_udp_user_buffer_prefault_test.sh', makefile)
+        self.assertIn('--mode "udp-user-buffer-prefault"', makefile)
+        self.assertEqual(
+            tuple(
+                line.strip()
+                for line in runner_path.read_text().splitlines()
+                if line.strip().startswith("/test/")
+            ),
+            ("/test/network/udp_user_buffer_prefault",),
+        )
+        self.assertEqual(general_runner.count("./udp_user_buffer_prefault"), 1)
+
     def test_accepts_native_ipv6_udp_transcript(self) -> None:
         try:
             validate_transcript("ipv6_udp: PASS\n", mode="ipv6-udp")
