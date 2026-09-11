@@ -80,11 +80,11 @@ boot controller, persistent Asterinas Docker development container.
 - [x] Review the complete diff normally against the maintainability,
   development, security, and hardware indexes.  Do not invoke the retired
   `aster-code-review` skill.
-- [ ] Run one unattended `browse-firefox` transaction with the existing
+- [x] Run one unattended `browse-firefox` transaction with the existing
   attested MMC deployment.  Require strict URL/TLS/DOM/framebuffer evidence,
   `proxy_bridge.ready=true`, one physical boot, zero Firefox restarts, checksum
   success, and recovery to U-Boot.
-- [ ] Record exact tests, evidence path, hashes, timings, and review result in
+- [x] Record exact tests, evidence path, hashes, timings, and review result in
   this plan and commit the notes.
 - [ ] Fetch `asterinas-riscv/main`, prove it is an ancestor, push `HEAD:main`
   without force, and verify the fetched remote commit equals local `HEAD`.
@@ -119,12 +119,12 @@ Four evidence-rich runs all recovered automatically to U-Boot and all published
   bounded log replay, and the host ACK; the real `status=124` arrived just after
   the host deadline and abort byte.
 
-The page gate therefore still lacks a successful post-hardening physical run.
-Do not publish this branch yet.  The next design step is to replace the shared
-deadline with three explicit bounded budgets: page/DOM execution, guest
-framebuffer and wrapper finalization, and host serial ACK drain.  All three must
-remain below the kernel-owned 1050-second recovery timer; simply retrying or
-unboundedly increasing the page timeout is not acceptable.
+At this checkpoint, the page gate still lacked a successful post-hardening
+physical run and the branch remained unpublished.  This motivated replacing
+the shared deadline with three explicit bounded budgets: page/DOM execution,
+guest framebuffer and wrapper finalization, and host serial ACK drain.  All
+three remain below the kernel-owned 1050-second recovery timer; simply retrying
+or unboundedly increasing the page timeout was not acceptable.
 
 ### Task 4: Split the physical page deadline into three bounded stages
 
@@ -133,25 +133,60 @@ unboundedly increasing the page timeout is not acceptable.
 - Modify: `tools/riscv/tests/test_megrez_firefox_browse.py`
 - Modify: `tools/riscv/megrez_firefox_browse.py`
 
-- [ ] Add a failing orchestration test requiring `run_firefox_browse` to pass
+- [x] Add a failing orchestration test requiring `run_firefox_browse` to pass
   `page_timeout=650`, `finalize_timeout=120`, and `ack_timeout=60` as separate
   `run_baidu_home` arguments.
-- [ ] Run the focused Firefox test and verify it fails because the production
+- [x] Run the focused Firefox test and verify it fails because the production
   protocol still exposes one `browse_timeout`.
-- [ ] Add a failing real-command test requiring `--timeout 650`, outer
+- [x] Add a failing real-command test requiring `--timeout 650`, outer
   `/usr/bin/timeout 770`, and a host `_run_long_step` timeout of 830 seconds.
-- [ ] Run the focused real-command test and verify it fails because the outer
+- [x] Run the focused real-command test and verify it fails because the outer
   guest and host deadlines still have only ten seconds of headroom.
-- [ ] Update `FirefoxBrowseConfig`, `FirefoxBrowseOperations`, and the fake
+- [x] Update `FirefoxBrowseConfig`, `FirefoxBrowseOperations`, and the fake
   operation to use the three named budgets without changing the evidence
   retrieval or recovery interfaces.
-- [ ] Implement the minimal command arithmetic, retain status 124 as failure,
+- [x] Implement the minimal command arithmetic, retain status 124 as failure,
   and keep the wrapper-expanded command at no more than 768 bytes.
-- [ ] Run the focused Firefox tests, then all selected 425-test modules in the
+- [x] Run the focused Firefox tests, then all selected regression modules in the
   persistent development container with `ResourceWarning` promoted to an
   error.  Also run Python bytecode compilation, generated-command `bash -n`,
   Stage-1 `bash -n`, and `git diff --check`.
-- [ ] Commit the deadline split, then run exactly one unattended physical
-  Firefox transaction using the existing attested MMC artifacts.  Require the
-  strict URL/TLS/DOM/framebuffer hashes, latched proxy readiness, one boot, zero
-  Firefox restarts, and automatic recovery to U-Boot before publishing.
+- [x] Commit the deadline split (`284b1bb62`), then run exactly one unattended
+  physical Firefox transaction using the existing attested MMC artifacts.
+  Require the strict URL/TLS/DOM/framebuffer hashes, latched proxy readiness,
+  one boot, zero Firefox restarts, and automatic recovery to U-Boot before
+  publishing.
+
+## Successful physical validation (2026-09-11)
+
+The final code passed 427 selected tests in 23.227 seconds in the persistent
+development container with `ResourceWarning` promoted to an error.  The focused
+Firefox module passed 17 tests.  Python bytecode compilation, Stage-1 and
+generated page-command `bash -n`, and `git diff --check` passed.  The actual
+wrapper-expanded page command remained 693 bytes and the observed host page
+deadline was 830 seconds.  Normal review against the maintainability,
+development, security, and hardware indexes found no remaining issue.
+
+Exactly one post-split physical transaction ran with the unchanged, attested
+MMC deployment.  Evidence is under
+`target/megrez-desktop/evidence-6b3037dc/browse-d87ae5223ab1231e`:
+
+- `passed=true`, `reason=baidu-home-ready`, `failure=""`, and total time
+  880.244 seconds;
+- one physical boot, Firefox PID 111, zero Firefox restarts, and automatic
+  recovery to a new U-Boot prompt;
+- latched `proxy_bridge.ready=true` and MMC-only kernel/initramfs/DTB transport;
+- exact `https://www.baidu.com/` identity with `tls=verified`, completed DOM,
+  and a visually complete 1920x1080 framebuffer PNG;
+- serial `A_WEB_CONNECT_RETRIES count=378`,
+  `BOOT_DOM_READY guest_monotonic_ns=736569458000`, and nonce-bound
+  `step=baidu-home status=0`;
+- page JSON SHA-256
+  `47cd1015082134ac6e8241e2f6760ffff3bd8621300d8ad91fbdc2aa8ade1018`,
+  framebuffer PNG SHA-256
+  `74a393d5bfe7a7cea369c659cbafc2bd5b1421505675e7a48378c02f424ff789`,
+  and serial SHA-256
+  `9ebcf6b5b8f085735189647c3fc98b813c5fe52ab47ff0ffa9efd4b8d6334740`.
+
+All seven entries in the published `sha256sums.txt` verified successfully.  No
+MMC partition was rewritten during implementation or physical validation.
