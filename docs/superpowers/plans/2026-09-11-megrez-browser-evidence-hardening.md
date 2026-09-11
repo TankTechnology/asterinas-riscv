@@ -24,23 +24,23 @@ boot controller, persistent Asterinas Docker development container.
 - Modify: `tools/riscv/tests/test_megrez_proxy_bridge.py`
 - Modify: `tools/riscv/megrez_proxy_bridge.py`
 
-- [ ] Add a failing test that starts and closes a bridge, then requires
+- [x] Add a failing test that starts and closes a bridge, then requires
   `running` to be false while `summary()["ready"]` remains true and captured
   stderr remains present.
-- [ ] Run that test in the persistent container and verify it fails because
+- [x] Run that test in the persistent container and verify it fails because
   `close()` currently clears readiness.
-- [ ] Add failing tests that reject restart after close, tolerate
+- [x] Add failing tests that reject restart after close, tolerate
   `ProcessLookupError` between `poll` and TERM while still calling `wait`, close
   an internally-owned stderr spool, and leave caller-owned stderr open.
-- [ ] Run the new tests and verify each failure is caused by the missing
+- [x] Run the new tests and verify each failure is caused by the missing
   lifecycle behavior.
-- [ ] Add explicit closed and ever-ready state.  Capture stderr without
+- [x] Add explicit closed and ever-ready state.  Capture stderr without
   overwriting stored bytes after the spool closes, close only owned stderr,
   reject post-close starts, and treat only `ProcessLookupError` as an already
   vanished process group.
-- [ ] Run `tools.riscv.tests.test_megrez_proxy_bridge` and keep all existing
+- [x] Run `tools.riscv.tests.test_megrez_proxy_bridge` and keep all existing
   startup, escalation, configuration, and idempotent-close tests green.
-- [ ] Commit the proxy-only change.
+- [x] Commit the proxy-only change (`5eebd1649`).
 
 ### Task 2: Align the Firefox clock and result interfaces with reality
 
@@ -49,20 +49,20 @@ boot controller, persistent Asterinas Docker development container.
 - Modify: `tools/riscv/tests/test_megrez_firefox_browse.py`
 - Modify: `tools/riscv/megrez_firefox_browse.py`
 
-- [ ] Change the fake operations test interface to
+- [x] Change the fake operations test interface to
   `synchronize_clock(timeout)` and run it to verify the production caller still
   passes a browser PID.
-- [ ] Add failing tests that reject host epochs before 2024-01-01 and after
+- [x] Add failing tests that reject host epochs before 2024-01-01 and after
   2100-12-31 without sending a serial command.
-- [ ] Add failing result-invariant tests showing that `passed=true` rejects a
+- [x] Add failing result-invariant tests showing that `passed=true` rejects a
   missing or false proxy `ready` field while `passed=false` accepts it.
-- [ ] Remove the browser PID from the protocol, caller, and real operation;
+- [x] Remove the browser PID from the protocol, caller, and real operation;
   validate the host epoch before forming the bounded shell command.
-- [ ] Require latched proxy readiness in successful `FirefoxBrowseResult`
+- [x] Require latched proxy readiness in successful `FirefoxBrowseResult`
   construction and update test proxy summaries to describe successful startup.
-- [ ] Run the Firefox browse tests and then the proxy, desktop, and GMAC tests
+- [x] Run the Firefox browse tests and then the proxy, desktop, and GMAC tests
   to catch shared-summary regressions.
-- [ ] Commit the Firefox contract change.
+- [x] Commit the Firefox contract change (`33357212a`).
 
 ### Task 3: Verify and publish the hardened baseline
 
@@ -72,12 +72,12 @@ boot controller, persistent Asterinas Docker development container.
 - Generated under ignored `target/megrez-desktop/`: one new physical evidence
   bundle using the existing plan and MMC artifacts.
 
-- [ ] Run the browser guest-contract, proxy, Firefox browse, desktop, GMAC,
+- [x] Run the browser guest-contract, proxy, Firefox browse, desktop, GMAC,
   boot-stability, physical-graphics, and Debian-rootfs unit modules in the
   persistent Docker container with `ResourceWarning` promoted to an error.
-- [ ] Run Python bytecode compilation, `bash -n` for touched workflow scripts,
+- [x] Run Python bytecode compilation, `bash -n` for touched workflow scripts,
   and `git diff --check`.  Do not install missing formatters or dependencies.
-- [ ] Review the complete diff normally against the maintainability,
+- [x] Review the complete diff normally against the maintainability,
   development, security, and hardware indexes.  Do not invoke the retired
   `aster-code-review` skill.
 - [ ] Run one unattended `browse-firefox` transaction with the existing
@@ -88,3 +88,40 @@ boot controller, persistent Asterinas Docker development container.
   this plan and commit the notes.
 - [ ] Fetch `asterinas-riscv/main`, prove it is an ancestor, push `HEAD:main`
   without force, and verify the fetched remote commit equals local `HEAD`.
+
+## Physical-validation checkpoint (2026-09-11)
+
+The current code passes 425 selected tests in the persistent development
+container with `ResourceWarning` promoted to an error.  Python bytecode
+compilation, the stage-1 `bash -n` check, generated clock and browser command
+`bash -n` checks, and `git diff --check` also pass.  Normal review against the
+maintainability, development, security, and hardware indexes found no remaining
+issue in the committed proxy and clock contracts.
+
+The existing MMC kernel, stage 1, root filesystem, and DTB were not rewritten.
+Four evidence-rich runs all recovered automatically to U-Boot and all published
+`proxy_bridge.ready=true`, proving the corrected latched proxy evidence:
+
+- `browse-52f941d38ab00777` reached Marionette and Baidu but streamed 1,010
+  expected connection refusals as roughly 3,030 UART records.  The resulting
+  serial backlog hid the guest timeout behind `serial-marker-not-seen`.
+- `browse-79d544de08865110` reached complete graphical readiness but an invalid
+  clock result took the pre-existing bare `exit 1` path, terminating the debug
+  shell and allowing the later abort byte to corrupt the replacement shell.
+- `browse-d0a3b15f1dd3e815` proved the revised clock contract exactly
+  (`requested=observed=1789094617`) and then rejected the first buffered browser
+  command before transmission because its wrapper-expanded size was 865 bytes.
+- `browse-9d979cb96e917d4d` proved the corrected 693-byte transmitted command and
+  bounded serial output (`A_WEB_CONNECT_RETRIES count=1192`, 65 total `A_WEB`
+  lines).  It completed navigation, title, repeated live-DOM probes, a 27,478
+  byte snapshot, and `BOOT_DOM_READY` at guest monotonic 797.747 seconds.  The
+  650-second DOM budget then left only ten seconds for framebuffer finalization,
+  bounded log replay, and the host ACK; the real `status=124` arrived just after
+  the host deadline and abort byte.
+
+The page gate therefore still lacks a successful post-hardening physical run.
+Do not publish this branch yet.  The next design step is to replace the shared
+deadline with three explicit bounded budgets: page/DOM execution, guest
+framebuffer and wrapper finalization, and host serial ACK drain.  All three must
+remain below the kernel-owned 1050-second recovery timer; simply retrying or
+unboundedly increasing the page timeout is not acceptable.
