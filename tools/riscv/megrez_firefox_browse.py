@@ -39,12 +39,14 @@ MIN_BROWSER_VIEWPORT_WIDTH = 1024
 MIN_BROWSER_VIEWPORT_HEIGHT = 700
 MAX_SERIAL_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_BYTES = 256 * 1024
-# The slowest useful board trace reached the completed Baidu DOM after 810 guest
-# seconds. Bound the page sub-gate at 650 seconds so that a run beginning around
-# guest second 300 still leaves roughly one minute before the host's 1020-second
-# deadline to export diagnostics. The kernel remains the terminal recovery owner.
+# A physical trace completed Baidu DOM and JSON evidence at the old deadline,
+# then lost framebuffer finalization and the serial acknowledgement to shared
+# ten-second headroom. Keep each stage independently bounded; the host-wide
+# guest-second-1020 deadline and the kernel remain the terminal recovery owners.
 FIREFOX_BROWSE_REBOOT_AFTER_SECONDS = 1050
 MAX_BAIDU_HOME_GATE_SECONDS = 650
+MAX_BAIDU_HOME_FINALIZE_SECONDS = 120
+MAX_BAIDU_HOME_ACK_SECONDS = 60
 HOST_CLOCK_MAX_SKEW_SECONDS = 5
 MIN_HOST_CLOCK_UNIX_SECONDS = 1704067200
 MAX_HOST_CLOCK_UNIX_SECONDS = 4133980799
@@ -127,7 +129,9 @@ class FirefoxBrowseConfig:
     boot_timeout: float = 180.0
     readiness_timeout: float = 300.0
     clock_timeout: float = 45.0
-    browse_timeout: float = 670.0
+    page_timeout: float = 650.0
+    finalize_timeout: float = 120.0
+    ack_timeout: float = 60.0
     transfer_timeout: float = 180.0
     diagnostics_timeout: float = 60.0
     reboot_timeout: float = 30.0
@@ -142,6 +146,12 @@ class FirefoxBrowseConfig:
             for value in asdict(self).values()
         ):
             raise ValueError("Firefox browse deadlines must be in (0, 1200]")
+        if (
+            self.page_timeout > MAX_BAIDU_HOME_GATE_SECONDS
+            or self.finalize_timeout > MAX_BAIDU_HOME_FINALIZE_SECONDS
+            or self.ack_timeout > MAX_BAIDU_HOME_ACK_SECONDS
+        ):
+            raise ValueError("Firefox page stage deadlines exceed their safe bounds")
 
 
 @dataclass(frozen=True)
@@ -217,7 +227,12 @@ class FirefoxBrowseOperations(Protocol):
     def prove_boot_readiness(self, timeout: float) -> BootReadinessEvidence: ...
     def synchronize_clock(self, timeout: float) -> dict[str, object]: ...
     def run_baidu_home(
-        self, browser_pid: int, nonce: str, timeout: float
+        self,
+        browser_pid: int,
+        nonce: str,
+        page_timeout: float,
+        finalize_timeout: float,
+        ack_timeout: float,
     ) -> dict[str, object]: ...
     def retrieve_evidence(self, nonce: str, name: str, timeout: float) -> bytes: ...
     def collect_diagnostics(self, timeout: float) -> bytes: ...
@@ -324,7 +339,11 @@ def run_firefox_browse(
             if clock_evidence.get("marker") != "ASTERINAS_CLOCK_SYNC_READY":
                 raise HostGateError("guest clock synchronization evidence is invalid")
             page_marker = operations.run_baidu_home(
-                readiness.browser_pid, selected_nonce, config.browse_timeout
+                readiness.browser_pid,
+                selected_nonce,
+                config.page_timeout,
+                config.finalize_timeout,
+                config.ack_timeout,
             )
             page_payload = operations.retrieve_evidence(
                 selected_nonce, "baidu-home.json", config.transfer_timeout
@@ -683,24 +702,31 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         return evidence
 
     def run_baidu_home(
-        self, browser_pid: int, nonce: str, timeout: float
+        self,
+        browser_pid: int,
+        nonce: str,
+        page_timeout: float,
+        finalize_timeout: float,
+        ack_timeout: float,
     ) -> dict[str, object]:
         if _NONCE.fullmatch(nonce) is None:
             raise ValueError("Firefox browse nonce is invalid")
-        guest_timeout = max(1, min(int(timeout) - 15, MAX_BAIDU_HOME_GATE_SECONDS))
+        guest_timeout = max(1.0, min(page_timeout, MAX_BAIDU_HOME_GATE_SECONDS))
+        guest_process_timeout = guest_timeout + finalize_timeout
+        host_timeout = guest_process_timeout + ack_timeout
         directory = f"/run/asterinas-browse-{nonce}"
         serial = self._require_serial()
         start = serial.checkpoint()
         command = (
             f"d={directory}; install -d -m 0700 $d; l=$d/g.log; "
-            f"/usr/bin/timeout {guest_timeout + 10} "
+            f"/usr/bin/timeout {guest_process_timeout:g} "
             f"/usr/bin/nsenter -t {browser_pid} -n /usr/bin/env -i "
             "PATH=/usr/bin:/bin HOME=/home/asterinas PYTHONPATH=/usr/lib/asterinas "
             "ASTERINAS_MARIONETTE_DIAGNOSTICS=1 "
             "ASTERINAS_MARIONETTE_DEBUG_ERRORS=1 "
             "/run/asterinas-tools/browser-web-marionette-gate --scope baidu-home "
             "--screenshot-backend framebuffer "
-            f"--firefox-pid {browser_pid} --timeout {guest_timeout} "
+            f"--firefox-pid {browser_pid} --timeout {guest_timeout:g} "
             "--evidence-dir $d 2>$l; q=$?; "
             "printf 'A_WEB_CONNECT_RETRIES count=%s\\n' "
             '"$(/usr/bin/grep -c \'phase=tcp-connect state=exception\' $l)" '
@@ -710,7 +736,7 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
         # A guest timeout cannot carry the TLS/DOM/screenshot success marker,
         # so preserve status 124 as the direct failure instead of waiting for
         # evidence that the terminated gate cannot produce.
-        self._run_long_step(command, "baidu-home", nonce, timeout)
+        self._run_long_step(command, "baidu-home", nonce, host_timeout)
         return _single_json_marker(
             self._step_payload(start), "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY"
         )
