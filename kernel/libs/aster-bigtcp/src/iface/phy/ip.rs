@@ -37,6 +37,7 @@ impl<D: WithDevice, E: Ext> IpIface<D, E> {
         type_: InterfaceType,
         flags: InterfaceFlags,
         udp_registry: Arc<crate::socket_table::UdpSocketRegistry<E>>,
+        tcp_registry: Arc<crate::socket_table::TcpSocketRegistry<E>>,
     ) -> Arc<Self> {
         let interface = driver.with(|device| {
             let config = Config::new(wire::HardwareAddress::Ip);
@@ -53,7 +54,15 @@ impl<D: WithDevice, E: Ext> IpIface<D, E> {
             interface
         });
 
-        let common = IfaceCommon::new(name, type_, flags, interface, sched_poll, udp_registry);
+        let common = IfaceCommon::new(
+            name,
+            type_,
+            flags,
+            interface,
+            sched_poll,
+            udp_registry,
+            tcp_registry,
+        );
 
         Arc::new(Self { driver, common })
     }
