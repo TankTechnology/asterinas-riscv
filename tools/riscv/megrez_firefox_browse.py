@@ -49,7 +49,6 @@ HOST_CLOCK_MAX_SKEW_SECONDS = 5
 MIN_HOST_CLOCK_UNIX_SECONDS = 1704067200
 MAX_HOST_CLOCK_UNIX_SECONDS = 4133980799
 MAX_GATE_DIAGNOSTIC_LINES = 64
-MAX_GATE_TRANSPORT_LINES = 8
 _NONCE = re.compile(r"\A[0-9a-f]{16}\Z")
 _SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 _FILE_NAME = re.compile(r"\Abaidu-home\.(json|png)\Z")
@@ -705,12 +704,7 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
             "--evidence-dir $d 2>$l; q=$?; "
             "printf 'A_WEB_CONNECT_RETRIES count=%s\\n' "
             '"$(/usr/bin/grep -c \'phase=tcp-connect state=exception\' $l)" '
-            ">&2; /usr/bin/grep -E "
-            "'^A_WEB_(TIMELINE|JS_PING|PROBE_|PHASE)' $l | "
-            "/usr/bin/grep -v 'phase=tcp-connect' | "
-            f"/usr/bin/tail -n {MAX_GATE_DIAGNOSTIC_LINES} >&2; "
-            "/usr/bin/grep '^A_WEB_MARIONETTE_TRANSPORT' $l | "
-            f"/usr/bin/tail -n {MAX_GATE_TRANSPORT_LINES} >&2; "
+            f">&2; /usr/bin/tail -n {MAX_GATE_DIAGNOSTIC_LINES} $l >&2; "
             '(exit "$q")'
         )
         # A guest timeout cannot carry the TLS/DOM/screenshot success marker,
