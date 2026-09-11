@@ -1,47 +1,40 @@
-{
-  target ? "x86_64",
-  enableBenchmarkTest ? false,
-  enableConformanceTest ? false,
-  enableRegressionTest ? false,
-  conformanceTestSuite ? "ltp",
-  conformanceTestWorkDir ? "/tmp",
-  conformanceTestSelector ? "",
-  regressionTestPlatform ? "asterinas",
-  dnsServer ? "none",
-  smp ? 1,
-  initramfsCompressed ? true,
-  benchmarkName ? "none",
-  system ? builtins.currentSystem,
-}:
+{ target ? "x86_64", enableBenchmarkTest ? false, enableConformanceTest ? false
+, enableRegressionTest ? false, conformanceTestSuite ? "ltp"
+, conformanceTestWorkDir ? "/tmp", regressionTestPlatform ? "asterinas"
+, dnsServer ? "none", smp ? 1, initramfsCompressed ? true
+, regressionTestDirs ? null, }:
 let
-  crossSystem.config =
-    if target == "x86_64" then
-      "x86_64-unknown-linux-gnu"
-    else if target == "riscv64" then
-      "riscv64-unknown-linux-gnu"
-    else if target == "aarch64" then
-      "aarch64-unknown-linux-gnu"
-    else
-      throw "Target arch ${target} not yet supported.";
+  crossSystem.config = if target == "x86_64" then
+    "x86_64-unknown-linux-gnu"
+  else if target == "riscv64" then
+    "riscv64-unknown-linux-gnu"
+  else
+    throw "Target arch ${target} not yet supported.";
 
-  pkgs = import ../../../distro/nixpkgs.nix {
+  # Pinned nixpkgs (nix version: 2.29.1, channel: nixos-25.05, release date: 2025-07-01)
+  nixpkgs = fetchTarball {
+    url =
+      "https://github.com/NixOS/nixpkgs/archive/c0bebd16e69e631ac6e52d6eb439daba28ac50cd.tar.gz";
+    sha256 = "1fbhkqm8cnsxszw4d4g0402vwsi75yazxkpfx3rdvln4n6s68saf";
+  };
+  pkgs = import nixpkgs {
     config = { };
     overlays = [ ];
-    inherit system crossSystem;
+    inherit crossSystem;
   };
-  buildMachinePkgs = pkgs.pkgsBuildBuild;
-in
-rec {
+in rec {
   # Packages needed by initramfs
   busybox = pkgs.busybox;
-  benchmark = pkgs.callPackage ./benchmark { inherit benchmarkName; };
+  benchmark = pkgs.callPackage ./benchmark { };
   conformance = pkgs.callPackage ./conformance {
     inherit smp;
     testSuite = conformanceTestSuite;
     workDir = conformanceTestWorkDir;
-    testSelector = conformanceTestSelector;
   };
-  regression = pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
+  regression = pkgs.callPackage ./regression {
+    testPlatform = regressionTestPlatform;
+    testDirs = regressionTestDirs;
+  };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
     inherit busybox;
@@ -54,24 +47,17 @@ rec {
     inherit initramfs;
     compressed = initramfsCompressed;
   };
-  rootfs-image = pkgs.callPackage ./rootfs-image.nix { inherit initramfs; };
 
-  # These clients run on the build machine, so use its native packages here.
-  # This only selects host clients; guest packages above still use `pkgs` and
-  # keep the requested guest architecture. Use `pkgsBuildBuild` because lmbench
-  # reads `targetPlatform` for its build flags and installation paths;
-  # `buildPackages` would leave that field tied to the guest architecture.
-  apacheHttpd = buildMachinePkgs.apacheHttpd;
-  iperf3 = buildMachinePkgs.iperf3;
-  libmemcached = buildMachinePkgs.libmemcached.overrideAttrs (_: {
+  # Packages needed by host
+  apacheHttpd = pkgs.apacheHttpd;
+  iperf3 = pkgs.iperf3;
+  libmemcached = pkgs.libmemcached.overrideAttrs (_: {
     configureFlags = [ "--enable-memaslap" ];
     LDFLAGS = "-lpthread";
     CPPFLAGS = "-fcommon -fpermissive";
   });
-  lmbench = buildMachinePkgs.callPackage ./benchmark/lmbench.nix { };
-  redis =
-    (buildMachinePkgs.redis.overrideAttrs (_: {
-      doCheck = false;
-    })).override
-      { withSystemd = false; };
+  lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
+  redis = (pkgs.redis.overrideAttrs (_: { doCheck = false; })).override {
+    withSystemd = false;
+  };
 }

@@ -42,6 +42,7 @@ sleep 0.2
 ./unix_seqpacket_err
 ./unix_scm_rights_acyclic
 ./unix_stream_err
+./ipv6_udp
 
 ./netlink_padding
 ./netlink_route
