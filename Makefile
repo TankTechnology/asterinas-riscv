@@ -148,6 +148,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_udp)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
@@ -1051,6 +1054,10 @@ else ifeq ($(AUTO_TEST), ipv6_udp)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-udp"
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "udp-user-buffer-prefault"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Dynamic clock regression passed." \
