@@ -33,8 +33,35 @@ use crate::{
     errors::BindError,
     ext::Ext,
     socket::{TcpListenerBg, UdpSocketBg},
-    socket_table::{SocketTable, TcpSocketRegistry, UdpSocketRegistry},
+    socket_table::{SocketRegistries, SocketTable, TcpSocketRegistry, UdpSocketRegistry},
 };
+
+/// Configuration shared by all concrete interface constructors.
+pub struct IfaceConfig<E: Ext> {
+    name: CString,
+    type_: InterfaceType,
+    flags: InterfaceFlags,
+    sched_poll: E::ScheduleNextPoll,
+    socket_registries: Arc<SocketRegistries<E>>,
+}
+
+impl<E: Ext> IfaceConfig<E> {
+    pub fn new(
+        name: CString,
+        type_: InterfaceType,
+        flags: InterfaceFlags,
+        sched_poll: E::ScheduleNextPoll,
+        socket_registries: Arc<SocketRegistries<E>>,
+    ) -> Self {
+        Self {
+            name,
+            type_,
+            flags,
+            sched_poll,
+            socket_registries,
+        }
+    }
+}
 
 pub struct IfaceCommon<E: Ext> {
     index: u32,
@@ -45,8 +72,7 @@ pub struct IfaceCommon<E: Ext> {
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
-    udp_registry: Arc<UdpSocketRegistry<E>>,
-    tcp_registry: Arc<TcpSocketRegistry<E>>,
+    socket_registries: Arc<SocketRegistries<E>>,
     sched_poll: E::ScheduleNextPoll,
 }
 
@@ -81,15 +107,15 @@ impl From<IpAddress> for NormalizedAddress {
 }
 
 impl<E: Ext> IfaceCommon<E> {
-    pub(super) fn new(
-        name: CString,
-        type_: InterfaceType,
-        flags: InterfaceFlags,
-        interface: smoltcp::iface::Interface,
-        sched_poll: E::ScheduleNextPoll,
-        udp_registry: Arc<UdpSocketRegistry<E>>,
-        tcp_registry: Arc<TcpSocketRegistry<E>>,
-    ) -> Self {
+    pub(super) fn new(interface: smoltcp::iface::Interface, config: IfaceConfig<E>) -> Self {
+        let IfaceConfig {
+            name,
+            type_,
+            flags,
+            sched_poll,
+            socket_registries,
+        } = config;
+
         // Linux reserves interface index 1 for the loopback device in every
         // network namespace.  In particular, systemd configures a freshly
         // created namespace by addressing `lo` through the fixed
@@ -113,8 +139,7 @@ impl<E: Ext> IfaceCommon<E> {
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
-            udp_registry,
-            tcp_registry,
+            socket_registries,
             sched_poll,
         }
     }
@@ -171,12 +196,12 @@ impl<E: Ext> IfaceCommon<E> {
         self.sockets.lock()
     }
 
-    pub(crate) fn udp_registry(&self) -> &Arc<UdpSocketRegistry<E>> {
-        &self.udp_registry
+    pub(crate) fn udp_registry(&self) -> &UdpSocketRegistry<E> {
+        self.socket_registries.udp()
     }
 
-    pub(crate) fn tcp_registry(&self) -> &Arc<TcpSocketRegistry<E>> {
-        &self.tcp_registry
+    pub(crate) fn tcp_registry(&self) -> &TcpSocketRegistry<E> {
+        self.socket_registries.tcp()
     }
 }
 
@@ -209,13 +234,12 @@ impl<E: Ext> IfaceCommon<E> {
         protocol: PortProtocol,
     ) -> Result<BoundPort<E>, BindError> {
         let addr = config.addr();
-        let udp_registry = self.udp_registry.clone();
-        let tcp_registry = self.tcp_registry.clone();
+        let socket_registries = self.socket_registries.clone();
         let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |port| {
             matches!(addr, IpAddress::Ipv4(_))
                 && match protocol {
-                    PortProtocol::Tcp => tcp_registry.has_dual_port(port),
-                    PortProtocol::Udp => udp_registry.has_dual_port(port),
+                    PortProtocol::Tcp => socket_registries.tcp().has_dual_port(port),
+                    PortProtocol::Udp => socket_registries.udp().has_dual_port(port),
                 }
         })?;
         Ok(BoundPort {
@@ -280,8 +304,8 @@ impl<E: Ext> IfaceCommon<E> {
         let mut context = PollContext::new(
             interface.as_mut(),
             &sockets,
-            &self.udp_registry,
-            &self.tcp_registry,
+            self.socket_registries.udp(),
+            self.socket_registries.tcp(),
             self.index,
             &mut socket_actions,
         );
