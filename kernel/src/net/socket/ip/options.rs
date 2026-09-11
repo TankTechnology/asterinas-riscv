@@ -161,9 +161,19 @@ impl Ipv6OptionSet {
         Ok(())
     }
 
-    pub(super) fn set_option(&mut self, option: &dyn SocketOption) -> Result<()> {
+    pub(super) fn set_option(
+        &mut self,
+        option: &dyn SocketOption,
+        is_socket_bound: bool,
+    ) -> Result<()> {
         sock_option_ref!(match option {
             v6only @ V6Only => {
+                if is_socket_bound {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "IPV6_V6ONLY cannot be changed after binding the socket"
+                    );
+                }
                 self.v6only = *v6only.get().unwrap();
             }
             _ => return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option is unknown"),

@@ -73,10 +73,40 @@ int main(void)
 	int conflict = -1;
 	int strict_listener = -1;
 	int ipv4_owner = -1;
+	int reverse_ipv4 = -1;
+	int reverse_dual = -1;
 	int v6only = 0;
 
 	signal(SIGALRM, timeout_handler);
 	alarm(10);
+
+	struct sockaddr_in reverse_ipv4_address = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	socklen_t reverse_ipv4_length = sizeof(reverse_ipv4_address);
+	reverse_ipv4 = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(reverse_ipv4 >= 0, "reverse-ipv4-socket");
+	CHECK(bind(reverse_ipv4, (struct sockaddr *)&reverse_ipv4_address,
+		   sizeof(reverse_ipv4_address)) == 0,
+	      "reverse-ipv4-bind");
+	CHECK(getsockname(reverse_ipv4,
+			  (struct sockaddr *)&reverse_ipv4_address,
+			  &reverse_ipv4_length) == 0,
+	      "reverse-ipv4-name");
+	reverse_dual = socket(AF_INET6, SOCK_DGRAM, 0);
+	CHECK(reverse_dual >= 0, "reverse-dual-socket");
+	wildcard.sin6_port = reverse_ipv4_address.sin_port;
+	errno = 0;
+	CHECK(bind(reverse_dual, (struct sockaddr *)&wildcard,
+		   sizeof(wildcard)) == -1 &&
+		      errno == EADDRINUSE,
+	      "reverse-dual-port-reservation");
+	close(reverse_dual);
+	reverse_dual = -1;
+	close(reverse_ipv4);
+	reverse_ipv4 = -1;
+	wildcard.sin6_port = 0;
 
 	listener = socket(AF_INET6, SOCK_DGRAM, 0);
 	CHECK(listener >= 0, "dual-socket");
@@ -205,6 +235,10 @@ int main(void)
 	return EXIT_SUCCESS;
 
 fail:
+	if (reverse_dual >= 0)
+		close(reverse_dual);
+	if (reverse_ipv4 >= 0)
+		close(reverse_ipv4);
 	if (ipv4_owner >= 0)
 		close(ipv4_owner);
 	if (strict_listener >= 0)

@@ -88,13 +88,16 @@ impl InitStream {
         self.family
     }
 
-    pub(super) fn bind(&mut self, endpoint: &IpEndpoint, can_reuse: bool) -> Result<()> {
+    pub(super) fn bind(
+        &mut self,
+        endpoint: &IpEndpoint,
+        can_reuse: bool,
+        v6only: bool,
+    ) -> Result<()> {
         if self.bound_port.is_some() {
             return_errno_with_message!(Errno::EINVAL, "the socket is already bound to an address");
         }
 
-        // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
-        // IPv6 addresses.
         if IpAddressFamily::from(endpoint.addr) != self.family {
             return_errno_with_message!(
                 Errno::EAFNOSUPPORT,
@@ -102,7 +105,7 @@ impl InitStream {
             );
         }
 
-        self.bound_port = Some(bind_port(endpoint, can_reuse)?);
+        self.bound_port = Some(bind_port(endpoint, can_reuse, v6only)?);
 
         Ok(())
     }
@@ -123,8 +126,6 @@ impl InitStream {
             "`finish_last_connect()` should be called before calling `connect()`"
         );
 
-        // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
-        // IPv6 addresses.
         if IpAddressFamily::from(remote_endpoint.addr) != self.family {
             return Err((
                 Error::with_message(
@@ -165,7 +166,7 @@ impl InitStream {
                     ));
                 }
             };
-            match bind_port(&endpoint, can_reuse) {
+            match bind_port(&endpoint, can_reuse, false) {
                 Ok(bound_port) => bound_port,
                 Err(err) => return Err((err, self)),
             }
@@ -233,7 +234,7 @@ impl InitStream {
                         IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0)
                     }
                 };
-                match bind_port(&endpoint, false) {
+                match bind_port(&endpoint, false, v6only) {
                     Ok(bound_port) => bound_port,
                     Err(err) => return Err((err, self)),
                 }
@@ -302,7 +303,9 @@ impl InitStream {
     }
 }
 
-fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundTcpPort> {
-    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse)?;
+fn bind_port(endpoint: &IpEndpoint, can_reuse: bool, v6only: bool) -> Result<BoundTcpPort> {
+    let dual_stack =
+        matches!(endpoint.addr, IpAddress::Ipv6(addr) if addr.is_unspecified()) && !v6only;
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack)?;
     Ok(iface.bind_tcp(config)?)
 }

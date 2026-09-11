@@ -5,7 +5,7 @@
 
 use alloc::{
     boxed::Box,
-    collections::btree_map::BTreeMap,
+    collections::btree_map::{BTreeMap, Entry},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -17,6 +17,7 @@ use ostd::{const_assert, sync::SpinLock};
 use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 
 use crate::{
+    errors::BindError,
     ext::Ext,
     iface::Iface,
     socket::{TcpConnectionBg, TcpListenerBg, UdpSocketBg},
@@ -24,6 +25,67 @@ use crate::{
 };
 
 pub type SocketHash = u32;
+
+struct DualStackPortRegistry {
+    state: SpinLock<DualStackPortState, BottomHalfDisabled>,
+}
+
+struct DualStackPortState {
+    dual_ports: Vec<PortNum>,
+    ipv4_ports: BTreeMap<PortNum, usize>,
+}
+
+impl DualStackPortRegistry {
+    fn new() -> Self {
+        Self {
+            state: SpinLock::new(DualStackPortState {
+                dual_ports: Vec::new(),
+                ipv4_ports: BTreeMap::new(),
+            }),
+        }
+    }
+
+    fn bind_ipv4(
+        &self,
+        bind: impl FnOnce(&[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        let mut state = self.state.lock();
+        let result = bind(&state.dual_ports)?;
+        *state.ipv4_ports.entry(result.0).or_default() += 1;
+        Ok(result)
+    }
+
+    fn bind_dual_stack(
+        &self,
+        bind: impl FnOnce(&BTreeMap<PortNum, usize>, &[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        let mut state = self.state.lock();
+        let result = bind(&state.ipv4_ports, &state.dual_ports)?;
+        state.dual_ports.push(result.0);
+        Ok(result)
+    }
+
+    fn unregister_ipv4(&self, port: PortNum) {
+        let mut state = self.state.lock();
+        let Entry::Occupied(mut entry) = state.ipv4_ports.entry(port) else {
+            debug_assert!(false, "IPv4 port was not registered");
+            return;
+        };
+        *entry.get_mut() -= 1;
+        if *entry.get() == 0 {
+            entry.remove();
+        }
+    }
+
+    fn unregister_dual_stack(&self, port: PortNum) {
+        let mut state = self.state.lock();
+        let Some(index) = state.dual_ports.iter().position(|value| *value == port) else {
+            debug_assert!(false, "dual-stack port was not registered");
+            return;
+        };
+        state.dual_ports.swap_remove(index);
+    }
+}
 
 /// Socket registries shared by every interface in one network environment.
 pub struct SocketRegistries<E: Ext> {
@@ -66,10 +128,10 @@ impl<E: Ext> Default for SocketRegistries<E> {
 /// packet arrives through another interface.
 pub struct UdpSocketRegistry<E: Ext> {
     state: SpinLock<UdpSocketRegistryState<E>, BottomHalfDisabled>,
+    ports: DualStackPortRegistry,
 }
 
 struct UdpSocketRegistryState<E: Ext> {
-    dual_ports: Vec<PortNum>,
     sockets: BTreeMap<PortNum, Vec<Weak<UdpSocketBg<E>>>>,
 }
 
@@ -77,9 +139,9 @@ impl<E: Ext> UdpSocketRegistry<E> {
     pub fn new() -> Self {
         Self {
             state: SpinLock::new(UdpSocketRegistryState {
-                dual_ports: Vec::new(),
                 sockets: BTreeMap::new(),
             }),
+            ports: DualStackPortRegistry::new(),
         }
     }
 
@@ -128,24 +190,26 @@ impl<E: Ext> UdpSocketRegistry<E> {
         sockets
     }
 
-    pub(crate) fn register_dual_port(&self, port: PortNum) -> bool {
-        let mut state = self.state.lock();
-        if state.dual_ports.contains(&port) {
-            return false;
-        }
-        state.dual_ports.push(port);
-        true
+    pub(crate) fn bind_ipv4_port(
+        &self,
+        bind: impl FnOnce(&[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        self.ports.bind_ipv4(bind)
     }
 
-    pub(crate) fn unregister_dual_port(&self, port: PortNum) {
-        let mut state = self.state.lock();
-        if let Some(index) = state.dual_ports.iter().position(|value| *value == port) {
-            state.dual_ports.swap_remove(index);
-        }
+    pub(crate) fn bind_dual_stack_port(
+        &self,
+        bind: impl FnOnce(&BTreeMap<PortNum, usize>, &[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        self.ports.bind_dual_stack(bind)
     }
 
-    pub(crate) fn has_dual_port(&self, port: PortNum) -> bool {
-        self.state.lock().dual_ports.contains(&port)
+    pub(crate) fn unregister_ipv4_port(&self, port: PortNum) {
+        self.ports.unregister_ipv4(port);
+    }
+
+    pub(crate) fn unregister_dual_stack_port(&self, port: PortNum) {
+        self.ports.unregister_dual_stack(port);
     }
 }
 
@@ -255,10 +319,10 @@ impl From<(IpEndpoint, IpEndpoint)> for ConnectionKey {
 /// arrives or loops back through another interface.
 pub struct TcpSocketRegistry<E: Ext> {
     state: SpinLock<TcpSocketRegistryState<E>, BottomHalfDisabled>,
+    ports: DualStackPortRegistry,
 }
 
 struct TcpSocketRegistryState<E: Ext> {
-    dual_ports: Vec<PortNum>,
     listeners: BTreeMap<PortNum, Vec<Weak<TcpListenerBg<E>>>>,
     ifaces: BTreeMap<u32, Weak<dyn Iface<E>>>,
 }
@@ -267,10 +331,10 @@ impl<E: Ext> TcpSocketRegistry<E> {
     pub fn new() -> Self {
         Self {
             state: SpinLock::new(TcpSocketRegistryState {
-                dual_ports: Vec::new(),
                 listeners: BTreeMap::new(),
                 ifaces: BTreeMap::new(),
             }),
+            ports: DualStackPortRegistry::new(),
         }
     }
 
@@ -331,7 +395,7 @@ impl<E: Ext> TcpSocketRegistry<E> {
 
         if let Some(listener) = listeners
             .iter()
-            .find(|listener| listener.listener_key() == key)
+            .find(|listener| !listener.is_closed() && listener.listener_key() == key)
         {
             return Some(listener.clone());
         }
@@ -343,7 +407,7 @@ impl<E: Ext> TcpSocketRegistry<E> {
         let wildcard_key = ListenerKey::new(wildcard_addr, key.port);
         if let Some(listener) = listeners
             .iter()
-            .find(|listener| listener.listener_key() == &wildcard_key)
+            .find(|listener| !listener.is_closed() && listener.listener_key() == &wildcard_key)
         {
             return Some(listener.clone());
         }
@@ -353,29 +417,33 @@ impl<E: Ext> TcpSocketRegistry<E> {
         }
         let v6_wildcard =
             ListenerKey::new(IpAddress::Ipv6(core::net::Ipv6Addr::UNSPECIFIED), key.port);
-        listeners
-            .into_iter()
-            .find(|listener| listener.listener_key() == &v6_wildcard && listener.accepts_ipv4())
+        listeners.into_iter().find(|listener| {
+            !listener.is_closed()
+                && listener.listener_key() == &v6_wildcard
+                && listener.accepts_ipv4()
+        })
     }
 
-    pub(crate) fn register_dual_port(&self, port: PortNum) -> bool {
-        let mut state = self.state.lock();
-        if state.dual_ports.contains(&port) {
-            return false;
-        }
-        state.dual_ports.push(port);
-        true
+    pub(crate) fn bind_ipv4_port(
+        &self,
+        bind: impl FnOnce(&[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        self.ports.bind_ipv4(bind)
     }
 
-    pub(crate) fn unregister_dual_port(&self, port: PortNum) {
-        let mut state = self.state.lock();
-        if let Some(index) = state.dual_ports.iter().position(|value| *value == port) {
-            state.dual_ports.swap_remove(index);
-        }
+    pub(crate) fn bind_dual_stack_port(
+        &self,
+        bind: impl FnOnce(&BTreeMap<PortNum, usize>, &[PortNum]) -> Result<(PortNum, bool), BindError>,
+    ) -> Result<(PortNum, bool), BindError> {
+        self.ports.bind_dual_stack(bind)
     }
 
-    pub(crate) fn has_dual_port(&self, port: PortNum) -> bool {
-        self.state.lock().dual_ports.contains(&port)
+    pub(crate) fn unregister_ipv4_port(&self, port: PortNum) {
+        self.ports.unregister_ipv4(port);
+    }
+
+    pub(crate) fn unregister_dual_stack_port(&self, port: PortNum) {
+        self.ports.unregister_dual_stack(port);
     }
 }
 
@@ -721,6 +789,95 @@ mod tests {
         );
 
         assert_ne!(ipv4_key, ipv6_key);
+    }
+
+    #[ktest]
+    fn dual_stack_ports_conflict_in_both_bind_orders() {
+        const PORT: PortNum = 8080;
+
+        let registry = DualStackPortRegistry::new();
+        registry
+            .bind_ipv4(|dual_ports| {
+                assert!(!dual_ports.contains(&PORT));
+                Ok((PORT, false))
+            })
+            .unwrap();
+        assert_eq!(
+            registry.bind_dual_stack(|ipv4_ports, dual_ports| {
+                if ipv4_ports.contains_key(&PORT) || dual_ports.contains(&PORT) {
+                    Err(BindError::InUse)
+                } else {
+                    Ok((PORT, false))
+                }
+            }),
+            Err(BindError::InUse)
+        );
+        registry.unregister_ipv4(PORT);
+
+        registry
+            .bind_dual_stack(|ipv4_ports, dual_ports| {
+                assert!(!ipv4_ports.contains_key(&PORT));
+                assert!(!dual_ports.contains(&PORT));
+                Ok((PORT, false))
+            })
+            .unwrap();
+        assert_eq!(
+            registry.bind_dual_stack(|ipv4_ports, dual_ports| {
+                if ipv4_ports.contains_key(&PORT) || dual_ports.contains(&PORT) {
+                    Err(BindError::InUse)
+                } else {
+                    Ok((PORT, true))
+                }
+            }),
+            Err(BindError::InUse)
+        );
+        assert_eq!(
+            registry.bind_ipv4(|dual_ports| {
+                if dual_ports.contains(&PORT) {
+                    Err(BindError::InUse)
+                } else {
+                    Ok((PORT, false))
+                }
+            }),
+            Err(BindError::InUse)
+        );
+        registry.unregister_dual_stack(PORT);
+    }
+
+    #[ktest]
+    fn ipv4_port_remains_registered_until_last_owner_drops() {
+        const PORT: PortNum = 8080;
+
+        let registry = DualStackPortRegistry::new();
+        for _ in 0..2 {
+            registry
+                .bind_ipv4(|dual_ports| {
+                    assert!(!dual_ports.contains(&PORT));
+                    Ok((PORT, true))
+                })
+                .unwrap();
+        }
+
+        registry.unregister_ipv4(PORT);
+        assert_eq!(
+            registry.bind_dual_stack(|ipv4_ports, dual_ports| {
+                if ipv4_ports.contains_key(&PORT) || dual_ports.contains(&PORT) {
+                    Err(BindError::InUse)
+                } else {
+                    Ok((PORT, false))
+                }
+            }),
+            Err(BindError::InUse)
+        );
+        registry.unregister_ipv4(PORT);
+        registry
+            .bind_dual_stack(|ipv4_ports, dual_ports| {
+                assert!(!ipv4_ports.contains_key(&PORT));
+                assert!(!dual_ports.contains(&PORT));
+                Ok((PORT, false))
+            })
+            .unwrap();
+        registry.unregister_dual_stack(PORT);
     }
 }
 

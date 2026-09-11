@@ -6,6 +6,7 @@ use smoltcp::wire::{IpAddress, IpEndpoint};
 pub struct BindPortConfig {
     addr: IpAddress,
     kind: PortKind,
+    dual_stack: bool,
 }
 
 enum PortKind {
@@ -31,7 +32,16 @@ impl BindPortConfig {
         Self {
             addr: endpoint.addr,
             kind,
+            dual_stack: false,
         }
+    }
+
+    /// Creates a configuration for an IPv6 wildcard port that also owns the
+    /// corresponding IPv4 port in the network namespace.
+    pub fn new_dual_stack(endpoint: IpEndpoint, can_reuse: bool) -> Self {
+        let mut config = Self::new(endpoint, can_reuse);
+        config.dual_stack = true;
+        config
     }
 
     /// Creates a new configuration for reusing the port of a listening socket.
@@ -39,11 +49,16 @@ impl BindPortConfig {
         Self {
             addr: endpoint.addr,
             kind: PortKind::Backlog(endpoint.port),
+            dual_stack: false,
         }
     }
 
     pub(super) fn is_backlog(&self) -> bool {
         matches!(self.kind, PortKind::Backlog(..))
+    }
+
+    pub(super) fn is_dual_stack(&self) -> bool {
+        self.dual_stack
     }
 
     pub(super) fn can_reuse(&self) -> bool {

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    marker::PhantomData,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
@@ -29,7 +32,7 @@ pub struct UdpSocketInner<E: Ext> {
     socket: SpinLock<Box<RawUdpSocket>, BottomHalfDisabled>,
     need_dispatch: AtomicBool,
     accepts_ipv4: bool,
-    _ipv4_bound: Option<BoundUdpPort<E>>,
+    ext: PhantomData<fn() -> E>,
 }
 
 impl<E: Ext> Inner<E> for UdpSocketInner<E> {
@@ -44,13 +47,6 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
         // closed socket through its weak reference.
         this.bound.iface().common().remove_udp_socket(this);
 
-        if this.inner.accepts_ipv4 {
-            this.bound
-                .iface()
-                .common()
-                .udp_registry()
-                .unregister_dual_port(this.bound.port());
-        }
         this.bound
             .iface()
             .common()
@@ -172,37 +168,11 @@ impl<E: Ext> UdpSocket<E> {
             socket
         };
 
-        let ipv4_bound = if accepts_ipv4 {
-            let ipv4_endpoint = smoltcp::wire::IpEndpoint::new(
-                IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED),
-                local_endpoint.port,
-            );
-            let Ok(ipv4_bound) = bound
-                .iface()
-                .bind_udp(crate::iface::BindPortConfig::new(ipv4_endpoint, false))
-            else {
-                return Err((bound, smoltcp::socket::udp::BindError::Unaddressable));
-            };
-            Some(ipv4_bound)
-        } else {
-            None
-        };
-
-        if accepts_ipv4
-            && !bound
-                .iface()
-                .common()
-                .udp_registry()
-                .register_dual_port(local_endpoint.port)
-        {
-            return Err((bound, smoltcp::socket::udp::BindError::InvalidState));
-        }
-
         let inner = UdpSocketInner {
             socket: SpinLock::new(socket),
             need_dispatch: AtomicBool::new(false),
             accepts_ipv4,
-            _ipv4_bound: ipv4_bound,
+            ext: PhantomData,
         };
 
         let socket = Self::new(bound, inner);

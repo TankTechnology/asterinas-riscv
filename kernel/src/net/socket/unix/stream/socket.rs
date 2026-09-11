@@ -350,6 +350,10 @@ impl SocketPrivate for UnixStreamSocket {
 }
 
 impl Socket for UnixStreamSocket {
+    fn supports_partial_send(&self) -> bool {
+        !self.is_seqpacket()
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let addr = UnixSocketAddr::try_from(socket_addr)?;
 

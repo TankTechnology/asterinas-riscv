@@ -480,7 +480,7 @@ impl SocketPrivate for StreamSocket {
 }
 
 impl Socket for StreamSocket {
-    fn is_stream_socket(&self) -> bool {
+    fn supports_partial_send(&self) -> bool {
         true
     }
 
@@ -494,7 +494,8 @@ impl Socket for StreamSocket {
         };
 
         let can_reuse = self.options.read().socket.reuse_addr();
-        init_stream.bind(&endpoint, can_reuse)
+        let v6only = self.options.read().ipv6.v6only();
+        init_stream.bind(&endpoint, can_reuse, v6only)
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
@@ -784,7 +785,11 @@ impl Socket for StreamSocket {
                 match options.ip.set_option(option, state.as_ref()) {
                     Err(err) if err.error() == Errno::ENOPROTOOPT => {
                         if self.family == IpAddressFamily::IPv6 {
-                            match options.ipv6.set_option(option) {
+                            let is_socket_bound = !matches!(
+                                state.as_ref(),
+                                State::Init(init_stream) if init_stream.bound_port().is_none()
+                            );
+                            match options.ipv6.set_option(option, is_socket_bound) {
                                 Ok(()) => NeedIfacePoll::FALSE,
                                 Err(err) if err.error() == Errno::ENOPROTOOPT => {
                                     // Deal with TCP-level options

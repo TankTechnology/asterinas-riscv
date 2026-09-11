@@ -36,9 +36,39 @@ static void send_all(int fd, const char *buf, size_t len)
 	}
 }
 
+static void test_unix_stream_partial_sendmsg(void)
+{
+	int sockets[2];
+	char good_buffer[] = "unix";
+	char received[sizeof(good_buffer) - 1];
+	struct iovec iov[2] = {
+		{ .iov_base = good_buffer, .iov_len = sizeof(good_buffer) - 1 },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = {
+		.msg_iov = iov,
+		.msg_iovlen = 2,
+	};
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) < 0)
+		fail("socketpair");
+	if (sendmsg(sockets[0], &message, 0) !=
+	    (ssize_t)(sizeof(good_buffer) - 1))
+		fail("unix stream sendmsg partial iovec");
+	if (recv(sockets[1], received, sizeof(received), 0) !=
+		    (ssize_t)sizeof(received) ||
+	    memcmp(received, good_buffer, sizeof(received)) != 0) {
+		fprintf(stderr, "unix stream partial iovec payload mismatch\n");
+		exit(EXIT_FAILURE);
+	}
+	close(sockets[0]);
+	close(sockets[1]);
+}
+
 int main(void)
 {
 	alarm(10);
+	test_unix_stream_partial_sendmsg();
 
 	struct sockaddr_in addr = {
 		.sin_family = AF_INET,
