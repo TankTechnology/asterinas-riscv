@@ -86,7 +86,7 @@ boot controller, persistent Asterinas Docker development container.
   success, and recovery to U-Boot.
 - [x] Record exact tests, evidence path, hashes, timings, and review result in
   this plan and commit the notes.
-- [ ] Fetch `asterinas-riscv/main`, prove it is an ancestor, push `HEAD:main`
+- [x] Fetch `asterinas-riscv/main`, prove it is an ancestor, push `HEAD:main`
   without force, and verify the fetched remote commit equals local `HEAD`.
 
 ## Physical-validation checkpoint (2026-09-11)
@@ -190,3 +190,8 @@ MMC deployment.  Evidence is under
 
 All seven entries in the published `sha256sums.txt` verified successfully.  No
 MMC partition was rewritten during implementation or physical validation.
+
+The fetched `asterinas-riscv/main` commit `67a2fd1a8` was an ancestor with zero
+remote-only commits.  The branch was published by ordinary fast-forward push;
+the first post-push fetch matched the code and validation-record commit
+`88e5d2aa0` exactly.
