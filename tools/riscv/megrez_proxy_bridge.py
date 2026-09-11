@@ -142,7 +142,8 @@ class ProxyBridge:
             mode="w+b",
         )
         self._process: BridgeProcess | None = None
-        self._ready = False
+        self._ever_ready = False
+        self._closed = False
         self._pid: int | None = None
         self._exit_status: int | None = None
         self._stderr_hex = ""
@@ -157,7 +158,7 @@ class ProxyBridge:
     @property
     def running(self) -> bool:
         return (
-            self._ready
+            self._ever_ready
             and self._process is not None
             and self._process.poll() is None
         )
@@ -174,11 +175,13 @@ class ProxyBridge:
     def start(self) -> ProxyBridge:
         if self.running:
             return self
-        if self._process is not None:
+        if self._closed or self._process is not None:
             raise ProxyBridgeError("proxy-bridge-state-invalid")
         if not self._probe(upstream=True, timeout=1.0):
+            self.close()
             raise ProxyBridgeError("proxy-upstream-unavailable")
         if self._probe(upstream=False, timeout=1.0):
+            self.close()
             raise ProxyBridgeError("proxy-listener-in-use")
 
         argv = (
@@ -200,6 +203,7 @@ class ProxyBridge:
             )
         except OSError as error:
             reason = error.errno if error.errno is not None else "unknown"
+            self.close()
             raise ProxyBridgeError(f"proxy-bridge-spawn:{reason}") from error
         self._process = process
         self._pid = process.pid
@@ -216,7 +220,7 @@ class ProxyBridge:
                 failure = "proxy-bridge-startup-timeout"
                 break
             if self._probe(upstream=False, timeout=remaining):
-                self._ready = True
+                self._ever_ready = True
                 return self
             self._sleeper(min(0.05, remaining))
 
@@ -230,29 +234,45 @@ class ProxyBridge:
             data = self.stderr_file.read(MAX_STDERR_BYTES)
             self.stderr_file.seek(position)
         except (OSError, ValueError):
-            data = b""
+            return
         self._stderr_hex = bytes(data).hex()
 
+    def _close_owned_stderr(self) -> None:
+        if self._owns_stderr and not self.stderr_file.closed:
+            self.stderr_file.close()
+
     def close(self) -> None:
-        process = self._process
-        if process is None:
+        if self._closed:
             return
+        process = self._process
         self._process = None
-        self._ready = False
-        status = process.poll()
-        if status is None:
-            self._terminate_group(process.pid, signal.SIGTERM)
-            try:
-                status = process.wait(timeout=self.config.shutdown_timeout)
-            except (subprocess.TimeoutExpired, TimeoutError):
-                self._terminate_group(process.pid, signal.SIGKILL)
+        try:
+            if process is None:
+                return
+            status = process.poll()
+            if status is None:
+                try:
+                    self._terminate_group(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     status = process.wait(timeout=self.config.shutdown_timeout)
-                except (subprocess.TimeoutExpired, TimeoutError) as error:
-                    self._capture_stderr()
-                    raise ProxyBridgeError("proxy-bridge-reap-timeout") from error
-        self._exit_status = status
-        self._capture_stderr()
+                except (subprocess.TimeoutExpired, TimeoutError):
+                    try:
+                        self._terminate_group(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        status = process.wait(timeout=self.config.shutdown_timeout)
+                    except (subprocess.TimeoutExpired, TimeoutError) as kill_error:
+                        raise ProxyBridgeError(
+                            "proxy-bridge-reap-timeout"
+                        ) from kill_error
+            self._exit_status = status
+        finally:
+            self._closed = True
+            self._capture_stderr()
+            self._close_owned_stderr()
 
     def summary(self) -> dict[str, object]:
         self._capture_stderr()
@@ -266,7 +286,7 @@ class ProxyBridge:
                 f"{self.config.upstream_address}:{self.config.upstream_port}"
             ),
             "pid": self._pid,
-            "ready": self._ready,
+            "ready": self._ever_ready,
             "exit_status": status,
             "stderr_hex": self._stderr_hex,
         }

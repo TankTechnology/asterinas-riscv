@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import io
 import importlib
+import signal
 import unittest
 from pathlib import Path
 from typing import Any
-import signal
 
 try:
     bridge: Any = importlib.import_module("tools.riscv.megrez_proxy_bridge")
@@ -203,6 +203,124 @@ class ProxyBridgeTests(unittest.TestCase):
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0][0], 4242)
         self.assertEqual(process.wait_timeouts, [2.0])
+
+    def test_close_latches_readiness_and_preserves_bounded_stderr(self) -> None:
+        process = FakeProcess()
+        stderr = io.BytesIO(b"bridge diagnostic\n")
+        instance = bridge.ProxyBridge(
+            bridge.ProxyBridgeConfig(),
+            process_factory=FakeProcessFactory(process),
+            endpoint_probe=EndpointState(),
+            monotonic=iter((0.0, 0.0, 0.1, 0.2)).__next__,
+            sleeper=lambda _seconds: None,
+            stderr_file=stderr,
+            terminate_group=lambda _pid, _signal: setattr(
+                process, "exit_status", -signal.SIGTERM
+            ),
+        )
+
+        instance.start()
+        instance.close()
+
+        self.assertFalse(instance.running)
+        self.assertEqual(instance.summary()["ready"], True)
+        self.assertEqual(
+            instance.summary()["stderr_hex"], b"bridge diagnostic\n".hex()
+        )
+
+    def test_closed_bridge_rejects_restart(self) -> None:
+        process = FakeProcess()
+        instance = bridge.ProxyBridge(
+            bridge.ProxyBridgeConfig(),
+            process_factory=FakeProcessFactory(process),
+            endpoint_probe=EndpointState(),
+            monotonic=iter((0.0, 0.0, 0.1, 0.2)).__next__,
+            sleeper=lambda _seconds: None,
+            stderr_file=io.BytesIO(),
+            terminate_group=lambda _pid, _signal: setattr(
+                process, "exit_status", -signal.SIGTERM
+            ),
+        )
+        instance.start()
+        instance.close()
+
+        with self.assertRaisesRegex(
+            bridge.ProxyBridgeError, "^proxy-bridge-state-invalid$"
+        ):
+            instance.start()
+
+    def test_close_reaps_a_process_that_vanishes_before_term(self) -> None:
+        process = FakeProcess()
+
+        def vanished(_pid: int, _signum: int) -> None:
+            process.exit_status = 0
+            raise ProcessLookupError
+
+        instance = bridge.ProxyBridge(
+            bridge.ProxyBridgeConfig(),
+            process_factory=FakeProcessFactory(process),
+            endpoint_probe=EndpointState(),
+            monotonic=iter((0.0, 0.0, 0.1, 0.2)).__next__,
+            sleeper=lambda _seconds: None,
+            stderr_file=io.BytesIO(),
+            terminate_group=vanished,
+        )
+        instance.start()
+
+        instance.close()
+
+        self.assertEqual(process.wait_timeouts, [2.0])
+        self.assertEqual(instance.summary()["exit_status"], 0)
+
+    def test_close_releases_only_an_internally_owned_stderr_spool(self) -> None:
+        def run(stderr_file: io.BytesIO | None) -> tuple[object, io.BytesIO]:
+            process = FakeProcess()
+            arguments = {}
+            if stderr_file is not None:
+                arguments["stderr_file"] = stderr_file
+            instance = bridge.ProxyBridge(
+                bridge.ProxyBridgeConfig(),
+                process_factory=FakeProcessFactory(process),
+                endpoint_probe=EndpointState(),
+                monotonic=iter((0.0, 0.0, 0.1, 0.2)).__next__,
+                sleeper=lambda _seconds: None,
+                terminate_group=lambda _pid, _signal: setattr(
+                    process, "exit_status", -signal.SIGTERM
+                ),
+                **arguments,
+            )
+            instance.start()
+            instance.stderr_file.write(b"owned lifecycle\n")
+            owned_file = instance.stderr_file
+            instance.close()
+            return instance, owned_file
+
+        owned_instance, owned_file = run(None)
+        caller_file = io.BytesIO()
+        _caller_instance, returned_caller_file = run(caller_file)
+
+        self.assertTrue(owned_file.closed)
+        self.assertEqual(
+            owned_instance.summary()["stderr_hex"], b"owned lifecycle\n".hex()
+        )
+        self.assertIs(returned_caller_file, caller_file)
+        self.assertFalse(caller_file.closed)
+
+    def test_preflight_failure_closes_an_internally_owned_stderr_spool(self) -> None:
+        instance = bridge.ProxyBridge(
+            bridge.ProxyBridgeConfig(),
+            process_factory=FakeProcessFactory(),
+            endpoint_probe=EndpointState(upstream=False),
+        )
+        owned_file = instance.stderr_file
+
+        with self.assertRaisesRegex(
+            bridge.ProxyBridgeError, "^proxy-upstream-unavailable$"
+        ):
+            instance.start()
+
+        self.assertTrue(owned_file.closed)
+        self.assertEqual(instance.summary()["ready"], False)
 
     def test_configuration_is_canonical_and_bounded(self) -> None:
         invalid = (
