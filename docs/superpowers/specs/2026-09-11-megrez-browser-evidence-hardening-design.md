@@ -56,6 +56,27 @@ after a completed run may still have a nonzero signal-derived exit status; the
 latched readiness and owned shutdown evidence distinguish that from startup
 failure.
 
+## Firefox page deadline contract
+
+The physical trace proved that the Baidu DOM and JSON evidence completed before
+the old shared deadline, while framebuffer encoding, bounded diagnostic replay,
+and the serial status acknowledgement crossed it.  Those are different stages
+and therefore use three explicit budgets:
+
+- 650 seconds for Marionette connection, navigation, and DOM evidence;
+- 120 additional guest seconds for framebuffer capture and process
+  finalization;
+- 60 additional host seconds to drain bounded serial output and observe the
+  nonce-bound status acknowledgement.
+
+`run_baidu_home` receives the three budgets separately.  The guest gate's
+`--timeout` remains 650 seconds, `/usr/bin/timeout` bounds the gate process at
+770 seconds, and the host serial deadline is 830 seconds.  A guest timeout
+status remains a failure; the change does not accept partial DOM evidence or
+turn any deadline into an unbounded wait.  The existing host-wide deadline at
+guest second 1020 and kernel-owned reset at guest second 1050 remain the final
+safety boundary.
+
 ## Testing
 
 Tests are written before implementation and must demonstrate the missing
@@ -70,7 +91,11 @@ behavior first.  Coverage includes:
 - summaries after close retain captured stderr;
 - the clock API takes no browser PID and rejects an out-of-range host clock;
 - a passing Firefox result rejects absent or false proxy readiness;
-- failed Firefox results remain publishable with false readiness.
+- failed Firefox results remain publishable with false readiness;
+- orchestration passes the three budgets without collapsing them;
+- the generated guest command contains the 650-second page and 770-second
+  finalization limits while its host wait uses 830 seconds;
+- the wrapper-expanded serial command remains at most 768 bytes.
 
 The final verification runs the proxy, Firefox browse, desktop, GMAC, boot
 stability, physical graphics, browser guest-contract, and Debian rootfs test
