@@ -135,11 +135,21 @@ class _Operations:
         }
 
     def run_baidu_home(
-        self, browser_pid: int, nonce: str, _timeout: float
+        self,
+        browser_pid: int,
+        nonce: str,
+        page_timeout: float,
+        finalize_timeout: float,
+        ack_timeout: float,
     ) -> dict[str, object]:
         self.events.append("baidu-home")
         assert browser_pid == 116
         assert len(nonce) == 16
+        assert (page_timeout, finalize_timeout, ack_timeout) == (
+            650.0,
+            120.0,
+            60.0,
+        )
         if self.fail_at == "baidu-home":
             raise TimeoutError("Marionette homepage timed out")
         return {
@@ -216,6 +226,22 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertNotIn("asterinas.reboot_after=900", tokens)
         self.assertEqual(tokens.count("asterinas.tcp_diagnostic_port=2828"), 1)
         self.assertFalse(any("mmc_write_partition2" in token for token in tokens))
+
+    def test_page_stage_budgets_are_individually_bounded(self) -> None:
+        config = browse.FirefoxBrowseConfig()
+        self.assertEqual(
+            (config.page_timeout, config.finalize_timeout, config.ack_timeout),
+            (650.0, 120.0, 60.0),
+        )
+        for field, value in (
+            ("page_timeout", 651.0),
+            ("finalize_timeout", 121.0),
+            ("ack_timeout", 61.0),
+        ):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, "Firefox page stage deadlines"
+            ):
+                browse.FirefoxBrowseConfig(**{field: value})
 
     @mock.patch.object(browse, "validate_baidu_home")
     @mock.patch.object(browse, "validate_png_screenshot")
@@ -379,7 +405,9 @@ class FirefoxBrowseTests(unittest.TestCase):
         home = operations.run_baidu_home(
             116,
             "0123456789abcdef",
-            browse.FirefoxBrowseConfig().browse_timeout,
+            650.0,
+            120.0,
+            60.0,
         )
 
         self.assertEqual(clock["marker"], "ASTERINAS_CLOCK_SYNC_READY")
@@ -406,10 +434,11 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertIn("--firefox-pid 116", home_command)
         self.assertIn("ASTERINAS_MARIONETTE_DIAGNOSTICS=1", home_command)
         self.assertIn("ASTERINAS_MARIONETTE_DEBUG_ERRORS=1", home_command)
-        # Leave about one minute before the host's 1020-second guest deadline
-        # so a failed page gate can still export its bounded diagnostics.
-        self.assertIn("/usr/bin/timeout 660 ", home_command)
+        # Guest finalization and the host acknowledgement drain have separate
+        # bounded headroom after the page deadline.
+        self.assertIn("/usr/bin/timeout 770 ", home_command)
         self.assertIn("--timeout 650 ", home_command)
+        self.assertEqual(operations._run_long_step.call_args_list[1].args[3], 830.0)
         self.assertEqual(
             browse.RealFirefoxBrowseOperations.GUEST_LIFETIME_SECONDS, 1050
         )
@@ -436,7 +465,9 @@ class FirefoxBrowseTests(unittest.TestCase):
         operations.run_baidu_home(
             116,
             "0123456789abcdef",
-            browse.FirefoxBrowseConfig().browse_timeout,
+            browse.FirefoxBrowseConfig().page_timeout,
+            browse.FirefoxBrowseConfig().finalize_timeout,
+            browse.FirefoxBrowseConfig().ack_timeout,
         )
 
         command = operations._run_long_step.call_args.args[0]
@@ -460,6 +491,32 @@ class FirefoxBrowseTests(unittest.TestCase):
             "nonce=0123456789abcdef step=baidu-home status=%s\\n' \"$_s\""
         )
         self.assertLessEqual(len((transmitted + "\n").encode()), 768)
+
+    def test_baidu_gate_preserves_fractional_stage_deadlines(self) -> None:
+        operations = object.__new__(browse.RealFirefoxBrowseOperations)
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 10
+        operations._require_serial = mock.Mock(return_value=serial)
+        operations._run_long_step = mock.Mock()
+        operations._step_payload = mock.Mock(
+            return_value=(
+                b'{"marker":"DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",'
+                b'"scope":"baidu-home"}\n'
+            )
+        )
+
+        operations.run_baidu_home(
+            116,
+            "0123456789abcdef",
+            649.5,
+            119.5,
+            59.5,
+        )
+
+        call = operations._run_long_step.call_args
+        self.assertIn("/usr/bin/timeout 769 ", call.args[0])
+        self.assertIn("--timeout 649.5 ", call.args[0])
+        self.assertEqual(call.args[3], 828.5)
 
     def test_clock_sync_rejects_guest_time_outside_the_serial_attestation(self) -> None:
         operations = object.__new__(browse.RealFirefoxBrowseOperations)
