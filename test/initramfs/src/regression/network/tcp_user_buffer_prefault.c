@@ -38,6 +38,8 @@ static void send_all(int fd, const char *buf, size_t len)
 
 int main(void)
 {
+	alarm(10);
+
 	struct sockaddr_in addr = {
 		.sin_family = AF_INET,
 		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
@@ -77,6 +79,22 @@ int main(void)
 				len = SEND_CHUNK;
 			send_all(client_fd, send_buf + off, len);
 		}
+
+		char partial[3];
+		size_t received = 0;
+		while (received < sizeof(partial)) {
+			ssize_t n = recv(client_fd, partial + received,
+					 sizeof(partial) - received, 0);
+			if (n <= 0)
+				fail("child recv partial iovec");
+			received += (size_t)n;
+		}
+		if (memcmp(partial, "abc", sizeof(partial)) != 0) {
+			fprintf(stderr, "partial iovec payload mismatch\n");
+			return EXIT_FAILURE;
+		}
+		send_all(client_fd, "xyz", 3);
+
 		munmap(send_buf, PAYLOAD_LEN);
 		close(client_fd);
 		_exit(EXIT_SUCCESS);
@@ -113,6 +131,39 @@ int main(void)
 			return EXIT_FAILURE;
 		}
 	}
+
+	char good_buffer[] = "abc";
+	struct iovec iov[2] = {
+		{ .iov_base = good_buffer, .iov_len = sizeof(good_buffer) - 1 },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = {
+		.msg_iov = iov,
+		.msg_iovlen = 2,
+	};
+	if (sendmsg(server_fd, &message, 0) !=
+	    (ssize_t)(sizeof(good_buffer) - 1))
+		fail("sendmsg partial iovec");
+
+	char receive_prefix = 0;
+	iov[0].iov_base = &receive_prefix;
+	iov[0].iov_len = 1;
+	if (recvmsg(server_fd, &message, 0) != 1 || receive_prefix != 'x')
+		fail("recvmsg partial iovec");
+	char receive_suffix[2];
+	size_t suffix_received = 0;
+	while (suffix_received < sizeof(receive_suffix)) {
+		ssize_t n = recv(server_fd, receive_suffix + suffix_received,
+				 sizeof(receive_suffix) - suffix_received, 0);
+		if (n <= 0)
+			fail("recv partial iovec suffix");
+		suffix_received += (size_t)n;
+	}
+	if (memcmp(receive_suffix, "yz", sizeof(receive_suffix)) != 0) {
+		fprintf(stderr, "partial iovec receive suffix mismatch\n");
+		return EXIT_FAILURE;
+	}
+
 	munmap(recv_buf, PAYLOAD_LEN);
 	close(server_fd);
 	close(listen_fd);
@@ -120,6 +171,7 @@ int main(void)
 	if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != EXIT_SUCCESS)
 		return EXIT_FAILURE;
+	alarm(0);
 	puts("TCP user buffer prefault regression passed.");
 	return EXIT_SUCCESS;
 }
