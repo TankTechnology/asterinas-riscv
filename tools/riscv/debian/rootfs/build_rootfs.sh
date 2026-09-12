@@ -1157,51 +1157,7 @@ finalize_browser_startup_caches() {
     qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
         --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
-    # Keep the target-side diagnostic visible without rewriting Debian's
-    # usr-is-merged cache aliases.  The package postinst has already created
-    # the target-side caches; a force scan here can remove those files after
-    # treating the intentional /usr/share/fonts aliases as loops.  `-n`
-    # performs the target-side check while preserving the materialised cache.
-    local fontcache_log="$WORK_DIR/fontconfig-cache.log"
-    if ! run_chroot "$stage" /usr/bin/fc-cache -f -v >"$fontcache_log" 2>&1; then
-        printf '%s\n' 'fontconfig non-mutating probe failed' >&2
-    fi
-    # Materialise caches from the concrete font directories only.  Scanning
-    # /usr/share/fonts as a whole follows Debian's compatibility symlinks and
-    # can discard every cache as a loop; these real directories avoid that
-    # alias walk while covering the fonts shipped in this image.
-    local font_dir
-    for font_dir in \
-        /usr/share/fonts/X11/Type1 /usr/share/fonts/X11/misc \
-        /usr/share/fonts/truetype/dejavu /usr/share/fonts/truetype/wqy \
-        /usr/share/fonts/opentype/urw-base35 /usr/share/fonts/type1/urw-base35; do
-        [[ -d "$stage$font_dir" ]] || continue
-        if ! run_chroot "$stage" /usr/bin/fc-cache -f "$font_dir" >>"$fontcache_log" 2>&1; then
-            printf 'fontconfig directory scan failed: %s\n' "$font_dir" >&2
-        fi
-    done
-    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
-        if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-            # proot cannot currently expose fontconfig's host-side cache
-            # directory semantics. Keep a deterministic, non-empty marker so
-            # the startup-cache contract remains explicit; Firefox will build
-            # the real cache on first launch and the diagnostic log records the
-            # fallback. Native/binfmt builds remain fail-closed below.
-            printf '\004\374\002\374ASTERINAS_EXPLICIT_QEMU_FONTCONFIG_CACHE_PENDING\n' > \
-                "$stage/var/cache/fontconfig/asterinas-pending.cache-9"
-        fi
-    fi
-    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
-        printf '%s\n' 'fontconfig cache listing:' >&2
-        find "$stage/var/cache/fontconfig" -maxdepth 2 -printf '%M %u %g %p %s\\n' >&2 || :
-        printf '%s\n' 'fontconfig command output:' >&2
-        sed -n '1,120p' "$fontcache_log" >&2 || :
-    fi
-    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
-        die "staged fontconfig cache is absent"
+    generate_fontconfig_cache "$stage"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
@@ -1210,13 +1166,23 @@ finalize_browser_startup_caches() {
 
 generate_fontconfig_cache() {
     local stage="$1"
-    local cache_file
+    local cache_file font_root
     local scan_log="$stage/usr/share/asterinas/fontconfig-build.log"
 
+    # Cache headers embed directory mtimes. Normalize these inputs before
+    # scanning; the final whole-image timestamp pass must not invalidate them.
+    for font_root in /usr/share/fonts /usr/local/share/fonts; do
+        [[ -d "$stage$font_root" ]] || continue
+        find "$stage$font_root" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    done
     install -d -m 0755 -- "$stage/usr/share/asterinas"
+    install -d -m 0755 -- "$stage/var/cache/fontconfig"
     printf 'FONTCONFIG_BUILD_SOURCE_DATE_EPOCH unset\n' >"$scan_log"
     if ! (
         unset SOURCE_DATE_EPOCH
+        # The host workspace stays private (umask 077), but system font
+        # caches must be readable by the unprivileged desktop processes.
+        umask 022
         run_chroot "$stage" /usr/bin/fc-cache -f -v
     ) >>"$scan_log" 2>&1; then
         cat -- "$scan_log" >&2

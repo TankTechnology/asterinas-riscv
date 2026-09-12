@@ -1477,9 +1477,18 @@ class BrowserWebContractTests(unittest.TestCase):
             (root / "var/lib/systemd/catalog/database").write_bytes(
                 b"RHHHKSLP" + b"\0" * 24
             )
-            (root / "var/cache/fontconfig/fixture.cache-9").write_bytes(
-                b"\x04\xfc\x02\xfc" + b"\0" * 28
+            font_directory = root / "usr/share/fonts/fixture"
+            font_directory.mkdir(parents=True)
+            os.utime(font_directory, ns=(1704067200000000000,) * 2)
+            cache_dir_name = b"/usr/share/fonts/fixture\0"
+            font_cache_bytes = (
+                struct.pack(
+                    "<II7q", 0xFC02FC04, 9, 64 + len(cache_dir_name),
+                    64, 0, 0, 0, 1704067200, 0,
+                )
+                + cache_dir_name
             )
+            (root / "var/cache/fontconfig/fixture.cache-9").write_bytes(font_cache_bytes)
             unit = root / "etc/systemd/system/asterinas-browser-web.service"
             unit.write_text(
                 "[Service]\nUser=asterinas\nAmbientCapabilities=\n"
@@ -1498,6 +1507,19 @@ class BrowserWebContractTests(unittest.TestCase):
             os.utime(root / "etc/ld.so.cache", ns=(100, 100))
             with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", os.getuid()):
                 self.assertIn("ldconfig=riscv64", cache_check.check_cache_profile(root))
+                font_cache = root / "var/cache/fontconfig/fixture.cache-9"
+                font_cache.chmod(0o600)
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
+                    cache_check.check_cache_profile(root)
+                font_cache.chmod(0o644)
+                os.utime(font_directory, ns=(1704067200000000001,) * 2)
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
+                    cache_check.check_cache_profile(root)
+                os.utime(font_directory, ns=(1704067200000000000,) * 2)
+                font_cache.write_bytes(b"\x04\xfc\x02\xfcPENDING")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
+                    cache_check.check_cache_profile(root)
+                font_cache.write_bytes(font_cache_bytes)
 
                 unit_contents = unit.read_text()
                 unit.unlink()
@@ -1593,11 +1615,11 @@ class BrowserWebContractTests(unittest.TestCase):
                 (root / "var/cache/fontconfig/CACHEDIR.TAG").write_text("tag")
                 with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
                     cache_check.check_cache_profile(root)
-                font.write_bytes(b"\x04\xfc\x02\xfc" + b"\0" * 28)
+                font.write_bytes(font_cache_bytes)
                 font.write_bytes(b"arbitrary-font-bytes")
                 with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
                     cache_check.check_cache_profile(root)
-                font.write_bytes(b"\x04\xfc\x02\xfc" + b"\0" * 28)
+                font.write_bytes(font_cache_bytes)
 
                 catalog = root / "var/lib/systemd/catalog/database"
                 catalog.write_bytes(b"")
@@ -1684,26 +1706,37 @@ class BrowserWebContractTests(unittest.TestCase):
 source "$1"
 stage="$2/stage"
 mkdir -p "$stage/var/cache/fontconfig"
+mkdir -p "$stage/usr/share/fonts/fixture" "$stage/usr/local/share/fonts"
+touch -d @1800000000 "$stage/usr/share/fonts/fixture" "$stage/usr/local/share/fonts"
 attempt_file="$2/attempts"
 scenario="$3"
 printf '0\n' >"$attempt_file"
 export SOURCE_DATE_EPOCH=1704067200
+umask 077
+if [[ "$scenario" == failed ]]; then
+    printf 'old cache\n' >"$stage/var/cache/fontconfig/old.cache-9"
+fi
 chroot() {
     current="$(cat "$attempt_file")"
     current="$((current + 1))"
     printf '%s\n' "$current" >"$attempt_file"
+    [[ "$scenario" != failed ]] || return 1
     if [[ "$scenario" == success && -z "${SOURCE_DATE_EPOCH-}" && " $* " == *" -v "* ]]; then
+        [[ "$(stat -c %Y "$1/usr/share/fonts/fixture")" == 1704067200 ]] || return 1
+        [[ "$(stat -c %Y "$1/usr/local/share/fonts")" == 1704067200 ]] || return 1
         printf 'cache\n' >"$1/var/cache/fontconfig/retry.cache-9"
     fi
     return 0
 }
 generate_fontconfig_cache "$stage" "$3"
+[[ "$(umask)" == 0077 ]] || exit 3
 """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for scenario, expected_status, expected_attempts in (
                 ("success", 0, "1"),
                 ("empty", 2, "1"),
+                ("failed", 2, "1"),
             ):
                 with self.subTest(scenario=scenario):
                     work = root / scenario
@@ -1729,6 +1762,15 @@ generate_fontconfig_cache "$stage" "$3"
                     )
                     if scenario == "empty":
                         self.assertIn("fontconfig cache is absent", result.stderr)
+                    elif scenario == "failed":
+                        self.assertIn("fontconfig cache rebuild failed", result.stderr)
+                    else:
+                        self.assertEqual(
+                            (work / "stage/var/cache/fontconfig/retry.cache-9")
+                            .stat()
+                            .st_mode & 0o777,
+                            0o644,
+                        )
 
     def test_desktop_network_profile_requires_prebuilt_startup_caches(self) -> None:
         builder = ROOTFS / "build_rootfs.sh"
