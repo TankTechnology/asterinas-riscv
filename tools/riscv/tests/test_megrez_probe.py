@@ -1459,6 +1459,43 @@ class ProbeCliTests(unittest.TestCase):
         self.assertEqual(result, 2)
         factory.assert_not_called()
 
+    def test_qemu_rejects_a_stale_generation_before_process_launch(self) -> None:
+        mapping = _bundle_mapping()
+        stale = _extlinux_bytes().replace(
+            f"/{MMC_PATHS['kernel']}".encode(),
+            b"/asterinas-sv48-fe1dcfdf7.booti",
+        )
+        mapping["extlinux"] = {
+            "path": MMC_EXTLINUX,
+            "size": len(stale),
+            "sha256": hashlib.sha256(stale).hexdigest(),
+            "crc32": f"{zlib.crc32(stale):08x}",
+            "contents": stale.decode(),
+        }
+        self.bundle_path.write_bytes(_encoded(mapping))
+        factory = mock.Mock()
+
+        with redirect_stderr(io.StringIO()):
+            result = probe.main(
+                (
+                    "boot",
+                    "--bundle",
+                    str(self.bundle_path),
+                    "--output-directory",
+                    str(self.directory / "stale-qemu-result"),
+                    "--qemu",
+                    "--qemu-kernel",
+                    "/kernel",
+                    "--qemu-initramfs",
+                    "/initramfs",
+                ),
+                qemu_operations_factory=factory,
+                stdin_isatty=lambda: False,
+            )
+
+        self.assertEqual(result, 2)
+        factory.assert_not_called()
+
     def test_bounded_reader_rejects_fifo_without_waiting_for_a_writer(self) -> None:
         fifo = self.directory / "bundle.fifo"
         os.mkfifo(fifo)

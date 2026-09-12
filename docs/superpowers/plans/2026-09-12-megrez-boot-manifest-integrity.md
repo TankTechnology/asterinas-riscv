@@ -16,11 +16,11 @@
 - Create: `tools/riscv/megrez_boot_manifest.py`
 - Create: `tools/riscv/tests/test_megrez_boot_manifest.py`
 
-- [ ] Add a regression fixture for `MEGREZ-BOOT-MANIFEST-001` whose `linux` and `initrd` paths name the absent `asterinas-sv48-fe1dcfdf7.booti` and `initramfs-full-712208ba4.cpio`; require validation to report the missing kernel before any board operation.
-- [ ] Add failing tests for missing/duplicate `default`, `label`, `linux`, `initrd`, `fdt`, and `append` directives; path traversal; unexpected labels; mutable artifact names; and a path that does not contain the first 12 hexadecimal digits of the corresponding plan artifact SHA-256.
-- [ ] Implement `ExtlinuxGeneration` with strict UTF-8 parsing, canonical rendering, bounded input, exact directive cardinality, safe absolute paths, and `validate_against_plan(plan)`. Keep comments and generic extlinux features out of the accepted generated subset so that the audited bytes are deterministic.
-- [ ] Add staged-directory validation using descriptor-safe regular-file reads. Require each referenced file to match the plan size, SHA-256, and CRC32; reject symlinks and files that change while being read.
-- [ ] Run `python3 -m unittest -v tools.riscv.tests.test_megrez_boot_manifest` and commit only the new module and tests.
+- [x] Add a regression fixture for `MEGREZ-BOOT-MANIFEST-001` whose `linux` and `initrd` paths name the absent `asterinas-sv48-fe1dcfdf7.booti` and `initramfs-full-712208ba4.cpio`; require validation to report the missing kernel before any board operation.
+- [x] Add failing tests for missing/duplicate `default`, `label`, `linux`, `initrd`, `fdt`, and `append` directives; path traversal; unexpected labels; mutable artifact names; and a path that does not contain the first 12 hexadecimal digits of the corresponding plan artifact SHA-256.
+- [x] Implement `ExtlinuxGeneration` with strict UTF-8 parsing, canonical rendering, bounded input, exact directive cardinality, safe absolute paths, and `validate_against_plan(plan)`. Keep comments and generic extlinux features out of the accepted generated subset so that the audited bytes are deterministic.
+- [x] Add staged-directory validation using descriptor-safe regular-file reads. Require each referenced file to match the plan size, SHA-256, and CRC32; reject symlinks and files that change while being read.
+- [x] Run `python3 -m unittest -v tools.riscv.tests.test_megrez_boot_manifest` and commit only the new module and tests.
 
 ### Task 2: Bind `current.json` to the exact persistent configuration
 
@@ -28,11 +28,11 @@
 - Modify: `tools/riscv/megrez_probe.py`
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 
-- [ ] Add failing schema-v2 tests for an embedded extlinux identity with exact `path`, `size`, `sha256`, and `crc32`; reject legacy schema 1 on physical execution, digest mismatches, unsafe config paths, stale entry paths, and mutable artifact names.
-- [ ] Change `configure` to require `--extlinux-config` and `--mmc-extlinux`. Parse the config through `ExtlinuxGeneration`, require it to reference the exact three `--mmc-*` paths and plan identities, then atomically publish schema-v2 `current.json`.
-- [ ] Preserve QEMU fixture usability by allowing schema 1 only inside the explicit `--qemu` adapter. The ordinary physical command must load schema 2 before constructing or opening `PhysicalProbeOperations`.
-- [ ] Add the generation/config digest to the retained physical `result.json`, so a passing run identifies the persistent reset path it audited.
-- [ ] Run `python3 -m unittest -v tools.riscv.tests.test_megrez_probe` and commit only the probe/module test changes.
+- [x] Add failing schema-v2 tests for an embedded extlinux identity with exact `path`, `size`, `sha256`, and `crc32`; reject legacy schema 1 on physical execution, digest mismatches, unsafe config paths, stale entry paths, and mutable artifact names.
+- [x] Change `configure` to require `--extlinux-config` and `--mmc-extlinux`. Parse the config through `ExtlinuxGeneration`, require it to reference the exact three `--mmc-*` paths and plan identities, then atomically publish schema-v2 `current.json`.
+- [x] Preserve QEMU fixture usability by allowing schema 1 only inside the explicit `--qemu` adapter. The ordinary physical command must load schema 2 before constructing or opening `PhysicalProbeOperations`.
+- [x] Add the generation/config digest to the retained physical `result.json`, so a passing run identifies the persistent reset path it audited.
+- [x] Run `python3 -m unittest -v tools.riscv.tests.test_megrez_probe` and commit only the probe/module test changes.
 
 ### Task 3: Fail before `booti` when persistent MMC state is stale
 
@@ -40,10 +40,10 @@
 - Modify: `tools/riscv/megrez_probe.py`
 - Modify: `tools/riscv/tests/test_megrez_probe.py`
 
-- [ ] Add a failing physical-adapter test that expects the extlinux configuration to be loaded and CRC-checked first, then the kernel, initramfs, and DTB; any config error must prevent all artifact loads and `booti`.
-- [ ] Extend `PhysicalProbeOperations.ensure_artifacts()` to validate `/extlinux/asterinas.conf` at a dedicated non-overlapping load address before validating the three plan artifacts. Use the bundle's exact size/CRC and keep one monotonic deadline across all four reads.
-- [ ] Assert that the generated command stream contains no `saveenv`, filesystem write, YMODEM, network, partition-2, Firefox, or fallback boot action. A mismatch reports `manual-reset-required` only if the board state is no longer provably at U-Boot; otherwise it leaves the prompt live.
-- [ ] Run the focused physical-operation tests, then the full `test_megrez_probe` module, and commit the adapter change.
+- [x] Add a failing physical-adapter test that expects the extlinux configuration to be loaded and CRC-checked first, then the kernel, initramfs, and DTB; any config error must prevent all artifact loads and `booti`.
+- [x] Extend `PhysicalProbeOperations.ensure_artifacts()` to validate `/extlinux/asterinas.conf` at a dedicated non-overlapping load address before validating the three plan artifacts. Use the bundle's exact size/CRC and keep one monotonic deadline across all four reads.
+- [x] Assert that the generated command stream contains no `saveenv`, filesystem write, YMODEM, network, partition-2, Firefox, or fallback boot action. A mismatch reports `manual-reset-required` only if the board state is no longer provably at U-Boot; otherwise it leaves the prompt live.
+- [x] Run the focused physical-operation tests, then the full `test_megrez_probe` module, and commit the adapter change.
 
 ### Task 4: Generate a rollback-safe RockOS publication transaction
 
@@ -53,11 +53,11 @@
 - Modify: `tools/riscv/megrez_rockos_attestation.py`
 - Modify: `tools/riscv/tests/test_megrez_rockos_attestation.py`
 
-- [ ] Add failing tests for a publication command sequence that writes only new immutable artifact paths, verifies source and installed size/SHA-256, calls `sync`, writes the configuration to a same-directory temporary name, verifies it, atomically renames it to `/boot/extlinux/asterinas.conf` last, and calls `sync` again.
-- [ ] Reject an existing destination with different bytes, insufficient space, wrong `/boot` backing partition, shell metacharacters, overwritten artifact names, config publication before artifact verification, deletion of old files, or any partition-2 path.
-- [ ] Reuse the existing RockOS serial login/recovery lifecycle and credential handling. Add an explicit publication action; keep measurement as a separate post-reboot attestation and never place credentials in argv, environment, evidence JSON, or serial logs.
-- [ ] Publish a canonical generation manifest plus redacted transaction transcript atomically on the host. Failure must preserve the old config and old artifacts and must still attempt normal recovery to U-Boot.
-- [ ] Run both boot-manifest and RockOS test modules and commit the publication path.
+- [x] Add failing tests for a publication command sequence that writes only new immutable artifact paths, verifies source and installed size/SHA-256, calls `sync`, writes the configuration to a same-directory temporary name, verifies it, atomically renames it to `/boot/extlinux/asterinas.conf` last, and calls `sync` again.
+- [x] Reject an existing destination with different bytes, insufficient space, wrong `/boot` backing partition, shell metacharacters, overwritten artifact names, config publication before artifact verification, deletion of old files, or any partition-2 path.
+- [x] Reuse the existing RockOS serial login/recovery lifecycle and credential handling. Add an explicit publication action; keep measurement as a separate post-reboot attestation and never place credentials in argv, environment, evidence JSON, or serial logs.
+- [x] Publish a canonical generation manifest plus redacted transaction transcript atomically on the host. Failure must preserve the old config and old artifacts and must still attempt normal recovery to U-Boot.
+- [x] Run both boot-manifest and RockOS test modules and commit the publication path.
 
 ### Task 5: Add the automated regression gate and operator workflow
 
@@ -66,10 +66,16 @@
 - Modify: `tools/riscv/README.md`
 - Modify: `docs/superpowers/specs/2026-09-12-megrez-boot-manifest-integrity-design.md` only if implementation findings refine the approved contract
 
-- [ ] Add `test_riscv_megrez_boot_manifest_unit` and include it in the existing RISC-V host-test group without rebuilding an image or downloading dependencies.
-- [ ] Document the deployment-only sequence: create immutable SHA-prefixed names, render and locally validate the generation, publish once through RockOS, attest after reboot, and run `python3 -m tools.riscv.megrez_probe boot`. Document `MEGREZ-BOOT-MANIFEST-001` and the exact fail-closed message.
-- [ ] Add a QEMU regression that feeds the stale fixture and proves rejection before QEMU starts, then runs a valid schema-v2 bundle through the existing lightweight probe/recovery adapter.
-- [ ] Run Python format/static checks available in the persistent container, the two new unit modules, the existing probe/RockOS/boot-stability tests, `git diff --check`, and the existing QEMU probe gate. Commit only the Makefile/docs/test integration.
+- [x] Add `test_riscv_megrez_boot_manifest_unit` and include it in the existing RISC-V host-test group without rebuilding an image or downloading dependencies.
+- [x] Document the deployment-only sequence: create immutable SHA-prefixed names, render and locally validate the generation, publish once through RockOS, attest after reboot, and run `python3 -m tools.riscv.megrez_probe boot`. Document `MEGREZ-BOOT-MANIFEST-001` and the exact fail-closed message.
+- [x] Add a QEMU regression that feeds the stale fixture and proves rejection before QEMU starts, then runs a valid schema-v2 bundle through the existing lightweight probe/recovery adapter.
+- [x] Run Python format/static checks available in the persistent container, the two new unit modules, the existing probe/RockOS/boot-stability tests, `git diff --check`, and the existing QEMU probe gate. Commit only the Makefile/docs/test integration.
+
+QEMU evidence on 2026-09-12: bundle `1a44c248e8160522...` and extlinux
+`aaf76a1db7c696bd...` passed `boot syscall213` in 5.330 seconds and passed the
+30-second unattended recovery gate in 34.466 seconds.  An initial run using
+the network-only Stage1 failed closed at its expected TCP prerequisite and was
+not treated as manifest evidence.
 
 ### Task 6: Repair partition 1 once and prove one physical epoch
 

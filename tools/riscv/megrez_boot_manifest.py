@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import hashlib
 import json
@@ -12,8 +13,12 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import Any
 import zlib
+
+from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
+from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
 
 
 MAX_EXTLINUX_BYTES = 16 * 1024
@@ -49,6 +54,27 @@ class ExtlinuxGeneration:
     initrd: str
     fdt: str
     append: str
+
+    @classmethod
+    def for_plan(
+        cls, plan: Any, artifact_paths: dict[str, str]
+    ) -> ExtlinuxGeneration:
+        if not isinstance(artifact_paths, dict) or set(artifact_paths) != set(
+            ARTIFACT_ORDER
+        ):
+            raise BootManifestError("generation requires exactly three artifact paths")
+        label = f"asterinas-{plan.plan_sha256[:12]}"
+        generation = cls(
+            default=label,
+            label=label,
+            linux=artifact_paths["kernel"],
+            initrd=artifact_paths["initramfs"],
+            fdt=artifact_paths["megrez_dtb"],
+            append=plan.bootargs,
+        )
+        parsed = cls.from_bytes(generation.canonical_bytes())
+        parsed.validate_against_plan(plan)
+        return parsed
 
     @classmethod
     def from_bytes(cls, data: bytes) -> ExtlinuxGeneration:
@@ -199,6 +225,30 @@ def _read_regular_unchanged(
         os.close(descriptor)
 
 
+def write_generation(
+    plan: Any, artifact_paths: dict[str, str], output: Path
+) -> ExtlinuxGeneration:
+    """Atomically write one generated extlinux configuration."""
+
+    generation = ExtlinuxGeneration.for_plan(plan, artifact_paths)
+    directory = output.absolute().parent
+    current = Path(directory.anchor)
+    for component in directory.parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise BootManifestError("extlinux output path has an unsafe component")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with PinnedOutputDirectory(directory) as publication:
+        publication.atomic_write(
+            output.name, generation.canonical_bytes(), mode=0o600
+        )
+    return generation
+
+
 def _publication_inputs(
     generation: ExtlinuxGeneration, plan: Any, base_url: str, nonce: str
 ) -> dict[str, Any]:
@@ -306,3 +356,65 @@ def publication_manifest_bytes(
         },
     }
     return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def parse_args(arguments: tuple[str, ...]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("render",))
+    parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--mmc-kernel", required=True)
+    parser.add_argument("--mmc-initramfs", required=True)
+    parser.add_argument("--mmc-dtb", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    return parser.parse_args(arguments)
+
+
+def _read_debug_plan(path: Path) -> DebugPlan:
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        maximum = 64 * 1024
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum:
+            raise BootManifestError("debug plan is not a bounded regular file")
+        payload = bytearray()
+        while len(payload) <= maximum:
+            chunk = os.read(descriptor, maximum + 1 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) != metadata.st_size:
+            raise BootManifestError("debug plan changed while being read")
+        return DebugPlan.from_bytes(bytes(payload))
+    finally:
+        os.close(descriptor)
+
+
+def main(arguments: tuple[str, ...] | None = None) -> int:
+    values = parse_args(tuple(sys.argv[1:] if arguments is None else arguments))
+    try:
+        plan = _read_debug_plan(values.plan)
+        generation = write_generation(
+            plan,
+            {
+                "kernel": values.mmc_kernel,
+                "initramfs": values.mmc_initramfs,
+                "megrez_dtb": values.mmc_dtb,
+            },
+            values.output,
+        )
+    except (BootManifestError, DebugContractError, OSError) as error:
+        print(f"Megrez boot manifest failed: {error}", file=sys.stderr)
+        return 2
+    print(
+        "MEGREZ_BOOT_MANIFEST_RENDERED "
+        f"plan_sha256={plan.plan_sha256} "
+        f"sha256={hashlib.sha256(generation.canonical_bytes()).hexdigest()}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
