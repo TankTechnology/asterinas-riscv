@@ -28,10 +28,11 @@ from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan
 
 SERIAL_DEVICE = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_TEST-if00-port0"
 MMC_PATHS = {
-    "kernel": "asterinas-test.Image",
-    "initramfs": "asterinas-test-stage1.cpio",
-    "megrez_dtb": "dtbs/linux/eswin/eic7700-milkv-megrez.dtb",
+    "kernel": f"asterinas-{hashlib.sha256(b'kernel').hexdigest()[:12]}.booti",
+    "initramfs": f"stage1-{hashlib.sha256(b'initramfs').hexdigest()[:12]}.cpio",
+    "megrez_dtb": f"dtb/megrez-{hashlib.sha256(b'megrez_dtb').hexdigest()[:12]}.dtb",
 }
+MMC_EXTLINUX = "extlinux/asterinas.conf"
 
 
 def _plan() -> DebugPlan:
@@ -64,10 +65,23 @@ def _plan() -> DebugPlan:
     )
 
 
-def _bundle_mapping() -> dict[str, object]:
+def _extlinux_bytes(plan=None) -> bytes:
+    selected = plan or _plan()
+    label = f"asterinas-{selected.plan_sha256[:12]}"
+    return (
+        f"default {label}\n"
+        f"label {label}\n"
+        f"linux /{MMC_PATHS['kernel']}\n"
+        f"initrd /{MMC_PATHS['initramfs']}\n"
+        f"fdt /{MMC_PATHS['megrez_dtb']}\n"
+        f"append {selected.bootargs}\n"
+    ).encode()
+
+
+def _bundle_mapping(*, schema_version: int = 2) -> dict[str, object]:
     plan = _plan()
-    return {
-        "schema_version": 1,
+    mapping = {
+        "schema_version": schema_version,
         "plan": plan.to_dict(),
         "plan_sha256": plan.plan_sha256,
         "device": SERIAL_DEVICE,
@@ -76,6 +90,16 @@ def _bundle_mapping() -> dict[str, object]:
             for name in ("kernel", "initramfs", "megrez_dtb")
         ],
     }
+    if schema_version == 2:
+        config = _extlinux_bytes(plan)
+        mapping["extlinux"] = {
+            "path": MMC_EXTLINUX,
+            "size": len(config),
+            "sha256": hashlib.sha256(config).hexdigest(),
+            "crc32": f"{zlib.crc32(config):08x}",
+            "contents": config.decode(),
+        }
+    return mapping
 
 
 def _encoded(mapping: dict[str, object]) -> bytes:
@@ -97,6 +121,42 @@ class ProbeBundleTests(unittest.TestCase):
             hashlib.sha256(bundle.canonical_bytes()).hexdigest(),
         )
         self.assertEqual(probe.ProbeBundle.from_bytes(bundle.canonical_bytes()), bundle)
+        self.assertEqual(bundle.extlinux.path, MMC_EXTLINUX)
+        self.assertEqual(bundle.extlinux.contents.encode(), _extlinux_bytes())
+
+    def test_legacy_bundle_is_allowed_only_for_explicit_qemu(self) -> None:
+        bundle = probe.ProbeBundle.from_bytes(
+            _encoded(_bundle_mapping(schema_version=1))
+        )
+
+        bundle.validate()
+        with self.assertRaisesRegex(
+            probe.ProbeContractError, "schema 2 extlinux generation"
+        ):
+            bundle.require_physical_generation()
+
+    def test_bundle_rejects_changed_extlinux_identity(self) -> None:
+        for field, value in (
+            ("size", 1),
+            ("sha256", "f" * 64),
+            ("crc32", "f" * 8),
+        ):
+            with self.subTest(field=field):
+                mapping = _bundle_mapping()
+                mapping["extlinux"][field] = value  # type: ignore[index]
+                with self.assertRaisesRegex(
+                    probe.ProbeContractError, "extlinux identity"
+                ):
+                    probe.ProbeBundle.from_bytes(_encoded(mapping))
+
+    def test_bundle_rejects_extlinux_artifact_path_mismatch(self) -> None:
+        mapping = _bundle_mapping()
+        mapping["mmc_artifacts"][0]["path"] = "asterinas-other.booti"  # type: ignore[index]
+
+        with self.assertRaisesRegex(
+            probe.ProbeContractError, "extlinux artifact paths"
+        ):
+            probe.ProbeBundle.from_bytes(_encoded(mapping))
 
     def test_bundle_rejects_unknown_fields(self) -> None:
         mapping = _bundle_mapping()
@@ -555,6 +615,7 @@ class ProbeLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(result.selected_probes, ("boot", "syscall213"))
         self.assertEqual(len(result.outcomes), 2)
+        self.assertEqual(result.extlinux_sha256, self._bundle().extlinux.sha256)
 
     def test_fatal_transcript_cannot_publish_a_successful_probe(self) -> None:
         events: list[str] = []
@@ -728,6 +789,7 @@ class ProbePublisherTests(unittest.TestCase):
             ),
             elapsed_seconds=2.5,
             recovered=True,
+            extlinux_sha256=self.bundle.extlinux.sha256,
         )
 
     def test_success_publishes_private_hash_valid_result_last(self) -> None:
@@ -747,6 +809,7 @@ class ProbePublisherTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         result = json.loads((self.directory / "result.json").read_bytes())
         self.assertTrue(result["passed"])
+        self.assertEqual(result["extlinux_sha256"], self.bundle.extlinux.sha256)
         for line in (self.directory / "sha256sums.txt").read_text().splitlines():
             digest, name = line.split("  ", 1)
             self.assertEqual(
@@ -1184,6 +1247,8 @@ class ProbeCliTests(unittest.TestCase):
         self.directory = Path(self.temporary_directory.name)
         self.plan_path = self.directory / "plan.json"
         self.plan_path.write_bytes(_plan().canonical_bytes())
+        self.extlinux_path = self.directory / "asterinas.conf"
+        self.extlinux_path.write_bytes(_extlinux_bytes())
         self.bundle_path = self.directory / "current.json"
 
     def test_normal_cli_needs_only_probe_names(self) -> None:
@@ -1257,6 +1322,10 @@ class ProbeCliTests(unittest.TestCase):
                     MMC_PATHS["initramfs"],
                     "--mmc-dtb",
                     MMC_PATHS["megrez_dtb"],
+                    "--extlinux-config",
+                    str(self.extlinux_path),
+                    "--mmc-extlinux",
+                    MMC_EXTLINUX,
                     "--bundle",
                     str(self.bundle_path),
                 )
@@ -1265,6 +1334,8 @@ class ProbeCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         bundle = probe.ProbeBundle.from_bytes(self.bundle_path.read_bytes())
         self.assertEqual(bundle.plan_sha256, _plan().plan_sha256)
+        self.assertEqual(bundle.schema_version, 2)
+        self.assertEqual(bundle.extlinux.sha256, hashlib.sha256(_extlinux_bytes()).hexdigest())
         self.assertEqual(stat.S_IMODE(self.bundle_path.stat().st_mode), 0o600)
 
     def test_configure_does_not_change_an_existing_parent_mode(self) -> None:
@@ -1287,6 +1358,10 @@ class ProbeCliTests(unittest.TestCase):
                     MMC_PATHS["initramfs"],
                     "--mmc-dtb",
                     MMC_PATHS["megrez_dtb"],
+                    "--extlinux-config",
+                    str(self.extlinux_path),
+                    "--mmc-extlinux",
+                    MMC_EXTLINUX,
                     "--bundle",
                     str(bundle_path),
                 )
@@ -1326,6 +1401,28 @@ class ProbeCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         factory.assert_called_once_with(bundle)
         self.assertTrue(json.loads((output / "result.json").read_text())["passed"])
+
+    def test_physical_cli_rejects_legacy_bundle_before_opening_serial(self) -> None:
+        self.bundle_path.write_bytes(
+            _encoded(_bundle_mapping(schema_version=1))
+        )
+        factory = mock.Mock()
+
+        with redirect_stderr(io.StringIO()):
+            result = probe.main(
+                (
+                    "boot",
+                    "--bundle",
+                    str(self.bundle_path),
+                    "--output-directory",
+                    str(self.directory / "legacy-result"),
+                ),
+                operations_factory=factory,
+                stdin_isatty=lambda: False,
+            )
+
+        self.assertEqual(result, 2)
+        factory.assert_not_called()
 
     def test_bounded_reader_rejects_fifo_without_waiting_for_a_writer(self) -> None:
         fifo = self.directory / "bundle.fifo"
