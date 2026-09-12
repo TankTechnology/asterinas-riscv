@@ -27,3 +27,5 @@ SUBDIRS += riscv_flush_icache
 endif
 
 include ../common/Makefile
+
+$(OBJ_OUTPUT_DIR)/rseq: EXTRA_C_FLAGS += -pthread
