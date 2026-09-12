@@ -4,5 +4,6 @@
 #define ASTERINAS_STAGE1_PROBE_H
 
 int stage1_run_probe_agent(void);
+int stage1_run_probe_auto(void);
 
 #endif

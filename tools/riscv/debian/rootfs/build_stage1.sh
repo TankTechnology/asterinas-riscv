@@ -10,6 +10,7 @@ Usage: build_stage1.sh [OUTPUT]
        build_stage1.sh --print-entries
 
 Build the static RISC-V Debian root-handoff initramfs.
+Set STAGE1_BUSYBOX to a cached RISC-V BusyBox to include the Basic shell.
 EOF
 }
 
@@ -59,6 +60,7 @@ BROWSER_GATE_SOURCE="$SCRIPT_DIR/browser_web_marionette_gate.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+read -r -a EXTRA_LINK_FLAGS <<< "${RISC_V_LDFLAGS:-}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-0}"
 MAX_NEWC_TIMESTAMP=4294967295
 
@@ -145,12 +147,18 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
-    "$SOURCE" "$DEBUG_CONSOLE_SOURCE" "$PROBE_SOURCE" -o "$STAGE/init"
+    "$SOURCE" "$DEBUG_CONSOLE_SOURCE" "$PROBE_SOURCE" \
+    "${EXTRA_LINK_FLAGS[@]}" -o "$STAGE/init"
 chmod 0755 "$STAGE" "$STAGE/init"
 install -D -m 0755 -- "$BROWSER_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate"
 install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync"
+if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
+    PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.riscv.debian.rootfs.stage1_basic \
+        --stage "$STAGE" --busybox "$STAGE1_BUSYBOX"
+    find "$STAGE" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+fi
 touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE" \
     "$STAGE/init" \
@@ -173,13 +181,19 @@ printf '%s\n' \
     usr/lib/asterinas/megrez-clock-sync |
     cpio --quiet --reproducible --owner=0:0 --create --format=newc \
         --directory="$STAGE" >"$ARCHIVE"
+if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
+    # Keep the legacy archive byte-for-byte stable when Basic is not requested.
+    (cd "$STAGE" && find . -mindepth 1 ! -name initramfs.cpio -printf '%P\n' |
+        LC_ALL=C sort | cpio --quiet --reproducible --owner=0:0 \
+            --create --format=newc) >"$ARCHIVE"
+fi
 if [[ ! -s "$ARCHIVE" ]]; then
     printf 'error: generated initramfs is empty\n' >&2
     exit 1
 fi
 
 ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
-if [[ "$ARCHIVE_ENTRIES" != $'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\nusr/lib/asterinas/browser-web-marionette-gate\nusr/lib/asterinas/megrez-clock-sync' ]]; then
+if [[ -z "${STAGE1_BUSYBOX:-}" && "$ARCHIVE_ENTRIES" != $'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\nusr/lib/asterinas/browser-web-marionette-gate\nusr/lib/asterinas/megrez-clock-sync' ]]; then
     printf 'error: generated initramfs has unexpected entries\n' >&2
     exit 1
 fi
