@@ -108,6 +108,7 @@ _MAX_DMESG_BYTES = 32 * 1024
 _SERIAL_CONTEXT_BYTES = 2048
 _SERIAL_SUMMARY_BYTES = 8 * 1024
 _PHYSICAL_TRANSCRIPT_BYTES = 256 * 1024
+EXTLINUX_LOAD_ADDRESS = 0x88100000
 _PROBE_READY = b"ASTERINAS_PROBE_READY v=1 pid=1"
 _SOFTWARE_REBOOT_ARMED_30 = b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=30"
 _FATAL_REBOOT_MARKERS = (
@@ -1195,7 +1196,7 @@ class PhysicalProbeOperations:
         session_factory: Callable[..., BoardSession] = BoardSession.from_fd,
         serial_factory: Callable[..., SerialConsole] = SerialConsole,
     ) -> None:
-        bundle.validate()
+        bundle.require_physical_generation()
         self._bundle = bundle
         self._open_device = open_device
         self._lock_device = lock_device
@@ -1255,8 +1256,23 @@ class PhysicalProbeOperations:
         deadline = _deadline(timeout)
         session.command("mmc dev 1", timeout=max(0.001, deadline - time.monotonic()))
         session.command("mmc rescan", timeout=max(0.001, deadline - time.monotonic()))
+        extlinux = self._bundle.extlinux
+        assert extlinux is not None
+        config_size = session.load_artifact(
+            "extlinux",
+            extlinux.path,
+            EXTLINUX_LOAD_ADDRESS,
+            extlinux.crc32,
+        )
+        if config_size != extlinux.size:
+            raise ProbeContractError(
+                "extlinux: MMC size mismatch: expected "
+                f"{extlinux.size}, got {config_size}"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError("MMC artifact verification deadline expired")
         identities = {item.name: item for item in self._bundle.plan.artifacts}
-        outcomes = []
+        outcomes = ["extlinux:mmc"]
         for artifact in self._bundle.mmc_artifacts:
             identity = identities[artifact.name]
             actual_size = session.load_artifact(

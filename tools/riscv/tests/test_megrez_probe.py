@@ -968,9 +968,11 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
         self.session = mock.Mock()
         self.session.wait_for_uboot_prompt.return_value = "U-Boot 2024.01\n=> "
         identities = {item.name: item for item in self.bundle.plan.artifacts}
-        self.session.load_artifact.side_effect = lambda name, *_args: identities[
-            name
-        ].size
+        self.session.load_artifact.side_effect = lambda name, *_args: (
+            self.bundle.extlinux.size
+            if name == "extlinux"
+            else identities[name].size
+        )
         self.serial_instances: list[_PhysicalSerial] = []
         self.closed: list[int] = []
 
@@ -988,7 +990,7 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
             serial_factory=serial_factory,
         )
 
-    def test_physical_adapter_loads_only_three_mmc_artifacts_and_recovers(self) -> None:
+    def test_physical_adapter_checks_extlinux_before_three_artifacts(self) -> None:
         self.operations.open(10)
         self.operations.ensure_artifacts(10)
         bootargs = probe.probe_bootargs(self.bundle.plan, 90)
@@ -1005,6 +1007,13 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
             self.session.load_artifact.call_args_list,
             [
                 mock.call(
+                    "extlinux",
+                    MMC_EXTLINUX,
+                    probe.EXTLINUX_LOAD_ADDRESS,
+                    self.bundle.extlinux.crc32,
+                ),
+                *[
+                mock.call(
                     item.name,
                     MMC_PATHS[item.name],
                     item.load_address,
@@ -1012,6 +1021,7 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
                 )
                 for item in self.bundle.plan.artifacts
                 if item.name in ("kernel", "initramfs", "megrez_dtb")
+                ],
             ],
         )
         commands = [call.args[0] for call in self.session.command.call_args_list]
@@ -1039,6 +1049,31 @@ class PhysicalProbeOperationsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(probe.ProbeContractError, "size mismatch"):
             self.operations.ensure_artifacts(10)
+
+        self.assertEqual(self.session.load_artifact.call_count, 1)
+        self.session.start_boot_attempt.assert_not_called()
+        self.assertFalse(
+            any(
+                call.args[0].startswith("booti ")
+                for call in self.session.send.call_args_list
+            )
+        )
+
+    def test_physical_adapter_rejects_a_legacy_bundle_before_serial_open(self) -> None:
+        legacy = probe.ProbeBundle.from_bytes(
+            _encoded(_bundle_mapping(schema_version=1))
+        )
+        opened = []
+
+        with self.assertRaisesRegex(
+            probe.ProbeContractError, "schema 2 extlinux generation"
+        ):
+            probe.PhysicalProbeOperations(
+                legacy,
+                open_device=lambda device: opened.append(device),
+            )
+
+        self.assertEqual(opened, [])
 
     def test_interactive_shell_prints_complete_guest_responses(self) -> None:
         nonce = "0" * 32
