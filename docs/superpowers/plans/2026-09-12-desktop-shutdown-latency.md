@@ -85,6 +85,9 @@ The default menu and installed kernel stay untouched.
 - [ ] Design synchronization for pending cancellation and already-dequeued
   stop actions, including sibling threads and concurrent signal senders.
   Simply clearing one pending queue is insufficient.
+  A Linux/OSTEP-based proposal is written in
+  `docs/superpowers/specs/2026-09-12-signal-job-control-design.md`; specification
+  approval and the implementation lock audit are still pending.
 - [ ] Establish which processes still wait in the normal-console shutdown,
   and whether the missing cancellation actually causes that wait. Console
   routing and logging timing remain uncontrolled differences in the fast run.
