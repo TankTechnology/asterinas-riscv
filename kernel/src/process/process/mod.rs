@@ -5,8 +5,6 @@ use core::{
     time::Duration,
 };
 
-use ostd::timer::Jiffies;
-
 use self::timer_manager::PosixTimerManager;
 use super::{
     namespace::pid_ns::{PidNamespace, PidNsReservation},
@@ -158,7 +156,7 @@ pub struct Process {
     /// A manager that manages timer resources and utilities of the process.
     timer_manager: PosixTimerManager,
     /// Process start time since boot.
-    start_time: Jiffies,
+    start_time: Duration,
 
     // Namespaces
     /// The user namespace
@@ -282,7 +280,9 @@ impl Process {
                 exit_signal: AtomicSigNum::new_empty(),
                 prof_clock,
                 timer_manager,
-                start_time: Jiffies::elapsed(),
+                // Match /proc/uptime rather than accumulated timer IRQs,
+                // which can lag behind the clock source during startup.
+                start_time: aster_time::read_monotonic_time(),
                 user_ns: Mutex::new(user_ns),
             }
         })
@@ -352,7 +352,7 @@ impl Process {
     }
 
     /// Returns the process start time since boot.
-    pub fn start_time(&self) -> Jiffies {
+    pub fn start_time(&self) -> Duration {
         self.start_time
     }
 
