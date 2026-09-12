@@ -738,6 +738,9 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-systemd-debug-root",
             "root-init-systemd-debug-isolated-root",
             "root-init-probe",
+            "root-init-basic",
+            "root-init-probe-auto",
+            "root-init-volatile-home",
             "root-init-probe-debug-conflict",
             "root-init-probe-duplicate",
             "root-init-debug-with-interactive",
@@ -755,6 +758,7 @@ class DebianStage1Tests(unittest.TestCase):
             "systemd-software-desktop-root-label",
             "systemd-handoff-sequence",
             "systemd-debug-handoff-sequence",
+            "systemd-volatile-home-handoff",
             "systemd-exec",
         )
 
@@ -795,6 +799,13 @@ class DebianStage1Tests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        automatic = subprocess.run(
+            [binary, "--auto"], input="", capture_output=True, text=True, timeout=2
+        )
+        self.assertEqual(automatic.returncode, 0, automatic.stderr)
+        self.assertIn("name=boot detail=", automatic.stdout)
+        self.assertIn("count=1 status=pass", automatic.stdout)
+        self.assertIn("ASTERINAS_PROBE_AUTO_REBOOT", automatic.stdout)
         nonce = "00112233445566778899aabbccddeeff"
         request = (
             f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} "
