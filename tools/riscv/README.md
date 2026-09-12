@@ -39,6 +39,28 @@ or input responsiveness. The installed cold-profile ESR image still takes
 minutes to expose its window. The test allows up to 300 seconds after the root
 console appears; this is a timeout bound, not a performance target.
 
+### Build profile for desktop performance
+
+Use the existing optimized build for desktop performance qualification:
+
+```bash
+tools/docker/run_dev_container.sh --offline -- make kernel \
+  TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+This is a build-time choice, not an additional step on every boot. Keep the
+default `RELEASE=0` for unoptimized debugging when needed; do not use it as the
+desktop performance baseline. The installed September 12 menu kernel was built
+with `profile = "dev"`. Controlled QEMU measurements show substantial VM and
+Firefox executable-loading overhead compared with the same source in release
+mode. They do not yet establish full-window startup time on the board.
+
+Retain `target/osdk/aster-kernel/bundle.toml` with each candidate to record its
+build profile, alongside the existing artifact hashes. The optimized candidate
+must still pass the normal qualification before replacing the installed kernel;
+do not overwrite the menu's frozen kernel in place. Reuse the existing Debian
+image and Stage1. See the [measurements and short probe](../../docs/porting/evidence/2026-09-12-firefox-release-startup.md).
+
 Maintenance commands below run in the persistent development container. They
 are for changing/qualifying a generation, not commands to repeat each boot:
 
