@@ -180,6 +180,21 @@ class BootMenuTests(unittest.TestCase):
         )
         self.assertEqual(fields["fdtdir"], "/dtbs/linux-6.6/")
 
+    def test_fallback_selects_vendor_default_after_reordered_rescue_entry(self):
+        value = document()
+        header, stanzas = VENDOR.split("label l0\n", 1)
+        normal, rescue = stanzas.split("label l0r\n", 1)
+        value["vendor"] = header + "label l0r\n" + rescue + "label l0\n" + normal
+        value["extlinux"] = menu.render(value)
+        operations = Mock()
+        session = operations._require_session.return_value
+        with patch.object(board.os, "write"):
+            board.boot_cycle(
+                operations, value, "fallback", "debian", "fixture", "0" * 32
+            )
+        self.assertEqual(session.send.call_args_list[1].args, ("2",))
+        operations.reboot_and_recover.assert_called_once_with("fixture", 120)
+
     def test_rejects_missing_duplicate_or_inherited_defaults(self):
         variants = (
             VENDOR.replace("default l0\n", ""),
