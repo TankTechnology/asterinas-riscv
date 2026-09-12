@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import unittest
 
 from tools.riscv import megrez_rockos_attestation as rockos
+from tools.riscv.megrez_boot_manifest import ExtlinuxGeneration
 
 
 MMC_ARTIFACTS = {
@@ -25,12 +26,19 @@ MMC_ARTIFACTS = {
 def _plan():
     return SimpleNamespace(
         plan_sha256="a" * 64,
+        bootargs="console=ttyS0 init=/init",
         artifacts=tuple(
-            SimpleNamespace(name=name, size=size, sha256=digest)
-            for name, size, digest in (
-                ("kernel", 101, "1" * 64),
-                ("initramfs", 202, "2" * 64),
-                ("megrez_dtb", 303, "3" * 64),
+            SimpleNamespace(
+                name=name,
+                size=size,
+                sha256=digest,
+                crc32=crc32,
+                load_address=load_address,
+            )
+            for name, size, digest, crc32, load_address in (
+                ("kernel", 101, "1" * 64, "11111111", 0x80200000),
+                ("initramfs", 202, "2" * 64, "22222222", 0x83000000),
+                ("megrez_dtb", 303, "3" * 64, "33333333", 0xF0000000),
             )
         ),
         validate=lambda: None,
@@ -69,6 +77,39 @@ def _measurement_log(plan=None, nonce="4" * 32):
     return ("\r\n".join(lines) + "\r\n").encode()
 
 
+def _generation(plan=None):
+    selected = plan or _plan()
+    identities = {identity.name: identity for identity in selected.artifacts}
+    label = f"asterinas-{selected.plan_sha256[:12]}"
+    return ExtlinuxGeneration.from_bytes(
+        (
+            f"default {label}\n"
+            f"label {label}\n"
+            f"linux /asterinas-{identities['kernel'].sha256[:12]}.booti\n"
+            f"initrd /stage1-{identities['initramfs'].sha256[:12]}.cpio\n"
+            f"fdt /dtb/megrez-{identities['megrez_dtb'].sha256[:12]}.dtb\n"
+            "append console=ttyS0 init=/init\n"
+        ).encode()
+    )
+
+
+def _publication_log(nonce="4" * 32):
+    lines = [
+        "__ASTERINAS_ROCKOS_PUBLISH_BEGIN__ "
+        f"nonce={nonce} partition=/dev/mmcblk1p1 status=0"
+    ]
+    lines.extend(
+        "__ASTERINAS_ROCKOS_PUBLISH_ITEM__ "
+        f"nonce={nonce} name={name} status=0"
+        for name in ("kernel", "initramfs", "megrez_dtb", "extlinux")
+    )
+    lines.append(
+        "__ASTERINAS_ROCKOS_PUBLISH_END__ "
+        f"nonce={nonce} artifacts=3 config=1 status=0"
+    )
+    return ("\r\n".join(lines) + "\r\n").encode()
+
+
 class _Operations:
     def __init__(self, measurement: bytes) -> None:
         self.measurement = measurement
@@ -95,6 +136,21 @@ class _Operations:
 
     def close(self) -> None:
         self.events.append("close")
+
+
+class _PublicationOperations(_Operations):
+    def __init__(self, transcript: bytes) -> None:
+        super().__init__(b"")
+        self.publication = transcript
+        self.commands = ()
+
+    def publish(self, commands, _timeout: float) -> None:
+        self.commands = tuple(commands)
+        self.events.append("publish")
+
+    @property
+    def publication_transcript(self) -> bytes:
+        return self.publication
 
 
 class RockOsAttestationTests(unittest.TestCase):
@@ -161,6 +217,92 @@ class RockOsAttestationTests(unittest.TestCase):
             ["open", "boot", "login:debian:6", "measure-failed", "recover:6", "close"],
         )
 
+    def test_publication_is_retained_only_after_normal_recovery(self) -> None:
+        plan = _plan()
+        generation = _generation(plan)
+        transcript = _publication_log()
+        operations = _PublicationOperations(transcript)
+        published = []
+
+        receipt = rockos.run_rockos_publication(
+            plan,
+            generation,
+            "http://10.100.19.216:18081/generation",
+            "debian",
+            "secret",
+            rockos.RockOsAttestationConfig(),
+            operations,
+            lambda manifest, log: published.append((manifest, log)),
+            nonce="4" * 32,
+        )
+
+        self.assertEqual(
+            operations.events,
+            ["open", "boot", "login:debian:6", "publish", "recover:6", "close"],
+        )
+        self.assertEqual(published, [(receipt, transcript)])
+        self.assertIn(b'"extlinux"', receipt)
+        self.assertIn(b'"plan_sha256"', receipt)
+
+    def test_failed_publication_still_recovers_and_is_not_retained(self) -> None:
+        failed = _publication_log().replace(
+            b"name=initramfs status=0", b"name=initramfs status=1"
+        )
+        operations = _PublicationOperations(failed)
+        published = []
+
+        with self.assertRaisesRegex(rockos.HostGateError, "publication failed"):
+            rockos.run_rockos_publication(
+                _plan(),
+                _generation(),
+                "http://10.100.19.216:18081/generation",
+                "debian",
+                "secret",
+                rockos.RockOsAttestationConfig(),
+                operations,
+                lambda *values: published.append(values),
+                nonce="4" * 32,
+            )
+
+        self.assertEqual(published, [])
+        self.assertEqual(operations.events[-2:], ["recover:6", "close"])
+
+    def test_publication_publisher_atomically_retains_receipt_and_log(self) -> None:
+        plan = _plan()
+        receipt = rockos.publication_manifest_bytes(
+            _generation(plan),
+            plan,
+            "http://10.100.19.216:18081/generation",
+            "4" * 32,
+        )
+        transcript = _publication_log()
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            output = (
+                repository
+                / "target/current-main-physical-graphics/physical/publication"
+            )
+            publisher = rockos.RealRockOsPublicationPublisher(
+                output, repository=repository
+            )
+
+            publisher(receipt, transcript)
+
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {
+                    "generation.json",
+                    "publication.serial.log",
+                    "sha256sums.txt",
+                },
+            )
+            for line in (output / "sha256sums.txt").read_text().splitlines():
+                digest, name = line.split("  ", 1)
+                self.assertEqual(
+                    hashlib.sha256((output / name).read_bytes()).hexdigest(),
+                    digest,
+                )
+
     def test_atomic_publisher_retains_receipt_raw_log_and_hashes(self) -> None:
         plan = _plan()
         measurement = _measurement_log(plan)
@@ -222,6 +364,34 @@ class RockOsAttestationTests(unittest.TestCase):
             option for action in parser._actions for option in action.option_strings
         }
 
+        self.assertIn("--password-fd", option_strings)
+        self.assertNotIn("--password", option_strings)
+
+    def test_cli_has_an_explicit_publication_action(self) -> None:
+        values = rockos.parse_args(
+            (
+                "publish",
+                "/dev/serial/by-id/usb-test",
+                "--plan",
+                "/plan.json",
+                "--extlinux-config",
+                "/asterinas.conf",
+                "--staged-directory",
+                "/staged",
+                "--base-url",
+                "http://10.100.19.216:18081/generation",
+                "--output-directory",
+                "target/current-main-physical-graphics/physical/publication",
+            )
+        )
+
+        self.assertEqual(values.action, "publish")
+        self.assertEqual(values.extlinux_config, Path("/asterinas.conf"))
+        option_strings = {
+            option
+            for action in rockos.publication_argument_parser()._actions
+            for option in action.option_strings
+        }
         self.assertIn("--password-fd", option_strings)
         self.assertNotIn("--password", option_strings)
 
