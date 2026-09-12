@@ -597,9 +597,33 @@ int stage1_run_probe_agent(void)
     return 0;
 }
 
-#if defined(DEBIAN_STAGE1_PROBE_SELF_TEST)
-int main(void)
+int stage1_run_probe_auto(void)
 {
+    /* Autonomous records use a fixed nonce; they are not host attestations. */
+    struct ProbeRequest request = {
+        .nonce = "00000000000000000000000000000000",
+        .names = { "boot" },
+        .count = 1,
+    };
+    if (prepare_proc() != 0) {
+        return 2;
+    }
+    int passed = run_batch(&request);
+    (void)printf("ASTERINAS_PROBE_AUTO_REBOOT v=1\n");
+    flush_line();
+#if !defined(DEBIAN_STAGE1_PROBE_SELF_TEST)
+    sync();
+    (void)reboot(RB_AUTOBOOT);
+#endif
+    return passed ? 0 : 1;
+}
+
+#if defined(DEBIAN_STAGE1_PROBE_SELF_TEST)
+int main(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "--auto") == 0) {
+        return stage1_run_probe_auto();
+    }
     return stage1_run_probe_agent();
 }
 #endif
