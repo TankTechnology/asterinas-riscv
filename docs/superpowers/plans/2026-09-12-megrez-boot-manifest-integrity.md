@@ -121,7 +121,16 @@ network transfer, or `saveenv` action.
 **Files:**
 - Modify only files required by review findings.
 
-- [ ] Review the complete diff normally against the Asterinas maintainability, development, security, hardware, and documentation persona indexes. Do not invoke the retired `aster-code-review` skill.
-- [ ] Run the complete focused suite again in the persistent container and record exact commands/results. Confirm unrelated dirty worktree files were neither reverted nor included accidentally.
+- [x] Review the complete diff normally against the Asterinas maintainability, development, security, hardware, and documentation persona indexes. Do not invoke the retired `aster-code-review` skill.
+- [x] Run the complete focused suite again in the persistent container and record exact commands/results. Confirm unrelated dirty worktree files were neither reverted nor included accidentally.
 - [ ] Commit remaining fixes by exact path. Fetch `origin`, verify the branch is a fast-forward descendant of `origin/main`, and inspect every outgoing commit.
 - [ ] Push `HEAD:main` without force only after all software gates and the one physical epoch pass. Re-fetch and require `origin/main == HEAD` before reporting completion.
+
+Final clean-worktree verification on 2026-09-12 used the persistent container.
+`make test_riscv_megrez_probe_unit` passed 87 tests, and the focused
+boot-manifest, RockOS, probe, and boot-stability modules passed 119 tests.
+`py_compile` and `git diff --check origin/main...HEAD` also passed.  An
+additional broad 230-test run found two failures in the unchanged
+physical-graphics QEMU tests; both reproduce identically on `origin/main` and
+are not included in this boot-only branch.  The isolated branch contains only
+the ten manifest/boot commits and no network-stack or dirty-worktree changes.
