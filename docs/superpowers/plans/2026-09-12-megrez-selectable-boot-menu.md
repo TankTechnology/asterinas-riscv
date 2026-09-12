@@ -54,22 +54,33 @@ Execution is inline in the existing boot worktree, as already authorized.
 
 - [x] Publish the canary through RockOS using the existing serial/root-shell
   maintenance path and network staging. Check size/SHA after sync.
-- [ ] Test default RockOS and fallback, Basic, and Probe for three successful
+- [x] Test default RockOS and fallback, Basic, and Probe for three successful
   cycles each; test Desktop twice. Reuse artifacts between cycles. Stop and
   diagnose any failure before another trial.
   - Basic, Probe, RockOS/default, and fallback: 3/3 each, candidate 2.
-  - Desktop: X/Firefox processes observed, visible-window qualification pending.
-- [ ] Promote the qualified menu; verify software reboot and operator-assisted
-  power-cycle separately. Preserve the existing 30-second firmware bootdelay;
-  the additional menu timeout is 10 seconds, not a 10-second total boot time.
-- [ ] Update the operator README, evidence, and plan status. Review the diff,
+  - Desktop: two visible-window and firmware-recovery passes (284.027 and
+    366.184 seconds from menu to readiness). Failed diagnostic runs excluded.
+- [x] Promote the qualified menu and verify an uninterrupted software reboot.
+  Run `0aea2376e79616bce87486840b2628ef` passed: fresh firmware, persistent
+  four-mode menu, no-input default RockOS, and successful serial login.
+- [ ] Verify an operator-assisted power cycle separately. The existing
+  30-second firmware bootdelay is preserved; the additional menu timeout is
+  10 seconds, not a 10-second total boot time. Leave the board in RockOS until
+  the operator is available; do not claim a software reboot is a cold start.
+- [x] Update the operator README, evidence, and plan status. Review the diff,
   commit scoped changes, and report exact completed versus remaining gates.
-  - Native focused gate: 129 tests passed. Rebuilt Stage1 equals the frozen
+  - Native focused gate: 150 tests passed. Rebuilt Stage1 equals the frozen
     candidate hash; refreshed QEMU runs passed (Basic 7.160 s, Probe 5.767 s).
   - Independent commits: `d1dff34b4` (safe U-Boot prompt acquisition),
-    `2d6ddd1df` (standalone Stage1 modes and temporary Desktop HOME).
+    `2d6ddd1df` (standalone Stage1 modes and temporary Desktop HOME),
+    `e1751fbef` (menu workflow), `3965c21b1` (full-duplex serial checks), and
+    `2d2a0c528` (review fix: select the actual vendor default on fallback).
   - Detailed physical evidence and limitations:
     [validation notes](2026-09-12-megrez-menu-validation.md).
+
+Remote `main` remains at `7767494e6`; implementation and validation commits are
+local to `codex/megrez-boot-main`. Final cold-start acceptance and the stable-main
+handoff remain pending. No network integration source was absorbed here.
 
 ## Design clarifications from source inspection
 
