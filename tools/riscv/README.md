@@ -55,6 +55,14 @@ with `profile = "dev"`. Controlled QEMU measurements show substantial VM and
 Firefox executable-loading overhead compared with the same source in release
 mode. They do not yet establish full-window startup time on the board.
 
+The subsequent release canary reached a visible Firefox window at menu +70–74 s
+in two physical boots and passed a local-page JavaScript/DOM-event check with
+a verified framebuffer screenshot.
+The same-source dev comparison took approximately 282 s to expose its window.
+The installed default kernel is still unchanged.
+These offline observations do not qualify Internet browsing, USB input,
+or the candidate's network-source parity with the deployed integration kernel.
+
 Retain `target/osdk/aster-kernel/bundle.toml` with each candidate to record its
 build profile, alongside the existing artifact hashes. The optimized candidate
 must still pass the normal qualification before replacing the installed kernel;

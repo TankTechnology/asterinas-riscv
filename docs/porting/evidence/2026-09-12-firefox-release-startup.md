@@ -8,11 +8,18 @@ or recurring boot script was needed. The candidate is built from
 `01b6e1eda` in `codex/megrez-boot-main`, with the same Sv39 feature and SMP4
 test configuration as the unoptimized comparison kernel.
 
-This is a **QEMU component result**, not a measured physical Firefox-window
-speedup. The board remains in RockOS; neither its qualified kernel nor its
-menu was replaced. Complete Desktop qualification remains required before
-promotion. In particular, the separate headless screenshot experiment did
-not produce a screenshot and must not be reported as passing Firefox.
+The component results below have now been followed by physical Desktop tests.
+The release canary first detected a visible Firefox window at menu +74.004 s
+and +69.906 s in two separate boots.
+The same-source dev kernel detected its window at +282.190 s,
+an observed approximately fourfold difference for these runs.
+The first boot also passed local-page JavaScript and DOM-event checks,
+and a verified 1920x1080 framebuffer capture shows the resulting page.
+These observations do not qualify Internet browsing or physical USB input.
+The installed default menu and frozen integration kernel remain unchanged;
+complete promotion qualification and network-source parity are still required.
+The separate QEMU headless screenshot experiment remains a failure,
+not successful evidence superseded by the physical test.
 
 ## Root cause evidence
 
@@ -185,3 +192,171 @@ the same fresh-profile policy and compare it with the dev kernel on the
 same board. Record menu time separately from browser time. Only promote
 after the established recovery and mode checks pass; retain the current menu
 until then. Do not infer a 20-fold desktop speedup from these components.
+
+## Physical Desktop follow-up
+
+The September 12 follow-up reused the installed Debian partition,
+including the previously repaired font caches, Firefox ESR 140.15.0,
+prepared DTB, Stage1, and volatile-home policy.
+For the release tests, only a separate 5,895,368-byte release kernel and
+content-addressed canary menu were staged using the existing RockOS tool.
+The subsequent same-source dev comparison staged its own 15,483,248-byte
+kernel and separate menu without replacing either installed generation.
+No root-image transfer, package download, Docker rebuild, manual CRC sequence,
+or firmware-environment change was needed.
+The preflight read-only `e2fsck -fn /dev/mmcblk1p2` returned zero.
+
+| Check | Observed result |
+| --- | --- |
+| Basic | Menu to shell 2.146 s; recovered to fresh firmware |
+| Probe | Menu to completion 2.029 s; recovered to fresh firmware |
+| Desktop, first boot | Console 10.587 s; visible window detected at 74.004 s |
+| Desktop, second boot | Menu to readiness marker 69.906 s; recovered to fresh firmware |
+| Same-source dev Desktop | Console 60.527 s; visible window detected at 282.190 s |
+| First-boot content check | Local HTML, page JavaScript, DOM button handler, framebuffer capture; exit 0 |
+| Same-boot browser restart, retained profile | Window detected 9.807 s after service start |
+| Same-boot browser restart, fresh profile | Window detected 17.339 s after service start |
+
+Desktop timing starts at host menu selection, excluding the preceding firmware
+delay and human selection time.
+The first observer used a ten-second polling delay plus query execution time.
+Only its final host-clock observation is retained in the result JSON;
+the serial log does not timestamp individual samples.
+The dev comparison used that same observer and retained its host stdout.
+Run order was release, release, dev, using the same Debian partition,
+font caches, DTB, Stage1, boot arguments, and fresh volatile HOME on each boot.
+Both kernels were built from `01b6e1eda`; their hashes are recorded above.
+The approximately 3.8–4.0x ratio describes these sampled window observations,
+not a randomized benchmark, a confidence interval, or an Internet-page speedup.
+No electrical power cycle or storage-device cache flush was performed.
+The second used the existing qualification runner's two-second poll delay,
+plus the cost of three short serial queries per sample.
+These are detection upper bounds, not exact first-paint timestamps.
+The same-boot restart measurements use the guest monotonic clock and a
+two-second polling delay; they are not fresh-boot measurements.
+The fresh-profile test moved the original private runtime profile aside,
+preserved its owner/mode in the new directory, and retained the warm system
+page cache and per-user caches.
+It therefore does not isolate disk I/O alone from all other cached state.
+
+The content check attached to the existing loopback Marionette endpoint,
+created a session, navigated to a small local HTML file under `/run`,
+asserted the page's own JavaScript result, dispatched a DOM button click,
+and asserted the changed result.
+It then captured the live framebuffer through the existing fbdev helper.
+The screenshot was transferred over paced serial output;
+length and SHA-256 were verified before visual inspection.
+The decoded PNG is 41,508 bytes, SHA-256
+`8ee06cdcc3e088ba707c87589b2ca9eccc963a4ae2b53533d014b15cdb44fb74`.
+The page-and-capture script completed in 6.990 s after attachment began;
+this is not an exec-to-page startup measurement because it ran after the
+first-window observation and host-side preparation.
+A DOM click does not prove USB mouse/keyboard delivery or trusted X input.
+The existing basic-only browser settings were retained for the offline test;
+they must not be represented as normal Internet-mode acceptance.
+
+Two warm standalone `glxtest` executions took 0.100 and 0.077 s,
+both exiting one with the already configured
+`MOZ_AVOID_OPENGL_ALTOGETHER` diagnostic.
+Warm `firefox --version` took 0.224 and 0.249 s, both exiting zero.
+Thus the graphics warning is reproducible without a long helper wait;
+its Firefox-relative timestamp of 37.429 s does not establish that the helper
+itself blocked for that duration.
+The cold/warm gap supports investigating first-load work next,
+but does not yet identify an individual ext2, MMC, VM, or scheduler defect.
+No DMA coherency rules, SD clock limits, or browser sandbox settings were
+relaxed to produce these results.
+
+Recovery after the first boot and two controlled Firefox restarts succeeded
+through one `sync; systemctl --force reboot` command.
+The second complete Desktop cycle took 179.443 s including recovery,
+versus 72.303 s from cycle entry to readiness;
+the remaining approximately 107 s includes shutdown and firmware initialization.
+Recovery passed its 120-second bound, but this is still a latency issue.
+There was no second force flag, repeated reboot command, or physical reset.
+The first custom observation record intentionally says `recovered: false`
+because it left the live guest for content checks;
+the separate `recovery-1.log` records its later successful recovery.
+Do not silently convert that custom record into a promotion-gate result.
+
+The later dev comparison did **not** complete the recovery gate.
+Its explicit `SYNC_DONE` acknowledgement arrived 3.804 s after host command
+transmission began (including paced transmission, not pure syscall time).
+Fresh OpenSBI and U-Boot output followed, but the 120-second firmware wait
+expired at `scanning bus usb1@50490000 for devices...`.
+Later passive observation and one Ctrl-C produced no prompt;
+SSH reported no route to the board.
+No second reboot, forced power operation, or firmware write was attempted.
+This is a failed bounded recovery check, not evidence of an Asterinas `sync`
+hang or proof that the optimized candidate causes it.
+Later SSH access confirmed RockOS `Linux 6.6.87` on `/dev/mmcblk1p3`.
+No additional host-issued reboot or reset preceded that observation;
+the exact late-recovery time and cause were not measured.
+A fresh, unmounted read-only `e2fsck -fn /dev/mmcblk1p2` returned zero,
+with 19,505 files and 231,205 used blocks.
+The installed and vendor menu hashes and frozen kernel hash still matched
+their preflight identities.
+Late recovery does not turn the original 120-second gate into a pass.
+See `recovery-dev-1.log`, `recovery-dev-host-1.log`, `final-ssh.log`, and
+`final-root-check.log`.
+The passive/Ctrl-C checks were observed through host tools;
+the empty `late-firmware-observation.log` records no received output,
+but does not itself record or prove the transmitted Ctrl-C.
+
+Raw follow-up evidence is retained in `target/firefox-desktop-release/`:
+
+- `candidate/manifest.json` and `stage/result.json`: canary identity/publication.
+- `basic-1/`, `probe-1/`, `desktop-release-1/`, `desktop-release-2/`: boot observations.
+- `dev-candidate/`, `stage-dev/`, `desktop-dev-1/`, `desktop-dev-1-host.log`: same-source physical dev comparison.
+- `content-1.log`, `desktop-release-1.png`, `screenshot-transfer.log`: functional and visual evidence.
+- `components-1.log`, `warm-restart-1.log`, `fresh-profile-1.log`: bounded component comparisons.
+- `recovery-1.log`: first Desktop recovery after the content/restart experiments.
+
+The release canary menu SHA-256 is
+`4239d4381cf389d8a7bf0de9768a2e354e73ebed57a8c0a26898d1a18e9f2bdf`.
+It does not replace the installed menu
+`02280720efe7a1ad0ac084cdc20429406631e12d2e16f05638544bab0883fb26`.
+The candidate source branch lacks separate network-integration changes present
+in the frozen deployed kernel, so replacing the default kernel merely on the
+basis of these offline results would risk discarding that work.
+
+The unchanged menu/serial host test suites passed 73 tests in the persistent
+container with `PYTHONPATH=.:tools/riscv`; see `unit-tests.log`.
+Initial invocations used a nonexistent test-module name and then omitted
+the required import path; those were harness import errors, not passing tests
+or guest regressions.
+An independent evidence review checked the physical figures and decoded
+screenshot against the raw logs.
+Its request to remove an unretained exact negative-poll timestamp was applied.
+
+## Newly identified fault-around boundary defect
+
+After the physical comparison, source inspection found a concrete unit mismatch
+in `kernel/src/vm/vmar/vm_mapping.rs`, introduced by local batch-fault change
+`0024b7c8dd`:
+
+```rust
+let end_idx = vmo.offset() + end_offset.div_ceil(PAGE_SIZE);
+```
+
+`MappedVmo::offset()` is a byte offset, whereas `commit_range_for_fault`
+takes page indices.
+For example, a mapping starting eight pages into a 128-page file with a
+16-page fault window should request pages 8 through 23.
+The expression instead produces end index `32768 + 16 = 32784`;
+the backend clamps that to 128 and can populate pages 8 through 127.
+Clamping to the file size does not restore the intended 16-page bound.
+This is a static counterexample, not an executed regression or a measured
+attribution of the remaining Firefox seconds.
+
+The page-cache diagnostic flag also changes this path:
+`Vmo::commit_range` falls back to committing only the first page when
+`PAGECACHE_PROFILE` is enabled.
+Consequently, a diagnostic boot using that flag can hide the over-read
+mechanism and is not an equivalent performance workload.
+The proposed next step is a bounded backend-read-count regression with a
+nonzero mapping offset, followed by a minimal unit-conversion correction
+while preserving the 16-page policy.
+No production change for this newly discovered defect has been applied yet.
+Implementation is awaiting the requested minimal-fix design confirmation;
+the board is now back in RockOS for subsequent candidate validation.
