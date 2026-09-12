@@ -581,6 +581,47 @@ class DebianStage1Tests(unittest.TestCase):
             text=True,
         )
 
+    def test_debug_console_exits_on_sigterm(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+        subprocess.run([binary, root], check=True, capture_output=True)
+        bashrc = root / "run/asterinas-debug-console.bashrc"
+
+        with subprocess.Popen(
+            ["/bin/bash", "--noprofile", "--rcfile", str(bashrc), "-i"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        ) as shell:
+            try:
+                shell.stdin.write(b"printf 'CONSOLE_%s\\n' LIVE\n")
+                shell.stdin.flush()
+                output = b""
+                deadline = time.monotonic() + 5
+                while b"\nCONSOLE_LIVE\n" not in output:
+                    remaining = deadline - time.monotonic()
+                    self.assertGreater(remaining, 0, output)
+                    readable, _, _ = select.select([shell.stdout], [], [], remaining)
+                    self.assertTrue(readable, output)
+                    chunk = os.read(shell.stdout.fileno(), 4096)
+                    self.assertTrue(chunk, output)
+                    output += chunk
+                # Keep stdin open: EOF must not accidentally satisfy this test.
+                shell.send_signal(signal.SIGTERM)
+                try:
+                    shell.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.fail("interactive debug console ignored SIGTERM")
+                self.assertEqual(shell.returncode, 0)
+            finally:
+                if shell.poll() is None:
+                    shell.kill()
+                shell.wait(timeout=3)
+
     def test_debug_console_runtime_tree_is_exact(self) -> None:
         binary = self.directory / "debug-console-harness"
         compilation = self.compile_debug_console_harness(binary)
@@ -619,6 +660,7 @@ class DebianStage1Tests(unittest.TestCase):
         )
         self.assertEqual(
             bashrc.read_text(),
+            "trap 'exit 0' TERM\n"
             "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
             "bind 'set enable-bracketed-paste off' 2>/dev/null\n"
             "PS1='root@asterinas-debug:\\w# '\n",

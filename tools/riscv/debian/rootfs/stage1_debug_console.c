@@ -42,6 +42,9 @@ static const char DEBUG_CONSOLE_TARGET[] =
     "After=asterinas-debug-console.service\n";
 
 static const char DEBUG_CONSOLE_BASHRC[] =
+    // Interactive Bash otherwise ignores TERM. Let shutdown close the idle
+    // console without SIGKILL; install this before advertising readiness.
+    "trap 'exit 0' TERM\n"
     "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
     "bind 'set enable-bracketed-paste off' 2>/dev/null\n"
     "PS1='root@asterinas-debug:\\w# '\n";
