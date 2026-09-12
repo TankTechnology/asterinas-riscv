@@ -22,12 +22,13 @@ candidate 2. Failed/interrupted cycles never count as passed recovery cycles.
 
 ## Software evidence
 
-- Basic QEMU, exact candidate-2 Stage1: 7.011 seconds, pass.
-- Automatic Probe QEMU, same Stage1: 5.936 seconds, pass.
+- Basic QEMU, exact candidate-2 Stage1: 7.160 seconds, pass.
+- Automatic Probe QEMU, same Stage1: 5.767 seconds, pass.
 - Both use SMP4 `virt` with no disk or network device, exercising lightweight
   startup independently of the Debian partition.
-- The final focused native suite passed 129 tests, including the short-command,
-  QEMU-launch cleanup, DTB and BusyBox-closure preparation regressions.
+- The final focused native suite passed 150 tests, including full-duplex serial
+  retry limits, vendor-default reordering, QEMU-launch cleanup, DTB and
+  BusyBox-closure preparation regressions.
 - Rebuilding Stage1 after the last self-test/source-layout changes produced
   exactly the candidate-2 SHA-256 above.
 - Shell-executed publication tests verify that a corrupt installed artifact
@@ -43,6 +44,7 @@ candidate 2. Failed/interrupted cycles never count as passed recovery cycles.
 | Probe | 3 | 8.514, 8.506, 8.512 |
 | RockOS default | 3 | 30.606, 31.428, 32.599 |
 | Missing-selector fallback | 3 | 21.607, 21.503, 21.986 |
+| Desktop, visible Firefox window | 2 | 284.027, 366.184 |
 
 Every listed cycle includes a successful software reboot and fresh firmware
 recovery. RockOS/default numbers include the ten-second menu timeout; fallback
@@ -51,9 +53,41 @@ is not part of these menu-to-readiness numbers. Six read-only Debian filesystem
 checks completed with `ROOTFS_CHECK_RC=0`. No artifacts were transferred between
 these cycles.
 
-Desktop qualification additionally requires a visible Firefox X window. Earlier
-process-only checks are diagnostic evidence, not completed Desktop qualification.
-Promotion and cold power-on remain gated on the implementation plan.
+Desktop qualification additionally requires a visible Firefox X window. The
+successful runs are `desktop-5` (`f866b152c9fcba59a45b047ead1978ee`) and
+`desktop-7` (`e0df5a7fc66eb4bf13f20028de436207`), taking 401.311 and 482.373 seconds
+including recovery. Their serial-log SHA-256 values are respectively
+`bac2fcec0d99c5f8df88931a65ba29f0c275cf6b0fbc1846e89145b905d54a17` and
+`c0179728972c5a122a162206df315a7fa95e3bb537b51e1c626aa46c35e5cfce`.
+The latter uses the final full-duplex transport. Earlier failed or process-only
+checks are diagnostic evidence, not completed Desktop qualification. The local
+promotion gate accepted exactly 3/3/3/3/2 matching successful cycles.
+
+## Active selector and remaining acceptance
+
+`physical-promote-1`, run `0aea2376e79616bce87486840b2628ef`, successfully replaced
+`/extlinux/asterinas.conf` with the exact candidate-2 menu. Its serial SHA-256 is
+`2f3c820c4065ff6dce2ddf3031398cf2e5688f79a235cd836f9fe49500acd7b0`.
+Only the 1,948-byte publication script was transferred; kernel, DTB and Stage1
+were verified in place. After publication, an uninterrupted software reboot
+passed through the existing persistent boot command, 30-second firmware delay,
+four-entry menu, ten-second default selection and RockOS serial login. The
+board is left in RockOS, not waiting indefinitely in U-Boot or an Asterinas
+debug shell.
+
+The final `post-promotion-check.log` independently confirms the active menu
+hash, the unchanged vendor hash
+`eb5f39a6e2db71ccc93ae005c488fd9f7ef353e75426e5a51e8923a9cbf2ebc5`, and the old
+selector backup at
+`/boot/extlinux/asterinas-backup-aaf76a1db7c696bd65d8f07dfc8dc3d91fe3ccd99c31770b399e671539e49d2a.conf`.
+A seventh unmounted, read-only `e2fsck -fn /dev/mmcblk1p2` returned 0 after the
+final Desktop cycles. RockOS reports kernel 6.6.87 and `end1` UP at
+`10.100.19.200/21`; the serial session was returned to the normal user shell.
+
+The vendor menu and persistent U-Boot environment were not changed. A real
+operator-assisted power cycle is still pending; this report does not claim
+cold-start or USB-keyboard menu qualification. Remote main has not been updated
+pending the final cold-start acceptance.
 
 ## Incidents and preventive changes
 
@@ -125,10 +159,21 @@ or a memory dump. RockOS attestation and the menu controller now use Ctrl-C to
 acquire the prompt, without executing command history. A mocked serial test
 verifies that this path does not send an empty command.
 
+### MEGREZ-MENU-FALLBACK-001: vendor default need not be the first entry
+
+Independent review found that fallback qualification selected entry 1 even
+though vendor parsing preserves an arbitrary default stanza. The controller
+now calculates that stanza's actual menu index. A reordered rescue/default
+fixture reproduced selection of 1 instead of 2 before the fix and passes after
+it. The captured board configuration has its default first, so this correction
+does not invalidate the three existing fallback cycles.
+
 ## Claim boundaries
 
-Desktop checks prove a running X server socket, framebuffer device and Firefox
-process, not rendered webpage correctness or a working external network.
+Desktop checks prove a running X server socket, framebuffer device, Firefox
+process and visible X window, not rendered webpage correctness or a working
+external network. Window latency varied from 4.7 to 6.1 minutes in successful
+cycles; this milestone does not claim to fix desktop startup performance.
 Three existing Debian services were reported failed (network evidence, browser
 evidence and sysctl); cmdline masks did not prevent the first two from running
 on this installed image. These are not silently reclassified as a clean systemd
