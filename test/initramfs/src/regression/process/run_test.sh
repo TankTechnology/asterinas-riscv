@@ -89,4 +89,5 @@ fi
 ./job_control
 ./pidfd
 ./pidfd_getfd
+./rseq
 ./wait4
