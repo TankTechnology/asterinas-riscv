@@ -135,18 +135,42 @@ class BootMenuTests(unittest.TestCase):
 
     def test_desktop_checks_use_short_acknowledged_commands(self):
         session = Mock()
-        session.wait_for.side_effect = [
+        responses = [
             "\nDISPLAY_RC=0\r\nroot@asterinas-debug:/#",
             "\nFIREFOX_RC=0\r\nroot@asterinas-debug:/#",
             "\nWINDOW_RC=0\r\nroot@asterinas-debug:/#",
         ]
-        self.assertTrue(board.desktop_ready(session))
-        for call in session.send.call_args_list:
-            self.assertLessEqual(len(call.args[0]), 96)
+        with patch.object(board, "query_guest", side_effect=responses) as query:
+            self.assertTrue(board.desktop_ready(session))
+            for call in query.call_args_list:
+                self.assertLessEqual(len(call.args[1]), 96)
         session.command.assert_not_called()
-        session.wait_for.side_effect = ["bash: syntax error\nroot@asterinas-debug:/#"]
-        with self.assertRaisesRegex(menu.BootManifestError, "truncated"):
+        with (
+            patch.object(board, "query_guest", return_value="bash: syntax error\n"),
+            self.assertRaisesRegex(menu.BootManifestError, "truncated"),
+        ):
             board.desktop_ready(session)
+
+    def test_guest_query_reuses_full_duplex_transport_with_one_safe_retry(self):
+        session, serial = Mock(), Mock()
+        serial.checkpoint.return_value = 0
+        serial.transcript = b"QUERY_OK\nroot@asterinas-debug:/#"
+        serial.wait_for.side_effect = [TimeoutError(), None, None]
+        with patch.object(board, "SerialConsole", return_value=serial) as constructor:
+            self.assertIn("QUERY_OK", board.query_guest(session, "echo QUERY_OK"))
+            constructor.assert_called_once_with(
+                session.fd, max_bytes=1024 * 1024, tx_delay=0.005
+            )
+        self.assertEqual(
+            [call.args[0] for call in serial.send.call_args_list],
+            [b"echo QUERY_OK\n", b"\x03\n", b"echo QUERY_OK\n"],
+        )
+        serial.wait_for.side_effect = [TimeoutError(), None, TimeoutError()]
+        with (
+            patch.object(board, "SerialConsole", return_value=serial),
+            self.assertRaises(TimeoutError),
+        ):
+            board.query_guest(session, "echo QUERY_OK")
 
     def test_preserves_selected_vendor_stanza(self):
         label, stanza, fields = menu.vendor_default(VENDOR)

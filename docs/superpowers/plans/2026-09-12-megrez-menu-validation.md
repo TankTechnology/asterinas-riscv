@@ -83,6 +83,15 @@ services. A regression prohibits use of the U-Boot command helper here.
 The underlying cause of the long-line loss is not claimed to be fixed in the
 UART driver. Boot-menu selection itself sends only a single digit.
 
+A later cycle also lost the end of a short command while the desktop was busy.
+The controller now reuses `gate_runtime.SerialConsole`, as the existing physical
+graphics controller does: paced full-duplex TX/RX, a capped transcript and absolute
+deadlines. The same live guest accepted the replacement transport's queries.
+Read-only queries allow one Ctrl-C/prompt-resynchronized retry; reboot is never
+retried. Tests check both the successful retry and the two-attempt limit. This
+is a host transport/recovery improvement, not a claim to have fixed UART timing
+in the kernel. The failed cycle remains excluded from qualification.
+
 ### MEGREZ-MENU-REBOOT-001: logind error is not the terminal reboot state
 
 Ordinary `systemctl reboot` reported a logind unit error but eventually rebooted.
