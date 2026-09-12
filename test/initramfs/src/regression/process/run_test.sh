@@ -73,6 +73,7 @@ fi
 ./signal/pidfd_send_signal
 ./signal/signal_fd
 ./signal/signal_test2
+./signal/stop_continue
 
 if [ "$(uname -m)" = "x86_64" ]; then
     ./signal/fault_signals
