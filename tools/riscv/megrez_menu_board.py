@@ -204,7 +204,13 @@ def boot_cycle(operations, document, mode, username, password, nonce, check_root
     menu_seen = time.monotonic()
     if mode in ("rockos", "fallback"):
         if mode == "fallback":
-            session.send("1")
+            default, _, _ = menu.vendor_default(document["vendor"])
+            labels = [
+                line.split()[1]
+                for line in document["vendor"].splitlines()
+                if line.split()[:1] == ["label"]
+            ]
+            session.send(str(labels.index(default) + 1))
         session.wait_for("login:", 180)
         reached = time.monotonic()
         operations.login(username, password, 30)
