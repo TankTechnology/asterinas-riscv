@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,11 @@ _SAFE_LABEL = re.compile(r"[a-z0-9][a-z0-9.-]*")
 _SAFE_PATH = re.compile(
     r"/[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
 )
+_SAFE_BASE_URL = re.compile(
+    r"http://(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[1-9][0-9]{0,4}"
+    r"(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
+)
+_NONCE = re.compile(r"[0-9a-f]{32}")
 
 
 class BootManifestError(ValueError):
@@ -191,3 +197,112 @@ def _read_regular_unchanged(
         return bytes(payload)
     finally:
         os.close(descriptor)
+
+
+def _publication_inputs(
+    generation: ExtlinuxGeneration, plan: Any, base_url: str, nonce: str
+) -> dict[str, Any]:
+    generation.validate_against_plan(plan)
+    if not isinstance(base_url, str) or _SAFE_BASE_URL.fullmatch(base_url) is None:
+        raise BootManifestError("RockOS publication base URL is unsafe")
+    if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
+        raise BootManifestError("RockOS publication nonce is invalid")
+    identities = {identity.name: identity for identity in plan.artifacts}
+    return identities
+
+
+def rockos_publication_commands(
+    generation: ExtlinuxGeneration, plan: Any, base_url: str, nonce: str
+) -> tuple[str, ...]:
+    """Build a nonce-bound, config-last RockOS publication transaction."""
+
+    identities = _publication_inputs(generation, plan, base_url, nonce)
+    config = generation.canonical_bytes()
+    required = sum(identities[name].size for name in ARTIFACT_ORDER) + len(config)
+    commands = [
+        "_partition=$(findmnt -n -o SOURCE -- /boot); "
+        "_available=$(df -B1 --output=avail /boot | tail -n 1); "
+        f"if [ \"$_partition\" = /dev/mmcblk1p1 ] && [ \"$_available\" -ge {required} ]; "
+        "then _asterinas_publish_ok=1; printf '__ASTERINAS_ROCKOS_PUBLISH_BEGIN__ "
+        f"nonce={nonce} partition=%s status=0\\n' \"$_partition\"; "
+        "else _asterinas_publish_ok=0; printf '__ASTERINAS_ROCKOS_PUBLISH_BEGIN__ "
+        f"nonce={nonce} partition=%s status=1\\n' \"$_partition\"; fi"
+    ]
+    for name in ARTIFACT_ORDER:
+        identity = identities[name]
+        relative = generation.artifact_paths[name].removeprefix("/")
+        destination = f"/boot/{relative}"
+        temporary = f"/tmp/{Path(relative).name}.{nonce}.part"
+        source = f"{base_url}/{relative}"
+        commands.append(
+            f"_destination={destination}; _temporary={temporary}; "
+            "if [ \"$_asterinas_publish_ok\" = 1 ] "
+            f"&& curl --fail --silent --show-error --location --output \"$_temporary\" {source} "
+            f"&& [ \"$(stat -c %s -- \"$_temporary\")\" = {identity.size} ] "
+            f"&& printf '%s  %s\\n' {identity.sha256} \"$_temporary\" | sha256sum -c - >/dev/null "
+            "&& { if [ -e \"$_destination\" ]; then "
+            f"printf '%s  %s\\n' {identity.sha256} \"$_destination\" | sha256sum -c - >/dev/null; "
+            "else install -D -m 0444 -- \"$_temporary\" \"$_destination\"; fi; } "
+            "&& sync; then printf '%s\\n' '__ASTERINAS_ROCKOS_PUBLISH_ITEM__ "
+            f"nonce={nonce} name={name} status=0'; "
+            "else _asterinas_publish_ok=0; printf '%s\\n' '__ASTERINAS_ROCKOS_PUBLISH_ITEM__ "
+            f"nonce={nonce} name={name} status=1'; fi"
+        )
+
+    config_sha256 = hashlib.sha256(config).hexdigest()
+    config_path = "/boot/extlinux/asterinas.conf"
+    config_temporary = f"/boot/extlinux/.asterinas.conf.{nonce}.part"
+    config_source = f"{base_url}/extlinux/asterinas.conf"
+    commands.append(
+        f"_destination={config_path}; _temporary={config_temporary}; "
+        "mkdir -p -- /boot/extlinux; "
+        "if [ \"$_asterinas_publish_ok\" = 1 ] "
+        f"&& curl --fail --silent --show-error --location --output \"$_temporary\" {config_source} "
+        f"&& [ \"$(stat -c %s -- \"$_temporary\")\" = {len(config)} ] "
+        f"&& printf '%s  %s\\n' {config_sha256} \"$_temporary\" | sha256sum -c - >/dev/null "
+        "&& sync && mv -f -- \"$_temporary\" \"$_destination\" && sync "
+        f"&& printf '%s  %s\\n' {config_sha256} \"$_destination\" | sha256sum -c - >/dev/null; "
+        "then printf '%s\\n' '__ASTERINAS_ROCKOS_PUBLISH_ITEM__ "
+        f"nonce={nonce} name=extlinux status=0'; "
+        "else _asterinas_publish_ok=0; printf '%s\\n' '__ASTERINAS_ROCKOS_PUBLISH_ITEM__ "
+        f"nonce={nonce} name=extlinux status=1'; fi"
+    )
+    commands.append(
+        "printf '%s\\n' \"__ASTERINAS_ROCKOS_PUBLISH_END__ "
+        f"nonce={nonce} artifacts=3 config=1 "
+        'status=$((1 - _asterinas_publish_ok))"'
+    )
+    return tuple(commands)
+
+
+def publication_manifest_bytes(
+    generation: ExtlinuxGeneration, plan: Any, base_url: str, nonce: str
+) -> bytes:
+    """Return the canonical host receipt input for one publication attempt."""
+
+    identities = _publication_inputs(generation, plan, base_url, nonce)
+    config = generation.canonical_bytes()
+    document = {
+        "schema_version": 1,
+        "plan_sha256": plan.plan_sha256,
+        "nonce": nonce,
+        "base_url": base_url,
+        "artifacts": [
+            {
+                "name": name,
+                "path": generation.artifact_paths[name],
+                "size": identities[name].size,
+                "sha256": identities[name].sha256,
+                "crc32": identities[name].crc32,
+                "load_address": identities[name].load_address,
+            }
+            for name in ARTIFACT_ORDER
+        ],
+        "extlinux": {
+            "path": "/extlinux/asterinas.conf",
+            "size": len(config),
+            "sha256": hashlib.sha256(config).hexdigest(),
+            "contents": config.decode(),
+        },
+    }
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()

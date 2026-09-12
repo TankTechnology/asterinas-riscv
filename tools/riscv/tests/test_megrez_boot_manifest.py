@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -26,6 +27,11 @@ def _identity(name: str):
     payload = ARTIFACT_BYTES[name]
     return SimpleNamespace(
         name=name,
+        load_address={
+            "kernel": 0x80200000,
+            "initramfs": 0x83000000,
+            "megrez_dtb": 0xF0000000,
+        }[name],
         size=len(payload),
         sha256=hashlib.sha256(payload).hexdigest(),
         crc32=f"{zlib.crc32(payload):08x}",
@@ -192,6 +198,84 @@ class ExtlinuxGenerationTests(unittest.TestCase):
                 "kernel: staged file is not a regular non-symlink file",
             ):
                 generation.validate_staged_directory(root, plan)
+
+
+class RockOsPublicationCommandTests(unittest.TestCase):
+    def test_artifacts_are_verified_before_atomic_config_publication(self) -> None:
+        plan = _plan()
+        generation = manifest.ExtlinuxGeneration.from_bytes(_rendered(plan))
+        nonce = "4" * 32
+
+        commands = manifest.rockos_publication_commands(
+            generation,
+            plan,
+            "http://10.100.19.216:18081/generation",
+            nonce,
+        )
+        script = "\n".join(commands)
+
+        self.assertIn("findmnt -n -o SOURCE -- /boot", commands[0])
+        self.assertIn("/dev/mmcblk1p1", commands[0])
+        self.assertIn("_asterinas_publish_ok=1", commands[0])
+        positions = [
+            script.index(f"name={name} status=0")
+            for name in ("kernel", "initramfs", "megrez_dtb", "extlinux")
+        ]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn(
+            f"/boot/extlinux/.asterinas.conf.{nonce}.part",
+            commands[-2],
+        )
+        self.assertIn("mv -f --", commands[-2])
+        self.assertIn('[ "$_asterinas_publish_ok" = 1 ]', commands[-2])
+        self.assertIn("/boot/extlinux/asterinas.conf", commands[-2])
+        self.assertIn("sync", commands[-2])
+        self.assertTrue(commands[-1].startswith("printf '%s\\n' "))
+        self.assertNotIn("/dev/mmcblk1p2", script)
+        self.assertNotIn("saveenv", script)
+        self.assertNotRegex(script, r"rm[^\n]*/boot/")
+
+    def test_artifact_publication_never_overwrites_different_bytes(self) -> None:
+        commands = manifest.rockos_publication_commands(
+            manifest.ExtlinuxGeneration.from_bytes(_rendered()),
+            _plan(),
+            "http://10.100.19.216:18081/generation",
+            "4" * 32,
+        )
+        artifact_commands = commands[1:4]
+
+        for command in artifact_commands:
+            self.assertIn('if [ -e "$_destination" ]', command)
+            self.assertIn("sha256sum -c -", command)
+            self.assertIn("install -D -m 0444", command)
+            self.assertNotIn("mv -f", command)
+
+    def test_publication_rejects_nonliteral_transport_or_nonce(self) -> None:
+        generation = manifest.ExtlinuxGeneration.from_bytes(_rendered())
+        for base_url, nonce in (
+            ("https://example.com/generation", "4" * 32),
+            ("http://10.100.19.216:18081/x;reboot", "4" * 32),
+            ("http://10.100.19.216:18081/generation", "not-a-nonce"),
+        ):
+            with self.subTest(base_url=base_url, nonce=nonce):
+                with self.assertRaises(manifest.BootManifestError):
+                    manifest.rockos_publication_commands(
+                        generation, _plan(), base_url, nonce
+                    )
+
+    def test_publication_manifest_retains_crc_and_load_address(self) -> None:
+        document = json.loads(
+            manifest.publication_manifest_bytes(
+                manifest.ExtlinuxGeneration.from_bytes(_rendered()),
+                _plan(),
+                "http://10.100.19.216:18081/generation",
+                "4" * 32,
+            )
+        )
+
+        for artifact in document["artifacts"]:
+            self.assertRegex(artifact["crc32"], r"^[0-9a-f]{8}$")
+            self.assertGreater(artifact["load_address"], 0)
 
 
 if __name__ == "__main__":
