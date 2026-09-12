@@ -2,6 +2,7 @@
 
 pub mod c_types;
 pub mod constants;
+pub(in crate::process) mod job_control;
 mod pause;
 mod pending;
 mod poll;
@@ -200,8 +201,10 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
                     do_exit_group(TermStatus::Killed(sig_num), ctx, user_ctx);
                 }
                 SigDefaultAction::Ign => {}
-                SigDefaultAction::Stop => ctx.process.stop(sig_num),
-                SigDefaultAction::Cont => ctx.process.resume(),
+                SigDefaultAction::Stop => ctx.process.stop_if_selected(ctx.posix_thread, sig_num),
+                // Continuing is exclusively a generation-time effect. Delivering
+                // an older CONT must not undo a newer STOP.
+                SigDefaultAction::Cont => {}
             }
         }
     }
@@ -238,17 +241,27 @@ fn dequeue_pending_signal(ctx: &Context) -> Option<(DequeuedSignal, SigAction)> 
     let sig_dispositions = ctx.process.sig_dispositions().lock();
     let sig_dispositions = sig_dispositions.lock();
 
+    // Never acquire ptrace state while holding the signal coordinator. A tracer
+    // may replace any selected signal with STOP, so prepare eligibility before
+    // entering its wait and never recreate it after a concurrent CONT.
+    let is_traced = posix_thread.is_traced();
+    let mut control = ctx.process.signal_job_control().lock();
+    control.select(&mut posix_thread.selected_stop().lock(), false);
     let sig_mask = posix_thread.sig_mask();
     let (signal, sig_num, sig_action) = loop {
-        let signal = ctx.dequeue_signal(&sig_mask)?;
+        let signal = pending::dequeue_signal(posix_thread, &ctx.process, &sig_mask)?;
         let sig_num = signal.num();
         let sig_action = sig_dispositions.get(sig_num);
-        if sig_action.will_ignore(sig_num) && !posix_thread.is_traced() {
+        if sig_action.will_ignore(sig_num) && !is_traced {
             continue;
         }
 
         break (signal, sig_num, sig_action);
     };
+    // Prepare all selections: PTRACE_SEIZE can attach after the snapshot above,
+    // and the tracer may then replace this signal with STOP.
+    control.select(&mut posix_thread.selected_stop().lock(), true);
+    drop(control);
 
     debug!(
         "sig_num = {:?}, sig_name = {}, sig_action = {:#x?}",

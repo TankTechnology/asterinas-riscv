@@ -15,7 +15,7 @@ use spin::Once;
 use super::{
     Credentials, Process,
     signal::{
-        constants::SIGCONT, sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues,
+        job_control::SelectedStop, sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues,
         signals::Signal,
     },
 };
@@ -160,6 +160,8 @@ pub struct PosixThread {
     sig_mask: AtomicSigMask,
     /// Thread-directed sigqueue
     sig_queues: SigQueues,
+    // Accessed only while holding the process's signal coordinator.
+    selected_stop: Mutex<SelectedStop>,
     /// The per-thread signal [`Waker`], which will be used to wake up the thread
     /// when enqueuing a signal, along with the reason why the thread is paused.
     signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
@@ -260,6 +262,10 @@ impl PosixThread {
 
     pub(super) fn sig_queues(&self) -> &SigQueues {
         &self.sig_queues
+    }
+
+    pub(super) fn selected_stop(&self) -> &Mutex<SelectedStop> {
+        &self.selected_stop
     }
 
     /// Returns whether the signal is blocked by the thread.
@@ -363,14 +369,10 @@ impl PosixThread {
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
-        let is_sigcont = signal.num() == SIGCONT;
-        self.sig_queues.enqueue(signal);
-        // Thread-directed SIGCONT also continues the entire process. A remote
-        // sender may retain this thread after its process has been reaped.
-        if is_sigcont && let Some(process) = self.process.upgrade() {
-            process.resume();
+        // A remote sender may retain a thread after its process has been reaped.
+        if let Some(process) = self.process.upgrade() {
+            process.enqueue_signal_for_thread(signal, Some(self));
         }
-        self.wake_signalled_waker();
     }
 
     pub fn register_signalfd_poller(&self, poller: &mut PollHandle, mask: IoEvents) {
