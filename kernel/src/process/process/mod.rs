@@ -13,6 +13,7 @@ use super::{
     process_vm::ProcessVmarGuard,
     rlimit::ResourceLimits,
     signal::{
+        constants::SIGCONT,
         sig_disposition::SigDispositions,
         sig_num::{AtomicSigNum, SigNum},
         signals::Signal,
@@ -693,7 +694,14 @@ impl Process {
             return;
         }
 
+        let is_sigcont = signal.num() == SIGCONT;
         self.sig_queues.enqueue(signal);
+
+        // Continuing a stopped process is a generation-time effect, independent
+        // of whether SIGCONT is blocked, ignored, or handled in userspace.
+        if is_sigcont {
+            self.resume();
+        }
 
         for task in self.tasks.lock().as_slice() {
             let posix_thread = task.as_posix_thread().unwrap();
@@ -749,11 +757,14 @@ impl Process {
     /// Resumes the stopped process.
     pub fn resume(&self) {
         if self.status.stop_status().resume() {
-            self.wake_up_parent();
+            // A remote signal sender can race with exit and reaping. Unlike a
+            // running target thread, it cannot assume the parent is still live.
+            if let Some(parent) = self.parent.lock().process().upgrade() {
+                parent.children_wait_queue.wake_all();
+            }
 
-            // Note that the resume function is called by the thread which deals with SIGCONT,
-            // since SIGCONT is handled by any thread in this process, we need to wake
-            // up other stopped threads in the same process.
+            // A signal sender or any target thread may resume the process;
+            // all stopped threads must be woken, not just the signal recipient.
             for task in self.tasks.lock().as_slice() {
                 let posix_thread = task.as_posix_thread().unwrap();
                 posix_thread.wake_signalled_waker();

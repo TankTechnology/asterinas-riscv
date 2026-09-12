@@ -14,7 +14,10 @@ use spin::Once;
 
 use super::{
     Credentials, Process,
-    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
+    signal::{
+        constants::SIGCONT, sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues,
+        signals::Signal,
+    },
 };
 use crate::{
     events::IoEvents,
@@ -360,7 +363,13 @@ impl PosixThread {
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
+        let is_sigcont = signal.num() == SIGCONT;
         self.sig_queues.enqueue(signal);
+        // Thread-directed SIGCONT also continues the entire process. A remote
+        // sender may retain this thread after its process has been reaped.
+        if is_sigcont && let Some(process) = self.process.upgrade() {
+            process.resume();
+        }
         self.wake_signalled_waker();
     }
 
