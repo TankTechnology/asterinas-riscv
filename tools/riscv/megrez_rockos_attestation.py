@@ -206,7 +206,9 @@ class RealRockOsAttestationOperations:
             session = BoardSession.from_fd(
                 fd, None, confirm=False, log_stream=self._log
             )
-            session.send("")
+            # An empty U-Boot command repeats the last command, including booti.
+            # Ctrl-C requests a fresh prompt without executing command history.
+            os.write(fd, b"\x03")
             session.wait_for_uboot_prompt(timeout)
         except BaseException:
             os.close(fd)
