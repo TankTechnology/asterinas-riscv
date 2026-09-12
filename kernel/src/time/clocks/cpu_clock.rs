@@ -6,8 +6,6 @@ use core::{
     time::Duration,
 };
 
-use ostd::timer::{Jiffies, TIMER_FREQ};
-
 use crate::time::Clock;
 
 /// A clock used to record the CPU time for processes and threads.
@@ -40,13 +38,6 @@ impl CpuClock {
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
                 Some(old.saturating_add(nanoseconds))
             });
-    }
-
-    /// Reads the current time of this clock in [`Jiffies`].
-    pub fn read_jiffies(&self) -> Jiffies {
-        let nanoseconds = self.nanoseconds.load(Ordering::Relaxed);
-        let jiffies = (u128::from(nanoseconds) * u128::from(TIMER_FREQ)) / 1_000_000_000;
-        Jiffies::new(u64::try_from(jiffies).unwrap_or(u64::MAX))
     }
 }
 
