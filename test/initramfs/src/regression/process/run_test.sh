@@ -75,8 +75,29 @@ fi
 ./signal/signal_test2
 ./signal/stop_continue
 ./signal/stop_continue_pending
+./signal/sigtimedwait_race
+./signal/group_stop
+./signal/group_stop_workload
+./signal/group_stop_events
+./signal/group_stop_disposition
+./signal/group_stop_restart
+./signal/group_stop_sleep
+./signal/group_stop_wait
+./signal/group_stop_ppoll
+./signal/group_stop_pselect
+./signal/group_stop_poll_select
+./signal/group_stop_futex
+./signal/group_stop_ptrace
+./signal/group_stop_ptrace_parent
+./signal/group_stop_lifecycle
+./signal/group_stop_time_namespace || [ "$?" -eq 77 ]
+
+if [ "$(uname -m)" != "loongarch64" ]; then
+    ./signal/signal_restart_context
+fi
 
 if [ "$(uname -m)" = "x86_64" ]; then
+    ./signal/signal_sigsuspend_ptrace
     ./signal/fault_signals
     ./signal/sigaltstack
     ./signal/signal_fpu
@@ -87,6 +108,7 @@ fi
 
 ./cgroup.sh
 ./syslog/syslog
+./syslog/provenance
 ./group_session
 ./job_control
 ./pidfd
