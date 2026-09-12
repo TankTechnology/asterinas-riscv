@@ -98,11 +98,23 @@ tests also enforce the root-shell transition and serial command-size limit.
 - Generated, not committed: `target/megrez-probe/current.json`
 - Generated, not committed: `target/megrez-probe/physical/result.json`
 
-- [ ] Freeze the current SV39 kernel, lightweight Stage1, and Megrez DTB identities. Build only if a frozen source is absent; use `tools/docker/run_dev_container.sh` and never delete the persistent container or its caches.
-- [ ] Run all software gates before opening `/dev/ttyUSB0`. Confirm exclusive serial ownership and a live U-Boot prompt, then boot RockOS exactly once and publish the generation. Do not modify partition 2, persistent U-Boot environment, or any old generation.
-- [ ] Reboot normally, require a fresh OpenSBI/U-Boot epoch, attest the four persistent files, and create schema-v2 `current.json` from the attested bytes.
-- [ ] Run exactly one lightweight physical probe. Require extlinux plus three artifact size/CRC checks, terminal `PASS`, Asterinas software reboot, a fresh firmware epoch, and interruption of the next autoboot so the terminal state is U-Boot.
-- [ ] Verify evidence hashes and confirm the transcript contains no serial upload, partition write during the probe, RockOS activity during the probe, Firefox, fallback boot, or `saveenv`. If any condition fails, retain evidence and do not claim the reset path is repaired.
+- [x] Freeze the current SV39 kernel, lightweight Stage1, and Megrez DTB identities. Build only if a frozen source is absent; use `tools/docker/run_dev_container.sh` and never delete the persistent container or its caches.
+- [x] Run all software gates before opening `/dev/ttyUSB0`. Confirm exclusive serial ownership and a live U-Boot prompt, then boot RockOS only for the bounded publication attempts. Do not modify partition 2, persistent U-Boot environment, or any old generation.
+- [x] Reboot normally, require a fresh OpenSBI/U-Boot epoch, attest the four persistent files, and create schema-v2 `current.json` from the attested bytes.
+- [x] Run exactly one lightweight physical probe. Require extlinux plus three artifact size/CRC checks, terminal `PASS`, Asterinas software reboot, a fresh firmware epoch, and interruption of the next autoboot so the terminal state is U-Boot.
+- [x] Verify evidence hashes and confirm the transcript contains no serial upload, partition write during the probe, RockOS activity during the probe, Firefox, fallback boot, or `saveenv`. If any condition fails, retain evidence and do not claim the reset path is repaired.
+
+Physical evidence on 2026-09-12: publication nonce `9454f6a63353...`
+installed kernel `485b9079c204...`, Stage1 `d12e5ec8ca4c...`, Megrez DTB
+`02a8d43d581b...`, and extlinux `aaf76a1db7c...`, then recovered normally
+to U-Boot.  The schema-v2 bundle is `cbc1d0955851...`.  Its single `boot`
+probe loaded and CRC-checked extlinux first (`beb20b5f`), then kernel
+(`24f33f77`), initramfs (`c0dc29d2`), and DTB (`4afcb20e`); it emitted
+terminal `PASS`, software-rebooted, validated a fresh OpenSBI/U-Boot/prompt
+epoch, and finished in 41.98 seconds with `passed=true` and `recovered=true`.
+Both retained evidence files passed `sha256sum -c`; the probe transcript
+contains no upload, filesystem write, partition 2, RockOS, Firefox, fallback,
+network transfer, or `saveenv` action.
 
 ### Task 7: Final verification and publication
 
