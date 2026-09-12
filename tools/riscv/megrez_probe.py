@@ -35,18 +35,26 @@ from tools.riscv.megrez_board_session import (
     open_serial,
     validate_recovery_epoch,
 )
+from tools.riscv.megrez_boot_manifest import (
+    BootManifestError,
+    ExtlinuxGeneration,
+    MAX_EXTLINUX_BYTES,
+)
 from tools.riscv.megrez_debug_board import _lock_serial, _uboot_bootargs_commands
 from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
 
 
-_BUNDLE_FIELDS = frozenset(
+_BUNDLE_V1_FIELDS = frozenset(
     ("schema_version", "plan", "plan_sha256", "device", "mmc_artifacts")
 )
+_BUNDLE_V2_FIELDS = _BUNDLE_V1_FIELDS | {"extlinux"}
 _MMC_FIELDS = frozenset(("name", "path"))
+_EXTLINUX_FIELDS = frozenset(("path", "size", "sha256", "crc32", "contents"))
 _MMC_ORDER = ("kernel", "initramfs", "megrez_dtb")
 _MMC_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*")
 _SERIAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_CRC32 = re.compile(r"[0-9a-f]{8}")
 _NONCE = re.compile(r"[0-9a-f]{32}")
 _SAFE_DETAIL = r"[a-z0-9][a-z0-9-]*"
 _START = re.compile(
@@ -190,6 +198,88 @@ class MmcArtifact:
 
 
 @dataclass(frozen=True)
+class MmcExtlinux:
+    """Exact persistent extlinux bytes selected by the reset path."""
+
+    path: str
+    size: int
+    sha256: str
+    crc32: str
+    contents: str
+
+    @classmethod
+    def from_mapping(cls, value: object) -> MmcExtlinux:
+        mapping = _exact_mapping(value, _EXTLINUX_FIELDS, "extlinux identity")
+        identity = cls(
+            path=mapping["path"],
+            size=mapping["size"],
+            sha256=mapping["sha256"],
+            crc32=mapping["crc32"],
+            contents=mapping["contents"],
+        )
+        identity.validate()
+        return identity
+
+    @classmethod
+    def from_bytes(cls, path: str, contents: bytes) -> MmcExtlinux:
+        try:
+            text = contents.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ProbeContractError("extlinux identity is not UTF-8") from error
+        identity = cls(
+            path=path,
+            size=len(contents),
+            sha256=hashlib.sha256(contents).hexdigest(),
+            crc32=f"{zlib.crc32(contents):08x}",
+            contents=text,
+        )
+        identity.validate()
+        return identity
+
+    def validate(self) -> None:
+        if not isinstance(self.path, str) or _MMC_PATH.fullmatch(self.path) is None:
+            raise ProbeContractError("unsafe extlinux identity path")
+        if self.path != "extlinux/asterinas.conf":
+            raise ProbeContractError("extlinux identity path is not the reset entry")
+        if not isinstance(self.contents, str):
+            raise ProbeContractError("extlinux identity contents must be text")
+        encoded = self.contents.encode("utf-8")
+        if (
+            type(self.size) is not int
+            or not 0 < self.size <= MAX_EXTLINUX_BYTES
+            or self.size != len(encoded)
+            or not isinstance(self.sha256, str)
+            or _SHA256.fullmatch(self.sha256) is None
+            or self.sha256 != hashlib.sha256(encoded).hexdigest()
+            or not isinstance(self.crc32, str)
+            or _CRC32.fullmatch(self.crc32) is None
+            or self.crc32 != f"{zlib.crc32(encoded):08x}"
+        ):
+            raise ProbeContractError("extlinux identity does not match its contents")
+        try:
+            generation = ExtlinuxGeneration.from_bytes(encoded)
+        except BootManifestError as error:
+            raise ProbeContractError(f"invalid extlinux identity: {error}") from error
+        if generation.canonical_bytes() != encoded:
+            raise ProbeContractError("extlinux identity is not canonical")
+
+    @property
+    def generation(self) -> ExtlinuxGeneration:
+        self.validate()
+        return ExtlinuxGeneration.from_bytes(self.contents.encode())
+
+    def to_dict(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "path": self.path,
+            "size": self.size,
+            "sha256": self.sha256,
+            "crc32": self.crc32,
+            "contents": self.contents,
+        }
+
+
+@dataclass(frozen=True)
 class ProbeBundle:
     """One exact deployment selected for repeatable physical probes."""
 
@@ -198,10 +288,16 @@ class ProbeBundle:
     plan_sha256: str
     device: str
     mmc_artifacts: tuple[MmcArtifact, ...]
+    extlinux: MmcExtlinux | None = None
 
     @classmethod
     def from_bytes(cls, data: bytes) -> ProbeBundle:
-        mapping = _exact_mapping(_load_json(data), _BUNDLE_FIELDS, "probe bundle")
+        loaded = _load_json(data)
+        if not isinstance(loaded, dict):
+            raise ProbeContractError("probe bundle fields do not match the contract")
+        schema_version = loaded.get("schema_version")
+        fields = _BUNDLE_V2_FIELDS if schema_version == 2 else _BUNDLE_V1_FIELDS
+        mapping = _exact_mapping(loaded, fields, "probe bundle")
         try:
             plan = DebugPlan.from_bytes(_canonical_json(mapping["plan"]))
         except (DebugContractError, TypeError, ValueError) as error:
@@ -215,13 +311,18 @@ class ProbeBundle:
             plan_sha256=mapping["plan_sha256"],
             device=mapping["device"],
             mmc_artifacts=tuple(MmcArtifact.from_mapping(item) for item in artifacts),
+            extlinux=(
+                MmcExtlinux.from_mapping(mapping["extlinux"])
+                if schema_version == 2
+                else None
+            ),
         )
         bundle.validate()
         return bundle
 
     def validate(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise ProbeContractError("probe bundle schema must be 1")
+        if type(self.schema_version) is not int or self.schema_version not in (1, 2):
+            raise ProbeContractError("probe bundle schema must be 1 or 2")
         try:
             self.plan.validate()
         except DebugContractError as error:
@@ -250,16 +351,43 @@ class ProbeBundle:
             artifact.validate()
             if artifact.name not in identities:
                 raise ProbeContractError("MMC artifact is absent from embedded plan")
+        if self.schema_version == 1:
+            if self.extlinux is not None:
+                raise ProbeContractError("legacy bundle cannot contain extlinux identity")
+            return
+        if self.extlinux is None:
+            raise ProbeContractError("schema 2 requires an extlinux identity")
+        self.extlinux.validate()
+        try:
+            self.extlinux.generation.validate_against_plan(self.plan)
+        except BootManifestError as error:
+            raise ProbeContractError(f"invalid extlinux identity: {error}") from error
+        selected_paths = {
+            item.name: f"/{item.path}" for item in self.mmc_artifacts
+        }
+        if self.extlinux.generation.artifact_paths != selected_paths:
+            raise ProbeContractError("extlinux artifact paths do not match MMC artifacts")
+
+    def require_physical_generation(self) -> None:
+        self.validate()
+        if self.schema_version != 2 or self.extlinux is None:
+            raise ProbeContractError(
+                "physical probe requires a schema 2 extlinux generation"
+            )
 
     def to_dict(self) -> dict[str, object]:
         self.validate()
-        return {
+        document = {
             "schema_version": self.schema_version,
             "plan": self.plan.to_dict(),
             "plan_sha256": self.plan_sha256,
             "device": self.device,
             "mmc_artifacts": [artifact.to_dict() for artifact in self.mmc_artifacts],
         }
+        if self.schema_version == 2:
+            assert self.extlinux is not None
+            document["extlinux"] = self.extlinux.to_dict()
+        return document
 
     def canonical_bytes(self) -> bytes:
         return _canonical_json(self.to_dict())
@@ -335,10 +463,16 @@ class ProbeRunResult:
     outcomes: tuple[ProbeOutcome, ...]
     elapsed_seconds: float
     recovered: bool
+    extlinux_sha256: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         if self.schema_version != 1:
             raise ProbeContractError("probe result schema must be 1")
+        if self.extlinux_sha256 is not None and (
+            not isinstance(self.extlinux_sha256, str)
+            or _SHA256.fullmatch(self.extlinux_sha256) is None
+        ):
+            raise ProbeContractError("probe result extlinux digest is invalid")
         return {
             "schema_version": self.schema_version,
             "passed": self.passed,
@@ -358,6 +492,7 @@ class ProbeRunResult:
             ],
             "elapsed_seconds": self.elapsed_seconds,
             "recovered": self.recovered,
+            "extlinux_sha256": self.extlinux_sha256,
         }
 
     def canonical_bytes(self) -> bytes:
@@ -862,6 +997,9 @@ def run_probe(
         outcomes=outcomes,
         elapsed_seconds=round(max(0.0, clock() - started), 3),
         recovered=recovered,
+        extlinux_sha256=(
+            bundle.extlinux.sha256 if bundle.extlinux is not None else None
+        ),
     )
     publisher.publish(result, transcript, dmesg)
     return result
@@ -1675,6 +1813,9 @@ def run_qemu_deadline_gate(
         outcomes=(),
         elapsed_seconds=round(max(0.0, clock() - started), 3),
         recovered=recovered,
+        extlinux_sha256=(
+            bundle.extlinux.sha256 if bundle.extlinux is not None else None
+        ),
     )
     publisher.publish(result, transcript, b"")
     return result
@@ -1724,6 +1865,8 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
         parser.add_argument("--mmc-kernel", required=True)
         parser.add_argument("--mmc-initramfs", required=True)
         parser.add_argument("--mmc-dtb", required=True)
+        parser.add_argument("--extlinux-config", required=True, type=Path)
+        parser.add_argument("--mmc-extlinux", required=True)
         parser.add_argument(
             "--bundle", type=Path, default=Path("target/megrez-probe/current.json")
         )
@@ -1765,8 +1908,14 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
 
 def _configure(values: argparse.Namespace) -> ProbeBundle:
     plan = DebugPlan.from_bytes(_read_bounded_regular(values.plan, 64 * 1024, "plan"))
+    extlinux = MmcExtlinux.from_bytes(
+        values.mmc_extlinux,
+        _read_bounded_regular(
+            values.extlinux_config, MAX_EXTLINUX_BYTES, "extlinux configuration"
+        ),
+    )
     bundle = ProbeBundle(
-        schema_version=1,
+        schema_version=2,
         plan=plan,
         plan_sha256=plan.plan_sha256,
         device=values.device,
@@ -1775,6 +1924,7 @@ def _configure(values: argparse.Namespace) -> ProbeBundle:
             MmcArtifact("initramfs", values.mmc_initramfs),
             MmcArtifact("megrez_dtb", values.mmc_dtb),
         ),
+        extlinux=extlinux,
     )
     bundle.validate()
     directory = _prepare_bundle_directory(values.bundle.parent)
@@ -1829,6 +1979,7 @@ def main(
                     publisher,
                 )
         else:
+            bundle.require_physical_generation()
             selected = validate_probe_names(values.probes)
             config = ProbeRunConfig(
                 session_seconds=values.session_seconds,
