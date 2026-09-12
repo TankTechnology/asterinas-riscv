@@ -74,6 +74,43 @@ def _rendered(plan=None, paths=None):
 
 
 class ExtlinuxGenerationTests(unittest.TestCase):
+    def test_renders_one_generation_directly_from_the_plan(self) -> None:
+        plan = _plan()
+
+        generation = manifest.ExtlinuxGeneration.for_plan(plan, _paths(plan))
+
+        self.assertEqual(generation.canonical_bytes(), _rendered(plan))
+
+    def test_render_cli_atomically_writes_the_selected_configuration(self) -> None:
+        plan = _plan()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "extlinux/asterinas.conf"
+
+            generation = manifest.write_generation(plan, _paths(plan), output)
+
+            self.assertEqual(output.read_bytes(), generation.canonical_bytes())
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_render_cli_requires_all_three_immutable_paths(self) -> None:
+        values = manifest.parse_args(
+            (
+                "render",
+                "--plan",
+                "/plan.json",
+                "--mmc-kernel",
+                _paths()["kernel"],
+                "--mmc-initramfs",
+                _paths()["initramfs"],
+                "--mmc-dtb",
+                _paths()["megrez_dtb"],
+                "--output",
+                "/staged/extlinux/asterinas.conf",
+            )
+        )
+
+        self.assertEqual(values.action, "render")
+        self.assertEqual(values.output, Path("/staged/extlinux/asterinas.conf"))
+
     def test_parses_and_renders_one_plan_bound_generation(self) -> None:
         plan = _plan()
         generation = manifest.ExtlinuxGeneration.from_bytes(_rendered(plan))

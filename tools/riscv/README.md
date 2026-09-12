@@ -440,14 +440,71 @@ tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_qemu \
   MEGREZ_PROBE_INITRAMFS=target/megrez-probe/build/initramfs.cpio
 ```
 
-Deployment is a separate maintenance operation.
-Boot RockOS only to transfer a changed artifact, verify its exact size and
-SHA-256, atomically install its versioned filename on partition 1, and reboot
-normally.
-The schema-2 RockOS
-attestation below remains the full Debian/browser release workflow; the
-schema-1 probe bundle is instead bound to the selected SHA-256 identities and
-to U-Boot's observed byte counts and CRC32 values on every run.
+Deployment is a separate maintenance operation.  Every kernel, Stage1, and
+DTB basename must contain the first 12 hexadecimal digits of that artifact's
+SHA-256.  The extlinux label contains the first 12 digits of the plan SHA-256.
+Keep the generated configuration at
+`<staged-directory>/extlinux/asterinas.conf` and validate the complete staged
+tree before opening the serial port.
+
+Render that configuration atomically from the frozen plan and the three
+partition-relative paths:
+
+```bash
+python3 -m tools.riscv.megrez_boot_manifest render \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --mmc-kernel /asterinas-KERNEL_SHA12.booti \
+  --mmc-initramfs /stage1-INITRAMFS_SHA12.cpio \
+  --mmc-dtb /dtb/megrez-DTB_SHA12.dtb \
+  --output "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf"
+```
+
+With that directory already served read-only on the private board network,
+publish it once through RockOS:
+
+```bash
+python3 -m tools.riscv.megrez_rockos_attestation publish \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --extlinux-config "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf" \
+  --staged-directory "$PWD/target/megrez-boot-manifest/current" \
+  --base-url http://10.100.19.216:18081/current \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/publication"
+```
+
+The command checks that `/boot` is `/dev/mmcblk1p1`, verifies or installs only
+new immutable artifact names, and replaces `/boot/extlinux/asterinas.conf`
+atomically last.  A failure leaves the previous configuration in place and
+still attempts a normal reboot to U-Boot.  It never accesses partition 2.
+
+After the RockOS receipt succeeds, select exactly those persistent bytes once:
+
+```bash
+python3 -m tools.riscv.megrez_probe configure \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --mmc-kernel asterinas-KERNEL_SHA12.booti \
+  --mmc-initramfs stage1-INITRAMFS_SHA12.cpio \
+  --mmc-dtb dtb/megrez-DTB_SHA12.dtb \
+  --extlinux-config "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf" \
+  --mmc-extlinux extlinux/asterinas.conf
+```
+
+The probe bundle is schema 2 and binds the extlinux contents and its
+size/SHA-256/CRC32 in addition to the three artifacts.  Each physical probe
+loads and CRC-checks the persistent extlinux file first; a mismatch stops
+before `booti`.  Schema 1 remains accepted only by the explicit diskless QEMU
+adapter.
+
+This prevents `MEGREZ-BOOT-MANIFEST-001`, where the reset entry referenced the
+missing `asterinas-sv48-fe1dcfdf7.booti` and
+`initramfs-full-712208ba4.cpio`.  The host-side fixture reports
+`kernel: staged file is missing`; a physical MMC mismatch reports an extlinux
+size/CRC failure and does not try another kernel.
+
+The schema-2 RockOS attestation below remains the full Debian/browser release
+workflow.  The lightweight probe does not start RockOS, Firefox, network, or
+partition 2 during routine runs.
 A firmware or
 SBI hard lock that prevents all serial progress still requires a manual board
 reset.
