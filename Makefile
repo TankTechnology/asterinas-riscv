@@ -441,6 +441,12 @@ test_riscv_megrez_boot_manifest_unit:
 		tools.riscv.tests.test_megrez_boot_manifest \
 		tools.riscv.tests.test_megrez_rockos_attestation -v
 
+.PHONY: test_riscv_megrez_boot_menu_unit
+test_riscv_megrez_boot_menu_unit: test_riscv_megrez_boot_manifest_unit
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_boot_menu \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
 .PHONY: test_riscv_megrez_probe_unit
 test_riscv_megrez_probe_unit: test_riscv_megrez_boot_manifest_unit
 	@python3 -W error::ResourceWarning -m unittest \

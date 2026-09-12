@@ -8,6 +8,68 @@ The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
 
+## Megrez selectable boot menu
+
+The schema-v3 selector provides RockOS, Asterinas Basic, Probe, and Desktop.
+It is qualified as a versioned canary before replacing `/extlinux/asterinas.conf`.
+See the [design](../../docs/superpowers/specs/2026-09-12-megrez-selectable-boot-menu-design.md)
+and [implementation status](../../docs/superpowers/plans/2026-09-12-megrez-selectable-boot-menu.md).
+
+After promotion, routine startup needs only a reboot/reset and menu selection:
+
+| Entry | Purpose | Recovery policy |
+| --- | --- | --- |
+| RockOS (default) | Maintenance and network file transfer | Normal RockOS shutdown |
+| Basic | BusyBox shell in the small initramfs; no Debian disk required | `sync; reboot -f` |
+| Probe | Automatic, non-writing boot check | Requests reboot; 90-second software deadline |
+| Desktop | Existing Debian, X and Firefox | Explicit shutdown; no automatic deadline |
+
+The menu defaults to RockOS after ten seconds. The board's preceding 30-second
+firmware delay is unchanged. No routine build, upload, CRC command, manual DTB
+patch, or `booti` sequence is required. A hard-locked kernel still requires a
+physical reset; the software timer is not a hardware watchdog. Basic's shell
+does not currently provide job control.
+
+Desktop shares the kernel, prepared DTB and Stage1 with Basic/Probe. It mounts
+the existing Debian partition and uses a temporary, UID-1000 desktop HOME;
+browser profiles and caches do not persist across reboot. Other Debian rootfs
+writes remain possible. Qualification checks X, framebuffer and Firefox process
+readiness and a visible Firefox window, not webpage rendering, Internet access
+or input responsiveness. The installed cold-profile ESR image still takes
+minutes to expose its window. The test allows up to 300 seconds after the root
+console appears; this is a timeout bound, not a performance target.
+
+Maintenance commands below run in the persistent development container. They
+are for changing/qualifying a generation, not commands to repeat each boot:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_boot_menu_unit
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_boot_menu --help
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_menu_board --help
+```
+
+`megrez_boot_menu prepare-dtb` moves the existing framebuffer/USB fixups to
+publication time. `prepare` records frozen local artifacts and the exact vendor
+configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
+only missing artifacts, verifies sizes/SHA-256, then publishes a canary. A
+`cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
+returns to U-Boot. `--check-root` optionally runs read-only `e2fsck -fn` from
+RockOS, refusing a mounted Debian filesystem.
+
+`promote --from-uboot --evidence DIRECTORY` requires three successful cycles
+each for Basic, Probe, RockOS and fallback, and two for Desktop, all for the
+same menu identity. It verifies installed files again, backs up the previous
+selector, atomically replaces it, and observes an uninterrupted software reboot
+through the persistent menu to RockOS. It never modifies the vendor extlinux
+file, uses `saveenv`, or deploys a rootfs image. Cold power-on qualification is
+separate and must be recorded from a real operator power cycle.
+
+Supply RockOS credentials through `--password-fd`, or explicitly select
+`--factory-login` only for the documented unchanged factory account. The board
+must be in the state named by the command; failure does not trigger speculative
+serial commands or forced resets. A failed cycle retains its `serial.log` and
+`result.json` and does not count toward promotion.
+
 ## SMP4 cross-hart instruction-cache regression
 
 The formal RISC-V regression job runs with exactly four guest CPUs and sets

@@ -79,15 +79,17 @@ remove.
 All Asterinas entries reuse the same selected kernel and DTB generation. Basic
 and Probe reuse the same lightweight Stage1; only their init arguments differ.
 Desktop reuses the same kernel, DTB, identity checks, publication transaction,
-and serial evidence format, but selects the existing full Debian Stage1 and
-desktop boot arguments.
+and serial evidence format, but selects Debian root-handoff arguments. The
+current generation uses the same 4.4 MiB Stage1 for all three modes; a separate
+Desktop archive is permitted only when its contents actually differ.
 
 The resulting artifact set is:
 
 ```text
-verified kernel + verified DTB
-                + lightweight Stage1 -> Basic / Probe
-                + full Stage1        -> Desktop
+verified kernel + verified DTB + shared Stage1
+                                -> Basic (initramfs shell)
+                                -> Probe (automatic boot check)
+                                -> Desktop (existing Debian partition)
 ```
 
 An artifact is prepared and published only when its content changes. Choosing
@@ -112,7 +114,12 @@ defaults to RockOS unless an operator selects another entry.
 **Asterinas Desktop** boots the existing full Debian/Firefox environment. It
 uses the already validated desktop root-init and root-filesystem policy. It
 has no short automatic reboot deadline and does not add Firefox to Basic or
-Probe.
+Probe. `--debug-console=root` retains an independent maintenance console;
+`isolated-root` must not be used because it suppresses graphical startup.
+`--volatile-home` prepares the existing disposable desktop HOME policy inside
+Stage1, rather than requiring a host-side setup command. Browser profile/cache
+changes in that HOME disappear on reboot. This does not make all of Debian
+read-only: normal rootfs writes remain enabled by the existing desktop policy.
 
 ### Manifest evolution
 
@@ -134,6 +141,11 @@ Routine operation is entirely board-local:
 ```text
 reset or reboot -> wait for menu -> select one entry -> boot from MMC
 ```
+
+The existing firmware has a separate 30-second autoboot delay, which is not
+changed by this work. The menu timeout is ten seconds, not total startup time.
+Serial-console selection is qualified here; USB-keyboard menu selection needs
+its own operator observation.
 
 A single host-side maintenance entry point owns selector rendering,
 validation, canary publication, final publication, and qualification. It may
@@ -182,7 +194,7 @@ Host-side tests cover:
 - enforcing RockOS as the ten-second default;
 - proving Basic and Probe share lightweight artifacts but have distinct init
   arguments;
-- proving Desktop selects the full Stage1;
+- proving Desktop selects Debian handoff and may share Stage1 without duplication;
 - rejecting missing, mutable, mismatched, or unrecorded Asterinas artifacts;
 - reading existing schema-v2 manifests while refusing to publish them as a
   multi-mode selector;
@@ -242,6 +254,6 @@ This milestone is complete when:
 
 This milestone does not merge the network stack, debug Firefox networking,
 add DRM acceleration, alter the RockOS vendor configuration, change persistent
-U-Boot environment variables, write partition 2, or add a hardware watchdog.
+U-Boot environment variables, deploy a new partition-2 image, or add a hardware watchdog.
 Those changes require their own evidence and must not complicate the basic
 boot selector.
