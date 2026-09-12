@@ -5,6 +5,9 @@ pub trait LinuxAbi {
     /// Gets the system call number.
     fn syscall_num(&self) -> usize;
 
+    /// Sets the system call number for a kernel-requested restart.
+    fn set_syscall_num(&mut self, num: usize);
+
     /// Gets the return value of the system call.
     fn syscall_ret(&self) -> usize;
 

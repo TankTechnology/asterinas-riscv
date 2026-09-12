@@ -15,7 +15,10 @@ use spin::Once;
 use super::{
     Credentials, Process,
     signal::{
-        job_control::SelectedStop, sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues,
+        job_control::{GroupStopParticipant, SelectedStop},
+        sig_mask::{AtomicSigMask, SigSet},
+        sig_num::SigNum,
+        sig_queues::SigQueues,
         signals::Signal,
     },
 };
@@ -162,6 +165,8 @@ pub struct PosixThread {
     sig_queues: SigQueues,
     // Accessed only while holding the process's signal coordinator.
     selected_stop: Mutex<SelectedStop>,
+    // Membership and checkpoints are serialized by the same coordinator.
+    group_stop_participant: Mutex<GroupStopParticipant>,
     /// The per-thread signal [`Waker`], which will be used to wake up the thread
     /// when enqueuing a signal, along with the reason why the thread is paused.
     signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
@@ -268,6 +273,20 @@ impl PosixThread {
         &self.selected_stop
     }
 
+    pub(super) fn group_stop_participant(&self) -> &Mutex<GroupStopParticipant> {
+        &self.group_stop_participant
+    }
+
+    /// Snapshots thread-directed and process-directed pending sets together.
+    pub(crate) fn pending_signal_sets(&self) -> (SigSet, SigSet) {
+        let process = self.process();
+        let _control = process.signal_job_control().lock();
+        (
+            self.sig_queues.sig_pending(),
+            process.sig_queues().sig_pending(),
+        )
+    }
+
     /// Returns whether the signal is blocked by the thread.
     pub fn has_signal_blocked(&self, signum: SigNum) -> bool {
         // FIXME: Some signals cannot be blocked, even set in sig_mask.
@@ -297,6 +316,14 @@ impl PosixThread {
 
     /// Returns the sleeping state of this thread.
     pub fn sleeping_state(&self) -> SleepingState {
+        // STOP commitment is independent of whether a kernel wake briefly
+        // schedules this task. Such a wake does not authorize user execution
+        // and must not turn /proc's T/t into R. Release the stop-state locks
+        // before acquiring the signalled-waker lock below.
+        if let Some(state) = self.stopped_state() {
+            return state;
+        }
+
         // This implementation prevents a thread (let's call it `threadA`) that is
         // sleeping in an interruptible wait from being mistakenly reported as
         // sleeping in an uninterruptible wait due to a race condition, where another
@@ -332,16 +359,6 @@ impl PosixThread {
         //    release-acquire pair A8-B1.
         // Therefore, the condition where both B2 and B3 see `None` will never happen.
         //
-        // Similarly, this implementation prevents a process that has been stopped by
-        // a signal or ptrace from being incorrectly reported as sleeping in an
-        // (un)interruptible wait.
-        //
-        // FIXME: This implementation cannot prevent a stopped process from being
-        // reported as running when `crate::process::signal::handle_pending_signal`
-        // is called, but the pending signal is not a `SIGCONT`. However, is this
-        // actually a problem? We considered an approach to fix this issue, but it
-        // does not fully resolve it and has some drawbacks. For more details, see
-        // <https://github.com/asterinas/asterinas/pull/2491#issuecomment-3527958970>.
         let signalled_waker = self.signalled_waker.lock();
         let task = self.task.upgrade().unwrap();
         match (
@@ -349,8 +366,12 @@ impl PosixThread {
             task.schedule_info().cpu.get().is_none(),
         ) {
             (Some((_, PauseReason::Sleep)), true) => SleepingState::Interruptible,
-            (Some((_, PauseReason::StopBySignal)), true) => SleepingState::StopBySignal,
-            (Some((_, PauseReason::StopByPtrace)), true) => SleepingState::StopByPtrace,
+            // A released stop waiter can remain registered until it runs.
+            // The committed stop snapshot above, not that stale wait reason,
+            // determines whether it is still stopped.
+            (Some((_, PauseReason::StopBySignal | PauseReason::StopByPtrace)), true) => {
+                SleepingState::Running
+            }
             (None, true) => SleepingState::Uninterruptible,
             (_, false) => SleepingState::Running,
         }

@@ -13,12 +13,17 @@ use super::{
     process_vm::ProcessVmarGuard,
     rlimit::ResourceLimits,
     signal::{
-        constants::{SIGCONT, SIGKILL, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU},
-        job_control::{SignalJobControl, is_stop_signal},
+        c_types::siginfo_t,
+        constants::{
+            CLD_CONTINUED, CLD_STOPPED, SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTSTP, SIGTTIN,
+            SIGTTOU,
+        },
+        job_control::{GroupStopParticipant, SignalJobControl, is_stop_signal},
+        sig_action::{SigActionFlags, SigHandler},
         sig_disposition::SigDispositions,
         sig_mask::SigSet,
         sig_num::{AtomicSigNum, SigNum},
-        signals::Signal,
+        signals::{Signal, raw::RawSignal},
     },
     status::ProcessStatus,
     task_set::TaskSet,
@@ -729,10 +734,11 @@ impl Process {
                 thread.sig_queues().discard(discarded);
                 if is_sigcont {
                     control.cancel(&mut thread.selected_stop().lock());
+                    *thread.group_stop_participant().lock() = Default::default();
                 }
             }
             // Generation effects apply even when blocked, ignored, or coalesced.
-            let resumed = is_sigcont && self.status.stop_status().resume();
+            let resumed = is_sigcont && control.resume(&self.status);
             (queue.enqueue_without_notify(signal), resumed)
         } else {
             // In particular SIGKILL must not reacquire task membership: exit and
@@ -798,20 +804,58 @@ impl Process {
 
     /// Commits a selected stop only if no CONT or exit has superseded it.
     pub(super) fn stop_if_selected(&self, thread: &PosixThread, sig_num: SigNum) {
-        let stopped = {
+        let tasks = {
+            let tasks = self.tasks.lock();
             let mut control = self.signal_job_control.lock();
+            // A signal-delivery ptrace stop may have overlapped a sibling's
+            // group-stop initiation. Participate in that CURRENT obligation;
+            // do not let the tracer's injected signal replace its stop round.
+            if thread.group_stop_participant().lock().must_stop() {
+                control.cancel(&mut thread.selected_stop().lock());
+                return;
+            }
             let kill_pending = thread.sig_queues().has_pending_signal(SIGKILL)
                 || self.sig_queues.has_pending_signal(SIGKILL);
-            control.commit_stop(
+            if !control.begin_stop(
                 &mut thread.selected_stop().lock(),
                 &self.status,
                 sig_num,
-                kill_pending,
-            )
+                kill_pending || tasks.in_execve(),
+            ) {
+                return;
+            }
+            for task in tasks.as_slice() {
+                if !task.as_thread().unwrap().is_exited() {
+                    control.enroll(
+                        &mut task
+                            .as_posix_thread()
+                            .unwrap()
+                            .group_stop_participant()
+                            .lock(),
+                    );
+                }
+            }
+            tasks.as_slice().to_vec()
         };
-        if stopped {
-            self.wake_up_parent();
+        for task in tasks {
+            task.as_posix_thread().unwrap().wake_signalled_waker();
         }
+    }
+
+    /// Returns whether this thread must acknowledge the current stop episode.
+    pub(crate) fn has_group_stop_checkpoint(&self, thread: &PosixThread) -> bool {
+        let _control = self.signal_job_control.lock();
+        matches!(
+            *thread.group_stop_participant().lock(),
+            GroupStopParticipant::Pending { .. }
+        )
+    }
+
+    /// Enrolls a new member while the caller still owns task membership.
+    pub(super) fn enroll_group_stop(&self, thread: &PosixThread) {
+        self.signal_job_control
+            .lock()
+            .enroll(&mut thread.group_stop_participant().lock());
     }
 
     /// Returns whether the process is stopped.
@@ -819,15 +863,104 @@ impl Process {
         self.status.stop_status().is_stopped()
     }
 
+    /// Returns whether returning members have group-stop work to handle.
+    pub(crate) fn has_group_stop_work(&self, thread: &PosixThread) -> bool {
+        self.thread_must_stop(thread) || self.status.stop_status().notification_pending()
+    }
+
+    /// Checks the thread's obligation, not the process completion latch: a
+    /// tracer can explicitly resume one member while its siblings stay stopped.
+    pub(crate) fn thread_must_stop(&self, thread: &PosixThread) -> bool {
+        if !self.is_stopped() {
+            return false;
+        }
+        let _control = self.signal_job_control.lock();
+        thread.group_stop_participant().lock().must_stop()
+    }
+
+    /// Delivers a claimed group-state notification with all child locks released.
+    pub(super) fn notify_group_stop(&self) {
+        if !self.status.stop_status().notification_pending() {
+            return;
+        }
+        let Some(event) = self
+            .signal_job_control
+            .lock()
+            .take_notification(&self.status)
+        else {
+            return;
+        };
+        self.notify_group_stop_event(event, None);
+    }
+
+    /// Delivers a previously claimed event, optionally omitting the tracer's
+    /// process when its per-thread stop notification already covers this event.
+    pub(super) fn notify_group_stop_event(&self, event: StopWaitStatus, tracer: Option<&Process>) {
+        let Some(parent) = self.parent.lock().process().upgrade() else {
+            return;
+        };
+        if tracer.is_some_and(|tracer| core::ptr::eq(parent.as_ref(), tracer)) {
+            return;
+        }
+        let (code, status) = match event {
+            StopWaitStatus::Stopped(signum) => (CLD_STOPPED, signum.as_u8() as i32),
+            StopWaitStatus::Continue => (CLD_CONTINUED, SIGCONT.as_u8() as i32),
+        };
+        let info = self.child_state_siginfo(&parent, code, status);
+        parent.notify_child_state(info);
+    }
+
+    /// Publishes a child-state signal and wakes waiters, honoring this parent's
+    /// dispositions for both ordinary children and ptrace notifications.
+    pub(super) fn notify_child_state(&self, info: siginfo_t) {
+        // Serialize disposition checking with enqueue, but release those locks
+        // before queue observers and wake callbacks. SA_NOCLDSTOP suppresses
+        // SIGCHLD only: waiters must still observe the committed wait status.
+        let enqueued = {
+            let dispositions = self.sig_dispositions.lock();
+            let dispositions = dispositions.lock();
+            let action = dispositions.get(SIGCHLD);
+            let suppressed = action.handler() == SigHandler::Ign
+                || action.flags().contains(SigActionFlags::SA_NOCLDSTOP);
+            if suppressed {
+                false
+            } else {
+                let _control = self.signal_job_control.lock();
+                self.sig_queues
+                    .enqueue_without_notify(Box::new(RawSignal::new(info)))
+            }
+        };
+        if enqueued {
+            self.sig_queues.notify_enqueue();
+            let tasks = self.tasks.lock().as_slice().to_vec();
+            for task in tasks {
+                task.as_posix_thread().unwrap().wake_signalled_waker();
+            }
+        }
+        self.children_wait_queue.wake_all();
+    }
+
+    /// Builds a child-state payload in the parent's PID and user namespaces.
+    pub(super) fn child_state_siginfo(
+        &self,
+        parent: &Process,
+        code: i32,
+        status: i32,
+    ) -> siginfo_t {
+        let mut info = siginfo_t::new(SIGCHLD, code);
+        let main_thread = self.main_thread();
+        let uid = main_thread.as_posix_thread().unwrap().credentials().ruid();
+        info.set_pid_uid(
+            self.pid_in_ns(parent.pid_ns()).unwrap_or(0),
+            parent.user_ns().lock().map_kuid(uid),
+        );
+        info.set_status(status);
+        info
+    }
+
     /// Gets and clears the stop status changes for the `wait` syscall.
     pub(super) fn wait_stopped_or_continued(&self, options: WaitOptions) -> Option<StopWaitStatus> {
         self.status.stop_status().wait(options)
-    }
-
-    fn wake_up_parent(&self) {
-        let parent_guard = self.parent.lock();
-        let parent = parent_guard.process().upgrade().unwrap();
-        parent.children_wait_queue.wake_all();
     }
 
     // ******************* Subreaper ********************

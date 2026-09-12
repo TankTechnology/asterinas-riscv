@@ -217,6 +217,7 @@ impl PosixThreadBuilder {
                     sig_mask,
                     sig_queues,
                     selected_stop: Mutex::new(Default::default()),
+                    group_stop_participant: Mutex::new(Default::default()),
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
                     cpu_time_accounting: SpinLock::new(CpuTimeAccounting::new()),

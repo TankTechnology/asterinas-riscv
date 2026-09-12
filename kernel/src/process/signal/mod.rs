@@ -26,7 +26,7 @@ use ostd::{
 pub use pause::{Pause, PauseReason, with_sigmask_changed};
 pub use pending::{DequeuedSignal, HandlePendingSignal};
 pub use poll::{PollAdaptor, PollHandle, Pollable, Pollee, Poller};
-use sig_action::{SigAction, SigActionFlags, SigDefaultAction};
+use sig_action::{SigAction, SigActionFlags, SigDefaultAction, SigHandler};
 use sig_mask::SigMask;
 use sig_num::SigNum;
 pub use sig_stack::{SigStack, SigStackFlags, SigStackStatus};
@@ -49,190 +49,188 @@ pub trait SignalContext {
 
 /// Handles a pending signal for the current process.
 pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
-    // FIXME: This function may handle or suppress only one signal per trap, delaying
-    // other pending unmasked signals until the next trap. Consider a looped scan.
-    //
-    // For details, see <https://github.com/asterinas/asterinas/pull/2984/#discussion_r3137275994>.
-    let syscall_restart = if let Some(orig_syscall_ret) = ctx.thread_local.orig_syscall_ret()
-        && user_ctx.syscall_ret() == -(Errno::ERESTARTSYS as i32) as usize
-    {
-        // We should never return `ERESTARTSYS` to the userspace.
-        user_ctx.set_syscall_ret(-(Errno::EINTR as i32) as usize);
-        Some(orig_syscall_ret)
-    } else {
-        None
-    };
+    ctx.process.notify_group_stop();
+    // A temporary mask belongs to the whole delivery decision, not one stop
+    // checkpoint or one internal restart code. Keep its saved original in
+    // ThreadLocal until a user handler consumes it or the final return restores
+    // it. This also covers nonrestartable ppoll and tracer-cancelled restarts.
+    // Ignored/suppressed signals and default CONT do not complete the delivery
+    // decision. Keep scanning with the temporary mask until a user handler is
+    // prepared, a stop checkpoint is needed, or no eligible signal remains.
+    while let Some((dequeued, sig_action)) = dequeue_pending_signal(ctx) {
+        let (signal, sig_action) = if dequeued.num() != SIGKILL {
+            match ctx.posix_thread.ptrace_stop(dequeued, ctx, user_ctx) {
+                PtraceStopResult::Continued(Some(dequeued)) => {
+                    // Note that this `dequeued` object outputted by `ptrace_stop`
+                    // might be different from the input `dequeued` object
+                    // because of tracer manipulation.
+                    // But we name both `dequeued` anyway.
 
-    let mut restore_sig_mask = ctx
-        .thread_local
-        .sig_mask_saved()
-        .take()
-        .map(|mask| RestoreSigMaskGuard { ctx, mask });
-
-    let (dequeued, sig_action) = if let Some(dequeued_signal) = dequeue_pending_signal(ctx) {
-        dequeued_signal
-    } else {
-        // Fast path: There is no signal mask to restore.
-        if restore_sig_mask.is_none() {
-            return;
-        }
-        // Restore the signal mask first.
-        let _ = restore_sig_mask.take();
-
-        // Try again with the new signal mask.
-        if let Some(dequeued_signal) = dequeue_pending_signal(ctx) {
-            dequeued_signal
-        } else {
-            return;
-        }
-    };
-
-    let (signal, sig_action) = if dequeued.num() != SIGKILL {
-        match ctx.posix_thread.ptrace_stop(dequeued, ctx, user_ctx) {
-            PtraceStopResult::Continued(Some(dequeued)) => {
-                // Note that this `dequeued` object outputted by `ptrace_stop`
-                // might be different from the input `dequeued` object
-                // because of tracer manipulation.
-                // But we name both `dequeued` anyway.
-
-                let sig_num = dequeued.num();
-                if ctx.posix_thread.sig_mask().contains(sig_num) {
-                    // Requeue the injected signal to the same signal queue as the
-                    // dequeued stop signal (thread queue or process queue).
-                    //
-                    // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/kernel/signal.c#L2770>
-                    requeue_signal(ctx, dequeued);
-                    return;
-                }
-
-                (dequeued.unwrap(), get_sig_action(ctx, sig_num))
-            }
-            PtraceStopResult::Continued(None) => return,
-            PtraceStopResult::Interrupted => {
-                match dequeue_pending_signal(ctx) {
-                    Some((dequeued, action)) if dequeued.num() == SIGKILL => {
-                        (dequeued.unwrap(), action)
+                    let sig_num = dequeued.num();
+                    if ctx.posix_thread.sig_mask().contains(sig_num) {
+                        // Requeue the injected signal to the same signal queue as the
+                        // dequeued stop signal (thread queue or process queue).
+                        //
+                        // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/kernel/signal.c#L2770>
+                        requeue_signal(ctx, dequeued);
+                        continue;
                     }
-                    // SIGKILL was consumed by a sibling thread; this thread will be
-                    // terminated as part of the process-wide exit.
-                    _ => return,
+
+                    (dequeued.unwrap(), get_sig_action(ctx, sig_num))
+                }
+                PtraceStopResult::Continued(None) => continue,
+                PtraceStopResult::Interrupted => {
+                    match dequeue_pending_signal(ctx) {
+                        Some((dequeued, action)) if dequeued.num() == SIGKILL => {
+                            (dequeued.unwrap(), action)
+                        }
+                        // SIGKILL was consumed by a sibling thread; this thread will be
+                        // terminated as part of the process-wide exit.
+                        _ => return,
+                    }
+                }
+                PtraceStopResult::NotTraced(dequeued) => (dequeued.unwrap().unwrap(), sig_action),
+            }
+        } else {
+            (dequeued.unwrap(), sig_action)
+        };
+
+        let sig_num = signal.num();
+        provenance::trace_delivery(sig_num, ctx);
+        match sig_action.handler() {
+            SigHandler::Ign => {
+                debug!("Ignore signal {:?}", sig_num);
+            }
+            SigHandler::User(handler_addr) => {
+                let flags = sig_action.flags();
+                if flags.contains(SigActionFlags::SA_RESETHAND) {
+                    // In Linux, SA_RESETHAND corresponds to SA_ONESHOT,
+                    // which means the user handler will be executed only once and then reset to the default.
+                    // Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/kernel/signal.c#L2761>.
+                    let sig_dispositions = ctx.process.sig_dispositions().lock();
+                    let mut sig_dispositions = sig_dispositions.lock();
+                    sig_dispositions.set_default(sig_num);
+                }
+
+                let restore_sig_mask = ctx.thread_local.sig_mask_saved().take();
+                let restart_code = user_ctx.syscall_ret();
+                if is_restart_code(restart_code) && ctx.thread_local.orig_syscall_ret().is_some() {
+                    if restart_code == -(Errno::ERESTARTSYS as i32) as usize
+                        && flags.contains(SigActionFlags::SA_RESTART)
+                    {
+                        restart_syscall_if_needed(user_ctx, ctx);
+                    } else {
+                        user_ctx.set_syscall_ret(-(Errno::EINTR as i32) as usize);
+                    }
+                }
+
+                if let Err(e) = handle_user_signal(
+                    ctx,
+                    sig_num,
+                    handler_addr,
+                    flags,
+                    sig_action.restorer_addr(),
+                    sig_action.mask(),
+                    restore_sig_mask,
+                    user_ctx,
+                    signal.to_info(),
+                ) {
+                    debug!("Failed to handle user signal: {:?}", e);
+                    // If signal handling fails, the process should be terminated with SIGSEGV.
+                    // Reference: <https://elixir.bootlin.com/linux/v6.13/source/kernel/signal.c#L3082>
+                    //
+                    // FIXME: Linux converts a signal-frame setup failure into a SIGSEGV delivery,
+                    // instead of killing the process directly.
+                    // This can be observed in LTP test `signal06`.
+                    do_exit_group(TermStatus::Killed(SIGSEGV), ctx, user_ctx);
+                }
+                return;
+            }
+            SigHandler::Dfl if ctx.process.is_init_process() => {
+                // From Linux man pages "kill(2)":
+                // "The only signals that can be sent to process ID 1, the init process, are those for
+                // which init has explicitly installed signal handlers."
+            }
+            SigHandler::Dfl => {
+                let sig_default_action = SigDefaultAction::from_signum(sig_num);
+                debug!("sig_default_action = {:?}", sig_default_action);
+
+                match sig_default_action {
+                    SigDefaultAction::Core | SigDefaultAction::Term => {
+                        warn!(
+                            "PID {}: terminating on signal {}",
+                            ctx.process.pid(),
+                            sig_num.sig_name()
+                        );
+                        // The signal terminates the current process. Therefore, we should exit here.
+                        do_exit_group(TermStatus::Killed(sig_num), ctx, user_ctx);
+                        return;
+                    }
+                    SigDefaultAction::Ign => {}
+                    SigDefaultAction::Stop => {
+                        ctx.process.stop_if_selected(ctx.posix_thread, sig_num);
+                        if ctx.process.is_stopped() {
+                            return;
+                        }
+                    }
+                    // Continuing is exclusively a generation-time effect. Delivering
+                    // an older CONT must not undo a newer STOP.
+                    SigDefaultAction::Cont => {}
                 }
             }
-            PtraceStopResult::NotTraced(dequeued) => (dequeued.unwrap().unwrap(), sig_action),
         }
-    } else {
-        (dequeued.unwrap(), sig_action)
+    }
+}
+
+/// Restarts an interrupted syscall when no non-restarting handler was delivered.
+///
+/// Stop checkpoints and ignored/suppressed signals must retain ERESTARTSYS until
+/// the final return-to-user decision. Otherwise a stopped sibling's blocked read
+/// spuriously returns EINTR even though it received no caught signal.
+pub(crate) fn restart_syscall_if_needed(user_ctx: &mut UserContext, ctx: &Context) {
+    // No handler consumed this temporary mask. Restore it at the final return
+    // boundary even if a tracer cancelled restart or replaced the return value.
+    if let Some(mask) = ctx.thread_local.sig_mask_saved().take() {
+        ctx.set_sig_mask(mask);
+    }
+
+    let restart_code = user_ctx.syscall_ret();
+    if !is_restart_code(restart_code) {
+        return;
+    }
+    let Some(original) = ctx.thread_local.orig_syscall_ret() else {
+        return;
     };
 
-    let sig_num = signal.num();
-    provenance::trace_delivery(sig_num, ctx);
-    match sig_action {
-        SigAction::Ign => {
-            debug!("Ignore signal {:?}", sig_num);
-        }
-        SigAction::User {
-            handler_addr,
-            flags,
-            restorer_addr,
-            mask,
-        } => {
-            if flags.contains(SigActionFlags::SA_RESETHAND) {
-                // In Linux, SA_RESETHAND corresponds to SA_ONESHOT,
-                // which means the user handler will be executed only once and then reset to the default.
-                // Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/kernel/signal.c#L2761>.
-                let sig_dispositions = ctx.process.sig_dispositions().lock();
-                let mut sig_dispositions = sig_dispositions.lock();
-                sig_dispositions.set_default(sig_num);
-            }
+    #[cfg(target_arch = "x86_64")]
+    const SYSCALL_INSTR_LEN: usize = 2;
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    const SYSCALL_INSTR_LEN: usize = 4;
 
-            if let Some(orig_syscall_ret) = syscall_restart
-                && flags.contains(SigActionFlags::SA_RESTART)
-            {
-                #[cfg(target_arch = "x86_64")]
-                const SYSCALL_INSTR_LEN: usize = 2; // syscall
-                #[cfg(target_arch = "riscv64")]
-                const SYSCALL_INSTR_LEN: usize = 4; // ecall
-                #[cfg(target_arch = "loongarch64")]
-                const SYSCALL_INSTR_LEN: usize = 4; // syscall
-
-                user_ctx.set_syscall_ret(orig_syscall_ret);
-                user_ctx
-                    .set_instruction_pointer(user_ctx.instruction_pointer() - SYSCALL_INSTR_LEN);
-            }
-
-            if let Err(e) = handle_user_signal(
-                ctx,
-                sig_num,
-                handler_addr,
-                flags,
-                restorer_addr,
-                mask,
-                restore_sig_mask.map(RestoreSigMaskGuard::into_mask),
-                user_ctx,
-                signal.to_info(),
-            ) {
-                debug!("Failed to handle user signal: {:?}", e);
-                // If signal handling fails, the process should be terminated with SIGSEGV.
-                // Reference: <https://elixir.bootlin.com/linux/v6.13/source/kernel/signal.c#L3082>
-                //
-                // FIXME: Linux converts a signal-frame setup failure into a SIGSEGV delivery,
-                // instead of killing the process directly.
-                // This can be observed in LTP test `signal06`.
-                do_exit_group(TermStatus::Killed(SIGSEGV), ctx, user_ctx);
-            }
-        }
-        SigAction::Dfl if ctx.process.is_init_process() => {
-            // From Linux man pages "kill(2)":
-            // "The only signals that can be sent to process ID 1, the init process, are those for
-            // which init has explicitly installed signal handlers."
-        }
-        SigAction::Dfl => {
-            let sig_default_action = SigDefaultAction::from_signum(sig_num);
-            debug!("sig_default_action = {:?}", sig_default_action);
-
-            match sig_default_action {
-                SigDefaultAction::Core | SigDefaultAction::Term => {
-                    warn!(
-                        "PID {}: terminating on signal {}",
-                        ctx.process.pid(),
-                        sig_num.sig_name()
-                    );
-                    // The signal terminates the current process. Therefore, we should exit here.
-                    do_exit_group(TermStatus::Killed(sig_num), ctx, user_ctx);
-                }
-                SigDefaultAction::Ign => {}
-                SigDefaultAction::Stop => ctx.process.stop_if_selected(ctx.posix_thread, sig_num),
-                // Continuing is exclusively a generation-time effect. Delivering
-                // an older CONT must not undo a newer STOP.
-                SigDefaultAction::Cont => {}
-            }
-        }
+    let Some(restart_pc) = user_ctx
+        .instruction_pointer()
+        .checked_sub(SYSCALL_INSTR_LEN)
+    else {
+        // A tracer may have replaced the instruction pointer. Do not let an
+        // invalid userspace PC underflow a kernel arithmetic operation.
+        user_ctx.set_syscall_ret(-(Errno::EINTR as i32) as usize);
+        return;
+    };
+    user_ctx.set_syscall_ret(original);
+    if restart_code == -(Errno::ERESTART_RESTARTBLOCK as i32) as usize {
+        user_ctx.set_syscall_num(crate::syscall::SYS_RESTART_SYSCALL as usize);
     }
+    user_ctx.set_instruction_pointer(restart_pc);
 }
 
-/// A guard that restores the signal mask on drop.
-struct RestoreSigMaskGuard<'a> {
-    ctx: &'a Context<'a>,
-    mask: SigMask,
-}
-
-impl RestoreSigMaskGuard<'_> {
-    /// Forgets the guard and returns the signal mask to restore.
-    fn into_mask(self) -> SigMask {
-        let mask = self.mask;
-        // Assert that it's a `Copy` type. So we won't leak resources.
-        let _ = self.mask;
-
-        core::mem::forget(self);
-
-        mask
-    }
-}
-
-impl Drop for RestoreSigMaskGuard<'_> {
-    fn drop(&mut self) {
-        self.ctx.set_sig_mask(self.mask);
-    }
+fn is_restart_code(value: usize) -> bool {
+    [
+        Errno::ERESTARTSYS,
+        Errno::ERESTARTNOHAND,
+        Errno::ERESTART_RESTARTBLOCK,
+    ]
+    .iter()
+    .any(|errno| value == -(*errno as i32) as usize)
 }
 
 fn dequeue_pending_signal(ctx: &Context) -> Option<(DequeuedSignal, SigAction)> {
@@ -247,7 +245,14 @@ fn dequeue_pending_signal(ctx: &Context) -> Option<(DequeuedSignal, SigAction)> 
     let is_traced = posix_thread.is_traced();
     let mut control = ctx.process.signal_job_control().lock();
     control.select(&mut posix_thread.selected_stop().lock(), false);
-    let sig_mask = posix_thread.sig_mask();
+    // A stopped task may only consume SIGKILL. In particular, preparing a user
+    // handler here would remove the signal from pending before SIGCONT. Check
+    // the stop state under the same coordinator as signal generation.
+    let sig_mask = if posix_thread.group_stop_participant().lock().must_stop() {
+        !SigMask::from(SIGKILL)
+    } else {
+        posix_thread.sig_mask()
+    };
     let (signal, sig_num, sig_action) = loop {
         let signal = pending::dequeue_signal(posix_thread, &ctx.process, &sig_mask)?;
         let sig_num = signal.num();

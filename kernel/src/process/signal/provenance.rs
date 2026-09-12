@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Temporary low-volume diagnostics for locating the source of `SIGKILL`.
+//! Temporary diagnostics for locating the source of `SIGKILL`.
+//!
+//! Put numeric identities before descriptive fields: bounded UART diagnostic
+//! output may lose a record's suffix. Avoid thread-name locks and allocations
+//! in exit paths. Routine sibling fanout is debug-only; delivery stays in the
+//! info-level ring without flooding a warning-level console.
 
 use super::{constants::SIGKILL, sig_num::SigNum, signals::Signal};
 use crate::{
@@ -15,15 +20,6 @@ fn should_trace(sig_num: SigNum) -> bool {
     sig_num == SIGKILL
 }
 
-fn comm(thread: &PosixThread) -> String {
-    thread
-        .thread_name()
-        .lock()
-        .name()
-        .to_string_lossy()
-        .into_owned()
-}
-
 pub(crate) fn trace_user_process_enqueue(
     signal: &dyn Signal,
     callpoint: &'static str,
@@ -35,20 +31,16 @@ pub(crate) fn trace_user_process_enqueue(
         return;
     }
 
-    let sender_comm = comm(ctx.posix_thread);
     let target_main_thread = target.main_thread();
     let target_thread = target_main_thread.as_posix_thread().unwrap();
-    let target_comm = comm(target_thread);
     warn!(
-        "A_SIGKILL_PROVENANCE stage=enqueue origin=user callpoint={} route={} sender_pid={} sender_tid={} sender_comm={:?} target_pid={} target_tid={} target_comm={:?}",
-        callpoint,
-        route,
+        "A_SIGKILL_PROVENANCE stage=enqueue sender={}/{} target={}/{} origin=user callpoint={} route={}",
         ctx.process.pid(),
         ctx.posix_thread.tid(),
-        sender_comm,
         target.pid(),
         target_thread.tid(),
-        target_comm,
+        callpoint,
+        route,
     );
 }
 
@@ -63,18 +55,14 @@ pub(crate) fn trace_user_thread_enqueue(
         return;
     }
 
-    let sender_comm = comm(ctx.posix_thread);
-    let target_comm = comm(target);
     warn!(
-        "A_SIGKILL_PROVENANCE stage=enqueue origin=user callpoint={} route={} sender_pid={} sender_tid={} sender_comm={:?} target_pid={} target_tid={} target_comm={:?}",
-        callpoint,
-        route,
+        "A_SIGKILL_PROVENANCE stage=enqueue sender={}/{} target={}/{} origin=user callpoint={} route={}",
         ctx.process.pid(),
         ctx.posix_thread.tid(),
-        sender_comm,
         target.process().pid(),
         target.tid(),
-        target_comm,
+        callpoint,
+        route,
     );
 }
 
@@ -83,19 +71,15 @@ pub(crate) fn trace_kernel_process_enqueue(
     sender: &PosixThread,
     target: &Process,
 ) {
-    let sender_comm = comm(sender);
     let target_main_thread = target.main_thread();
     let target_thread = target_main_thread.as_posix_thread().unwrap();
-    let target_comm = comm(target_thread);
     warn!(
-        "A_SIGKILL_PROVENANCE stage=enqueue origin=kernel reason={} route=process sender_pid={} sender_tid={} sender_comm={:?} target_pid={} target_tid={} target_comm={:?}",
-        reason,
+        "A_SIGKILL_PROVENANCE stage=enqueue sender={}/{} target={}/{} origin=kernel reason={} route=process",
         sender.process().pid(),
         sender.tid(),
-        sender_comm,
         target.pid(),
         target_thread.tid(),
-        target_comm,
+        reason,
     );
 }
 
@@ -104,18 +88,18 @@ pub(crate) fn trace_kernel_thread_enqueue(
     sender: &PosixThread,
     target: &PosixThread,
 ) {
-    let sender_comm = comm(sender);
-    let target_comm = comm(target);
-    warn!(
-        "A_SIGKILL_PROVENANCE stage=enqueue origin=kernel reason={} route=thread sender_pid={} sender_tid={} sender_comm={:?} target_pid={} target_tid={} target_comm={:?}",
-        reason,
-        sender.process().pid(),
-        sender.tid(),
-        sender_comm,
-        target.process().pid(),
-        target.tid(),
-        target_comm,
+    let sender_pid = sender.process().pid();
+    let sender_tid = sender.tid();
+    let target_pid = target.process().pid();
+    let target_tid = target.tid();
+    let message = format_args!(
+        "A_SIGKILL_PROVENANCE stage=enqueue sender={sender_pid}/{sender_tid} target={target_pid}/{target_tid} origin=kernel reason={reason} route=thread"
     );
+    if matches!(reason, "exit-group-sibling" | "execve-sibling") {
+        debug!("{message}");
+    } else {
+        warn!("{message}");
+    }
 }
 
 pub(crate) fn trace_delivery(sig_num: SigNum, ctx: &Context) {
@@ -123,12 +107,10 @@ pub(crate) fn trace_delivery(sig_num: SigNum, ctx: &Context) {
         return;
     }
 
-    let target_comm = comm(ctx.posix_thread);
-    warn!(
-        "A_SIGKILL_PROVENANCE stage=delivery origin=pending-signal target_pid={} target_tid={} target_comm={:?}",
+    info!(
+        "A_SIGKILL_PROVENANCE stage=delivery target={}/{} origin=pending-signal",
         ctx.process.pid(),
         ctx.posix_thread.tid(),
-        target_comm,
     );
 }
 
