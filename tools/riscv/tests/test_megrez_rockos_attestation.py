@@ -201,7 +201,7 @@ class RockOsAttestationTests(unittest.TestCase):
         self.assertNotIn("password", script.lower())
         self.assertLess(max(map(len, commands)), rockos.MAX_ROCKOS_COMMAND_BYTES)
 
-    def test_real_publication_authorizes_sudo_before_recording_commands(self) -> None:
+    def test_real_publication_enters_root_shell_before_recording_commands(self) -> None:
         class Session:
             def __init__(self) -> None:
                 self.events = []
@@ -211,6 +211,9 @@ class RockOsAttestationTests(unittest.TestCase):
 
             def wait_for(self, expected: str, _timeout: float) -> None:
                 self.events.append(("wait", expected))
+
+            def wait_for_uboot_prompt(self, _timeout: float) -> None:
+                self.events.append(("wait", "uboot"))
 
         session = Session()
         operations = rockos.RealRockOsAttestationOperations("/dev/unused")
@@ -222,15 +225,25 @@ class RockOsAttestationTests(unittest.TestCase):
         self.assertEqual(
             session.events,
             [
-                ("send", "sudo -k -v"),
+                ("send", "sudo -k -s"),
                 ("wait", "password for"),
                 ("send", "secret"),
-                ("wait", rockos.ROCKOS_PROMPT),
+                ("wait", "# "),
+                (
+                    "send",
+                    "PS1='__ASTERINAS_ROCKOS_ROOT_''PROMPT__ '; export PS1",
+                ),
+                ("wait", rockos.ROCKOS_ROOT_PROMPT),
                 ("send", "sudo -n true"),
-                ("wait", rockos.ROCKOS_PROMPT),
+                ("wait", rockos.ROCKOS_ROOT_PROMPT),
             ],
         )
         self.assertEqual(operations._publication_start, len("sudo setup output"))
+
+        session.events.clear()
+        operations.reboot_and_recover("secret", 10.0)
+
+        self.assertEqual(session.events, [("send", "reboot"), ("wait", "uboot")])
 
     def test_run_publishes_only_after_measurement_and_fresh_recovery(self) -> None:
         plan = _plan()
