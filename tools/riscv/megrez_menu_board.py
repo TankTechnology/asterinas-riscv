@@ -17,6 +17,7 @@ import threading
 import time
 
 from tools.riscv import megrez_boot_menu as menu
+from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 from tools.riscv.megrez_board_session import BoardSession, open_serial
 from tools.riscv.megrez_debug_board import _lock_serial
 from tools.riscv.megrez_rockos_attestation import (
@@ -131,6 +132,31 @@ def stage(
         operations.login(username, password, 30)
 
 
+def query_guest(session, command):
+    """Run a read-only shell query with the existing full-duplex transport."""
+    serial = SerialConsole(session.fd, max_bytes=1024 * 1024, tx_delay=0.005)
+    for attempt in range(2):
+        start = serial.checkpoint()
+        try:
+            deadline = time.monotonic() + 20
+            serial.send((command + "\n").encode(), deadline)
+            serial.wait_for(b"root@asterinas-debug:/#", deadline, start=start)
+            return serial.transcript[start:].decode(errors="replace")
+        except TimeoutError:
+            if attempt == 1:
+                raise
+            # Cancel an incomplete input line (or the read-only query), then
+            # acknowledge a new prompt before the sole permitted retry.
+            session._log("HOST_DESKTOP_QUERY_RETRY attempt=1\n")
+            recovery = serial.checkpoint()
+            deadline = time.monotonic() + 5
+            serial.send(b"\x03\n", deadline)
+            serial.wait_for(b"root@asterinas-debug:/#", deadline, start=recovery)
+        finally:
+            session._log(serial.transcript[start:].decode(errors="replace"))
+    raise AssertionError("guest query attempts exhausted")
+
+
 def desktop_ready(session):
     """Acknowledge each short command; detect serial truncation separately."""
     ready = True
@@ -147,8 +173,7 @@ def desktop_ready(session):
     ):
         # BoardSession.command enforces U-Boot echo/error rules, which do not
         # apply to Bash's prompt and wrapped readline display.
-        session.send(command)
-        response = session.wait_for("root@asterinas-debug:/#", 20)
+        response = query_guest(session, command)
         status = re.search(rf"\n{marker}=([0-9]+)\r?\n", response)
         menu.require(
             status is not None, "desktop check command was truncated or not executed"
@@ -242,13 +267,22 @@ def boot_cycle(operations, document, mode, username, password, nonce, check_root
                 time.monotonic() < deadline, "desktop readiness deadline expired"
             )
             time.sleep(2)
-        session.send(f'echo DESKTOP_READY:{nonce[:16]}""{nonce[16:]}')
-        session.wait_for(f"DESKTOP_READY:{nonce}", 20)
+        response = query_guest(
+            session, f'echo DESKTOP_READY:{nonce[:16]}""{nonce[16:]}'
+        )
+        menu.require(
+            f"DESKTOP_READY:{nonce}" in response, "missing desktop terminal marker"
+        )
         reached = time.monotonic()
         # The experimental Debian image has no usable logind. A single
         # --force asks PID 1 to stop processes and unmount filesystems without
         # the logind authorization path; never use the double-force syscall.
-        session.send("sync; systemctl --force reboot")
+        serial = SerialConsole(session.fd, max_bytes=1024 * 1024, tx_delay=0.005)
+        try:
+            # Unlike read-only queries, a reboot is sent once, never retried.
+            serial.send(b"sync; systemctl --force reboot\n", time.monotonic() + 15)
+        finally:
+            session._log(serial.transcript.decode(errors="replace"))
         recovery = session.wait_for_uboot_prompt(120)
         menu.require(
             "OpenSBI" in recovery and "U-Boot " in recovery,
