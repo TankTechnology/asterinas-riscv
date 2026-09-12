@@ -38,16 +38,19 @@ and capability-advertisement defect takes precedence over adding `kcmp`.
   region on the frozen pre-fix release image; preserve the behavioral failure.
   `target/rseq-safety/before-final/serial.log` reports successful registration,
   `canary_intact=0`, and the assertion failure (`RSEQ_RESULT=134`).
-- [ ] Until the full restart protocol is implemented, return `ENOSYS` without
+- [x] Until the full restart protocol is implemented, return `ENOSYS` without
   touching userspace memory or retaining a registration. Remove the obsolete
   per-thread registration and exit-time user-memory write.
-- [ ] Test the fallback explicitly, including unchanged memory, invalid
+- [x] Test the fallback explicitly, including unchanged memory, invalid
   arguments and libc/thread startup. Distinguish Linux supported/registered
   behavior from Asterinas's intentionally unsupported interface.
-- [ ] Review the scoped diff, build offline after the fault-window build lane
+- [x] Review the scoped diff, build offline after the fault-window build lane
   is released, and run the regression in QEMU.
-- [ ] Keep this change separate from the fault-window performance comparison;
-  validate the combined candidate with desktop/libc startup afterwards.
+- [x] Keep this change separate from the fault-window performance comparison;
+  validate the combined candidate with desktop/libc startup afterwards. The
+  combined candidate passes physical page JavaScript, DOM interaction and a
+  guarded main-thread/new-thread rseq probe, then recovers to RockOS. Evidence:
+  `docs/porting/evidence/2026-09-12-fault-window-and-rseq.md`.
 
 ## References
 

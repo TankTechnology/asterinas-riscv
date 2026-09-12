@@ -12,7 +12,7 @@
 
 **File:** `kernel/src/vm/vmar/vm_mapping.rs` (production expression and existing `tests` module).
 
-- [ ] Add a test backend that records read indices and immediately initializes each requested page. Its `read_page_async` body is:
+- [x] Add a test backend that records read indices and immediately initializes each requested page. Its `read_page_async` body is:
 
 ```rust
 self.reads.lock().push(idx);
@@ -23,7 +23,7 @@ Ok(())
 
   Keep `reads` as `SpinLock<Vec<usize>>` inside a test-only `RecordingPageCacheBackend`. Implement the required write callback as an explicit unexpected-I/O error. Keep the backend's `Arc` alive while testing the weak-backed VMO.
 
-- [ ] Add `fault_around_reads_only_the_mapping_window`, following the adjacent `VmMapping::new`/`handle_page_fault` ktests. For each offset in `[0, 8, 120]`, create a fresh 128-page backend VMO, a read-only 16-page mapping at virtual address `16 * PAGE_SIZE`, and a mapped VMO offset of `offset * PAGE_SIZE`. Invoke the real handler at mapping start. Assert:
+- [x] Add `fault_around_reads_only_the_mapping_window`, following the adjacent `VmMapping::new`/`handle_page_fault` ktests. For each offset in `[0, 8, 120]`, create a fresh 128-page backend VMO, a read-only 16-page mapping, and a mapped VMO offset of `offset * PAGE_SIZE`. Use distinct 16-page-aligned virtual ranges in one active VmSpace to isolate cases without repeatedly activating address spaces. Invoke the real handler at mapping start. Assert:
 
 ```rust
 let expected_end = (offset + 16).min(128);
@@ -32,7 +32,7 @@ assert_eq!(*backend.reads.lock(), (offset..expected_end).collect::<Vec<_>>());
 
   Also verify the fault page is mapped read-only and its initialized byte is zero. This tests zero-offset compatibility, the nonzero-offset defect, and file-tail clipping with at most 512 KiB backing allocation.
 
-- [ ] Run the ktest before changing production code, retaining the failing log. From `kernel/` in the existing container:
+- [x] Run the ktest before changing production code, retaining the failing log. From `kernel/` in the existing container:
 
 ```sh
 OSDK_TARGET_ARCH=riscv64 OSDK_LOCAL_DEV=1 CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=4 \
@@ -43,7 +43,7 @@ OSDK_TARGET_ARCH=riscv64 OSDK_LOCAL_DEV=1 CARGO_NET_OFFLINE=true CARGO_BUILD_JOB
 
   Reuse the existing QEMU fixture configuration from prior clock ktests if the scheme requires disk paths. The expected defect is extra reads for offset 8 (pages 8..127 instead of 8..23), not a harness failure.
 
-- [ ] Replace the faulty expression with:
+- [x] Replace the faulty expression with:
 
 ```rust
 let end_idx = vmo.offset() / PAGE_SIZE + end_offset.div_ceil(PAGE_SIZE);
@@ -51,16 +51,16 @@ let end_idx = vmo.offset() / PAGE_SIZE + end_offset.div_ceil(PAGE_SIZE);
 
   Document that the mapped offset is already page aligned. Do not alter page count, I/O policy, error fallback, or unrelated formatting.
 
-- [ ] Rerun the failing test, then all `vm::vmar::vm_mapping::tests` and relevant page-cache tests. Check formatting and whitespace; commit only this scoped file after ordinary review.
+- [x] Rerun the failing test, then all six mapping tests and the sequential-batching/concurrent-fault page-cache tests. OSDK selects exact function suffixes, not module substrings; zero-selection attempts are not counted. Check formatting and whitespace; commit the scoped fix after ordinary review (`830c91a68`).
 
 ## Task 2: Existing canary validation
 
-- [ ] Build an offline release candidate with the same features, preserving Image and bundle identity. Reuse existing Stage1, DTB, Debian and container.
-- [ ] Run QEMU Basic/Probe and the existing user-space clock probe on the frozen candidate.
-- [ ] Preflight RockOS SSH, unchanged default menu, unmounted Debian filesystem check, and exclusive serial ownership. Stage a separate candidate using `megrez_menu_board`, not by replacing an installed image.
-- [ ] Repeat Basic/Probe and full Desktop. Use the retained `desktop_observe.py` and `content_check.py` for the same window, page-JavaScript, DOM-handler and framebuffer criteria. Record cache policy and image hashes.
-- [ ] Request software shutdown once; observe firmware and recover RockOS. Record timeout failures honestly, even if later recovery succeeds. Do not issue a second forced reboot or reset.
-- [ ] Record before/after observations and remaining limitations in the existing Firefox evidence document. Do not promote over the deployed networking kernel without source parity and the established promotion gates.
+- [x] Build an offline release candidate with the same features, preserving Image and bundle identity. Reuse existing Stage1, DTB, Debian and container.
+- [x] Run QEMU Basic/Probe and the existing user-space clock probe on the frozen candidate.
+- [x] Preflight RockOS SSH, unchanged default menu, unmounted Debian filesystem check, and exclusive serial ownership. Stage a separate candidate using `megrez_menu_board`, not by replacing an installed image.
+- [x] Repeat Basic/Probe and full Desktop. Use the retained `desktop_observe.py` and `content_check.py` for the same window, page-JavaScript, DOM-handler and framebuffer criteria. Record cache policy and image hashes.
+- [x] Request software shutdown once; observe firmware and recover RockOS. Record timeout failures honestly, even if later recovery succeeds. Do not issue a second forced reboot or reset.
+- [x] Record before/after observations and remaining limitations in `docs/porting/evidence/2026-09-12-fault-window-and-rseq.md`, linked from the existing Firefox evidence document. Do not promote over the deployed networking kernel without source parity and the established promotion gates.
 
 ## Separate syscall work
 

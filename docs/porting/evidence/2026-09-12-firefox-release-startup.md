@@ -1,5 +1,9 @@
 # Firefox startup: optimized kernel candidate
 
+Follow-up: [fault-window and rseq safety validation](2026-09-12-fault-window-and-rseq.md)
+records the subsequent kernel fixes, regression tests and physical observations.
+The measurements below remain the earlier release-profile baseline.
+
 ## Outcome and limits
 
 The existing `release` build removes substantial overhead from the RISC-V
