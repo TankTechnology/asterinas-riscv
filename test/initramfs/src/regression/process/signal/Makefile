@@ -11,3 +11,5 @@ C_OBJS_FILTER += \
 endif
 
 include ../../common/Makefile
+
+$(OBJ_OUTPUT_DIR)/stop_continue_pending: EXTRA_C_FLAGS += -pthread

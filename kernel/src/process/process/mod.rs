@@ -9,12 +9,14 @@ use self::timer_manager::PosixTimerManager;
 use super::{
     namespace::pid_ns::{PidNamespace, PidNsReservation},
     pid_table::{self, PidTable},
-    posix_thread::{AsPosixThread, FIRST_POSIX_TID},
+    posix_thread::{AsPosixThread, FIRST_POSIX_TID, PosixThread},
     process_vm::ProcessVmarGuard,
     rlimit::ResourceLimits,
     signal::{
-        constants::SIGCONT,
+        constants::{SIGCONT, SIGKILL, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU},
+        job_control::{SignalJobControl, is_stop_signal},
         sig_disposition::SigDispositions,
+        sig_mask::SigSet,
         sig_num::{AtomicSigNum, SigNum},
         signals::Signal,
     },
@@ -146,6 +148,7 @@ pub struct Process {
     sig_dispositions: Mutex<Arc<Mutex<SigDispositions>>>,
     /// The process-level sigqueue.
     sig_queues: SigQueues,
+    signal_job_control: Mutex<SignalJobControl>,
     /// The signal that the process should receive when parent process exits.
     parent_death_signal: AtomicSigNum,
     /// The signal that should be sent to the parent when this process exits.
@@ -277,6 +280,7 @@ impl Process {
                 has_child_subreaper: AtomicBool::new(false),
                 sig_dispositions: Mutex::new(sig_dispositions),
                 sig_queues: SigQueues::new(),
+                signal_job_control: Mutex::new(SignalJobControl::default()),
                 parent_death_signal: AtomicSigNum::new_empty(),
                 exit_signal: AtomicSigNum::new_empty(),
                 prof_clock,
@@ -684,33 +688,78 @@ impl Process {
         &self.sig_queues
     }
 
+    pub(super) fn signal_job_control(&self) -> &Mutex<SignalJobControl> {
+        &self.signal_job_control
+    }
+
     /// Enqueues a process-directed signal.
     ///
     /// This method does not perform permission checks on user signals.
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
+        self.enqueue_signal_for_thread(signal, None);
+    }
+
+    /// Common generation path; `None` selects the process-wide pending queue.
+    pub(super) fn enqueue_signal_for_thread(
+        &self,
+        signal: Box<dyn Signal>,
+        target: Option<&PosixThread>,
+    ) {
         if self.status.is_zombie() {
             return;
         }
 
         let is_sigcont = signal.num() == SIGCONT;
-        self.sig_queues.enqueue(signal);
+        let queue = target.map_or(&self.sig_queues, PosixThread::sig_queues);
+        let (enqueued, resumed) = if is_sigcont || is_stop_signal(signal.num()) {
+            // Stabilize membership before taking the coordinator: newly created
+            // threads cannot miss a process-wide cancellation.
+            let tasks = self.tasks.lock();
+            let mut control = self.signal_job_control.lock();
+            let discarded = if is_sigcont {
+                SigSet::from(SIGSTOP) | SIGTSTP | SIGTTIN | SIGTTOU
+            } else {
+                SigSet::from(SIGCONT)
+            };
+            self.sig_queues.discard(discarded);
+            for task in tasks.as_slice() {
+                let thread = task.as_posix_thread().unwrap();
+                thread.sig_queues().discard(discarded);
+                if is_sigcont {
+                    control.cancel(&mut thread.selected_stop().lock());
+                }
+            }
+            // Generation effects apply even when blocked, ignored, or coalesced.
+            let resumed = is_sigcont && self.status.stop_status().resume();
+            (queue.enqueue_without_notify(signal), resumed)
+        } else {
+            // In particular SIGKILL must not reacquire task membership: exit and
+            // exec already hold it when terminating sibling threads.
+            let _control = self.signal_job_control.lock();
+            (queue.enqueue_without_notify(signal), false)
+        };
 
-        // Continuing a stopped process is a generation-time effect, independent
-        // of whether SIGCONT is blocked, ignored, or handled in userspace.
-        if is_sigcont {
-            self.resume();
+        // Release the coordinator and the task-set guard acquired here before
+        // observer callbacks. Sibling SIGKILL callers may already hold task membership.
+        if enqueued {
+            queue.notify_enqueue();
         }
-
-        for task in self.tasks.lock().as_slice() {
-            let posix_thread = task.as_posix_thread().unwrap();
-            // FIXME: This behavior differs a bit from Linux.
-            // Linux wakes up a single thread that neither blocks the signal
-            // nor already has the same pending signal;
-            // for simplicity we wake up all threads.
-            // Reference: <https://elixir.bootlin.com/linux/v6.17/source/kernel/signal.c#L969>.
-            posix_thread.wake_signalled_waker();
+        if resumed && let Some(parent) = self.parent.lock().process().upgrade() {
+            parent.children_wait_queue.wake_all();
+        }
+        if let Some(target) = target
+            && !is_sigcont
+        {
+            target.wake_signalled_waker();
+        } else {
+            // FIXME: Process-directed signals currently wake all threads instead
+            // of selecting one eligible recipient as Linux does.
+            let tasks = self.tasks.lock().as_slice().to_vec();
+            for task in tasks {
+                task.as_posix_thread().unwrap().wake_signalled_waker();
+            }
         }
     }
 
@@ -747,28 +796,21 @@ impl Process {
         &self.status
     }
 
-    /// Stops the process.
-    pub fn stop(&self, sig_num: SigNum) {
-        if self.status.stop_status().stop(sig_num) {
+    /// Commits a selected stop only if no CONT or exit has superseded it.
+    pub(super) fn stop_if_selected(&self, thread: &PosixThread, sig_num: SigNum) {
+        let stopped = {
+            let mut control = self.signal_job_control.lock();
+            let kill_pending = thread.sig_queues().has_pending_signal(SIGKILL)
+                || self.sig_queues.has_pending_signal(SIGKILL);
+            control.commit_stop(
+                &mut thread.selected_stop().lock(),
+                &self.status,
+                sig_num,
+                kill_pending,
+            )
+        };
+        if stopped {
             self.wake_up_parent();
-        }
-    }
-
-    /// Resumes the stopped process.
-    pub fn resume(&self) {
-        if self.status.stop_status().resume() {
-            // A remote signal sender can race with exit and reaping. Unlike a
-            // running target thread, it cannot assume the parent is still live.
-            if let Some(parent) = self.parent.lock().process().upgrade() {
-                parent.children_wait_queue.wake_all();
-            }
-
-            // A signal sender or any target thread may resume the process;
-            // all stopped threads must be woken, not just the signal recipient.
-            for task in self.tasks.lock().as_slice() {
-                let posix_thread = task.as_posix_thread().unwrap();
-                posix_thread.wake_signalled_waker();
-            }
         }
     }
 

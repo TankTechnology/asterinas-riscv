@@ -74,6 +74,7 @@ fi
 ./signal/signal_fd
 ./signal/signal_test2
 ./signal/stop_continue
+./signal/stop_continue_pending
 
 if [ "$(uname -m)" = "x86_64" ]; then
     ./signal/fault_signals

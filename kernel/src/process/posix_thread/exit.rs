@@ -69,6 +69,9 @@ fn exit_internal(
         let in_evecve = tasks.in_execve();
 
         if is_exiting_group && !has_exited_group && !in_evecve {
+            // This is group-exit commitment, unlike the sibling SIGKILLs used
+            // by exec. Serialize it with selected STOP commitment.
+            posix_process.signal_job_control().lock().commit_exit();
             sigkill_other_threads(&current_task, &tasks, "exit-group-sibling");
             tasks.set_exited_group();
         }
@@ -88,7 +91,11 @@ fn exit_internal(
         }
         current_thread.exit();
 
-        tasks.remove_exited(&current_task)
+        let is_last = tasks.remove_exited(&current_task);
+        if is_last {
+            posix_process.signal_job_control().lock().commit_exit();
+        }
+        is_last
     };
 
     crate::syscall::diagnostics::on_exit(ctx, term_status);
