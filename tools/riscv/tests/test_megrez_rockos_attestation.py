@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch, MagicMock
 
 from tools.riscv import megrez_rockos_attestation as rockos
 from tools.riscv.megrez_boot_manifest import ExtlinuxGeneration
@@ -23,6 +24,20 @@ MMC_ARTIFACTS = {
     "initramfs": "asterinas-current-stage1.cpio",
     "megrez_dtb": "dtbs/linux/eswin/eic7700-milkv-megrez.dtb",
 }
+
+
+class PromptAcquisitionTests(unittest.TestCase):
+    def test_open_does_not_repeat_the_last_uboot_command(self):
+        session = MagicMock()
+        with patch.object(rockos, "open_serial", return_value=42), \
+                patch.object(rockos, "_lock_serial"), \
+                patch.object(rockos.BoardSession, "from_fd", return_value=session), \
+                patch.object(rockos.os, "write") as write:
+            operations = rockos.RealRockOsAttestationOperations("/dev/test")
+            operations.open(5)
+            write.assert_called_once_with(42, b"\x03")
+            session.send.assert_not_called()
+            session.wait_for_uboot_prompt.assert_called_once_with(5)
 
 
 def _plan():
