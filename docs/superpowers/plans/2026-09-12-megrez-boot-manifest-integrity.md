@@ -82,11 +82,14 @@ first RockOS transaction tried to install the immutable kernel as the ordinary
 `debian` user and failed with `Permission denied` before changing `/boot`.
 The transaction latch emitted failure for every remaining item, did not replace
 `asterinas.conf`, rebooted normally, and returned the board to U-Boot.  The
-regression fix authenticates `sudo` once before transaction evidence begins and
-requires every privileged mutation to use `sudo -n`; configuration download,
-verification, same-directory staging, and the final atomic rename remain
-separate and config-last.  Focused tests also enforce the serial command-size
-limit so this class of fix cannot silently exceed the board's safe input bound.
+first regression fix authenticated `sudo` before transaction evidence began,
+but a second fail-closed attempt proved that this RockOS policy discards the
+timestamp before the next `sudo -n` command.  The final fix enters one
+password-authenticated root shell before evidence capture, assigns a unique
+root prompt, keeps privileged mutations non-interactive, and reboots directly
+from that shell.  Configuration download, verification, same-directory
+staging, and the final atomic rename remain separate and config-last.  Focused
+tests also enforce the root-shell transition and serial command-size limit.
 
 ### Task 6: Repair partition 1 once and prove one physical epoch
 

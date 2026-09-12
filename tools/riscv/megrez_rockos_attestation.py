@@ -47,6 +47,7 @@ from tools.riscv.megrez_physical_graphics import (
 ROCKOS_BOOT_COMMAND = "sysboot mmc 1:1 any 0x88200000 /extlinux/extlinux.conf"
 ROCKOS_MENU_CHOICE = "1"
 ROCKOS_PROMPT = "__ASTERINAS_ROCKOS_PROMPT__ "
+ROCKOS_ROOT_PROMPT = "__ASTERINAS_ROCKOS_ROOT_PROMPT__ "
 MAX_ROCKOS_COMMAND_BYTES = 1024
 _NONCE = re.compile(r"\A[0-9a-f]{32}\Z")
 _PUBLISH_BEGIN = re.compile(
@@ -196,6 +197,7 @@ class RealRockOsAttestationOperations:
         self._log = io.StringIO()
         self._measurement_start: int | None = None
         self._publication_start: int | None = None
+        self._publication_root_shell = False
 
     def open(self, timeout: float) -> None:
         fd = open_serial(self._device)
@@ -261,10 +263,13 @@ class RealRockOsAttestationOperations:
             for command in commands
         ):
             raise HostGateError("RockOS publication command exceeds the safe size")
-        session.send("sudo -k -v")
+        session.send("sudo -k -s")
         session.wait_for("password for", min(timeout, 30.0))
         session.send(password)
-        session.wait_for(ROCKOS_PROMPT, timeout)
+        session.wait_for("# ", timeout)
+        session.send("PS1='__ASTERINAS_ROCKOS_ROOT_''PROMPT__ '; export PS1")
+        session.wait_for(ROCKOS_ROOT_PROMPT, timeout)
+        self._publication_root_shell = True
         self._publication_start = len(self._log.getvalue())
         deadline = time.monotonic() + timeout
         for command in commands:
@@ -272,10 +277,15 @@ class RealRockOsAttestationOperations:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("RockOS publication deadline expired")
-            session.wait_for(ROCKOS_PROMPT, remaining)
+            session.wait_for(ROCKOS_ROOT_PROMPT, remaining)
 
     def reboot_and_recover(self, password: str, timeout: float) -> None:
         session = self._require_session()
+        if self._publication_root_shell:
+            session.send("reboot")
+            session.wait_for_uboot_prompt(timeout)
+            self._publication_root_shell = False
+            return
         session.send("sudo -k reboot")
         session.wait_for("password for", min(timeout, 30.0))
         session.send(password)
