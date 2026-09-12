@@ -476,6 +476,14 @@ The command checks that `/boot` is `/dev/mmcblk1p1`, verifies or installs only
 new immutable artifact names, and replaces `/boot/extlinux/asterinas.conf`
 atomically last.  A failure leaves the previous configuration in place and
 still attempts a normal reboot to U-Boot.  It never accesses partition 2.
+The serial driver authenticates `sudo` once before transaction logging starts;
+all `/boot` mutations then use non-interactive `sudo -n`.  Do not replace these
+with ordinary-user writes: `MEGREZ-ROCKOS-PUBLISH-001` was a fail-closed first
+publication attempt in which `install` returned `Permission denied` on
+`/boot/asterinas-*.booti`.  The transaction latch correctly skipped the
+remaining artifacts and config and recovered to U-Boot, but the attempt cost a
+full RockOS boot.  Unit tests now require privileged, non-interactive writes and
+the 1024-byte serial command bound.
 
 After the RockOS receipt succeeds, select exactly those persistent bytes once:
 

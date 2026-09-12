@@ -77,6 +77,17 @@ QEMU evidence on 2026-09-12: bundle `1a44c248e8160522...` and extlinux
 the network-only Stage1 failed closed at its expected TCP prerequisite and was
 not treated as manifest evidence.
 
+Physical publication incident `MEGREZ-ROCKOS-PUBLISH-001` on 2026-09-12: the
+first RockOS transaction tried to install the immutable kernel as the ordinary
+`debian` user and failed with `Permission denied` before changing `/boot`.
+The transaction latch emitted failure for every remaining item, did not replace
+`asterinas.conf`, rebooted normally, and returned the board to U-Boot.  The
+regression fix authenticates `sudo` once before transaction evidence begins and
+requires every privileged mutation to use `sudo -n`; configuration download,
+verification, same-directory staging, and the final atomic rename remain
+separate and config-last.  Focused tests also enforce the serial command-size
+limit so this class of fix cannot silently exceed the board's safe input bound.
+
 ### Task 6: Repair partition 1 once and prove one physical epoch
 
 **Files:**

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -14,6 +15,7 @@ import unittest
 
 from tools.riscv import megrez_rockos_attestation as rockos
 from tools.riscv.megrez_boot_manifest import ExtlinuxGeneration
+from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan
 
 
 MMC_ARTIFACTS = {
@@ -144,7 +146,7 @@ class _PublicationOperations(_Operations):
         self.publication = transcript
         self.commands = ()
 
-    def publish(self, commands, _timeout: float) -> None:
+    def publish(self, commands, _password: str, _timeout: float) -> None:
         self.commands = tuple(commands)
         self.events.append("publish")
 
@@ -154,6 +156,37 @@ class _PublicationOperations(_Operations):
 
 
 class RockOsAttestationTests(unittest.TestCase):
+    def test_publication_plan_reader_accepts_a_lightweight_probe_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            addresses = {
+                "kernel": 0x80200000,
+                "initramfs": 0x83000000,
+                "qemu_dtb": 0xF0000000,
+                "megrez_dtb": 0xF0000000,
+            }
+            artifacts = []
+            for name, address in addresses.items():
+                path = root / name
+                path.write_bytes(name.encode())
+                artifacts.append(ArtifactIdentity.from_path(name, path, address))
+            plan = DebugPlan(
+                schema_version=1,
+                profile="tcp-probe",
+                artifacts=tuple(artifacts),
+                bootargs="console=ttyS0 init=/init asterinas.reboot_after=180",
+                smp=4,
+                sv39=True,
+                markers=("ASTERINAS_PROBE_READY v=1 pid=1",),
+                reboot_after=180,
+            )
+            path = root / "plan.json"
+            path.write_bytes(plan.canonical_bytes())
+
+            loaded = rockos._read_publication_plan(path)
+
+            self.assertEqual(loaded, plan)
+
     def test_commands_expose_native_measurements_and_nonce_bound_frame(self) -> None:
         commands = rockos.measurement_commands(
             _plan().plan_sha256, MMC_ARTIFACTS, "4" * 32
@@ -167,6 +200,37 @@ class RockOsAttestationTests(unittest.TestCase):
         self.assertIn("__ASTERINAS_ROCKOS_MEASUREMENT_END__", script)
         self.assertNotIn("password", script.lower())
         self.assertLess(max(map(len, commands)), rockos.MAX_ROCKOS_COMMAND_BYTES)
+
+    def test_real_publication_authorizes_sudo_before_recording_commands(self) -> None:
+        class Session:
+            def __init__(self) -> None:
+                self.events = []
+
+            def send(self, command: str) -> None:
+                self.events.append(("send", command))
+
+            def wait_for(self, expected: str, _timeout: float) -> None:
+                self.events.append(("wait", expected))
+
+        session = Session()
+        operations = rockos.RealRockOsAttestationOperations("/dev/unused")
+        operations._session = session
+        operations._log = io.StringIO("sudo setup output")
+
+        operations.publish(("sudo -n true",), "secret", 10.0)
+
+        self.assertEqual(
+            session.events,
+            [
+                ("send", "sudo -k -v"),
+                ("wait", "password for"),
+                ("send", "secret"),
+                ("wait", rockos.ROCKOS_PROMPT),
+                ("send", "sudo -n true"),
+                ("wait", rockos.ROCKOS_PROMPT),
+            ],
+        )
+        self.assertEqual(operations._publication_start, len("sudo setup output"))
 
     def test_run_publishes_only_after_measurement_and_fresh_recovery(self) -> None:
         plan = _plan()
