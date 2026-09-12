@@ -216,6 +216,11 @@ impl ProcFileOps for StatusFileOps {
             process.tasks().lock().as_slice().len()
         )?;
 
+        let (thread_pending, shared_pending) = posix_thread.pending_signal_sets();
+        writeln!(printer, "SigPnd:\t{:016x}", thread_pending)?;
+        writeln!(printer, "ShdPnd:\t{:016x}", shared_pending)?;
+        writeln!(printer, "SigBlk:\t{:016x}", posix_thread.sig_mask())?;
+
         writeln!(
             printer,
             "CapInh:\t{:016x}",

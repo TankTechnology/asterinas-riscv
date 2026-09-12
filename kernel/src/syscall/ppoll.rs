@@ -8,7 +8,7 @@ use super::{SyscallReturn, poll::do_sys_poll};
 use crate::{
     prelude::*,
     process::{posix_thread::ContextPthreadAdminApi, signal::sig_mask::SigMask},
-    time::timespec_t,
+    time::{clocks::MonotonicClock, timer::Timeout, timespec_t},
 };
 
 pub fn sys_ppoll(
@@ -27,6 +27,8 @@ pub fn sys_ppoll(
     } else {
         None
     };
+    let clock = MonotonicClock::timer_manager().clock();
+    let started = timeout.map(|_| clock.read_time());
 
     if sigmask_addr != 0 {
         if sigmask_size != size_of::<SigMask>() {
@@ -37,14 +39,31 @@ pub fn sys_ppoll(
         ctx.save_and_set_sig_mask(sigmask);
     }
 
-    do_sys_poll(fds, nfds, timeout, ctx)
+    let result = do_sys_poll(fds, nfds, timeout.map(Timeout::After), ctx);
 
-    // TODO: Write back the remaining time to `timespec_addr`.
-    //
-    // The ppoll system call should write back the remaining time,
-    // yet the function counterpart in libc hides this behavior to
-    // make the API more portable across different UNIX-like OSes.
-    // For the maximized Linux compatibility, we should follow Linux's behavior.
-    // But this cannot be readily achieved given how our internal synchronization primitives
-    // such as `Pause` and `WaitTimeout` work.
+    // Unlike poll's restart block, ppoll replays the user arguments. Write back
+    // its remaining duration before signal delivery; libc hides this ABI update
+    // by passing a copy. STOP/CONT without a caught handler can then restart.
+    // See Linux v6.12 fs/select.c: poll_select_finish.
+    if let Some(duration) = timeout
+        && !duration.is_zero()
+    {
+        let remaining = duration.saturating_sub(clock.read_time() - started.unwrap());
+        if user_space
+            .write_val(timespec_addr, &timespec_t::from(remaining))
+            .is_err()
+        {
+            // A read-only timeout must not turn success into EFAULT. Since the
+            // duration was not updated, an interrupted call must not restart.
+            return result;
+        }
+    }
+
+    result.map_err(|err| {
+        if err.error() == Errno::EINTR {
+            Error::new(Errno::ERESTARTNOHAND)
+        } else {
+            err
+        }
+    })
 }

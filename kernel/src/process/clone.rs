@@ -618,6 +618,7 @@ fn clone_child_task(
             "the process has exited or has already executed a new program",
         )
     })?;
+    process.enroll_group_stop(child_posix_thread);
     drop(tasks);
 
     let child_thread = child_task.as_thread().unwrap();

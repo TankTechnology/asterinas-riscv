@@ -261,6 +261,7 @@ fn syscall_profile_log_process_boundary(number: u64, args: &[u64; 6], ctx: &Cont
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch.rs")]
 mod arch;
+pub(crate) use arch::SYS_RESTART_SYSCALL;
 
 mod accept;
 mod access;
@@ -380,6 +381,7 @@ mod recvfrom;
 mod recvmsg;
 mod removexattr;
 mod rename;
+pub(crate) mod restart_syscall;
 #[cfg(target_arch = "riscv64")]
 mod riscv_flush_icache;
 mod riscv_hwprobe;
@@ -696,6 +698,11 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
                 user_ctx.set_syscall_ret(return_value as usize);
                 diagnostics::complete(ctx, diagnostics::Outcome::Return(return_value));
             } else {
+                // exec and sigreturn install a context, not a syscall result.
+                // Never reinterpret a restored user-controlled register as an
+                // internal restart code from this kernel entry.
+                ctx.thread_local.set_orig_syscall_ret(None);
+                ctx.thread_local.restart_block().take();
                 diagnostics::complete(ctx, diagnostics::Outcome::NoReturn);
             }
         }

@@ -287,15 +287,18 @@ impl Poller {
     ///
     /// [`ETIME`]: crate::error::Errno::ETIME
     pub fn new(timeout: Option<&Duration>) -> Self {
-        let (waiter, waker) = Waiter::new_pair();
+        Self::new_with_timeout(TimeoutExt::from(timeout))
+    }
 
-        let mut timeout_ext = TimeoutExt::from(timeout);
-        timeout_ext.freeze();
+    /// Constructs a poller with an explicit timeout clock and deadline.
+    pub(crate) fn new_with_timeout(mut timeout: TimeoutExt<'static>) -> Self {
+        let (waiter, waker) = Waiter::new_pair();
+        timeout.freeze();
 
         Self {
             poller: PollHandle::new(Arc::downgrade(&waker) as Weak<_>),
             waiter,
-            timeout: timeout_ext,
+            timeout,
         }
     }
 

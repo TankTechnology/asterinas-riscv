@@ -54,23 +54,6 @@ impl From<FutexFlags> for FutexVisibility {
     }
 }
 
-pub fn futex_wait(
-    futex_addr: u64,
-    futex_val: i32,
-    timeout: Option<ManagedTimeout>,
-    ctx: &Context,
-    visibility: FutexVisibility,
-) -> Result<()> {
-    futex_wait_bitset(
-        futex_addr as _,
-        futex_val,
-        timeout,
-        FUTEX_BITSET_MATCH_ANY,
-        ctx,
-        visibility,
-    )
-}
-
 pub fn futex_wait_bitset(
     futex_addr: Vaddr,
     futex_val: i32,

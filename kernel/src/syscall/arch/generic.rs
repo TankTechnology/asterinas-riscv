@@ -122,6 +122,7 @@ macro_rules! import_generic_syscall_entries {
             recvmsg::sys_recvmsg,
             removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
             rename::sys_renameat2,
+            restart_syscall::sys_restart_syscall,
             rseq::sys_rseq,
             rt_sigaction::sys_rt_sigaction,
             rt_sigpending::sys_rt_sigpending,
@@ -342,6 +343,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SCHED_GET_PRIORITY_MIN = 126 => sys_sched_get_priority_min(args[..1]);
             SYS_SCHED_RR_GET_INTERVAL = 127  => sys_sched_rr_get_interval(args[..2]);
             SYS_KILL = 129                   => sys_kill(args[..2]);
+            SYS_RESTART_SYSCALL = 128        => sys_restart_syscall(args[..0]);
             SYS_TKILL = 130                  => sys_tkill(args[..2]);
             SYS_TGKILL = 131                 => sys_tgkill(args[..3]);
             SYS_SIGALTSTACK = 132            => sys_sigaltstack(args[..2], &user_ctx);

@@ -4,11 +4,11 @@ use core::time::Duration;
 
 use ostd::{mm::VmIo, sync::Waiter};
 
-use super::{ClockId, SyscallReturn, clock_gettime::read_clock};
+use super::{ClockId, SyscallReturn, restart_syscall::RestartBlock};
 use crate::{
     prelude::*,
     time::{
-        TIMER_ABSTIME, clockid_t,
+        TIMER_ABSTIME, TimerManager, clockid_t,
         clocks::{BootTimeClock, MonotonicClock, RealTimeClock},
         timer::Timeout,
         timespec_t,
@@ -57,6 +57,7 @@ fn do_clock_nanosleep(
     remain_timespec_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
+    ctx.thread_local.restart_block().take();
     let request_time = {
         let timespec = ctx
             .user_space()
@@ -69,68 +70,130 @@ fn do_clock_nanosleep(
         clockid, is_abs_time, request_time, remain_timespec_addr
     );
 
-    let start_time = read_clock(clockid, ctx)?;
-    let duration = if is_abs_time {
-        if request_time < start_time {
-            return Ok(SyscallReturn::Return(0));
-        }
-
-        request_time - start_time
+    // Relative CLOCK_REALTIME sleeps are unaffected by wall-clock adjustments.
+    // Linux likewise uses the monotonic base for relative realtime hrtimers.
+    let clockid = if !is_abs_time && clockid == ClockId::CLOCK_REALTIME as clockid_t {
+        ClockId::CLOCK_MONOTONIC as clockid_t
     } else {
-        request_time
+        clockid
     };
+    let timer_manager = sleep_timer_manager(clockid, ctx)?;
+    // Timer managers use host clocks. Relative durations have no namespace
+    // offset; absolute namespace timestamps must be translated exactly once.
+    let deadline = if is_abs_time {
+        match ClockId::try_from(clockid)? {
+            ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_BOOTTIME => ctx
+                .thread_local
+                .borrow_ns_proxy()
+                .unwrap()
+                .time_ns()
+                .remove_offset(
+                    request_time,
+                    clockid == ClockId::CLOCK_BOOTTIME as clockid_t,
+                ),
+            _ => request_time,
+        }
+    } else {
+        timer_manager
+            .clock()
+            .read_time()
+            .checked_add(request_time)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "sleep deadline overflows"))?
+    };
+    let request = NanosleepRestart {
+        clockid,
+        deadline,
+        remain_timespec_addr: if is_abs_time {
+            None
+        } else {
+            Some(remain_timespec_addr)
+        },
+    };
+    request.restart(ctx)
+}
 
-    // FIXME: sleeping thread can only be interrupted by signals that will call signal handler or terminate
-    // current process. i.e., the signals that should be ignored will not interrupt sleeping thread.
-    let waiter = Waiter::new_pair().0;
+/// An interrupted sleep's host-clock deadline, never a fresh duration.
+#[derive(Clone, Copy)]
+pub(crate) struct NanosleepRestart {
+    clockid: clockid_t,
+    deadline: Duration,
+    // None denotes TIMER_ABSTIME; Some(0) is a relative sleep without copyout.
+    remain_timespec_addr: Option<Vaddr>,
+}
 
-    let timer_manager = {
-        let clock_id = ClockId::try_from(clockid)?;
-        match clock_id {
-            ClockId::CLOCK_BOOTTIME => BootTimeClock::timer_manager(),
-            ClockId::CLOCK_MONOTONIC => MonotonicClock::timer_manager(),
-            ClockId::CLOCK_REALTIME => RealTimeClock::timer_manager(),
-            // FIXME: We should better not expose this prof timer manager.
-            ClockId::CLOCK_PROCESS_CPUTIME_ID => {
-                ctx.process.timer_manager().prof_timer().timer_manager()
-            }
-            // Linux returns `EOPNOTSUPP` for `CLOCK_THREAD_CPUTIME_ID`,
-            // `CLOCK_MONOTONIC_RAW`, and the low-resolution coarse clocks.
-            ClockId::CLOCK_THREAD_CPUTIME_ID
-            | ClockId::CLOCK_MONOTONIC_RAW
-            | ClockId::CLOCK_REALTIME_COARSE
-            | ClockId::CLOCK_MONOTONIC_COARSE => {
+impl NanosleepRestart {
+    pub(super) fn restart(self, ctx: &Context) -> Result<SyscallReturn> {
+        let Self {
+            clockid,
+            deadline,
+            remain_timespec_addr,
+        } = self;
+        let timer_manager = sleep_timer_manager(clockid, ctx)?;
+
+        let waiter = Waiter::new_pair().0;
+        let res = waiter.pause_until_or_timeout(
+            || None,
+            ManagedTimeout::new_with_manager(Timeout::When(deadline), timer_manager),
+        );
+
+        match res {
+            Err(e) if e.error() == Errno::ETIME => Ok(SyscallReturn::Return(0)),
+            Err(e) if e.error() == Errno::EINTR => {
+                let end_time = timer_manager.clock().read_time();
+
+                if end_time >= deadline {
+                    return Ok(SyscallReturn::Return(0));
+                }
+
+                if let Some(remain_timespec_addr) = remain_timespec_addr
+                    && remain_timespec_addr != 0
+                {
+                    let remaining_duration = deadline - end_time;
+                    let remaining_timespec = timespec_t::from(remaining_duration);
+                    ctx.user_space()
+                        .write_val(remain_timespec_addr, &remaining_timespec)?;
+                }
+
+                // A caught handler always turns these into EINTR, even with
+                // SA_RESTART. With no handler, absolute sleeps replay the original
+                // call; relative sleeps use restart_syscall with this deadline.
+                // See Linux v6.12 kernel/time/hrtimer.c: hrtimer_nanosleep.
+                if remain_timespec_addr.is_none() {
+                    return_errno_with_message!(
+                        Errno::ERESTARTNOHAND,
+                        "absolute sleep was interrupted"
+                    );
+                }
+                ctx.thread_local
+                    .restart_block()
+                    .set(RestartBlock::Nanosleep(self));
                 return_errno_with_message!(
-                    Errno::EOPNOTSUPP,
-                    "unsupported clockid for clock_nanosleep"
+                    Errno::ERESTART_RESTARTBLOCK,
+                    "relative sleep was interrupted"
                 );
             }
+            Ok(()) | Err(_) => unreachable!(),
         }
-    };
-
-    let res = waiter.pause_until_or_timeout(
-        || None,
-        ManagedTimeout::new_with_manager(Timeout::After(duration), timer_manager),
-    );
-
-    match res {
-        Err(e) if e.error() == Errno::ETIME => Ok(SyscallReturn::Return(0)),
-        Err(e) if e.error() == Errno::EINTR => {
-            let end_time = read_clock(clockid, ctx)?;
-
-            if end_time >= start_time + duration {
-                return Ok(SyscallReturn::Return(0));
-            }
-
-            if remain_timespec_addr != 0 && !is_abs_time {
-                let remaining_duration = (start_time + duration) - end_time;
-                let remaining_timespec = timespec_t::from(remaining_duration);
-                ctx.user_space()
-                    .write_val(remain_timespec_addr, &remaining_timespec)?;
-            }
-
-            return_errno_with_message!(Errno::EINTR, "sleep was interrupted");
-        }
-        Ok(()) | Err(_) => unreachable!(),
     }
+}
+
+fn sleep_timer_manager<'a>(clockid: clockid_t, ctx: &'a Context) -> Result<&'a Arc<TimerManager>> {
+    Ok(match ClockId::try_from(clockid)? {
+        ClockId::CLOCK_BOOTTIME => BootTimeClock::timer_manager(),
+        ClockId::CLOCK_MONOTONIC => MonotonicClock::timer_manager(),
+        ClockId::CLOCK_REALTIME => RealTimeClock::timer_manager(),
+        // FIXME: We should better not expose this prof timer manager.
+        ClockId::CLOCK_PROCESS_CPUTIME_ID => {
+            ctx.process.timer_manager().prof_timer().timer_manager()
+        }
+        ClockId::CLOCK_THREAD_CPUTIME_ID
+        | ClockId::CLOCK_MONOTONIC_RAW
+        | ClockId::CLOCK_REALTIME_COARSE
+        | ClockId::CLOCK_MONOTONIC_COARSE => {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "unsupported clockid for clock_nanosleep"
+            );
+        }
+    })
 }
