@@ -261,7 +261,7 @@ class RockOsPublicationCommandTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn(
             f"/boot/extlinux/.asterinas.conf.{nonce}.part",
-            commands[-2],
+            commands[-3],
         )
         self.assertIn("mv -f --", commands[-2])
         self.assertIn('[ "$_asterinas_publish_ok" = 1 ]', commands[-2])
@@ -284,8 +284,31 @@ class RockOsPublicationCommandTests(unittest.TestCase):
         for command in artifact_commands:
             self.assertIn('if [ -e "$_destination" ]', command)
             self.assertIn("sha256sum -c -", command)
-            self.assertIn("install -D -m 0444", command)
+            self.assertIn("sudo -n install -D -m 0444", command)
             self.assertNotIn("mv -f", command)
+
+    def test_publication_uses_only_noninteractive_sudo_for_boot_writes(self) -> None:
+        commands = manifest.rockos_publication_commands(
+            manifest.ExtlinuxGeneration.from_bytes(_rendered()),
+            _plan(),
+            "http://10.100.19.216:18081/generation",
+            "4" * 32,
+        )
+        artifact_commands = commands[1:4]
+        config_stage_command = commands[-3]
+        config_commit_command = commands[-2]
+
+        self.assertTrue(
+            all("sudo -n install -D -m 0444" in command for command in artifact_commands)
+        )
+        self.assertIn("sudo -n mkdir -p -- /boot/extlinux", config_stage_command)
+        self.assertIn("sudo -n install -m 0444", config_stage_command)
+        self.assertIn("sudo -n mv -f --", config_commit_command)
+        self.assertNotIn("sudo -S", "\n".join(commands))
+        self.assertLessEqual(
+            max(len((command + "\n").encode()) for command in commands),
+            1024,
+        )
 
     def test_publication_rejects_nonliteral_transport_or_nonce(self) -> None:
         generation = manifest.ExtlinuxGeneration.from_bytes(_rendered())

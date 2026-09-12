@@ -35,6 +35,7 @@ from tools.riscv.megrez_boot_manifest import (
     rockos_publication_commands,
 )
 from tools.riscv.megrez_debug_board import _lock_serial
+from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
 from tools.riscv.megrez_physical_graphics import (
     HostGateError,
     _positive_seconds,
@@ -120,7 +121,9 @@ class RockOsPublicationOperations(Protocol):
 
     def login(self, username: str, password: str, timeout: float) -> None: ...
 
-    def publish(self, commands: Sequence[str], timeout: float) -> None: ...
+    def publish(
+        self, commands: Sequence[str], password: str, timeout: float
+    ) -> None: ...
 
     def reboot_and_recover(self, password: str, timeout: float) -> None: ...
 
@@ -246,14 +249,22 @@ class RealRockOsAttestationOperations:
                 raise TimeoutError("RockOS measurement deadline expired")
             session.wait_for(ROCKOS_PROMPT, remaining)
 
-    def publish(self, commands: Sequence[str], timeout: float) -> None:
+    def publish(
+        self, commands: Sequence[str], password: str, timeout: float
+    ) -> None:
         session = self._require_session()
+        if not password or "\n" in password:
+            raise HostGateError("RockOS password is invalid")
         if not commands or any(
             not isinstance(command, str)
             or len((command + "\n").encode()) > MAX_ROCKOS_COMMAND_BYTES
             for command in commands
         ):
             raise HostGateError("RockOS publication command exceeds the safe size")
+        session.send("sudo -k -v")
+        session.wait_for("password for", min(timeout, 30.0))
+        session.send(password)
+        session.wait_for(ROCKOS_PROMPT, timeout)
         self._publication_start = len(self._log.getvalue())
         deadline = time.monotonic() + timeout
         for command in commands:
@@ -484,7 +495,7 @@ def run_rockos_publication(
         operations.boot_rockos(config.boot_timeout)
         operations.login(username, password, config.login_timeout)
         try:
-            operations.publish(commands, config.measurement_timeout)
+            operations.publish(commands, password, config.measurement_timeout)
         finally:
             operations.reboot_and_recover(password, config.recovery_timeout)
         transcript = operations.publication_transcript
@@ -578,6 +589,13 @@ def _read_regular(path: Path, maximum: int, label: str) -> bytes:
         os.close(descriptor)
 
 
+def _read_publication_plan(path: Path) -> DebugPlan:
+    try:
+        return DebugPlan.from_bytes(_read_regular(path, 64 * 1024, "debug plan"))
+    except DebugContractError as error:
+        raise HostGateError(f"publication debug plan is invalid: {error}") from error
+
+
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("device")
     parser.add_argument("--plan", required=True, type=Path)
@@ -626,7 +644,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         publisher = RealRockOsPublicationPublisher(values.output_directory)
         try:
             publisher.invalidate()
-            plan = _read_plan(values.plan)
+            plan = _read_publication_plan(values.plan)
             config_bytes = _read_regular(
                 values.extlinux_config,
                 MAX_EXTLINUX_BYTES,
