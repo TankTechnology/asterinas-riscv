@@ -12,6 +12,7 @@ import json
 import os
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -67,6 +68,7 @@ from tools.riscv.debian.rootfs.browser_web_trust_check import (
 )
 from tools.riscv.debian.rootfs.firefox_jit_overlay import (
     OverlayError,
+    Package as OverlayPackage,
     install as install_firefox_jit_overlay,
 )
 from tools.riscv.debian.rootfs.browser_web_qemu_gate import (
@@ -975,6 +977,9 @@ class BrowserWebContractTests(unittest.TestCase):
             "physical_graphics_interaction.html",
             "physical_graphics_gate.py",
             "firefox_diagnostic_snapshot.py",
+            "browser_web_trust_check.py",
+            "browser_web_online_rootfs_check.py",
+            "firefox_jit_overlay.py",
         )
 
         def digest(source_directory: Path) -> str:
@@ -1013,6 +1018,106 @@ class BrowserWebContractTests(unittest.TestCase):
             '--tool-version "browser-web-runtime=$browser_web_runtime_version"',
             builder,
         )
+
+    def test_browser_web_builder_wires_explicit_frozen_jit_packages(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        self.assertIn("--firefox-jit-package-dir", builder)
+        self.assertIn('python3 "$script_directory/firefox_jit_overlay.py"', builder)
+        self.assertIn('--package-dir "$FIREFOX_JIT_PACKAGE_DIR"', builder)
+        self.assertIn(
+            '--tool-version "firefox-jit-overlay=$firefox_jit_overlay_version"',
+            builder,
+        )
+
+    def test_firefox_jit_overlay_cli_accepts_package_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            packages = Path(directory) / "packages"
+            root.mkdir()
+            packages.mkdir()
+            for package in OVERLAY_PACKAGES:
+                (packages / package["filename"]).write_bytes(b"forged")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOTFS / "firefox_jit_overlay.py"),
+                    "--root",
+                    str(root),
+                    "--package-dir",
+                    str(packages),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("hash mismatch", result.stderr)
+
+    def test_firefox_jit_overlay_cli_preserves_positional_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            paths = []
+            for package in OVERLAY_PACKAGES:
+                path = Path(directory) / package["filename"]
+                path.write_bytes(b"forged")
+                paths.append(path)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOTFS / "firefox_jit_overlay.py"),
+                    "--root",
+                    str(root),
+                    *(str(path) for path in paths),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("hash mismatch", result.stderr)
+
+    def test_firefox_jit_builder_rejects_non_browser_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package_directory = root / "packages"
+            package_directory.mkdir()
+            result = subprocess.run(
+                [
+                    str(ROOTFS / "build_rootfs.sh"),
+                    "--profile",
+                    "minimal-m1",
+                    "--output-dir",
+                    str(root / "output"),
+                    "--cache-dir",
+                    str(root / "cache"),
+                    "--firefox-jit-package-dir",
+                    str(package_directory),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "Firefox JIT overlay is only valid for the browser-web profile",
+                result.stderr,
+            )
+
+    def test_schema_seven_validates_optional_jit_overlay_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            payload = self._schema7_payload()
+            payload["tool_versions"]["firefox-jit-overlay"] = "b" * 64
+            path.write_text(json.dumps(payload))
+            self.assertEqual(load_manifest(path).profile, "browser-web")
+
+            payload["tool_versions"]["firefox-jit-overlay"] = "not-a-digest"
+            path.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(
+                ContractError, "tool_versions.firefox-jit-overlay"
+            ):
+                load_manifest(path)
 
     def test_physical_graphics_witness_is_installed_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
@@ -2777,6 +2882,65 @@ generate_fontconfig_cache "$stage" "$3"
                 paths.append(path)
             with self.assertRaisesRegex(OverlayError, "hash mismatch"):
                 install_firefox_jit_overlay(root, paths)
+
+    def test_firefox_jit_overlay_extracts_verified_private_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            package_directory = Path(directory) / "packages"
+            root.mkdir()
+            package_directory.mkdir()
+            source_policy = root / "usr/lib/firefox-esr/distribution/policies.json"
+            source_policy.parent.mkdir(parents=True)
+            source_policy.write_text("{}\n")
+
+            packages = tuple(
+                OverlayPackage(
+                    role=f"role-{index}",
+                    filename=f"package-{index}.deb",
+                    package=f"package-{index}",
+                    version="1",
+                    sha1="0" * 40,
+                    sha256=hashlib.sha256(f"frozen-{index}".encode()).hexdigest(),
+                )
+                for index in range(3)
+            )
+            paths = []
+            for index, package in enumerate(packages):
+                path = package_directory / package.filename
+                path.write_bytes(f"frozen-{index}".encode())
+                paths.append(path)
+
+            extracted = []
+
+            def extract(snapshot: Path, stage: Path) -> None:
+                extracted.append(snapshot.read_bytes())
+                if len(extracted) == 1:
+                    for path in paths:
+                        path.write_bytes(b"mutated-after-verification")
+                    launcher = stage / "usr/bin/firefox"
+                    launcher.parent.mkdir(parents=True)
+                    launcher.symlink_to("../lib/firefox/firefox")
+
+            with (
+                mock.patch(
+                    "tools.riscv.debian.rootfs.firefox_jit_overlay.PACKAGES",
+                    packages,
+                ),
+                mock.patch(
+                    "tools.riscv.debian.rootfs.firefox_jit_overlay.RUNTIME_FILES",
+                    {},
+                ),
+                mock.patch(
+                    "tools.riscv.debian.rootfs.firefox_jit_overlay._extract_data",
+                    side_effect=extract,
+                ),
+            ):
+                install_firefox_jit_overlay(root, paths)
+
+            self.assertEqual(
+                extracted,
+                [f"frozen-{index}".encode() for index in range(3)],
+            )
 
     def test_trust_checker_accepts_exact_jit_overlay_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

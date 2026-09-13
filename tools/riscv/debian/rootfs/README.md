@@ -73,6 +73,31 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
 
+### Build the frozen Firefox 143 RISC-V JIT root
+
+The `browser-web` profile normally retains Debian's signed Firefox ESR base.
+The complete WebAssembly-capable image is an explicit opt-in and never
+downloads an unpinned browser during the rootfs build. Put the three packages
+named by `firefox_jit_overlay.py` in one persistent directory; the installer
+requires their exact filenames and SHA-256 identities before extracting them.
+
+Reuse both that directory and the content-addressed Debian cache across builds:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh \
+  --profile browser-web \
+  --output-dir target/debian-riscv/browser-web-jit/rootfs \
+  --cache-dir target/debian-riscv/cache \
+  --firefox-jit-package-dir target/debian-riscv/firefox-jit-packages
+```
+
+The resulting schema-seven manifest records the overlay marker digest as
+`tool_versions.firefox-jit-overlay`. The build also runs the static RISC-V ELF,
+NSS, CA, launcher, and online-root checks against the overlaid tree before it
+publishes the ext2 image. Keep the package and Debian cache directories; do not
+delete them between QEMU or physical-board experiments. Omitting
+`--firefox-jit-package-dir` preserves the existing ESR-only build.
+
 ## Fast browser-web development overlay
 
 Do not rerun debootstrap or apt for changes limited to the browser-web guest
