@@ -14,7 +14,7 @@ use ostd::{
 };
 
 use crate::{
-    MMC_BOUNDED_PIO,
+    MMC_BOUNDED_PIO, MMC_DEFAULT_SPEED,
     card::{Card, HostController, Response},
     sdhci::{
         Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
@@ -398,7 +398,11 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
             config.interrupt
         );
     }
-    let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
+    let card = Card::discover_with_policy(
+        &mut host,
+        !high_speed_allowed(MMC_DEFAULT_SPEED.load(Ordering::Relaxed)),
+    )
+    .map_err(ProbeError::Host)?;
     let mut sector0 = [0u8; 512];
     card.read_sector(&mut host, 0, &mut sector0)
         .map_err(ProbeError::Host)?;
@@ -409,11 +413,20 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         sector0[510],
         sector0[511]
     );
+    ostd::info!(
+        "[mmc] timing={} clock={}",
+        card.speed_selection().label(),
+        card.data_clock_hz()
+    );
     Ok(Some((host, card)))
 }
 
 const fn sdma_allowed(force_bounded_pio: bool) -> bool {
     !force_bounded_pio
+}
+
+const fn high_speed_allowed(force_default_speed: bool) -> bool {
+    !force_default_speed
 }
 
 /// Safe MMIO-backed SDHCI polling host.
@@ -1020,6 +1033,12 @@ mod tests {
     fn bounded_pio_boot_policy_skips_sdma_without_changing_the_default() {
         assert!(!sdma_allowed(true));
         assert!(sdma_allowed(false));
+    }
+
+    #[ktest]
+    fn default_speed_boot_policy_skips_promotion_without_changing_the_default() {
+        assert!(!high_speed_allowed(true));
+        assert!(high_speed_allowed(false));
     }
 
     #[ktest]
