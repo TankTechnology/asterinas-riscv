@@ -696,6 +696,16 @@ class SerialContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "FDT error"):
             session.command(fdt_command)
 
+    def test_fdt_error_detection_ignores_the_verified_command_echo(self):
+        session = self._session()
+        command = 'fdt set /chosen bootargs "console=ttyS0 loglevel=error"'
+        session.send = mock.Mock()
+        session.wait_for = mock.Mock(return_value=f"{command}\r\n=> ")
+
+        output = session.command(command)
+
+        self.assertEqual(output, f"{command}\r\n=> ")
+
     def test_booti_accepts_nonfatal_fdt_warning_after_kernel_entry(self):
         session = self._session()
         command = "booti 0x80200000 0x83000000:${initrd_size} 0xf0000000"
@@ -1341,6 +1351,15 @@ class BootTransactionTests(unittest.TestCase):
                 "/soc/usb1@50490000/dwc3@50490000",
                 {},
             ),
+            events,
+        )
+        self.assertIn(("command", 'setenv bootargs "init=/init"', {}), events)
+        self.assertIn(
+            ("command", 'fdt set /chosen bootargs "${bootargs}"', {}),
+            events,
+        )
+        self.assertNotIn(
+            ("command", 'fdt set /chosen bootargs "init=/init"', {}),
             events,
         )
         self.assertEqual(events[booti_index - 1], ("start",))

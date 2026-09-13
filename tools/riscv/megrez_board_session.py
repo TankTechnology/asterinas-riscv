@@ -475,7 +475,11 @@ class BoardSession:
             raise RuntimeError(
                 f"U-Boot error while running {command!r}: {out[-200:]!r}"
             )
-        if command.startswith("fdt ") and FDT_ERROR_PATTERN.search(out):
+        command_echoes = (command, f"{PROMPT.strip()} {command}")
+        response = "\n".join(
+            line for line in normalized_lines if line not in command_echoes
+        )
+        if command.startswith("fdt ") and FDT_ERROR_PATTERN.search(response):
             raise RuntimeError(f"FDT error while running {command!r}: {out[-200:]!r}")
         return out
 
@@ -985,7 +989,7 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
         else f"setenv initrd_size 0x{initrd_size:x}"
     )
     session.command(f'setenv bootargs "{args.bootargs}"')
-    session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
+    session.command('fdt set /chosen bootargs "${bootargs}"')
     session.command(MEGREZ_USB_HOST_COMMAND)
     session.start_boot_attempt()
     return session.command(
