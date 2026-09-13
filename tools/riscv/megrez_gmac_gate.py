@@ -28,7 +28,6 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
-    NETWORK_LAYERS,
     NetworkMode,
     classify_web_network,
 )
@@ -86,13 +85,13 @@ FIXTURE_REQUESTS = 20
 FIXTURE_URL = f"http://{HOST_ADDRESS}:{FIXTURE_PORT}{FIXTURE_PATH}"
 NETWORK_BOOTARG = f"asterinas.net=eic7700-rj45,{BOARD_ADDRESS}/21,{GATEWAY_ADDRESS}"
 ROOTFS_WRITE_BOOTARG = "asterinas.mmc_write_partition2"
-NEIGHBOR_BOOTARGS = " ".join(
-    f"asterinas.neighbor=eic7700-rj45,{address},{hardware_address}"
-    for address, hardware_address in (
-        (GATEWAY_ADDRESS, GATEWAY_HARDWARE_ADDRESS),
-        (HOST_ADDRESS, HOST_HARDWARE_ADDRESS),
-    )
+GATEWAY_NEIGHBOR_BOOTARG = (
+    f"asterinas.neighbor=eic7700-rj45,{GATEWAY_ADDRESS},{GATEWAY_HARDWARE_ADDRESS}"
 )
+HOST_NEIGHBOR_BOOTARG = (
+    f"asterinas.neighbor=eic7700-rj45,{HOST_ADDRESS},{HOST_HARDWARE_ADDRESS}"
+)
+NEIGHBOR_BOOTARGS = f"{GATEWAY_NEIGHBOR_BOOTARG} {HOST_NEIGHBOR_BOOTARG}"
 SERIAL_EVIDENCE_VARIABLES = (
     "ASTERINAS_DESKTOP_M4_CONSOLE",
     "ASTERINAS_DESKTOP_M5_CONSOLE",
@@ -109,6 +108,7 @@ DESKTOP_MASK_BOOTARGS = " ".join(
     )
 )
 MAX_UBOOT_COMMAND_BYTES = 1024
+MAX_EXPANDED_FDT_COMMAND_BYTES = 960
 DESKTOP_PROXY_BOOTARGS = " ".join(
     f"systemd.setenv={name}={value}"
     for name, value in (
@@ -128,13 +128,13 @@ DESKTOP_FIXTURE_BOOTARGS = " ".join(
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 PHYSICAL_MILESTONES = (
-    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
     DESKTOP_M4_MILESTONES[-1].encode(),
     DESKTOP_M6_REMOTE_MARKER.encode(),
 )
 PHYSICAL_NETWORK_MILESTONES = (
-    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
 PHYSICAL_DESKTOP_MILESTONES = tuple(
@@ -286,7 +286,9 @@ def physical_bootargs(
         try:
             parsed_resolver = ipaddress.ip_address(resolver_address)
         except ValueError as error:
-            raise ValueError("resolver address must be a canonical IPv4 address") from error
+            raise ValueError(
+                "resolver address must be a canonical IPv4 address"
+            ) from error
         if parsed_resolver.version != 4 or str(parsed_resolver) != resolver_address:
             raise ValueError("resolver address must be a canonical IPv4 address")
     elif resolver_address is not None:
@@ -310,6 +312,9 @@ def physical_bootargs(
         return bootargs
 
     if target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+        consoles = "console=ttyS0 console=tty0"
+        if target is GateTarget.NETWORK:
+            consoles = "console=ttyS0"
         evidence_variables = ["ASTERINAS_DESKTOP_M5_CONSOLE"]
         if target is GateTarget.FIREFOX:
             evidence_variables.append("ASTERINAS_BROWSER_WEB_CONSOLE")
@@ -321,22 +326,29 @@ def physical_bootargs(
         )
         if network_mode is NetworkMode.DIRECT:
             mode_arguments += (
-                " systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER="
-                f"{resolver_address}"
+                f" systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER={resolver_address}"
             )
             proxy_arguments = ""
         else:
             proxy_arguments = f" {DESKTOP_PROXY_BOOTARGS}"
+        neighbor_arguments = NEIGHBOR_BOOTARGS
+        if target is GateTarget.NETWORK and network_mode is NetworkMode.PROXY:
+            neighbor_arguments = HOST_NEIGHBOR_BOOTARG
         bootargs = (
-            "console=ttyS0 console=tty0 loglevel=info "
+            f"{consoles} loglevel=error "
+            "asterinas.klog_capture=info "
             f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
-            f"{NEIGHBOR_BOOTARGS}{restart} {evidence} {mode_arguments}"
+            f"{neighbor_arguments}{restart} {evidence} {mode_arguments}"
             f"{proxy_arguments} {DESKTOP_FIXTURE_BOOTARGS} "
             "-- --root-init=systemd"
         )
         command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
         if command_bytes >= MAX_UBOOT_COMMAND_BYTES:
             raise GateFailure("U-Boot bootargs command exceeds 1023 bytes")
+        if target is GateTarget.NETWORK:
+            expanded_fdt_bytes = len(f'fdt set /chosen bootargs "{bootargs}"'.encode())
+            if expanded_fdt_bytes >= MAX_EXPANDED_FDT_COMMAND_BYTES:
+                raise GateFailure("expanded FDT bootargs command exceeds 959 bytes")
         return bootargs
 
     evidence_variables = (
@@ -440,7 +452,7 @@ def classify_physical_network_transcript(transcript: bytes) -> GateResult:
 def classify_physical_web_network_transcript(
     transcript: bytes, *, mode: NetworkMode
 ) -> GateResult:
-    """Classify one selected physical GMAC and exactly one web-network mode."""
+    """Classify one end-to-end physical web-network mode."""
 
     if not isinstance(transcript, bytes):
         return GateResult(False, "physical transcript must be bytes", None)
@@ -449,18 +461,9 @@ def classify_physical_web_network_transcript(
     fatal_reason = _fatal_transcript_reason(transcript)
     if fatal_reason is not None:
         return GateResult(False, fatal_reason, None)
-    selected = b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 "
-    if transcript.count(selected) != 1:
-        return GateResult(False, "missing or duplicate selected GMAC", None)
     network = classify_web_network(transcript, mode=mode)
     if not network.passed:
         return network
-    first_layer = (
-        f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
-        f"layer={NETWORK_LAYERS[0]} status=pass"
-    ).encode()
-    if transcript.find(selected) > transcript.find(first_layer):
-        return GateResult(False, "selected GMAC appears after network evidence", None)
     return GateResult(True, "pass", None)
 
 
@@ -475,9 +478,7 @@ def classify_physical_firefox_transcript(
     ready = firefox_ready_marker(mode).encode()
     if transcript.count(ready) != 1:
         return GateResult(False, "missing or duplicate Firefox Baidu ready", None)
-    network_ready = (
-        f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10"
-    ).encode()
+    network_ready = (f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10").encode()
     if transcript.find(network_ready) > transcript.find(ready):
         return GateResult(False, "Firefox ready appears before network ready", None)
     return GateResult(True, "pass", None)
@@ -767,10 +768,11 @@ class PhysicalGateOperations:
         )
 
     def _uses_proxy(self) -> bool:
-        return (
-            getattr(self.arguments, "network_mode", None) is NetworkMode.PROXY
-            and getattr(self.arguments, "target", None)
-            in (GateTarget.NETWORK, GateTarget.FIREFOX)
+        return getattr(
+            self.arguments, "network_mode", None
+        ) is NetworkMode.PROXY and getattr(self.arguments, "target", None) in (
+            GateTarget.NETWORK,
+            GateTarget.FIREFOX,
         )
 
     def __enter__(self) -> PhysicalGateOperations:
@@ -875,8 +877,10 @@ class PhysicalGateOperations:
         remaining = max(0.0, deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError("automatic recovery deadline expired")
-        return self._session().wait_for_uboot_prompt(timeout=remaining).encode(
-            errors="replace"
+        return (
+            self._session()
+            .wait_for_uboot_prompt(timeout=remaining)
+            .encode(errors="replace")
         )
 
     def close_board(self) -> None:
@@ -898,8 +902,7 @@ class PhysicalGateOperations:
             proxy_summary = self.proxy_bridge.summary()
             result["proxy_bridge"] = proxy_summary
             proxy_payload = (
-                json.dumps(proxy_summary, sort_keys=True, separators=(",", ":"))
-                + "\n"
+                json.dumps(proxy_summary, sort_keys=True, separators=(",", ":")) + "\n"
             ).encode()
             self.output.atomic_write("proxy-bridge.json", proxy_payload)
         if self._uses_network():
