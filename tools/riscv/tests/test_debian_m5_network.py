@@ -97,8 +97,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
     def _web_network_transcript(self, mode: object) -> bytes:
         layers = getattr(network_gate, "NETWORK_LAYERS", ())
         records = [
-            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
-            f"layer={layer} status=pass"
+            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} layer={layer} status=pass"
             for layer in layers
         ]
         records.append(
@@ -115,29 +114,22 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         direct_transcript = self._web_network_transcript(direct)
 
         self.assertTrue(
-            network_gate.classify_web_network(
-                proxy_transcript, mode=proxy
-            ).passed
+            network_gate.classify_web_network(proxy_transcript, mode=proxy).passed
         )
         self.assertTrue(
-            network_gate.classify_web_network(
-                direct_transcript, mode=direct
-            ).passed
+            network_gate.classify_web_network(direct_transcript, mode=direct).passed
         )
         self.assertFalse(
-            network_gate.classify_web_network(
-                proxy_transcript, mode=direct
-            ).passed
+            network_gate.classify_web_network(proxy_transcript, mode=direct).passed
         )
         self.assertFalse(
-            network_gate.classify_web_network(
-                direct_transcript, mode=proxy
-            ).passed
+            network_gate.classify_web_network(direct_transcript, mode=proxy).passed
         )
 
-        mixed = proxy_transcript + (
-            "DEBIAN_WEB_NETWORK_READY mode=direct layers=10\n"
-        ).encode()
+        mixed = (
+            proxy_transcript
+            + ("DEBIAN_WEB_NETWORK_READY mode=direct layers=10\n").encode()
+        )
         self.assertEqual(
             network_gate.classify_web_network(mixed, mode=proxy).reason,
             "mixed web network modes",
@@ -180,15 +172,15 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             ).reason,
             "missing or duplicate neighbor layer",
         )
-        first = (
-            "DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=link status=pass"
-        ).encode()
+        first = ("DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=link status=pass").encode()
         second = (
             "DEBIAN_WEB_NETWORK_LAYER mode=proxy layer=address status=pass"
         ).encode()
-        reordered = transcript.replace(first, b"__FIRST__").replace(
-            second, first
-        ).replace(b"__FIRST__", second)
+        reordered = (
+            transcript.replace(first, b"__FIRST__")
+            .replace(second, first)
+            .replace(b"__FIRST__", second)
+        )
         self.assertEqual(
             network_gate.classify_web_network(reordered, mode=mode).reason,
             "web network layers out of order",
@@ -212,24 +204,17 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=magic reason=broken\n"
         )
         self.assertEqual(
-            network_gate.classify_web_network(
-                unknown_layer, mode=mode
-            ).reason,
+            network_gate.classify_web_network(unknown_layer, mode=mode).reason,
             "web network failure has unknown layer",
         )
         config_failure = (
-            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=config "
-            b"reason=proxy-present\n"
+            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=config reason=proxy-present\n"
         )
         self.assertEqual(
-            network_gate.classify_web_network(
-                config_failure, mode=mode
-            ).reason,
+            network_gate.classify_web_network(config_failure, mode=mode).reason,
             "web network config failure: proxy-present",
         )
-        wrong_mode = (
-            b"DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=https reason=broken\n"
-        )
+        wrong_mode = b"DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=https reason=broken\n"
         self.assertEqual(
             network_gate.classify_web_network(wrong_mode, mode=mode).reason,
             "mixed web network modes",
@@ -913,6 +898,8 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         resolv_conf = directory / "resolv.conf"
         resolv_conf.write_text("nameserver 192.0.2.53\n", encoding="utf-8")
         command_log = directory / "commands.log"
+        uptime = directory / "uptime"
+        uptime.write_text("10.00 8.00\n", encoding="utf-8")
         fixture_payload = directory / "fixture.bin"
         fixture_payload.write_bytes(PAYLOAD)
         medium_payload = directory / "medium.bin"
@@ -920,7 +907,7 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         fixture_count = directory / "fixture-count"
 
         tools = {
-            "ip": r'''#!/bin/sh
+            "ip": r"""#!/bin/sh
 printf 'ip %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 case "$*" in
     "-o link show dev eth0")
@@ -945,28 +932,32 @@ case "$*" in
         ;;
     *) exit 2 ;;
 esac
-''',
-            "ping": r'''#!/bin/sh
+""",
+            "ping": r"""#!/bin/sh
 printf 'ping %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 [ "$ASTERINAS_WEB_FAIL_STAGE" = reachability ] && exit 1
 exit 0
-''',
-            "getent": r'''#!/bin/sh
+""",
+            "getent": r"""#!/bin/sh
 printf 'getent %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 [ "$ASTERINAS_WEB_FAIL_STAGE" = dns ] && exit 2
 printf '%s\n' '110.242.68.3 STREAM www.baidu.com'
-''',
-            "date": r'''#!/bin/sh
+""",
+            "date": r"""#!/bin/sh
 printf 'date %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 exit 0
-''',
-            "curl": r'''#!/bin/sh
+""",
+            "curl": r"""#!/bin/sh
 printf 'curl %s\n' "$*" >>"$ASTERINAS_WEB_COMMAND_LOG"
 output=
+outputs=
 headers=
 previous=
 for argument in "$@"; do
-    if [ "$previous" = --output ]; then output="$argument"; fi
+    if [ "$previous" = --output ]; then
+        output="$argument"
+        outputs="$outputs $argument"
+    fi
     if [ "$previous" = --dump-header ]; then headers="$argument"; fi
     previous="$argument"
 done
@@ -986,9 +977,15 @@ case "$*" in
         fi
         ;;
     *https://www.baidu.com/*|*https://10.0.2.2:8446/*)
+        count_file="$ASTERINAS_WEB_HTTPS_COUNT"
+        count=0
+        [ ! -f "$count_file" ] || count="$(cat "$count_file")"
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$count_file"
         case "$ASTERINAS_WEB_FAIL_STAGE" in
             https-connect) exit 7 ;;
             https-tls) exit 60 ;;
+            https-once) [ "$count" = 1 ] && exit 124 ;;
         esac
         printf '200\t10.100.19.200\t0.010\t0.020'
         ;;
@@ -1002,21 +999,25 @@ case "$*" in
         ;;
     *asterinas-network-probe.bin*)
         [ -n "$output" ] || exit 98
-        count=0
-        [ ! -f "$ASTERINAS_WEB_FIXTURE_COUNT" ] || count="$(cat "$ASTERINAS_WEB_FIXTURE_COUNT")"
-        count=$((count + 1))
-        printf '%s\n' "$count" >"$ASTERINAS_WEB_FIXTURE_COUNT"
-        if [ "$ASTERINAS_WEB_FAIL_STAGE" = http ] && [ "$count" = 1 ]; then
-            exit 7
-        elif [ "$ASTERINAS_WEB_FAIL_STAGE" = repeat ] && [ "$count" -gt 1 ]; then
-            head -c 65535 "$ASTERINAS_WEB_FIXTURE_PAYLOAD" >"$output"
-        else
-            cp "$ASTERINAS_WEB_FIXTURE_PAYLOAD" "$output"
-        fi
+        for output in $outputs; do
+            count=0
+            [ ! -f "$ASTERINAS_WEB_FIXTURE_COUNT" ] || count="$(cat "$ASTERINAS_WEB_FIXTURE_COUNT")"
+            count=$((count + 1))
+            printf '%s\n' "$count" >"$ASTERINAS_WEB_FIXTURE_COUNT"
+            if [ "$ASTERINAS_WEB_FAIL_STAGE" = http ] && [ "$count" = 1 ]; then
+                exit 7
+            elif [ "$ASTERINAS_WEB_FAIL_STAGE" = repeat-timeout ] && [ "$count" -gt 1 ]; then
+                exit 124
+            elif [ "$ASTERINAS_WEB_FAIL_STAGE" = repeat ] && [ "$count" -gt 1 ]; then
+                head -c 65535 "$ASTERINAS_WEB_FIXTURE_PAYLOAD" >"$output"
+            else
+                cp "$ASTERINAS_WEB_FIXTURE_PAYLOAD" "$output"
+            fi
+        done
         ;;
     *) exit 99 ;;
 esac
-''',
+""",
         }
         for name, source in tools.items():
             executable = fake_bin / name
@@ -1036,11 +1037,13 @@ esac
             "ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS": "2",
             "ASTERINAS_DESKTOP_M5_RESOLV_CONF": str(resolv_conf),
             "ASTERINAS_DESKTOP_M5_URL_FILE": str(directory / "desktop-url"),
+            "ASTERINAS_DESKTOP_M5_UPTIME_PATH": str(uptime),
             "ASTERINAS_WEB_NETWORK_MODE": mode,
             "ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY": "1",
             "ASTERINAS_WEB_NETWORK_ADDRESS": "10.100.19.200/21",
             "ASTERINAS_WEB_NETWORK_GATEWAY": "10.100.16.1",
             "ASTERINAS_WEB_NETWORK_RESOLVER": "10.100.16.1",
+            "ASTERINAS_WEB_HTTPS_COUNT": str(directory / "https-count"),
             "ASTERINAS_DESKTOP_FIXTURE_URL": (
                 f"http://10.100.19.216:17894{FIXTURE_PATH}"
             ),
@@ -1069,6 +1072,30 @@ esac
                 environment.pop(name)
         return environment, console, resolv_conf, command_log
 
+    def test_web_network_rejects_an_invalid_monotonic_clock(self) -> None:
+        environment, console, _, _ = self._web_network_environment(
+            self.directory / "web-invalid-uptime",
+            mode="proxy",
+        )
+        Path(environment["ASTERINAS_DESKTOP_M5_UPTIME_PATH"]).write_text(
+            "not-an-uptime\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines()[-1],
+            "DEBIAN_WEB_NETWORK_FAIL mode=proxy layer=config reason=monotonic-clock",
+        )
+
     def test_web_network_derives_medium_fixture_from_probe_url(self) -> None:
         environment, console, _, command_log = self._web_network_environment(
             self.directory / "web-derived-medium",
@@ -1093,10 +1120,8 @@ esac
         )
 
     def test_proxy_web_network_evidence(self) -> None:
-        environment, console, resolv_conf, command_log = (
-            self._web_network_environment(
-                self.directory / "web-proxy", mode="proxy"
-            )
+        environment, console, resolv_conf, command_log = self._web_network_environment(
+            self.directory / "web-proxy", mode="proxy"
         )
 
         result = subprocess.run(
@@ -1120,13 +1145,11 @@ esac
         )
         commands = command_log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(
-            sum(FIXTURE_PATH in line for line in commands),
+            sum(line.count(FIXTURE_PATH) for line in commands),
             20,
         )
         external = [
-            line
-            for line in commands
-            if "www.baidu.com" in line or "result.png" in line
+            line for line in commands if "www.baidu.com" in line or "result.png" in line
         ]
         self.assertTrue(external)
         self.assertTrue(
@@ -1135,14 +1158,16 @@ esac
         self.assertFalse(any("http://www.baidu.com/" in line for line in commands))
         fixture_http = [line for line in commands if FIXTURE_PATH in line][0]
         self.assertIn("--dump-header", fixture_http)
+        fixture_calls = [line for line in commands if FIXTURE_PATH in line]
+        self.assertEqual(len(fixture_calls), 2)
+        self.assertEqual(fixture_calls[1].count(FIXTURE_PATH), 19)
+        self.assertEqual(fixture_calls[1].count("--output"), 19)
         self.assertFalse(any(line.startswith("getent ") for line in commands))
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
 
     def test_direct_web_network_has_no_proxy_configuration(self) -> None:
-        environment, console, resolv_conf, command_log = (
-            self._web_network_environment(
-                self.directory / "web-direct", mode="direct"
-            )
+        environment, console, resolv_conf, command_log = self._web_network_environment(
+            self.directory / "web-direct", mode="direct"
         )
 
         result = subprocess.run(
@@ -1189,7 +1214,10 @@ esac
         )
         self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
         self.assertFalse(
-            any(line.startswith("ping ") for line in command_log.read_text().splitlines())
+            any(
+                line.startswith("ping ")
+                for line in command_log.read_text().splitlines()
+            )
         )
 
     def test_web_network_skips_unsupported_neighbor_query(self) -> None:
@@ -1217,8 +1245,35 @@ esac
         )
         self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
         self.assertFalse(
-            any(line.startswith("ip neigh ") for line in command_log.read_text().splitlines())
+            any(
+                line.startswith("ip neigh ")
+                for line in command_log.read_text().splitlines()
+            )
         )
+
+    def test_web_network_retries_one_transient_https_timeout(self) -> None:
+        environment, console, _, _ = self._web_network_environment(
+            self.directory / "web-https-once",
+            mode="proxy",
+            fail_stage="https-once",
+        )
+        environment["ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY"] = "0"
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = console.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "DEBIAN_WEB_NETWORK_RETRY mode=proxy layer=https attempt=1 reason=timeout",
+            lines,
+        )
+        self.assertEqual(lines[-1], "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10")
 
     def test_web_network_failure_taxonomy(self) -> None:
         cases = {
@@ -1233,6 +1288,7 @@ esac
             "https-tls": ("https", "tls"),
             "baidu-asset": ("baidu-asset", "content"),
             "repeat": ("repeat", "length"),
+            "repeat-timeout": ("repeat", "timeout"),
             "medium": ("medium", "length"),
         }
         for fail_stage, (layer, reason) in cases.items():
@@ -1263,9 +1319,7 @@ esac
             mode="direct",
             fail_stage="https-tls",
         )
-        environment["ASTERINAS_WEB_NETWORK_HTTPS_URL"] = (
-            "https://10.0.2.2:8446/"
-        )
+        environment["ASTERINAS_WEB_NETWORK_HTTPS_URL"] = "https://10.0.2.2:8446/"
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -1899,17 +1953,13 @@ printf '200\t10.0.2.15'
             "test_riscv_debian_web_network_proxy_qemu",
             "test_riscv_debian_web_network_direct_qemu",
         ):
-            block = makefile.split(f".PHONY: {target}", 1)[1].split(
-                ".PHONY:", 1
-            )[0]
+            block = makefile.split(f".PHONY: {target}", 1)[1].split(".PHONY:", 1)[0]
             self.assertIn("test_riscv_debian_desktop_m5_qemu_gate", block)
             self.assertIn("DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network", block)
 
     def test_qemu_web_bootargs_are_split_below_uboot_console_limit(self) -> None:
         operations = object.__new__(NetworkM5QemuOperations)
-        operations.BOOTARGS = qemu_web_network_bootargs(
-            network_gate.NetworkMode.PROXY
-        )
+        operations.BOOTARGS = qemu_web_network_bootargs(network_gate.NetworkMode.PROXY)
         commands = operations._boot_commands(0x40000000)
         bootarg_commands = tuple(
             command
@@ -1925,10 +1975,7 @@ printf '200\t10.0.2.15'
                 for command in commands
             )
         )
-        chunks = tuple(
-            command.split('"', 2)[1]
-            for command in bootarg_commands[:-1]
-        )
+        chunks = tuple(command.split('"', 2)[1] for command in bootarg_commands[:-1])
         self.assertEqual(" ".join(chunks), operations.BOOTARGS)
         expansion = " ".join(
             f"${{ast_bootargs_{index}}}" for index in range(len(chunks))
@@ -2092,9 +2139,7 @@ printf '200\t10.0.2.15'
             expected_failure=QemuExpectedFailure.DNS,
             fixture=fixture,
         )
-        transcript = (
-            b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=dns reason=resolve\n"
-        )
+        transcript = b"DEBIAN_WEB_NETWORK_FAIL mode=direct layer=dns reason=resolve\n"
 
         with operations:
             operations.invalidate(config)
