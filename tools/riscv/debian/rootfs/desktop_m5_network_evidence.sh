@@ -7,6 +7,7 @@ readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
+readonly UPTIME_PATH="${ASTERINAS_DESKTOP_M5_UPTIME_PATH:-/proc/uptime}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
@@ -71,9 +72,24 @@ web_cleanup() {
     fi
 }
 
+web_monotonic_seconds() {
+    local idle
+    local uptime
+
+    [[ "$UPTIME_PATH" == /* && -f "$UPTIME_PATH" && ! -L "$UPTIME_PATH" ]] ||
+        return 1
+    read -r uptime idle <"$UPTIME_PATH" || return 1
+    [[ "$uptime" =~ ^(0|[1-9][0-9]*)\.[0-9]+$ ]] || return 1
+    printf '%s\n' "${uptime%%.*}"
+}
+
 web_timeout_seconds() {
     local deadline="$1"
-    local remaining=$((deadline - SECONDS))
+    local now
+    local remaining
+
+    now="$(web_monotonic_seconds)" || return 1
+    remaining=$((deadline - now))
 
     ((remaining > 0)) || return 1
     if ((remaining < COMMAND_TIMEOUT_SECONDS)); then
@@ -96,7 +112,7 @@ web_curl_reason() {
             fi
             ;;
         22) printf '%s\n' http-status ;;
-        28) printf '%s\n' timeout ;;
+        28 | 124) printf '%s\n' timeout ;;
         35 | 51 | 58 | 59 | 60 | 77 | 80 | 82 | 83 | 90 | 91)
             printf '%s\n' tls
             ;;
@@ -121,23 +137,37 @@ web_network_evidence() {
     local clock_date=''
     local curl_result
     local curl_status
-    local deadline=$((SECONDS + TIMEOUT_SECONDS))
+    local deadline
     local header
     local headers
     local http_file
     local http_headers
     local https_status
+    local https_attempt=0
+    local https_reason
     local limit
     local link_output
     local local_address
     local neighbor_observable=1
     local neighbor_output
     local neighbor_status=0
+    local now
     local peer
     local signature
     local temporary_asset
     local temporary_medium
-    local temporary_repeat
+    local repeat_hashes
+    local repeat_sizes
+    local remaining
+    local -a repeat_curl=(
+        --fail
+        --ipv4
+        --silent
+        --show-error
+        --max-time "$COMMAND_TIMEOUT_SECONDS"
+        --noproxy '*'
+    )
+    local -a repeat_files=()
     local -a external_curl=()
 
     case "$WEB_NETWORK_MODE" in
@@ -175,6 +205,9 @@ web_network_evidence() {
         web_fail config invalid-medium
     [[ "$WEB_NETWORK_MEDIUM_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
         web_fail config invalid-medium
+
+    now="$(web_monotonic_seconds)" || web_fail config monotonic-clock
+    deadline=$((now + TIMEOUT_SECONDS))
 
     WEB_TEMPORARY_DIRECTORY="$(mktemp -d "${URL_FILE}.web.XXXXXX")" ||
         web_fail config temporary-directory
@@ -278,16 +311,23 @@ web_network_evidence() {
     web_emit_layer dns
     web_emit_layer http
 
-    limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout
-    if curl_result="$(timeout "$limit" curl --fail --ipv4 --location --silent \
-        --show-error --max-time "$limit" "${external_curl[@]}" \
-        --output /dev/null --write-out $'%{http_code}\t%{local_ip}\t%{time_connect}\t%{time_appconnect}' \
-        "$BAIDU_URL")"; then
-        :
-    else
-        curl_status=$?
-        web_fail https "$(web_curl_reason "$curl_status")"
-    fi
+    while ((https_attempt < 2)); do
+        limit="$(web_timeout_seconds "$deadline")" || web_fail https timeout
+        if curl_result="$(timeout "$limit" curl --fail --ipv4 --location --silent \
+            --show-error --max-time "$limit" "${external_curl[@]}" \
+            --output /dev/null --write-out $'%{http_code}\t%{local_ip}\t%{time_connect}\t%{time_appconnect}' \
+            "$BAIDU_URL")"; then
+            break
+        else
+            curl_status=$?
+        fi
+        https_reason="$(web_curl_reason "$curl_status")"
+        ((https_attempt += 1))
+        if [[ "$https_reason" != timeout ]] || ((https_attempt >= 2)); then
+            web_fail https "$https_reason"
+        fi
+        emit "DEBIAN_WEB_NETWORK_RETRY mode=$WEB_NETWORK_MODE layer=https attempt=$https_attempt reason=$https_reason"
+    done
     IFS=$'\t' read -r https_status local_address _ _ <<<"$curl_result"
     [[ "$https_status" =~ ^(2|3)[0-9][0-9]$ ]] || web_fail https http-status
     [[ "$local_address" == "${WEB_NETWORK_ADDRESS%/*}" ]] ||
@@ -309,23 +349,32 @@ web_network_evidence() {
     web_emit_layer baidu-asset
 
     # The HTTP layer already verified the first deterministic fixture response.
-    # Download 19 more so the complete mode contract records exactly 20.
+    # Download 19 more so the complete mode contract records exactly 20. Keep
+    # the transfers in one curl process so process startup does not dominate
+    # the physical-board deadline while Firefox is cold-starting.
     for ((attempt = 1; attempt < FIXTURE_REQUESTS; attempt++)); do
-        temporary_repeat="$WEB_TEMPORARY_DIRECTORY/repeat-$attempt"
-        limit="$(web_timeout_seconds "$deadline")" || web_fail repeat timeout
-        if timeout "$limit" curl --fail --ipv4 --silent --show-error \
-            --max-time "$limit" --noproxy '*' --output "$temporary_repeat" \
-            "$FIXTURE_URL"; then
-            :
-        else
-            curl_status=$?
-            web_fail repeat "$(web_curl_reason "$curl_status")"
-        fi
-        [[ "$(stat -c '%s' -- "$temporary_repeat")" == "$FIXTURE_SIZE" ]] ||
-            web_fail repeat length
-        [[ "$(sha256sum -- "$temporary_repeat" | awk '{print $1}')" == "$FIXTURE_SHA256" ]] ||
-            web_fail repeat digest
+        repeat_files+=("$WEB_TEMPORARY_DIRECTORY/repeat-$attempt")
+        repeat_curl+=(--output "${repeat_files[-1]}" "$FIXTURE_URL")
     done
+    now="$(web_monotonic_seconds)" || web_fail repeat timeout
+    remaining=$((deadline - now))
+    ((remaining > 0)) || web_fail repeat timeout
+    if timeout "$remaining" curl "${repeat_curl[@]}"; then
+        :
+    else
+        curl_status=$?
+        web_fail repeat "$(web_curl_reason "$curl_status")"
+    fi
+    repeat_sizes="$(stat -c '%s' -- "${repeat_files[@]}")" ||
+        web_fail repeat length
+    while IFS= read -r size; do
+        [[ "$size" == "$FIXTURE_SIZE" ]] || web_fail repeat length
+    done <<<"$repeat_sizes"
+    repeat_hashes="$(sha256sum -- "${repeat_files[@]}")" ||
+        web_fail repeat digest
+    while IFS=' ' read -r hash _; do
+        [[ "$hash" == "$FIXTURE_SHA256" ]] || web_fail repeat digest
+    done <<<"$repeat_hashes"
     web_emit_layer repeat
 
     temporary_medium="$WEB_TEMPORARY_DIRECTORY/medium"
