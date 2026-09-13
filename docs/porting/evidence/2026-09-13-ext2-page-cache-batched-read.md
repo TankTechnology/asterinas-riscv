@@ -97,8 +97,9 @@ batching is not the only remaining Firefox cost.
 
 At the final sample the Firefox main thread had respectively 1,690/1,822 and
 1,684/1,944 user/system ticks. The still-high system time, the approximately
-9.8-MB/s direct-read ceiling, software rendering, and startup variance are the
-next performance leads. This change makes no DRM or MMC-DMA claim.
+9.8-MB/s 25-MHz MMC ceiling, software rendering, and startup variance are the
+next performance leads. This change makes no DRM or higher-speed MMC timing
+claim.
 
 ## Deployment and provenance
 
