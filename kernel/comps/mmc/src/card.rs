@@ -76,6 +76,7 @@ impl Scr {
         Ok(Self { spec })
     }
 
+    #[cfg(ktest)]
     const fn spec(self) -> SdSpec {
         self.spec
     }
