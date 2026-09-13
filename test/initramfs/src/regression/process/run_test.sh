@@ -17,6 +17,7 @@ fi
 ./clone3/clone_set_tid
 
 ./cpu_affinity/cpu_affinity
+./cpu_affinity/inheritance || [ "$?" -eq 77 ]
 
 if [ "$(uname -m)" = "riscv64" ]; then
     if grep -qw 'RISCV_ICACHE_REQUIRE_SMP4=1' /proc/cmdline; then
