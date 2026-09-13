@@ -6,7 +6,7 @@ The user approved the staged approach on 2026-09-13:
 measure logging critical paths and CPU-pinned scheduling workloads first,
 fix demonstrated bottlenecks with concurrency checks second,
 then qualify Firefox startup, first paint, and interaction latency.
-This written specification is pending the user's review.
+The user approved this written specification in the following turn.
 
 This first subproject delivers measurements and reproducible probes.
 It does not replace the scheduler, introduce an asynchronous console worker,
