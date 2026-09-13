@@ -8,6 +8,7 @@ mod indirect_block_manager;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::bio::BioCompleteFn;
+use ostd::mm::io::util::HasVmReaderWriter;
 
 use self::block_ptr_tree::ResolvedBlockRange;
 pub(super) use self::block_ptr_tree::{BlockPtrTree, RawBlockPtrs};
@@ -142,6 +143,58 @@ impl InodeBlockManager {
 }
 
 impl BlockAsPageCacheBackend for InodeBlockManager {
+    fn submit_read_bios(
+        &self,
+        requests: Vec<PageCacheReadRequest>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        let npages = self.npages.load(Ordering::Acquire);
+        if requests.iter().any(|request| request.idx() >= npages) {
+            return_errno_with_message!(Errno::EINVAL, "invalid read size");
+        }
+
+        let fs = self.fs()?;
+        let mut run_start_bid = None;
+        let mut run = Vec::new();
+
+        for request in requests {
+            let idx = request.idx();
+            let iblock = Iblock::try_from(idx)
+                .map_err(|_| Error::with_message(Errno::EINVAL, "logical block number overflow"))?;
+            let Some(bid) = self.lookup_block(iblock)? else {
+                submit_contiguous_read_run(
+                    &fs,
+                    run_start_bid.take(),
+                    core::mem::take(&mut run),
+                    io_batch,
+                )?;
+                let (_, _, complete_fn) = request.into_parts();
+                complete_fn(BioStatus::Zeros);
+                continue;
+            };
+
+            let is_continuation = run_start_bid.is_some_and(|start_bid| {
+                run.first().is_some_and(|first: &PageCacheReadRequest| {
+                    continues_read_run(first.idx(), start_bid, run.len(), idx, bid)
+                })
+            });
+            if !run.is_empty() && !is_continuation {
+                submit_contiguous_read_run(
+                    &fs,
+                    run_start_bid.take(),
+                    core::mem::take(&mut run),
+                    io_batch,
+                )?;
+            }
+            if run.is_empty() {
+                run_start_bid = Some(bid);
+            }
+            run.push(request);
+        }
+
+        submit_contiguous_read_run(&fs, run_start_bid, run, io_batch)
+    }
+
     fn submit_read_bio(
         &self,
         idx: usize,
@@ -200,5 +253,83 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         };
 
         fs.write_blocks_async(bid, bio_segment, Some(complete_fn), io_batch)
+    }
+}
+
+fn continues_read_run(
+    first_idx: usize,
+    start_bid: Ext2Bid,
+    run_len: usize,
+    next_idx: usize,
+    next_bid: Ext2Bid,
+) -> bool {
+    first_idx.checked_add(run_len) == Some(next_idx)
+        && Ext2Bid::try_from(run_len)
+            .ok()
+            .and_then(|len| start_bid.checked_add(len))
+            == Some(next_bid)
+}
+
+/// Submits one physically contiguous extent and scatters its completion data
+/// into the original page-cache segments without allocating in the callback.
+fn submit_contiguous_read_run(
+    fs: &Ext2,
+    start_bid: Option<Ext2Bid>,
+    requests: Vec<PageCacheReadRequest>,
+    io_batch: &mut IoBatch,
+) -> Result<()> {
+    let Some(start_bid) = start_bid else {
+        debug_assert!(requests.is_empty());
+        return Ok(());
+    };
+    debug_assert!(!requests.is_empty());
+
+    let extent_segment = BioSegment::alloc(requests.len(), BioDirection::FromDevice);
+    let scatter_source = extent_segment.clone();
+    let complete_fn: BioCompleteFn = Box::new(move |status| {
+        if status != BioStatus::Complete {
+            for request in requests {
+                let (_, _, page_complete_fn) = request.into_parts();
+                page_complete_fn(status);
+            }
+            return;
+        }
+
+        let Ok(mut reader) = scatter_source.reader() else {
+            for request in requests {
+                let (_, _, page_complete_fn) = request.into_parts();
+                page_complete_fn(BioStatus::IoError);
+            }
+            return;
+        };
+        for request in requests {
+            let (_, page_segment, page_complete_fn) = request.into_parts();
+            let page_status = match page_segment.write_from_device_reader(&mut reader) {
+                Ok(()) => BioStatus::Complete,
+                Err(_) => BioStatus::IoError,
+            };
+            page_complete_fn(page_status);
+        }
+    });
+
+    fs.read_blocks_async(start_bid, extent_segment, Some(complete_fn), io_batch)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::{Ext2Bid, continues_read_run};
+
+    #[ktest]
+    fn read_run_requires_logical_and_physical_contiguity() {
+        assert!(continues_read_run(4, 100, 3, 7, 103));
+        assert!(!continues_read_run(4, 100, 3, 8, 103));
+        assert!(!continues_read_run(4, 100, 3, 7, 104));
+    }
+
+    #[ktest]
+    fn read_run_rejects_overflow() {
+        assert!(!continues_read_run(usize::MAX, Ext2Bid::MAX, 1, 0, 0));
     }
 }

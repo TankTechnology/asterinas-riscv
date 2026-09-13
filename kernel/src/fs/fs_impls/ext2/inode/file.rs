@@ -528,6 +528,134 @@ mod test {
         assert_eq!(readback, base_data);
     }
 
+    #[ktest]
+    fn buffered_read_coalesces_contiguous_blocks() {
+        const NUM_BLOCKS: usize = 4;
+
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
+            .build()
+            .unwrap();
+        let file = create_file(&f.root(), "batched-read");
+        let payload = (0..NUM_BLOCKS * BLOCK_SIZE)
+            .map(|offset| (offset / BLOCK_SIZE) as u8 + 1)
+            .collect::<Vec<_>>();
+
+        let mut source = VmReader::from(payload.as_slice()).to_fallible();
+        assert_eq!(file.write_at(0, &mut source).unwrap(), payload.len());
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..payload.len())
+            .unwrap();
+
+        f.disk.reset_read_stats();
+        let mut readback = vec![0; payload.len()];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
+        assert_eq!(
+            file.read_at(0, &mut destination, StatusFlags::empty())
+                .unwrap(),
+            payload.len()
+        );
+
+        assert_eq!(readback, payload);
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.ext2.sync_all().unwrap();
+    }
+
+    #[ktest]
+    fn failed_batched_read_is_reported_and_retryable() {
+        const NUM_BLOCKS: usize = 4;
+
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
+            .build()
+            .unwrap();
+        let file = create_file(&f.root(), "failed-batched-read");
+        let payload = vec![0xa5; NUM_BLOCKS * BLOCK_SIZE];
+
+        let mut source = VmReader::from(payload.as_slice()).to_fallible();
+        file.write_at(0, &mut source).unwrap();
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..payload.len())
+            .unwrap();
+
+        f.disk.reset_read_stats();
+        f.disk.set_fail_reads(true);
+        let mut failed_readback = vec![0; payload.len()];
+        let mut failed_destination = VmWriter::from(failed_readback.as_mut_slice()).to_fallible();
+        assert_errno!(
+            file.read_at(0, &mut failed_destination, StatusFlags::empty()),
+            Errno::EIO
+        );
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.disk.set_fail_reads(false);
+        f.disk.reset_read_stats();
+        let mut readback = vec![0; payload.len()];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
+        file.read_at(0, &mut destination, StatusFlags::empty())
+            .unwrap();
+
+        assert_eq!(readback, payload);
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.ext2.sync_all().unwrap();
+    }
+
+    #[ktest]
+    fn buffered_read_splits_runs_at_sparse_holes() {
+        const NUM_BLOCKS: usize = 4;
+
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
+            .build()
+            .unwrap();
+        let file = create_file(&f.root(), "sparse-batched-read");
+        file.resize(NUM_BLOCKS * BLOCK_SIZE).unwrap();
+
+        let first_block = vec![0x11; BLOCK_SIZE];
+        let last_block = vec![0x44; BLOCK_SIZE];
+        let mut first_source = VmReader::from(first_block.as_slice()).to_fallible();
+        file.write_at(0, &mut first_source).unwrap();
+        let mut last_source = VmReader::from(last_block.as_slice()).to_fallible();
+        file.write_at(3 * BLOCK_SIZE, &mut last_source).unwrap();
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..NUM_BLOCKS * BLOCK_SIZE)
+            .unwrap();
+
+        f.disk.reset_read_stats();
+        let mut readback = vec![0xff; NUM_BLOCKS * BLOCK_SIZE];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
+        file.read_at(0, &mut destination, StatusFlags::empty())
+            .unwrap();
+
+        assert_eq!(&readback[..BLOCK_SIZE], first_block);
+        assert_eq!(&readback[BLOCK_SIZE..3 * BLOCK_SIZE], &[0; 2 * BLOCK_SIZE]);
+        assert_eq!(&readback[3 * BLOCK_SIZE..], last_block);
+        assert_eq!(f.disk.read_bio_count(), 2);
+        assert_eq!(f.disk.max_read_bio_blocks(), 1);
+
+        f.ext2.sync_all().unwrap();
+    }
+
     // TODO: Enable this test once page-table dirty bits are propagated back to
     // the VMO. Currently the hardware dirty flag set by mmap writes is not
     // reflected in the VMO's dirty tracking, so a subsequent buffered write to

@@ -752,8 +752,10 @@ impl Vmo {
             match self.try_operate_on_range_internal(&current_range, &mut operate, commit_mode) {
                 Ok(()) => break 'retry,
                 Err(err) => {
-                    if matches!(&err, VmoCommitError::NeedIo { .. })
-                        && !PAGECACHE_PROFILE.load(Ordering::Relaxed)
+                    if matches!(
+                        &err,
+                        VmoCommitError::NeedIo { .. } | VmoCommitError::WaitUntilInit { .. }
+                    ) && !PAGECACHE_PROFILE.load(Ordering::Relaxed)
                     {
                         let index = err.pending_index()?;
                         let end_idx = current_range.end / PAGE_SIZE;
@@ -855,14 +857,40 @@ impl<'a> BackedVmo<'a> {
         }
 
         let mut pages = Vec::with_capacity(end_idx - start_idx);
+        let mut new_locked_pages = Vec::with_capacity(end_idx - start_idx);
+        let mut existing_pages = Vec::new();
         {
             let mut locked_pages = self.vmo.pages.lock();
             for index in start_idx..end_idx {
                 let mut cursor = locked_pages.cursor_mut(index as u64);
                 let page = if let Some(page) = cursor.load() {
-                    page.clone()
+                    let page = page.clone();
+                    if !commit_mode.skips_backend_read() && page.is_uninit() {
+                        // A previous batch may have failed after publishing the
+                        // page. Reclaim it without waiting so retries can still
+                        // use the batched backend. A page currently owned by
+                        // another initializer remains on the wait path below.
+                        if let Some(locked_page) = page.clone().try_lock() {
+                            if locked_page.is_uninit() {
+                                new_locked_pages.push((index, locked_page));
+                            }
+                        } else {
+                            existing_pages.push((index, page.clone()));
+                        }
+                    }
+                    page
                 } else {
                     let page = CachePage::alloc_uninit()?;
+                    if !commit_mode.skips_backend_read() {
+                        // Lock before publishing. This guarantees that no
+                        // concurrent committer can claim a newly allocated page
+                        // before this batch has submitted its I/O.
+                        let locked_page = page
+                            .clone()
+                            .try_lock()
+                            .expect("a newly allocated cache page must be unlocked");
+                        new_locked_pages.push((index, locked_page));
+                    }
                     cursor.store(page.clone());
                     page
                 };
@@ -875,10 +903,16 @@ impl<'a> BackedVmo<'a> {
         }
 
         let mut io_batch = IoBatch::with_capacity(pages.len());
-        for (index, page) in &pages {
+        if !new_locked_pages.is_empty() {
+            self.backend
+                .read_pages_async(new_locked_pages, &mut io_batch)?;
+        }
+        // Existing uninitialized pages may belong to another committer and
+        // retain the original wait-or-initialize behavior.
+        for (index, page) in existing_pages {
             let backend = &self.backend;
             page.ensure_init(|locked_page| {
-                backend.read_page_async(*index, locked_page, &mut io_batch)
+                backend.read_page_async(index, locked_page, &mut io_batch)
             })?;
         }
         io_batch.wait_all()?;

@@ -369,6 +369,22 @@ pub trait PageCacheBackend: Sync + Send {
         io_batch: &mut IoBatch,
     ) -> Result<()>;
 
+    /// Reads multiple already-locked pages from the backend asynchronously.
+    ///
+    /// The default implementation preserves the single-page contract. Block
+    /// backends may override this through [`BlockAsPageCacheBackend`] to merge
+    /// adjacent requests into larger device operations.
+    fn read_pages_async(
+        &self,
+        pages: Vec<(usize, LockedCachePage)>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        for (idx, locked_page) in pages {
+            self.read_page_async(idx, locked_page, io_batch)?;
+        }
+        Ok(())
+    }
+
     /// Writes a page to the backend asynchronously.
     ///
     /// If the caller tries to pass an index that exceeds the size of the
@@ -409,8 +425,6 @@ impl dyn PageCacheBackend + '_ {
 /// so implementations must not allocate, take blocking locks, or hold a lock
 /// that a waiter on the page wait queue may already hold.
 //
-// TODO: This trait should provide interfaces for reading or writing multiple
-// pages in a single BIO to improve efficiency for sequential I/O.
 pub trait BlockAsPageCacheBackend: Sync + Send {
     /// Submits read I/O for the page at `idx`.
     ///
@@ -432,6 +446,23 @@ pub trait BlockAsPageCacheBackend: Sync + Send {
         io_batch: &mut IoBatch,
     ) -> Result<()>;
 
+    /// Submits a group of page-cache reads.
+    ///
+    /// The default implementation submits one BIO per page. Filesystems that
+    /// know the physical block mapping can override this method and coalesce
+    /// adjacent requests without exposing that mapping to the page cache.
+    fn submit_read_bios(
+        &self,
+        requests: Vec<PageCacheReadRequest>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        for request in requests {
+            let (idx, bio_segment, complete_fn) = request.into_parts();
+            self.submit_read_bio(idx, bio_segment, complete_fn, io_batch)?;
+        }
+        Ok(())
+    }
+
     /// Submits write I/O for the page at `idx`.
     ///
     /// `bio_segment` contains the stable page snapshot that must be written.
@@ -448,6 +479,37 @@ pub trait BlockAsPageCacheBackend: Sync + Send {
         complete_fn: BioCompleteFn,
         io_batch: &mut IoBatch,
     ) -> Result<()>;
+}
+
+/// One locked page-cache read prepared for a block-backed filesystem.
+///
+/// Ownership of the completion callback also carries ownership of the page
+/// lock. Implementations must invoke it exactly once for every request they
+/// successfully accept, including sparse-hole requests that need no device I/O.
+pub struct PageCacheReadRequest {
+    idx: usize,
+    bio_segment: BioSegment,
+    complete_fn: BioCompleteFn,
+}
+
+impl PageCacheReadRequest {
+    fn new(idx: usize, bio_segment: BioSegment, complete_fn: BioCompleteFn) -> Self {
+        Self {
+            idx,
+            bio_segment,
+            complete_fn,
+        }
+    }
+
+    /// Returns the page index within the backend object.
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+
+    /// Consumes the request and returns its block-I/O parts.
+    pub fn into_parts(self) -> (usize, BioSegment, BioCompleteFn) {
+        (self.idx, self.bio_segment, self.complete_fn)
+    }
 }
 
 impl<T: BlockAsPageCacheBackend> PageCacheBackend for T {
@@ -473,6 +535,34 @@ impl<T: BlockAsPageCacheBackend> PageCacheBackend for T {
         });
 
         self.submit_read_bio(idx, bio_segment, complete_fn, io_batch)
+    }
+
+    fn read_pages_async(
+        &self,
+        pages: Vec<(usize, LockedCachePage)>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        let requests = pages
+            .into_iter()
+            .map(|(idx, locked_page)| {
+                let bio_segment = BioSegment::new_from_segment(
+                    Segment::from(locked_page.deref().clone()).into(),
+                    BioDirection::FromDevice,
+                );
+                let complete_fn: BioCompleteFn = Box::new(move |status| {
+                    if status == BioStatus::Zeros {
+                        locked_page.fill_zeros(0, PAGE_SIZE).unwrap();
+                        locked_page.set_up_to_date();
+                    } else if status == BioStatus::Complete {
+                        locked_page.set_up_to_date();
+                    }
+                    // Dropping `locked_page` releases the page lock.
+                });
+                PageCacheReadRequest::new(idx, bio_segment, complete_fn)
+            })
+            .collect();
+
+        self.submit_read_bios(requests, io_batch)
     }
 
     fn write_page_async(

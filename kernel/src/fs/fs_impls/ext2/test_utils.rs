@@ -65,6 +65,9 @@ pub(super) struct Ext2MemoryDisk {
     segment: Segment<()>,
     flush_count: AtomicUsize,
     fail_flush: AtomicBool,
+    fail_reads: AtomicBool,
+    read_bio_count: AtomicUsize,
+    max_read_bio_blocks: AtomicUsize,
 }
 
 impl Ext2MemoryDisk {
@@ -78,6 +81,9 @@ impl Ext2MemoryDisk {
             segment,
             flush_count: AtomicUsize::new(0),
             fail_flush: AtomicBool::new(false),
+            fail_reads: AtomicBool::new(false),
+            read_bio_count: AtomicUsize::new(0),
+            max_read_bio_blocks: AtomicUsize::new(0),
         }
     }
 
@@ -95,6 +101,23 @@ impl Ext2MemoryDisk {
             let offset = table_offset + idx * size_of::<RawBlockGroup>();
             self.segment.write_val(offset, desc).unwrap();
         }
+    }
+
+    pub(super) fn reset_read_stats(&self) {
+        self.read_bio_count.store(0, Ordering::Relaxed);
+        self.max_read_bio_blocks.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn read_bio_count(&self) -> usize {
+        self.read_bio_count.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn max_read_bio_blocks(&self) -> usize {
+        self.max_read_bio_blocks.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_fail_reads(&self, fail_reads: bool) {
+        self.fail_reads.store(fail_reads, Ordering::Relaxed);
     }
 }
 
@@ -117,6 +140,17 @@ impl BlockDevice for Ext2MemoryDisk {
             };
             bio.complete(status);
             return Ok(());
+        }
+
+        if bio.type_() == BioType::Read {
+            let read_bio_blocks = bio.segments().iter().map(|segment| segment.nblocks()).sum();
+            self.read_bio_count.fetch_add(1, Ordering::Relaxed);
+            self.max_read_bio_blocks
+                .fetch_max(read_bio_blocks, Ordering::Relaxed);
+            if self.fail_reads.load(Ordering::Relaxed) {
+                bio.complete(BioStatus::IoError);
+                return Ok(());
+            }
         }
 
         let mut cur_device_ofs = bio.sid_range().start.to_raw() as usize * SECTOR_SIZE;
