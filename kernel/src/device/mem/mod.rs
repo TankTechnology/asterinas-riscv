@@ -77,6 +77,9 @@ impl Device for MemDevice {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        if matches!(self.file, MemFile::Kmsg) {
+            return Ok(Box::new(super::kmsg::KmsgFile::new()));
+        }
         Ok(Box::new(self.file))
     }
 }
@@ -87,6 +90,7 @@ pub(super) fn init_in_first_kthread() {
     MEM_MAJOR.call_once(|| acquire_major(MajorId::new(1)).unwrap());
 
     register(Arc::new(MemDevice::new(MemFile::Full))).unwrap();
+    register(Arc::new(MemDevice::new(MemFile::Kmsg))).unwrap();
     register(Arc::new(MemDevice::new(MemFile::Null))).unwrap();
     register(Arc::new(MemDevice::new(MemFile::Random))).unwrap();
     register(Arc::new(MemDevice::new(MemFile::Urandom))).unwrap();

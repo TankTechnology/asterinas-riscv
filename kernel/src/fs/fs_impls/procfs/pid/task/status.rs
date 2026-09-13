@@ -119,9 +119,8 @@ impl ProcFileOps for StatusFileOps {
             .process()
             .pid_ns()
             .clone();
-        let vpid_of = |process: &Arc<crate::process::Process>| {
-            process.pid_in_ns(&reader_ns).unwrap_or(0)
-        };
+        let vpid_of =
+            |process: &Arc<crate::process::Process>| process.pid_in_ns(&reader_ns).unwrap_or(0);
 
         writeln!(printer, "Tgid:\t{}", vpid_of(&process))?;
         writeln!(
@@ -200,13 +199,14 @@ impl ProcFileOps for StatusFileOps {
 
         if let Some(vmar_ref) = process.lock_vmar().as_ref() {
             let vsize = vmar_ref.get_mappings_total_size();
+            let locked = vmar_ref.get_locked_size() / 1024;
             let anon = vmar_ref.get_rss_counter(RssType::Anon) * (PAGE_SIZE / 1024);
             let file = vmar_ref.get_rss_counter(RssType::File) * (PAGE_SIZE / 1024);
             let rss = anon + file;
             writeln!(
                 printer,
-                "VmSize:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
-                vsize, rss, anon, file
+                "VmSize:\t{} kB\nVmLck:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
+                vsize, locked, rss, anon, file
             )?;
         }
 
@@ -215,6 +215,11 @@ impl ProcFileOps for StatusFileOps {
             "Threads:\t{}",
             process.tasks().lock().as_slice().len()
         )?;
+
+        let (thread_pending, shared_pending) = posix_thread.pending_signal_sets();
+        writeln!(printer, "SigPnd:\t{:016x}", thread_pending)?;
+        writeln!(printer, "ShdPnd:\t{:016x}", shared_pending)?;
+        writeln!(printer, "SigBlk:\t{:016x}", posix_thread.sig_mask())?;
 
         writeln!(
             printer,

@@ -28,7 +28,9 @@ use crate::{
     ext::Ext,
     iface::{
         BoundTcpPort, PollKey, PollableIfaceMut,
-        tcp_diagnostics::{TCP_EGRESS_TRACE, TcpEgressStage},
+        tcp_diagnostics::{
+            TCP_EGRESS_TRACE, TcpDiagnosticStage, TcpEgressStage, record_tcp_diagnostic,
+        },
     },
     socket::{
         event::SocketEvents,
@@ -440,14 +442,35 @@ impl<E: Ext> TcpConnection<E> {
         };
 
         let result = NonZeroUsize::new(result).ok_or(IoError::NoProgress)?;
+        let key = self.0.connection_key();
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::SendBuffered,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [result.get() as u64, 0, 0],
+        );
         if TCP_EGRESS_TRACE.record(TcpEgressStage::Buffered) {
             ostd::info!(
                 "ASTERINAS_TCP_EGRESS stage={}",
                 TcpEgressStage::Buffered.as_str()
             );
         }
+        let old_poll_at_ms = self.0.poll_key().diagnostic_next_poll_at_ms();
         let poll_at = socket.poll_at(iface.context_mut());
+        let new_poll_at_ms = match &poll_at {
+            PollAt::Now => 0,
+            PollAt::Time(instant) => instant.total_millis() as u64,
+            PollAt::Ingress => u64::MAX,
+        };
         let need_poll = iface.update_next_poll_at_ms(&self.0, poll_at);
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::PollScheduled,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [old_poll_at_ms, new_poll_at_ms, u64::from(*need_poll)],
+        );
 
         Ok((result, need_poll))
     }
@@ -732,6 +755,7 @@ impl<E: Ext> TcpConnectionBg<E> {
 
         let old_state = socket.state();
         let old_recv_queue = socket.recv_queue();
+        let payload_len = tcp_repr.payload.len();
         let is_rst = tcp_repr.control == TcpControl::Rst;
         // For TCP, receiving an ACK packet can free up space in the queue, allowing more packets
         // to be queued.
@@ -746,7 +770,37 @@ impl<E: Ext> TcpConnectionBg<E> {
             socket.check_state(self, old_state, old_recv_queue, is_rst);
         events |= state_events;
 
+        let key = self.connection_key();
+        if payload_len != 0 {
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PeerProcess,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [
+                    payload_len as u64,
+                    old_recv_queue as u64,
+                    socket.recv_queue() as u64,
+                ],
+            );
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::SocketEvents,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [u64::from(events.bits()), 0, 0],
+            );
+        }
         self.notify_events(events);
+        if payload_len != 0 {
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PolleeNotify,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [u64::from(events.bits()), socket.recv_queue() as u64, 0],
+            );
+        }
 
         let poll_at = socket.poll_at(iface.context_mut());
         iface.update_next_poll_at_ms(self, poll_at);

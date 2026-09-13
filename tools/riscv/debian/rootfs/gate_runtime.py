@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
+import math
 import os
 import secrets
 import select
@@ -97,6 +99,17 @@ class PinnedOutputDirectory:
             if fd >= 0:
                 os.close(fd)
                 setattr(self, attribute, -1)
+
+    def lock_exclusive(self) -> None:
+        """Fail unless this process owns the directory for one complete run."""
+
+        try:
+            fcntl.flock(
+                self._operation_fd,
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError as error:
+            raise RuntimeError("output directory is already active") from error
 
     def invalidate(self, *names: str) -> None:
         for candidate in names:
@@ -312,18 +325,31 @@ def launch_process(
 class SerialConsole:
     """A capped serial transcript reader using caller-provided absolute deadlines."""
 
+    _TX_DEADLINE_HEADROOM = 2.0
+
     def __init__(
         self,
         fd: int,
         *,
         process: GateProcess | None = None,
         max_bytes: int,
+        tx_delay: float = 0.0,
     ) -> None:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
+        if (
+            isinstance(tx_delay, bool)
+            or not isinstance(tx_delay, (int, float))
+            or not math.isfinite(tx_delay)
+            or not 0 <= tx_delay <= 0.1
+        ):
+            raise ValueError("tx_delay must be a finite value in [0, 0.1]")
         self.fd = fd
         self.process = process
         self.max_bytes = max_bytes
+        self.tx_delay = float(tx_delay)
+        access_mode = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
+        self._can_read_during_send = access_mode != os.O_WRONLY
         self._transcript = bytearray()
         os.set_blocking(fd, False)
 
@@ -340,6 +366,13 @@ class SerialConsole:
         if not payload:
             raise ValueError("serial command must not be empty")
         view = memoryview(payload)
+        if self.tx_delay:
+            paced_seconds = self.tx_delay * max(0, len(view) - 1)
+            required_seconds = paced_seconds + self._TX_DEADLINE_HEADROOM
+            if deadline - time.monotonic() <= required_seconds:
+                raise TimeoutError(
+                    "serial command deadline expired before transmission"
+                )
         sent = 0
         while sent < len(view):
             try:
@@ -349,9 +382,35 @@ class SerialConsole:
             if not writable:
                 continue
             try:
-                sent += os.write(self.fd, view[sent:])
+                end = sent + 1 if self.tx_delay else len(view)
+                sent += os.write(self.fd, view[sent:end])
             except BlockingIOError:
                 continue
+            if self.tx_delay and sent < len(view):
+                remaining = deadline - time.monotonic()
+                if remaining <= self.tx_delay:
+                    raise TimeoutError("serial command deadline expired")
+                if not self._can_read_during_send:
+                    time.sleep(self.tx_delay)
+                    continue
+                # A physical shell may echo and redraw a long line faster than
+                # paced TX. Drain full-duplex RX during the mandatory delay so
+                # completion markers do not queue behind unread terminal output.
+                pace_deadline = time.monotonic() + self.tx_delay
+                while True:
+                    pace_remaining = pace_deadline - time.monotonic()
+                    if pace_remaining <= 0:
+                        break
+                    readable, _, _ = select.select([self.fd], [], [], pace_remaining)
+                    if not readable:
+                        break
+                    try:
+                        chunk = os.read(self.fd, 4096)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        break
+                    self._append(chunk)
 
     def _read(self, deadline: float) -> bytes | None:
         ready, _, _ = select.select([self.fd], [], [], _remaining(deadline))

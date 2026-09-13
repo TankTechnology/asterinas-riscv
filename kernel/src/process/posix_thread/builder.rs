@@ -17,13 +17,14 @@ use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
-        posix_thread::{name::ThreadName, thread_local::SuppUserContext},
-        signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
         Credentials, NsProxy, Process, UserNamespace,
+        posix_thread::{name::ThreadName, thread_local::SuppUserContext},
+        process::timer_manager::CpuTimeAccounting,
+        signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
-    thread::{task, Thread, Tid},
-    time::{clocks::ProfClock, TimerManager},
+    thread::{Thread, Tid, task},
+    time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,
 };
 
@@ -44,6 +45,7 @@ pub struct PosixThreadBuilder {
     fs: Option<Arc<ThreadFsInfo>>,
     sig_mask: AtomicSigMask,
     sig_queues: SigQueues,
+    cpu_affinity: CpuSet,
     sched_policy: SchedPolicy,
     supp_user_context: SuppUserContext,
     user_ns: Option<Arc<UserNamespace>>,
@@ -74,6 +76,7 @@ impl PosixThreadBuilder {
             fs: None,
             sig_mask: AtomicSigMask::new_empty(),
             sig_queues: SigQueues::new(),
+            cpu_affinity: CpuSet::new_full(),
             sched_policy: SchedPolicy::Fair(Nice::default()),
             supp_user_context: SuppUserContext::new(),
             user_ns: None,
@@ -111,6 +114,11 @@ impl PosixThreadBuilder {
 
     pub fn sig_mask(mut self, sig_mask: AtomicSigMask) -> Self {
         self.sig_mask = sig_mask;
+        self
+    }
+
+    pub fn cpu_affinity(mut self, cpu_affinity: CpuSet) -> Self {
+        self.cpu_affinity = cpu_affinity;
         self
     }
 
@@ -181,6 +189,7 @@ impl PosixThreadBuilder {
             fs,
             sig_mask,
             sig_queues,
+            cpu_affinity,
             sched_policy,
             supp_user_context,
             user_ns,
@@ -215,8 +224,12 @@ impl PosixThreadBuilder {
                     file_table: Mutex::new(Some(file_table.clone_ro())),
                     sig_mask,
                     sig_queues,
+                    selected_stop: Mutex::new(Default::default()),
+                    group_stop_participant: Mutex::new(Default::default()),
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
+                    cpu_time_accounting: SpinLock::new(CpuTimeAccounting::new()),
+                    syscall_diagnostics: Default::default(),
                     virtual_timer_manager,
                     prof_timer_manager,
                     io_priority: AtomicU32::new(0),
@@ -232,7 +245,6 @@ impl PosixThreadBuilder {
                 }
             };
 
-            let cpu_affinity = CpuSet::new_full();
             let thread = Arc::new(Thread::new(
                 weak_task.clone(),
                 posix_thread,

@@ -37,6 +37,7 @@ pub struct InodeHandle {
     open_file: Option<Box<dyn PerOpenFileOps>>,
     offset: Mutex<usize>,
     rights: Rights,
+    write_access_tracked: bool,
 }
 
 impl InodeHandle {
@@ -60,30 +61,65 @@ impl InodeHandle {
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Result<Self> {
+        Self::new_unchecked_access_impl(path, access_mode, status_flags, true)
+    }
+
+    /// Creates a handle without registering its writable access in the inode's
+    /// exec/write exclusion counter.
+    ///
+    /// Linux uses this behavior for the original anonymous file returned by
+    /// `memfd_create`. Normal VFS opens, including later opens of the same
+    /// inode, must continue to use [`Self::new_unchecked_access`].
+    pub(in crate::fs) fn new_unchecked_access_without_write_tracking(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+    ) -> Result<Self> {
+        Self::new_unchecked_access_impl(path, access_mode, status_flags, false)
+    }
+
+    fn new_unchecked_access_impl(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+        track_write_access: bool,
+    ) -> Result<Self> {
         let inode = path.inode();
-        let (open_file, rights) = if status_flags.contains(StatusFlags::O_PATH) {
-            (None, Rights::empty())
+        let (open_file, rights, write_access_tracked) = if status_flags
+            .contains(StatusFlags::O_PATH)
+        {
+            (None, Rights::empty(), false)
         } else if inode.type_() == InodeType::Dir && access_mode.is_writable() {
             return_errno_with_message!(Errno::EISDIR, "a directory cannot be opened writable");
         } else {
             // Track opens for writing so that `execve` can deny executing a
             // file that is being written to (ETXTBSY), mirroring Linux's
             // `i_writecount`. The count is released when the handle is dropped.
-            let write_tracked = access_mode.is_writable() && inode.type_().is_regular_file();
+            let write_tracked =
+                track_write_access && access_mode.is_writable() && inode.type_().is_regular_file();
             if write_tracked {
                 inode.write_access_tracker_or_init().acquire_write()?;
             }
-            let open_file = match inode.open(access_mode, status_flags).transpose() {
-                Ok(open_file) => open_file,
-                Err(err) => {
-                    if write_tracked {
-                        inode.write_access_tracker_or_init().release_write();
+            let open_file =
+                match inode
+                    .open(access_mode, status_flags)
+                    .transpose()
+                    .and_then(|open_file| {
+                        if let Some(file) = &open_file {
+                            file.check_open_access(access_mode)?;
+                        }
+                        Ok(open_file)
+                    }) {
+                    Ok(open_file) => open_file,
+                    Err(err) => {
+                        if write_tracked {
+                            inode.write_access_tracker_or_init().release_write();
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
-                }
-            };
+                };
             let rights = Rights::from(access_mode);
-            (open_file, rights)
+            (open_file, rights, write_tracked)
         };
 
         Ok(Self {
@@ -91,6 +127,7 @@ impl InodeHandle {
             open_file,
             offset: Mutex::new(0),
             rights,
+            write_access_tracked,
         })
     }
 
@@ -464,7 +501,13 @@ impl FileLike for InodeHandle {
         }
 
         if let Some(ref open_file) = self.open_file {
+            if let Some(result) = open_file.seek(pos) {
+                return result;
+            }
             open_file.check_seekable()?;
+            if matches!(pos, SeekFrom::Data(_) | SeekFrom::Hole(_)) {
+                return_errno_with_message!(Errno::EINVAL, "seeking data is not supported");
+            }
             if open_file.is_offset_aware() {
                 return do_seek_util(&self.offset, pos, open_file.seek_end()?);
             } else {
@@ -556,12 +599,8 @@ impl Drop for InodeHandle {
     fn drop(&mut self) {
         let _ = self.unlock_flock();
 
-        // Release the write-access tracking registered at open time.
-        // The predicate mirrors the one in `new_unchecked_access`
-        // (`O_PATH` handles have empty rights and thus never match).
-        if self.access_mode().is_writable()
-            && self.path().inode().type_().is_regular_file()
-        {
+        // Release exactly the write-access reference acquired at open time.
+        if self.write_access_tracked {
             self.path()
                 .inode()
                 .write_access_tracker_or_init()
@@ -587,6 +626,8 @@ pub enum SeekFrom {
     Start(usize),
     End(isize),
     Current(isize),
+    Data(isize),
+    Hole(isize),
 }
 
 /// File operations for one opened file description.
@@ -595,6 +636,18 @@ pub enum SeekFrom {
 /// operations that are not purely inode-backed, such as state and operations for
 /// devices, pipes, namespace files, and procfs files.
 pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
+    /// Checks additional access restrictions for the opened file description.
+    fn check_open_access(&self, _access_mode: AccessMode) -> Result<()> {
+        Ok(())
+    }
+
+    /// Handles seeking when the file uses positions other than byte offsets.
+    ///
+    /// `None` delegates to the ordinary inode-handle seek implementation.
+    fn seek(&self, _pos: SeekFrom) -> Option<Result<usize>> {
+        None
+    }
+
     /// Returns whether this per-open object is an audited SCM_RIGHTS ownership leaf.
     ///
     /// The default must remain conservative: an implementation may strongly retain arbitrary
@@ -609,9 +662,10 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
 
     /// Returns whether the `read()`/`write()` operation should use and advance the offset.
     ///
-    /// If [`PerOpenFileOps::check_seekable`] succeeds but this method returns `false`,
-    /// the offset in the `seek()` operation will be ignored.
-    /// In that case, the `seek()` operation will do nothing but succeed.
+    /// When [`PerOpenFileOps::seek`] returns `None`, the default seek path
+    /// ignores the offset for supported seek origins and succeeds if
+    /// [`PerOpenFileOps::check_seekable`] succeeds but this method returns `false`.
+    /// A result returned by the per-open `seek` override takes precedence.
     fn is_offset_aware(&self) -> bool;
 
     /// Checks whether positional I/O (`pread`/`pwrite`) is supported.
@@ -682,6 +736,9 @@ fn do_seek_util(offset: &Mutex<usize>, pos: SeekFrom, end: Option<usize>) -> Res
             }
         }
         SeekFrom::Current(diff) => offset.wrapping_add_signed(diff),
+        SeekFrom::Data(_) | SeekFrom::Hole(_) => {
+            return_errno_with_message!(Errno::EINVAL, "seeking data is not supported");
+        }
     };
 
     // Invariant: `*offset <= isize::MAX as usize`.

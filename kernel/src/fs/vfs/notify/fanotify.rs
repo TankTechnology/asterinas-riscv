@@ -236,10 +236,7 @@ impl FanotifyFile {
             let mut marks = self.marks.lock();
             // Double-check: another thread may have added a mark for the same
             // inode while we were setting up the subscriber.
-            if marks
-                .iter()
-                .any(|e| Weak::ptr_eq(&e.inode, &inode_weak))
-            {
+            if marks.iter().any(|e| Weak::ptr_eq(&e.inode, &inode_weak)) {
                 // The subscriber we just registered is now owned by the
                 // existing mark — drop our strong reference and return.
                 return Ok(());

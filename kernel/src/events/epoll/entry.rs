@@ -24,10 +24,7 @@ use crate::{
 static EPOLL_ENTRY_PROFILE: AtomicBool = AtomicBool::new(false);
 static EPOLL_ENTRY_POLLS: AtomicU64 = AtomicU64::new(0);
 
-aster_cmdline::define_flag_param_early!(
-    "asterinas.epoll_entry_profile",
-    EPOLL_ENTRY_PROFILE
-);
+aster_cmdline::define_flag_param_early!("asterinas.epoll_entry_profile", EPOLL_ENTRY_PROFILE);
 
 #[inline]
 fn should_keep_ready(has_event: bool, flags: EpollFlags) -> bool {

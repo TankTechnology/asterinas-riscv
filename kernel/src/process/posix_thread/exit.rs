@@ -7,7 +7,6 @@ use super::{
     futex::{FutexVisibility, futex_wake},
     ptrace::PtraceEvent,
     robust_list::wake_robust_futex,
-    rseq::{RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED},
 };
 use crate::{
     context::current_userspace,
@@ -64,12 +63,18 @@ fn exit_internal(
     let thread_local = current_task.as_thread_local().unwrap();
     let posix_process = posix_thread.process();
 
-    let is_last_thread = {
+    let (is_last_thread, completed_stop) = {
         let mut tasks = posix_process.tasks().lock();
         let has_exited_group = tasks.has_exited_group();
         let in_evecve = tasks.in_execve();
 
         if is_exiting_group && !has_exited_group && !in_evecve {
+            // This is group-exit commitment, unlike the sibling SIGKILLs used
+            // by exec. Serialize it with selected STOP commitment.
+            posix_process
+                .signal_job_control()
+                .lock()
+                .commit_exit(posix_process.status());
             sigkill_other_threads(&current_task, &tasks, "exit-group-sibling");
             tasks.set_exited_group();
         }
@@ -89,8 +94,23 @@ fn exit_internal(
         }
         current_thread.exit();
 
-        tasks.remove_exited(&current_task)
+        let is_last = tasks.remove_exited(&current_task);
+        let mut control = posix_process.signal_job_control().lock();
+        if is_last {
+            control.commit_exit(posix_process.status());
+        }
+        let completed = control.leave(
+            &mut posix_thread.group_stop_participant().lock(),
+            posix_process.status(),
+        );
+        (is_last, completed)
     };
+
+    if completed_stop {
+        posix_process.notify_group_stop();
+    }
+
+    crate::syscall::diagnostics::on_exit(ctx, term_status);
 
     // This is put after `current_thread.exit()`,
     // so `attach_tracee` will observe that the tracer has exited while
@@ -105,8 +125,6 @@ fn exit_internal(
     wake_clear_ctid(thread_local);
 
     wake_robust_list(thread_local, posix_thread.tid());
-
-    unregister_rseq(thread_local);
 
     // According to Linux behavior, the main thread shouldn't be removed from the table until the
     // process is reaped by its parent.
@@ -167,19 +185,6 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
         .inspect_err(|err| debug!("exit: cannot wake the futex on the child TID: {:?}", err));
 
     thread_local.clear_child_tid().set(0);
-}
-
-/// Marks the thread's rseq area as uninitialized.
-///
-/// This corresponds to Linux's `rseq_reset_rseq_cpu_node_id`. Errors are
-/// silently ignored (the thread is exiting).
-fn unregister_rseq(thread_local: &ThreadLocal) {
-    let Some(rseq) = thread_local.rseq().borrow_mut().take() else {
-        return;
-    };
-    let _ = current_userspace!()
-        .write_val(rseq.ptr + RSEQ_CPU_ID_OFFSET, &RSEQ_CPU_ID_UNINITIALIZED)
-        .inspect_err(|err| debug!("exit: cannot unregister rseq: {:?}", err));
 }
 
 /// Walks the robust futex list, marking futex dead and waking waiters.

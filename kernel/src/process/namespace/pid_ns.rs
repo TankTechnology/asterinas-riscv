@@ -39,6 +39,56 @@ struct PidNsInner {
     vpids: BTreeMap<u32, Weak<Process>>,
 }
 
+/// A set of virtual PIDs reserved for a process being created.
+///
+/// Non-initial namespaces contain placeholder entries until [`Self::commit`]
+/// publishes the new process. Dropping an uncommitted reservation rolls every
+/// placeholder back, so a failed clone cannot leak requested PIDs.
+pub(in crate::process) struct PidNsReservation {
+    entries: Vec<(Arc<PidNamespace>, u32)>,
+    committed: bool,
+}
+
+impl PidNsReservation {
+    pub(in crate::process) fn commit(
+        mut self,
+        process: &Weak<Process>,
+    ) -> Box<[(Arc<PidNamespace>, u32)]> {
+        for (namespace, vpid) in &self.entries {
+            if namespace.is_init() {
+                continue;
+            }
+
+            let mut inner = namespace.inner.lock();
+            let entry = inner
+                .vpids
+                .get_mut(vpid)
+                .expect("a reserved virtual PID must remain present until commit");
+            debug_assert!(entry.strong_count() == 0);
+            *entry = process.clone();
+        }
+
+        self.committed = true;
+        core::mem::take(&mut self.entries).into_boxed_slice()
+    }
+}
+
+impl Drop for PidNsReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+
+        for (namespace, vpid) in &self.entries {
+            if namespace.is_init() {
+                continue;
+            }
+            let removed = namespace.inner.lock().vpids.remove(vpid);
+            debug_assert!(removed.is_some_and(|process| process.strong_count() == 0));
+        }
+    }
+}
+
 impl PidNamespace {
     /// Returns a reference to the singleton initial PID namespace.
     pub fn get_init_singleton() -> &'static Arc<PidNamespace> {
@@ -98,34 +148,81 @@ impl PidNamespace {
         self.parent.as_ref()
     }
 
-    /// Registers `process` in this namespace and all of its ancestors,
-    /// allocating a virtual PID in each non-initial namespace.
+    /// Reserves a virtual PID in this namespace and all of its ancestors.
     ///
     /// In the initial namespace the virtual PID is the process's global PID.
+    /// The `set_tid` array supplies requested PIDs from the innermost
+    /// namespace outwards. Missing entries are allocated automatically.
     ///
-    /// Returns the `(namespace, virtual PID)` pairs from the innermost
-    /// namespace outwards.
-    pub fn register_process(self: &Arc<Self>, process: &Weak<Process>, global_pid: u32) -> Vec<(Arc<PidNamespace>, u32)> {
-        let mut result = Vec::new();
+    /// The returned reservation must be committed when the process object is
+    /// constructed. Until then, requested IDs are not visible to lookups.
+    pub(in crate::process) fn reserve_process_ids(
+        self: &Arc<Self>,
+        global_pid: u32,
+        set_tid: &[u32],
+    ) -> Result<PidNsReservation> {
+        let mut reservation = PidNsReservation {
+            entries: Vec::new(),
+            committed: false,
+        };
         let mut current = self;
+        let mut level = 0;
         loop {
             let vpid = if current.is_init() {
+                if set_tid
+                    .get(level)
+                    .is_some_and(|requested| *requested != global_pid)
+                {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "the requested initial-namespace PID differs from the global PID"
+                    );
+                }
                 global_pid
             } else {
                 let mut inner = current.inner.lock();
-                let vpid = inner.next_vpid;
-                inner.next_vpid += 1;
-                inner.vpids.insert(vpid, process.clone());
+                let vpid = if let Some(&requested) = set_tid.get(level) {
+                    if inner.vpids.contains_key(&requested) {
+                        return_errno_with_message!(Errno::EEXIST, "the requested PID is in use");
+                    }
+                    if requested >= inner.next_vpid {
+                        inner.next_vpid = requested.checked_add(1).ok_or_else(|| {
+                            Error::with_message(Errno::EAGAIN, "PID namespace is exhausted")
+                        })?;
+                    }
+                    requested
+                } else {
+                    while inner.vpids.contains_key(&inner.next_vpid) {
+                        inner.next_vpid = inner.next_vpid.checked_add(1).ok_or_else(|| {
+                            Error::with_message(Errno::EAGAIN, "PID namespace is exhausted")
+                        })?;
+                    }
+                    let allocated = inner.next_vpid;
+                    inner.next_vpid = inner.next_vpid.checked_add(1).ok_or_else(|| {
+                        Error::with_message(Errno::EAGAIN, "PID namespace is exhausted")
+                    })?;
+                    allocated
+                };
+                inner.vpids.insert(vpid, Weak::new());
                 vpid
             };
-            result.push((current.clone(), vpid));
+            reservation.entries.push((current.clone(), vpid));
 
             let Some(parent) = current.parent_ns() else {
                 break;
             };
             current = parent;
+            level += 1;
         }
-        result
+
+        if set_tid.len() > reservation.entries.len() {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "set_tid has more entries than the PID namespace depth"
+            );
+        }
+
+        Ok(reservation)
     }
 
     /// Removes the process with the given virtual PID from this namespace.

@@ -64,6 +64,32 @@ static unsigned long read_proc_mem_word(int proc_mem_fd, unsigned long addr)
 	return value;
 }
 
+FN_TEST(ptrace_attach_detach)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		for (;;)
+			pause();
+	}
+
+	TEST_SUCC(ptrace(PTRACE_ATTACH, pid, 0, 0));
+
+	int status = 0;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGSTOP);
+	TEST_RES(read_tracer_pid(pid), _ret == getpid());
+
+	TEST_SUCC(ptrace(PTRACE_DETACH, pid, 0, 0));
+	TEST_RES(read_tracer_pid(pid), _ret == 0);
+
+	TEST_SUCC(kill(pid, SIGKILL));
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSIGNALED(status) &&
+						   WTERMSIG(status) == SIGKILL);
+}
+END_TEST()
+
 FN_TEST(ptrace_signal_stop_wait_continue)
 {
 	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
@@ -101,6 +127,47 @@ FN_TEST(ptrace_sigkill_interrupts_ptrace_stop)
 	TEST_SUCC(kill(pid, SIGKILL));
 	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSIGNALED(status) &&
 						   WTERMSIG(status) == SIGKILL);
+}
+END_TEST()
+
+FN_TEST(ptrace_continue_cancels_selected_stop)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		sigset_t blocked;
+		CHECK(sigemptyset(&blocked));
+		CHECK(sigaddset(&blocked, SIGCONT));
+		CHECK(sigprocmask(SIG_BLOCK, &blocked, NULL));
+		CHECK(ptrace(PTRACE_TRACEME, 0, 0, 0));
+		CHECK(raise(SIGSTOP));
+		_exit(0);
+	}
+
+	int status = 0;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGSTOP);
+	// The tracer holds a STOP already removed from the pending queue. CONT
+	// must revoke it now, even though CONT itself cannot be delivered.
+	TEST_SUCC(kill(pid, SIGCONT));
+	TEST_SUCC(ptrace(PTRACE_CONT, pid, 0, SIGSTOP));
+	// A broken kernel may neither resume the child nor report its group stop
+	// to the tracer. Bound this wait so the regression can kill and reap it.
+	pid_t waited = 0;
+	for (int attempt = 0; attempt < 500; ++attempt) {
+		waited = waitpid(pid, &status, WUNTRACED | WNOHANG);
+		if (waited != 0)
+			break;
+		usleep(10000);
+	}
+	TEST_RES(waited,
+		 _ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	if (waited == 0 || (waited == pid && WIFSTOPPED(status))) {
+		// Reap a child stopped by an incorrectly retained selection.
+		TEST_SUCC(kill(pid, SIGKILL));
+		TEST_RES(waitpid(pid, &status, 0),
+			 _ret == pid && WIFSIGNALED(status));
+	}
 }
 END_TEST()
 

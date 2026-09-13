@@ -37,6 +37,13 @@ pub(super) fn current_task() -> Option<NonNull<Task>> {
 /// local IRQ disabled.
 #[track_caller]
 pub(super) fn switch_to_task(next_task: Arc<Task>) {
+    let irq_guard = prepare_task_switch();
+    switch_to_task_with_local_irqs_disabled(next_task, irq_guard);
+}
+
+/// Prepares for a task switch and keeps local IRQs disabled until the switch.
+#[track_caller]
+pub(super) fn prepare_task_switch() -> DisabledLocalIrqGuard {
     super::atomic_mode::might_sleep();
 
     // SAFETY: RCU read-side critical sections disables preemption. By the time
@@ -45,7 +52,15 @@ pub(super) fn switch_to_task(next_task: Arc<Task>) {
         crate::sync::finish_grace_period();
     }
 
-    let irq_guard = crate::irq::disable_local();
+    crate::irq::disable_local()
+}
+
+/// Switches tasks using a guard returned by [`prepare_task_switch`].
+pub(super) fn switch_to_task_with_local_irqs_disabled(
+    next_task: Arc<Task>,
+    irq_guard: DisabledLocalIrqGuard,
+) {
+    debug_assert!(!crate::arch::irq::is_local_enabled());
 
     before_switching_to(&next_task, &irq_guard);
 

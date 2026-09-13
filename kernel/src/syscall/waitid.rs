@@ -90,7 +90,9 @@ fn calculate_si_code_and_si_status(wait_status: &WaitStatus) -> (i32, i32) {
             parse_exit_code(exit_code)
         }
         WaitStatus::Stop(_process, signum) => (CLD_STOPPED, signum.as_u8() as i32),
-        WaitStatus::Continue(_) => (CLD_CONTINUED, SIGCONT.as_u8() as i32),
+        WaitStatus::Continue(_) | WaitStatus::TraceeContinue(_) => {
+            (CLD_CONTINUED, SIGCONT.as_u8() as i32)
+        }
         WaitStatus::TraceeExit(thread) => {
             let exit_code = thread.as_posix_thread().unwrap().exit_code();
             parse_exit_code(exit_code)

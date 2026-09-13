@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{constants::*, sig_action::SigAction, sig_num::SigNum};
+use super::{
+    constants::*,
+    sig_action::{SigAction, SigHandler},
+    sig_num::SigNum,
+};
 use crate::{
     prelude::*,
     process::signal::{sig_action::SigActionFlags, signals::Signal},
@@ -49,18 +53,16 @@ impl SigDispositions {
 
     pub fn set_default(&mut self, num: SigNum) {
         let idx = Self::num_to_idx(num);
-        self.map[idx] = SigAction::Dfl;
+        self.map[idx].reset_handler();
     }
 
-    /// man 7 signal:
-    /// When execve, the handled signals are reset to the default; the dispositions of
-    /// ignored signals are left unchanged.
-    /// This function should be used when execve.
+    /// Resets dispositions for exec, retaining explicitly ignored handlers.
+    ///
+    /// Flags, restorers and masks are cleared for all actions, including
+    /// ignored ones. See Linux's `flush_signal_handlers` in `kernel/signal.c`.
     pub fn inherit(&mut self) {
         for sigaction in &mut self.map {
-            if let SigAction::User { .. } = sigaction {
-                *sigaction = SigAction::Dfl;
-            }
+            sigaction.reset_for_exec();
         }
     }
 
@@ -80,16 +82,11 @@ fn check_sigaction(sig_action: &SigAction) -> Result<()> {
     // whereas we have moved this check forward to prevent this action from being set.
     // This may result in some differences from the behavior of Linux.
 
-    let SigAction::User {
-        flags,
-        restorer_addr,
-        ..
-    } = sig_action
-    else {
+    if !matches!(sig_action.handler(), SigHandler::User(_)) {
         return Ok(());
-    };
+    }
 
-    if flags.contains(SigActionFlags::SA_RESTORER) && *restorer_addr != 0 {
+    if sig_action.flags().contains(SigActionFlags::SA_RESTORER) && sig_action.restorer_addr() != 0 {
         return Ok(());
     }
 

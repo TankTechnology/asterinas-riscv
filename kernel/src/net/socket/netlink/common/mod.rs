@@ -32,7 +32,11 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    util::{MultiRead, MultiWrite, bpf::SockFilter, net::{CSocketAddrFamily, SockType}},
+    util::{
+        MultiRead, MultiWrite,
+        bpf::SockFilter,
+        net::{CSocketAddrFamily, SockType},
+    },
 };
 
 mod bound;
@@ -203,7 +207,9 @@ where
         // All messages we deliver originate from the kernel, so the group is 0
         // (unicast).
         let control_messages = if self.options.read().pktinfo {
-            vec![ControlMessage::Netlink(NetlinkControlMessage::new_pktinfo(0))]
+            vec![ControlMessage::Netlink(NetlinkControlMessage::new_pktinfo(
+                0,
+            ))]
         } else {
             Vec::new()
         };
@@ -250,8 +256,7 @@ where
                     Inner::Bound(bound_socket) => bound_socket.local_endpoint().groups(),
                 };
                 // Linux reports 1-based group IDs for NETLINK_LIST_MEMBERSHIPS.
-                list_memberships
-                    .set(groups.ids_iter().map(|id| id + 1).collect::<Vec<u32>>());
+                list_memberships.set(groups.ids_iter().map(|id| id + 1).collect::<Vec<u32>>());
                 return Ok(());
             }
             _ => (),
@@ -403,7 +408,7 @@ fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
         // NETLINK_PKTINFO is handled in `set_option` (socket-level state).
         // NETLINK_EXT_ACK only enables extended-ACK TLVs in error messages,
         // which we do not emit.
-        _ext_ack @ ExtAck => {},
+        _ext_ack @ ExtAck => {}
         _ =>
             return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to be set is unknown"),
     });

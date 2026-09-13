@@ -29,13 +29,14 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import select
 import stat
 import subprocess
 import sys
 import termios
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TextIO
 
 from tools.riscv.megrez_debian_shell_physical import (
@@ -43,12 +44,25 @@ from tools.riscv.megrez_debian_shell_physical import (
     shell_commands as shell_commands,
 )
 from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+from tools.riscv.debian.rootfs.debug_console_protocol import (
+    DEBUG_CONSOLE_READY,
+    MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+    DebugConsoleProtocolError,
+    run_debug_console_phase,
+)
+from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 
 BAUD = 115200
 YMODEM_BAUD = 1_500_000
 YMODEM_STAGING_ADDRESS = 0x9000_0000
 MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
+YMODEM_MIN_TRANSFER_TIMEOUT = 120.0
+YMODEM_MIN_BYTES_PER_SECOND = 32 * 1024
+YMODEM_TRANSFER_GRACE_SECONDS = 30.0
+YMODEM_MAX_TRANSFER_TIMEOUT = 2100.0
 TX_DELAY = 0.02
+DEBUG_CONSOLE_TX_DELAY = 0.005
+RECOVERY_GRACE_SECONDS = 30.0
 PROMPT = "=> "
 INCOMPLETE_RECOVERED_EXIT = 3
 RECOVERY_WINDOW_CHARACTERS = 64 * 1024
@@ -64,6 +78,7 @@ FINAL_MILESTONE_MARKERS = {
     "verifier": "DEBIAN_VERIFY_PASS",
     "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
     "debian-shell-handoff": "__DEBIAN_ROOTFS_SHELL_READY__",
+    "debug-root-console": "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
 }
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
@@ -101,6 +116,9 @@ MEGREZ_USB_HOST_COMMAND = (
 PARTITION_MARKER = re.compile(
     r"(?m)^__ASTERINAS_PARTITION_(?P<number>[123])__"
     r"start=(?P<start>[0-9a-f]+) size=(?P<size>[0-9a-f]+)\r?$"
+)
+TERMINAL_ESCAPE_PATTERN = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))"
 )
 
 
@@ -227,6 +245,14 @@ def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> Non
     if result.returncode != 0:
         diagnostic = result.stderr.decode(errors="replace")[-200:]
         raise RuntimeError(f"YMODEM sender exited {result.returncode}: {diagnostic!r}")
+
+
+def _ymodem_transfer_timeout(size: int) -> float:
+    estimated = size / YMODEM_MIN_BYTES_PER_SECOND + YMODEM_TRANSFER_GRACE_SECONDS
+    return min(
+        YMODEM_MAX_TRANSFER_TIMEOUT,
+        max(YMODEM_MIN_TRANSFER_TIMEOUT, estimated),
+    )
 
 
 def read_available(fd: int, timeout: float) -> str:
@@ -360,6 +386,8 @@ class BoardSession:
             self.log = log_stream
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
+        self.milestone_transcript = ""
+        self.debug_console_transcript = b""
         self._milestone_tail = ""
         self._next_milestone = 0
         if final_marker == MILESTONES["userspace"]:
@@ -507,7 +535,11 @@ class BoardSession:
             try:
                 os.write(self.fd, b"\r")
                 self.wait_for("Ready for binary", timeout=15)
-                _transfer_ymodem_file(self.fd, source_fd, 120.0)
+                _transfer_ymodem_file(
+                    self.fd,
+                    source_fd,
+                    _ymodem_transfer_timeout(metadata.st_size),
+                )
                 completion = self.wait_for("press ESC", timeout=15)
             except BaseException:
                 try:
@@ -601,6 +633,13 @@ class BoardSession:
         return int(load_result.group(1))
 
     def note_milestone(self, text: str) -> None:
+        milestone_transcript = self.milestone_transcript + text
+        if (
+            len(milestone_transcript.encode("utf-8"))
+            > MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES
+        ):
+            raise BufferError("boot milestone transcript exceeds 8 MiB")
+        self.milestone_transcript = milestone_transcript
         found, next_index, tail = observe_milestones(
             self._next_milestone, self._milestone_tail, text, self._markers
         )
@@ -613,6 +652,7 @@ class BoardSession:
     def start_boot_attempt(self) -> None:
         """Discard pre-boot observations and start one ordered boot attempt."""
         self.milestones.clear()
+        self.milestone_transcript = ""
         self._milestone_tail = ""
         self._next_milestone = 0
 
@@ -832,6 +872,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ]
     if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
         p.error("--firmware-framebuffer requires console=tty0 as the first console")
+    if args.final_profile == "debug-root-console":
+        tokens = args.bootargs.split()
+        if tokens.count("--") != 1:
+            p.error("debug-root-console requires one root-init argument separator")
+        separator = tokens.index("--")
+        loglevels = [
+            token for token in tokens[:separator] if token.startswith("loglevel=")
+        ]
+        if loglevels != ["loglevel=off"]:
+            p.error("debug-root-console requires exactly one loglevel=off")
+        if tokens[separator + 1 :] != [
+            "--root-init=systemd",
+            "--debug-console=root",
+        ]:
+            p.error(
+                "debug-root-console requires exact systemd and debug-console selectors"
+            )
     return args
 
 
@@ -938,6 +995,47 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     )
 
 
+def validate_debug_console_readiness(transcript: str) -> None:
+    """Require one exact readiness line after removing terminal escapes."""
+
+    if len(transcript.encode("utf-8")) > MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES:
+        raise DebugConsoleProtocolError("root-console transcript exceeds byte cap")
+    normalized = TERMINAL_ESCAPE_PATTERN.sub("", transcript)
+    readiness_count = sum(
+        line.rstrip("\r") == DEBUG_CONSOLE_READY for line in normalized.splitlines()
+    )
+    if readiness_count != 1:
+        raise DebugConsoleProtocolError(
+            "root-console readiness marker is missing or duplicated"
+        )
+
+
+def run_debug_root_console(session: BoardSession, deadline: float):
+    """Run fixed root probes without transferring ownership of the serial FD."""
+
+    validate_debug_console_readiness(session.milestone_transcript)
+    serial = SerialConsole(
+        session.fd,
+        max_bytes=MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+        tx_delay=DEBUG_CONSOLE_TX_DELAY,
+    )
+    try:
+        evidence = run_debug_console_phase(
+            serial,
+            deadline,
+            secrets.token_hex(16),
+            ready_seen=True,
+        )
+        protocol_transcript = serial.transcript.decode("utf-8")
+        validate_debug_console_readiness(
+            session.milestone_transcript + protocol_transcript
+        )
+        return evidence
+    finally:
+        session.debug_console_transcript = serial.transcript
+        session._log(session.debug_console_transcript.decode("utf-8", errors="replace"))
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.mock_qemu:
@@ -979,12 +1077,40 @@ def main(argv: list[str]) -> int:
         print(json.dumps(session.milestones))
         if len(session.milestones) != expected_milestones:
             return 2
+        debug_error: BaseException | None = None
+        if args.final_profile == "debug-root-console":
+            try:
+                debug_evidence = run_debug_root_console(session, end)
+            except (
+                DebugConsoleProtocolError,
+                TimeoutError,
+                BufferError,
+                EOFError,
+                UnicodeError,
+                OSError,
+            ) as error:
+                print(f"debug root console failed: {error}", file=sys.stderr)
+                debug_error = error
+            else:
+                print(
+                    json.dumps(
+                        {"debug_console": asdict(debug_evidence)},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
         if args.require_recovery:
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                return 2
-            recovery = session.wait_for_uboot_prompt(timeout=remaining)
-            validate_recovery_epoch(recovery)
+            retained = session.debug_console_transcript.decode(
+                "utf-8", errors="replace"
+            )
+            if not _has_recovery_epoch(retained):
+                remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
+                if remaining <= 0:
+                    return 2
+                recovery = session.wait_for_uboot_prompt(timeout=remaining)
+                validate_recovery_epoch(recovery)
+        if debug_error is not None:
+            return 2
         return 0
     finally:
         session.log.close()

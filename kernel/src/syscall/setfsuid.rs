@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{posix_thread::ContextPthreadAdminApi, Uid},
+    process::{Uid, posix_thread::ContextPthreadAdminApi},
 };
 
 pub fn sys_setfsuid(uid: i32, ctx: &Context) -> Result<SyscallReturn> {

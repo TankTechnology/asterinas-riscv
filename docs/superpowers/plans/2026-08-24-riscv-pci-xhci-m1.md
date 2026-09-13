@@ -551,7 +551,7 @@ Megrez remain unproved.
 
 - [ ] **Step 2: Run the Asterinas persona review**
 
-Use the `aster-code-review` skill in diff mode from the M1 plan commit through HEAD.
+Perform a normal diff review from the M1 plan commit through HEAD.
 Resolve every Critical or Important finding with a new RED/GREEN test and focused
 commit. Do not broaden M1 to fix Minor recommendations unrelated to its contract.
 

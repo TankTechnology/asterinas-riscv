@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import struct
 
 
 class CacheCheckError(RuntimeError):
@@ -127,6 +128,39 @@ def _account_rows(path: Path, fields: int) -> list[list[str]]:
     if any(len(row) != fields for row in rows):
         raise CacheCheckError(f"malformed account database: {path}")
     return rows
+
+
+def _check_font_cache(root: Path, path: Path) -> None:
+    """Check the staged RISC-V le64 cache-v9 header and directory timestamp."""
+    if path.stat().st_mode & 0o444 != 0o444:
+        raise CacheCheckError(f"fontconfig cache is not readable by desktop users: {path}")
+    data = path.read_bytes()
+    # Fontconfig's FcCacheTimeValid compares both seconds and nanoseconds.
+    # A valid magic alone also admits the old explicit-QEMU placeholder.
+    # Format: fontconfig src/fcint.h, _FcCache, cache version 9, 64-bit LE.
+    if len(data) < 64:
+        raise CacheCheckError(f"truncated fontconfig cache header: {path}")
+    magic, version, size, directory, _, _, _, seconds, nanos = struct.unpack_from(
+        "<II7q", data
+    )
+    if (
+        magic != 0xFC02FC04
+        or version != 9
+        or size != len(data)
+        or not 64 <= directory < size
+    ):
+        raise CacheCheckError(f"invalid fontconfig cache header: {path}")
+    end = data.find(b"\0", directory)
+    if end == -1:
+        raise CacheCheckError(f"unterminated fontconfig directory: {path}")
+    name = data[directory:end].decode("utf-8")
+    if not name.startswith("/") or ".." in name.split("/"):
+        raise CacheCheckError(f"unsafe fontconfig directory: {path}")
+    target = root / name.lstrip("/")
+    if not target.resolve().is_relative_to(root) or not target.is_dir():
+        raise CacheCheckError(f"missing or unsafe fontconfig directory: {path}")
+    if target.stat().st_mtime_ns != seconds * 1_000_000_000 + nanos:
+        raise CacheCheckError(f"stale fontconfig directory timestamp: {path}")
 
 
 def _unique_named_ids(
@@ -278,6 +312,8 @@ def check_cache_profile(
             continue
     if not font_caches:
         raise CacheCheckError("fontconfig has no real pre-generated cache")
+    for font_cache in font_caches:
+        _check_font_cache(root, font_cache)
 
     for relative in ("etc/.updated", "var/.updated"):
         marker = _regular(root / relative)

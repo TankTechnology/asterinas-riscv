@@ -8,7 +8,7 @@ use ostd::{
     arch::cpu::context::FpuContext, irq::DisabledLocalIrqGuard, sync::RwArc, task::CurrentTask,
 };
 
-use super::{RobustListHead, Rseq, cpu_sync::CpuSync};
+use super::{RobustListHead, cpu_sync::CpuSync};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
@@ -16,6 +16,7 @@ use crate::{
         NsProxy, UserNamespace,
         signal::{SigStack, sig_mask::SigMask},
     },
+    syscall::restart_syscall::RestartBlock,
     vm::vmar::VmarHandle,
 };
 
@@ -33,10 +34,6 @@ pub struct ThreadLocal {
     // Robust futexes.
     // https://man7.org/linux/man-pages/man2/get_robust_list.2.html
     robust_list: RefCell<Option<RobustListHead>>,
-
-    // Restartable sequences.
-    // https://man7.org/linux/man-pages/man2/rseq.2.html
-    rseq: RefCell<Option<Rseq>>,
 
     // Files.
     /// File table.
@@ -56,6 +53,7 @@ pub struct ThreadLocal {
     /// Original syscall-return register value captured
     /// at the most recent kernel entry, or `None` for non-syscall entries.
     orig_syscall_ret: Cell<Option<usize>>,
+    restart_block: Cell<RestartBlock>,
 
     // Namespaces.
     user_ns: RefCell<Arc<UserNamespace>>,
@@ -80,13 +78,13 @@ impl ThreadLocal {
             vmar: RefCell::new(Some(vmar)),
             page_fault_disabled: Cell::new(false),
             robust_list: RefCell::new(None),
-            rseq: RefCell::new(None),
             file_table: RefCell::new(Some(file_table)),
             fs: RefCell::new(fs),
             supp_user_context,
             sig_stack: RefCell::new(SigStack::default()),
             sig_mask_saved: Cell::new(None),
             orig_syscall_ret: Cell::new(None),
+            restart_block: Cell::new(RestartBlock::None),
             user_ns: RefCell::new(user_ns),
             ns_proxy: RefCell::new(Some(ns_proxy)),
         }
@@ -147,10 +145,6 @@ impl ThreadLocal {
         &self.robust_list
     }
 
-    pub fn rseq(&self) -> &RefCell<Option<Rseq>> {
-        &self.rseq
-    }
-
     pub fn borrow_file_table(&self) -> FileTableRef<'_> {
         ThreadLocalOptionRef(self.file_table.borrow())
     }
@@ -195,6 +189,10 @@ impl ThreadLocal {
     /// for the most recent kernel entry.
     pub fn set_orig_syscall_ret(&self, value: Option<usize>) {
         self.orig_syscall_ret.set(value);
+    }
+
+    pub(crate) fn restart_block(&self) -> &Cell<RestartBlock> {
+        &self.restart_block
     }
 
     pub fn borrow_user_ns(&self) -> Ref<'_, Arc<UserNamespace>> {

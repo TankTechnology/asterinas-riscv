@@ -3,8 +3,8 @@
 //! Defines the IPC namespace abstraction.
 //!
 //! An IPC namespace isolates System V IPC resources from other namespaces.
-//! It currently manages semaphore sets only, while message queues and shared
-//! memory remain to be added.
+//! It currently manages semaphore sets and shared memory, while message queues
+//! remain to be added.
 //!
 //! Each namespace stores its semaphore sets in a per-namespace map keyed by
 //! IPC key and uses a dedicated ID allocator to assign semaphore identifiers.
@@ -28,8 +28,9 @@ use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
     process::{
-        Credentials, Pid, UserNamespace, credentials::capabilities::CapSet,
-        posix_thread::PosixThread,
+        Credentials, Pid, UserNamespace,
+        credentials::capabilities::CapSet,
+        posix_thread::{AsPosixThread, PosixThread},
     },
     security::lsm::hooks as lsm_hooks,
 };
@@ -41,13 +42,15 @@ use crate::{
 /// Each namespace maintains its own independent set
 /// of IPC resources and identifier allocator.
 ///
-/// Lock ordering:
-/// `sem_ids` -> `SemaphoreSet::inner`.
+/// Shared-memory lock ordering:
+/// `shm_keys` -> `shm_ids` -> `shm_attachments`.
 pub struct IpcNamespace {
     /// Semaphore sets within this namespace.
     sem_ids: IpcIds<SemaphoreSet>,
     /// Shared memory segments within this namespace.
     shm_ids: IpcIds<ShmSet>,
+    /// Discoverable non-private shared memory keys.
+    shm_keys: RwMutex<BTreeMap<IpcKey, IpcId>>,
     /// Attachments of shared memory segments, keyed by `(pid, address)`.
     shm_attachments: RwMutex<BTreeMap<(Pid, Vaddr), IpcId>>,
     /// Owner user namespace.
@@ -84,6 +87,7 @@ impl IpcNamespace {
         Arc::new(Self {
             sem_ids,
             shm_ids,
+            shm_keys: RwMutex::new(BTreeMap::new()),
             shm_attachments: RwMutex::new(BTreeMap::new()),
             owner,
             stashed_dentry,
@@ -221,17 +225,34 @@ impl IpcNamespace {
         F: FnOnce(&ShmSet) -> Result<T>,
     {
         self.shm_ids.with(shmid, |shm_set| {
-            Self::validate_shm_set(shm_set, required_perm)?;
+            self.validate_shm_set(shm_set, required_perm)?;
             op(shm_set)
         })?
     }
 
-    /// Removes the shared memory segment identified by `shmid`.
-    pub fn remove_shm_set<F>(&self, shmid: IpcId, may_remove: F) -> Result<()>
+    /// Marks a shared memory segment for removal.
+    ///
+    /// A segment with active attachments remains addressable by its ID until
+    /// the last detach. Linux allows a new `shmat` during this interval.
+    pub fn mark_shm_set_for_removal<F>(&self, shmid: IpcId, may_remove: F) -> Result<()>
     where
         F: FnOnce(&ShmSet) -> Result<()>,
     {
-        self.shm_ids.remove(shmid, may_remove)
+        let mut shm_keys = self.shm_keys.write();
+        let mut removed_key = None;
+        self.shm_ids.remove_if(shmid, |shm_set| {
+            may_remove(shm_set)?;
+            if shm_set.is_marked_for_removal() {
+                return_errno_with_message!(Errno::EINVAL, "the segment is already removed");
+            }
+            removed_key = Some(shm_set.permission().key());
+            Ok(shm_set.mark_for_removal())
+        })?;
+        if let Some(key) = removed_key.filter(|key| *key != IPC_PRIVATE) {
+            let removed_shmid = shm_keys.remove(&key);
+            debug_assert_eq!(removed_shmid, Some(shmid));
+        }
+        Ok(())
     }
 
     /// Returns the existing shared memory segment or creates a new one.
@@ -248,25 +269,10 @@ impl IpcNamespace {
             return self.create_shm_set(size, mode, pid, credentials);
         }
 
-        // For now, we compute `shmid` by hashing `key`. If the hash conflicts, we will simply
-        // return an error. See the TODO below.
-        const { assert!(SHMMNI <= u32::MAX as usize) };
-        let shmid = IpcId::new(key.cast_unsigned() % SHMMNI as u32 + 1);
-
-        loop {
-            match self.shm_ids.with(shmid, |shm_set| {
-                if shm_set.permission().key() != key {
-                    if flags.contains(IpcFlags::IPC_CREAT) {
-                        // TODO: Manage all keys in a data structure (e.g., a map)
-                        return_errno_with_message!(Errno::ENOSPC, "key hashes conflict");
-                    }
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-
-                Self::validate_shm_set(
-                    shm_set,
-                    ShmPermissionMode::ALTER | ShmPermissionMode::READ,
-                )?;
+        let mut shm_keys = self.shm_keys.write();
+        if let Some(&shmid) = shm_keys.get(&key) {
+            return self.shm_ids.with(shmid, |shm_set| {
+                self.validate_shm_set(shm_set, ShmPermissionMode::from_requested_mode(mode))?;
 
                 if flags.contains(IpcFlags::IPC_CREAT | IpcFlags::IPC_EXCL) {
                     return_errno_with_message!(
@@ -280,32 +286,49 @@ impl IpcNamespace {
                 }
 
                 Ok(shmid)
-            }) {
-                Err(_id_not_exist) if flags.contains(IpcFlags::IPC_CREAT) => {}
-                Err(_id_not_exist) => {
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-                Ok(result) => return result,
-            }
-
-            match self
-                .shm_ids
-                .insert_at(shmid, |_| ShmSet::new(key, size, mode, pid, &credentials))
-            {
-                Ok(()) => return Ok(shmid),
-                Err(err) if err.error() == Errno::EEXIST => continue,
-                Err(err) => return Err(err),
-            }
+            })?;
         }
+        if !flags.contains(IpcFlags::IPC_CREAT) {
+            return_errno_with_message!(Errno::ENOENT, "the key does not exist");
+        }
+
+        let shmid = self
+            .shm_ids
+            .insert_auto(|_| ShmSet::new(key, size, mode, pid, &credentials))?;
+        let previous = shm_keys.insert(key, shmid);
+        debug_assert!(previous.is_none());
+        Ok(shmid)
     }
 
-    fn validate_shm_set(_shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
-        if !required_perm.is_empty() {
-            // TODO: Support permission check
-            warn!("Shared memory doesn't support permission check now");
+    fn validate_shm_set(&self, shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
+        if required_perm.is_empty() {
+            return Ok(());
         }
 
-        Ok(())
+        let current = current_thread!();
+        let posix_thread = current.as_posix_thread().unwrap();
+        if shm_set
+            .permission()
+            .allows(required_perm.bits(), &posix_thread.credentials())
+            || lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                self.owner.as_ref(),
+                posix_thread,
+                CapSet::IPC_OWNER,
+            ))
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        return_errno_with_message!(
+            Errno::EACCES,
+            "the process does not have permission to access the shared memory segment"
+        );
+    }
+
+    /// Returns the user namespace that owns this IPC namespace.
+    pub fn owner(&self) -> &Arc<UserNamespace> {
+        &self.owner
     }
 
     /// Creates a new shared memory segment and returns its ID.
@@ -322,12 +345,23 @@ impl IpcNamespace {
 
     /// Records an attachment of `shmid` at `addr` by the process `pid`.
     pub fn record_shm_attachment(&self, pid: Pid, addr: Vaddr, shmid: IpcId) {
-        self.shm_attachments.write().insert((pid, addr), shmid);
+        let previous = self.shm_attachments.write().insert((pid, addr), shmid);
+        debug_assert!(previous.is_none());
     }
 
-    /// Removes and returns the shared memory ID attached at `addr` by `pid`.
-    pub fn remove_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
+    /// Atomically claims and removes the attachment at `addr` for `pid`.
+    pub fn take_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
         self.shm_attachments.write().remove(&(pid, addr))
+    }
+
+    /// Releases an attachment and destroys a removed segment after its last
+    /// attachment is gone.
+    pub fn release_shm_attachment(&self, shmid: IpcId, pid: Pid) -> Result<()> {
+        self.shm_ids.remove_if(shmid, |shm_set| {
+            let is_last = shm_set.detach(pid);
+            Ok(is_last && shm_set.is_marked_for_removal())
+        })?;
+        Ok(())
     }
 }
 

@@ -72,6 +72,7 @@ pub trait HandlePendingSignal {
 
 impl HandlePendingSignal for Context<'_> {
     fn pending_signals(&self) -> SigSet {
+        let _control = self.process.signal_job_control().lock();
         self.posix_thread.sig_queues().sig_pending() | self.process.sig_queues().sig_pending()
     }
 
@@ -87,22 +88,16 @@ impl HandlePendingSignal for Context<'_> {
     }
 
     fn dequeue_signal(&self, mask: &SigMask) -> Option<DequeuedSignal> {
-        self.posix_thread
-            .sig_queues()
-            .dequeue(mask)
-            .map(DequeuedSignal::FromThread)
-            .or_else(|| {
-                self.process
-                    .sig_queues()
-                    .dequeue(mask)
-                    .map(DequeuedSignal::FromProcess)
-            })
+        let _control = self.process.signal_job_control().lock();
+        dequeue_signal(self.posix_thread, &self.process, mask)
     }
 }
 
 impl HandlePendingSignal for PosixThread {
     fn pending_signals(&self) -> SigSet {
-        self.sig_queues().sig_pending() | self.process().sig_queues().sig_pending()
+        let process = self.process();
+        let _control = process.signal_job_control().lock();
+        self.sig_queues().sig_pending() | process.sig_queues().sig_pending()
     }
 
     fn has_pending(&self) -> bool {
@@ -116,16 +111,29 @@ impl HandlePendingSignal for PosixThread {
     }
 
     fn dequeue_signal(&self, mask: &SigMask) -> Option<DequeuedSignal> {
-        self.sig_queues()
-            .dequeue(mask)
-            .map(DequeuedSignal::FromThread)
-            .or_else(|| {
-                self.process()
-                    .sig_queues()
-                    .dequeue(mask)
-                    .map(DequeuedSignal::FromProcess)
-            })
+        let process = self.process();
+        let _control = process.signal_job_control().lock();
+        dequeue_signal(self, &process, mask)
     }
+}
+
+/// The caller holds the process signal coordinator. Raw consumers do not select
+/// a stop action; delivery additionally records eligibility before unlocking.
+pub(super) fn dequeue_signal(
+    thread: &PosixThread,
+    process: &Process,
+    mask: &SigMask,
+) -> Option<DequeuedSignal> {
+    thread
+        .sig_queues()
+        .dequeue(mask)
+        .map(DequeuedSignal::FromThread)
+        .or_else(|| {
+            process
+                .sig_queues()
+                .dequeue(mask)
+                .map(DequeuedSignal::FromProcess)
+        })
 }
 
 fn has_pending_signal(posix_thread: &PosixThread, process: &Process) -> bool {

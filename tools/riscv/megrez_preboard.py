@@ -324,8 +324,7 @@ def _validate_native_recovery(native: dict[str, Any], kernel: ArtifactIdentity) 
         or audit.get("passed") is not True
         or audit.get("failures") != []
         or audit.get("booti_command_count") != 1
-        or native.get("boot_disk_sha256_before")
-        != native.get("boot_disk_sha256_after")
+        or native.get("boot_disk_sha256_before") != native.get("boot_disk_sha256_after")
         or not isinstance(native.get("boot_disk_sha256_before"), str)
         or _SHA256.fullmatch(native["boot_disk_sha256_before"]) is None
         or native.get("passed") is not True
@@ -428,7 +427,10 @@ def _validate_rootfs(identities: dict[str, ArtifactIdentity]) -> None:
         manifest,
         Path(identities["packages_lock"].path),
     )
-    checksums = load_package_checksums(Path(identities["package_checksums"].path))
+    checksums = load_package_checksums(
+        Path(identities["package_checksums"].path),
+        schema_version=manifest.schema_version,
+    )
     if checksums != manifest.downloaded_packages:
         raise PreboardError("preboard package checksums mismatch")
 

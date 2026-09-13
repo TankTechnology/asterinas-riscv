@@ -10,8 +10,12 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "stage1_debug_console.h"
+#include "stage1_probe.h"
 
 #if !defined(DEBIAN_STAGE1_SELF_TEST) && \
     !defined(DEBIAN_STAGE1_LIFECYCLE_TEST)
@@ -86,10 +90,20 @@ static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
     ROOT_INIT_SYSTEMD,
+    ROOT_INIT_PROBE,
+    ROOT_INIT_BASIC,
+    ROOT_INIT_PROBE_AUTO,
+};
+
+struct RootInitConfig {
+    enum RootInitMode mode;
+    int debug_root_console;
+    int debug_console_isolated;
+    int volatile_home;
 };
 
 struct ProductionContext {
-    enum RootInitMode root_init_mode;
+    struct RootInitConfig root_init;
 };
 
 static char *const INTERACTIVE_ROOT_INIT_ARGV[] = {
@@ -121,6 +135,8 @@ enum HandoffStep {
     HANDOFF_CHDIR,
     HANDOFF_EXEC,
     HANDOFF_PREPARE_API_DIRS,
+    HANDOFF_PREPARE_DEBUG_CONSOLE,
+    HANDOFF_VOLATILE_HOME,
 };
 
 struct Stage1Ops {
@@ -173,16 +189,44 @@ static int compare_timespec(const struct timespec *left,
     return 0;
 }
 
-static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
+static int parse_root_init(int argc, char **argv,
+                           struct RootInitConfig *config)
 {
-    *mode = ROOT_INIT_INTERACTIVE;
+    config->mode = ROOT_INIT_INTERACTIVE;
+    config->debug_root_console = 0;
+    config->debug_console_isolated = 0;
+    config->volatile_home = 0;
     int selector_seen = 0;
+    int debug_seen = 0;
     for (int index = 1; index < argc; ++index) {
         enum RootInitMode selected_mode;
         if (strcmp(argv[index], "--root-init=interactive") == 0) {
             selected_mode = ROOT_INIT_INTERACTIVE;
         } else if (strcmp(argv[index], "--root-init=systemd") == 0) {
             selected_mode = ROOT_INIT_SYSTEMD;
+        } else if (strcmp(argv[index], "--root-init=probe") == 0) {
+            selected_mode = ROOT_INIT_PROBE;
+        } else if (strcmp(argv[index], "--root-init=basic") == 0) {
+            selected_mode = ROOT_INIT_BASIC;
+        } else if (strcmp(argv[index], "--root-init=probe-auto") == 0) {
+            selected_mode = ROOT_INIT_PROBE_AUTO;
+        } else if (strcmp(argv[index], "--volatile-home") == 0) {
+            if (config->volatile_home) {
+                return -1;
+            }
+            config->volatile_home = 1;
+            continue;
+        } else if (strcmp(argv[index], "--debug-console=root") == 0 ||
+                   strcmp(argv[index],
+                          "--debug-console=isolated-root") == 0) {
+            if (debug_seen) {
+                return -1;
+            }
+            debug_seen = 1;
+            config->debug_root_console = 1;
+            config->debug_console_isolated =
+                strcmp(argv[index], "--debug-console=isolated-root") == 0;
+            continue;
         } else {
             return -1;
         }
@@ -190,9 +234,12 @@ static int parse_root_init(int argc, char **argv, enum RootInitMode *mode)
             return -1;
         }
         selector_seen = 1;
-        *mode = selected_mode;
+        config->mode = selected_mode;
     }
-    return 0;
+    return (config->debug_root_console || config->volatile_home) &&
+                   config->mode != ROOT_INIT_SYSTEMD
+               ? -1
+               : 0;
 }
 
 static int ext2_superblock_matches(
@@ -298,7 +345,7 @@ static const char *discover_root(struct Stage1Ops *ops,
 }
 
 static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
-                                enum RootInitMode mode)
+                                const struct RootInitConfig *config)
 {
     static const struct HandoffAction interactive_steps[] = {
         { HANDOFF_MOUNT_ROOT, "root-mount" },
@@ -321,16 +368,37 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
         { HANDOFF_CHDIR, "chdir" },
         { HANDOFF_EXEC, "exec" },
     };
+    static const struct HandoffAction systemd_debug_steps[] = {
+        { HANDOFF_MOUNT_ROOT, "root-mount" },
+        { HANDOFF_BIND_DEV, "dev-bind" },
+        { HANDOFF_PREPARE_API_DIRS, "api-directories" },
+        { HANDOFF_MOUNT_RUN, "run-mount" },
+        { HANDOFF_PREPARE_DEBUG_CONSOLE, "debug-console" },
+        { HANDOFF_MOUNT_TMP, "tmp-mount" },
+        { HANDOFF_CHROOT, "chroot" },
+        { HANDOFF_CHDIR, "chdir" },
+        { HANDOFF_EXEC, "exec" },
+    };
 
     const struct HandoffAction *steps = interactive_steps;
     size_t step_count =
         sizeof(interactive_steps) / sizeof(interactive_steps[0]);
-    if (mode == ROOT_INIT_SYSTEMD) {
+    if (config->mode == ROOT_INIT_SYSTEMD) {
         steps = systemd_steps;
         step_count = sizeof(systemd_steps) / sizeof(systemd_steps[0]);
     }
+    if (config->debug_root_console) {
+        steps = systemd_debug_steps;
+        step_count =
+            sizeof(systemd_debug_steps) / sizeof(systemd_debug_steps[0]);
+    }
 
     for (size_t index = 0; index < step_count; ++index) {
+        if (steps[index].step == HANDOFF_CHROOT && config->volatile_home &&
+            ops->perform_handoff(ops->context, HANDOFF_VOLATILE_HOME,
+                                 root_device) != 0) {
+            return "volatile-home";
+        }
         if (ops->perform_handoff(ops->context, steps[index].step,
                                  root_device) != 0) {
             return steps[index].reason;
@@ -567,6 +635,8 @@ static int handoff_case(const char *case_name, enum HandoffStep *step,
         { "proc-mount-failure", HANDOFF_MOUNT_PROC, "proc-mount" },
         { "sysfs-mount-failure", HANDOFF_MOUNT_SYSFS, "sysfs-mount" },
         { "run-mount-failure", HANDOFF_MOUNT_RUN, "run-mount" },
+        { "debug-console-failure", HANDOFF_PREPARE_DEBUG_CONSOLE,
+          "debug-console" },
         { "tmp-mount-failure", HANDOFF_MOUNT_TMP, "tmp-mount" },
         { "chroot-failure", HANDOFF_CHROOT, "chroot" },
         { "chdir-failure", HANDOFF_CHDIR, "chdir" },
@@ -602,11 +672,22 @@ static int run_handoff_self_test(const char *case_name,
         .wait_for_retry = mock_wait_for_retry,
         .perform_handoff = mock_perform_handoff,
     };
-    const char *reason =
-        handoff_root(&ops, "/dev/vdb", ROOT_INIT_INTERACTIVE);
+    const struct RootInitConfig config = {
+        .mode = failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE
+                    ? ROOT_INIT_SYSTEMD
+                    : ROOT_INIT_INTERACTIVE,
+        .debug_root_console =
+            failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE ? 1 : 0,
+        .debug_console_isolated = 0,
+    };
+    const char *reason = handoff_root(&ops, "/dev/vdb", &config);
+    unsigned int expected_count =
+        failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE
+            ? 5
+            : (unsigned int)failing_step + 1;
 
     if (strcmp(reason, expected_reason) != 0 ||
-        context.handoff_count != (unsigned int)failing_step + 1) {
+        context.handoff_count != expected_count) {
         return fail_self_test(case_name, "handoff failure boundary was wrong");
     }
     return 0;
@@ -614,10 +695,36 @@ static int run_handoff_self_test(const char *case_name,
 
 static int run_root_init_self_test(const char *case_name)
 {
-    enum RootInitMode mode = ROOT_INIT_INTERACTIVE;
+    struct RootInitConfig config;
     char *default_argv[] = { "init", NULL };
     char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *probe_argv[] = { "init", "--root-init=probe", NULL };
+    char *probe_debug_argv[] = {
+        "init", "--root-init=probe", "--debug-console=root", NULL,
+    };
+    char *duplicate_probe_argv[] = {
+        "init", "--root-init=probe", "--root-init=probe", NULL,
+    };
+    char *systemd_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root", NULL,
+    };
+    char *systemd_isolated_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=isolated-root", NULL,
+    };
+    char *interactive_debug_argv[] = {
+        "init", "--root-init=interactive", "--debug-console=root", NULL,
+    };
+    char *duplicate_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root",
+        "--debug-console=root", NULL,
+    };
+    char *unknown_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=user", NULL,
+    };
+    char *control_debug_argv[] = {
+        "init", "--root-init=systemd", "--debug-console=root\n", NULL,
+    };
     char *duplicate_argv[] = {
         "init", "--root-init=interactive", "--root-init=systemd", NULL,
     };
@@ -625,31 +732,114 @@ static int run_root_init_self_test(const char *case_name)
     char *control_argv[] = { "init", "--root-init=systemd\n", NULL };
 
     if (strcmp(case_name, "root-init-default-interactive") == 0) {
-        if (parse_root_init(1, default_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(1, default_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_INTERACTIVE ||
+            config.debug_root_console) {
             return fail_self_test(case_name, "default mode was not interactive");
         }
     } else if (strcmp(case_name, "root-init-explicit-interactive") == 0) {
-        if (parse_root_init(2, interactive_argv, &mode) != 0 ||
-            mode != ROOT_INIT_INTERACTIVE) {
+        if (parse_root_init(2, interactive_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_INTERACTIVE ||
+            config.debug_root_console) {
             return fail_self_test(case_name,
                                   "explicit interactive mode was rejected");
         }
     } else if (strcmp(case_name, "root-init-systemd") == 0) {
-        if (parse_root_init(2, systemd_argv, &mode) != 0 ||
-            mode != ROOT_INIT_SYSTEMD) {
+        if (parse_root_init(2, systemd_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || config.debug_root_console) {
             return fail_self_test(case_name, "systemd mode was rejected");
         }
+    } else if (strcmp(case_name, "root-init-probe") == 0) {
+        if (parse_root_init(2, probe_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_PROBE || config.debug_root_console) {
+            return fail_self_test(case_name, "probe mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-basic") == 0 ||
+               strcmp(case_name, "root-init-probe-auto") == 0) {
+        int basic = strcmp(case_name, "root-init-basic") == 0;
+        char *selected[] = { "init", basic ? "--root-init=basic"
+                                           : "--root-init=probe-auto", NULL };
+        if (parse_root_init(2, selected, &config) != 0 ||
+            config.mode != (basic ? ROOT_INIT_BASIC : ROOT_INIT_PROBE_AUTO)) {
+            return fail_self_test(case_name, "standalone mode was rejected");
+        }
+        char *conflict[] = { "init", selected[1], "--debug-console=root", NULL };
+        char *duplicate[] = { "init", selected[1], selected[1], NULL };
+        if (parse_root_init(3, conflict, &config) == 0 ||
+            parse_root_init(3, duplicate, &config) == 0) {
+            return fail_self_test(case_name, "conflicting mode was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-volatile-home") == 0) {
+        char *selected[] = {
+            "init", "--root-init=systemd", "--volatile-home", NULL
+        };
+        char *duplicate[] = {
+            "init", "--root-init=systemd", "--volatile-home",
+            "--volatile-home", NULL
+        };
+        char *conflict[] = {
+            "init", "--root-init=basic", "--volatile-home", NULL
+        };
+        if (parse_root_init(3, selected, &config) != 0 || !config.volatile_home ||
+            parse_root_init(4, duplicate, &config) == 0 ||
+            parse_root_init(3, conflict, &config) == 0) {
+            return fail_self_test(case_name, "invalid volatile home selection");
+        }
+    } else if (strcmp(case_name, "root-init-probe-debug-conflict") == 0) {
+        if (parse_root_init(3, probe_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "probe debug console conflict was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-probe-duplicate") == 0) {
+        if (parse_root_init(3, duplicate_probe_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "duplicate probe selector was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-systemd-debug-root") == 0) {
+        if (parse_root_init(3, systemd_debug_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console ||
+            config.debug_console_isolated) {
+            return fail_self_test(case_name,
+                                  "systemd debug root console was rejected");
+        }
+    } else if (strcmp(case_name,
+                      "root-init-systemd-debug-isolated-root") == 0) {
+        if (parse_root_init(3, systemd_isolated_debug_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD || !config.debug_root_console ||
+            !config.debug_console_isolated) {
+            return fail_self_test(
+                case_name, "systemd isolated debug console was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-debug-with-interactive") == 0) {
+        if (parse_root_init(3, interactive_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "interactive debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-duplicate") == 0) {
+        if (parse_root_init(4, duplicate_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "duplicate debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-unknown") == 0) {
+        if (parse_root_init(3, unknown_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "unknown debug console was accepted");
+        }
+    } else if (strcmp(case_name, "root-init-debug-control-character") == 0) {
+        if (parse_root_init(3, control_debug_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "debug console control character was accepted");
+        }
     } else if (strcmp(case_name, "root-init-duplicate") == 0) {
-        if (parse_root_init(3, duplicate_argv, &mode) == 0) {
+        if (parse_root_init(3, duplicate_argv, &config) == 0) {
             return fail_self_test(case_name, "duplicate selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-unknown") == 0) {
-        if (parse_root_init(2, unknown_argv, &mode) == 0) {
+        if (parse_root_init(2, unknown_argv, &config) == 0) {
             return fail_self_test(case_name, "unknown selector was accepted");
         }
     } else if (strcmp(case_name, "root-init-control-character") == 0) {
-        if (parse_root_init(2, control_argv, &mode) == 0) {
+        if (parse_root_init(2, control_argv, &config) == 0) {
             return fail_self_test(case_name,
                                   "control character was accepted");
         }
@@ -718,13 +908,75 @@ static int run_root_init_self_test(const char *case_name)
             HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_RUN,
             HANDOFF_MOUNT_TMP, HANDOFF_CHROOT, HANDOFF_CHDIR, HANDOFF_EXEC,
         };
-        const char *reason =
-            handoff_root(&ops, "/dev/vdb", ROOT_INIT_SYSTEMD);
+        const struct RootInitConfig config = {
+            .mode = ROOT_INIT_SYSTEMD,
+            .debug_root_console = 0,
+            .debug_console_isolated = 0,
+        };
+        const char *reason = handoff_root(&ops, "/dev/vdb", &config);
         if (strcmp(reason, "exec-returned") != 0 ||
             context.handoff_count != sizeof(expected) / sizeof(expected[0]) ||
             memcmp(context.handoff_steps, expected, sizeof(expected)) != 0) {
             return fail_self_test(case_name,
                                   "systemd handoff sequence was incorrect");
+        }
+    } else if (strcmp(case_name, "systemd-volatile-home-handoff") == 0) {
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = HANDOFF_CHROOT,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .perform_handoff = mock_perform_handoff,
+        };
+        const struct RootInitConfig config = {
+            .mode = ROOT_INIT_SYSTEMD,
+            .volatile_home = 1,
+        };
+        const char *reason = handoff_root(&ops, "/dev/vdb", &config);
+        if (strcmp(reason, "chroot") != 0 || context.handoff_count != 7 ||
+            context.handoff_steps[5] != HANDOFF_VOLATILE_HOME) {
+            return fail_self_test(case_name,
+                                  "volatile home was not prepared before chroot");
+        }
+        context.handoff_count = 0;
+        context.failing_step = HANDOFF_VOLATILE_HOME;
+        reason = handoff_root(&ops, "/dev/vdb", &config);
+        if (strcmp(reason, "volatile-home") != 0 || context.handoff_count != 6) {
+            return fail_self_test(case_name,
+                                  "volatile home failure did not stop handoff");
+        }
+    } else if (strcmp(case_name, "systemd-debug-handoff-sequence") == 0) {
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = (enum HandoffStep)-1,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .perform_handoff = mock_perform_handoff,
+        };
+        static const enum HandoffStep expected[] = {
+            HANDOFF_MOUNT_ROOT,
+            HANDOFF_BIND_DEV,
+            HANDOFF_PREPARE_API_DIRS,
+            HANDOFF_MOUNT_RUN,
+            HANDOFF_PREPARE_DEBUG_CONSOLE,
+            HANDOFF_MOUNT_TMP,
+            HANDOFF_CHROOT,
+            HANDOFF_CHDIR,
+            HANDOFF_EXEC,
+        };
+        const struct RootInitConfig config = {
+            .mode = ROOT_INIT_SYSTEMD,
+            .debug_root_console = 1,
+            .debug_console_isolated = 0,
+        };
+        const char *reason = handoff_root(&ops, "/dev/vdb", &config);
+        if (strcmp(reason, "exec-returned") != 0 ||
+            context.handoff_count != sizeof(expected) / sizeof(expected[0]) ||
+            memcmp(context.handoff_steps, expected, sizeof(expected)) != 0) {
+            return fail_self_test(case_name,
+                                  "debug handoff sequence was incorrect");
         }
     } else if (strcmp(case_name, "systemd-exec") == 0) {
         char *const *arguments = root_init_arguments(ROOT_INIT_SYSTEMD);
@@ -835,7 +1087,7 @@ static enum ProbeResult production_probe_device(
         return PROBE_NO_MATCH;
     }
     if (!ext2_superblock_matches_mode(superblock,
-                                      production_context->root_init_mode)) {
+                                      production_context->root_init.mode)) {
         report_progress("probe-complete", "result", "no-match");
         return PROBE_NO_MATCH;
     }
@@ -900,11 +1152,13 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         [HANDOFF_MOUNT_PROC] = "proc-mount",
         [HANDOFF_MOUNT_SYSFS] = "sysfs-mount",
         [HANDOFF_MOUNT_RUN] = "run-mount",
+        [HANDOFF_PREPARE_DEBUG_CONSOLE] = "debug-console",
         [HANDOFF_MOUNT_TMP] = "tmp-mount",
         [HANDOFF_CHROOT] = "chroot",
         [HANDOFF_CHDIR] = "chdir",
         [HANDOFF_EXEC] = "exec",
         [HANDOFF_PREPARE_API_DIRS] = "api-directories",
+        [HANDOFF_VOLATILE_HOME] = "volatile-home",
     };
     const char *action = step_names[step];
     report_progress("handoff-enter", "action", action);
@@ -937,6 +1191,20 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        if (result == 0 &&
+            ensure_directory("/newroot/run/asterinas-tools") != 0) {
+            result = -1;
+        }
+        if (result == 0) {
+            result = mount("/usr/lib/asterinas",
+                           "/newroot/run/asterinas-tools", NULL, MS_BIND,
+                           NULL);
+        }
+        break;
+    case HANDOFF_PREPARE_DEBUG_CONSOLE:
+        result = production_context->root_init.debug_console_isolated
+                     ? stage1_prepare_isolated_debug_console("/newroot")
+                     : stage1_prepare_debug_console("/newroot");
         break;
     case HANDOFF_MOUNT_TMP:
         if (ensure_directory("/newroot/tmp") != 0) {
@@ -944,6 +1212,27 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         }
         result = mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
         break;
+    case HANDOFF_VOLATILE_HOME: {
+        /* Match the existing physical desktop's disposable HOME policy. */
+        static const char *const directories[] = {
+            "/newroot/run/asterinas-desktop-home",
+            "/newroot/run/asterinas-desktop-home/.mozilla",
+            "/newroot/run/asterinas-desktop-home/.cache",
+            "/newroot/run/asterinas-desktop-home/.config",
+            "/newroot/run/asterinas-desktop-home/Downloads",
+        };
+        for (size_t index = 0;
+             index < sizeof(directories) / sizeof(directories[0]); ++index) {
+            if (ensure_directory(directories[index]) != 0 ||
+                chmod(directories[index], 0700) != 0 ||
+                chown(directories[index], 1000, 1000) != 0) {
+                return -1;
+            }
+        }
+        result = mount(directories[0], "/newroot/home/asterinas", NULL,
+                       MS_BIND, NULL);
+        break;
+    }
     case HANDOFF_PREPARE_API_DIRS:
         if (ensure_directory("/newroot/proc") != 0 ||
             ensure_directory("/newroot/sys") != 0 ||
@@ -960,7 +1249,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         break;
     case HANDOFF_EXEC: {
         char *const *arguments =
-            root_init_arguments(production_context->root_init_mode);
+            root_init_arguments(production_context->root_init.mode);
         return execv(arguments[0], arguments);
     }
     }
@@ -1019,19 +1308,77 @@ static int configure_console(void)
     return 0;
 }
 
+static void run_basic_shell(void)
+{
+    if (ensure_directory("/proc") != 0 ||
+        mount("proc", "/proc", "proc", 0, NULL) != 0 ||
+        ensure_directory("/sys") != 0 ||
+        mount("sysfs", "/sys", "sysfs", 0, NULL) != 0 ||
+        ensure_directory("/tmp") != 0) {
+        fail_and_hold("basic-api-filesystems");
+    }
+    if (access("/bin/busybox", X_OK) != 0) {
+        fail_and_hold("basic-busybox-missing");
+    }
+    (void)setenv("PATH", "/bin", 1);
+    (void)setenv("PS1", "asterinas-basic# ", 1);
+    (void)setenv("HOME", "/", 1);
+    report_progress("basic-console", "root", "initramfs");
+    for (;;) {
+        pid_t child = fork();
+        if (child < 0) {
+            fail_and_hold("basic-shell-fork");
+        }
+        if (child == 0) {
+            execl("/bin/busybox", "sh", "-i", (char *)NULL);
+            _exit(127);
+        }
+        int status;
+        pid_t reaped;
+        do {
+            reaped = waitpid(-1, &status, 0);
+        } while ((reaped < 0 && errno == EINTR) || (reaped > 0 && reaped != child));
+        if (reaped < 0 || (WIFEXITED(status) && WEXITSTATUS(status) == 127)) {
+            fail_and_hold("basic-shell-exec");
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     struct ProductionContext context;
-    int root_init_result = parse_root_init(argc, argv, &context.root_init_mode);
+    int root_init_result = parse_root_init(argc, argv, &context.root_init);
     if (configure_console() != 0) {
         fail_and_hold("console-open");
     }
     if (root_init_result != 0) {
         fail_and_hold("root-init-argument");
     }
-    report_progress("start", "mode",
-                    context.root_init_mode == ROOT_INIT_SYSTEMD ? "systemd"
-                                                                : "interactive");
+    const char *mode = "interactive";
+    if (context.root_init.mode == ROOT_INIT_SYSTEMD) {
+        mode = "systemd";
+    } else if (context.root_init.mode == ROOT_INIT_PROBE) {
+        mode = "probe";
+    } else if (context.root_init.mode == ROOT_INIT_BASIC) {
+        mode = "basic";
+    } else if (context.root_init.mode == ROOT_INIT_PROBE_AUTO) {
+        mode = "probe-auto";
+    }
+    report_progress("start", "mode", mode);
+    if (context.root_init.mode == ROOT_INIT_BASIC) {
+        run_basic_shell();
+        fail_and_hold("basic-shell-returned");
+    }
+    if (context.root_init.mode == ROOT_INIT_PROBE_AUTO) {
+        (void)stage1_run_probe_auto();
+        fail_and_hold("probe-auto-returned");
+    }
+    if (context.root_init.mode == ROOT_INIT_PROBE) {
+        if (stage1_run_probe_agent() != 0) {
+            fail_and_hold("probe-agent");
+        }
+        fail_and_hold("probe-agent-returned");
+    }
 
     struct Stage1Ops ops = {
         .context = &context,
@@ -1050,7 +1397,7 @@ int main(int argc, char **argv)
         fail_and_hold("newroot-directory");
     }
 
-    reason = handoff_root(&ops, root_device, context.root_init_mode);
+    reason = handoff_root(&ops, root_device, &context.root_init);
     fail_and_hold(reason);
 }
 

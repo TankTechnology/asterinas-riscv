@@ -169,7 +169,7 @@ impl SchedAttr {
                 real_time::RealTimeAttr::new(prio, policy)
             },
             fair: fair::FairAttr::new(match policy {
-                SchedPolicy::Fair(nice) => nice,
+                SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => nice,
                 _ => Nice::default(),
             }),
             reset_on_fork: AtomicBool::new(false),
@@ -218,23 +218,9 @@ impl SchedAttr {
             SchedPolicy::RealTime { rt_prio, rt_policy } => {
                 self.real_time.update(rt_prio.get(), rt_policy);
             }
-            SchedPolicy::Fair(nice) => self.fair.update(nice),
+            SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => self.fair.update(nice),
             _ => {}
         });
-    }
-
-    pub fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
-        self.policy.update(|policy| {
-            let ret = f(policy);
-            match *policy {
-                SchedPolicy::RealTime { rt_prio, rt_policy } => {
-                    self.real_time.update(rt_prio.get(), rt_policy);
-                }
-                SchedPolicy::Fair(nice) => self.fair.update(nice),
-                _ => {}
-            }
-            ret
-        })
     }
 
     pub fn last_cpu(&self) -> Option<CpuId> {
@@ -251,7 +237,7 @@ impl Scheduler for ClassScheduler {
         let thread = task.as_thread()?.clone();
 
         let (still_in_rq, cpu) = {
-            let selected_cpu_id = self.select_cpu(&thread, flags);
+            let selected_cpu_id = self.select_cpu(&thread);
 
             if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
                 debug_assert!(flags != EnqueueFlags::Spawn);
@@ -273,7 +259,10 @@ impl Scheduler for ClassScheduler {
             .current
             .as_ref()
             .is_none_or(|((_, rq_current_thread), _)| {
-                thread.sched_attr().policy() < rq_current_thread.sched_attr().policy()
+                thread
+                    .sched_attr()
+                    .policy()
+                    .outranks(&rq_current_thread.sched_attr().policy())
             });
 
         thread.sched_attr().set_last_cpu(cpu);
@@ -312,12 +301,13 @@ impl ClassScheduler {
     }
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
-    fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
-        if let Some(last_cpu) = thread.sched_attr().last_cpu() {
+    fn select_cpu(&self, thread: &Thread) -> CpuId {
+        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+        if let Some(last_cpu) = thread.sched_attr().last_cpu()
+            && affinity.contains(last_cpu)
+        {
             return last_cpu;
         }
-        debug_assert!(flags == EnqueueFlags::Spawn);
-
         let guard = disable_local();
 
         let mut selected = guard.current_cpu();
@@ -334,7 +324,6 @@ impl ClassScheduler {
             }
         };
 
-        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         match self.last_chosen_cpu.get() {
             Some(cpu) => {
                 // Perform a round-robin selection starting after the last chosen CPU.
@@ -463,6 +452,50 @@ impl SchedulerStats for ClassScheduler {
             let PerCpuLoadStats { queue_len, is_idle } = rq.lock().load_stats();
             (queued + queue_len, running + u32::from(!is_idle))
         })
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::thread::kernel_thread::ThreadOptions;
+
+    #[ktest]
+    fn fair_yield_preserves_class_priority() {
+        // This scheduler is not injected; none of these tasks is spawned.
+        let scheduler = ClassScheduler::new();
+        let first = ThreadOptions::new(|| {}).build();
+        let peer = ThreadOptions::new(|| {}).build();
+        let higher = ThreadOptions::new(|| {})
+            .sched_policy(SchedPolicy::Stop)
+            .build();
+        let entity = |task: &Arc<Task>| (task.clone(), task.as_thread().unwrap().clone());
+        let mut rq = scheduler.rqs[CpuId::bsp().as_usize()].lock();
+
+        rq.enqueue_entity(entity(&first), None);
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &first));
+        rq.enqueue_entity(entity(&peer), None);
+        assert!(rq.update_current(UpdateFlags::Yield));
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &peer));
+        assert_eq!(rq.fair.len(), 1);
+        assert!(Arc::ptr_eq(rq.current().unwrap(), &peer));
+
+        // A same-class peer must not displace a queued higher-priority task.
+        rq.enqueue_entity(entity(&higher), None);
+        assert!(rq.update_current(UpdateFlags::Yield));
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &higher));
+        assert_eq!(rq.fair.len(), 2);
+        assert!(rq.stop.is_empty());
+
+        // The previous tasks each remain queued exactly once.
+        let a = rq.fair.pick_next().unwrap();
+        let b = rq.fair.pick_next().unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a, &first) || Arc::ptr_eq(&a, &peer));
+        assert!(Arc::ptr_eq(&b, &first) || Arc::ptr_eq(&b, &peer));
+        assert!(rq.fair.is_empty());
     }
 }
 

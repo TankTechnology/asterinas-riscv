@@ -559,6 +559,40 @@ pub(super) fn yield_now() {
     })
 }
 
+/// Re-enqueues the current task and switches to another local task.
+///
+/// Re-enqueuing lets the scheduler select a different CPU after the task's
+/// scheduling constraints have changed.
+#[track_caller]
+pub(super) fn migrate_current() {
+    // Keep scheduling atomic after removing the current task from its local runqueue. Otherwise,
+    // a timer interrupt could try to schedule while the task is between runqueues.
+    let irq_guard = processor::prepare_task_switch();
+    let mut current_task = None;
+    let mut next_task = None;
+
+    scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
+        let should_pick_next = local_rq.update_current(UpdateFlags::Wait);
+        assert!(
+            should_pick_next,
+            "cannot migrate the current task without a local replacement"
+        );
+
+        current_task = local_rq.dequeue_current();
+        next_task = Some(local_rq.pick_next().clone());
+    });
+
+    let current_task =
+        current_task.expect("the current task must be present in the local runqueue");
+    let next_task = next_task.unwrap();
+    let preempt_cpu = scheduler_singleton().enqueue(current_task, EnqueueFlags::Wake);
+    if let Some(preempt_cpu_id) = preempt_cpu {
+        set_need_preempt(preempt_cpu_id);
+    }
+
+    processor::switch_to_task_with_local_irqs_disabled(next_task, irq_guard);
+}
+
 /// Do rescheduling by acting on the scheduling decision (`ReschedAction`) made by a
 /// user-given closure.
 ///

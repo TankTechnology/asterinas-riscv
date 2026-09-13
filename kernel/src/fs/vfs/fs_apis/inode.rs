@@ -592,7 +592,14 @@ pub trait Inode: Any + FileOps + Send + Sync {
         };
 
         let creds = posix_thread.credentials();
-        check_permission_ids(&task, posix_thread, self, perm, creds.fsuid(), creds.fsgid())
+        check_permission_ids(
+            &task,
+            posix_thread,
+            self,
+            perm,
+            creds.fsuid(),
+            creds.fsgid(),
+        )
     }
 
     /// Same as [`Inode::check_permission`], but checks against the real UID/GID
@@ -685,12 +692,7 @@ fn check_permission_ids<I: Inode + ?Sized>(
         {
             return_errno_with_message!(Errno::EACCES, "owner permission check failed");
         }
-    } else if metadata.gid == gid
-        || posix_thread
-            .credentials()
-            .groups()
-            .contains(&metadata.gid)
-    {
+    } else if metadata.gid == gid || posix_thread.credentials().groups().contains(&metadata.gid) {
         if (perm.may_read() && !mode.is_group_readable())
             || (perm.may_write() && !mode.is_group_writable())
             || (perm.may_exec() && !mode.is_group_executable())

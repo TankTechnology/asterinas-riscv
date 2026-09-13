@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{sync::atomic::Ordering, time::Duration};
+use core::sync::atomic::Ordering;
 
 use aster_util::printer::VmPrinter;
-use ostd::timer::TIMER_FREQ;
 
 use super::{super::PidDirOps, TidDirOps};
 use crate::{
@@ -16,11 +15,11 @@ use crate::{
     process::{
         Process, ResourceType,
         posix_thread::{AsPosixThread, SleepingState},
-        signal::{HandlePendingSignal, sig_action::SigAction, sig_mask::SigMask},
+        signal::{HandlePendingSignal, sig_action::SigHandler, sig_mask::SigMask},
     },
     sched::{LinuxSchedPolicy, RealTimePriority, SchedPolicy},
     thread::Thread,
-    time::NSEC_PER_SEC,
+    time,
     vm::vmar::RssType,
 };
 
@@ -181,16 +180,16 @@ impl ProcFileOps for StatFileOps {
                 StatMode::Thread => posix_thread.prof_clock(),
             };
             (
-                prof_clock.user_clock().read_jiffies().as_u64(),
-                prof_clock.kernel_clock().read_jiffies().as_u64(),
+                time::duration_to_clock_ticks(prof_clock.user_clock().read_time()),
+                time::duration_to_clock_ticks(prof_clock.kernel_clock().read_time()),
             )
         };
 
         let (cutime, cstime) = {
             let (user_time, kernel_time) = process.reaped_children_stats().lock().get();
             (
-                duration_to_jiffies(user_time),
-                duration_to_jiffies(kernel_time),
+                time::duration_to_clock_ticks(user_time),
+                time::duration_to_clock_ticks(kernel_time),
             )
         };
 
@@ -198,8 +197,8 @@ impl ProcFileOps for StatFileOps {
         let nice = process.nice().load(Ordering::Relaxed).value().get();
         let num_threads = process.tasks().lock().as_slice().len();
         let itrealvalue =
-            duration_to_jiffies(process.timer_manager().alarm_timer().lock().remain());
-        let starttime = process.start_time().as_u64();
+            time::duration_to_clock_ticks(process.timer_manager().alarm_timer().lock().remain());
+        let starttime = time::duration_to_clock_ticks(process.start_time());
 
         let (
             vsize,
@@ -345,16 +344,6 @@ impl ProcFileOps for StatFileOps {
     }
 }
 
-/// Converts a duration into kernel clock ticks.
-fn duration_to_jiffies(duration: Duration) -> u64 {
-    const NSEC_PER_JIFFY: u64 = NSEC_PER_SEC as u64 / TIMER_FREQ;
-    const { assert!((NSEC_PER_SEC as u64).is_multiple_of(TIMER_FREQ)) };
-
-    let sec_jiffies = duration.as_secs().saturating_mul(TIMER_FREQ);
-    let subsec_jiffies = u64::from(duration.subsec_nanos()) / NSEC_PER_JIFFY;
-    sec_jiffies.saturating_add(subsec_jiffies)
-}
-
 /// Returns the `priority`, `rt_priority`, and `policy` values for `/proc/<pid>/stat`.
 fn sched_values(thread: &Thread) -> (i32, u8, i32) {
     const MAX_RT_PRIORITY: u8 = RealTimePriority::MAX.get();
@@ -377,7 +366,10 @@ fn sched_values(thread: &Thread) -> (i32, u8, i32) {
             let rt_priority = RT_PRIORITY_LIMIT - rt_prio.get();
             (-i32::from(rt_priority) - 1, rt_priority)
         }
-        SchedPolicy::Fair(nice) => (NICE_TO_PRIORITY_OFFSET + nice.value().get() as i32, 0),
+        SchedPolicy::Deadline { .. } => (-1, 0),
+        SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => {
+            (NICE_TO_PRIORITY_OFFSET + nice.value().get() as i32, 0)
+        }
         SchedPolicy::Idle => (NICE_TO_PRIORITY_OFFSET, 0),
     };
     let linux_policy = LinuxSchedPolicy::from(policy);
@@ -399,12 +391,12 @@ fn signal_disposition_masks(process: &Process) -> (u64, u64) {
         }
 
         let bit = u64::from(SigMask::from(sig_num));
-        match sig_action {
-            SigAction::Dfl => {}
+        match sig_action.handler() {
+            SigHandler::Dfl => {}
             // `sigignore` tracks explicitly ignored signals, while `sigcatch` tracks
             // signals with user-registered handlers.
-            SigAction::Ign => ignored |= bit,
-            SigAction::User { .. } => caught |= bit,
+            SigHandler::Ign => ignored |= bit,
+            SigHandler::User(_) => caught |= bit,
         }
     }
 

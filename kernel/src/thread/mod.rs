@@ -13,6 +13,7 @@ use ostd::{
 
 use crate::{
     prelude::*,
+    process::{CpuTimeMode, posix_thread::AsPosixThread},
     sched::{SchedAttr, SchedPolicy},
 };
 mod stats;
@@ -34,6 +35,10 @@ fn pre_schedule_handler(irq_guard: &DisabledLocalIrqGuard) {
         return;
     };
 
+    if let Some(posix_thread) = task.as_posix_thread() {
+        posix_thread.pause_cpu_time();
+    }
+
     thread_local.supp_user_context().before_schedule(irq_guard);
 }
 
@@ -45,6 +50,9 @@ fn post_schedule_handler() {
         .add_on_cpu(CpuId::current_racy(), 1);
 
     let task = Task::current().unwrap();
+    if let Some(posix_thread) = task.as_posix_thread() {
+        posix_thread.resume_cpu_time();
+    }
     let Some(thread_local) = task.as_thread_local() else {
         return;
     };
@@ -59,7 +67,18 @@ fn pre_user_run_handler(guard: &DisabledLocalIrqGuard) {
     let task = Task::current().unwrap();
     let thread_local = task.as_thread_local().unwrap();
 
+    task.as_posix_thread()
+        .unwrap()
+        .switch_cpu_time_mode(CpuTimeMode::User);
+
     thread_local.supp_user_context().before_user_exec(guard);
+}
+
+fn post_user_run_handler(_guard: &DisabledLocalIrqGuard) {
+    let task = Task::current().unwrap();
+    task.as_posix_thread()
+        .unwrap()
+        .switch_cpu_time_mode(CpuTimeMode::Kernel);
 }
 
 pub(super) fn init() {
@@ -67,6 +86,7 @@ pub(super) fn init() {
     ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);
     ostd::task::inject_pre_user_run_handler(pre_user_run_handler);
+    ostd::task::inject_post_user_run_handler(post_user_run_handler);
     ostd::arch::trap::inject_user_page_fault_handler(exception::page_fault_handler);
 }
 
@@ -148,6 +168,12 @@ impl Thread {
     #[track_caller]
     pub fn yield_now() {
         Task::yield_now()
+    }
+
+    /// Re-enqueues the current thread so that it can move to another CPU.
+    #[track_caller]
+    pub fn migrate_current() {
+        Task::migrate_current()
     }
 
     /// Joins the execution of the thread.

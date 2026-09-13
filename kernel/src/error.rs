@@ -153,6 +153,9 @@ pub enum Errno {
     EHWPOISON = 133, /* Memory page has hardware error */
 
     ERESTARTSYS = 512, /* Restart of an interrupted system call. For kernel internal use only. */
+    ERESTARTNOHAND = 514, /* Restart only when no signal handler is delivered. */
+    #[expect(non_camel_case_types)] // Keep the Linux internal errno spelling.
+    ERESTART_RESTARTBLOCK = 516, /* Restart using per-thread saved arguments. */
 }
 
 /// error used in this crate

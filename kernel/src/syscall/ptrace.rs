@@ -8,12 +8,17 @@ use crate::arch::ptrace as arch_ptrace;
 use crate::{
     prelude::*,
     process::{
+        pid_table,
         posix_thread::{
             AsPosixThread,
             alien_access::AlienAccessMode,
             ptrace::{PtraceContRequest, PtraceOptions},
         },
-        signal::{constants::SIGKILL, sig_num::SigNum, signals::user::UserSignal},
+        signal::{
+            constants::{SIGKILL, SIGSTOP},
+            sig_num::SigNum,
+            signals::user::UserSignal,
+        },
     },
     thread::{Thread, Tid},
 };
@@ -89,6 +94,29 @@ pub fn sys_ptrace(
                 tracee,
             );
             tracee.enqueue_signal(signal);
+        }
+        PtraceRequest::PTRACE_ATTACH => {
+            let tracee_thread = pid_table::pid_table_mut()
+                .get_thread(tid)
+                .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such thread"))?;
+            let tracer_thread = current_thread!();
+
+            do_ptrace_attach(&tracer_thread, tracee_thread.clone())?;
+
+            let tracee = tracee_thread.as_posix_thread().unwrap();
+            let signal = Box::new(UserSignal::new_kill(SIGSTOP, ctx));
+            crate::process::signal::provenance::trace_user_thread_enqueue(
+                signal.as_ref(),
+                "ptrace-attach",
+                "thread",
+                ctx,
+                tracee,
+            );
+            tracee.enqueue_signal(signal);
+        }
+        PtraceRequest::PTRACE_DETACH => {
+            let sig_num = parse_ptrace_injected_signal(data)?;
+            ctx.posix_thread.detach_from(tid, sig_num, ctx)?;
         }
         #[cfg(target_arch = "x86_64")]
         PtraceRequest::PTRACE_SINGLESTEP => {
@@ -220,6 +248,10 @@ enum PtraceRequest {
     /// Sets all general-purpose registers used by the thread.
     #[cfg(target_arch = "x86_64")]
     PTRACE_SETREGS = 13,
+    /// Attaches to a thread that is already running.
+    PTRACE_ATTACH = 16,
+    /// Detaches from an attached thread.
+    PTRACE_DETACH = 17,
     /// Continues and stops at the next entry to or return from syscall.
     PTRACE_SYSCALL = 24,
     /// Sets ptrace options.
@@ -233,10 +265,6 @@ enum PtraceRequest {
     // PTRACE_GETFPREGS = 14,
     // /// Sets all floating-point registers used by the thread.
     // PTRACE_SETFPREGS = 15,
-    // /// Attaches to a thread that is already running.
-    // PTRACE_ATTACH = 16,
-    // /// Detaches from an attached thread.
-    // PTRACE_DETACH = 17,
     // /// Gets all extended floating-point registers used by the thread.
     // PTRACE_GETFPXREGS = 18,
     // /// Sets all extended floating-point registers used by the thread.

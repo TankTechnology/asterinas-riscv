@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Asterinas Physical Graphics Interaction</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+      background: #07131d;
+      color: #edf8ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(135deg, rgba(25, 211, 197, 0.08), transparent 42%),
+        #07131d;
+    }
+    main {
+      width: min(1000px, 88vw);
+      padding: 48px;
+      border: 3px solid #5fd8ff;
+      border-radius: 24px;
+      background: #0e2230;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
+    }
+    h1 { margin-top: 0; font-size: 42px; letter-spacing: 0.04em; }
+    #interaction-instructions { font-size: 25px; line-height: 1.5; }
+    label { display: block; margin: 30px 0 12px; font-size: 22px; }
+    #interaction-nonce {
+      width: 100%;
+      padding: 18px 20px;
+      border: 4px solid #8ca4b3;
+      border-radius: 12px;
+      background: #02080d;
+      color: #ffffff;
+      font: 700 36px ui-monospace, "DejaVu Sans Mono", monospace;
+      letter-spacing: 0.15em;
+      outline: none;
+    }
+    #interaction-nonce:focus { border-color: #5fd8ff; }
+    #interaction-button {
+      width: 100%;
+      min-height: 150px;
+      margin-top: 34px;
+      border: 5px solid #fff3b0;
+      border-radius: 18px;
+      background: #e29d24;
+      color: #151007;
+      font: 800 34px ui-monospace, "DejaVu Sans Mono", monospace;
+      cursor: pointer;
+    }
+    #interaction-button.cyan {
+      border-color: #eaffff;
+      background: #17d7d0;
+      color: #031413;
+      cursor: default;
+    }
+    #interaction-state {
+      min-height: 108px;
+      margin: 28px 0 0;
+      padding: 18px;
+      overflow-wrap: anywhere;
+      border-radius: 12px;
+      background: #061018;
+      color: #bcefff;
+      font-size: 20px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ASTERINAS · PHYSICAL I/O</h1>
+    <p id="interaction-instructions">Preparing the bounded interaction cycle…</p>
+    <label for="interaction-nonce">Physical keyboard nonce</label>
+    <input id="interaction-nonce" inputmode="text" autocomplete="off"
+           autocapitalize="off" spellcheck="false" maxlength="16">
+    <button id="interaction-button" type="button">MOVE POINTER · CLICK ONCE</button>
+    <pre id="interaction-state" aria-live="polite"></pre>
+  </main>
+  <script>
+    "use strict";
+
+    const parameters = new URLSearchParams(window.location.search);
+    const cycleText = parameters.get("cycle") || "";
+    const nonceLengthText = parameters.get("nonce_length") || "";
+    const cycle = /^[1-3]$/.test(cycleText) ? Number(cycleText) : 0;
+    const nonceLength = nonceLengthText === "16" ? 16 : 0;
+    const validConfiguration = cycle !== 0 && nonceLength === 16;
+    const noncePattern = /^[0-9a-f]{16}$/;
+    const stageOrder = ["waiting", "key", "pointer", "complete"];
+    let reportedStage = "waiting";
+    let stageReport = Promise.resolve();
+
+    const nonceInput = document.getElementById("interaction-nonce");
+    const button = document.getElementById("interaction-button");
+    const output = document.getElementById("interaction-state");
+    const instructions = document.getElementById("interaction-instructions");
+
+    const state = {
+      cycle,
+      nonce: "",
+      trustedKey: false,
+      trustedInput: false,
+      trustedPointer: false,
+      trustedClick: false,
+      clickCount: 0,
+      color: "amber"
+    };
+
+    function keyComplete() {
+      return state.trustedKey && state.trustedInput && noncePattern.test(state.nonce);
+    }
+
+    function domStage() {
+      if (keyComplete() && state.trustedPointer && state.trustedClick && state.color === "cyan") {
+        return "complete";
+      }
+      if (keyComplete() && state.trustedPointer) return "pointer";
+      if (keyComplete()) return "key";
+      return "waiting";
+    }
+
+    function render() {
+      output.textContent = JSON.stringify(state, null, 2);
+      const titleNonce = noncePattern.test(state.nonce) ? state.nonce : "";
+      const stage = domStage();
+      document.title =
+        `ASTERINAS_PHYSICAL cycle=${cycle} stage=${stage} nonce=${titleNonce}`;
+      if (stageOrder.indexOf(stage) === stageOrder.indexOf(reportedStage) + 1) {
+        reportedStage = stage;
+        const query = new URLSearchParams({cycle: String(cycle), stage, nonce: state.nonce});
+        stageReport = stageReport.then(() =>
+          fetch(`/stage?${query.toString()}`, {
+            cache: "no-store",
+            credentials: "omit"
+          }).then(response => {
+            if (!response.ok) throw new Error(`stage-http-${response.status}`);
+          })
+        ).catch(error => {
+          console.error(`ASTERINAS_PHYSICAL_STAGE_REPORT_FAIL stage=${stage} name=${error.name}`);
+        });
+      }
+    }
+
+    if (validConfiguration) {
+      instructions.textContent =
+        `Cycle ${cycle}/3 · type the 16-character nonce, move the physical pointer, then click once.`;
+      nonceInput.focus();
+    } else {
+      instructions.textContent = "Invalid interaction configuration.";
+      nonceInput.disabled = true;
+      button.disabled = true;
+    }
+
+    nonceInput.addEventListener("keydown", (event) => {
+      if (event.isTrusted) {
+        state.trustedKey = true;
+        render();
+      }
+    });
+
+    nonceInput.addEventListener("input", (event) => {
+      if (event.isTrusted) {
+        state.trustedInput = true;
+        const sanitized = nonceInput.value.toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 16);
+        nonceInput.value = sanitized;
+        state.nonce = sanitized;
+        render();
+      }
+    });
+
+    document.addEventListener("pointermove", (event) => {
+      const bounds = button.getBoundingClientRect();
+      const insideButton =
+        event.clientX > bounds.left && event.clientX < bounds.right &&
+        event.clientY > bounds.top && event.clientY < bounds.bottom;
+      if (event.isTrusted && keyComplete() && insideButton) {
+        state.trustedPointer = true;
+        render();
+      }
+    });
+
+    button.addEventListener("click", (event) => {
+      if (event.isTrusted && state.trustedPointer && noncePattern.test(state.nonce) && state.clickCount === 0) {
+        state.trustedClick = true;
+        state.clickCount = 1;
+        state.color = "cyan";
+        button.classList.add("cyan");
+        button.textContent = `CYCLE ${cycle} PASS · CYAN`;
+        button.disabled = true;
+        render();
+      }
+    });
+
+    window.__asterinasPhysicalGraphicsSnapshot = () => Object.freeze({...state});
+    render();
+  </script>
+</body>
+</html>

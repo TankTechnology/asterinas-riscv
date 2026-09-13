@@ -55,6 +55,8 @@ pub(super) enum StopDeliverySignal {
     Consumed(DequeuedSignal),
     /// The signal that is injected by the tracer.
     Injected(DequeuedSignal),
+    /// A traditional group-stop has a wait report but no delivery payload.
+    GroupStop(Option<PtraceWaitStatus>),
     /// No ptrace-stop signal is recorded.
     #[default]
     Empty,
@@ -66,6 +68,10 @@ impl StopDeliverySignal {
         *self = Self::Pending(signal, wait_status);
     }
 
+    pub(super) fn group_stop(&mut self, wait_status: PtraceWaitStatus) {
+        *self = Self::GroupStop(Some(wait_status));
+    }
+
     /// Clears and returns the signal associated with a ptrace-stop,
     /// unless it has already been consumed by `wait`.
     pub(super) fn clear(&mut self) -> Option<DequeuedSignal> {
@@ -73,7 +79,7 @@ impl StopDeliverySignal {
 
         match this {
             Self::Pending(signal, _) | Self::Injected(signal) => Some(signal),
-            Self::Consumed(_) | Self::Empty => None,
+            Self::Consumed(_) | Self::GroupStop(_) | Self::Empty => None,
         }
     }
 
@@ -95,6 +101,14 @@ impl StopDeliverySignal {
                 *self = Self::Consumed(signal);
                 None
             }
+            Self::GroupStop(wait_status) => {
+                *self = Self::GroupStop(if options.contains(WaitOptions::WNOWAIT) {
+                    wait_status
+                } else {
+                    None
+                });
+                wait_status
+            }
             Self::Injected(_) => unreachable!(),
             Self::Empty => None,
         }
@@ -106,6 +120,9 @@ impl StopDeliverySignal {
 
         let mut signal = match this {
             Self::Pending(signal, _) | Self::Consumed(signal) => signal,
+            // A non-delivery group trap has no signal to replace. Linux ignores
+            // the resume signal argument for this kind of stop.
+            Self::GroupStop(_) => return,
             Self::Injected(_) | Self::Empty => unreachable!(),
         };
 
@@ -120,7 +137,7 @@ impl StopDeliverySignal {
             Self::Pending(signal, _) | Self::Consumed(signal) | Self::Injected(signal) => {
                 Some(signal.signal())
             }
-            Self::Empty => None,
+            Self::GroupStop(_) | Self::Empty => None,
         }
     }
 }

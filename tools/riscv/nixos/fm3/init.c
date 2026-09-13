@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // --- riscv64 asm-generic syscall numbers (not all in glibc headers) ---
@@ -53,21 +54,33 @@ struct open_how {
 
 // --- membarrier (linux/membarrier.h) ---
 #define MEMBARRIER_CMD_QUERY 0
+#define MEMBARRIER_CMD_GLOBAL (1 << 0)
+#define MEMBARRIER_CMD_GLOBAL_EXPEDITED (1 << 1)
+#define MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED (1 << 2)
 #define MEMBARRIER_CMD_PRIVATE_EXPEDITED (1 << 3)
 #define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED (1 << 4)
 #define MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE (1 << 5)
 #define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE (1 << 6)
+#define MEMBARRIER_CMD_GET_REGISTRATIONS (1 << 9)
 
 // --- mount_setattr (linux/mount.h) ---
+#ifndef MOUNT_ATTR_SIZE_VER0
 struct mount_attr {
     unsigned long long attr_set;
     unsigned long long attr_clr;
     unsigned long long propagation;
     unsigned long long userns_fd;
 };
+#endif
+#ifndef MOUNT_ATTR_NODEV
 #define MOUNT_ATTR_NODEV 0x00000004
+#endif
+#ifndef MOUNT_ATTR_NOEXEC
 #define MOUNT_ATTR_NOEXEC 0x00000008
+#endif
+#ifndef AT_RECURSIVE
 #define AT_RECURSIVE 0x8000
+#endif
 
 // --- mount propagation (mount(2) flags) ---
 #ifndef MS_PRIVATE
@@ -323,16 +336,126 @@ static void test_membarrier(void) {
         fail("membarrier", msg);
         return;
     }
-    // Query must advertise the private-expedited command.
-    if ((query & MEMBARRIER_CMD_PRIVATE_EXPEDITED) == 0) {
-        fail("membarrier", "QUERY does not advertise PRIVATE_EXPEDITED");
+    // Query must advertise both execution and its mandatory registration.
+    if ((query & MEMBARRIER_CMD_PRIVATE_EXPEDITED) == 0 ||
+        (query & MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED) == 0) {
+        fail("membarrier", "QUERY does not advertise private expedited pair");
         return;
     }
-    // Executing PRIVATE_EXPEDITED must succeed (flags==0).
-    long r = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0);
+    if ((query & MEMBARRIER_CMD_GLOBAL) == 0 ||
+        (query & MEMBARRIER_CMD_GLOBAL_EXPEDITED) == 0 ||
+        (query & MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED) == 0) {
+        fail("membarrier", "QUERY does not advertise global commands");
+        return;
+    }
+
+    long r = syscall(SYS_membarrier, MEMBARRIER_CMD_GLOBAL, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "GLOBAL -> errno %d (%s)", errno, strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_GLOBAL_EXPEDITED, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "GLOBAL_EXPEDITED -> errno %d (%s)", errno,
+                 strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "REGISTER_GLOBAL_EXPEDITED -> errno %d (%s)", errno,
+                 strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    // Linux requires registration before executing a private expedited
+    // barrier. The previous smoke test accidentally accepted a false-success
+    // implementation that skipped both this check and the actual barrier.
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0);
+    if (r == 0 || errno != EPERM) {
+        fail("membarrier", "unregistered PRIVATE_EXPEDITED did not return EPERM");
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "REGISTER_PRIVATE_EXPEDITED -> errno %d (%s)", errno,
+                 strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    long registrations = syscall(SYS_membarrier, MEMBARRIER_CMD_GET_REGISTRATIONS, 0, 0);
+    if ((registrations & MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED) == 0) {
+        fail("membarrier", "GET_REGISTRATIONS omitted private expedited registration");
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0);
     if (r != 0) {
         snprintf(msg, sizeof(msg), "PRIVATE_EXPEDITED -> errno %d (%s)", errno, strerror(errno));
         fail("membarrier", msg);
+        return;
+    }
+
+    // RISC-V must also expose and enforce registration for sync-core. The
+    // dedicated SMP4 regression exercises its cross-hart JIT visibility.
+    if ((query & MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE) == 0 ||
+        (query & MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE) == 0) {
+        fail("membarrier", "QUERY does not advertise sync-core pair");
+        return;
+    }
+
+    errno = 0;
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0);
+    if (r == 0 || errno != EPERM) {
+        fail("membarrier", "unregistered sync-core did not return EPERM");
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "REGISTER_SYNC_CORE -> errno %d (%s)", errno,
+                 strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    registrations = syscall(SYS_membarrier, MEMBARRIER_CMD_GET_REGISTRATIONS, 0, 0);
+    if ((registrations & MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE) == 0) {
+        fail("membarrier", "GET_REGISTRATIONS omitted sync-core registration");
+        return;
+    }
+
+    r = syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0);
+    if (r != 0) {
+        snprintf(msg, sizeof(msg), "PRIVATE_EXPEDITED_SYNC_CORE -> errno %d (%s)", errno,
+                 strerror(errno));
+        fail("membarrier", msg);
+        return;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        fail("membarrier", "fork for registration inheritance failed");
+        return;
+    }
+    if (child == 0) {
+        long inherited = syscall(SYS_membarrier, MEMBARRIER_CMD_GET_REGISTRATIONS, 0, 0);
+        long expected = MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED |
+                        MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED |
+                        MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE;
+        _exit((inherited & expected) == expected ? 0 : 1);
+    }
+
+    int child_status;
+    if (waitpid(child, &child_status, 0) != child || !WIFEXITED(child_status) ||
+        WEXITSTATUS(child_status) != 0) {
+        fail("membarrier", "fork did not inherit registrations");
         return;
     }
     ok("membarrier");

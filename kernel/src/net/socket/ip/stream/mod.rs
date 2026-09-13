@@ -627,10 +627,13 @@ impl Socket for StreamSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (received_bytes, _) =
+        let (received_bytes, _) = if flags.contains(RecvFlags::MSG_DONTWAIT) {
+            self.try_recv(writer, flags)?
+        } else {
             self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
                 self.try_recv(writer, flags)
-            })?;
+            })?
+        };
 
         // TODO: Receive control message
 

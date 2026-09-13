@@ -213,8 +213,8 @@ pub fn run_filter(insns: &[SockFilter], data: &[u8], big_endian_loads: bool) -> 
                 };
             }
             BPF_MISC => match code & 0xf8 {
-                0x00 => x = a,  // `MISC | TAX`
-                0x80 => a = x,  // `MISC | TXA`
+                0x00 => x = a, // `MISC | TAX`
+                0x80 => a = x, // `MISC | TXA`
                 _ => return None,
             },
             _ => return None,

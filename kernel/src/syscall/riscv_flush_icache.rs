@@ -29,7 +29,7 @@ pub fn sys_riscv_flush_icache(
         return_errno_with_message!(Errno::EINVAL, "invalid riscv_flush_icache flags");
     }
 
-    ostd::arch::flush_icache(flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0);
+    ostd::arch::flush_icache(flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0)?;
 
     Ok(SyscallReturn::Return(0))
 }
