@@ -21,3 +21,4 @@ set -e
 ./hwrng
 ./nvme
 ./random
+./zero

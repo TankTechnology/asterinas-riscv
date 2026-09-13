@@ -14,11 +14,18 @@ use crate::chunk::split_to_order;
 /// of the CPUs, and then divided by this constant.
 const CACHE_EXPECTED_PORTION: usize = 2;
 
+/// Prevents CPU-local pools from retaining a large fraction of physical RAM.
+///
+/// Freeing memory on a different CPU from the one that allocated it can split
+/// adjacent buddies across local pools. Bounding each pool keeps most memory
+/// in the global buddy set, where cross-CPU frees can coalesce.
+const CACHE_EXPECTED_SIZE_LIMIT: usize = 8 * 1024 * 1024;
+
 /// Returns the expected size of cache for each CPU-local free pool.
 ///
 /// It depends on the size of the global free pool.
 fn cache_expected_size(global_size: usize) -> usize {
-    global_size / num_cpus() / CACHE_EXPECTED_PORTION
+    (global_size / num_cpus() / CACHE_EXPECTED_PORTION).min(CACHE_EXPECTED_SIZE_LIMIT)
 }
 
 /// Controls the minimal size of cache for each CPU-local free pool.
@@ -102,5 +109,21 @@ fn balance_to<const MAX_ORDER1: BuddyOrder, const MAX_ORDER2: BuddyOrder>(
             balance_to(a, b, order - 1);
             balance_to(a, b, order - 1);
         }
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use ostd::prelude::ktest;
+
+    #[ktest]
+    fn cpu_local_cache_target_is_bounded() {
+        let uncapped_target = CACHE_EXPECTED_SIZE_LIMIT / 2;
+        let small_global = uncapped_target * num_cpus() * CACHE_EXPECTED_PORTION;
+        assert_eq!(cache_expected_size(small_global), uncapped_target);
+
+        let large_global = CACHE_EXPECTED_SIZE_LIMIT * num_cpus() * CACHE_EXPECTED_PORTION * 2;
+        assert_eq!(cache_expected_size(large_global), CACHE_EXPECTED_SIZE_LIMIT);
     }
 }

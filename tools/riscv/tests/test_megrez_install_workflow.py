@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import lzma
 import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -144,7 +146,16 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         self.assertEqual(events[1][0], "server-enter")
         self.assertEqual(events[1][-1], self.tftp)
         command = events[2][1]
+        self.assertEqual(
+            command[:3],
+            (sys.executable, "-m", "tools.riscv.megrez_board_session"),
+        )
         self.assertIn("--require-recovery", command)
+        installer_name = command[command.index("--initrd") + 1]
+        self.assertEqual(installer_name, "debian-current-network-installer.cpio.gz")
+        self.assertEqual(
+            gzip.decompress((self.tftp / installer_name).read_bytes()), b"installer"
+        )
         self.assertEqual(command[command.index("--load-transport") + 1], "ymodem")
         self.assertIn("--ymodem-directory", command)
         self.assertIn("--booti-compressed-crc32", command)

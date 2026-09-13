@@ -405,7 +405,7 @@ the trap and panic implementation is unchanged in the diff.
 
 - [ ] **Step 5: Run Asterinas persona review**
 
-Use `aster-code-review` against the PR #3657 base. Review
+Perform a normal review against the PR #3657 base. Review
 maintainability, development correctness/concurrency, security boundaries, and
 RISC-V hardware semantics. Fix critical or major findings with a new RED/GREEN
 cycle and rerun affected checks.

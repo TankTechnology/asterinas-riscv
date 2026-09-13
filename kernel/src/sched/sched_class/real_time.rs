@@ -5,6 +5,7 @@ use core::{
     array,
     num::NonZero,
     sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed},
+    time::Duration,
 };
 
 use aster_util::ranged_integer::RangedU8;
@@ -17,7 +18,10 @@ use ostd::{
     },
 };
 
-use super::{CurrentRuntime, SchedAttr, SchedClassRq, time::base_slice_clocks};
+use super::{
+    CurrentRuntime, SchedAttr, SchedClassRq,
+    time::{BASE_SLICE_NS, base_slice_clocks},
+};
 use crate::thread::AsThread;
 
 pub type RealTimePriority = RangedU8<1, 99>;
@@ -39,6 +43,17 @@ impl Default for RealTimePolicy {
 }
 
 impl RealTimePolicy {
+    pub(crate) fn time_slice_duration(self) -> Duration {
+        match self {
+            RealTimePolicy::Fifo => Duration::ZERO,
+            RealTimePolicy::RoundRobin { base_slice_factor } => Duration::from_nanos(
+                BASE_SLICE_NS
+                    * base_slice_factor
+                        .map_or(DEFAULT_BASE_SLICE_FACTOR, |factor| u64::from(factor.get())),
+            ),
+        }
+    }
+
     fn to_time_slice(self) -> u64 {
         match self {
             RealTimePolicy::RoundRobin { base_slice_factor } => {
@@ -48,6 +63,32 @@ impl RealTimePolicy {
             }
             RealTimePolicy::Fifo => 0,
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn policy_time_slice_duration() {
+        assert_eq!(RealTimePolicy::Fifo.time_slice_duration(), Duration::ZERO);
+        assert_eq!(
+            RealTimePolicy::RoundRobin {
+                base_slice_factor: None,
+            }
+            .time_slice_duration(),
+            Duration::from_nanos(BASE_SLICE_NS * DEFAULT_BASE_SLICE_FACTOR)
+        );
+        assert_eq!(
+            RealTimePolicy::RoundRobin {
+                base_slice_factor: NonZero::new(2),
+            }
+            .time_slice_duration(),
+            Duration::from_nanos(BASE_SLICE_NS * 2)
+        );
     }
 }
 

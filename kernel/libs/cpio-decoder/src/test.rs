@@ -8,7 +8,9 @@ struct FailingWriter;
 
 impl no_std_io2::io::Write for FailingWriter {
     fn write(&mut self, _buf: &[u8]) -> no_std_io2::io::Result<usize> {
-        Err(no_std_io2::io::Error::from(no_std_io2::io::ErrorKind::Other))
+        Err(no_std_io2::io::Error::from(
+            no_std_io2::io::ErrorKind::Other,
+        ))
     }
 
     fn flush(&mut self) -> no_std_io2::io::Result<()> {

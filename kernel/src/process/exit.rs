@@ -10,8 +10,9 @@ use crate::{
     process::{
         posix_thread::AsPosixThread,
         signal::{
-            constants::SIGKILL, provenance::trace_kernel_process_enqueue,
-            signals::kernel::KernelSignal,
+            constants::{CLD_EXITED, CLD_KILLED, SIGCHLD, SIGKILL},
+            provenance::trace_kernel_process_enqueue,
+            signals::{kernel::KernelSignal, raw::RawSignal},
         },
     },
 };
@@ -213,8 +214,20 @@ fn send_child_death_signal(current_process: &Process) {
         return;
     };
 
-    if let Some(signal) = current_process.exit_signal().map(KernelSignal::new) {
-        parent.enqueue_signal(Box::new(signal));
+    if let Some(signum) = current_process.exit_signal() {
+        if signum == SIGCHLD {
+            let exit_code = current_process.status().exit_code();
+            let signal = exit_code & 0x7f;
+            let (code, status) = if signal != 0 {
+                (CLD_KILLED, signal as i32)
+            } else {
+                (CLD_EXITED, ((exit_code >> 8) & 0xff) as i32)
+            };
+            let info = current_process.child_state_siginfo(&parent, code, status);
+            parent.enqueue_signal(Box::new(RawSignal::new(info)));
+        } else {
+            parent.enqueue_signal(Box::new(KernelSignal::new(signum)));
+        }
     };
     parent.children_wait_queue().wake_all();
 }

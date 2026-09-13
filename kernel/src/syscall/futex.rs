@@ -9,9 +9,9 @@ use crate::{
     prelude::*,
     process::posix_thread::futex::{
         FutexFlags, FutexOp, FutexVisibility, futex_op_and_flags_from_u32, futex_requeue,
-        futex_wait, futex_wait_bitset, futex_wake, futex_wake_bitset, futex_wake_op,
+        futex_wait_bitset, futex_wake, futex_wake_bitset, futex_wake_op,
     },
-    syscall::SyscallReturn,
+    syscall::{SyscallReturn, restart_syscall::RestartBlock},
     time::{
         clocks::{MonotonicClock, RealTimeClock},
         timer::Timeout,
@@ -35,7 +35,8 @@ pub fn sys_futex(
         futex_op, futex_flags, futex_addr, futex_val
     );
 
-    let get_futex_timeout = |timeout_addr: Vaddr| -> Result<Option<ManagedTimeout<'static>>> {
+    let is_real_time = futex_flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME);
+    let get_futex_deadline = |timeout_addr: Vaddr| -> Result<Option<Duration>> {
         if timeout_addr == 0 {
             return Ok(None);
         }
@@ -45,52 +46,53 @@ pub fn sys_futex(
             Duration::try_from(time_spec)?
         };
 
-        let is_real_time = futex_flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME);
-        if is_real_time && futex_op == FutexOp::FUTEX_WAIT {
-            // Ref: <https://github.com/torvalds/linux/commit/4fbf5d6837bf81fd7a27d771358f4ee6c4f243f8>
-            return_errno_with_message!(Errno::ENOSYS, "FUTEX_WAIT cannot use CLOCK_REALTIME");
-        }
-
-        let timeout = {
-            // From man(2) futex:
-            // for FUTEX_WAIT, timeout is interpreted as a relative value.
-            // This differs from other futex operations,
-            // where timeout is interpreted as an absolute value.
-            // To obtain the equivalent of FUTEX_WAIT with an absolute timeout,
-            // employ FUTEX_WAIT_BITSET with val3 specified as FUTEX_BITSET_MATCH_ANY.
-            if futex_op == FutexOp::FUTEX_WAIT {
-                Timeout::After(timeout)
-            } else {
-                Timeout::When(timeout)
-            }
-        };
-
-        let timer_manager = if is_real_time {
-            debug!("futex timeout = {:?}, clock = CLOCK_REALTIME", timeout);
-            RealTimeClock::timer_manager()
-        } else {
-            debug!("futex timeout = {:?}, clock = CLOCK_MONOTONIC", timeout);
+        // Freeze relative waits before entering the futex queue. Absolute
+        // MONOTONIC timestamps belong to the caller's time namespace, whereas
+        // timer managers and saved restart deadlines always use host clocks.
+        let deadline = if futex_op == FutexOp::FUTEX_WAIT {
             MonotonicClock::timer_manager()
+                .clock()
+                .read_time()
+                .saturating_add(timeout)
+        } else if is_real_time {
+            timeout
+        } else {
+            ctx.thread_local
+                .borrow_ns_proxy()
+                .unwrap()
+                .time_ns()
+                .remove_offset(timeout, false)
         };
-
-        Ok(Some(ManagedTimeout::new_with_manager(
-            timeout,
-            timer_manager,
-        )))
+        Ok(Some(deadline))
     };
 
     let visibility = FutexVisibility::from(futex_flags);
     let res = match futex_op {
-        FutexOp::FUTEX_WAIT => {
-            let timeout = get_futex_timeout(utime_addr)?;
-            futex_wait(futex_addr as _, futex_val as _, timeout, ctx, visibility).map(|_| 0)
-        }
-        FutexOp::FUTEX_WAIT_BITSET => {
-            let timeout = get_futex_timeout(utime_addr)?;
+        FutexOp::FUTEX_WAIT | FutexOp::FUTEX_WAIT_BITSET => {
+            let deadline = get_futex_deadline(utime_addr)?;
+            if is_real_time && futex_op == FutexOp::FUTEX_WAIT {
+                return_errno_with_message!(Errno::ENOSYS, "FUTEX_WAIT cannot use CLOCK_REALTIME");
+            }
+            let bitset = if futex_op == FutexOp::FUTEX_WAIT {
+                u32::MAX // FUTEX_BITSET_MATCH_ANY
+            } else {
+                bitset
+            };
+            if let Some(deadline) = deadline {
+                return FutexRestart {
+                    futex_addr,
+                    futex_val,
+                    bitset,
+                    visibility,
+                    is_real_time,
+                    deadline,
+                }
+                .restart(ctx);
+            }
             futex_wait_bitset(
                 futex_addr as _,
                 futex_val as _,
-                timeout,
+                None,
                 bitset as _,
                 ctx,
                 visibility,
@@ -145,6 +147,54 @@ pub fn sys_futex(
 
     debug!("futex returns, tid= {} ", ctx.posix_thread.tid());
     Ok(SyscallReturn::Return(res as _))
+}
+
+/// A timed futex wait's immutable arguments and host-clock deadline.
+#[derive(Clone, Copy)]
+pub(crate) struct FutexRestart {
+    futex_addr: Vaddr,
+    futex_val: u32,
+    bitset: u32,
+    visibility: FutexVisibility,
+    is_real_time: bool,
+    deadline: Duration,
+}
+
+impl FutexRestart {
+    pub(super) fn restart(self, ctx: &Context) -> Result<SyscallReturn> {
+        let timer_manager = if self.is_real_time {
+            RealTimeClock::timer_manager()
+        } else {
+            MonotonicClock::timer_manager()
+        };
+        let timeout = ManagedTimeout::new_with_manager(Timeout::When(self.deadline), timer_manager);
+        // The lower layer resolves wake-versus-cancellation under the bucket
+        // lock. Save restart work only after it has dequeued and unlocked; an
+        // actual futex wake must retain its successful result even with a signal.
+        futex_wait_bitset(
+            self.futex_addr,
+            self.futex_val as _,
+            Some(timeout),
+            self.bitset,
+            ctx,
+            self.visibility,
+        )
+        .map_err(|err| match err.error() {
+            Errno::ETIME => Error::new(Errno::ETIMEDOUT),
+            Errno::EINTR => {
+                // Linux v6.12 kernel/futex/waitwake.c: futex_wait. A caught
+                // handler returns EINTR even with SA_RESTART. STOP/CONT without
+                // a handler reuses these arguments, never a fresh duration or
+                // a second conversion from the caller's time namespace.
+                ctx.thread_local
+                    .restart_block()
+                    .set(RestartBlock::Futex(self));
+                Error::new(Errno::ERESTART_RESTARTBLOCK)
+            }
+            _ => err,
+        })?;
+        Ok(SyscallReturn::Return(0))
+    }
 }
 
 fn futex_val_to_max_count(futex_val: u32) -> usize {

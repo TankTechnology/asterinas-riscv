@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Run one Asterinas kernel ktest with the repository-local RISC-V OSDK binary.
 # The wrapper deliberately runs from kernel/ and writes QEMU evidence outside
 # target/ so a focused test does not rebuild or overwrite the whole workspace.

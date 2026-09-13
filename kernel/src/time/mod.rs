@@ -5,8 +5,8 @@
 pub use core::{Clock, timer};
 
 use ::core::time::Duration;
-pub use system_time::{START_TIME, SystemTime};
 pub(crate) use system_time::wall_clock_adjust_nanos;
+pub use system_time::{START_TIME, SystemTime};
 pub use timer::{Timer, TimerManager};
 
 use crate::prelude::*;
@@ -14,6 +14,7 @@ use crate::prelude::*;
 pub mod clocks;
 mod core;
 pub mod cpu_time_stats;
+pub mod namespace;
 mod softirq;
 mod system_time;
 pub mod timerfd;
@@ -27,6 +28,56 @@ const NSEC_PER_USEC: i64 = 1_000;
 const USEC_PER_SEC: i64 = 1_000_000;
 pub const NSEC_PER_SEC: i64 = 1_000_000_000;
 
+/// Linux's user-visible clock ticks per second, independent of timer IRQs.
+///
+/// See <https://github.com/torvalds/linux/blob/v6.16/include/uapi/asm-generic/param.h>.
+pub(crate) const USER_HZ: u64 = 100;
+
+/// Converts a duration to user-visible clock ticks, rounding down.
+pub(crate) fn duration_to_clock_ticks(duration: Duration) -> u64 {
+    let ticks = duration.as_nanos() * u128::from(USER_HZ) / NSEC_PER_SEC as u128;
+    u64::try_from(ticks).unwrap_or(u64::MAX)
+}
+
+/// Converts internal timer ticks to user-visible clock ticks, rounding down.
+pub(crate) fn jiffies_to_clock_ticks(jiffies: ostd::timer::Jiffies) -> u64 {
+    let ticks =
+        u128::from(jiffies.as_u64()) * u128::from(USER_HZ) / u128::from(ostd::timer::TIMER_FREQ);
+    u64::try_from(ticks).unwrap_or(u64::MAX)
+}
+
+#[cfg(ktest)]
+mod clock_tick_tests {
+    use ostd::{prelude::*, timer::Jiffies};
+
+    use super::*;
+
+    #[ktest]
+    fn user_ticks_have_ten_millisecond_resolution() {
+        assert_eq!(USER_HZ, 100);
+        assert_eq!(duration_to_clock_ticks(Duration::ZERO), 0);
+        assert_eq!(duration_to_clock_ticks(Duration::from_nanos(9_999_999)), 0);
+        assert_eq!(duration_to_clock_ticks(Duration::from_millis(10)), 1);
+        assert_eq!(duration_to_clock_ticks(Duration::from_secs(1)), 100);
+        assert_eq!(duration_to_clock_ticks(Duration::MAX), u64::MAX);
+    }
+
+    #[ktest]
+    fn internal_jiffies_are_not_user_ticks() {
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(0)), 0);
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(9)), 0);
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(10)), 1);
+        assert_eq!(
+            jiffies_to_clock_ticks(Jiffies::new(ostd::timer::TIMER_FREQ)),
+            USER_HZ
+        );
+        assert_eq!(
+            jiffies_to_clock_ticks(Jiffies::new(u64::MAX)),
+            u64::MAX / 10
+        );
+    }
+}
+
 pub(super) fn init() {
     system_time::init();
     clocks::init();
@@ -35,6 +86,7 @@ pub(super) fn init() {
 }
 
 pub(super) fn init_on_each_cpu() {
+    softirq::init_on_each_cpu();
     cpu_time_stats::init_on_each_cpu();
 }
 

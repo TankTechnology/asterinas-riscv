@@ -993,7 +993,7 @@ Expected:
 
 - [ ] **Step 3: Perform final Asterinas code review**
 
-Run the `aster-code-review` skill in diff mode against `upstream/main`.
+Perform a normal diff review against `upstream/main`.
 Review with these personas:
 
 - Project maintainer: constructor boundary, visibility, naming, focused diff;

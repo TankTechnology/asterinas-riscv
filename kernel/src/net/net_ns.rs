@@ -12,6 +12,8 @@
 //! Socket bind/connect and netlink route dumps operate on the interface view
 //! of the *current* namespace; packet polling of real devices stays global.
 
+use core::sync::atomic::{AtomicI32, Ordering};
+
 use spin::Once;
 
 use super::iface::{self, Iface};
@@ -27,6 +29,8 @@ pub struct NetNamespace {
     ifaces: Vec<Arc<Iface>>,
     /// The user namespace that owns this network namespace.
     owner: Arc<UserNamespace>,
+    default_ipv4_tag: AtomicI32,
+    loopback_ipv4_tag: AtomicI32,
     stashed_dentry: StashedDentry,
 }
 
@@ -39,6 +43,8 @@ impl NetNamespace {
             Arc::new(Self {
                 ifaces: iface::iter_all_ifaces().cloned().collect(),
                 owner: UserNamespace::get_init_singleton().clone(),
+                default_ipv4_tag: AtomicI32::new(0),
+                loopback_ipv4_tag: AtomicI32::new(0),
                 stashed_dentry: StashedDentry::new(),
             })
         })
@@ -53,6 +59,8 @@ impl NetNamespace {
         Arc::new(Self {
             ifaces: vec![loopback],
             owner,
+            default_ipv4_tag: AtomicI32::new(0),
+            loopback_ipv4_tag: AtomicI32::new(0),
             stashed_dentry: StashedDentry::new(),
         })
     }
@@ -79,6 +87,26 @@ impl NetNamespace {
             .iter()
             .find(|iface| iface.type_() != iface::InterfaceType::LOOPBACK)
             .unwrap_or(&self.ifaces[0])
+    }
+
+    /// Returns the IPv4 interface-tag default for newly created interfaces.
+    pub fn default_ipv4_tag(&self) -> i32 {
+        self.default_ipv4_tag.load(Ordering::Relaxed)
+    }
+
+    /// Updates the IPv4 interface-tag default in this network namespace.
+    pub fn set_default_ipv4_tag(&self, value: i32) {
+        self.default_ipv4_tag.store(value, Ordering::Relaxed);
+    }
+
+    /// Returns the loopback IPv4 tag in this network namespace.
+    pub fn loopback_ipv4_tag(&self) -> i32 {
+        self.loopback_ipv4_tag.load(Ordering::Relaxed)
+    }
+
+    /// Updates the loopback IPv4 tag in this network namespace.
+    pub fn set_loopback_ipv4_tag(&self, value: i32) {
+        self.loopback_ipv4_tag.store(value, Ordering::Relaxed);
     }
 }
 

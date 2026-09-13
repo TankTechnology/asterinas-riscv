@@ -33,10 +33,20 @@ pub fn shm_attach(
     ipc_ns: &Arc<IpcNamespace>,
     ctx: &Context,
 ) -> Result<Vaddr> {
-    // TODO: Support permission check.
-    warn!("Shared memory attach doesn't support permission check now");
+    let mut required_perm = PermissionMode::READ;
+    if !shmflg.contains(ShmFlags::SHM_RDONLY) {
+        required_perm |= PermissionMode::WRITE;
+    }
+    if shmflg.contains(ShmFlags::SHM_EXEC) {
+        required_perm |= PermissionMode::EXECUTE;
+    }
 
-    let (vmo, size) = ipc_ns.with_shm_set(shmid, PermissionMode::empty(), |shm_set| {
+    let pid = ctx.process.pid();
+    let (vmo, size) = ipc_ns.with_shm_set(shmid, required_perm, |shm_set| {
+        // Reserve the attachment while the ID-table read lock is held. This
+        // prevents a concurrent IPC_RMID from destroying the segment while
+        // the address-space mapping is being built.
+        shm_set.attach(pid);
         Ok((shm_set.vmo().clone(), shm_set.size()))
     })?;
     let size = size.align_up(PAGE_SIZE);
@@ -51,33 +61,36 @@ pub fn shm_attach(
 
     let user_space = ctx.user_space();
     let vmar = user_space.vmar();
-    let mut options = vmar.new_map(size, vm_perms)?;
-    options = options.is_shared(true).vmo(vmo);
+    let map_result = (|| {
+        let mut options = vmar.new_map(size, vm_perms)?;
+        options = options.is_shared(true).vmo(vmo);
 
-    if shmaddr != 0 {
-        let addr = if shmflg.contains(ShmFlags::SHM_RND) {
-            shmaddr.align_down(PAGE_SIZE)
-        } else {
-            if !shmaddr.is_multiple_of(PAGE_SIZE) {
-                return_errno_with_message!(Errno::EINVAL, "shmaddr is not aligned");
-            }
-            shmaddr
-        };
-        let offset = if shmflg.contains(ShmFlags::SHM_REMAP) {
-            VmarMapOffset::FixedReplace(addr)
-        } else {
-            VmarMapOffset::FixedNoReplace(addr)
-        };
-        options = options.offset(offset);
-    }
+        if shmaddr != 0 {
+            let addr = if shmflg.contains(ShmFlags::SHM_RND) {
+                shmaddr.align_down(PAGE_SIZE)
+            } else {
+                if !shmaddr.is_multiple_of(PAGE_SIZE) {
+                    return_errno_with_message!(Errno::EINVAL, "shmaddr is not aligned");
+                }
+                shmaddr
+            };
+            let offset = if shmflg.contains(ShmFlags::SHM_REMAP) {
+                VmarMapOffset::FixedReplace(addr)
+            } else {
+                VmarMapOffset::FixedNoReplace(addr)
+            };
+            options = options.offset(offset);
+        }
 
-    let map_addr = options.build()?;
-
-    let pid = ctx.process.pid();
-    ipc_ns.with_shm_set(shmid, PermissionMode::empty(), |shm_set| {
-        shm_set.attach(pid);
-        Ok(())
-    })?;
+        options.build()
+    })();
+    let map_addr = match map_result {
+        Ok(addr) => addr,
+        Err(error) => {
+            ipc_ns.release_shm_attachment(shmid, pid)?;
+            return Err(error);
+        }
+    };
     ipc_ns.record_shm_attachment(pid, map_addr, shmid);
 
     Ok(map_addr)
@@ -92,26 +105,28 @@ pub fn shm_detach(shmaddr: Vaddr, ipc_ns: &Arc<IpcNamespace>, ctx: &Context) -> 
     }
 
     let pid = ctx.process.pid();
-    let shmid = ipc_ns.remove_shm_attachment(pid, shmaddr).ok_or_else(|| {
+    let shmid = ipc_ns.take_shm_attachment(pid, shmaddr).ok_or_else(|| {
         Error::with_message(Errno::EINVAL, "no shared memory attached at the address")
     })?;
 
     let user_space = ctx.user_space();
     let vmar = user_space.vmar();
-    let range = {
-        let guard = vmar.query(shmaddr..shmaddr + PAGE_SIZE);
-        let mapping = guard
-            .iter()
-            .next()
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the address is not mapped"))?;
-        mapping.map_to_addr()..mapping.map_end()
-    };
-    vmar.remove_mapping(range)?;
-
-    ipc_ns.with_shm_set(shmid, PermissionMode::empty(), |shm_set| {
-        shm_set.detach(pid);
-        Ok(())
-    })?;
+    let unmap_result = (|| {
+        let range = {
+            let guard = vmar.query(shmaddr..shmaddr + PAGE_SIZE);
+            let mapping = guard
+                .iter()
+                .next()
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "the address is not mapped"))?;
+            mapping.map_to_addr()..mapping.map_end()
+        };
+        vmar.remove_mapping(range)
+    })();
+    if let Err(error) = unmap_result {
+        ipc_ns.record_shm_attachment(pid, shmaddr, shmid);
+        return Err(error);
+    }
+    ipc_ns.release_shm_attachment(shmid, pid)?;
 
     Ok(())
 }

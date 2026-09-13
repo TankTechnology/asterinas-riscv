@@ -3,6 +3,7 @@
 pub use cgroup_ns::CgroupNamespace;
 pub use controller::cpu::{CpuStatKind, charge_cpu_time};
 use fs::CgroupFsType;
+use inode::CgroupInode;
 pub(in crate::fs) use systree_node::CgroupSystem;
 pub use systree_node::{CgroupMembership, CgroupNode, CgroupSysNode};
 
@@ -13,8 +14,6 @@ use crate::{
     },
     prelude::*,
 };
-
-use inode::CgroupInode;
 
 /// Resolves a cgroup-v2 directory file descriptor (as passed to `clone3`'s
 /// `CLONE_INTO_CGROUP` via its `cgroup` field) to the corresponding

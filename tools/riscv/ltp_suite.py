@@ -31,8 +31,8 @@ _SUITE_SPECS = (
     (
         "arch-riscv64",
         Path("tools/riscv/ltp/manifests/arch-riscv64.txt"),
-        138,
-        1,
+        158,
+        0,
     ),
 )
 

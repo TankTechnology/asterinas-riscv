@@ -65,10 +65,12 @@ impl WriteAccessTracker {
                     "the file is being executed, write access is denied"
                 );
             }
-            match self
-                .count
-                .compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire)
-            {
+            match self.count.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => return Ok(()),
                 Err(new_cur) => cur = new_cur,
             }
@@ -92,10 +94,12 @@ impl WriteAccessTracker {
                     "the file is open for writing, execute access is denied"
                 );
             }
-            match self
-                .count
-                .compare_exchange_weak(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire)
-            {
+            match self.count.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => return Ok(()),
                 Err(new_cur) => cur = new_cur,
             }

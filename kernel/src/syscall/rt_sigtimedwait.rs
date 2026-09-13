@@ -12,7 +12,6 @@ use crate::{
         constants::{SIGKILL, SIGSTOP},
         sig_mask::{SigMask, SigSet},
         signals::Signal,
-        with_sigmask_changed,
     },
     time::{timespec_t, wait::ManagedTimeout},
 };
@@ -71,33 +70,32 @@ pub fn sys_rt_sigtimedwait(
         return Ok(SyscallReturn::Return(signal.num().as_u8() as _));
     }
 
-    with_sigmask_changed(
-        ctx,
-        |sig_mask| sig_mask & mask,
-        || {
-            // Wait for a signal to arrive or timeout.
-            let waiter = Waiter::new_pair().0;
-            let signal = waiter
-                .pause_until_or_timeout(
-                    || dequeue_signal_with_checking_ignore(ctx, mask, block_list),
-                    timeout.map(ManagedTimeout::new),
-                )
-                .map_err(|e| {
-                    if e.error() == Errno::ETIME {
-                        Error::new(Errno::EAGAIN)
-                    } else {
-                        e
-                    }
-                })?;
-
-            if info_ptr != 0 {
-                let siginfo = signal.to_info();
-                ctx.user_space().write_val(info_ptr, &siginfo)?;
+    // Keep originally blocked signals blocked during the wait. The generic
+    // cancellation probe may discard unblocked, ignored signals: unblocking
+    // SIGCHLD here lets that probe steal it between our dequeue attempts.
+    // Signal enqueue wakes our registered waiter even for blocked signals;
+    // the condition below explicitly dequeues the requested set. No temporary
+    // unblocking is needed for this wakeup protocol.
+    let waiter = Waiter::new_pair().0;
+    let signal = waiter
+        .pause_until_or_timeout(
+            || dequeue_signal_with_checking_ignore(ctx, mask, block_list),
+            timeout.map(ManagedTimeout::new),
+        )
+        .map_err(|e| {
+            if e.error() == Errno::ETIME {
+                Error::new(Errno::EAGAIN)
+            } else {
+                e
             }
+        })?;
 
-            Ok(SyscallReturn::Return(signal.num().as_u8() as _))
-        },
-    )
+    if info_ptr != 0 {
+        let siginfo = signal.to_info();
+        ctx.user_space().write_val(info_ptr, &siginfo)?;
+    }
+
+    Ok(SyscallReturn::Return(signal.num().as_u8() as _))
 }
 
 /// Dequeue a signal from the thread's pending signal queue.

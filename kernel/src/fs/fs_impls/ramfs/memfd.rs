@@ -271,7 +271,15 @@ impl MemfdInodeHandle for InodeHandle {
 
         let path = MemfdTmpFs::new_path(memfd_inode);
 
-        InodeHandle::new_unchecked_access(path, AccessMode::O_RDWR, StatusFlags::empty())
+        // Like Linux's shmem_file_setup(), memfd_create() directly allocates
+        // the original anonymous file description instead of performing a
+        // normal writable VFS open. It therefore must not contribute to the
+        // inode's exec/write exclusion counter.
+        InodeHandle::new_unchecked_access_without_write_tracking(
+            path,
+            AccessMode::O_RDWR,
+            StatusFlags::empty(),
+        )
     }
 
     fn add_seals(&self, new_seals: FileSeals) -> Result<()> {

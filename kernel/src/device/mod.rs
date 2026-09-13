@@ -3,6 +3,7 @@
 mod dri;
 mod evdev;
 mod fb;
+pub(crate) mod kmsg;
 pub(crate) mod r#loop;
 mod mem;
 pub mod misc;
@@ -169,6 +170,7 @@ pub fn add_node(
 pub fn init_in_first_kthread() {
     registry::init_in_first_kthread();
     mem::init_in_first_kthread();
+    kmsg::init_in_first_kthread();
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();
     fb::init_in_first_kthread();

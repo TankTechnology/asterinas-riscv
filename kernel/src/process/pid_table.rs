@@ -9,7 +9,7 @@
 
 use alloc::collections::btree_map::Entry;
 
-use super::{Pgid, Pid, Process, ProcessGroup, Session, Sid};
+use super::{Pgid, Pid, Process, ProcessGroup, Session, Sid, posix_thread::release_posix_tid};
 use crate::{
     prelude::*,
     process::posix_thread::AsPosixThread,
@@ -77,6 +77,7 @@ impl PidTable {
 
         if should_remove {
             map_entry.remove();
+            release_posix_tid(tid);
         }
     }
 
@@ -100,6 +101,7 @@ impl PidTable {
 
         if should_remove {
             map_entry.remove();
+            release_posix_tid(tid);
         }
 
         Some(thread)
@@ -164,6 +166,7 @@ impl PidTable {
 
         if should_remove {
             map_entry.remove();
+            release_posix_tid(pid);
         }
     }
 
@@ -209,6 +212,7 @@ impl PidTable {
 
         if should_remove {
             map_entry.remove();
+            release_posix_tid(pgid);
         }
     }
 
@@ -249,6 +253,7 @@ impl PidTable {
 
         if should_remove {
             map_entry.remove();
+            release_posix_tid(sid);
         }
     }
 

@@ -5,7 +5,10 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use aster_bigtcp::{socket::RawTcpOption, wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address}};
+use aster_bigtcp::{
+    socket::RawTcpOption,
+    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address},
+};
 
 use super::{connecting::ConnectingStream, listen::ListenStream, observer::StreamObserver};
 use crate::{
@@ -136,12 +139,14 @@ impl InitStream {
         // resolves to localhost. Do the same here so that LTP tests which
         // bind to INADDR_ANY and then connect back to the same address work.
         let resolved_remote = match remote_endpoint.addr {
-            IpAddress::Ipv4(addr) if addr.is_unspecified() => {
-                IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1)), remote_endpoint.port)
-            }
-            IpAddress::Ipv6(addr) if addr.is_unspecified() => {
-                IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 1)), remote_endpoint.port)
-            }
+            IpAddress::Ipv4(addr) if addr.is_unspecified() => IpEndpoint::new(
+                IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1)),
+                remote_endpoint.port,
+            ),
+            IpAddress::Ipv6(addr) if addr.is_unspecified() => IpEndpoint::new(
+                IpAddress::Ipv6(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 1)),
+                remote_endpoint.port,
+            ),
             _ => *remote_endpoint,
         };
 

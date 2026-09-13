@@ -86,8 +86,10 @@ impl ProcessStatus {
 
 #[derive(Debug)]
 pub(super) struct StopStatus {
-    /// Indicates whether the process is stopped.
+    /// Fast indication that a group stop is requested, including Stopping.
+    /// The coordinator owns the phase; wait status is published only on completion.
     is_stopped: AtomicBool,
+    notification_pending: AtomicBool,
 
     /// Indicates whether the process's status has changed and has not yet been waited on.
     ///
@@ -102,24 +104,25 @@ impl StopStatus {
     pub(self) const fn new() -> Self {
         Self {
             is_stopped: AtomicBool::new(false),
+            notification_pending: AtomicBool::new(false),
             wait_status: SpinLock::new(None),
         }
     }
 
-    /// Stops the process by some signal.
-    ///
-    /// The return value indicates whether the stop status has changed.
-    pub(super) fn stop(&self, signum: SigNum) -> bool {
-        // Hold the lock first to avoid race conditions
-        let mut wait_status = self.wait_status.lock();
+    /// Requests stop checkpoints, without claiming that all threads stopped.
+    /// All writers hold the process signal coordinator.
+    pub(super) fn request_stop(&self) {
+        self.is_stopped.store(true, Ordering::Relaxed);
+    }
 
-        if self.is_stopped.load(Ordering::Relaxed) {
-            false
-        } else {
-            self.is_stopped.store(true, Ordering::Relaxed);
-            *wait_status = Some(StopWaitStatus::Stopped(signum));
-            true
-        }
+    /// Publishes a completed group stop after the last participant acknowledges.
+    pub(super) fn complete_stop(&self, signum: SigNum) {
+        *self.wait_status.lock() = Some(StopWaitStatus::Stopped(signum));
+    }
+
+    /// Cancels stop work on terminal group exit, without reporting continuation.
+    pub(super) fn cancel(&self) {
+        self.is_stopped.store(false, Ordering::Relaxed);
     }
 
     /// Resumes the process.
@@ -138,9 +141,17 @@ impl StopStatus {
         }
     }
 
-    /// Returns whether the process is stopped.
+    /// Returns whether an uncancelled group stop has been requested.
     pub(super) fn is_stopped(&self) -> bool {
         self.is_stopped.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_notification_pending(&self, pending: bool) {
+        self.notification_pending.store(pending, Ordering::Relaxed);
+    }
+
+    pub(super) fn notification_pending(&self) -> bool {
+        self.notification_pending.load(Ordering::Relaxed)
     }
 
     /// Returns the stop status changes for the `wait` syscall.

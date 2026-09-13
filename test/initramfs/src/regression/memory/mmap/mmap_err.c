@@ -82,6 +82,24 @@ FN_TEST(zero_len)
 }
 END_TEST()
 
+FN_TEST(file_error_order)
+{
+	// Linux resolves a non-anonymous mapping's descriptor before rejecting a
+	// zero length, invalid mapping type, or unaligned fixed address. LTP mmap08
+	// covers the zero-length case.
+	TEST_ERRNO(mmap(NULL, 0, PROT_WRITE, MAP_SHARED, -1, 0), EBADF);
+	TEST_ERRNO(mmap(NULL, PAGE_SIZE, PROT_READ, 0, -1, 0), EBADF);
+	TEST_ERRNO(mmap((void *)1, PAGE_SIZE, PROT_WRITE,
+			MAP_SHARED | MAP_FIXED, -1, 0),
+		   EBADF);
+
+	// Offset alignment is validated at the syscall boundary, before the file
+	// descriptor is resolved.
+	TEST_ERRNO(mmap(NULL, PAGE_SIZE, PROT_READ, MAP_PRIVATE, -1, 1),
+		   EINVAL);
+}
+END_TEST()
+
 FN_TEST(overflow_addr)
 {
 	size_t exact_len = -(size_t)valid_addr;

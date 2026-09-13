@@ -6,11 +6,15 @@ use super::SyscallReturn;
 use crate::prelude::*;
 
 pub fn sys_pause(_ctx: &Context) -> Result<SyscallReturn> {
-    // FIXME: like sleep, paused thread can only be interrupted by signals that will call signal
-    // handler or terminate current process
     let waiter = Waiter::new_pair().0;
 
-    waiter.pause_until(|| None)?;
+    waiter.pause_until(|| None::<()>).map_err(|err| {
+        if err.error() == Errno::EINTR {
+            Error::new(Errno::ERESTARTNOHAND)
+        } else {
+            err
+        }
+    })?;
 
-    unreachable!("[Internal Error] pause should always return EINTR");
+    unreachable!("pause can only finish by signal interruption");
 }

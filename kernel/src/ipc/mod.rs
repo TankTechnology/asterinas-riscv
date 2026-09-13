@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use aster_rights::ReadOp;
+
 use crate::{
     prelude::*,
-    process::{Gid, Uid},
+    process::{Credentials, Gid, Uid},
 };
 
 mod ipc_ids;
@@ -92,6 +94,8 @@ pub struct IpcPermission {
 }
 
 impl IpcPermission {
+    const CLASS_MASK: u16 = 0o7;
+
     pub fn key(&self) -> IpcKey {
         self.key
     }
@@ -119,6 +123,32 @@ impl IpcPermission {
     /// Returns permission mode
     pub fn mode(&self) -> u16 {
         self.mode
+    }
+
+    /// Returns whether the credentials have the requested IPC access.
+    ///
+    /// Creator IDs participate in owner and group selection, matching Linux's
+    /// `ipcperms`. Capability overrides are namespace-dependent and are
+    /// therefore handled by [`IpcNamespace`].
+    ///
+    /// Reference: <https://github.com/torvalds/linux/blob/master/ipc/util.c>.
+    fn allows(&self, required_mode: u16, credentials: &Credentials<ReadOp>) -> bool {
+        let granted_mode = if credentials.euid() == self.cuid || credentials.euid() == self.uid {
+            self.mode >> 6
+        } else {
+            let groups = credentials.groups();
+            if credentials.egid() == self.cguid
+                || credentials.egid() == self.gid
+                || groups.contains(&self.cguid)
+                || groups.contains(&self.gid)
+            {
+                self.mode >> 3
+            } else {
+                self.mode
+            }
+        };
+
+        required_mode & !granted_mode & Self::CLASS_MASK == 0
     }
 
     pub(self) fn new_sem_perm(key: IpcKey, uid: Uid, gid: Gid, mode: u16) -> Self {

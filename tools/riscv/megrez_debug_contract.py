@@ -30,6 +30,8 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
 ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
+BROWSER_ROOT_IMAGE_BYTES = 2 * ROOT_IMAGE_BYTES
+ROOT_IMAGE_SIZES = frozenset((ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES))
 DEBIAN_BROWSER_MIN_REBOOT_AFTER = 600
 ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
@@ -111,7 +113,7 @@ class DebugContractError(ValueError):
 
 def _artifact_size_bounds(name: str) -> tuple[int, int]:
     if name == "root_image":
-        return ROOT_IMAGE_BYTES, ROOT_IMAGE_BYTES
+        return ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES
     if name in METADATA_ARTIFACT_NAMES:
         return 1, METADATA_ARTIFACT_BYTES
     return 1, MAX_ARTIFACT_BYTES
@@ -148,13 +150,11 @@ class ArtifactIdentity:
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
             raise DebugContractError("artifact must be a regular non-symlink file")
         minimum_size, maximum_size = _artifact_size_bounds(name)
+        if name == "root_image" and before.st_size not in ROOT_IMAGE_SIZES:
+            raise DebugContractError("root image must be exactly 1 GiB or 2 GiB")
         if before.st_size < minimum_size:
-            if minimum_size == maximum_size:
-                raise DebugContractError("root image must be exactly 1 GiB")
             raise DebugContractError("artifact is empty")
         if before.st_size > maximum_size:
-            if minimum_size == maximum_size:
-                raise DebugContractError("root image must be exactly 1 GiB")
             if maximum_size == METADATA_ARTIFACT_BYTES:
                 raise DebugContractError("metadata artifact exceeds the 8 MiB limit")
             raise DebugContractError("artifact exceeds the 64 MiB limit")
@@ -201,6 +201,8 @@ class ArtifactIdentity:
             isinstance(self.size, bool)
             or not isinstance(self.size, int)
             or not minimum_size <= self.size <= maximum_size
+            or self.name == "root_image"
+            and self.size not in ROOT_IMAGE_SIZES
         ):
             raise DebugContractError("invalid artifact size")
         if (

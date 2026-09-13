@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{sync::{Arc, Weak}, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 
 use aster_systree::{EmptyNode, SysBranchNode, SysObj};
 use ostd::task::Task;
@@ -93,12 +96,8 @@ impl FileSystem for CgroupFs {
             .ok_or_else(|| Error::with_message(Errno::ESTALE, "stale cgroup file handle"))?;
 
         let sb = self.sb();
-        let inode: Arc<dyn Inode> = CgroupInode::new_branch_dir(
-            SysTreeNodeKind::Branch(node),
-            None,
-            Weak::new(),
-            &sb,
-        );
+        let inode: Arc<dyn Inode> =
+            CgroupInode::new_branch_dir(SysTreeNodeKind::Branch(node), None, Weak::new(), &sb);
         Ok(inode)
     }
 
@@ -112,10 +111,7 @@ impl FileSystem for CgroupFs {
 /// Node IDs are assigned monotonically and are never reused, so a matching ID
 /// is globally unique. cgroup trees are small in practice, making a simple
 /// depth-first walk adequate.
-fn find_branch_node_by_id(
-    root: Arc<dyn SysBranchNode>,
-    id: u64,
-) -> Option<Arc<dyn SysBranchNode>> {
+fn find_branch_node_by_id(root: Arc<dyn SysBranchNode>, id: u64) -> Option<Arc<dyn SysBranchNode>> {
     if root.id().as_u64() == id {
         return Some(root);
     }

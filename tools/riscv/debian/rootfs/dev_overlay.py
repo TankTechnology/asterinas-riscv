@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Materialize audited development overlays on a frozen Debian ext2 rootfs."""
+"""Materialize audited development overlays on a frozen Debian ext2 rootfs.
+
+Files replace existing regular files unless their entry explicitly sets
+``create: true``, which also permits a new regular file in an existing directory.
+Destination paths must not traverse symlinks.
+"""
 
 from __future__ import annotations
 
@@ -34,13 +39,16 @@ _FILE_KEYS = {"source", "destination", "mode"}
 _MODE_RE = re.compile(r"\A0[0-7]{3}\Z")
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _DESTINATION_RE = re.compile(r"\A/[A-Za-z0-9._+@%:,=/~-]+\Z")
+_DEBUGFS_BANNER_RE = re.compile(r"debugfs [0-9]+(?:\.[0-9]+)+ \([^()\r\n]+\)")
 _HASH_CHUNK_SIZE = 1024 * 1024
 # Linux documents the shared ext2/ext4 superblock at byte 1024, with `s_wtime`
-# at offset 0x30 and `s_magic` at 0x38. See
+# at offset 0x30, `s_magic` at 0x38, and `s_feature_ro_compat` at 0x64. See
 # Documentation/filesystems/ext4/super.rst in the Linux kernel source.
 _EXT_SUPERBLOCK_OFFSET = 1024
 _EXT_WRITE_TIME_OFFSET = _EXT_SUPERBLOCK_OFFSET + 48
 _EXT_MAGIC_OFFSET = _EXT_SUPERBLOCK_OFFSET + 56
+_EXT_RO_COMPAT_OFFSET = _EXT_SUPERBLOCK_OFFSET + 100
+_EXT_METADATA_CSUM = 0x0400
 _EXT_MAGIC = b"\x53\xef"
 
 
@@ -50,13 +58,14 @@ class OverlayError(ValueError):
 
 @dataclass(frozen=True)
 class OverlayFile:
-    """One immutable regular-file replacement in a development overlay."""
+    """One immutable regular-file update in a development overlay."""
 
     source_name: str
     source: Path
     destination: str
     mode: int
     sha256: str
+    create: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,9 +94,15 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     return value
 
 
-def _exact_keys(value: Mapping[str, Any], expected: set[str], name: str) -> None:
+def _exact_keys(
+    value: Mapping[str, Any],
+    expected: set[str],
+    name: str,
+    *,
+    optional: frozenset[str] = frozenset(),
+) -> None:
     missing = sorted(expected - set(value))
-    unexpected = sorted(set(value) - expected)
+    unexpected = sorted(set(value) - expected - optional)
     if missing:
         raise OverlayError(f"missing {name} fields: {missing}")
     if unexpected:
@@ -177,7 +192,7 @@ def load_overlay_spec(
         ) from error
     document = _mapping(raw, "overlay")
     _exact_keys(document, _SPEC_KEYS, "overlay")
-    if document["schema_version"] != 1:
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise OverlayError("unsupported overlay schema version")
     profile = _string(document["profile"], "profile")
     if expected_profile is not None and profile != expected_profile:
@@ -192,7 +207,10 @@ def load_overlay_spec(
     destinations: set[str] = set()
     for index, raw_file in enumerate(raw_files):
         item = _mapping(raw_file, f"files[{index}]")
-        _exact_keys(item, _FILE_KEYS, f"files[{index}]")
+        _exact_keys(item, _FILE_KEYS, f"files[{index}]", optional=frozenset({"create"}))
+        create = item.get("create", False)
+        if not isinstance(create, bool):
+            raise OverlayError(f"files[{index}].create must be a boolean")
         source_name = _string(item["source"], f"files[{index}].source")
         source = _resolve_source(path.parent, source_name)
         destination = _destination(item["destination"])
@@ -209,6 +227,7 @@ def load_overlay_spec(
                 destination=destination,
                 mode=int(mode_text, 8),
                 sha256=_sha256_file(source),
+                create=create,
             )
         )
     return OverlaySpec(
@@ -216,31 +235,86 @@ def load_overlay_spec(
     )
 
 
-def _run_debugfs(image: Path, command: str, *, writable: bool = False) -> str:
+def _run_debugfs(
+    image: Path,
+    command: str,
+    *,
+    writable: bool = False,
+    allow_missing: bool = False,
+) -> str | None:
     arguments = ["debugfs"]
     if writable:
         arguments.append("-w")
     arguments.extend(("-R", command, str(image)))
-    result = subprocess.run(arguments, capture_output=True, text=True)
-    if result.returncode != 0:
+    # libext2fs uses this clock for writes, including deletion times in freed
+    # inodes that may not be reused. Keep their deletion time fixed and nonzero.
+    environment = dict(os.environ, E2FSPROGS_FAKE_TIME="1")
+    result = subprocess.run(arguments, capture_output=True, text=True, env=environment)
+    diagnostics = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+    if diagnostics and _DEBUGFS_BANNER_RE.fullmatch(diagnostics[0]):
+        diagnostics.pop(0)
+    if (
+        allow_missing
+        and not writable
+        and command.startswith("stat ")
+        and result.returncode == 0
+        and not result.stdout
+        and diagnostics == [f"{command[5:]}: File not found by ext2_lookup"]
+    ):
+        return None
+    if result.returncode != 0 or diagnostics:
         raise OverlayError(f"debugfs failed for {command!r}: {result.stderr.strip()}")
     return result.stdout
 
 
-def _require_existing_regular_file(image: Path, destination: str) -> None:
-    output = _run_debugfs(image, f"stat {destination}")
-    if "Inode:" not in output:
-        raise OverlayError(f"overlay destination does not exist: {destination}")
-    if "Type: regular" not in output:
-        raise OverlayError(f"overlay destination is not a regular file: {destination}")
+def _inode_type(output: str | None) -> str | None:
+    """Read the actual inode header, excluding quoted symlink target text."""
+
+    if output is None:
+        return None
+    match = re.match(
+        r"Inode:[ \t]+[0-9]+[ \t]+Type:[ \t]+([^\r\n]+?)[ \t]+Mode:", output
+    )
+    if match is None:
+        raise OverlayError("invalid debugfs inode stat output")
+    return match.group(1)
+
+
+def _validate_destination(image: Path, entry: OverlayFile) -> bool:
+    """Validate each path component and return whether the target exists."""
+
+    # Inspect ancestors from the root so debugfs never resolves a path through
+    # an unchecked symlink, including when the final component is absent.
+    for parent in reversed(PurePosixPath(entry.destination).parents):
+        inode_type = _inode_type(
+            _run_debugfs(image, f"stat {parent}", allow_missing=True)
+        )
+        if inode_type is None:
+            raise OverlayError(f"overlay parent does not exist: {parent}")
+        if inode_type != "directory":
+            raise OverlayError(f"overlay parent is not a directory: {parent}")
+
+    inode_type = _inode_type(
+        _run_debugfs(image, f"stat {entry.destination}", allow_missing=True)
+    )
+    if inode_type is None:
+        if entry.create:
+            return False
+        raise OverlayError(f"overlay destination does not exist: {entry.destination}")
+    if inode_type != "regular":
+        raise OverlayError(
+            f"overlay destination is not a regular file: {entry.destination}"
+        )
+    return True
 
 
 def _apply_file(image: Path, entry: OverlayFile, scratch: Path, index: int) -> None:
-    _require_existing_regular_file(image, entry.destination)
+    destination_exists = _validate_destination(image, entry)
     staged_source = scratch / f"source-{index:04d}"
     shutil.copyfile(entry.source, staged_source)
+    if destination_exists:
+        _run_debugfs(image, f"rm {entry.destination}", writable=True)
     commands = (
-        f"rm {entry.destination}",
         f"write {staged_source} {entry.destination}",
         f"set_inode_field {entry.destination} mode {stat.S_IFREG | entry.mode}",
         f"set_inode_field {entry.destination} uid 0",
@@ -258,13 +332,47 @@ def _apply_file(image: Path, entry: OverlayFile, scratch: Path, index: int) -> N
     if _sha256_file(dumped) != entry.sha256:
         raise OverlayError(f"overlay byte verification failed: {entry.destination}")
     stat_output = _run_debugfs(image, f"stat {entry.destination}")
-    if "Type: regular" not in stat_output:
+    if _inode_type(stat_output) != "regular":
         raise OverlayError(
             f"overlay file-type verification failed: {entry.destination}"
         )
     match = re.search(r"\bMode:\s+0*([0-7]{3,4})\b", stat_output)
     if match is None or int(match.group(1), 8) & 0o7777 != entry.mode:
         raise OverlayError(f"overlay mode verification failed: {entry.destination}")
+    match = re.search(r"\bUser:\s+(\d+)\s+Group:\s+(\d+)\b", stat_output)
+    if match is None or (int(match.group(1)), int(match.group(2))) != (0, 0):
+        raise OverlayError(
+            f"overlay ownership verification failed: {entry.destination}"
+        )
+    for field in ("atime", "ctime", "mtime", "crtime"):
+        match = re.search(
+            rf"^[ \t]*{field}:[ \t]+0x([0-9a-f]+)(?::([0-9a-f]+))?[ \t]+--",
+            stat_output,
+            re.MULTILINE,
+        )
+        if (
+            match is None
+            or int(match.group(1), 16) != 0
+            or int(match.group(2) or "0", 16) != 0
+        ):
+            raise OverlayError(
+                f"overlay timestamp verification failed ({field}): {entry.destination}"
+            )
+
+
+def _require_supported_ext_image(image: Path) -> None:
+    """Reject metadata checksums before any edits using raw superblock writes."""
+
+    with image.open("rb") as stream:
+        stream.seek(_EXT_MAGIC_OFFSET)
+        if stream.read(len(_EXT_MAGIC)) != _EXT_MAGIC:
+            raise OverlayError("base image does not contain an ext superblock")
+        stream.seek(_EXT_RO_COMPAT_OFFSET)
+        features = stream.read(4)
+        if len(features) != 4:
+            raise OverlayError("base ext superblock is truncated")
+        if int.from_bytes(features, "little") & _EXT_METADATA_CSUM:
+            raise OverlayError("ext metadata checksums are unsupported for overlays")
 
 
 def _restore_ext_write_time(base_image: Path, derived_image: Path) -> None:
@@ -295,6 +403,7 @@ def materialize_image(base_image: Path, output_image: Path, spec: OverlaySpec) -
     if base_input.is_symlink() or not stat.S_ISREG(base_input.stat().st_mode):
         raise OverlayError("base image must be a non-symlink regular file")
     base_image = base_input.resolve(strict=True)
+    _require_supported_ext_image(base_image)
     output_image = Path(output_image).absolute()
     if output_image == base_image or (
         output_image.exists() and os.path.samefile(base_image, output_image)
@@ -322,7 +431,11 @@ def materialize_image(base_image: Path, output_image: Path, spec: OverlaySpec) -
             ],
             check=True,
         )
-        with tempfile.TemporaryDirectory(prefix="asterinas-dev-overlay-") as directory:
+        # These generated paths become debugfs command arguments; keep them
+        # independent of TMPDIR, which may contain spaces or parser characters.
+        with tempfile.TemporaryDirectory(
+            prefix="asterinas-dev-overlay-", dir="/tmp"
+        ) as directory:
             scratch = Path(directory)
             for index, entry in enumerate(spec.files):
                 _apply_file(temporary, entry, scratch, index)
@@ -365,6 +478,7 @@ def build_derived_documents(
             "destination": entry.destination,
             "mode": f"0{entry.mode:03o}",
             "sha256": entry.sha256,
+            "create": entry.create,
         }
         for entry in spec.files
     ]

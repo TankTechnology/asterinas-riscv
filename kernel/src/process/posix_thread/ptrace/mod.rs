@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ostd::arch::cpu::context::{FsBase, GeneralRegs, GsBase};
 use ostd::{arch::cpu::context::UserContext, sync::Waiter};
 
-use super::{AsPosixThread, PosixThread};
+use super::{AsPosixThread, PosixThread, SleepingState};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::ptrace as arch_ptrace;
 use crate::{
@@ -16,12 +16,15 @@ use crate::{
     process::{
         CloneArgs, CloneFlags, Process, WaitOptions,
         signal::{
-            DequeuedSignal, PauseReason,
+            DequeuedSignal, HandlePendingSignal, PauseReason,
             c_types::siginfo_t,
-            constants::{CLD_TRAPPED, SIGCHLD, SIGKILL, SIGTRAP},
+            constants::{CLD_STOPPED, CLD_TRAPPED, SIGCHLD, SIGKILL, SIGTRAP},
+            job_control::GroupStopParticipant,
             provenance::trace_kernel_thread_enqueue,
+            sig_num::SigNum,
             signals::{kernel::KernelSignal, raw::RawSignal, user::UserSignal},
         },
+        status::StopWaitStatus,
     },
     thread::{Thread, Tid},
 };
@@ -33,6 +36,26 @@ use util::StopDeliverySignal;
 pub use util::{PtraceContRequest, PtraceOptions, PtraceStopResult, PtraceWaitStatus};
 
 impl PosixThread {
+    /// Returns a committed stop independently of transient kernel scheduling.
+    pub(super) fn stopped_state(&self) -> Option<SleepingState> {
+        let tracee = self.tracee_status.get();
+        // Use the same order as traced acknowledgment and detach. A ptrace
+        // hold takes precedence over group parking, but merely being traced
+        // (or having an unacknowledged group request) does not mean stopped.
+        let _state = tracee.map(|tracee| tracee.state.lock());
+        if tracee.is_some_and(|tracee| tracee.is_stopped.load(Ordering::Relaxed)) {
+            return Some(SleepingState::StopByPtrace);
+        }
+        let process = self.process.upgrade()?;
+        let _control = process.signal_job_control().lock();
+        (process.is_stopped()
+            && matches!(
+                *self.group_stop_participant().lock(),
+                GroupStopParticipant::Acknowledged
+            ))
+        .then_some(SleepingState::StopBySignal)
+    }
+
     /// Returns whether this thread is being traced.
     pub(in crate::process) fn is_traced(&self) -> bool {
         self.tracer().is_some()
@@ -50,12 +73,23 @@ impl PosixThread {
     /// Returns `EPERM` if this thread is already being traced.
     fn set_tracer(&self, tracer: Weak<Thread>) -> Result<()> {
         let status = self.tracee_status.call_once(TraceeStatus::new);
-        status.set_tracer(tracer)
+        status.set_tracer(tracer, self)?;
+        self.wake_signalled_waker();
+        Ok(())
     }
 
     /// Detaches the tracer of this thread.
     pub(in crate::process) fn detach_tracer(&self) {
         self.detach_tracer_with(|_| {});
+    }
+
+    /// Detaches this thread from its tracer and resumes it.
+    fn detach_from_ptrace(&self, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let status = self.get_tracee_status()?;
+        status.detach(sig_num, ctx, self)?;
+        self.wake_signalled_waker();
+
+        Ok(())
     }
 
     /// Detaches the tracer of this thread with a callback.
@@ -64,7 +98,7 @@ impl PosixThread {
         F: FnOnce(&TraceeState),
     {
         if let Some(status) = self.tracee_status.get() {
-            status.detach_tracer_with(detach_callback);
+            status.detach_tracer_with(detach_callback, self);
             self.wake_signalled_waker();
         }
     }
@@ -83,6 +117,16 @@ impl PosixThread {
         } else {
             PtraceStopResult::NotTraced(Some(signal))
         }
+    }
+
+    /// Participates in group stop, transferring control to the tracer if one
+    /// is attached. Tracer attachment is serialized with acknowledgment.
+    pub(crate) fn group_stop(&self, ctx: &Context, user_ctx: &mut UserContext) {
+        // Initializing the state here also serializes the first attach against
+        // an untraced checkpoint; a snapshot of an absent Once is insufficient.
+        self.tracee_status
+            .call_once(TraceeStatus::new)
+            .group_stop(ctx, user_ctx);
     }
 
     /// Stops this thread by ptrace on the `event` if it is currently traced,
@@ -131,6 +175,24 @@ impl PosixThread {
         self.tracee_status
             .get()
             .and_then(|status| status.wait(options))
+    }
+
+    /// Consumes the real parent's group status independently of the tracer's
+    /// per-thread stop. A parent tracing its own child must not see both stops.
+    pub(in crate::process) fn wait_child_group_status(
+        &self,
+        mut options: WaitOptions,
+        parent: &Process,
+    ) -> Option<StopWaitStatus> {
+        // Serialize eligibility and consumption with even the first attach.
+        // Lock order: parent children -> tracee state -> group wait status.
+        let state = self.tracee_status.call_once(TraceeStatus::new).state.lock();
+        if state.tracer().is_some_and(|tracer| {
+            core::ptr::eq(tracer.as_posix_thread().unwrap().process().as_ref(), parent)
+        }) {
+            options.remove(WaitOptions::WSTOPPED);
+        }
+        self.process().wait_stopped_or_continued(options)
     }
 
     /// Continues this thread from a ptrace-stop.
@@ -305,6 +367,29 @@ impl PosixThread {
             .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))
     }
 
+    /// Detaches the tracee with the given TID and resumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ESRCH` if there is no such tracee or it is not ptrace-stopped.
+    pub fn detach_from(&self, tid: Tid, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let tracees = self
+            .tracees()
+            .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))?;
+
+        // Lock order: tracer.tracees -> tracee.tracee_status
+        let mut tracees = tracees.lock();
+        let tracee_thread = tracees
+            .get(&tid)
+            .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))?;
+        let tracee = tracee_thread.as_posix_thread().unwrap();
+
+        tracee.detach_from_ptrace(sig_num, ctx)?;
+        tracees.remove(&tid);
+
+        Ok(())
+    }
+
     /// Clears all tracees of this tracer on exit.
     pub(in crate::process) fn clear_tracees(&self) {
         let Some(tracees) = self.tracees() else {
@@ -355,23 +440,57 @@ impl TraceeStatus {
         self.state.lock().tracer()
     }
 
-    fn set_tracer(&self, tracer: Weak<Thread>) -> Result<()> {
+    fn set_tracer(&self, tracer: Weak<Thread>, thread: &PosixThread) -> Result<()> {
         let mut state = self.state.lock();
         if state.tracer().is_some() {
             return_errno_with_message!(Errno::EPERM, "the thread is already being traced");
         }
         state.tracer = tracer;
+        thread
+            .process()
+            .signal_job_control()
+            .lock()
+            .attach(&mut thread.group_stop_participant().lock());
 
         Ok(())
     }
 
-    fn detach_tracer_with<F>(&self, detach_callback: F)
+    fn detach_tracer_with<F>(&self, detach_callback: F, thread: &PosixThread)
     where
         F: FnOnce(&TraceeState),
     {
         // Hold the lock first to avoid race conditions.
         let mut state = self.state.lock();
 
+        detach_callback(&state);
+        self.finish_detach(&mut state, thread);
+    }
+
+    fn detach(&self, sig_num: Option<SigNum>, ctx: &Context, thread: &PosixThread) -> Result<()> {
+        let mut state = self.state.lock();
+        self.check_ptrace_stopped(&state)?;
+
+        if let Some(sig_num) = sig_num {
+            state
+                .signal
+                .inject(Box::new(UserSignal::new_kill(sig_num, ctx)));
+        } else {
+            state.signal.clear();
+        }
+
+        self.finish_detach(&mut state, thread);
+
+        Ok(())
+    }
+
+    fn finish_detach(&self, state: &mut TraceeState, thread: &PosixThread) {
+        // Lock order: tracee state -> coordinator -> participant. Publish the
+        // restored obligation before releasing ptrace's execution hold.
+        thread
+            .process()
+            .signal_job_control()
+            .lock()
+            .detach(&mut thread.group_stop_participant().lock());
         state.tracer = Weak::new();
         #[cfg(target_arch = "x86_64")]
         {
@@ -379,9 +498,56 @@ impl TraceeStatus {
                 arch_ptrace::disable_single_step(regs);
             }
         }
+        state.options = PtraceOptions::empty();
         state.is_tracing_syscall = false;
-        detach_callback(&state);
         self.is_stopped.store(false, Ordering::Relaxed);
+    }
+
+    fn group_stop(&self, ctx: &Context, user_ctx: &mut UserContext) {
+        let mut state = self.state.lock();
+        let tracer = state.tracer();
+        let mut control = ctx.process.signal_job_control().lock();
+        let mut participant = ctx.posix_thread.group_stop_participant().lock();
+        if ctx.has_pending_sigkill() {
+            return;
+        }
+        let Some(tracer) = tracer else {
+            control.acknowledge(&mut participant, ctx.process.status());
+            drop(participant);
+            drop(control);
+            drop(state);
+            ctx.process.notify_group_stop();
+            return;
+        };
+        let Some((signum, completed)) =
+            control.acknowledge_traced(&mut participant, ctx.process.status())
+        else {
+            return;
+        };
+        let wait_status = PtraceWaitStatus::from_signal(signum);
+        let report_signum = control.group_stop_signal().unwrap();
+        // Claim this completion before releasing the coordinator: a sibling
+        // must not send it separately while we suppress a duplicate parent.
+        let group_event = if completed {
+            control.take_notification(ctx.process.status())
+        } else {
+            None
+        };
+        // Consume the CURRENT obligation and publish the ptrace stop in the
+        // same critical section. Neither detach nor SIGCONT can split them.
+        self.prepare_ptrace_stop(&mut state, None, wait_status, None, ctx, user_ctx);
+        drop(participant);
+        drop(control);
+        drop(state);
+        self.finish_ptrace_stop(
+            tracer,
+            (CLD_STOPPED, report_signum.as_u8() as i32),
+            group_event,
+            ctx,
+            user_ctx,
+        );
+        // No participation write here: an old stop return may follow CONT
+        // and a new STOP. Only the next checkpoint can consume that new work.
     }
 
     fn ptrace_stop(
@@ -476,12 +642,39 @@ impl TraceeStatus {
         ctx: &Context,
         user_ctx: &mut UserContext,
     ) -> PtraceStopResult {
+        self.prepare_ptrace_stop(&mut state, Some(signal), wait_status, event, ctx, user_ctx);
+        drop(state);
+        self.finish_ptrace_stop(
+            tracer,
+            (
+                CLD_TRAPPED,
+                (wait_status.to_wait4_status() >> 8) as i32 & 0x7f,
+            ),
+            None,
+            ctx,
+            user_ctx,
+        )
+    }
+
+    fn prepare_ptrace_stop(
+        &self,
+        state: &mut TraceeState,
+        signal: Option<DequeuedSignal>,
+        wait_status: PtraceWaitStatus,
+        event: Option<PtraceEvent>,
+        ctx: &Context,
+        user_ctx: &mut UserContext,
+    ) {
         #[cfg(not(target_arch = "x86_64"))]
-        let _ = user_ctx;
+        let _ = (ctx, user_ctx);
 
         debug_assert!(!self.is_ptrace_stopped());
 
-        state.signal.stop(signal, wait_status);
+        if let Some(signal) = signal {
+            state.signal.stop(signal, wait_status);
+        } else {
+            state.signal.group_stop(wait_status);
+        }
         state.event = event;
         #[cfg(target_arch = "x86_64")]
         {
@@ -492,15 +685,41 @@ impl TraceeStatus {
             state.set_orig_syscall_ret(ctx.thread_local.orig_syscall_ret());
         }
         self.is_stopped.store(true, Ordering::Relaxed);
-        drop(state);
+    }
+
+    fn finish_ptrace_stop(
+        &self,
+        tracer: Arc<Thread>,
+        notification: (i32, i32),
+        group_event: Option<StopWaitStatus>,
+        ctx: &Context,
+        user_ctx: &mut UserContext,
+    ) -> PtraceStopResult {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = user_ctx;
 
         let tracer = tracer.as_posix_thread().unwrap();
-        tracer.enqueue_signal(Box::new(RawSignal::new({
-            let mut siginfo = siginfo_t::new(SIGCHLD, CLD_TRAPPED);
-            siginfo.set_pid_uid_by(ctx);
-            siginfo
-        })));
-        tracer.process().children_wait_queue().wake_all();
+        let tracer_process = tracer.process();
+        let (code, status) = notification;
+        let mut info = ctx
+            .process
+            .child_state_siginfo(&tracer_process, code, status);
+        if ctx.posix_thread.tid() != ctx.process.pid() {
+            // Ptrace's non-leader TID namespace translation is not implemented
+            // yet, matching the existing ptrace wait ABI.
+            info.set_pid_uid(
+                ctx.posix_thread.tid(),
+                tracer_process
+                    .user_ns()
+                    .lock()
+                    .map_kuid(ctx.posix_thread.credentials().ruid()),
+            );
+        }
+        tracer_process.notify_child_state(info);
+        if let Some(event) = group_event {
+            ctx.process
+                .notify_group_stop_event(event, Some(&tracer_process));
+        }
 
         let waiter = Waiter::new_pair().0;
         if waiter
@@ -753,7 +972,11 @@ impl TraceeStatus {
         let state = self.state.lock();
         self.check_ptrace_stopped(&state)?;
 
-        Ok(state.signal.get().unwrap().to_info())
+        state
+            .signal
+            .get()
+            .map(|signal| signal.to_info())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the group stop has no signal info"))
     }
 }
 

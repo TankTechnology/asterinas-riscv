@@ -73,7 +73,11 @@ pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     // Only interfaces visible in the current network namespace can be
     // addressed.
     let net_ns = current_net_ns();
-    let Some(iface) = net_ns.ifaces().iter().find(|iface| iface.index() == index.get()) else {
+    let Some(iface) = net_ns
+        .ifaces()
+        .iter()
+        .find(|iface| iface.index() == index.get())
+    else {
         return_errno_with_message!(Errno::ENODEV, "no link found");
     };
 
