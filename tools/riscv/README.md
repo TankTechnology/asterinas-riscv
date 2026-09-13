@@ -848,16 +848,22 @@ tools/docker/run_dev_container.sh -- make test_riscv_megrez_desktop_unit
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
 requires an aligned 512 KiB SDMA buffer whose CPU and device addresses are
 identical inside `0xc0000000..0x100000000`, the EIC7700 removable-card
-controller, a nonzero SDHC capacity, and read-only `mmcblk0` registration in
-that order. For the physical data-path gate it then requires one exact 32 MiB
-read whose CRC32 matches the value measured by U-Boot. That read covers the
-partition table and is stronger than the old, never-implemented
+controller, a nonzero SDHC capacity, the exact negotiated record
+`[mmc] timing=high-speed clock=50000000`, and read-only `mmcblk0` registration
+in that order. For the physical data-path gate it then requires one exact
+32 MiB read whose CRC32 matches the value measured by U-Boot. That read covers
+the partition table and is stronger than the old, never-implemented
 `partition-table sha256` log requirement. The identity address is the RockOS
 U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID 16 and
 is not usable as a fixed offset while Asterinas RISC-V has no IOMMU. Panic,
-fatal, probe-failure, writable, translated, misaligned, duplicate, and
-out-of-order evidence is rejected. Linux boot output is not an accepted
-substitute.
+fatal, probe-failure, writable, default-speed fallback, translated, misaligned,
+duplicate, and out-of-order evidence is rejected. Linux boot output is not an
+accepted substitute.
+
+`asterinas.mmc_default_speed` is the recovery escape hatch. It skips optional
+SCR/CMD6 promotion and retains 4-bit 25 MHz default-speed operation. A run with
+this flag is useful for recovery or an A/B diagnosis, but cannot pass the High
+Speed physical gate.
 
 Run the host tests with:
 

@@ -30,6 +30,7 @@ _CARD = re.compile(
     r"\[mmc\] SDHC rca=(?P<rca>[1-9][0-9]*) sectors=(?P<sectors>[1-9][0-9]*)"
     r"(?: sector0=[0-9a-fA-F]{4})?"
 )
+_TIMING = re.compile(r"\[mmc\] timing=high-speed clock=50000000")
 _BLOCK = re.compile(r"\[mmc\] mmcblk0 registered read-only")
 _UPTIME = r"(?:0|[1-9][0-9]*)\.[0-9]+"
 _READ_START = re.compile(
@@ -75,6 +76,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
         list(_BUFFER.finditer(text)),
         list(_CONTROLLER.finditer(text)),
         list(_CARD.finditer(text)),
+        list(_TIMING.finditer(text)),
         list(_BLOCK.finditer(text)),
     ]
     if any(len(found) != 1 for found in matches):
@@ -112,7 +114,7 @@ def classify(transcript: bytes, *, expected_crc32: str | None = None) -> GateRes
     start_match = start_matches[0]
     pass_match = pass_matches[0]
     if (
-        matches[3][0].start() > start_match.start()
+        matches[4][0].start() > start_match.start()
         or start_match.start() > pass_match.start()
     ):
         return _failure("out-of-order-read-marker")

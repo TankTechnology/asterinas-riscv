@@ -169,28 +169,63 @@ pub enum CardTiming {
     HighSpeed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpeedSelection {
+    HighSpeed,
+    DefaultSpeedUnsupported,
+    DefaultSpeedForced,
+    DefaultSpeedRecovered,
+}
+
+impl SpeedSelection {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HighSpeed => "high-speed",
+            Self::DefaultSpeedUnsupported => "default-speed-unsupported",
+            Self::DefaultSpeedForced => "default-speed-forced",
+            Self::DefaultSpeedRecovered => "default-speed-recovered",
+        }
+    }
+}
+
 /// Immutable SDHC identity learned during discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Card {
     rca: u16,
     nr_sectors: u64,
     timing: CardTiming,
+    speed_selection: SpeedSelection,
 }
 
 impl Card {
     /// Discovers and selects one high-capacity SD card.
     pub fn discover(host: &mut impl HostController) -> Result<Self, HostError> {
+        Self::discover_with_policy(host, false)
+    }
+
+    pub fn discover_with_policy(
+        host: &mut impl HostController,
+        force_default_speed: bool,
+    ) -> Result<Self, HostError> {
         let (mut card, csd) = Self::discover_default_speed(host)?;
+        if force_default_speed {
+            card.speed_selection = SpeedSelection::DefaultSpeedForced;
+            return Ok(card);
+        }
         if !csd.supports_switch() {
             return Ok(card);
         }
         match card.try_enable_high_speed(host)? {
             Promotion::Selected => {
                 card.timing = CardTiming::HighSpeed;
+                card.speed_selection = SpeedSelection::HighSpeed;
                 Ok(card)
             }
             Promotion::Unsupported => Ok(card),
-            Promotion::Ambiguous => Self::discover_default_speed(host).map(|(card, _)| card),
+            Promotion::Ambiguous => Self::discover_default_speed(host).map(|(mut card, _)| {
+                card.speed_selection = SpeedSelection::DefaultSpeedRecovered;
+                card
+            }),
         }
     }
 
@@ -251,6 +286,7 @@ impl Card {
                 rca,
                 nr_sectors: csd.nr_sectors(),
                 timing: CardTiming::DefaultSpeed,
+                speed_selection: SpeedSelection::DefaultSpeedUnsupported,
             },
             csd,
         ))
@@ -316,6 +352,10 @@ impl Card {
 
     pub const fn timing(self) -> CardTiming {
         self.timing
+    }
+
+    pub const fn speed_selection(self) -> SpeedSelection {
+        self.speed_selection
     }
 
     pub const fn data_clock_hz(self) -> u32 {
@@ -782,6 +822,7 @@ mod tests {
             rca: 1,
             nr_sectors: 8,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FastHost {
             reads: Vec::new(),
@@ -856,6 +897,7 @@ mod tests {
 
         let card = Card::discover(&mut host).unwrap();
         assert_eq!(card.timing(), CardTiming::HighSpeed);
+        assert_eq!(card.speed_selection(), SpeedSelection::HighSpeed);
         assert_eq!(card.data_clock_hz(), HIGH_SPEED_CLOCK_HZ);
         host.assert_done();
     }
@@ -893,6 +935,10 @@ mod tests {
 
         let card = Card::discover(&mut host).unwrap();
         assert_eq!(card.timing(), CardTiming::DefaultSpeed);
+        assert_eq!(
+            card.speed_selection(),
+            SpeedSelection::DefaultSpeedUnsupported
+        );
         assert_eq!(card.data_clock_hz(), DATA_CLOCK_HZ);
         assert_eq!(host.data_resets, 0);
         host.assert_done();
@@ -918,6 +964,10 @@ mod tests {
 
         let card = Card::discover(&mut host).unwrap();
         assert_eq!(card.timing(), CardTiming::DefaultSpeed);
+        assert_eq!(
+            card.speed_selection(),
+            SpeedSelection::DefaultSpeedUnsupported
+        );
         assert_eq!(host.data_resets, 1);
         host.assert_done();
     }
@@ -931,6 +981,10 @@ mod tests {
 
         let card = Card::discover(&mut host).unwrap();
         assert_eq!(card.timing(), CardTiming::DefaultSpeed);
+        assert_eq!(
+            card.speed_selection(),
+            SpeedSelection::DefaultSpeedUnsupported
+        );
         assert_eq!(host.data_resets, 0);
         host.assert_done();
     }
@@ -951,7 +1005,24 @@ mod tests {
 
         let card = Card::discover(&mut host).unwrap();
         assert_eq!(card.timing(), CardTiming::DefaultSpeed);
+        assert_eq!(
+            card.speed_selection(),
+            SpeedSelection::DefaultSpeedRecovered
+        );
         assert_eq!(host.data_resets, 1);
+        host.assert_done();
+    }
+
+    #[ktest]
+    fn forced_default_speed_skips_all_optional_card_commands() {
+        let csd = (1u128 << 126) | ((CSD_COMMAND_CLASS_SWITCH as u128) << 84);
+        let mut host = FakeHost::discovery(csd);
+
+        let card = Card::discover_with_policy(&mut host, true).unwrap();
+
+        assert_eq!(card.timing(), CardTiming::DefaultSpeed);
+        assert_eq!(card.speed_selection(), SpeedSelection::DefaultSpeedForced);
+        assert_eq!(card.data_clock_hz(), DATA_CLOCK_HZ);
         host.assert_done();
     }
 
@@ -992,6 +1063,7 @@ mod tests {
             rca: 1,
             nr_sectors: 8,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::Command(17, 3, Response::Short(0))].into();
@@ -1009,6 +1081,7 @@ mod tests {
             rca: 1,
             nr_sectors: 2,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::Command(17, 1, Response::Short(0))].into();
@@ -1038,6 +1111,7 @@ mod tests {
             rca: 1,
             nr_sectors: 8,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::DataCommand(18, 2, 512, 2, Response::Short(0))].into();
@@ -1056,6 +1130,7 @@ mod tests {
             rca: 1,
             nr_sectors: 8,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::Command(24, 3, Response::Short(0))].into();
@@ -1074,6 +1149,7 @@ mod tests {
             rca: 1,
             nr_sectors: 2,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::Command(24, 1, Response::Short(0))].into();
@@ -1099,6 +1175,7 @@ mod tests {
             rca: 1,
             nr_sectors: 8,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::DataCommand(25, 2, 512, 2, Response::Short(0))].into();
@@ -1120,6 +1197,7 @@ mod tests {
             rca: 1,
             nr_sectors: 2048,
             timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
         };
         let mut host = FakeHost::discovery(1u128 << 126);
         host.steps = vec![Step::DataCommand(
