@@ -19,8 +19,9 @@ use crate::{
     sdhci::{
         Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
         SdmaInterrupt, SdmaTransfer, classify_sdma_interrupt, decode_command_failure,
-        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary, sdma_host_control,
-        sdma_v4_control, split_sdma_address, supports_sdma,
+        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary,
+        sd_high_speed_host_control, sdma_host_control, sdma_v4_control, split_sdma_address,
+        supports_sdma,
     },
 };
 
@@ -739,6 +740,13 @@ impl HostController for MmioHost {
             spin_loop();
         }
         Err(HostError::Timeout)
+    }
+
+    fn set_timing(&mut self, timing: crate::card::CardTiming) -> Result<(), HostError> {
+        let value = self.read8(HOST_CONTROL)?;
+        let value =
+            sd_high_speed_host_control(value, matches!(timing, crate::card::CardTiming::HighSpeed));
+        self.write8(HOST_CONTROL, value)
     }
 
     fn command(&mut self, command: Command) -> Result<Response, HostError> {
