@@ -76,5 +76,104 @@ sha256: 3e3c237caebc67d09d9d40730113a91dd222737800d96aca690a965af8887e44
 
 ## Physical acceptance
 
-Physical timing, CRC, throughput, Firefox, and automatic RockOS recovery
-results will be appended only after the recovery-armed experiments complete.
+The release image was staged under a unique name and selected through a
+temporary `sysboot` configuration. Partition 2 and both persistent selector
+files were not rewritten. The tested image was:
+
+```text
+target/osdk/aster-kernel-osdk-bin.Image
+size: 5970664 bytes
+sha256: 3e3c237caebc67d09d9d40730113a91dd222737800d96aca690a965af8887e44
+```
+
+### Lightweight timing gate
+
+The recovery-armed probe recorded the exact ordered sequence:
+
+```text
+[mmc] SDMA buffer cpu=0xfff00000 device=0xfff00000 bytes=524288
+[mmc] controller 0x50460000 irq=81 sdma boundary=524288
+[mmc] SDHC rca=43690 sectors=249737216 sector0=55aa
+[mmc] timing=high-speed clock=50000000
+[mmc] mmcblk0 registered read-only
+```
+
+The classifier passed and the board automatically returned to RockOS after a
+fresh OpenSBI/U-Boot epoch. The retained result is
+`target/firefox-current-performance/sd-hs-probe-2/result.json`; its serial log
+SHA-256 is
+`63ab9e991c9918579afd6bdf121aff66b474f3f48975a6830041dda7ab8f1db6`.
+
+### Data correctness and throughput
+
+A read-only RockOS mount established the immutable Firefox library baseline:
+
+```text
+/usr/lib/firefox-esr/libxul.so
+bytes: 135186264
+crc32: 90227f7f
+```
+
+Asterinas read the same file at 50 MHz and reproduced both byte count and
+CRC32. The matched 128 MiB measurements were:
+
+| path | 25 MHz baseline | 50 MHz result | change |
+|---|---:|---:|---:|
+| direct | 9.79 MB/s | 16.80 MB/s | +71.6% |
+| buffered | 8.89 MB/s | 15.72 MB/s | +76.8% |
+
+The direct path exceeds the required 35 percent improvement, all commands
+returned zero, and the transcript contains no MMC failure, timeout, or
+fallback record. The board performed a software reboot and returned to RockOS
+in a fresh firmware epoch. The retained result is
+`target/firefox-current-performance/sd-hs-io-5/result.json`; its serial log
+SHA-256 is
+`0be87ee36c9231446fe5dd2b10483d5a2d50ea097144e16da49bd10bd75d4e8d`.
+
+### Firefox result
+
+One desktop run reached the visible Firefox window after 122.71 seconds, but
+its debug console and Firefox process started only after 97.31 and 95.62
+seconds respectively. It is retained as an abnormal pre-Firefox system-start
+sample and is not mixed into the matched cold-start mean. Once Firefox had
+started, that run reached the window in 26.15 seconds, with an active service
+and no restart.
+
+The next two independently rebooted runs restored the normal approximately
+seven-second console time and produced:
+
+| run | console | visible Firefox window | Firefox process to window | service |
+|---|---:|---:|---:|---|
+| 2 | 7.34 s | 38.93 s | 32.87 s | active/running, `NRestarts=0` |
+| 3 | 6.94 s | 39.47 s | 33.23 s | active/running, `NRestarts=0` |
+
+The matched visible-window mean is 39.20 seconds, 9.4 percent below the prior
+batched-page-cache mean of 43.27 seconds (40.33 and 46.21 seconds). The close
+0.54-second spread also removes the prior 5.88-second spread. The retained
+results are `sd-hs-firefox-2/result.json` and
+`sd-hs-firefox-3/result.json` below `target/firefox-current-performance/`;
+their serial SHA-256 values are respectively
+`522e75617a268069de380439d4914e90d0f9f188d37dee41e8d0e391899c6f82`
+and
+`66639854745a960c06f7bbf06a5d32c2efcbdc1643e06f232309383c19ed9384`.
+
+### Recovery and qualification lessons
+
+- The EIC7700 hardware watchdog's maximum observed interval is approximately
+  19 seconds. It is suitable for the lightweight probe, but it interrupts the
+  longer CRC and throughput gate and must not be armed for that gate.
+- A CRC over the first 32 MiB of the whole disk is not stable because RockOS
+  mounts the boot partition read-write. A partition-2 CRC is also not stable
+  because partition 2 is the Asterinas Debian root. The immutable `libxul.so`
+  file is the correct cross-OS data-integrity object for this experiment.
+- `loglevel=info` is used only until the one-time MMC mode evidence has been
+  collected. The guest then lowers the console level before timing commands so
+  unrelated warnings cannot corrupt machine-readable markers.
+- After every experiment the board returned to RockOS. The final RockOS boot
+  ID was `a7242560-500d-42ca-9273-523028736a50`, and the persistent selector
+  hashes remained:
+
+```text
+02280720efe7a1ad0ac084cdc20429406631e12d2e16f05638544bab0883fb26  /boot/extlinux/asterinas.conf
+eb5f39a6e2db71ccc93ae005c488fd9f7ef353e75426e5a51e8923a9cbf2ebc5  /boot/extlinux/extlinux.conf
+```
