@@ -372,11 +372,22 @@ fn sequential_page_faults_submit_a_batch() {
     assert_eq!(backend.read_count(1), 1);
     assert_eq!(backend.read_count(2), 1);
     assert_eq!(backend.read_count(3), 1);
+    assert_eq!(backend.read_batch_calls(), 1);
     for _ in 0..NUM_PAGES {
         assert!(backend.complete_next_deferred_bio(IoKind::Read, true));
     }
     reader.join();
     assert!(*finished.lock());
+
+    // Re-reading resident pages must not create an empty backend batch.
+    let mut read_buffer = vec![0; NUM_PAGES * PAGE_SIZE];
+    page_cache
+        .read(
+            0,
+            &mut VmWriter::from(read_buffer.as_mut_slice()).to_fallible(),
+        )
+        .unwrap();
+    assert_eq!(backend.read_batch_calls(), 1);
 }
 
 /// Keeps backend reads failing for one page and checks both the initial
