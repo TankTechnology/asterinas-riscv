@@ -742,7 +742,7 @@ impl HostController for MmioHost {
     }
 
     fn command(&mut self, command: Command) -> Result<Response, HostError> {
-        if !command.has_valid_block_count() {
+        if !command.has_valid_data_shape() {
             return Err(HostError::Unsupported);
         }
         let inhibit = PRESENT_COMMAND_INHIBIT
@@ -754,7 +754,7 @@ impl HostController for MmioHost {
         self.wait_clear(Register::PresentState.offset(), inhibit)?;
         self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
         if command.data.is_some() {
-            self.write16(Register::BlockSize.offset(), 512)?;
+            self.write16(Register::BlockSize.offset(), command.block_size() as u16)?;
             self.write16(BLOCK_COUNT, command.block_count() as u16)?;
             self.write16(
                 Register::TransferMode.offset(),

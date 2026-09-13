@@ -75,6 +75,7 @@ pub struct Command {
     pub argument: u32,
     pub response: ResponseType,
     pub data: Option<DataDirection>,
+    block_size: u16,
     block_count: u16,
 }
 
@@ -96,19 +97,27 @@ impl Command {
     }
 
     pub const fn read_single_block(lba: u32) -> Self {
-        Self::new(17, lba, ResponseType::Short, Some(DataDirection::Read))
+        Self::new_data(17, lba, DataDirection::Read, 512, 1)
     }
 
     pub const fn write_single_block(lba: u32) -> Self {
-        Self::new(24, lba, ResponseType::Short, Some(DataDirection::Write))
+        Self::new_data(24, lba, DataDirection::Write, 512, 1)
     }
 
     pub const fn read_multiple_blocks(lba: u32, block_count: u16) -> Self {
-        Self::new_data(18, lba, DataDirection::Read, block_count)
+        Self::new_data(18, lba, DataDirection::Read, 512, block_count)
     }
 
     pub const fn write_multiple_blocks(lba: u32, block_count: u16) -> Self {
-        Self::new_data(25, lba, DataDirection::Write, block_count)
+        Self::new_data(25, lba, DataDirection::Write, 512, block_count)
+    }
+
+    pub const fn send_scr() -> Self {
+        Self::new_data(51, 0, DataDirection::Read, 8, 1)
+    }
+
+    pub const fn switch_function(argument: u32) -> Self {
+        Self::new_data(6, argument, DataDirection::Read, 64, 1)
     }
 
     pub const fn new(
@@ -122,6 +131,7 @@ impl Command {
             argument,
             response,
             data,
+            block_size: if data.is_some() { 512 } else { 0 },
             block_count: if data.is_some() { 1 } else { 0 },
         }
     }
@@ -130,6 +140,7 @@ impl Command {
         index: u8,
         argument: u32,
         direction: DataDirection,
+        block_size: u16,
         block_count: u16,
     ) -> Self {
         Self {
@@ -137,18 +148,23 @@ impl Command {
             argument,
             response: ResponseType::Short,
             data: Some(direction),
+            block_size,
             block_count,
         }
+    }
+
+    pub const fn block_size(self) -> usize {
+        self.block_size as usize
     }
 
     pub const fn block_count(self) -> usize {
         self.block_count as usize
     }
 
-    pub const fn has_valid_block_count(self) -> bool {
+    pub const fn has_valid_data_shape(self) -> bool {
         match self.data {
-            Some(_) => self.block_count != 0,
-            None => self.block_count == 0,
+            Some(_) => self.block_size != 0 && self.block_count != 0,
+            None => self.block_size == 0 && self.block_count == 0,
         }
     }
 
@@ -207,12 +223,15 @@ pub struct SdmaTransfer {
 impl SdmaTransfer {
     pub fn new(command: Command, device_range: Range<usize>) -> Result<Self, HostError> {
         let blocks = command.block_count();
-        let bytes = blocks.checked_mul(512).ok_or(HostError::Unsupported)?;
+        let bytes = blocks
+            .checked_mul(command.block_size())
+            .ok_or(HostError::Unsupported)?;
         let range_bytes = device_range
             .end
             .checked_sub(device_range.start)
             .ok_or(HostError::Unsupported)?;
         if command.data.is_none()
+            || command.block_size() != 512
             || blocks == 0
             || blocks > SDMA_MAX_BLOCKS
             || bytes != range_bytes
@@ -439,9 +458,31 @@ mod tests {
         assert_eq!(cmd25.transfer_mode_bits(), 0x26);
         assert_eq!(cmd17.transfer_mode_bits(), 0x10);
         assert_eq!(cmd24.transfer_mode_bits(), 0);
-        assert!(cmd18.has_valid_block_count());
-        assert!(!Command::read_multiple_blocks(0, 0).has_valid_block_count());
-        assert!(Command::idle().has_valid_block_count());
+        assert_eq!(cmd18.block_size(), 512);
+        assert!(cmd18.has_valid_data_shape());
+        assert!(!Command::read_multiple_blocks(0, 0).has_valid_data_shape());
+        assert!(Command::idle().has_valid_data_shape());
+    }
+
+    #[ktest]
+    fn metadata_commands_keep_their_wire_block_sizes_out_of_sdma() {
+        let scr = Command::send_scr();
+        assert_eq!((scr.index, scr.block_size(), scr.block_count()), (51, 8, 1));
+        assert_eq!(scr.data, Some(DataDirection::Read));
+        assert_eq!(scr.command_bits(), (51 << 8) | 0x3a);
+
+        let switch = Command::switch_function(0x80ff_fff1);
+        assert_eq!(switch.argument, 0x80ff_fff1);
+        assert_eq!(
+            (switch.index, switch.block_size(), switch.block_count()),
+            (6, 64, 1)
+        );
+        assert_eq!(switch.data, Some(DataDirection::Read));
+        assert_eq!(switch.command_bits(), (6 << 8) | 0x3a);
+        assert_eq!(
+            SdmaTransfer::new(switch, 0xfff0_0000..0xfff0_0040),
+            Err(HostError::Unsupported)
+        );
     }
 
     #[ktest]
