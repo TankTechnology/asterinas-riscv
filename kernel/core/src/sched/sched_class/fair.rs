@@ -336,11 +336,73 @@ impl SchedClassRq for FairClassRq {
                     return false;
                 }
 
-                matches!(flags, UpdateFlags::Wait)
+                // An explicit yield gives a queued peer a turn even when the
+                // current task has not exhausted its slice. Keep the runtime
+                // accounting above: yielding does not erase CPU time used.
+                matches!(flags, UpdateFlags::Yield | UpdateFlags::Wait)
                     || rt.period_delta > self.time_slice(weight)
                     || vruntime > self.min_vruntime + self.vtime_slice()
             }
             UpdateFlags::Exit => !self.is_empty(),
+        }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::{sched::SchedPolicy, thread::kernel_thread::ThreadOptions};
+
+    // Regression for the measured ~12 ms same-CPU voluntary-yield round trip.
+    // Use supplied runtime values: correctness must not depend on host speed.
+    #[ktest]
+    fn fair_yield_handoff() {
+        let mut rq = FairClassRq::new(CpuId::bsp());
+        let attr = SchedAttr::new(SchedPolicy::Fair(Nice::default()));
+        let runtime = CurrentRuntime {
+            start: 0,
+            delta: 17,
+            period_delta: 17,
+        };
+
+        // A lone task accounts its execution without requesting a replacement.
+        assert!(!rq.update_current(&runtime, &attr, UpdateFlags::Yield));
+        assert_eq!(attr.fair.vruntime.load(Ordering::Relaxed), 17);
+        assert_eq!(rq.min_vruntime, 17);
+
+        let peer = ThreadOptions::new(|| {}).build();
+        rq.enqueue(peer.clone(), None);
+        // An unexpired tick must retain its previous scheduling behavior.
+        assert!(!rq.update_current(&runtime, &attr, UpdateFlags::Tick));
+        assert_eq!(attr.fair.vruntime.load(Ordering::Relaxed), 34);
+
+        // Voluntary yield must not wait for either slice-expiration condition.
+        assert!(rq.update_current(&runtime, &attr, UpdateFlags::Yield));
+        assert_eq!(attr.fair.vruntime.load(Ordering::Relaxed), 51);
+        assert!(Arc::ptr_eq(&rq.pick_next().unwrap(), &peer));
+        assert!(rq.is_empty());
+        assert_eq!(rq.total_weight, 0);
+
+        rq.enqueue(peer, None);
+        let expired = CurrentRuntime {
+            start: 0,
+            delta: 1,
+            period_delta: rq.time_slice(WEIGHT_0) + 1,
+        };
+        assert!(rq.update_current(&expired, &attr, UpdateFlags::Tick));
+        assert!(rq.update_current(&runtime, &attr, UpdateFlags::Wait));
+
+        // Yield must still apply pending nice changes before charging runtime.
+        for nice in [Nice::MIN, Nice::MAX] {
+            let attr = SchedAttr::new(SchedPolicy::Fair(Nice::default()));
+            attr.fair.update(nice);
+            assert!(rq.update_current(&runtime, &attr, UpdateFlags::Yield));
+            assert_eq!(
+                attr.fair.vruntime.load(Ordering::Relaxed),
+                runtime.delta * WEIGHT_0 / nice_to_weight(nice)
+            );
         }
     }
 }
