@@ -129,6 +129,15 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
     aster_network::register_device(DEVICE_NAME.to_string(), true, device.clone())
         .map_err(|_| DeviceError::Registration)?;
     device.lock().irq.rearm().map_err(|_| DeviceError::Irq)?;
+    ostd::notice!(
+        "ASTERINAS_GMAC_READY key={} alias={} version={:#04x} speed={}Mbps duplex={} mac={:02x?}",
+        DEVICE_NAME,
+        selected.alias_index,
+        selected.version,
+        selected.link_state.speed_mbps(),
+        selected.link_state.is_full_duplex(),
+        selected.mac_address,
+    );
     Ok(())
 }
 
