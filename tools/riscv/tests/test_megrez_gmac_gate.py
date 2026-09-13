@@ -1012,6 +1012,75 @@ class MegrezGmacGateTests(unittest.TestCase):
                 run=lambda *args, **kwargs: conflict,
             )
 
+    def test_address_probe_falls_back_to_ping_without_raw_socket_permission(
+        self,
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def run_probe(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            calls.append(argv)
+            self.assertTrue(kwargs["capture_output"])
+            if argv[0] == "arping":
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    b"",
+                    b"CAP_NET_RAW required\n",
+                )
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        check_address_unused("enp1s0", BOARD_ADDRESS, run=run_probe)
+        self.assertEqual(
+            calls[1],
+            (
+                "ping",
+                "-c",
+                "1",
+                "-W",
+                "1",
+                "-I",
+                "enp1s0",
+                BOARD_ADDRESS,
+            ),
+        )
+
+        def run_conflict(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            del kwargs
+            if argv[0] == "arping":
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    b"",
+                    b"CAP_NET_RAW required\n",
+                )
+            return subprocess.CompletedProcess(argv, 0, b"reply", b"")
+
+        with self.assertRaisesRegex(GateFailure, "already in use"):
+            check_address_unused(
+                "enp1s0",
+                BOARD_ADDRESS,
+                run=run_conflict,
+            )
+
+    def test_address_probe_falls_back_to_ping_when_arping_is_missing(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def run_probe(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            calls.append(argv)
+            self.assertTrue(kwargs["capture_output"])
+            if argv[0] == "arping":
+                raise FileNotFoundError("arping")
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        check_address_unused("enp1s0", BOARD_ADDRESS, run=run_probe)
+        self.assertEqual([argv[0] for argv in calls], ["arping", "ping"])
+
 
 if __name__ == "__main__":
     unittest.main()

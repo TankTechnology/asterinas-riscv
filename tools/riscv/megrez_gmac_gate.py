@@ -547,13 +547,47 @@ def check_address_unused(
     if parsed.version != 4:
         raise GateFailure("invalid board IPv4 address")
     argv = ("arping", "-D", "-c", "2", "-w", "3", "-I", interface, address)
-    completed = run(argv, capture_output=True, check=False)
+    try:
+        completed = run(argv, capture_output=True, check=False)
+    except FileNotFoundError:
+        completed = None
+    if completed is None:
+        _check_address_unused_with_ping(interface, address, run=run)
+        return
     if completed.returncode == 0:
         return
     if completed.returncode == 1:
+        diagnostic = (completed.stdout + completed.stderr).lower()
+        permission_markers = (
+            b"cap_net_raw",
+            b"operation not permitted",
+            b"permission denied",
+        )
+        if any(marker in diagnostic for marker in permission_markers):
+            _check_address_unused_with_ping(interface, address, run=run)
+            return
         raise GateFailure("board IPv4 address is already in use")
     raise GateFailure(
         f"duplicate-address probe failed with status {completed.returncode}"
+    )
+
+
+def _check_address_unused_with_ping(
+    interface: str,
+    address: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    """Uses an ICMP reachability probe when ARP duplicate detection is unavailable."""
+
+    argv = ("ping", "-c", "1", "-W", "1", "-I", interface, address)
+    completed = run(argv, capture_output=True, check=False)
+    if completed.returncode == 1:
+        return
+    if completed.returncode == 0:
+        raise GateFailure("board IPv4 address is already in use")
+    raise GateFailure(
+        f"fallback address probe failed with status {completed.returncode}"
     )
 
 
