@@ -265,6 +265,15 @@ pub const fn sdma_host_control(host_control: u8) -> u8 {
     host_control & !(0b11 << 3)
 }
 
+pub const fn sd_high_speed_host_control(host_control: u8, enabled: bool) -> u8 {
+    const HIGH_SPEED_ENABLE: u8 = 1 << 2;
+    if enabled {
+        host_control | HIGH_SPEED_ENABLE
+    } else {
+        host_control & !HIGH_SPEED_ENABLE
+    }
+}
+
 pub const fn sdma_v4_control(host_control2: u16) -> Result<u16, HostError> {
     const V4_MODE: u16 = 1 << 12;
     const ADDRESS_64BIT: u16 = 1 << 13;
@@ -462,6 +471,12 @@ mod tests {
         assert!(cmd18.has_valid_data_shape());
         assert!(!Command::read_multiple_blocks(0, 0).has_valid_data_shape());
         assert!(Command::idle().has_valid_data_shape());
+    }
+
+    #[ktest]
+    fn sd_high_speed_timing_preserves_unrelated_host_control_bits() {
+        assert_eq!(sd_high_speed_host_control(0b1111_1011, true), 0b1111_1111);
+        assert_eq!(sd_high_speed_host_control(0b1111_1111, false), 0b1111_1011);
     }
 
     #[ktest]
