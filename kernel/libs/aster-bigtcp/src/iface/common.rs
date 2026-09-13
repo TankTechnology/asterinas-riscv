@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{
-    collections::btree_map::{BTreeMap, Entry},
+    collections::{
+        BTreeSet,
+        btree_map::{BTreeMap, Entry},
+    },
     ffi::CString,
     sync::Arc,
     vec::Vec,
@@ -497,6 +500,11 @@ impl PortState {
 
 struct PortTable {
     used_ports: BTreeMap<PortKey, PortState>,
+    /// Addresses indexed by port and protocol for bounded conflict checks.
+    ///
+    /// Each address occurs exactly when the corresponding key occurs in
+    /// `used_ports`; multiple reusable owners still occupy one address entry.
+    port_addresses: BTreeMap<(u16, PortProtocol), BTreeSet<NormalizedAddress>>,
     next_ephemeral_port: u16,
 }
 
@@ -504,6 +512,7 @@ impl PortTable {
     fn new() -> Self {
         Self {
             used_ports: BTreeMap::new(),
+            port_addresses: BTreeMap::new(),
             next_ephemeral_port: IP_LOCAL_PORT_START,
         }
     }
@@ -529,15 +538,26 @@ impl PortTable {
             }
         };
 
-        if !config.is_backlog()
-            && self.used_ports.iter().any(|(existing, state)| {
-                existing.port == port
-                    && existing.protocol == protocol
-                    && port_addresses_conflict(existing.addr, addr)
-                    && (!config_can_reuse || !state.can_reuse())
-            })
-        {
-            return Err(BindError::InUse);
+        if !config.is_backlog() {
+            if let Some(addresses) = self.port_addresses.get(&(port, protocol)) {
+                for existing_addr in addresses {
+                    if !port_addresses_conflict(*existing_addr, addr) {
+                        continue;
+                    }
+                    let existing = PortKey {
+                        addr: *existing_addr,
+                        port,
+                        protocol,
+                    };
+                    let Some(state) = self.used_ports.get(&existing) else {
+                        debug_assert!(false, "port address index must mirror the port table");
+                        return Err(BindError::InUse);
+                    };
+                    if !config_can_reuse || !state.can_reuse() {
+                        return Err(BindError::InUse);
+                    }
+                }
+            }
         }
 
         let key = PortKey {
@@ -567,6 +587,11 @@ impl PortTable {
                 vacant.insert(port_state);
             }
         };
+
+        self.port_addresses
+            .entry((port, protocol))
+            .or_default()
+            .insert(addr);
 
         Ok((port, config_can_reuse))
     }
@@ -599,13 +624,15 @@ impl PortTable {
         let start_port = self.next_ephemeral_port;
         let mut port = start_port;
         loop {
-            if !external_conflict(port)
-                && !self.used_ports.keys().any(|existing| {
-                    existing.port == port
-                        && existing.protocol == protocol
-                        && port_addresses_conflict(existing.addr, addr)
-                })
-            {
+            let address_conflict =
+                self.port_addresses
+                    .get(&(port, protocol))
+                    .is_some_and(|addresses| {
+                        addresses
+                            .iter()
+                            .any(|existing| port_addresses_conflict(*existing, addr))
+                    });
+            if !external_conflict(port) && !address_conflict {
                 self.next_ephemeral_port = next_ephemeral_port_after(port);
                 return Some(port);
             }
@@ -639,6 +666,15 @@ impl PortTable {
         }
         if port_state.nsocket == 0 {
             occupied.remove();
+            if let Some(addresses) = self.port_addresses.get_mut(&(port, protocol)) {
+                let removed = addresses.remove(&key.addr);
+                debug_assert!(removed, "port address index must mirror the port table");
+                if addresses.is_empty() {
+                    self.port_addresses.remove(&(port, protocol));
+                }
+            } else {
+                debug_assert!(false, "port address index must mirror the port table");
+            }
         }
     }
 
@@ -671,6 +707,118 @@ fn port_addresses_conflict(left: NormalizedAddress, right: NormalizedAddress) ->
         left_bits == right_bits || left_bits & 0xffff_ffff == 0 || right_bits & 0xffff_ffff == 0
     } else {
         left_bits == right_bits || left_bits == 0 || right_bits == 0
+    }
+}
+
+#[cfg(ktest)]
+mod port_table_tests {
+    use ostd::prelude::*;
+    use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
+
+    use super::{BindError, BindPortConfig, NormalizedAddress, PortProtocol, PortTable};
+
+    const PORT: u16 = 40_000;
+
+    fn ipv4(last_octet: u8) -> IpAddress {
+        IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, last_octet))
+    }
+
+    fn bind_config(address: IpAddress, port: u16, can_reuse: bool) -> BindPortConfig {
+        BindPortConfig::new(IpEndpoint::new(address, port), can_reuse)
+    }
+
+    fn no_external_conflict(_: u16) -> bool {
+        false
+    }
+
+    #[ktest]
+    fn explicit_bind_requires_reuse_from_every_conflicting_owner() {
+        for (first_reuse, second_reuse, expected) in [
+            (false, false, Err(BindError::InUse)),
+            (false, true, Err(BindError::InUse)),
+            (true, false, Err(BindError::InUse)),
+            (true, true, Ok((PORT, true))),
+        ] {
+            let mut table = PortTable::new();
+            table
+                .bind(
+                    bind_config(ipv4(1), PORT, first_reuse),
+                    PortProtocol::Tcp,
+                    no_external_conflict,
+                )
+                .unwrap();
+
+            assert_eq!(
+                table.bind(
+                    bind_config(ipv4(1), PORT, second_reuse),
+                    PortProtocol::Tcp,
+                    no_external_conflict,
+                ),
+                expected,
+            );
+        }
+    }
+
+    #[ktest]
+    fn address_index_tracks_first_bind_and_last_release() {
+        let address = ipv4(1);
+        let normalized = NormalizedAddress::from(address);
+        let mut table = PortTable::new();
+
+        table
+            .bind(
+                bind_config(address, PORT, true),
+                PortProtocol::Udp,
+                no_external_conflict,
+            )
+            .unwrap();
+        table
+            .bind(
+                bind_config(address, PORT, true),
+                PortProtocol::Udp,
+                no_external_conflict,
+            )
+            .unwrap();
+        assert_eq!(
+            table.port_addresses.get(&(PORT, PortProtocol::Udp)),
+            Some(&[normalized].into_iter().collect()),
+        );
+
+        table.release(address, PORT, true, PortProtocol::Udp);
+        assert!(
+            table
+                .port_addresses
+                .contains_key(&(PORT, PortProtocol::Udp))
+        );
+        table.release(address, PORT, true, PortProtocol::Udp);
+        assert!(
+            !table
+                .port_addresses
+                .contains_key(&(PORT, PortProtocol::Udp))
+        );
+    }
+
+    #[ktest]
+    fn ephemeral_bind_uses_address_index_to_skip_wildcard_conflict() {
+        let mut table = PortTable::new();
+        table
+            .bind(
+                bind_config(IpAddress::Ipv4(Ipv4Address::UNSPECIFIED), PORT, false),
+                PortProtocol::Tcp,
+                no_external_conflict,
+            )
+            .unwrap();
+        table.next_ephemeral_port = PORT;
+
+        let (allocated, _) = table
+            .bind(
+                bind_config(ipv4(1), 0, false),
+                PortProtocol::Tcp,
+                no_external_conflict,
+            )
+            .unwrap();
+
+        assert_eq!(allocated, PORT + 1);
     }
 }
 
