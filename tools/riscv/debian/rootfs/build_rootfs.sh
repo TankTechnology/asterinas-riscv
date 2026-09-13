@@ -52,6 +52,7 @@ SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
 PROFILE="minimal-m1"
+FIREFOX_JIT_PACKAGE_DIR=""
 ROOT_LABEL="ASTER_DEBIANROOT"
 ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
 declare -a INSTALL_PACKAGES=(
@@ -116,6 +117,7 @@ parse_arguments() {
     local has_mirror=0
     local has_suite=0
     local has_profile=0
+    local has_firefox_jit_package_dir=0
 
     while (($# > 0)); do
         case "$1" in
@@ -154,6 +156,13 @@ parse_arguments() {
                 PROFILE="$2"
                 shift 2
                 ;;
+            --firefox-jit-package-dir)
+                require_option_value "$1" "$#"
+                ((has_firefox_jit_package_dir == 0)) || die "duplicate argument: $1"
+                has_firefox_jit_package_dir=1
+                FIREFOX_JIT_PACKAGE_DIR="$2"
+                shift 2
+                ;;
             --print-tools | --print-packages)
                 [[ -z "$print_mode" ]] || die "duplicate print argument: $1"
                 print_mode="$1"
@@ -168,7 +177,8 @@ parse_arguments() {
     configure_profile "$has_output_dir"
 
     if [[ -n "$print_mode" ]]; then
-        ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 && has_suite == 0)) ||
+        ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
+            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
@@ -257,6 +267,19 @@ validate_configuration() {
         die "unsafe output/cache path: filesystem root"
     paths_are_disjoint "$OUTPUT_DIR" "$CACHE_DIR" ||
         die "unsafe output/cache path: directories alias or overlap"
+
+    if [[ -n "$FIREFOX_JIT_PACKAGE_DIR" ]]; then
+        [[ "$PROFILE" == browser-web ]] ||
+            die "Firefox JIT overlay is only valid for the browser-web profile"
+        [[ "$FIREFOX_JIT_PACKAGE_DIR" != *$'\n'* ]] ||
+            die "unsafe Firefox JIT package path"
+        FIREFOX_JIT_PACKAGE_DIR="$(normalize_path "$FIREFOX_JIT_PACKAGE_DIR")"
+        require_safe_path "$FIREFOX_JIT_PACKAGE_DIR" "Firefox JIT package"
+        [[ -d "$FIREFOX_JIT_PACKAGE_DIR" && ! -L "$FIREFOX_JIT_PACKAGE_DIR" ]] ||
+            die "Firefox JIT package directory must be an existing non-symlink directory"
+        paths_are_disjoint "$OUTPUT_DIR" "$FIREFOX_JIT_PACKAGE_DIR" ||
+            die "Firefox JIT package directory must not overlap the output"
+    fi
 
     validate_existing_publication_targets
     validate_existing_cache_targets
@@ -1431,6 +1454,7 @@ configure_desktop() {
     local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_user=asterinas
+    local firefox_trust_mode=embedded-xul
     local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1575,6 +1599,12 @@ configure_desktop() {
 }
 EOF
             chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
+            if [[ -n "$FIREFOX_JIT_PACKAGE_DIR" ]]; then
+                python3 "$script_directory/firefox_jit_overlay.py" \
+                    --root "$stage" \
+                    --package-dir "$FIREFOX_JIT_PACKAGE_DIR"
+                firefox_trust_mode=system-nss-jit-overlay
+            fi
             install -D -m 0755 -- "$script_directory/browser_web_trust_check.py" \
                 "$stage/usr/share/asterinas/browser-web-trust-check.py"
             install -D -m 0755 -- "$script_directory/browser_web_online_rootfs_check.py" \
@@ -1583,9 +1613,9 @@ EOF
                 >"$stage/usr/share/asterinas/browser-web-trust-static.log"
             [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
                 die "Firefox trust checker emitted an ambiguous result"
-            grep -Eq '^FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' \
+            grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log" ||
-                die "Firefox trust checker did not prove embedded XUL roots"
+                die "Firefox trust checker did not prove the selected trust mode"
             chmod 0644 -- \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"
         else
@@ -1924,7 +1954,8 @@ write_rootfs_manifest() {
     local mke2fs_version
     local qemu_version
     local browser_web_runtime_version=""
-    local -a browser_web_tool_version=()
+    local firefox_jit_overlay_version=""
+    local -a browser_web_tool_versions=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1935,9 +1966,19 @@ write_rootfs_manifest() {
 
     if [[ "$PROFILE" == browser-web ]]; then
         browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
-        browser_web_tool_version=(
+        browser_web_tool_versions=(
             --tool-version "browser-web-runtime=$browser_web_runtime_version"
         )
+        if [[ -f "$WORK_DIR/stage/usr/share/asterinas/firefox-riscv-jit-overlay.json" ]]; then
+            firefox_jit_overlay_version="$(
+                sha256sum -- \
+                    "$WORK_DIR/stage/usr/share/asterinas/firefox-riscv-jit-overlay.json" |
+                    cut -d' ' -f1
+            )"
+            browser_web_tool_versions+=(
+                --tool-version "firefox-jit-overlay=$firefox_jit_overlay_version"
+            )
+        fi
     fi
 
     local -a signed_source_arguments=()
@@ -1963,7 +2004,7 @@ write_rootfs_manifest() {
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
         --tool-version "qemu-riscv64-static=$qemu_version" \
-        "${browser_web_tool_version[@]}"
+        "${browser_web_tool_versions[@]}"
 }
 
 browser_web_runtime_digest() {
@@ -1982,6 +2023,9 @@ browser_web_runtime_digest() {
         physical_graphics_interaction.html
         physical_graphics_gate.py
         firefox_diagnostic_snapshot.py
+        browser_web_trust_check.py
+        browser_web_online_rootfs_check.py
+        firefox_jit_overlay.py
     )
 
     for input in "${inputs[@]}"; do

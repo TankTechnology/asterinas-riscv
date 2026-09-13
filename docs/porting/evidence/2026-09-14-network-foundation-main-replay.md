@@ -89,11 +89,38 @@ canvas, storage, and cookies passed.  This is a browser-image capability
 boundary, not evidence of a network or kernel crash.  The result is retained
 under `target/network-foundation-main/physical/qemu/firefox-proxy-valid/`.
 
-The repository already defines a frozen Firefox 143 RISC-V JIT overlay.  A
-new immutable schema-seven root image must be built with that overlay and a
-matching manifest before the full browser gate is replayed.  The Wasm check
-must not be relaxed: doing so would turn a real missing browser capability
-into a false pass.
+The rootfs builder now exposes that frozen Firefox 143 RISC-V JIT overlay as
+an explicit `browser-web`-only input.  It verifies the three pinned package
+filenames and SHA-256 identities, records the installed overlay marker in the
+schema-seven manifest, and reuses the existing package and Debian caches.  It
+does not download an unpinned browser as part of the build.
+
+The resulting immutable root and current network kernel have these identities:
+
+| Artifact | SHA-256 |
+|---|---|
+| Asterinas `Image` | `0c2da50816abea7d6be6aefc092acccd31b64f2421aceeed8047f2a5b97f956b` |
+| Firefox JIT root image | `d60e78e2a0097c635f380d94a63197c307c8a944fd47b3ca6591127bc982a741` |
+| schema-seven manifest | `6e348c8c62972296399c0e7410f0a972627341df4027135d84c9b9a0c845c725` |
+
+The proxy-mode replay with these exact inputs again completed all 20 fixture
+transfers.  Firefox reported `wasm=true`, as well as working workers, IndexedDB,
+canvas, local/session storage, and cookies.  It loaded and validated the live
+Baidu home page, Bilibili home page, and a selected Bilibili detail page over
+verified TLS before emitting `DEBIAN_BROWSER_WEB_PLATFORM_READY`.  The final
+strict transaction remained fail-closed because the automated Baidu search
+was redirected into Baidu's `wappass`/fingerprint path instead of producing a
+search-result page.  This is an external-site transaction result after the
+browser platform boundary passed; it is not evidence of a kernel, network,
+TLS, or WebAssembly failure.  Evidence is retained under
+`target/network-foundation-main/physical/qemu/firefox-jit-proxy-final/`.
+
+A direct-mode public-site replay did not publish a result before its long
+outer deadline and was terminated without affecting the board.  Before it is
+used as a routine regression, that runner needs bounded phase deadlines and
+live serial publication.  Proxy mode remains the deterministic qualification
+path; neither the WebAssembly check nor the live-site search criterion was
+relaxed to manufacture a pass.
 
 When running the root-owned gate inside the persistent Docker container, do
 not invoke it through a second `sudo -E`.  The container process is already

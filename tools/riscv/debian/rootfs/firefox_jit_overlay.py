@@ -96,6 +96,22 @@ def _regular(path: Path, *, executable: bool = False) -> None:
         raise OverlayError(f"unsafe or unusable overlay runtime file: {path}")
 
 
+def _snapshot_regular(source: Path, destination: Path) -> None:
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(source, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OverlayError(f"unsafe overlay package input: {source}")
+        with os.fdopen(descriptor, "rb") as input_file:
+            descriptor = -1
+            with destination.open("xb") as output_file:
+                shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _extract_data(deb: Path, root: Path) -> None:
     members = _run("ar", "t", os.fspath(deb)).splitlines()
     data_members = [name for name in members if name.startswith("data.tar.")]
@@ -133,17 +149,24 @@ def install(root: Path, package_paths: Sequence[Path]) -> dict[str, object]:
     by_name = {path.name: path.resolve() for path in package_paths}
     if set(by_name) != {package.filename for package in PACKAGES}:
         raise OverlayError("overlay package filenames do not match the frozen set")
-    for package in PACKAGES:
-        path = by_name[package.filename]
-        _regular(path)
-        if sha256(path) != package.sha256:
-            raise OverlayError(f"overlay package hash mismatch: {package.filename}")
 
     marker = root / MARKER
     if marker.exists() or marker.is_symlink():
         raise OverlayError("Firefox JIT overlay marker already exists")
-    for package in PACKAGES:
-        _extract_data(by_name[package.filename], root)
+    with tempfile.TemporaryDirectory(
+        prefix="asterinas-firefox-overlay-input-"
+    ) as directory:
+        snapshots = {}
+        for package in PACKAGES:
+            snapshot = Path(directory) / package.filename
+            _snapshot_regular(by_name[package.filename], snapshot)
+            if sha256(snapshot) != package.sha256:
+                raise OverlayError(
+                    f"overlay package hash mismatch: {package.filename}"
+                )
+            snapshots[package.filename] = snapshot
+        for package in PACKAGES:
+            _extract_data(snapshots[package.filename], root)
 
     launcher = root / "usr/bin/firefox"
     if not launcher.is_symlink() or os.readlink(launcher) != "../lib/firefox/firefox":
@@ -190,10 +213,25 @@ def install(root: Path, package_paths: Sequence[Path]) -> dict[str, object]:
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("packages", nargs=3, type=Path)
+    parser.add_argument(
+        "--package-dir",
+        type=Path,
+        help="directory containing the exact frozen package filenames",
+    )
+    parser.add_argument("packages", nargs="*", type=Path)
     values = parser.parse_args(arguments)
+    if values.package_dir is not None:
+        if values.packages:
+            parser.error("--package-dir cannot be combined with package paths")
+        package_paths = [
+            values.package_dir / package.filename for package in PACKAGES
+        ]
+    else:
+        if len(values.packages) != len(PACKAGES):
+            parser.error("provide --package-dir or exactly three frozen packages")
+        package_paths = values.packages
     try:
-        manifest = install(values.root, values.packages)
+        manifest = install(values.root, package_paths)
     except (OSError, OverlayError) as error:
         parser.error(str(error))
     print(
