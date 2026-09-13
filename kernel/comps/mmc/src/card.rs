@@ -12,6 +12,95 @@ const OCR_CCS: u32 = 1 << 30;
 const OCR_ARGUMENT: u32 = OCR_CCS | 0x00ff_8000;
 const SECTOR_SIZE: usize = 512;
 const MAX_BLOCKS_PER_COMMAND: usize = u16::MAX as usize;
+const CSD_COMMAND_CLASS_SWITCH: u16 = 1 << 10;
+const SWITCH_STATUS_HIGH_SPEED: u8 = 1 << 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SdSpec {
+    V1_0,
+    V1_10,
+    V2OrLater,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Csd {
+    nr_sectors: u64,
+    command_classes: u16,
+}
+
+impl Csd {
+    fn parse(raw: u128) -> Result<Self, HostError> {
+        if (raw >> 126) & 0b11 != 1 {
+            return Err(HostError::Unsupported);
+        }
+        let c_size = ((raw >> 48) & 0x3f_ffff) as u64;
+        let nr_sectors = c_size
+            .checked_add(1)
+            .and_then(|size| size.checked_mul(1024))
+            .ok_or(HostError::Unsupported)?;
+        Ok(Self {
+            nr_sectors,
+            command_classes: ((raw >> 84) & 0x0fff) as u16,
+        })
+    }
+
+    const fn nr_sectors(self) -> u64 {
+        self.nr_sectors
+    }
+
+    const fn supports_switch(self) -> bool {
+        self.command_classes & CSD_COMMAND_CLASS_SWITCH != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Scr {
+    spec: SdSpec,
+}
+
+impl Scr {
+    fn parse(bytes: [u8; 8]) -> Result<Self, HostError> {
+        let raw = u64::from_be_bytes(bytes);
+        if raw >> 60 != 0 {
+            return Err(HostError::Unsupported);
+        }
+        let spec = match (raw >> 56) & 0x0f {
+            0 => SdSpec::V1_0,
+            1 => SdSpec::V1_10,
+            2 => SdSpec::V2OrLater,
+            _ => return Err(HostError::Unsupported),
+        };
+        Ok(Self { spec })
+    }
+
+    const fn spec(self) -> SdSpec {
+        self.spec
+    }
+
+    const fn supports_switch(self) -> bool {
+        !matches!(self.spec, SdSpec::V1_0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SwitchStatus<'a> {
+    bytes: &'a [u8; 64],
+}
+
+impl<'a> SwitchStatus<'a> {
+    fn parse(bytes: &'a [u8]) -> Result<Self, HostError> {
+        let bytes = bytes.try_into().map_err(|_| HostError::Unsupported)?;
+        Ok(Self { bytes })
+    }
+
+    const fn supports_high_speed(self) -> bool {
+        self.bytes[13] & SWITCH_STATUS_HIGH_SPEED != 0
+    }
+
+    const fn selected_access_mode(self) -> u8 {
+        self.bytes[16] & 0x0f
+    }
+}
 
 /// A response returned by the SD host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,7 +206,7 @@ impl Card {
                 None,
             ))?
             .long()?;
-        let nr_sectors = csd_v2_nr_sectors(csd)?;
+        let nr_sectors = Csd::parse(csd)?.nr_sectors();
         host.command(Command::new(
             7,
             (rca as u32) << 16,
@@ -312,17 +401,6 @@ fn expect_long(response: Response) -> Result<(), HostError> {
         .ok_or(HostError::Unsupported)
 }
 
-fn csd_v2_nr_sectors(csd: u128) -> Result<u64, HostError> {
-    if (csd >> 126) & 0b11 != 1 {
-        return Err(HostError::Unsupported);
-    }
-    let c_size = ((csd >> 48) & 0x3f_ffff) as u64;
-    c_size
-        .checked_add(1)
-        .and_then(|size| size.checked_mul(1024))
-        .ok_or(HostError::Unsupported)
-}
-
 #[cfg(ktest)]
 mod tests {
     use alloc::{collections::VecDeque, vec, vec::Vec};
@@ -330,6 +408,42 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::*;
+
+    #[ktest]
+    fn parses_only_the_sd_capabilities_needed_for_high_speed() {
+        let c_size = 0x1234u128;
+        let csd = Csd::parse((1u128 << 126) | ((1u128 << 10) << 84) | (c_size << 48)).unwrap();
+        assert_eq!(csd.nr_sectors(), (c_size as u64 + 1) * 1024);
+        assert!(csd.supports_switch());
+        assert!(
+            !Csd::parse((1u128 << 126) | (c_size << 48))
+                .unwrap()
+                .supports_switch()
+        );
+        assert_eq!(Csd::parse(0), Err(HostError::Unsupported));
+
+        let scr = Scr::parse((1u64 << 56).to_be_bytes()).unwrap();
+        assert_eq!(scr.spec(), SdSpec::V1_10);
+        assert!(scr.supports_switch());
+        assert!(!Scr::parse(0u64.to_be_bytes()).unwrap().supports_switch());
+        assert_eq!(
+            Scr::parse((1u64 << 60).to_be_bytes()),
+            Err(HostError::Unsupported)
+        );
+
+        let mut status = [0u8; 64];
+        status[13] = 1 << 1;
+        status[16] = 1;
+        let status = SwitchStatus::parse(&status).unwrap();
+        assert!(status.supports_high_speed());
+        assert_eq!(status.selected_access_mode(), 1);
+
+        let mut unsupported = [0u8; 64];
+        unsupported[16] = 0x0f;
+        let unsupported = SwitchStatus::parse(&unsupported).unwrap();
+        assert!(!unsupported.supports_high_speed());
+        assert_eq!(unsupported.selected_access_mode(), 0x0f);
+    }
 
     #[derive(Debug)]
     enum Step {
