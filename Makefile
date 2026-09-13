@@ -1143,6 +1143,8 @@ test_klog_store:
 	@mkdir -p target
 	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/klog/store_tests.rs -o target/klog-store-tests
 	@target/klog-store-tests
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/diagnostics_tests.rs -o target/log-diagnostics-tests
+	@target/log-diagnostics-tests
 
 .PHONY: test
 test: NON_DEFAULT_PACKAGE_NAMES = \

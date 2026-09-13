@@ -60,12 +60,23 @@ impl KernelLog {
 
     /// Appends a user-supplied message with an already validated priority.
     pub fn push(&self, priority: u16, message: &[u8]) {
+        self.push_observed(priority, message, &mut super::diagnostics::Unmeasured);
+    }
+
+    pub(super) fn push_observed(
+        &self,
+        priority: u16,
+        message: &[u8],
+        observer: &mut impl super::diagnostics::Observer,
+    ) {
+        let start = observer.timestamp();
         let timestamp = Jiffies::elapsed().as_duration();
         let prepared = LogRecord::new(priority, timestamp_us(&timestamp), message);
         self.publish(prepared);
+        observer.memory(start, observer.timestamp());
         let level = Level::from_u8((priority & 7) as u8);
         if self.should_print(level) {
-            super::aster_logger::print_logs(level, &prepared, &timestamp);
+            super::aster_logger::print_logs_observed(level, &prepared, &timestamp, observer);
         }
     }
 

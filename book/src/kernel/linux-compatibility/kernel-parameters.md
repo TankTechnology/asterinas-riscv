@@ -129,6 +129,38 @@ For a quiet console with informational syscall lifecycle records retained for
 loglevel=off asterinas.klog_capture=info asterinas.syscall_diag=1
 ```
 
+### `asterinas.log_profile`
+
+Enable a bounded logging-cost probe with `asterinas.log_profile=1`.
+The default is disabled.
+Before userspace starts, the probe submits 640 fixed-size user-facility records
+through the retained log and normal console path.
+It alternates console levels `error` and `info`,
+and measured and unmeasured batches, over five repetitions.
+It restores the original console threshold on return and does not change capture policy.
+The probe overwrites older records in the bounded retained log;
+enable it only for dedicated diagnostic boots.
+
+`LOG_PROFILE` summaries report the RISC-V timebase frequency and count/total/max ticks
+for record preparation/publication, console-lock wait, and locked formatting/send.
+The locked interval includes device readiness callbacks but excludes lock release.
+The wait interval includes interrupt disabling and lock acquisition;
+neither is a complete CPU-interrupt-latency measurement.
+Attempted bytes include formatting and each console destination, not confirmed delivery.
+Back-to-back clock reads provide an overhead baseline;
+zero samples and unavailable clocks are not zero-cost measurements.
+Other architectures currently report `unavailable=clock` without running the workload.
+The probe measures user-record preparation, not kernel `format_args!` preparation
+or total Firefox logging overhead.
+
+Validate the complete transcript and its runner exit status with:
+
+```sh
+python3 tools/riscv/diagnostics/log_profile.py serial.log --exit-code 0
+```
+
+Supply the actual runner exit code; do not substitute zero after a timeout.
+
 ### `asterinas.syscall_diag`
 
 Enable bounded syscall diagnostics with `asterinas.syscall_diag=1`.

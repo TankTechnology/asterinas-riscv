@@ -31,8 +31,22 @@ impl ostd::log::Log for AsterLogger {
     }
 }
 
-#[cfg(feature = "log_color")]
 pub(super) fn print_logs(level: Level, record: &LogRecord, timestamp: &Duration) {
+    print_logs_observed(
+        level,
+        record,
+        timestamp,
+        &mut super::diagnostics::Unmeasured,
+    );
+}
+
+#[cfg(feature = "log_color")]
+pub(super) fn print_logs_observed(
+    level: Level,
+    record: &LogRecord,
+    timestamp: &Duration,
+    observer: &mut impl super::diagnostics::Observer,
+) {
     use owo_colors::Style;
 
     let secs = timestamp.as_secs();
@@ -49,26 +63,37 @@ pub(super) fn print_logs(level: Level, record: &LogRecord, timestamp: &Duration)
         Level::Emerg | Level::Alert | Level::Crit => Style::new().red().bold(),
     };
 
-    super::_print(format_args!(
-        "{} {:<6}: {}\n",
-        timestamp_style.style(format_args!("[{:>6}.{:03}]", secs, millis)),
-        level_style.style(level),
-        record_style.style(record.message())
-    ));
+    super::console::print_observed(
+        format_args!(
+            "{} {:<6}: {}\n",
+            timestamp_style.style(format_args!("[{:>6}.{:03}]", secs, millis)),
+            level_style.style(level),
+            record_style.style(record.message())
+        ),
+        observer,
+    );
 }
 
 #[cfg(not(feature = "log_color"))]
-pub(super) fn print_logs(level: Level, record: &LogRecord, timestamp: &Duration) {
+pub(super) fn print_logs_observed(
+    level: Level,
+    record: &LogRecord,
+    timestamp: &Duration,
+    observer: &mut impl super::diagnostics::Observer,
+) {
     let secs = timestamp.as_secs();
     let millis = timestamp.subsec_millis();
 
-    super::_print(format_args!(
-        "[{:>6}.{:03}] {:<6}: {}\n",
-        secs,
-        millis,
-        level,
-        record.message()
-    ));
+    super::console::print_observed(
+        format_args!(
+            "[{:>6}.{:03}] {:<6}: {}\n",
+            secs,
+            millis,
+            level,
+            record.message()
+        ),
+        observer,
+    );
 }
 
 pub(super) fn init() {

@@ -27,6 +27,7 @@ macro_rules! __log_prefix {
 
 mod aster_logger;
 mod console;
+mod diagnostics;
 pub mod klog;
 
 pub use console::_print;
