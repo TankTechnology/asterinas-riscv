@@ -29,11 +29,19 @@ import zlib
 
 if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
     sys.path.insert(0, "/usr/lib/asterinas")
+    from browser_interaction_perf import (  # type: ignore[import-not-found]
+        PerformanceContractError,
+        summarize_input_latencies,
+    )
     from browser_m5_marionette_gate import (  # type: ignore[import-not-found]
         _connect,
         GateError as MarionetteGateError,
     )
 else:
+    from tools.riscv.debian.rootfs.browser_interaction_perf import (
+        PerformanceContractError,
+        summarize_input_latencies,
+    )
     from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
         _connect,
         GateError as MarionetteGateError,
@@ -89,6 +97,7 @@ SNAPSHOT_FIELDS = {
     "trustedClick",
     "clickCount",
     "color",
+    "inputLatenciesMs",
 }
 FOCUS_SCRIPT = r"""if (document.URL !== arguments[0] || document.readyState !== 'complete') {
   return 'loading';
@@ -427,7 +436,11 @@ def validate_snapshot(
         raise GateError("physical-graphics-snapshot-click-count")
     if snapshot["color"] != "cyan":
         raise GateError("physical-graphics-snapshot-color")
-    return snapshot
+    try:
+        summary = summarize_input_latencies(snapshot["inputLatenciesMs"])
+    except PerformanceContractError as error:
+        raise GateError("physical-graphics-snapshot-input-latencies") from error
+    return {**snapshot, "inputLatencySummary": summary}
 
 
 def snapshot_complete(snapshot: object, *, cycle: int) -> bool:
@@ -457,7 +470,7 @@ def snapshot_complete(snapshot: object, *, cycle: int) -> bool:
         raise GateError("physical-graphics-snapshot-state-disagreement")
     if snapshot["trustedClick"] is not (click_count == 1):
         raise GateError("physical-graphics-snapshot-click-disagreement")
-    return (
+    is_complete = (
         click_count == 1
         and color == "cyan"
         and all(
@@ -470,6 +483,14 @@ def snapshot_complete(snapshot: object, *, cycle: int) -> bool:
             )
         )
     )
+    input_latencies = snapshot["inputLatenciesMs"]
+    if input_latencies == [] and not is_complete:
+        return False
+    try:
+        summarize_input_latencies(input_latencies)
+    except PerformanceContractError as error:
+        raise GateError("physical-graphics-snapshot-input-latencies") from error
+    return is_complete
 
 
 class GuardedMarionette:

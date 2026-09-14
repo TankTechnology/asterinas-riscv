@@ -9,6 +9,7 @@ import importlib
 import base64
 import hashlib
 import io
+import math
 from pathlib import Path
 import selectors
 import struct
@@ -82,6 +83,16 @@ class PhysicalGraphicsPageTests(unittest.TestCase):
         self.assertNotIn("event.movementY", page)
         for stage in ("waiting", "key", "pointer", "complete"):
             self.assertIn(f'"{stage}"', page)
+
+    def test_page_records_bounded_trusted_input_to_frame_latency(self) -> None:
+        page = self._page()
+
+        self.assertIn("inputLatenciesMs: []", page)
+        self.assertIn("function recordInputFrame(startMs)", page)
+        self.assertGreaterEqual(page.count("requestAnimationFrame"), 2)
+        self.assertIn("state.inputLatenciesMs.length < 64", page)
+        self.assertIn("const startMs = performance.now()", page)
+        self.assertIn("recordInputFrame(startMs)", page)
 
     def test_page_is_self_contained_and_uses_the_frozen_state_names(self) -> None:
         page = self._page()
@@ -165,6 +176,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
             "trustedClick": True,
             "clickCount": 1,
             "color": "cyan",
+            "inputLatenciesMs": [16.0, 18.5],
         }
 
     def test_accepts_only_the_exact_completed_snapshot(self) -> None:
@@ -173,7 +185,19 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
             hasattr(gate, "validate_snapshot"), "snapshot validator is missing"
         )
         expected = self._snapshot()
-        gate.validate_snapshot(expected, expected_nonce="0123456789abcdef", cycle=1)
+        validated = gate.validate_snapshot(
+            expected, expected_nonce="0123456789abcdef", cycle=1
+        )
+        self.assertEqual(
+            validated["inputLatencySummary"],
+            {
+                "count": 2,
+                "min_ms": 16.0,
+                "p50_ms": 16.0,
+                "p95_ms": 18.5,
+                "max_ms": 18.5,
+            },
+        )
         for name, value in (
             ("cycle", 2),
             ("nonce", "fedcba9876543210"),
@@ -189,6 +213,26 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
                 with self.assertRaises(gate.GateError):
                     gate.validate_snapshot(
                         mutated, expected_nonce="0123456789abcdef", cycle=1
+                    )
+
+    def test_rejects_invalid_input_latency_samples(self) -> None:
+        gate = load_gate(self)
+        expected = self._snapshot()
+        for samples in (
+            [],
+            [True],
+            [math.nan],
+            [0.0],
+            [-1.0],
+            [60_001.0],
+            [1.0] * 65,
+        ):
+            with self.subTest(samples=samples):
+                with self.assertRaises(gate.GateError):
+                    gate.validate_snapshot(
+                        {**expected, "inputLatenciesMs": samples},
+                        expected_nonce="0123456789abcdef",
+                        cycle=1,
                     )
 
     def test_rejects_unknown_missing_and_non_boolean_fields(self) -> None:
