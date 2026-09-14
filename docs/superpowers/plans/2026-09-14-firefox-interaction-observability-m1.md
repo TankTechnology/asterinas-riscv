@@ -350,8 +350,8 @@ Run:
 
 ```bash
 tools/docker/run_dev_container.sh -- \
-  python3 tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
-  --help
+  python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+  --network-mode direct --help
 ```
 
 Then run the repository's documented bounded local browser-web QEMU command using the
