@@ -1549,6 +1549,8 @@ configure_desktop() {
                 "$stage/usr/share/asterinas/physical-graphics/index.html"
             install -D -m 0755 -- "$script_directory/physical_graphics_gate.py" \
                 "$stage/usr/lib/asterinas/physical-graphics-gate"
+            install -D -m 0644 -- "$script_directory/browser_interaction_perf.py" \
+                "$stage/usr/lib/asterinas/browser_interaction_perf.py"
             install -D -m 0755 -- "$script_directory/firefox_diagnostic_snapshot.py" \
                 "$stage/usr/lib/asterinas/firefox-diagnostic-snapshot"
             install -d -m 0700 -- "$stage/home/asterinas/browser-web-evidence"
@@ -2028,6 +2030,7 @@ browser_web_runtime_digest() {
         browser_web_evidence.service
         physical_graphics_interaction.html
         physical_graphics_gate.py
+        browser_interaction_perf.py
         firefox_diagnostic_snapshot.py
         browser_web_trust_check.py
         browser_web_online_rootfs_check.py

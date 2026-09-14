@@ -113,7 +113,8 @@
       trustedPointer: false,
       trustedClick: false,
       clickCount: 0,
-      color: "amber"
+      color: "amber",
+      inputLatenciesMs: []
     };
 
     function keyComplete() {
@@ -151,6 +152,16 @@
       }
     }
 
+    function recordInputFrame(startMs) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const latencyMs = performance.now() - startMs;
+        if (Number.isFinite(latencyMs) && latencyMs > 0 && state.inputLatenciesMs.length < 64) {
+          state.inputLatenciesMs.push(latencyMs);
+          render();
+        }
+      }));
+    }
+
     if (validConfiguration) {
       instructions.textContent =
         `Cycle ${cycle}/3 · type the 16-character nonce, move the physical pointer, then click once.`;
@@ -170,11 +181,13 @@
 
     nonceInput.addEventListener("input", (event) => {
       if (event.isTrusted) {
+        const startMs = performance.now();
         state.trustedInput = true;
         const sanitized = nonceInput.value.toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 16);
         nonceInput.value = sanitized;
         state.nonce = sanitized;
         render();
+        recordInputFrame(startMs);
       }
     });
 
