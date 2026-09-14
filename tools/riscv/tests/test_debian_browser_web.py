@@ -1253,6 +1253,39 @@ class BrowserWebContractTests(unittest.TestCase):
                     self.assertEqual(result.returncode, expected_status)
                     self.assertEqual(result.stdout, "")
 
+    def test_display_provider_resolver_accepts_only_fbdev_legacy_config(self) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            provider_root = Path(directory) / "providers"
+            legacy_directory = Path(directory) / "legacy"
+            legacy_directory.mkdir()
+            (legacy_directory / "20-asterinas.conf").write_text("Section \"Device\"\n")
+            common = {
+                **os.environ,
+                "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
+                "ASTERINAS_LEGACY_XORG_CONFIG_DIR": str(legacy_directory),
+            }
+
+            fbdev = subprocess.run(
+                ["bash", str(resolver)],
+                env={**common, "ASTERINAS_DISPLAY_PROVIDER": "fbdev"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            drm = subprocess.run(
+                ["bash", str(resolver)],
+                env={**common, "ASTERINAS_DISPLAY_PROVIDER": "drm"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(fbdev.returncode, 0, fbdev.stderr)
+        self.assertEqual(fbdev.stdout, f"{legacy_directory}\n")
+        self.assertEqual(drm.returncode, 65)
+        self.assertEqual(drm.stdout, "")
+
     def test_browser_waits_for_network_and_evidence_waits_for_desktop(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
         self.assertIn(
