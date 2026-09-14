@@ -29,10 +29,13 @@ does not require a new deployment mechanism.
 `build_stage1.sh` will install
 `physical_external_services_quiesce.sh` and the experiment's
 `physical_graphics_gate.py` as executable files under `usr/lib/asterinas`.
-Both files will be part of the deterministic Stage1 entry list, timestamp
-normalization, and archive validation. Carrying the guest gate is necessary
-because the one-cycle host contract cannot safely execute the older
-three-cycle-only copy in the reused partition-2 image.
+The interaction gate's direct project dependencies,
+`browser_interaction_perf.py` and `browser_m5_marionette_gate.py`, are carried
+beside it so the payload is import-complete. All four added files will be part
+of the deterministic Stage1 entry list, timestamp normalization, and archive
+validation. Carrying the guest gate is necessary because the one-cycle host
+contract cannot safely execute the older three-cycle-only copy in the reused
+partition-2 image.
 
 The physical orchestration command will invoke
 `/run/asterinas-tools/physical-external-services-quiesce`. This path is
@@ -65,7 +68,7 @@ work adds no DRM implementation.
 
 ## Deployment and Data Flow
 
-1. Build a deterministic Stage1 containing `init` and the four helper files.
+1. Build a deterministic Stage1 containing `init` and the six helper files.
 2. Transfer or select the versioned kernel, Stage1, and DTB only.
 3. Stage1 mounts the existing ext2 root and bind-mounts its own helper directory
    at `/run/asterinas-tools`.
