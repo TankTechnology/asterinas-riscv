@@ -1573,7 +1573,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "/run/asterinas-tools/physical-graphics-gate",
             "--nonce 0123456789abcdef",
             "--cycle 2",
-            "--setup-timeout 300",
+            "--setup-timeout 540",
             "__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle=2 status=%s",
         ):
             self.assertIn(fragment, command)
@@ -1610,7 +1610,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "--cycle 3",
             "--firefox-pid",
             "--verify-final",
-            "--setup-timeout 300",
+            "--setup-timeout 540",
             "__ASTERINAS_PHYSICAL_FINAL_STATUS__",
         ):
             self.assertIn(fragment, command)
