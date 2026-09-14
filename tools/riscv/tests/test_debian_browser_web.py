@@ -2019,6 +2019,68 @@ generate_fontconfig_cache "$stage" "$3"
                 3,
             )
 
+    def test_qemu_timeout_reason_identifies_last_browser_phase(self) -> None:
+        network = b"DEBIAN_WEB_NETWORK_READY mode=direct layers=10\n"
+        cases = (
+            (b"U-Boot only\n", "browser-timeout:network-direct"),
+            (network, "browser-timeout:firefox-launch"),
+            (
+                network
+                + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                b"firefox_pid=70\n",
+                "browser-timeout:phase-navigate-baidu-home",
+            ),
+            (
+                network
+                + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                b"firefox_pid=70\n"
+                + b"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass "
+                b"bilibili_home=pass bilibili_detail=pass "
+                b"bv=BV1Ab411c7De tls=verified\n",
+                "browser-timeout:after-platform-ready",
+            ),
+        )
+        for transcript, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    web_qemu_gate.browser_timeout_reason(
+                        transcript, network_mode=NetworkMode.DIRECT
+                    ),
+                    expected,
+                )
+
+        operations = object.__new__(BrowserWebQemuOperations)
+        config = mock.Mock(boot_timeout=7200.0)
+        with mock.patch.object(web_qemu_gate.time, "monotonic", return_value=100.0):
+            self.assertEqual(operations._protocol_deadline(config), 1000.0)
+
+        operations.network_mode = NetworkMode.DIRECT
+        session = {
+            "serial": mock.Mock(
+                transcript=(
+                    network
+                    + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                    b"firefox_pid=70\n"
+                )
+            )
+        }
+        with mock.patch(
+            "tools.riscv.debian.rootfs.desktop_m3_gate."
+            "DesktopM3Operations.run_protocol",
+            side_effect=TimeoutError("serial deadline"),
+        ):
+            with self.assertRaisesRegex(
+                GateFailure, "browser-timeout:phase-navigate-baidu-home"
+            ):
+                operations.run_protocol(session, config)
+
+        makefile = (ROOT / "Makefile").read_text()
+        target = makefile.split(
+            ".PHONY: test_riscv_debian_browser_web_qemu_gate", 1
+        )[1].split(".PHONY:", 1)[0]
+        self.assertIn("--boot-timeout 900", target)
+        self.assertNotIn("--boot-timeout 7200", target)
+
     def test_qemu_gdb_stub_is_loopback_only_and_explicitly_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

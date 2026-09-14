@@ -85,6 +85,7 @@ KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
     b"Kernel panic - not syncing",
 )
+BROWSER_WEB_PROTOCOL_TIMEOUT_SECONDS = 900
 _PROGRESS_PREFIXES = (
     b"DEBIAN_WEB_NETWORK_",
     b"DEBIAN_BROWSER_WEB_",
@@ -719,6 +720,46 @@ def classify_browser_web_qemu(
     )
 
 
+def browser_timeout_reason(
+    transcript: bytes, *, network_mode: NetworkMode
+) -> str:
+    """Classify a bounded host timeout from completed structured markers."""
+
+    if not isinstance(network_mode, NetworkMode):
+        raise ValueError("browser network mode must be a NetworkMode")
+    events: list[tuple[int, str, tuple[bytes, ...]]] = []
+    events.extend(
+        (match.start(), "phase", match.groups())
+        for match in _TIMELINE_PHASE_LINE.finditer(transcript)
+    )
+    events.extend(
+        (match.start(), "platform", match.groups())
+        for match in _TIMELINE_PLATFORM_LINE.finditer(transcript)
+    )
+    active_phase: bytes | None = None
+    platform_ready = False
+    for _, kind, groups in sorted(events, key=lambda event: event[0]):
+        if kind == "platform":
+            active_phase = None
+            platform_ready = True
+            continue
+        phase, state, _ = groups
+        if state == b"start":
+            active_phase = phase
+        elif active_phase == phase:
+            active_phase = None
+    if active_phase is not None:
+        return f"browser-timeout:phase-{active_phase.decode('ascii')}"
+    if platform_ready:
+        return "browser-timeout:after-platform-ready"
+    network_ready = (
+        f"DEBIAN_WEB_NETWORK_READY mode={network_mode.value} layers=10".encode()
+    )
+    if network_ready not in transcript:
+        return f"browser-timeout:network-{network_mode.value}"
+    return "browser-timeout:firefox-launch"
+
+
 class BrowserWebQemuOperations(DesktopM5QemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
@@ -778,6 +819,13 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         try:
             super().run_protocol(session, config)
+        except TimeoutError as error:
+            raise GateFailure(
+                browser_timeout_reason(
+                    session["serial"].transcript,
+                    network_mode=self.network_mode,
+                )
+            ) from error
         except GateFailure:
             serial = session["serial"]
             if any(marker in serial.transcript for marker in KERNEL_FATAL_MARKERS):
@@ -787,6 +835,11 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 # the most valuable diagnostic is consistently truncated.
                 serial.drain(time.monotonic() + config.cleanup_timeout)
             raise
+
+    def _protocol_deadline(self, config: GateConfig) -> float:
+        return time.monotonic() + min(
+            config.boot_timeout, BROWSER_WEB_PROTOCOL_TIMEOUT_SECONDS
+        )
 
     def serial_observer(
         self, config: GateConfig, boot_number: int
