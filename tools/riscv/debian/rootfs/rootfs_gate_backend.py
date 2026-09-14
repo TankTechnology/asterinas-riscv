@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from tools.riscv.debian.rootfs.contract import (
     load_package_checksums,
     load_manifest,
@@ -285,7 +285,10 @@ class ConcreteOperations:
             os.close(slave)
             slave = -1
             serial = SerialConsole(
-                master, process=process, max_bytes=MAX_TRANSCRIPT_BYTES
+                master,
+                process=process,
+                max_bytes=MAX_TRANSCRIPT_BYTES,
+                observer=self.serial_observer(config, boot_number),
             )
             monitor = HmpMonitor.connect(
                 monitor_path,
@@ -313,6 +316,14 @@ class ConcreteOperations:
                 os.close(master)
             shutil.rmtree(directory, ignore_errors=True)
             raise
+
+    def serial_observer(
+        self, config: GateConfig, boot_number: int
+    ) -> Callable[[bytes], None] | None:
+        """Return an optional observer for serial bytes admitted to the transcript."""
+
+        del config, boot_number
+        return None
 
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:

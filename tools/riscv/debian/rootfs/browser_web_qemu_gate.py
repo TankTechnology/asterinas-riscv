@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from tools.riscv.debian.rootfs.browser_web_contract import (
@@ -39,7 +39,11 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
-from tools.riscv.debian.rootfs.gate_runtime import GateTermination, TerminationSignalState
+from tools.riscv.debian.rootfs.gate_runtime import (
+    GateTermination,
+    PinnedOutputDirectory,
+    TerminationSignalState,
+)
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure, parse_gate_args
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
@@ -81,6 +85,14 @@ KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
     b"Kernel panic - not syncing",
 )
+_PROGRESS_PREFIXES = (
+    b"DEBIAN_WEB_NETWORK_",
+    b"DEBIAN_BROWSER_WEB_",
+    b"A_WEB_TIMELINE",
+    b"A_WEB_PHASE",
+)
+_PROGRESS_PHASE = re.compile(r"(?:^| )phase=([^ ]+) state=(start|done)(?: |$)")
+_MAX_PROGRESS_LINE_BYTES = 4096
 WEB_EVIDENCE_PATHS = {
     "baidu-home.json": "/home/asterinas/browser-web-evidence/baidu-home.json",
     "baidu-home.png": "/home/asterinas/browser-web-evidence/baidu-home.png",
@@ -107,6 +119,53 @@ WEB_EVIDENCE_PATHS = {
     "timeline.log": "/home/asterinas/browser-web-timeline.log",
     "firefox-user.js": "/home/asterinas/.mozilla/asterinas-browser-web/user.js",
 }
+
+
+class BrowserWebProgress:
+    """Publish completed, structured Firefox serial markers as live progress."""
+
+    def __init__(self, output: PinnedOutputDirectory, *, boot_number: int) -> None:
+        self._output = output
+        self._boot_number = boot_number
+        self._pending = bytearray()
+        self._sequence = 0
+        self._active_phase: str | None = None
+
+    def __call__(self, chunk: bytes) -> None:
+        self._pending.extend(chunk)
+        while (newline := self._pending.find(b"\n")) >= 0:
+            raw_line = bytes(self._pending[:newline]).removesuffix(b"\r")
+            del self._pending[: newline + 1]
+            self._record(raw_line)
+        if len(self._pending) > _MAX_PROGRESS_LINE_BYTES:
+            self._pending.clear()
+
+    def _record(self, raw_line: bytes) -> None:
+        if not raw_line.startswith(_PROGRESS_PREFIXES):
+            return
+        try:
+            line = raw_line.decode("ascii")
+        except UnicodeDecodeError:
+            return
+        phase_match = _PROGRESS_PHASE.search(line) if line.startswith("A_WEB_PHASE") else None
+        if phase_match is not None:
+            phase, state = phase_match.groups()
+            if state == "start":
+                self._active_phase = phase
+            elif self._active_phase == phase:
+                self._active_phase = None
+        self._sequence += 1
+        document = {
+            "active_phase": self._active_phase,
+            "boot_number": self._boot_number,
+            "last_marker": line,
+            "sequence": self._sequence,
+        }
+        self._output.atomic_write(
+            "browser-web-progress.json",
+            (json.dumps(document, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        print(f"browser-web-progress: {line}", file=sys.stderr, flush=True)
 MAX_WEB_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_WEB_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_WEB_OPAQUE_LOG_BYTES = 16 * 1024 * 1024
@@ -729,12 +788,19 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 serial.drain(time.monotonic() + config.cleanup_timeout)
             raise
 
+    def serial_observer(
+        self, config: GateConfig, boot_number: int
+    ) -> Callable[[bytes], None]:
+        del config
+        return BrowserWebProgress(self._require_output(), boot_number=boot_number)
+
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
         self._require_output().invalidate(
             *(f"browser-web-{name}" for name in WEB_EVIDENCE_PATHS),
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
+            "browser-web-progress.json",
             "proxy-bridge.json",
         )
 

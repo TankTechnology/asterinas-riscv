@@ -334,6 +334,7 @@ class SerialConsole:
         process: GateProcess | None = None,
         max_bytes: int,
         tx_delay: float = 0.0,
+        observer: Callable[[bytes], None] | None = None,
     ) -> None:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
@@ -348,6 +349,7 @@ class SerialConsole:
         self.process = process
         self.max_bytes = max_bytes
         self.tx_delay = float(tx_delay)
+        self.observer = observer
         access_mode = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
         self._can_read_during_send = access_mode != os.O_WRONLY
         self._transcript = bytearray()
@@ -427,6 +429,8 @@ class SerialConsole:
         if len(self._transcript) + len(chunk) > self.max_bytes:
             raise BufferError("serial transcript exceeds byte cap")
         self._transcript.extend(chunk)
+        if self.observer is not None:
+            self.observer(chunk)
 
     def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
         if not marker:
