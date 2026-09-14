@@ -241,7 +241,7 @@ class RockOsAttestationTests(unittest.TestCase):
             session.events,
             [
                 ("send", "sudo -k -s"),
-                ("wait", "password for"),
+                ("wait", "assword"),
                 ("send", "secret"),
                 ("wait", "# "),
                 (

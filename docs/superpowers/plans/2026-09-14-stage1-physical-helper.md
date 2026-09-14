@@ -59,6 +59,7 @@
 - [x] Prove the focused tests fail before the change and pass afterward, then run all four related modules.
 - [x] Rebuild Stage1 twice and verify identical archives, executable modes, and source-bound helper hashes.
 - [x] Reproduce a physical UART command corruption from the retained echo, double the Linux-shell byte pacing, and retry one malformed response with a fresh nonce.
+- [x] Replace the five long physical readiness commands with one sub-128-byte invocation of a Stage1-carried, nonce-bound probe helper.
 
 ### Task 4: Prove deterministic payload identity and software regressions
 
