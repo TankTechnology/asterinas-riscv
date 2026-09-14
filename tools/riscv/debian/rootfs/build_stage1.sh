@@ -39,7 +39,8 @@ if (( $# == 1 )); then
                 usr/lib/asterinas \
                 usr/lib/asterinas/browser-web-marionette-gate \
                 usr/lib/asterinas/megrez-clock-sync \
-                usr/lib/asterinas/physical-external-services-quiesce
+                usr/lib/asterinas/physical-external-services-quiesce \
+                usr/lib/asterinas/physical-graphics-gate
             exit 0
             ;;
         -h | --help)
@@ -60,6 +61,7 @@ PROBE_SOURCE="$SCRIPT_DIR/stage1_probe.c"
 BROWSER_GATE_SOURCE="$SCRIPT_DIR/browser_web_marionette_gate.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
+PHYSICAL_GRAPHICS_GATE_SOURCE="$SCRIPT_DIR/physical_graphics_gate.py"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
 read -r -a EXTRA_LINK_FLAGS <<< "${RISC_V_LDFLAGS:-}"
@@ -158,6 +160,8 @@ install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync"
 install -D -m 0755 -- "$PHYSICAL_EXTERNAL_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce"
+install -D -m 0755 -- "$PHYSICAL_GRAPHICS_GATE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-gate"
 if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
     PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.riscv.debian.rootfs.stage1_basic \
         --stage "$STAGE" --busybox "$STAGE1_BUSYBOX"
@@ -171,7 +175,8 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
-    "$STAGE/usr/lib/asterinas/physical-external-services-quiesce"
+    "$STAGE/usr/lib/asterinas/physical-external-services-quiesce" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-gate"
 
 ARCHIVE="$STAGE/initramfs.cpio"
 : >"$ARCHIVE"
@@ -184,7 +189,8 @@ printf '%s\n' \
     usr/lib/asterinas \
     usr/lib/asterinas/browser-web-marionette-gate \
     usr/lib/asterinas/megrez-clock-sync \
-    usr/lib/asterinas/physical-external-services-quiesce |
+    usr/lib/asterinas/physical-external-services-quiesce \
+    usr/lib/asterinas/physical-graphics-gate |
     cpio --quiet --reproducible --owner=0:0 --create --format=newc \
         --directory="$STAGE" >"$ARCHIVE"
 if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
@@ -202,7 +208,8 @@ ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
 EXPECTED_ARCHIVE_ENTRIES=$'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'
-EXPECTED_ARCHIVE_ENTRIES+='usr/lib/asterinas/physical-external-services-quiesce'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-external-services-quiesce\n'
+EXPECTED_ARCHIVE_ENTRIES+='usr/lib/asterinas/physical-graphics-gate'
 if [[ -z "${STAGE1_BUSYBOX:-}" &&
     "$ARCHIVE_ENTRIES" != "$EXPECTED_ARCHIVE_ENTRIES" ]]; then
     printf 'error: generated initramfs has unexpected entries\n' >&2
