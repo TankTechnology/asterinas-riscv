@@ -1227,6 +1227,11 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("browser_performance_provenance.py", builder)
         self.assertIn("/usr/lib/asterinas/browser-performance-provenance", evidence)
         self.assertIn('--output "$RUNTIME_PROVENANCE"', evidence)
+        self.assertIn("RUNTIME_PROVENANCE_ERROR", evidence)
+        self.assertIn(
+            "DEBIAN_BROWSER_WEB_DIAGNOSTIC component=runtime-provenance stderr_hex=",
+            evidence,
+        )
         self.assertIn('"runtime-provenance.json"', qemu_gate)
         self.assertIn("bind_runtime_provenance", qemu_gate)
         self.assertIn('"browser-performance-provenance.json"', qemu_gate)
