@@ -530,6 +530,11 @@ class CycleEvidence:
     absolute_events: int
     evdev_sha256: str
     screenshot_sha256: str
+    input_latency_count: int
+    input_latency_min_ms: float
+    input_latency_p50_ms: float
+    input_latency_p95_ms: float
+    input_latency_max_ms: float
 
 
 class RealEvdevSource:
@@ -1013,7 +1018,10 @@ def run_cycle(
             )
             if not (dom_complete and input_complete):
                 raise GateError("physical-graphics-title-snapshot-disagreement")
-            validate_snapshot(snapshot, expected_nonce=nonce, cycle=cycle)
+            validated_snapshot = validate_snapshot(
+                snapshot, expected_nonce=nonce, cycle=cycle
+            )
+            latency = validated_snapshot["inputLatencySummary"]
             encoded = guarded.screenshot()
             if not isinstance(encoded, str):
                 raise GateError("physical-graphics-screenshot-response")
@@ -1041,6 +1049,14 @@ def run_cycle(
                 "trusted_pointer=1 trusted_click=1 click_count=1 color=cyan"
             )
             emit(
+                f"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle={cycle} "
+                f"count={latency['count']} "
+                f"min_ms={float(latency['min_ms']):.3f} "
+                f"p50_ms={float(latency['p50_ms']):.3f} "
+                f"p95_ms={float(latency['p95_ms']):.3f} "
+                f"max_ms={float(latency['max_ms']):.3f}"
+            )
+            emit(
                 f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} "
                 f"sha256={screenshot_sha256}"
             )
@@ -1059,6 +1075,11 @@ def run_cycle(
                 absolute_events=input_evidence.absolute_events,
                 evdev_sha256=input_evidence.digest,
                 screenshot_sha256=screenshot_sha256,
+                input_latency_count=int(latency["count"]),
+                input_latency_min_ms=float(latency["min_ms"]),
+                input_latency_p50_ms=float(latency["p50_ms"]),
+                input_latency_p95_ms=float(latency["p95_ms"]),
+                input_latency_max_ms=float(latency["max_ms"]),
             )
     finally:
         events.close()

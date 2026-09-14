@@ -404,9 +404,7 @@ class BrowserWebContractTests(unittest.TestCase):
     ) -> tuple[bytes, bytes]:
         variable = bytearray(160)
         fixed = bytearray(80)
-        struct.pack_into(
-            "=7I", variable, 0, width, height, width, height, 0, 0, 32
-        )
+        struct.pack_into("=7I", variable, 0, width, height, width, height, 0, 0, 32)
         struct.pack_into("=3I", variable, 32, 16, 8, 0)
         struct.pack_into("=3I", variable, 44, 8, 8, 0)
         struct.pack_into("=3I", variable, 56, 0, 8, 0)
@@ -418,10 +416,7 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_bgr_reserved_framebuffer_encodes_a_bounded_rgb_png(self) -> None:
         # Two visible BGRX pixels followed by four padding bytes per row.
-        raw = (
-            b"\x10\x20\x30\0\x40\x50\x60\0pad!"
-            b"\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
-        )
+        raw = b"\x10\x20\x30\0\x40\x50\x60\0pad!\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
 
         payload = web_gate._encode_bgr_reserved_framebuffer_png(
             raw, width=2, height=2, stride=12
@@ -440,8 +435,7 @@ class BrowserWebContractTests(unittest.TestCase):
             offset += 12 + length
         self.assertEqual(
             zlib.decompress(compressed),
-            b"\0\x30\x20\x10\x60\x50\x40"
-            b"\0\x90\x80\x70\xc0\xb0\xa0",
+            b"\0\x30\x20\x10\x60\x50\x40\0\x90\x80\x70\xc0\xb0\xa0",
         )
 
     def test_framebuffer_png_rejects_a_uniform_or_short_scanout(self) -> None:
@@ -467,19 +461,14 @@ class BrowserWebContractTests(unittest.TestCase):
             web_gate._parse_framebuffer_layout(bytes(unsupported), fixed)
 
     def test_framebuffer_capture_uses_fbdev_metadata_and_private_output(self) -> None:
-        raw = (
-            b"\x10\x20\x30\0\x40\x50\x60\0pad!"
-            b"\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
-        )
+        raw = b"\x10\x20\x30\0\x40\x50\x60\0pad!\x70\x80\x90\0\xa0\xb0\xc0\0pad!"
         variable, fixed = self._framebuffer_metadata()
 
         def ioctl(
             _descriptor: int, request: int, output: bytearray, mutate: bool
         ) -> int:
             self.assertTrue(mutate)
-            output[:] = (
-                variable if request == web_gate.FBIOGET_VSCREENINFO else fixed
-            )
+            output[:] = variable if request == web_gate.FBIOGET_VSCREENINFO else fixed
             return 0
 
         with tempfile.TemporaryDirectory() as directory:
@@ -580,7 +569,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertEqual(marker["screenshot_source"], "framebuffer")
         self.assertEqual(marker["screenshot_width"], 1920)
         self.assertEqual(marker["screenshot_height"], 1080)
-        self.assertEqual(marker["screenshot_sha256"], hashlib.sha256(screenshot).hexdigest())
+        self.assertEqual(
+            marker["screenshot_sha256"], hashlib.sha256(screenshot).hexdigest()
+        )
 
     def test_full_scope_rejects_the_framebuffer_screenshot_backend(self) -> None:
         with (
@@ -604,9 +595,7 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_screenshot_command_has_an_independent_deadline(self) -> None:
         client = mock.Mock()
-        client.command.return_value = {
-            "value": base64.b64encode(png()).decode("ascii")
-        }
+        client.command.return_value = {"value": base64.b64encode(png()).decode("ascii")}
         with (
             tempfile.TemporaryDirectory() as directory,
             mock.patch(
@@ -1005,6 +994,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_evidence.service",
             "physical_graphics_interaction.html",
             "physical_graphics_gate.py",
+            "physical_external_services_quiesce.sh",
             "browser_interaction_perf.py",
             "desktop_display_provider.sh",
             "browser_performance_provenance.py",
@@ -1160,8 +1150,13 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('"$script_directory/physical_graphics_gate.py"', builder)
         self.assertIn('"$stage/usr/lib/asterinas/physical-graphics-gate"', builder)
         self.assertIn('"$script_directory/browser_interaction_perf.py"', builder)
+        self.assertIn('"$stage/usr/lib/asterinas/browser_interaction_perf.py"', builder)
         self.assertIn(
-            '"$stage/usr/lib/asterinas/browser_interaction_perf.py"', builder
+            '"$script_directory/physical_external_services_quiesce.sh"', builder
+        )
+        self.assertIn(
+            '"$stage/usr/lib/asterinas/physical-external-services-quiesce"',
+            builder,
         )
         self.assertNotIn("physical-graphics-evidence", builder)
         runtime_inputs = builder[
@@ -1172,6 +1167,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("physical_graphics_interaction.html", runtime_inputs)
         self.assertIn("physical_graphics_gate.py", runtime_inputs)
         self.assertIn("browser_interaction_perf.py", runtime_inputs)
+        self.assertIn("physical_external_services_quiesce.sh", runtime_inputs)
 
     def test_display_provider_resolver_defaults_to_the_installed_fbdev_config(
         self,
@@ -1182,7 +1178,7 @@ class BrowserWebContractTests(unittest.TestCase):
             provider_root = Path(directory)
             config_directory = provider_root / "fbdev/xorg.conf.d"
             config_directory.mkdir(parents=True)
-            (config_directory / "20-asterinas.conf").write_text("Section \"Device\"\n")
+            (config_directory / "20-asterinas.conf").write_text('Section "Device"\n')
             environment = {
                 **os.environ,
                 "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
@@ -1204,9 +1200,7 @@ class BrowserWebContractTests(unittest.TestCase):
         builder = (ROOTFS / "build_rootfs.sh").read_text()
 
         self.assertIn('"$script_directory/desktop_display_provider.sh"', builder)
-        self.assertIn(
-            '"$stage/usr/lib/asterinas/desktop-display-provider"', builder
-        )
+        self.assertIn('"$stage/usr/lib/asterinas/desktop-display-provider"', builder)
         self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
@@ -1264,7 +1258,7 @@ class BrowserWebContractTests(unittest.TestCase):
             provider_root = Path(directory) / "providers"
             legacy_directory = Path(directory) / "legacy"
             legacy_directory.mkdir()
-            (legacy_directory / "20-asterinas.conf").write_text("Section \"Device\"\n")
+            (legacy_directory / "20-asterinas.conf").write_text('Section "Device"\n')
             common = {
                 **os.environ,
                 "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
@@ -1309,9 +1303,7 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
-        self.assertIn(
-            "Requires=asterinas-desktop-m5-network.service", browser_service
-        )
+        self.assertIn("Requires=asterinas-desktop-m5-network.service", browser_service)
         self.assertIn(
             "After=asterinas-browser-web-timeline-basic.service "
             "asterinas-desktop-m5-network.service",
@@ -1764,12 +1756,22 @@ class BrowserWebContractTests(unittest.TestCase):
             cache_dir_name = b"/usr/share/fonts/fixture\0"
             font_cache_bytes = (
                 struct.pack(
-                    "<II7q", 0xFC02FC04, 9, 64 + len(cache_dir_name),
-                    64, 0, 0, 0, 1704067200, 0,
+                    "<II7q",
+                    0xFC02FC04,
+                    9,
+                    64 + len(cache_dir_name),
+                    64,
+                    0,
+                    0,
+                    0,
+                    1704067200,
+                    0,
                 )
                 + cache_dir_name
             )
-            (root / "var/cache/fontconfig/fixture.cache-9").write_bytes(font_cache_bytes)
+            (root / "var/cache/fontconfig/fixture.cache-9").write_bytes(
+                font_cache_bytes
+            )
             unit = root / "etc/systemd/system/asterinas-browser-web.service"
             unit.write_text(
                 "[Service]\nUser=asterinas\nAmbientCapabilities=\n"
@@ -2049,7 +2051,8 @@ generate_fontconfig_cache "$stage" "$3"
                         self.assertEqual(
                             (work / "stage/var/cache/fontconfig/retry.cache-9")
                             .stat()
-                            .st_mode & 0o777,
+                            .st_mode
+                            & 0o777,
                             0o644,
                         )
 
@@ -2143,10 +2146,10 @@ generate_fontconfig_cache "$stage" "$3"
                     b"unstructured page text\n"
                     b"DEBIAN_WEB_NETWORK_READY mode=direct layers=10"
                 )
-                self.assertFalse((Path(directory) / "browser-web-progress.json").exists())
-                progress(
-                    b"\nA_WEB_PHASE phase=navigate-baidu-home state=sta"
+                self.assertFalse(
+                    (Path(directory) / "browser-web-progress.json").exists()
                 )
+                progress(b"\nA_WEB_PHASE phase=navigate-baidu-home state=sta")
                 first = json.loads(
                     (Path(directory) / "browser-web-progress.json").read_text()
                 )
@@ -2183,14 +2186,12 @@ generate_fontconfig_cache "$stage" "$3"
             (b"U-Boot only\n", "browser-timeout:network-direct"),
             (network, "browser-timeout:firefox-launch"),
             (
-                network
-                + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                network + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
                 b"firefox_pid=70\n",
                 "browser-timeout:phase-navigate-baidu-home",
             ),
             (
-                network
-                + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                network + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
                 b"firefox_pid=70\n"
                 + b"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass "
                 b"bilibili_home=pass bilibili_detail=pass "
@@ -2216,8 +2217,7 @@ generate_fontconfig_cache "$stage" "$3"
         session = {
             "serial": mock.Mock(
                 transcript=(
-                    network
-                    + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
+                    network + b"A_WEB_PHASE phase=navigate-baidu-home state=start "
                     b"firefox_pid=70\n"
                 )
             )
@@ -2233,9 +2233,9 @@ generate_fontconfig_cache "$stage" "$3"
                 operations.run_protocol(session, config)
 
         makefile = (ROOT / "Makefile").read_text()
-        target = makefile.split(
-            ".PHONY: test_riscv_debian_browser_web_qemu_gate", 1
-        )[1].split(".PHONY:", 1)[0]
+        target = makefile.split(".PHONY: test_riscv_debian_browser_web_qemu_gate", 1)[
+            1
+        ].split(".PHONY:", 1)[0]
         self.assertIn("--boot-timeout 900", target)
         self.assertNotIn("--boot-timeout 7200", target)
 
@@ -2290,18 +2290,14 @@ generate_fontconfig_cache "$stage" "$3"
 
         operations = object.__new__(BrowserWebQemuOperations)
         session = {
-            "serial": mock.Mock(
-                transcript=b"DEBIAN_ROOTFS_FAIL reason=dev-bind\r\n"
-            )
+            "serial": mock.Mock(transcript=b"DEBIAN_ROOTFS_FAIL reason=dev-bind\r\n")
         }
         with mock.patch(
             "tools.riscv.debian.rootfs.desktop_m3_gate."
             "DesktopM3Operations.run_protocol",
             side_effect=GateFailure("guest reported desktop failure"),
         ):
-            with self.assertRaisesRegex(
-                GateFailure, "stage1 rootfs failure: dev-bind"
-            ):
+            with self.assertRaisesRegex(GateFailure, "stage1 rootfs failure: dev-bind"):
                 operations.run_protocol(session, mock.sentinel.config)
 
     def test_kernel_fatal_drains_a_bounded_serial_tail(self) -> None:

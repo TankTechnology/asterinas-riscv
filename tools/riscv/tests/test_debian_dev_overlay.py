@@ -1017,6 +1017,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/browser_interaction_perf.py",
                 "/usr/lib/asterinas/browser-performance-provenance",
                 "/usr/lib/asterinas/physical-graphics-gate",
+                "/usr/lib/asterinas/physical-external-services-quiesce",
                 "/usr/share/asterinas/physical-graphics/index.html",
                 "/usr/lib/asterinas/firefox-diagnostic-snapshot",
                 "/usr/lib/asterinas/browser-web-firefox",
@@ -1044,6 +1045,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/browser-performance-provenance",
                 "/usr/lib/asterinas/desktop-display-provider",
                 "/usr/lib/asterinas/firefox-diagnostic-snapshot",
+                "/usr/lib/asterinas/physical-external-services-quiesce",
             },
         )
 

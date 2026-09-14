@@ -424,6 +424,21 @@ It validates three nonce-bound browser cycles and captures pixels, but its
 result always records `"physical":false`: QEMU cannot satisfy the physical
 result or prove the Megrez display scanout and real USB xHCI/HID paths.
 
+The interaction adapter enters the Stage1 `isolated-root` console first.  A
+single installed guest helper masks competing evidence/network units, creates
+the volatile browser home, and starts Xorg without Firefox.  The host completes
+the low-load kernel/rootfs probe before issuing one bounded Firefox start
+request.  That administrator-only request uses systemd's
+`ignore-dependencies` job mode because the production browser unit requires
+the online evidence service that this local interaction gate intentionally
+masks.  The desktop and timeline prerequisites are enqueued explicitly, and
+the browser script's own `wait-x` check remains the display-readiness barrier.
+This ordering avoids both the previous multi-kilobyte serial command and the
+start-stop-restart race that let Firefox starve the diagnostic shell.
+The Stage1 initramfs must come from the same source revision so that the
+`isolated-root` debug-console mode is available; an older cached Stage1 is
+rejected instead of silently falling back to the normal desktop boot.
+
 Browser evidence also publishes
 `browser-performance-provenance.json`, which binds the observed display
 provider, framebuffer geometry, Xorg package versions, and Firefox JIT-overlay

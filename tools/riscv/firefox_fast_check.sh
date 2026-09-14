@@ -41,6 +41,7 @@ bash -n \
   tools/riscv/debian/rootfs/browser_web_firefox.sh \
   tools/riscv/debian/rootfs/desktop_display_provider.sh \
   tools/riscv/debian/rootfs/desktop_m5_session.sh \
+  tools/riscv/debian/rootfs/physical_external_services_quiesce.sh \
   tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
   tools/riscv/debian/rootfs/browser_web_timeline.sh
 
