@@ -128,6 +128,12 @@ STAGE1_PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_probe.
 STAGE1_BROWSER_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_web_marionette_gate.py"
 )
+STAGE1_BROWSER_INTERACTION_PERF = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_interaction_perf.py"
+)
+STAGE1_BROWSER_M5_MARIONETTE_GATE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py"
+)
 STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
 STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
     REPOSITORY_ROOT
@@ -1265,7 +1271,9 @@ int main(void)
                 "usr",
                 "usr/lib",
                 "usr/lib/asterinas",
+                "usr/lib/asterinas/browser_interaction_perf.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
+                "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/megrez-clock-sync",
                 "usr/lib/asterinas/physical-external-services-quiesce",
                 "usr/lib/asterinas/physical-graphics-gate",
@@ -1287,6 +1295,29 @@ int main(void)
         mount_run = mount_run[: mount_run.index("case HANDOFF_PREPARE_DEBUG_CONSOLE:")]
         self.assertNotIn("O_WRONLY", mount_run)
         self.assertNotIn("/newroot/usr", mount_run)
+
+    def test_physical_gate_imports_its_stage1_carried_dependencies(self) -> None:
+        stage_tools = self.directory / "stage-tools"
+        stage_tools.mkdir()
+        for source in (
+            STAGE1_PHYSICAL_GRAPHICS_GATE,
+            STAGE1_BROWSER_INTERACTION_PERF,
+            STAGE1_BROWSER_M5_MARIONETTE_GATE,
+        ):
+            (stage_tools / source.name).write_bytes(source.read_bytes())
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = ""
+
+        result = subprocess.run(
+            [sys.executable, stage_tools / "physical_graphics_gate.py", "--help"],
+            cwd=stage_tools,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_builder_rejects_unknown_arguments(self) -> None:
         result = self.run_builder("--unknown")
@@ -1327,7 +1358,21 @@ int main(void)
                 ("usr/lib", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
                 ("usr/lib/asterinas", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
                 (
+                    "usr/lib/asterinas/browser_interaction_perf.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/browser-web-marionette-gate",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_m5_marionette_gate.py",
                     stat.S_IFREG | 0o755,
                     0,
                     0,
@@ -1358,12 +1403,14 @@ int main(void)
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
         self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
-        self.assertEqual(entries[5][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[6][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(entries[5][5], STAGE1_BROWSER_INTERACTION_PERF.read_bytes())
+        self.assertEqual(entries[6][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[7][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[8][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[7][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[9][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[8][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[10][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
