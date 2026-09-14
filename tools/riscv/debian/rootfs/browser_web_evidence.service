@@ -12,6 +12,11 @@ After=asterinas-desktop-m5-network.service
 Type=oneshot
 Environment=ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS=540
 Environment=ASTERINAS_BROWSER_WEB_FORMAL_TIMEOUT_SECONDS=480
+# Keep Python's import cache off the persistent ext2 root.  The browser gate
+# is a boot-time observer, so source imports are preferable to racing package
+# bytecode cache validation or rewriting while the desktop is starting.
+Environment=PYTHONPYCACHEPREFIX=/run/asterinas-browser-web-pycache
+Environment=PYTHONDONTWRITEBYTECODE=1
 TimeoutStartSec=570s
 ExecStart=/usr/lib/asterinas/browser-web-evidence
 RemainAfterExit=yes
