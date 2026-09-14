@@ -95,13 +95,16 @@ filenames and SHA-256 identities, records the installed overlay marker in the
 schema-seven manifest, and reuses the existing package and Debian caches.  It
 does not download an unpinned browser as part of the build.
 
-The resulting immutable root and current network kernel have these identities:
+The final cache-isolated root and current network kernel have these identities:
 
 | Artifact | SHA-256 |
 |---|---|
 | Asterinas `Image` | `0c2da50816abea7d6be6aefc092acccd31b64f2421aceeed8047f2a5b97f956b` |
-| Firefox JIT root image | `d60e78e2a0097c635f380d94a63197c307c8a944fd47b3ca6591127bc982a741` |
-| schema-seven manifest | `6e348c8c62972296399c0e7410f0a972627341df4027135d84c9b9a0c845c725` |
+| Firefox JIT root image | `179403de54e757093e4135a228d33e075a20fb8dea6b24b5687f0bcfc45ea505` |
+| schema-seven manifest | `7f3c9001942dcfeb4b858bc620fc99d4dd0aafc70473e4d0feb1481eb9ddf33a` |
+| package lock | `a984d41af358a990685f1f77cd0561d035dc1f9fc3e8686623e639e2d8f4aaba` |
+| package checksums | `200d5c468b1b8dfbb936be09a2670b4bb08d1dece2a00efe8d377ee22000f83a` |
+| Stage-1 initramfs | `2a1da2995176a935be89ea4dccf5cb1a4f6db3cf800a2dcc37b6d8f5f02caed3` |
 
 The proxy-mode replay with these exact inputs again completed all 20 fixture
 transfers.  Firefox reported `wasm=true`, as well as working workers, IndexedDB,
@@ -115,12 +118,49 @@ browser platform boundary passed; it is not evidence of a kernel, network,
 TLS, or WebAssembly failure.  Evidence is retained under
 `target/network-foundation-main/physical/qemu/firefox-jit-proxy-final/`.
 
-A direct-mode public-site replay did not publish a result before its long
-outer deadline and was terminated without affecting the board.  Before it is
-used as a routine regression, that runner needs bounded phase deadlines and
-live serial publication.  Proxy mode remains the deterministic qualification
-path; neither the WebAssembly check nor the live-site search criterion was
-relaxed to manufacture a pass.
+The final bounded proxy and direct replays used those exact inputs.  Both
+completed all ten network layers, exactly 20 owned-fixture transfers, strict
+HTTPS checks, Firefox session creation, the deterministic text/search/download
+fixture, and the public Baidu and Bilibili page checks before emitting
+`DEBIAN_BROWSER_WEB_PLATFORM_READY`.  Neither mode accepted the final Baidu
+automated-search result, so both remained fail-closed with
+`DEBIAN_BROWSER_WEB_FAIL reason=baidu-search-not-pass`; the browser platform
+boundary had already passed.  The serial identities are:
+
+| Mode | Platform boundary | Fixture requests | Serial SHA-256 | Result SHA-256 |
+|---|---|---:|---|---|
+| proxy | pass | 20 | `737e5bd5011d8248d4a77269a251dd74cd6075d072548597c7c6ed4717d6d532` | `2af06e4d2c48b7eb4991d6baae0153e89cadee14ba9485966955480feed224c5` |
+| direct | pass | 20 | `0566d3c1781e65c63772358e366df66a64d277d41ba68b10e2a70fa743a1daf6` | `f8336c93a7917f3f9bd3410bb2779c44586dd6bf6c74b7580ee713d069255c95` |
+
+Evidence is retained under
+`target/network-foundation-main/physical/qemu/firefox-network-final-{proxy,direct}/`.
+The runner now publishes each completed structured phase atomically to
+`browser-web-progress.json` and stderr, and shares one 900-second deadline
+across U-Boot, kernel boot, network qualification, and Firefox.  A timeout is
+classified by the last completed phase instead of being left to an unbounded
+outer command.
+
+One pre-final proxy run reported Python `bad marshal data` while importing a
+standard-library module.  The immutable root imported the same module under
+RISC-V user-mode emulation, and the on-disk source and bytecode hashes matched;
+an unchanged retry crossed the import and reached the browser platform.  This
+does not establish an ext2 allocator defect.  The evidence service now uses an
+empty cache prefix under `/run` and disables bytecode writes, removing package
+`.pyc` validation and rewriting from the boot-time observer's critical path.
+
+One direct replay also stopped at `DEBIAN_ROOTFS_FAIL reason=dev-bind`, before
+any network work.  Because the old browser runner did not treat the generic
+Stage-1 failure as terminal, it waited for the 900-second deadline and
+misclassified the result as a direct-network timeout.  The runner now stops on
+that marker and preserves the specific Stage-1 reason.  An immediate retry
+completed the direct network and Firefox platform boundaries above; the single
+`dev-bind` observation is retained separately under
+`firefox-network-final-direct-stage1-failure/` rather than being presented as
+a proven filesystem root cause.
+
+Proxy mode remains the deterministic physical-board path.  Neither the
+WebAssembly check nor the live-site search criterion was relaxed to manufacture
+a pass.
 
 When running the root-owned gate inside the persistent Docker container, do
 not invoke it through a second `sudo -E`.  The container process is already
@@ -131,6 +171,11 @@ extra sudo layer therefore prevents `qemu-system-riscv64` from launching.
 
 The host-side regression suite covers:
 
+- a single browser protocol deadline, live structured progress, and
+  phase-qualified timeout reasons;
+- immediate, reason-preserving termination on generic Stage-1 failures;
+- an ephemeral, non-writing Python import cache for the boot-time browser
+  observer;
 - monotonic guest network deadlines and the bounded HTTPS retry;
 - batched repeated fixture transfers with exact size and digest validation;
 - proxy/direct boot arguments and neighbor minimization;
