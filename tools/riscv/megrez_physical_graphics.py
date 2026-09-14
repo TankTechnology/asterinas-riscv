@@ -845,7 +845,7 @@ def physical_cycle_command(
         f"{expected_pid_check}"
         'if [ "$_asterinas_physical_status" != 124 ]; then '
         f'nsenter -t "$_asterinas_physical_pid" -n '
-        f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
+        f"/run/asterinas-tools/physical-graphics-gate --nonce {nonce} "
         f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" '
         f"--timeout {timeout:g} --setup-timeout {setup_timeout:g} "
         f"--expected-width {expected_width} "
@@ -898,7 +898,7 @@ def physical_final_command(
         "_asterinas_physical_status=124; "
         f'if [ "$_asterinas_physical_pid" = {browser_pid} ]; then '
         f'nsenter -t "$_asterinas_physical_pid" -n '
-        f"/usr/lib/asterinas/physical-graphics-gate --nonce {nonce} "
+        f"/run/asterinas-tools/physical-graphics-gate --nonce {nonce} "
         f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" --verify-final '
         f"--timeout {timeout:g} --setup-timeout {setup_timeout:g}; "
         "_asterinas_physical_status=$?; fi; "

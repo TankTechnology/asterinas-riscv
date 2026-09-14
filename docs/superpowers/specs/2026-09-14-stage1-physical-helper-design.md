@@ -27,10 +27,12 @@ does not require a new deployment mechanism.
 ## Design
 
 `build_stage1.sh` will install
-`physical_external_services_quiesce.sh` as
-`usr/lib/asterinas/physical-external-services-quiesce`. The file will be part
-of the deterministic Stage1 entry list, timestamp normalization, and archive
-validation.
+`physical_external_services_quiesce.sh` and the experiment's
+`physical_graphics_gate.py` as executable files under `usr/lib/asterinas`.
+Both files will be part of the deterministic Stage1 entry list, timestamp
+normalization, and archive validation. Carrying the guest gate is necessary
+because the one-cycle host contract cannot safely execute the older
+three-cycle-only copy in the reused partition-2 image.
 
 The physical orchestration command will invoke
 `/run/asterinas-tools/physical-external-services-quiesce`. This path is
@@ -38,6 +40,12 @@ provided only after Stage1 mounts its private tool directory into the mounted
 Debian root. The full browser root image will continue to install the same
 helper under `/usr/lib/asterinas` for QEMU and non-Stage1 environments, but the
 physical gate will not depend on that mutable root-image copy.
+
+The cycle and final-state commands will likewise invoke
+`/run/asterinas-tools/physical-graphics-gate`. The Stage1-carried guest gate
+accepts the host's bounded one- or three-cycle final-state contracts, so the
+host and guest halves of the experiment always come from the same source
+generation.
 
 No fallback to `/usr/lib/asterinas` is allowed in the physical gate. A stale
 Stage1 must fail closed rather than silently executing helper code from an
@@ -57,11 +65,12 @@ work adds no DRM implementation.
 
 ## Deployment and Data Flow
 
-1. Build a deterministic Stage1 containing `init` and the three helper files.
+1. Build a deterministic Stage1 containing `init` and the four helper files.
 2. Transfer or select the versioned kernel, Stage1, and DTB only.
 3. Stage1 mounts the existing ext2 root and bind-mounts its own helper directory
    at `/run/asterinas-tools`.
-4. The isolated root console invokes the Stage1-bound quiesce helper.
+4. The isolated root console invokes the Stage1-bound quiesce and interaction
+   helpers.
 5. The host runs system probes, starts Firefox, and evaluates graphical and
    interaction evidence.
 6. The fixed recovery timer returns the board to a fresh U-Boot epoch.
