@@ -327,9 +327,16 @@ class DesktopM3Operations(ConcreteOperations):
             for marker in failure_markers
         )
 
+    def _protocol_deadline(self, config: GateConfig) -> float | None:
+        """Return an optional deadline shared by every protocol phase."""
+
+        del config
+        return None
+
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         serial = session["serial"]
-        deadline = time.monotonic() + config.boot_timeout
+        protocol_deadline = self._protocol_deadline(config)
+        deadline = protocol_deadline or time.monotonic() + config.boot_timeout
         serial.wait_for(b"=> ", deadline)
         self._send_uboot(session, "pci enum", 1, deadline)
         bar_start = serial.checkpoint()
@@ -356,7 +363,7 @@ class DesktopM3Operations(ConcreteOperations):
         failure_markers = (self.FAILURE_MARKER, *self.ADDITIONAL_FAILURE_MARKERS)
         completion = serial.wait_for_any(
             (self.MILESTONES[-1].encode(), *failure_markers),
-            time.monotonic() + config.boot_timeout,
+            protocol_deadline or time.monotonic() + config.boot_timeout,
         )
         if self._completion_is_failure(completion, failure_markers):
             raise GateFailure("guest reported desktop failure")
