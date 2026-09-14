@@ -790,8 +790,9 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         self.assertEqual(result.key_downs, len(nonce))
         self.assertEqual(result.relative_events, 1)
         self.assertEqual(result.absolute_events, 0)
+        self.assertEqual(result.input_latency_p95_ms, 18.5)
         self.assertEqual(client.timeouts, [5.0])
-        self.assertEqual(len(markers), 22)
+        self.assertEqual(len(markers), 23)
         self.assertEqual(
             markers[:12],
             [
@@ -941,7 +942,12 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             "WebDriver:FullscreenWindow",
             [call.args[0] for call in command.call_args_list],
         )
-        self.assertIn("absolute_events=1", markers[-7])
+        self.assertIn("absolute_events=1", markers[-8])
+        self.assertEqual(
+            markers[-6],
+            "ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle=1 count=2 "
+            "min_ms=16.000 p50_ms=16.000 p95_ms=18.500 max_ms=18.500",
+        )
         self.assertEqual(base64.b64decode(markers[-3]), client.screenshot)
         self.assertEqual(markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=1")
 

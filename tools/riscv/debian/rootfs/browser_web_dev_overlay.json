@@ -40,6 +40,12 @@
       "mode": "0755"
     },
     {
+      "source": "physical_external_services_quiesce.sh",
+      "destination": "/usr/lib/asterinas/physical-external-services-quiesce",
+      "mode": "0755",
+      "create": true
+    },
+    {
       "source": "physical_graphics_interaction.html",
       "destination": "/usr/share/asterinas/physical-graphics/index.html",
       "mode": "0644"

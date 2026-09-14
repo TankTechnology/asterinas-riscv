@@ -1549,6 +1549,9 @@ configure_desktop() {
                 "$stage/usr/share/asterinas/physical-graphics/index.html"
             install -D -m 0755 -- "$script_directory/physical_graphics_gate.py" \
                 "$stage/usr/lib/asterinas/physical-graphics-gate"
+            install -D -m 0755 -- \
+                "$script_directory/physical_external_services_quiesce.sh" \
+                "$stage/usr/lib/asterinas/physical-external-services-quiesce"
             install -D -m 0644 -- "$script_directory/browser_interaction_perf.py" \
                 "$stage/usr/lib/asterinas/browser_interaction_perf.py"
             install -D -m 0755 -- \
@@ -2042,6 +2045,7 @@ browser_web_runtime_digest() {
         browser_web_evidence.service
         physical_graphics_interaction.html
         physical_graphics_gate.py
+        physical_external_services_quiesce.sh
         browser_interaction_perf.py
         desktop_display_provider.sh
         browser_performance_provenance.py
