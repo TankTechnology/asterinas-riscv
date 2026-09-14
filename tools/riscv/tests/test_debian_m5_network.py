@@ -1864,6 +1864,11 @@ printf '200\t10.0.2.15'
             )
         self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
         self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
+        for mode in (network_gate.NetworkMode.PROXY, network_gate.NetworkMode.DIRECT):
+            self.assertIn(
+                "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300",
+                qemu_web_network_bootargs(mode).split(),
+            )
 
     def test_qemu_network_target_ignores_desktop_readiness(self) -> None:
         transcript = (
