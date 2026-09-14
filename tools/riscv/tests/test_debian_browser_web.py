@@ -21,6 +21,7 @@ from unittest import mock
 import zlib
 
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
+from tools.riscv.debian.rootfs import browser_web_qemu_gate as web_qemu_gate
 from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
@@ -1972,6 +1973,51 @@ generate_fontconfig_cache "$stage" "$3"
                 )
                 self.assertFalse(result.passed)
         self.assertFalse(set(BROWSER_WEB_MILESTONES) & set(BROWSER_M5_MILESTONES))
+
+    def test_qemu_progress_tracks_split_structured_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = web_qemu_gate.PinnedOutputDirectory(directory)
+            self.addCleanup(output.close)
+            progress = web_qemu_gate.BrowserWebProgress(output, boot_number=2)
+            stderr = io.StringIO()
+            with mock.patch.object(sys, "stderr", stderr):
+                progress(
+                    b"unstructured page text\n"
+                    b"DEBIAN_WEB_NETWORK_READY mode=direct layers=10"
+                )
+                self.assertFalse((Path(directory) / "browser-web-progress.json").exists())
+                progress(
+                    b"\nA_WEB_PHASE phase=navigate-baidu-home state=sta"
+                )
+                first = json.loads(
+                    (Path(directory) / "browser-web-progress.json").read_text()
+                )
+                self.assertEqual(first["sequence"], 1)
+                progress(
+                    b"rt firefox_pid=70\n"
+                    b"A_WEB_PHASE phase=navigate-baidu-home state=done firefox_pid=70\n"
+                )
+
+            payload = json.loads(
+                (Path(directory) / "browser-web-progress.json").read_text()
+            )
+            self.assertEqual(
+                payload,
+                {
+                    "active_phase": None,
+                    "boot_number": 2,
+                    "last_marker": (
+                        "A_WEB_PHASE phase=navigate-baidu-home state=done "
+                        "firefox_pid=70"
+                    ),
+                    "sequence": 3,
+                },
+            )
+            self.assertNotIn("unstructured page text", stderr.getvalue())
+            self.assertEqual(
+                stderr.getvalue().count("browser-web-progress:"),
+                3,
+            )
 
     def test_qemu_gdb_stub_is_loopback_only_and_explicitly_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
