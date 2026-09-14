@@ -1320,8 +1320,12 @@ class PhysicalCommandTests(unittest.TestCase):
         ).read_text()
 
         self.assertEqual(
-            command, "/usr/lib/asterinas/physical-external-services-quiesce"
+            command,
+            "/run/asterinas-tools/physical-external-services-quiesce",
         )
+        self.assertNotIn("/usr/lib/asterinas", command)
+        self.assertNotIn("||", command)
+        self.assertNotIn(";", command)
         self.assertNotIn("\n", command)
         for fragment in (
             "timeout 60",
@@ -1424,7 +1428,7 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertEqual(
             serial.command,
-            "/usr/lib/asterinas/physical-external-services-quiesce\n",
+            "/run/asterinas-tools/physical-external-services-quiesce\n",
         )
 
     def test_isolated_readiness_starts_graphics_only_after_runtime_masks(self) -> None:

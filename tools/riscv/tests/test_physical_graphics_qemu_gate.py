@@ -212,7 +212,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
 
         self.assertEqual(
             serial.command,
-            "/usr/lib/asterinas/physical-external-services-quiesce\n",
+            "/run/asterinas-tools/physical-external-services-quiesce\n",
         )
 
     def test_rejects_browser_evidence_that_remains_active(self) -> None:
