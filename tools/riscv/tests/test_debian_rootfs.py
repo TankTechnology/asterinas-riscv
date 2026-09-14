@@ -612,6 +612,11 @@ class DebianStage1Tests(unittest.TestCase):
                     output += chunk
                 # Keep stdin open: EOF must not accidentally satisfy this test.
                 shell.send_signal(signal.SIGTERM)
+                # Bash defers traps while waiting in an interactive read.  A
+                # newline wakes that read so the TERM trap can run normally;
+                # systemd supplies the separate bounded fallback asserted below.
+                shell.stdin.write(b"\n")
+                shell.stdin.flush()
                 try:
                     shell.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -653,6 +658,8 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertIn("TTYPath=/dev/ttyS0\n", service_text)
         self.assertIn("StandardInput=tty-force\n", service_text)
         self.assertIn("Restart=always\n", service_text)
+        self.assertIn("TimeoutStopSec=2s\n", service_text)
+        self.assertIn("SendSIGKILL=yes\n", service_text)
         self.assertIn("DefaultDependencies=no\n", service_text)
         self.assertIn(
             "ConditionPathExists=/run/asterinas-debug-console.enabled\n",
