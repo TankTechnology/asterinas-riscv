@@ -65,11 +65,14 @@ PHYSICAL_MARIONETTE_SETUP_TIMEOUT = 300.0
 _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
 PHYSICAL_EXTERNAL_MARKER = "__ASTERINAS_PHYSICAL_EXTERNAL__"
+PHYSICAL_BROWSER_START_MARKER = "__ASTERINAS_PHYSICAL_BROWSER_START__"
 _EXTERNAL_SERVICES_QUIESCED = re.compile(
     rf"{PHYSICAL_EXTERNAL_MARKER} status=([0-9]+) setup_status=([0-9]+) "
+    r"failure_step=([a-z0-9-]+) "
     r"evidence_state=([a-z-]+) evidence_pid=([0-9]+) "
     r"network_state=([a-z-]+) network_pid=([0-9]+)"
 )
+_BROWSER_START = re.compile(rf"{PHYSICAL_BROWSER_START_MARKER} status=([0-9]+)")
 _READY = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=([1-3]) nonce_sha256=({_SHA256})"
 )
@@ -88,6 +91,12 @@ _DOM = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle=([1-3]) "
     rf"nonce_sha256=({_SHA256}) trusted_key=1 trusted_input=1 "
     rf"trusted_pointer=1 trusted_click=1 click_count=1 color=cyan"
+)
+_LATENCY_DECIMAL = r"[0-9]+(?:\.[0-9]+)?"
+_LATENCY = re.compile(
+    r"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle=([1-3]) count=([0-9]+) "
+    rf"min_ms=({_LATENCY_DECIMAL}) p50_ms=({_LATENCY_DECIMAL}) "
+    rf"p95_ms=({_LATENCY_DECIMAL}) max_ms=({_LATENCY_DECIMAL})"
 )
 _SCREENSHOT = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle=([1-3]) sha256=({_SHA256})"
@@ -171,6 +180,11 @@ class InteractionCycleEvidence:
     left_up: int
     evdev_sha256: str
     screenshot_sha256: str
+    input_latency_count: int
+    input_latency_min_ms: float
+    input_latency_p50_ms: float
+    input_latency_p95_ms: float
+    input_latency_max_ms: float
 
 
 @dataclass(frozen=True)
@@ -521,7 +535,7 @@ def _classify_interaction_hash_transcript(
     )
     if any(line.startswith(f"{_PROTOCOL_PREFIX}FAIL") for line in protocol_lines):
         raise HostGateError("guest physical graphics gate reported failure")
-    expected_markers = len(nonce_hashes) * 7 + 1
+    expected_markers = len(nonce_hashes) * 8 + 1
     if len(protocol_lines) != expected_markers:
         raise HostGateError(
             f"expected exactly {expected_markers} physical graphics markers"
@@ -537,9 +551,10 @@ def _classify_interaction_hash_transcript(
         )
         input_event = _match(protocol_lines[offset + 3], _INPUT, "INPUT")
         dom = _match(protocol_lines[offset + 4], _DOM, "DOM")
-        screenshot = _match(protocol_lines[offset + 5], _SCREENSHOT, "SCREENSHOT")
-        passed = _match(protocol_lines[offset + 6], _PASS, "PASS")
-        offset += 7
+        latency = _match(protocol_lines[offset + 5], _LATENCY, "LATENCY")
+        screenshot = _match(protocol_lines[offset + 6], _SCREENSHOT, "SCREENSHOT")
+        passed = _match(protocol_lines[offset + 7], _PASS, "PASS")
+        offset += 8
 
         marker_cycles = (
             int(ready.group(1)),
@@ -547,10 +562,11 @@ def _classify_interaction_hash_transcript(
             int(pointer_ready.group(1)),
             int(input_event.group(1)),
             int(dom.group(1)),
+            int(latency.group(1)),
             int(screenshot.group(1)),
             int(passed.group(1)),
         )
-        if marker_cycles != (cycle,) * 7:
+        if marker_cycles != (cycle,) * 8:
             raise HostGateError(
                 f"cycle {cycle} markers do not share the expected cycle"
             )
@@ -575,6 +591,17 @@ def _classify_interaction_hash_transcript(
             raise HostGateError(
                 f"cycle {cycle} has insufficient physical input evidence"
             )
+        latency_count = int(latency.group(2))
+        latency_values = tuple(float(latency.group(index)) for index in range(3, 7))
+        if (
+            not 1 <= latency_count <= 64
+            or any(
+                not math.isfinite(value) or not 0 < value <= 60_000
+                for value in latency_values
+            )
+            or tuple(sorted(latency_values)) != latency_values
+        ):
+            raise HostGateError(f"cycle {cycle} has invalid latency evidence")
         evidence.append(
             InteractionCycleEvidence(
                 cycle=cycle,
@@ -586,6 +613,11 @@ def _classify_interaction_hash_transcript(
                 left_up=left_up,
                 evdev_sha256=input_event.group(7),
                 screenshot_sha256=screenshot.group(2),
+                input_latency_count=latency_count,
+                input_latency_min_ms=latency_values[0],
+                input_latency_p50_ms=latency_values[1],
+                input_latency_p95_ms=latency_values[2],
+                input_latency_max_ms=latency_values[3],
             )
         )
 
@@ -702,91 +734,30 @@ def physical_preflight_command() -> str:
 
 
 def physical_external_services_quiesce_command() -> str:
-    """Prepare volatile graphics state and stop competing external workloads."""
+    """Return the bounded guest helper used to isolate the interaction gate."""
+
+    return "/usr/lib/asterinas/physical-external-services-quiesce"
+
+
+def physical_browser_start_command() -> str:
+    """Start only the local Firefox workload after baseline diagnostics."""
 
     return (
-        "_asterinas_external_status=0; "
-        "_asterinas_control=/run/systemd/system.control; "
-        "_asterinas_home=/run/asterinas-physical-home; "
-        "_asterinas_browser=asterinas-browser-web.service; "
-        '/usr/bin/install -d -m 0755 "$_asterinas_control" '
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/install -d -m 0700 -o 1000 -g 1000 "
-        '"$_asterinas_home" "$_asterinas_home/.mozilla" '
-        '"$_asterinas_home/.mozilla/asterinas-browser-web" '
-        '"$_asterinas_home/.cache" "$_asterinas_home/.config" '
-        '"$_asterinas_home/Downloads" '
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/install -m 0600 -o 1000 -g 1000 /dev/null "
-        '"$_asterinas_home/browser-web-timeline.log" '
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/install -d -m 0755 "
-        '"$_asterinas_control/$_asterinas_browser.d" '
-        "|| _asterinas_external_status=$?; "
-        "printf '%s\\n' '[Service]' "
-        "'Environment=HOME=/run/asterinas-physical-home' "
-        "'Environment=ASTERINAS_WEB_NETWORK_MODE=proxy' "
-        "'Environment=XDG_CACHE_HOME=/run/asterinas-physical-home/.cache' "
-        '>"$_asterinas_control/$_asterinas_browser.d/physical.conf" '
-        "|| _asterinas_external_status=$?; "
-        "for _asterinas_external_unit in "
-        "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service "
-        "serial-getty@ttyS0.service console-getty.service; do "
-        "/usr/bin/ln -sfn /dev/null "
-        '"$_asterinas_control/$_asterinas_external_unit" '
-        "|| _asterinas_external_status=$?; done; "
-        "/usr/bin/timeout 15 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 "
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/timeout 60 /usr/bin/systemctl stop "
-        "asterinas-desktop-m5.service "
-        "asterinas-browser-web.service "
-        "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service "
-        "serial-getty@ttyS0.service console-getty.service >/dev/null 2>&1 "
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/mountpoint -q /home/asterinas || "
-        '/usr/bin/mount --bind "$_asterinas_home" /home/asterinas '
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/systemctl reset-failed "
-        "asterinas-desktop-m5.service "
-        "asterinas-browser-web-timeline-basic.service "
-        "asterinas-browser-web.service "
-        "asterinas-browser-web-evidence.service "
-        "asterinas-desktop-m5-network.service >/dev/null 2>&1 || true; "
-        "/usr/bin/systemctl start --no-block asterinas-desktop-m5.service "
-        ">/dev/null 2>&1 || _asterinas_external_status=$?; "
-        "/usr/bin/timeout 15 /usr/bin/systemctl start "
-        "asterinas-browser-web-timeline-basic.service >/dev/null 2>&1 "
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/systemctl start --no-block asterinas-browser-web.service "
-        ">/dev/null 2>&1 || _asterinas_external_status=$?; "
-        "/usr/bin/systemctl start --no-block graphical.target >/dev/null 2>&1 "
-        "|| _asterinas_external_status=$?; "
-        "/usr/bin/sleep 1; "
-        "_asterinas_evidence_state=$(/usr/bin/systemctl is-active "
-        "asterinas-browser-web-evidence.service 2>/dev/null || true); "
-        "_asterinas_evidence_pid=$(/usr/bin/systemctl show --property MainPID "
-        "--value asterinas-browser-web-evidence.service 2>/dev/null || true); "
-        "_asterinas_network_state=$(/usr/bin/systemctl is-active "
-        "asterinas-desktop-m5-network.service 2>/dev/null || true); "
-        "_asterinas_network_pid=$(/usr/bin/systemctl show --property MainPID "
-        "--value asterinas-desktop-m5-network.service 2>/dev/null || true); "
-        "_asterinas_terminal_status=0; "
-        '[ "$_asterinas_evidence_state" = inactive ] && '
-        '[ "$_asterinas_evidence_pid" = 0 ] && '
-        '[ "$_asterinas_network_state" = inactive ] && '
-        '[ "$_asterinas_network_pid" = 0 ] '
-        "|| _asterinas_terminal_status=124; "
-        'case "$_asterinas_external_status" in 0|124) ;; *) '
-        '_asterinas_terminal_status="$_asterinas_external_status" ;; esac; '
-        f"printf '{PHYSICAL_EXTERNAL_MARKER} status=%s setup_status=%s "
-        "evidence_state=%s evidence_pid=%s network_state=%s network_pid=%s\n' "
-        '"$_asterinas_terminal_status" "$_asterinas_external_status" '
-        '"$_asterinas_evidence_state" '
-        '"$_asterinas_evidence_pid" "$_asterinas_network_state" '
-        '"$_asterinas_network_pid"'
+        "_asterinas_browser_start_status=0; "
+        "/usr/bin/systemctl start --no-block --job-mode=ignore-dependencies "
+        "asterinas-browser-web.service >/dev/null 2>&1 "
+        "|| _asterinas_browser_start_status=$?; "
+        f"printf '{PHYSICAL_BROWSER_START_MARKER} status=%s\\n' "
+        '"$_asterinas_browser_start_status"'
     )
+
+
+def validate_physical_browser_start(line: str) -> None:
+    """Require the isolated browser start request to enter systemd."""
+
+    match = _BROWSER_START.fullmatch(line)
+    if match is None or match.group(1) != "0":
+        raise HostGateError("isolated Firefox start failed")
 
 
 def validate_physical_external_services_quiesced(line: str) -> None:
@@ -798,6 +769,7 @@ def validate_physical_external_services_quiesced(line: str) -> None:
     (
         status,
         setup_status,
+        failure_step,
         evidence_state,
         evidence_pid,
         network_state,
@@ -811,7 +783,9 @@ def validate_physical_external_services_quiesced(line: str) -> None:
         or network_state != "inactive"
         or network_pid != "0"
     ):
-        raise HostGateError("external services are still active")
+        raise HostGateError(
+            f"external services are still active (failure_step={failure_step})"
+        )
 
 
 def physical_cycle_command(
@@ -1679,6 +1653,13 @@ class RealPhysicalGraphicsOperations:
         serial.wait_for(DEBUG_CONSOLE_READY.encode(), deadline)
         validate_debug_console_readiness(serial.transcript.decode("utf-8"))
         self._quiesce_external_services(deadline)
+        run_debug_console_phase(
+            serial,
+            deadline,
+            secrets.token_hex(16),
+            ready_seen=True,
+        )
+        self._start_browser(deadline)
 
         last_error: HostGateError | None = None
         while True:
@@ -1687,12 +1668,6 @@ class RealPhysicalGraphicsOperations:
             except HostGateError as error:
                 last_error = error
             else:
-                run_debug_console_phase(
-                    serial,
-                    deadline,
-                    secrets.token_hex(16),
-                    ready_seen=True,
-                )
                 self._browser_pid = evidence.browser_pid
                 self._sync_serial_log()
                 return evidence
@@ -1713,6 +1688,20 @@ class RealPhysicalGraphicsOperations:
                 continue
             validate_physical_external_services_quiesced(line)
             return
+
+    def _start_browser(self, deadline: float) -> None:
+        serial = self._require_serial()
+        cursor = serial.checkpoint()
+        serial.send((physical_browser_start_command() + "\n").encode(), deadline)
+        status_seen = False
+        wrapper_seen = False
+        while not (status_seen and wrapper_seen):
+            line, cursor = self._next_line(serial, cursor, deadline)
+            if line.startswith(PHYSICAL_BROWSER_START_MARKER):
+                validate_physical_browser_start(line)
+                status_seen = True
+            elif "ASTERINAS_FIREFOX_WEB wrapper-start pid=" in line:
+                wrapper_seen = True
 
     def _probe_graphical_readiness(self, deadline: float) -> GraphicalReadinessEvidence:
         serial = self._require_serial()

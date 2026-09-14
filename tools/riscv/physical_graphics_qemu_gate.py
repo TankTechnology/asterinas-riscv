@@ -37,14 +37,17 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 from tools.riscv.megrez_physical_graphics import (
     HostGateError,
     InteractionCycleEvidence,
+    PHYSICAL_BROWSER_START_MARKER,
     PHYSICAL_EXTERNAL_MARKER,
     PointerEvidenceMode,
     classify_interaction_transcript,
     extract_screenshot_frame,
     physical_cycle_command,
+    physical_browser_start_command,
     physical_external_services_quiesce_command,
     physical_final_command,
     validate_physical_external_services_quiesced,
+    validate_physical_browser_start,
 )
 from tools.riscv.qemu_qmp import (
     ABSOLUTE_AXIS_MAX,
@@ -62,7 +65,7 @@ _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
 _BROWSER_IDENTITY = re.compile(
     r"__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=([1-9][0-9]*) "
-    r"service=active restarts=0"
+    r"load=loaded active=active sub=running result=success restarts=0"
 )
 _LOCAL_GRAPHICS_READY = b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready"
 _MARIONETTE_LISTENING = b"Listening on port 2828"
@@ -107,7 +110,7 @@ def _physical_graphics_qemu_bootargs() -> str:
         "systemd.mask=asterinas-browser-web-evidence.service "
         "systemd.mask=asterinas-desktop-m5-network.service "
         "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 "
-        f"-- {initargs}"
+        "-- --root-init=systemd --debug-console=isolated-root"
     )
 
 
@@ -218,13 +221,21 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
         return (
             "_asterinas_qemu_pid=$(systemctl show --property MainPID --value "
             "asterinas-browser-web.service 2>/dev/null || true); "
-            "_asterinas_qemu_service=$(systemctl is-active "
+            "_asterinas_qemu_load=$(systemctl show --property LoadState --value "
+            "asterinas-browser-web.service 2>/dev/null || true); "
+            "_asterinas_qemu_active=$(systemctl show --property ActiveState --value "
+            "asterinas-browser-web.service 2>/dev/null || true); "
+            "_asterinas_qemu_sub=$(systemctl show --property SubState --value "
+            "asterinas-browser-web.service 2>/dev/null || true); "
+            "_asterinas_qemu_result=$(systemctl show --property Result --value "
             "asterinas-browser-web.service 2>/dev/null || true); "
             "_asterinas_qemu_restarts=$(systemctl show --property NRestarts --value "
             "asterinas-browser-web.service 2>/dev/null || true); "
-            "printf '__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=%s service=%s "
-            'restarts=%s\\n\' "$_asterinas_qemu_pid" '
-            '"$_asterinas_qemu_service" "$_asterinas_qemu_restarts"'
+            "printf '__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=%s load=%s "
+            "active=%s sub=%s result=%s restarts=%s\\n' "
+            '"$_asterinas_qemu_pid" "$_asterinas_qemu_load" '
+            '"$_asterinas_qemu_active" "$_asterinas_qemu_sub" '
+            '"$_asterinas_qemu_result" "$_asterinas_qemu_restarts"'
         )
 
     def _query_browser_pid(self, serial: Any, deadline: float) -> int:
@@ -236,7 +247,9 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
             if match is not None:
                 return int(match.group(1))
             if line.startswith("__ASTERINAS_PHYSICAL_QEMU_BROWSER__"):
-                raise GateFailure("QEMU Firefox service identity is incomplete")
+                raise GateFailure(
+                    f"QEMU Firefox service identity is incomplete ({line})"
+                )
 
     @staticmethod
     def _external_services_quiesce_command() -> str:
@@ -258,6 +271,25 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
             except HostGateError as error:
                 raise GateFailure(f"QEMU {error}") from error
             return
+
+    @staticmethod
+    def _start_browser(serial: Any, deadline: float) -> None:
+        """Start Firefox only after low-load system diagnostics complete."""
+
+        cursor = serial.checkpoint()
+        serial.send((physical_browser_start_command() + "\n").encode(), deadline)
+        status_seen = False
+        wrapper_seen = False
+        while not (status_seen and wrapper_seen):
+            line, cursor = _next_line(serial, cursor, deadline)
+            if line.startswith(PHYSICAL_BROWSER_START_MARKER):
+                try:
+                    validate_physical_browser_start(line)
+                except HostGateError as error:
+                    raise GateFailure(f"QEMU {error}") from error
+                status_seen = True
+            elif "ASTERINAS_FIREFOX_WEB wrapper-start pid=" in line:
+                wrapper_seen = True
 
     @staticmethod
     def _wait_for_local_graphics(serial: Any, deadline: float) -> None:
@@ -493,11 +525,12 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
         )
         self._wait_for_local_graphics(serial, time.monotonic() + config.boot_timeout)
         self._run_debug_console_probe(session, config)
-        self._wait_for_marionette(
-            serial, time.monotonic() + min(config.boot_timeout, 900.0)
-        )
+        self._start_browser(serial, time.monotonic() + config.command_timeout)
         self._browser_pid = self._query_browser_pid(
             serial, time.monotonic() + config.command_timeout
+        )
+        self._wait_for_marionette(
+            serial, time.monotonic() + min(config.boot_timeout, 900.0)
         )
         self._nonces = tuple(secrets.token_hex(8) for _ in range(3))
         if len(set(self._nonces)) != 3:

@@ -57,6 +57,8 @@ def interaction_markers(*, absolute_events: int = 2) -> bytes:
                 f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} "
                 f"nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 "
                 "trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
+                f"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle={cycle} "
+                "count=4 min_ms=1.000 p50_ms=2.000 p95_ms=4.000 max_ms=4.000",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} "
                 f"sha256={screenshot_hash}",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}",
@@ -121,8 +123,9 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
     def test_bootargs_keep_debug_root_but_mask_the_competing_browser_gate(self) -> None:
         bootargs = PhysicalGraphicsQemuOperations.BOOTARGS
         self.assertTrue(
-            bootargs.endswith("-- --root-init=systemd --debug-console=root")
+            bootargs.endswith("-- --root-init=systemd --debug-console=isolated-root")
         )
+        self.assertNotIn("systemd.unit=", bootargs)
         self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", bootargs)
         self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", bootargs)
         self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", bootargs)
@@ -132,6 +135,35 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
 
 
 class PhysicalGraphicsQemuInputTests(unittest.TestCase):
+    def test_browser_identity_reports_bounded_systemd_state(self) -> None:
+        operations = object.__new__(PhysicalGraphicsQemuOperations)
+        command = operations._browser_identity_command()
+
+        for field in (
+            "MainPID",
+            "LoadState",
+            "ActiveState",
+            "SubState",
+            "Result",
+            "NRestarts",
+        ):
+            self.assertIn(f"--property {field}", command)
+
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 0
+        with (
+            mock.patch(
+                "tools.riscv.physical_graphics_qemu_gate._next_line",
+                return_value=(
+                    "__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=0 load=loaded "
+                    "active=inactive sub=dead result=success restarts=0",
+                    1,
+                ),
+            ),
+            self.assertRaisesRegex(GateFailure, "active=inactive sub=dead"),
+        ):
+            operations._query_browser_pid(serial, 100.0)
+
     def test_hmp_commands_are_only_sixteen_hex_keys_without_relative_pointer_input(
         self,
     ) -> None:
@@ -169,6 +201,8 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             "tools.riscv.physical_graphics_qemu_gate._next_line",
             return_value=(
                 "__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 "
+                "setup_status=0 "
+                "failure_step=none "
                 "evidence_state=inactive evidence_pid=0 "
                 "network_state=inactive network_pid=0",
                 8,
@@ -176,10 +210,10 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         ):
             operations._quiesce_external_services(serial, 100.0)
 
-        self.assertIn("systemctl stop", serial.command)
-        self.assertIn("systemctl reset-failed", serial.command)
-        self.assertIn("asterinas-browser-web-evidence.service", serial.command)
-        self.assertIn("asterinas-desktop-m5-network.service", serial.command)
+        self.assertEqual(
+            serial.command,
+            "/usr/lib/asterinas/physical-external-services-quiesce\n",
+        )
 
     def test_rejects_browser_evidence_that_remains_active(self) -> None:
         serial = mock.Mock()
@@ -190,6 +224,8 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
                 "tools.riscv.physical_graphics_qemu_gate._next_line",
                 return_value=(
                     "__ASTERINAS_PHYSICAL_EXTERNAL__ status=124 "
+                    "setup_status=124 "
+                    "failure_step=none "
                     "evidence_state=active evidence_pid=42 "
                     "network_state=inactive network_pid=0",
                     8,
@@ -501,6 +537,11 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             ),
             mock.patch.object(
                 operations,
+                "_start_browser",
+                side_effect=lambda *_args: events.append("start-browser"),
+            ),
+            mock.patch.object(
+                operations,
                 "_wait_for_marionette",
                 side_effect=lambda *_args: events.append("marionette"),
             ),
@@ -540,8 +581,9 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
                 "quiesce",
                 "graphics",
                 "debug",
-                "marionette",
+                "start-browser",
                 "browser",
+                "marionette",
                 *(f"cycle-{cycle}:{nonce}" for cycle, nonce in enumerate(NONCES, 1)),
                 "final",
                 "complete",
