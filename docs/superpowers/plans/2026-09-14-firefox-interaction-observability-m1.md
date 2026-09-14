@@ -254,11 +254,15 @@ git commit -m "Add a stable desktop display provider boundary"
 - Create: `tools/riscv/tests/test_browser_performance_provenance.py`
 - Modify: `tools/riscv/debian/rootfs/build_rootfs.sh`
 - Modify: `tools/riscv/debian/rootfs/browser_web_evidence.sh`
+- Modify: `tools/riscv/debian/rootfs/browser_web_qemu_gate.py`
+- Modify: `tools/riscv/tests/test_debian_browser_web.py`
 
 - [ ] **Step 1: Write failing provenance tests**
 
-Build a temporary root containing a manifest, Debian status file, fbdev sysfs values,
-Xorg binary, Firefox executable, and optional JIT marker. Assert the exact schema:
+Build a temporary root containing a Debian status file, Firefox executable, and optional
+JIT marker. Supply synthetic Linux fbdev ioctl records to the pure parser and assert the
+exact guest runtime schema. Separately bind that schema to a temporary sidecar manifest
+and assert the published schema:
 
 ```python
 {
@@ -280,18 +284,22 @@ Run: `python3 -m unittest tools.riscv.tests.test_browser_performance_provenance 
 
 Expected: FAIL because the provenance module is absent.
 
-- [ ] **Step 3: Implement bounded file parsing and atomic JSON output**
+- [ ] **Step 3: Implement guest collection and host binding**
 
-Use `Path.lstat`, maximum file sizes, exact integer parsing, and SHA-256 streaming. The
-module accepts root/proc/sys prefixes for tests, writes JSON to a sibling temporary file,
-calls `os.replace`, and never invokes package managers or external network commands.
+Use `Path.lstat`, maximum file sizes, exact integer parsing, and SHA-256 streaming. Guest
+collection reads the two Linux fbdev metadata ioctls without reading framebuffer pixels,
+parses the bounded dpkg status file, and writes runtime JSON through `os.replace`. Host
+binding validates that exact JSON and hashes the already-final sidecar manifest. The
+manifest digest is never embedded back into the image because that would create a
+circular identity. Neither mode invokes package managers or external network commands.
 
 - [ ] **Step 4: Integrate provenance into browser evidence**
 
 Install the module as `/usr/lib/asterinas/browser-performance-provenance`, add it to
-`browser_web_runtime_digest`, run it before the online navigation phase, and include its
-path in the final evidence directory. A provenance failure fails the automated gate
-before public-network measurements.
+`browser_web_runtime_digest`, run guest collection before the online navigation phase,
+and extract `runtime-provenance.json` with the normal evidence set. During publication,
+`browser_web_qemu_gate.py` binds it to `config.manifest` and atomically publishes
+`browser-performance-provenance.json`. A provenance failure fails the automated gate.
 
 - [ ] **Step 5: Run focused and integration unit tests**
 
@@ -305,7 +313,9 @@ Expected: PASS.
 git add tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/tests/test_browser_performance_provenance.py \
   tools/riscv/debian/rootfs/build_rootfs.sh \
-  tools/riscv/debian/rootfs/browser_web_evidence.sh
+  tools/riscv/debian/rootfs/browser_web_evidence.sh \
+  tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
+  tools/riscv/tests/test_debian_browser_web.py
 git commit -m "Record Firefox performance runtime provenance"
 ```
 
