@@ -1693,15 +1693,15 @@ class RealPhysicalGraphicsOperations:
         serial = self._require_serial()
         cursor = serial.checkpoint()
         serial.send((physical_browser_start_command() + "\n").encode(), deadline)
-        status_seen = False
-        wrapper_seen = False
-        while not (status_seen and wrapper_seen):
+        while True:
             line, cursor = self._next_line(serial, cursor, deadline)
             if line.startswith(PHYSICAL_BROWSER_START_MARKER):
                 validate_physical_browser_start(line)
-                status_seen = True
-            elif "ASTERINAS_FIREFOX_WEB wrapper-start pid=" in line:
-                wrapper_seen = True
+                # Quiet physical boots route the service's console output to
+                # tty0, so wrapper logs are intentionally absent from UART.
+                # The following readiness probe verifies the active service,
+                # exact Firefox process, restart count, Xorg, and USB devices.
+                return
 
     def _probe_graphical_readiness(self, deadline: float) -> GraphicalReadinessEvidence:
         serial = self._require_serial()
