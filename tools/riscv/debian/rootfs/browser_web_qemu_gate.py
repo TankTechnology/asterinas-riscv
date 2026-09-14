@@ -79,7 +79,11 @@ def browser_web_milestones(mode: NetworkMode) -> tuple[str, ...]:
 
 BROWSER_WEB_MILESTONES = browser_web_milestones(NetworkMode.DIRECT)
 _NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
+_ROOTFS_FAILURE = b"DEBIAN_ROOTFS_FAIL reason="
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
+_ROOTFS_FAILURE_LINE = re.compile(
+    rb"(?:^|\n)DEBIAN_ROOTFS_FAIL reason=([a-z0-9][a-z0-9-]*)\r?(?:\n|$)"
+)
 _EXTERNAL_BLOCK = b"DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
@@ -760,13 +764,24 @@ def browser_timeout_reason(
     return "browser-timeout:firefox-launch"
 
 
+def _stage1_failure_reason(transcript: bytes) -> str | None:
+    matches = tuple(_ROOTFS_FAILURE_LINE.finditer(transcript))
+    if not matches:
+        return None
+    return matches[-1].group(1).decode("ascii")
+
+
 class BrowserWebQemuOperations(DesktopM5QemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
     ARTIFACT_PREFIX = "browser-web-qemu"
     MILESTONES = BROWSER_WEB_MILESTONES
     FAILURE_MARKER = _WEB_FAILURE
-    ADDITIONAL_FAILURE_MARKERS = (_NETWORK_FAILURE, *KERNEL_FATAL_MARKERS)
+    ADDITIONAL_FAILURE_MARKERS = (
+        _ROOTFS_FAILURE,
+        _NETWORK_FAILURE,
+        *KERNEL_FATAL_MARKERS,
+    )
     BOOTARGS = qemu_web_network_bootargs(NetworkMode.DIRECT)
 
     def __init__(
@@ -826,8 +841,13 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                     network_mode=self.network_mode,
                 )
             ) from error
-        except GateFailure:
+        except GateFailure as error:
             serial = session["serial"]
+            stage1_reason = _stage1_failure_reason(serial.transcript)
+            if stage1_reason is not None:
+                raise GateFailure(
+                    f"stage1 rootfs failure: {stage1_reason}"
+                ) from error
             if any(marker in serial.transcript for marker in KERNEL_FATAL_MARKERS):
                 # The generic desktop gate returns as soon as it sees the panic
                 # prefix.  Give the kernel logger one bounded cleanup interval
