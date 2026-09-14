@@ -94,7 +94,9 @@ git commit -m "Add browser interaction timing contract"
 **Files:**
 - Modify: `tools/riscv/debian/rootfs/physical_graphics_interaction.html`
 - Modify: `tools/riscv/debian/rootfs/physical_graphics_gate.py`
+- Modify: `tools/riscv/debian/rootfs/build_rootfs.sh`
 - Modify: `tools/riscv/tests/test_physical_graphics_gate.py`
+- Modify: `tools/riscv/tests/test_debian_browser_web.py`
 
 - [ ] **Step 1: Write failing snapshot tests**
 
@@ -151,6 +153,10 @@ add `inputLatenciesMs` to `SNAPSHOT_FIELDS`, and return a copied snapshot contai
 `inputLatencySummary`. Keep `snapshot_complete` permissive while input is still in
 progress, but require at least one valid sample in terminal state.
 
+Install `browser_interaction_perf.py` beside the physical graphics gate as
+`/usr/lib/asterinas/browser_interaction_perf.py` and include it in
+`browser_web_runtime_digest`, so host tests and guest execution import the same code.
+
 - [ ] **Step 5: Run the physical gate unit suite**
 
 Run: `python3 -m unittest tools.riscv.tests.test_browser_interaction_perf tools.riscv.tests.test_physical_graphics_gate -v`
@@ -162,7 +168,9 @@ Expected: PASS.
 ```bash
 git add tools/riscv/debian/rootfs/physical_graphics_interaction.html \
   tools/riscv/debian/rootfs/physical_graphics_gate.py \
-  tools/riscv/tests/test_physical_graphics_gate.py
+  tools/riscv/debian/rootfs/build_rootfs.sh \
+  tools/riscv/tests/test_physical_graphics_gate.py \
+  tools/riscv/tests/test_debian_browser_web.py
 git commit -m "Measure Firefox trusted input frame latency"
 ```
 
