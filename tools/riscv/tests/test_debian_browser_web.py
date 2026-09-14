@@ -981,6 +981,8 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_evidence.service",
             "physical_graphics_interaction.html",
             "physical_graphics_gate.py",
+            "browser_interaction_perf.py",
+            "desktop_display_provider.sh",
             "firefox_diagnostic_snapshot.py",
             "browser_web_trust_check.py",
             "browser_web_online_rootfs_check.py",
@@ -1145,6 +1147,70 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("physical_graphics_interaction.html", runtime_inputs)
         self.assertIn("physical_graphics_gate.py", runtime_inputs)
         self.assertIn("browser_interaction_perf.py", runtime_inputs)
+
+    def test_display_provider_resolver_defaults_to_the_installed_fbdev_config(
+        self,
+    ) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        self.assertTrue(resolver.is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            provider_root = Path(directory)
+            config_directory = provider_root / "fbdev/xorg.conf.d"
+            config_directory.mkdir(parents=True)
+            (config_directory / "20-asterinas.conf").write_text("Section \"Device\"\n")
+            environment = {
+                **os.environ,
+                "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
+            }
+
+            result = subprocess.run(
+                ["bash", str(resolver)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"{config_directory}\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_rootfs_installs_and_versions_the_display_provider_resolver(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+
+        self.assertIn('"$script_directory/desktop_display_provider.sh"', builder)
+        self.assertIn(
+            '"$stage/usr/lib/asterinas/desktop-display-provider"', builder
+        )
+        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
+        runtime_inputs = builder[
+            builder.index("browser_web_runtime_digest()") : builder.index(
+                "publish_artifacts()"
+            )
+        ]
+        self.assertIn("desktop_display_provider.sh", runtime_inputs)
+
+    def test_display_provider_resolver_rejects_missing_and_unknown_providers(
+        self,
+    ) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        self.assertTrue(resolver.is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            for provider, expected_status in (("drm", 65), ("unknown", 64)):
+                with self.subTest(provider=provider):
+                    result = subprocess.run(
+                        ["bash", str(resolver)],
+                        env={
+                            **os.environ,
+                            "ASTERINAS_DISPLAY_PROVIDER": provider,
+                            "ASTERINAS_DISPLAY_PROVIDER_ROOT": directory,
+                        },
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, expected_status)
+                    self.assertEqual(result.stdout, "")
 
     def test_browser_waits_for_network_and_evidence_waits_for_desktop(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
@@ -1424,6 +1490,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("SupplementaryGroups=video input tty", builder)
         self.assertIn("desktop_user=root", builder)
         desktop_session = (ROOTFS / "desktop_m5_session.sh").read_text()
+        self.assertIn("desktop-display-provider", desktop_session)
+        self.assertIn('-configdir "$provider_config_directory"', desktop_session)
+        self.assertIn("display-provider-ready", desktop_session)
         self.assertNotIn("-extension MIT-SHM", desktop_session)
         self.assertIn('-logfile "$HOME/Xorg.0.log" vt1', desktop_session)
         self.assertIn("-novtswitch -keeptty", desktop_session)

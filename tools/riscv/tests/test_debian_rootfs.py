@@ -1924,7 +1924,9 @@ WantedBy=multi-user.target
                 / "asterinas-desktop-m3.service"
             ).is_symlink()
         )
-        xorg_directory = stage / "etc/X11/xorg.conf.d"
+        xorg_directory = (
+            stage / "etc/asterinas/display-providers/fbdev/xorg.conf.d"
+        )
         self.assertEqual(stat.S_IMODE(xorg_directory.stat().st_mode), 0o755)
         xorg_config_path = xorg_directory / "20-asterinas.conf"
         self.assertEqual(stat.S_IMODE(xorg_config_path.stat().st_mode), 0o644)
