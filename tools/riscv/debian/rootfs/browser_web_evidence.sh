@@ -31,6 +31,7 @@ readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 readonly FIXTURE_URL="${ASTERINAS_DESKTOP_FIXTURE_URL:-}"
 readonly XORG_LOG=/home/asterinas/Xorg.0.log
+readonly RUNTIME_PROVENANCE=/home/asterinas/browser-web-evidence/runtime-provenance.json
 readonly SCREENSHOT=/home/asterinas/browser-web-evidence/baidu-search.png
 readonly STABILITY_SECONDS=60
 
@@ -394,6 +395,9 @@ marker BOOT_MARIONETTE_PORT_READY
 # the strict NRestarts=0 service check still runs after content evidence exists.
 validate_parent_security "$browser_pid"
 validate_firefox_network_profile
+rm -f -- "$RUNTIME_PROVENANCE"
+/usr/bin/timeout 15 /usr/lib/asterinas/browser-performance-provenance \
+    --output "$RUNTIME_PROVENANCE" || fail runtime-provenance
 # Resolve network/DNS/TLS only after Firefox is demonstrably alive.  This
 # preserves the strict online checks while ensuring a slow curl cannot hide a
 # Firefox startup failure or suppress its bounded diagnostics.
