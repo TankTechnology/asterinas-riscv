@@ -736,7 +736,7 @@ def physical_preflight_command() -> str:
 def physical_external_services_quiesce_command() -> str:
     """Return the bounded guest helper used to isolate the interaction gate."""
 
-    return "/usr/lib/asterinas/physical-external-services-quiesce"
+    return "/run/asterinas-tools/physical-external-services-quiesce"
 
 
 def physical_browser_start_command() -> str:

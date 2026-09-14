@@ -129,6 +129,10 @@ STAGE1_BROWSER_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_web_marionette_gate.py"
 )
 STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
+STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
+    REPOSITORY_ROOT
+    / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
+)
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
@@ -1260,6 +1264,7 @@ int main(void)
                 "usr/lib/asterinas",
                 "usr/lib/asterinas/browser-web-marionette-gate",
                 "usr/lib/asterinas/megrez-clock-sync",
+                "usr/lib/asterinas/physical-external-services-quiesce",
             ],
         )
 
@@ -1331,12 +1336,22 @@ int main(void)
                     0,
                     1700000000,
                 ),
+                (
+                    "usr/lib/asterinas/physical-external-services-quiesce",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
             ],
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
         self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
         self.assertEqual(entries[5][5], STAGE1_BROWSER_GATE.read_bytes())
         self.assertEqual(entries[6][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(
+            entries[7][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+        )
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
