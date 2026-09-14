@@ -614,6 +614,10 @@ class BrowserWebContractTests(unittest.TestCase):
         'user_pref("browser.pagethumbnails.capturing_disabled", true);',
         'user_pref("browser.region.network.url", "");',
         'user_pref("browser.topsites.contile.enabled", false);',
+        'user_pref("dom.ipc.processCount", 1);',
+        'user_pref("dom.ipc.processPrelaunch.enabled", false);',
+        'user_pref("fission.autostart", false);',
+        'user_pref("media.rdd-process.enabled", false);',
         'user_pref("network.captive-portal-service.enabled", false);',
         'user_pref("network.connectivity-service.enabled", false);',
     }
