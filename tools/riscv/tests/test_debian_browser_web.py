@@ -335,6 +335,30 @@ def web_evidence() -> dict[str, bytes]:
             'user_pref("browser.download.folderList", 2);\n'
             'user_pref("network.proxy.type", 0);\n'
         ).encode(),
+        "runtime-provenance.json": (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "display_provider": "fbdev",
+                    "framebuffer": {
+                        "width": 1920,
+                        "height": 1080,
+                        "stride_bytes": 7680,
+                        "bits_per_pixel": 32,
+                    },
+                    "firefox": {
+                        "executable": "/usr/bin/firefox-esr",
+                        "jit_overlay": False,
+                    },
+                    "packages": {
+                        "xserver-xorg-core": "2:21.1.16-1",
+                        "xserver-xorg-video-fbdev": "1:0.5.0-2",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode(),
     }
     for name in (
         "baidu-home",
@@ -983,6 +1007,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "physical_graphics_gate.py",
             "browser_interaction_perf.py",
             "desktop_display_provider.sh",
+            "browser_performance_provenance.py",
             "firefox_diagnostic_snapshot.py",
             "browser_web_trust_check.py",
             "browser_web_online_rootfs_check.py",
@@ -1189,6 +1214,22 @@ class BrowserWebContractTests(unittest.TestCase):
             )
         ]
         self.assertIn("desktop_display_provider.sh", runtime_inputs)
+
+    def test_runtime_provenance_is_installed_collected_and_host_bound(self) -> None:
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
+        qemu_gate = (ROOTFS / "browser_web_qemu_gate.py").read_text()
+
+        self.assertIn('"$script_directory/browser_performance_provenance.py"', builder)
+        self.assertIn(
+            '"$stage/usr/lib/asterinas/browser-performance-provenance"', builder
+        )
+        self.assertIn("browser_performance_provenance.py", builder)
+        self.assertIn("/usr/lib/asterinas/browser-performance-provenance", evidence)
+        self.assertIn('--output "$RUNTIME_PROVENANCE"', evidence)
+        self.assertIn('"runtime-provenance.json"', qemu_gate)
+        self.assertIn("bind_runtime_provenance", qemu_gate)
+        self.assertIn('"browser-performance-provenance.json"', qemu_gate)
 
     def test_display_provider_resolver_rejects_missing_and_unknown_providers(
         self,
