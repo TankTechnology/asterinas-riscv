@@ -1153,6 +1153,11 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("Requires=asterinas-desktop-m5.service", service)
         self.assertNotIn("Environment=ASTERINAS_WEB_NETWORK_MODE=", service)
         self.assertNotIn("Environment=ASTERINAS_DESKTOP_PROXY", service)
+        self.assertIn(
+            "Environment=PYTHONPYCACHEPREFIX=/run/asterinas-browser-web-pycache",
+            service,
+        )
+        self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
         self.assertIn(
             "Requires=asterinas-desktop-m5-network.service", browser_service
