@@ -1721,6 +1721,9 @@ EOF
         "$session_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-session"
     install -D -m 0755 -- \
+        "$script_directory/desktop_display_provider.sh" \
+        "$stage/usr/lib/asterinas/desktop-display-provider"
+    install -D -m 0755 -- \
         "$script_directory/desktop_m3_device_access.sh" \
         "$stage/usr/lib/asterinas/desktop-$generation-device-access"
     install -D -m 0755 -- \
@@ -1755,6 +1758,7 @@ StandardError=$desktop_standard_error
 # StandardOutput=$desktop_standard_output
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
+Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev
 $(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
@@ -1856,8 +1860,9 @@ EOF
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
 
-    install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
-    cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
+    local fbdev_config_directory="$stage/etc/asterinas/display-providers/fbdev/xorg.conf.d"
+    install -d -m 0755 -- "$fbdev_config_directory"
+    cat >"$fbdev_config_directory/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
     Driver "fbdev"
@@ -1896,7 +1901,11 @@ Section "ServerFlags"
     Option "OffTime" "0"
 EndSection
 EOF
-    chmod 0644 -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    chmod 0644 -- "$fbdev_config_directory/20-asterinas.conf"
+    install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
+    rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
+        "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
 }
 
 create_and_verify_image() {
@@ -2031,6 +2040,7 @@ browser_web_runtime_digest() {
         physical_graphics_interaction.html
         physical_graphics_gate.py
         browser_interaction_perf.py
+        desktop_display_provider.sh
         firefox_diagnostic_snapshot.py
         browser_web_trust_check.py
         browser_web_online_rootfs_check.py
