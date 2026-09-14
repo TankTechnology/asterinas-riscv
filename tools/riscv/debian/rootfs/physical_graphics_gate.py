@@ -27,22 +27,25 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 import zlib
 
-if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
-    sys.path.insert(0, "/usr/lib/asterinas")
-    from browser_interaction_perf import (  # type: ignore[import-not-found]
-        PerformanceContractError,
-        summarize_input_latencies,
-    )
-    from browser_m5_marionette_gate import (  # type: ignore[import-not-found]
-        _connect,
-        GateError as MarionetteGateError,
-    )
-else:
+try:
     from tools.riscv.debian.rootfs.browser_interaction_perf import (
         PerformanceContractError,
         summarize_input_latencies,
     )
     from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
+        _connect,
+        GateError as MarionetteGateError,
+    )
+except ModuleNotFoundError as error:
+    if error.name != "tools":
+        raise
+    script_directory = Path(__file__).resolve().parent
+    sys.path.insert(0, str(script_directory))
+    from browser_interaction_perf import (  # type: ignore[import-not-found]
+        PerformanceContractError,
+        summarize_input_latencies,
+    )
+    from browser_m5_marionette_gate import (  # type: ignore[import-not-found]
         _connect,
         GateError as MarionetteGateError,
     )

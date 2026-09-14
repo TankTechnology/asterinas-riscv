@@ -53,6 +53,8 @@
 
 - [x] Reproduce that the reused partition-2 guest gate rejects the supported one-cycle final-state contract.
 - [x] Carry `physical-graphics-gate` in Stage1 and require both host commands to use `/run/asterinas-tools` without a root-image fallback.
+- [x] Reproduce the missing `browser_interaction_perf` import on the board and carry both direct project dependencies beside the gate.
+- [x] Prove the gate imports successfully from an isolated Stage1-style directory with no repository `PYTHONPATH`.
 - [x] Accept only the host-supported terminal cycles 1 and 3 in the guest final-state verifier.
 - [x] Prove the focused tests fail before the change and pass afterward, then run all four related modules.
 - [x] Rebuild Stage1 twice and verify identical archives, executable modes, and source-bound helper hashes.

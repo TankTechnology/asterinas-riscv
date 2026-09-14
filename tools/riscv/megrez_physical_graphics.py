@@ -59,7 +59,7 @@ from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_HDMI_BYTES = 64 * 1024 * 1024
 MAX_GUEST_SCREENSHOT_BYTES = 512 * 1024
-PHYSICAL_REBOOT_AFTER = 900
+PHYSICAL_REBOOT_AFTER = 1140
 PHYSICAL_REBOOT_HEADROOM = 30.0
 # The non-JIT physical Firefox image has repeatedly needed 355--467 seconds
 # for WebDriver:NewSession. Keep a bounded margin above the measured tail.
@@ -2089,7 +2089,7 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--boot-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--cycle-timeout", type=_positive_seconds, default=180.0)
     parser.add_argument("--hdmi-timeout", type=_positive_seconds, default=180.0)
-    parser.add_argument("--recovery-timeout", type=_positive_seconds, default=930.0)
+    parser.add_argument("--recovery-timeout", type=_positive_seconds, default=1170.0)
     values = parser.parse_args(arguments)
     mmc_names = (values.mmc_kernel, values.mmc_initramfs, values.mmc_dtb)
     if any(name is not None for name in mmc_names) and not all(

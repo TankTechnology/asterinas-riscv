@@ -37,7 +37,9 @@ if (( $# == 1 )); then
                 usr \
                 usr/lib \
                 usr/lib/asterinas \
+                usr/lib/asterinas/browser_interaction_perf.py \
                 usr/lib/asterinas/browser-web-marionette-gate \
+                usr/lib/asterinas/browser_m5_marionette_gate.py \
                 usr/lib/asterinas/megrez-clock-sync \
                 usr/lib/asterinas/physical-external-services-quiesce \
                 usr/lib/asterinas/physical-graphics-gate
@@ -59,6 +61,8 @@ SOURCE="$SCRIPT_DIR/stage1_init.c"
 DEBUG_CONSOLE_SOURCE="$SCRIPT_DIR/stage1_debug_console.c"
 PROBE_SOURCE="$SCRIPT_DIR/stage1_probe.c"
 BROWSER_GATE_SOURCE="$SCRIPT_DIR/browser_web_marionette_gate.py"
+BROWSER_INTERACTION_PERF_SOURCE="$SCRIPT_DIR/browser_interaction_perf.py"
+BROWSER_M5_MARIONETTE_GATE_SOURCE="$SCRIPT_DIR/browser_m5_marionette_gate.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
 PHYSICAL_GRAPHICS_GATE_SOURCE="$SCRIPT_DIR/physical_graphics_gate.py"
@@ -156,6 +160,10 @@ trap 'exit 143' TERM
 chmod 0755 "$STAGE" "$STAGE/init"
 install -D -m 0755 -- "$BROWSER_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate"
+install -D -m 0755 -- "$BROWSER_INTERACTION_PERF_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_interaction_perf.py"
+install -D -m 0755 -- "$BROWSER_M5_MARIONETTE_GATE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py"
 install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync"
 install -D -m 0755 -- "$PHYSICAL_EXTERNAL_SOURCE" \
@@ -173,7 +181,9 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr" \
     "$STAGE/usr/lib" \
     "$STAGE/usr/lib/asterinas" \
+    "$STAGE/usr/lib/asterinas/browser_interaction_perf.py" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
+    "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce" \
     "$STAGE/usr/lib/asterinas/physical-graphics-gate"
@@ -187,7 +197,9 @@ printf '%s\n' \
     usr \
     usr/lib \
     usr/lib/asterinas \
+    usr/lib/asterinas/browser_interaction_perf.py \
     usr/lib/asterinas/browser-web-marionette-gate \
+    usr/lib/asterinas/browser_m5_marionette_gate.py \
     usr/lib/asterinas/megrez-clock-sync \
     usr/lib/asterinas/physical-external-services-quiesce \
     usr/lib/asterinas/physical-graphics-gate |
@@ -206,7 +218,9 @@ fi
 
 ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
 EXPECTED_ARCHIVE_ENTRIES=$'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_interaction_perf.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-external-services-quiesce\n'
 EXPECTED_ARCHIVE_ENTRIES+='usr/lib/asterinas/physical-graphics-gate'
