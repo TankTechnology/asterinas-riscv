@@ -31,6 +31,8 @@ static const char DEBUG_CONSOLE_SERVICE[] =
     "StandardError=tty\n"
     "TTYReset=yes\n"
     "TTYVHangup=yes\n"
+    "TimeoutStopSec=2s\n"
+    "SendSIGKILL=yes\n"
     "Restart=always\n"
     "RestartSec=1\n";
 
