@@ -1431,6 +1431,33 @@ class PhysicalCommandTests(unittest.TestCase):
             "/run/asterinas-tools/physical-external-services-quiesce\n",
         )
 
+    def test_browser_start_ack_precedes_the_strong_readiness_probe(self) -> None:
+        gate = load_gate(self)
+
+        class Serial:
+            def checkpoint(self) -> int:
+                return 7
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.command = payload.decode()
+
+        serial = Serial()
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = serial
+        with mock.patch.object(
+            operations,
+            "_next_line",
+            side_effect=[
+                ("__ASTERINAS_PHYSICAL_BROWSER_START__ status=0", 8),
+                AssertionError("waited for a quiet-console service log"),
+            ],
+        ) as next_line:
+            operations._start_browser(100.0)
+
+        self.assertEqual(serial.command, gate.physical_browser_start_command() + "\n")
+        next_line.assert_called_once()
+
     def test_isolated_readiness_starts_graphics_only_after_runtime_masks(self) -> None:
         gate = load_gate(self)
         events: list[str] = []

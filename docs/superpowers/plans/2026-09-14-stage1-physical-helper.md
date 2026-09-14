@@ -57,9 +57,9 @@
 **Files:**
 - Test output: `target/physical-firefox-validation/qemu-stage1-helper/`
 
-- [ ] Run `make test_riscv_physical_graphics_qemu_gate` with the rebuilt Stage1 and the pinned current-main kernel, DTB, root image, manifest, lock, and checksum inputs.
-- [ ] Require three successful cycles and verify the result records `physical: false`.
-- [ ] Retain result JSON, serial logs, and exact artifact hashes.
+- [x] Run `make test_riscv_physical_graphics_qemu_gate` with the rebuilt Stage1 and the pinned current-main kernel, DTB, root image, manifest, lock, and checksum inputs.
+- [x] Require three successful cycles and verify the result records `physical: false`.
+- [x] Retain result JSON, serial logs, and exact artifact hashes.
 
 ### Task 6: Validate the real board and finish the branch
 
