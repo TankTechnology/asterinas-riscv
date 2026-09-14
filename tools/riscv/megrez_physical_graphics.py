@@ -61,7 +61,9 @@ MAX_HDMI_BYTES = 64 * 1024 * 1024
 MAX_GUEST_SCREENSHOT_BYTES = 512 * 1024
 PHYSICAL_REBOOT_AFTER = 900
 PHYSICAL_REBOOT_HEADROOM = 30.0
-PHYSICAL_MARIONETTE_SETUP_TIMEOUT = 300.0
+# The non-JIT physical Firefox image has repeatedly needed 355--467 seconds
+# for WebDriver:NewSession. Keep a bounded margin above the measured tail.
+PHYSICAL_MARIONETTE_SETUP_TIMEOUT = 540.0
 _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
 PHYSICAL_EXTERNAL_MARKER = "__ASTERINAS_PHYSICAL_EXTERNAL__"
