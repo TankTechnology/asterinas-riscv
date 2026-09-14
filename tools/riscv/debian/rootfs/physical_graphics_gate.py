@@ -1088,7 +1088,7 @@ def run_cycle(
 def verify_final_state(client: MarionetteClient, *, nonce: str, cycle: int) -> None:
     """Recheck the terminal DOM without navigating or synthesizing input."""
 
-    if cycle != 3 or NONCE_PATTERN.fullmatch(nonce) is None:
+    if cycle not in (1, 3) or NONCE_PATTERN.fullmatch(nonce) is None:
         raise GateError("physical-graphics-final-identity")
     guarded = GuardedMarionette(client)
     session = guarded.command(

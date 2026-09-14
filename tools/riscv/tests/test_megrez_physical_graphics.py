@@ -1102,6 +1102,7 @@ class PhysicalCommandTests(unittest.TestCase):
     def test_one_cycle_final_command_and_completion_marker(self) -> None:
         gate = load_gate(self)
         command = gate.physical_final_command("0123456789abcdef", 41, 180.0, cycle=1)
+        self.assertIn("/run/asterinas-tools/physical-graphics-gate", command)
         self.assertIn("--cycle 1", command)
         self.assertNotIn("--cycle 3", command)
 
@@ -1569,7 +1570,7 @@ class PhysicalCommandTests(unittest.TestCase):
         for fragment in (
             "nsenter",
             "asterinas-browser-web.service",
-            "/usr/lib/asterinas/physical-graphics-gate",
+            "/run/asterinas-tools/physical-graphics-gate",
             "--nonce 0123456789abcdef",
             "--cycle 2",
             "--setup-timeout 300",

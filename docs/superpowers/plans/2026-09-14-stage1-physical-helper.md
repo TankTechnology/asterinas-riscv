@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the physical Firefox gate execute its quiesce helper from the booted Stage1, so a proven partition-2 root can be reused without rewriting it.
+**Goal:** Make the physical Firefox gate execute its experimental guest helpers from the booted Stage1, so a proven partition-2 root can be reused without rewriting it.
 
-**Architecture:** Extend the existing deterministic Stage1 `/usr/lib/asterinas` payload with the quiesce helper. Stage1 already bind-mounts that directory into the Debian root at `/run/asterinas-tools`; the host gate will invoke only that path and will fail closed when the mounted helper is unavailable.
+**Architecture:** Extend the existing deterministic Stage1 `/usr/lib/asterinas` payload with the quiesce and physical-interaction helpers. Stage1 already bind-mounts that directory into the Debian root at `/run/asterinas-tools`; the host gate will invoke only those paths and will fail closed when the mounted helpers are unavailable. This also binds the one- or three-cycle host contract to a matching guest implementation instead of the older copy in partition 2.
 
 **Tech Stack:** Bash Stage1 builder, Python orchestration and `unittest`, CPIO archive inspection, QEMU RISC-V gate, Megrez serial/U-Boot physical gate.
 
@@ -40,6 +40,22 @@
 - [x] Run the focused test and confirm it fails with the current rootfs path.
 - [x] Change `physical_external_services_quiesce_command()` to return the Stage1-bound path only.
 - [x] Re-run the focused test and the complete physical-graphics unit-test module.
+
+### Task 3a: Bind the interaction helper to the same Stage1 generation
+
+**Files:**
+- Modify: `tools/riscv/debian/rootfs/build_stage1.sh`
+- Modify: `tools/riscv/debian/rootfs/physical_graphics_gate.py`
+- Modify: `tools/riscv/megrez_physical_graphics.py`
+- Test: `tools/riscv/tests/test_debian_rootfs.py`
+- Test: `tools/riscv/tests/test_physical_graphics_gate.py`
+- Test: `tools/riscv/tests/test_megrez_physical_graphics.py`
+
+- [x] Reproduce that the reused partition-2 guest gate rejects the supported one-cycle final-state contract.
+- [x] Carry `physical-graphics-gate` in Stage1 and require both host commands to use `/run/asterinas-tools` without a root-image fallback.
+- [x] Accept only the host-supported terminal cycles 1 and 3 in the guest final-state verifier.
+- [x] Prove the focused tests fail before the change and pass afterward, then run all four related modules.
+- [x] Rebuild Stage1 twice and verify identical archives, executable modes, and source-bound helper hashes.
 
 ### Task 4: Prove deterministic payload identity and software regressions
 

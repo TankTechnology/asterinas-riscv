@@ -984,6 +984,16 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             ["WebDriver:NewSession", "WebDriver:ExecuteScript"],
         )
 
+    def test_final_state_verifier_accepts_one_cycle_gate(self) -> None:
+        gate = load_gate(self)
+        nonce = "0011223344556677"
+        client = self.Client(PhysicalGraphicsSnapshotTests._snapshot(nonce, 1))
+        gate.verify_final_state(client, nonce=nonce, cycle=1)
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["WebDriver:NewSession", "WebDriver:ExecuteScript"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
