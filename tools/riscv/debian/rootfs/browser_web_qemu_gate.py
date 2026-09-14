@@ -31,6 +31,11 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     validate_bilibili_detail,
     validate_fixture_search,
 )
+from tools.riscv.debian.rootfs.browser_performance_provenance import (
+    ProvenanceError,
+    bind_runtime_provenance,
+    validate_runtime_provenance,
+)
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DesktopM5QemuOperations,
@@ -123,6 +128,9 @@ WEB_EVIDENCE_PATHS = {
     "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
     "timeline.log": "/home/asterinas/browser-web-timeline.log",
     "firefox-user.js": "/home/asterinas/.mozilla/asterinas-browser-web/user.js",
+    "runtime-provenance.json": (
+        "/home/asterinas/browser-web-evidence/runtime-provenance.json"
+    ),
 }
 
 
@@ -581,6 +589,11 @@ def validate_web_evidence(
     _validate_firefox_network_profile(
         evidence["firefox-user.js"], network_mode=network_mode
     )
+    try:
+        runtime_provenance = json.loads(evidence["runtime-provenance.json"])
+        validate_runtime_provenance(runtime_provenance)
+    except (UnicodeDecodeError, json.JSONDecodeError, ProvenanceError) as error:
+        raise GateFailure("browser runtime provenance is invalid") from error
     if timeline_pid != security_pid:
         raise GateFailure("browser startup timeline PID does not match security evidence")
     if evidence["MarionetteActivePort"].strip() != b"2828":
@@ -807,6 +820,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         super().__init__(config, **arguments)
         self._web_evidence: dict[str, bytes] = {}
         self._web_evidence_index: dict[str, dict[str, object]] = {}
+        self._performance_provenance: dict[str, object] = {}
 
     def __enter__(self) -> BrowserWebQemuOperations:
         try:
@@ -874,6 +888,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
             "browser-web-progress.json",
+            "browser-performance-provenance.json",
             "proxy-bridge.json",
         )
 
@@ -897,6 +912,12 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         self._web_evidence_index = validate_web_evidence(
             self._web_evidence, network_mode=self.network_mode
         )
+        try:
+            self._performance_provenance = bind_runtime_provenance(
+                self._web_evidence["runtime-provenance.json"], config.manifest
+            )
+        except ProvenanceError as error:
+            raise GateFailure("failed to bind browser runtime provenance") from error
         return super().hash_final_root(config, prepared)
 
     def publish(
@@ -938,8 +959,21 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         if result.get("passed"):
             if not self._web_evidence or not self._web_evidence_index:
                 raise GateFailure("validated browser web evidence was not retained")
+            if not self._performance_provenance:
+                raise GateFailure("bound browser performance provenance was not retained")
             for name, contents in sorted(self._web_evidence.items()):
                 output.atomic_write(f"browser-web-{name}", contents)
+            output.atomic_write(
+                "browser-performance-provenance.json",
+                (
+                    json.dumps(
+                        self._performance_provenance,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode(),
+            )
             sums = "".join(
                 f"{metadata['sha256']}  browser-web-{name}\n"
                 for name, metadata in sorted(self._web_evidence_index.items())
@@ -959,6 +993,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
             )
             result["web_evidence"] = index
+            result["performance_provenance"] = self._performance_provenance
         super().publish(config, prepared, transcript, result)
 
 
