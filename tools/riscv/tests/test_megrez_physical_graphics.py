@@ -595,6 +595,31 @@ class PhysicalCliTests(unittest.TestCase):
 
 
 class PhysicalMmcArtifactTests(unittest.TestCase):
+    def test_real_boot_uses_conservative_linux_shell_uart_pacing(self) -> None:
+        gate = load_gate(self)
+        artifacts = tuple(
+            SimpleNamespace(name=name, load_address=address, size=size)
+            for name, address, size in (
+                ("kernel", 0x80200000, 101),
+                ("initramfs", 0x83000000, 202),
+                ("megrez_dtb", 0xF0000000, 303),
+            )
+        )
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._session = mock.Mock()
+        operations._fd = 41
+        operations._guest_deadline = None
+        operations._guest_started = False
+
+        with mock.patch.object(gate, "SerialConsole") as serial_console:
+            operations.boot(SimpleNamespace(artifacts=artifacts), "console=tty0", 30)
+
+        serial_console.assert_called_once_with(
+            41,
+            max_bytes=gate.MAX_TRANSCRIPT_BYTES,
+            tx_delay=0.01,
+        )
+
     def test_real_operations_load_complete_mmc_mapping_without_board_transport(
         self,
     ) -> None:
