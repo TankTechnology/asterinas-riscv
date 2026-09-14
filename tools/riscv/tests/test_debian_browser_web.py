@@ -2129,6 +2129,28 @@ generate_fontconfig_cache "$stage" "$3"
             with self.assertRaisesRegex(GateFailure, "guest reported desktop failure"):
                 operations.run_protocol(session, mock.sentinel.config)
 
+    def test_qemu_gate_stops_immediately_on_stage1_failure(self) -> None:
+        self.assertIn(
+            b"DEBIAN_ROOTFS_FAIL reason=",
+            BrowserWebQemuOperations.ADDITIONAL_FAILURE_MARKERS,
+        )
+
+        operations = object.__new__(BrowserWebQemuOperations)
+        session = {
+            "serial": mock.Mock(
+                transcript=b"DEBIAN_ROOTFS_FAIL reason=dev-bind\r\n"
+            )
+        }
+        with mock.patch(
+            "tools.riscv.debian.rootfs.desktop_m3_gate."
+            "DesktopM3Operations.run_protocol",
+            side_effect=GateFailure("guest reported desktop failure"),
+        ):
+            with self.assertRaisesRegex(
+                GateFailure, "stage1 rootfs failure: dev-bind"
+            ):
+                operations.run_protocol(session, mock.sentinel.config)
+
     def test_kernel_fatal_drains_a_bounded_serial_tail(self) -> None:
         operations = object.__new__(BrowserWebQemuOperations)
         serial = mock.Mock(transcript=b"prefix\n" + KERNEL_FATAL_MARKERS[0])
