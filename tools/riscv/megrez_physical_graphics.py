@@ -27,7 +27,8 @@ from typing import Any, Protocol, TextIO
 
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
-    run_debug_console_phase,
+    classify_debug_console,
+    debug_console_commands,
 )
 from tools.riscv.debian.rootfs.physical_graphics_gate import (
     GateError as GuestGateError,
@@ -739,6 +740,14 @@ def physical_external_services_quiesce_command() -> str:
     """Return the bounded guest helper used to isolate the interaction gate."""
 
     return "/run/asterinas-tools/physical-external-services-quiesce"
+
+
+def physical_system_probe_command(nonce: str) -> str:
+    """Return one short Stage1-bound command for all system readiness probes."""
+
+    if not isinstance(nonce, str) or re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise ValueError("physical system probe nonce must be 32 lowercase hex digits")
+    return f"/run/asterinas-tools/physical-system-probe {nonce}"
 
 
 def physical_browser_start_command() -> str:
@@ -1655,12 +1664,7 @@ class RealPhysicalGraphicsOperations:
         serial.wait_for(DEBUG_CONSOLE_READY.encode(), deadline)
         validate_debug_console_readiness(serial.transcript.decode("utf-8"))
         self._quiesce_external_services(deadline)
-        run_debug_console_phase(
-            serial,
-            deadline,
-            secrets.token_hex(16),
-            ready_seen=True,
-        )
+        self._probe_system_readiness(deadline)
         self._start_browser(deadline)
 
         last_error: HostGateError | None = None
@@ -1677,6 +1681,22 @@ class RealPhysicalGraphicsOperations:
             if remaining <= 0:
                 raise last_error or HostGateError("graphical preflight timed out")
             time.sleep(min(1.0, remaining))
+
+    def _probe_system_readiness(self, deadline: float) -> None:
+        serial = self._require_serial()
+        nonce = secrets.token_hex(16)
+        commands = debug_console_commands(nonce)
+        cursor = serial.checkpoint()
+        serial.send((physical_system_probe_command(nonce) + "\n").encode(), deadline)
+        serial.wait_for_any(
+            (
+                f"{commands[-1].end_marker}\r".encode(),
+                f"{commands[-1].end_marker}\n".encode(),
+            ),
+            deadline,
+            start=cursor,
+        )
+        classify_debug_console(serial.transcript[cursor:], nonce)
 
     def _quiesce_external_services(self, deadline: float) -> None:
         serial = self._require_serial()

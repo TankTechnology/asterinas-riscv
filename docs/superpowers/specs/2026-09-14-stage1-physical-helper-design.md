@@ -50,6 +50,12 @@ accepts the host's bounded one- or three-cycle final-state contracts, so the
 host and guest halves of the experiment always come from the same source
 generation.
 
+The five system-readiness probes are packaged as
+`physical-system-probe`. This keeps the UART request below 128 bytes while
+retaining the existing nonce-bound UID, PID 1, root mount, graphical target,
+and desktop service response protocol. It avoids depending on reliable input
+of several long shell programs over the physical serial console.
+
 No fallback to `/usr/lib/asterinas` is allowed in the physical gate. A stale
 Stage1 must fail closed rather than silently executing helper code from an
 unrelated partition-2 generation.
@@ -68,7 +74,7 @@ work adds no DRM implementation.
 
 ## Deployment and Data Flow
 
-1. Build a deterministic Stage1 containing `init` and the six helper files.
+1. Build a deterministic Stage1 containing `init` and the seven helper files.
 2. Transfer or select the versioned kernel, Stage1, and DTB only.
 3. Stage1 mounts the existing ext2 root and bind-mounts its own helper directory
    at `/run/asterinas-tools`.

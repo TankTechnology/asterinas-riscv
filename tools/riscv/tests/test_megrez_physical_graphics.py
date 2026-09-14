@@ -1426,6 +1426,22 @@ class PhysicalCommandTests(unittest.TestCase):
         )
         self.assertNotIn("systemctl start --no-block graphical.target", script)
 
+    def test_system_probe_is_one_short_stage1_bound_command(self) -> None:
+        gate = load_gate(self)
+        command = gate.physical_system_probe_command(
+            "0123456789abcdef0123456789abcdef"
+        )
+
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-system-probe "
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertLess(len(command.encode()), 128)
+        self.assertNotIn("systemctl", command)
+        with self.assertRaises(ValueError):
+            gate.physical_system_probe_command("not-a-nonce")
+
     def test_real_gate_requires_quiesced_services_before_preflight(self) -> None:
         gate = load_gate(self)
 
@@ -1522,9 +1538,9 @@ class PhysicalCommandTests(unittest.TestCase):
                 side_effect=lambda _transcript: events.append("validate"),
             ),
             mock.patch.object(
-                gate,
-                "run_debug_console_phase",
-                side_effect=lambda *_args, **_kwargs: events.append("debug"),
+                operations,
+                "_probe_system_readiness",
+                side_effect=lambda _deadline: events.append("debug"),
             ),
             mock.patch.object(
                 operations,
