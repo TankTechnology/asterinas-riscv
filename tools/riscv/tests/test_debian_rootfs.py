@@ -4449,6 +4449,22 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transcript.count(b"repeat-marker"), 2)
 
+    def test_serial_console_observes_admitted_chunks(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        observed: list[bytes] = []
+        console = SerialConsole(reader, max_bytes=8, observer=observed.append)
+        os.write(writer, b"ready\n")
+
+        console.wait_for(b"ready", time.monotonic() + 1.0)
+
+        self.assertEqual(observed, [b"ready\n"])
+        os.write(writer, b"overflow")
+        with self.assertRaisesRegex(BufferError, "serial transcript"):
+            console.wait_for(b"missing", time.monotonic() + 1.0)
+        self.assertEqual(observed, [b"ready\n"])
+
     def test_serial_console_wait_for_any_returns_the_first_observed_marker(
         self,
     ) -> None:
