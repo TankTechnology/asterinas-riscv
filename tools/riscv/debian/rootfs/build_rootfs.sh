@@ -1566,6 +1566,12 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-timeline"
             install -D -m 0644 -- "$script_directory/browser_web.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d"
+            cat >"$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf" <<'EOF'
+[Service]
+TimeoutStartSec=600s
+EOF
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
