@@ -1132,6 +1132,10 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertIn('"$script_directory/physical_graphics_gate.py"', builder)
         self.assertIn('"$stage/usr/lib/asterinas/physical-graphics-gate"', builder)
+        self.assertIn('"$script_directory/browser_interaction_perf.py"', builder)
+        self.assertIn(
+            '"$stage/usr/lib/asterinas/browser_interaction_perf.py"', builder
+        )
         self.assertNotIn("physical-graphics-evidence", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
@@ -1140,6 +1144,7 @@ class BrowserWebContractTests(unittest.TestCase):
         ]
         self.assertIn("physical_graphics_interaction.html", runtime_inputs)
         self.assertIn("physical_graphics_gate.py", runtime_inputs)
+        self.assertIn("browser_interaction_perf.py", runtime_inputs)
 
     def test_browser_waits_for_network_and_evidence_waits_for_desktop(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
