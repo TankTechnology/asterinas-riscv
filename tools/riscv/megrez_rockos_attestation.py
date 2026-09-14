@@ -266,7 +266,8 @@ class RealRockOsAttestationOperations:
         ):
             raise HostGateError("RockOS publication command exceeds the safe size")
         session.send("sudo -k -s")
-        session.wait_for("password for", min(timeout, 30.0))
+        # RockOS images use either "Password:" or "[sudo] password for ...:".
+        session.wait_for("assword", min(timeout, 30.0))
         session.send(password)
         session.wait_for("# ", timeout)
         session.send("PS1='__ASTERINAS_ROCKOS_ROOT_''PROMPT__ '; export PS1")
@@ -289,7 +290,7 @@ class RealRockOsAttestationOperations:
             self._publication_root_shell = False
             return
         session.send("sudo -k reboot")
-        session.wait_for("password for", min(timeout, 30.0))
+        session.wait_for("assword", min(timeout, 30.0))
         session.send(password)
         session.wait_for_uboot_prompt(timeout)
 

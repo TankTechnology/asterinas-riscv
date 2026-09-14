@@ -142,6 +142,9 @@ STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
 STAGE1_PHYSICAL_GRAPHICS_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_gate.py"
 )
+STAGE1_PHYSICAL_SYSTEM_PROBE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
+)
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
@@ -1277,6 +1280,7 @@ int main(void)
                 "usr/lib/asterinas/megrez-clock-sync",
                 "usr/lib/asterinas/physical-external-services-quiesce",
                 "usr/lib/asterinas/physical-graphics-gate",
+                "usr/lib/asterinas/physical-system-probe",
             ],
         )
 
@@ -1399,6 +1403,13 @@ int main(void)
                     0,
                     1700000000,
                 ),
+                (
+                    "usr/lib/asterinas/physical-system-probe",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
             ],
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
@@ -1411,6 +1422,7 @@ int main(void)
             entries[9][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
         self.assertEqual(entries[10][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[11][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
