@@ -424,6 +424,17 @@ It validates three nonce-bound browser cycles and captures pixels, but its
 result always records `"physical":false`: QEMU cannot satisfy the physical
 result or prove the Megrez display scanout and real USB xHCI/HID paths.
 
+Browser evidence also publishes
+`browser-performance-provenance.json`, which binds the observed display
+provider, framebuffer geometry, Xorg package versions, and Firefox JIT-overlay
+selection to the exact rootfs manifest. Completed physical interaction cycles
+carry trusted-input-to-frame samples plus nearest-rank p50/p95 values. Keep the
+same page and evidence schema when comparing the current `fbdev` provider with
+a future `drm` provider; the desktop session selects a provider-specific Xorg
+configuration through `ASTERINAS_DISPLAY_PROVIDER`. This integration adds the
+selection and evidence boundary only and intentionally does not modify DRM
+code.
+
 The physical guest keeps its fixed 900-second safety reboot. The gate defaults
 to three cycles for release-grade repeatability, but accepts `--cycles 1` for
 one information-rich experimental interaction. Graphical setup, the requested

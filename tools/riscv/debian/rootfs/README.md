@@ -158,6 +158,34 @@ caches, directories, symlinks, or device nodes change. QEMU run disks and
 physical-board installation artifacts remain separate from both the frozen
 base and this disposable derivative.
 
+### Browser performance evidence and display-provider boundary
+
+The browser-web guest defaults to `ASTERINAS_DISPLAY_PROVIDER=fbdev`. A full
+rootfs build resolves its Xorg configuration from
+`/etc/asterinas/display-providers/fbdev/xorg.conf.d`. For compatibility with
+an older frozen browser-web image, the development overlay may fall back to
+the existing `/etc/X11/xorg.conf.d`, but only for `fbdev`. A future DRM image
+must install
+`/etc/asterinas/display-providers/drm/xorg.conf.d/20-asterinas.conf` and set
+`ASTERINAS_DISPLAY_PROVIDER=drm`; a missing provider-specific configuration
+fails before Xorg starts. This boundary does not implement DRM or change a DRM
+kernel path.
+
+Each browser-web gate now collects `runtime-provenance.json` in the guest and
+publishes `browser-performance-provenance.json` after binding it to the exact
+host-side rootfs manifest SHA-256. The record identifies the display provider,
+framebuffer width, height, stride and pixel depth, installed Xorg server and
+fbdev driver versions, and whether Firefox uses the frozen RISC-V JIT overlay.
+The interaction gate also reports bounded trusted-input-to-frame samples and
+their nearest-rank p50/p95 summary. These records make fbdev and a future DRM
+provider directly comparable without changing the Firefox workload.
+
+Treat 100 ms p95 as the first admission target for physical interaction, not
+as an assumed baseline. Gather multiple samples during one desktop boot; do
+not reset the board or rewrite the root image between samples. The development
+overlay includes all of these runtime collectors, so script-only measurement
+changes do not rerun debootstrap, apt, or package downloads.
+
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
 cannot alias the interactive root:

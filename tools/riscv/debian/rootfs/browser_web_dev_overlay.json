@@ -23,6 +23,18 @@
       "mode": "0644"
     },
     {
+      "source": "browser_interaction_perf.py",
+      "destination": "/usr/lib/asterinas/browser_interaction_perf.py",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "browser_performance_provenance.py",
+      "destination": "/usr/lib/asterinas/browser-performance-provenance",
+      "mode": "0755",
+      "create": true
+    },
+    {
       "source": "physical_graphics_gate.py",
       "destination": "/usr/lib/asterinas/physical-graphics-gate",
       "mode": "0755"
@@ -67,6 +79,12 @@
       "source": "desktop_m5_session.sh",
       "destination": "/usr/lib/asterinas/desktop-m5-session",
       "mode": "0755"
+    },
+    {
+      "source": "desktop_display_provider.sh",
+      "destination": "/usr/lib/asterinas/desktop-display-provider",
+      "mode": "0755",
+      "create": true
     },
     {
       "source": "desktop_m3_device_access.sh",

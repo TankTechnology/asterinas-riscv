@@ -1014,6 +1014,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/megrez-safe-reboot",
                 "/usr/lib/asterinas/browser-web-marionette-gate",
                 "/usr/lib/asterinas/browser_m5_marionette_gate.py",
+                "/usr/lib/asterinas/browser_interaction_perf.py",
+                "/usr/lib/asterinas/browser-performance-provenance",
                 "/usr/lib/asterinas/physical-graphics-gate",
                 "/usr/share/asterinas/physical-graphics/index.html",
                 "/usr/lib/asterinas/firefox-diagnostic-snapshot",
@@ -1023,6 +1025,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/share/asterinas/browser-web-trust-check.py",
                 "/usr/share/asterinas/browser-web-online-rootfs-check.py",
                 "/usr/lib/asterinas/desktop-m5-session",
+                "/usr/lib/asterinas/desktop-display-provider",
                 "/usr/lib/asterinas/desktop-m5-device-access",
                 "/usr/lib/asterinas/desktop-m5-evidence",
                 "/etc/systemd/system/asterinas-browser-web.service",
@@ -1036,7 +1039,12 @@ class DevelopmentOverlayTests(unittest.TestCase):
         )
         self.assertEqual(
             {entry.destination for entry in spec.files if entry.create},
-            {"/usr/lib/asterinas/firefox-diagnostic-snapshot"},
+            {
+                "/usr/lib/asterinas/browser_interaction_perf.py",
+                "/usr/lib/asterinas/browser-performance-provenance",
+                "/usr/lib/asterinas/desktop-display-provider",
+                "/usr/lib/asterinas/firefox-diagnostic-snapshot",
+            },
         )
 
     def test_make_default_publishes_beneath_user_writable_target(self) -> None:
