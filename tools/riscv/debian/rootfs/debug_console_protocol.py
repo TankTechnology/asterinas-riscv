@@ -287,7 +287,10 @@ def run_debug_console_phase(
                     command_deadline,
                     start=command_start,
                 )
-        except TimeoutError:
+            return classify_debug_console(
+                serial.transcript[phase_start:], attempt_nonce
+            )
+        except (TimeoutError, DebugConsoleProtocolError):
             if attempt + 1 == DEBUG_CONSOLE_ATTEMPTS:
                 raise
             now = time.monotonic()
@@ -298,5 +301,4 @@ def run_debug_console_phase(
                 f"{nonce}:{attempt + 1}".encode()
             ).hexdigest()[:32]
             continue
-        return classify_debug_console(serial.transcript[phase_start:], attempt_nonce)
     raise AssertionError("debug-console attempts exhausted")

@@ -141,6 +141,37 @@ class CorruptPid1BeginOnceSerial(ScriptedSerial):
             self._transcript.extend(line.encode() + b"\r\r\n")
 
 
+class CorruptDesktopStatusOnceSerial(CorruptPid1BeginOnceSerial):
+    def send(self, payload: bytes, deadline: float) -> None:
+        del deadline
+        if payload == b"\x03\n":
+            self.aborts += 1
+            self._transcript.extend(b"^C\r\r\n")
+            return
+        text = payload.decode().rstrip("\n")
+        match = re.search(r"__ASTERINAS_DEBUG_([0-9a-f]{32})_", text)
+        assert match is not None
+        nonce = match.group(1)
+        command = next(
+            command
+            for command in debug_console_commands(nonce)
+            if command.payload == text
+        )
+        self.nonces.append(nonce)
+        self._transcript.extend(payload.rstrip(b"\n") + b"\r\r\n")
+        status = f"{command.status_prefix}0"
+        if command.name == "desktop" and not self.corrupted:
+            status = command.status_prefix
+            self.corrupted = True
+        for line in (
+            command.begin_marker,
+            f"{command.value_prefix}{PASSING_OUTPUTS[command.name]}",
+            status,
+            command.end_marker,
+        ):
+            self._transcript.extend(line.encode() + b"\r\r\n")
+
+
 class DebugConsoleProtocolTests(unittest.TestCase):
     def test_passing_transcript_yields_exact_evidence(self) -> None:
         self.assertEqual(
@@ -190,6 +221,17 @@ class DebugConsoleProtocolTests(unittest.TestCase):
         )
 
         self.assertEqual(evidence.pid1, "systemd")
+        self.assertEqual(serial.aborts, 1)
+        self.assertEqual(len(set(serial.nonces)), 2)
+
+    def test_runtime_retries_a_complete_frame_with_corrupted_status(self) -> None:
+        serial = CorruptDesktopStatusOnceSerial()
+
+        evidence = run_debug_console_phase(
+            serial, time.monotonic() + 123.0, NONCE, ready_seen=False
+        )
+
+        self.assertEqual(evidence.desktop_state, "active")
         self.assertEqual(serial.aborts, 1)
         self.assertEqual(len(set(serial.nonces)), 2)
 

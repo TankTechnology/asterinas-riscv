@@ -1637,7 +1637,7 @@ class RealPhysicalGraphicsOperations:
         self._serial = SerialConsole(
             fd,
             max_bytes=MAX_TRANSCRIPT_BYTES,
-            tx_delay=0.005,
+            tx_delay=0.01,
         )
 
     def _guest_phase_deadline(self, timeout: float) -> float:
