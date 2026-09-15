@@ -7,15 +7,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shlex
 import stat
 import subprocess
+import time
 from typing import Protocol
+import tty
 
-from tools.riscv.megrez_probe import qemu_probe_argv
+from tools.riscv.debian.rootfs.gate_runtime import (
+    PinnedOutputDirectory,
+    SerialConsole,
+    launch_process,
+)
+from tools.riscv.megrez_probe import (
+    classify_probe_transcript,
+    encode_probe_request,
+    qemu_probe_argv,
+    validate_probe_names,
+)
 
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -256,3 +269,130 @@ class RockOsArtifactTransport:
 
     def remove_partial(self, path: Path) -> None:
         self._ssh(f"rm -f -- {_remote_path(path)}")
+
+
+@dataclass(frozen=True)
+class SessionEvidence:
+    passed: bool
+    reason: str
+    phase: str
+    serial: bytes
+    elapsed_seconds: float
+    exit_status: int | None
+
+
+def run_session(argv: tuple[str, ...], nonce: str, seconds: int) -> SessionEvidence:
+    """Require one nonce-bound Stage1 exchange and a clean QEMU reboot exit."""
+
+    if not argv or re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise ValueError("invalid QEMU probe command or nonce")
+    if type(seconds) is not int or not 1 <= seconds <= 600:
+        raise ValueError("session timeout must be an integer from 1 to 600 seconds")
+    selected = validate_probe_names(("boot", "syscall213"))
+    started = time.monotonic()
+    deadline = started + seconds
+    phase = "launching-qemu"
+    master = -1
+    slave = -1
+    process = None
+    serial = None
+    reason = ""
+    passed = False
+    try:
+        master, slave = os.openpty()
+        tty.setraw(slave)
+        process = launch_process(argv, stdio_fd=slave)
+        os.close(slave)
+        slave = -1
+        serial = SerialConsole(master, process=process, max_bytes=256 * 1024)
+        phase = "waiting-ready"
+        serial.wait_for(b"ASTERINAS_PROBE_READY v=1 pid=1", deadline)
+        phase = "running-probes"
+        serial.send(encode_probe_request(nonce, selected), deadline)
+        reboot_ready = (
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
+        )
+        serial.wait_for(reboot_ready, deadline)
+        exchange = classify_probe_transcript(
+            serial.transcript, nonce, ("boot", "syscall213")
+        )
+        phase = "requesting-reboot"
+        serial.send(
+            f"ASTERINAS_PROBE_REBOOT v=1 nonce={nonce}\n".encode(), deadline
+        )
+        phase = "waiting-qemu-exit"
+        while process.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                raise TimeoutError("QEMU reboot exit deadline expired")
+            serial.drain(min(deadline, now + 0.05))
+        exit_status = process.wait(deadline)
+        if exit_status != 0:
+            raise RuntimeError(f"QEMU exited with status {exit_status}")
+        phase = "qemu-exited"
+        passed = exchange.passed
+        reason = "probe-pass" if passed else "guest probe failed"
+    except (OSError, ValueError, RuntimeError, TimeoutError, EOFError, BufferError) as error:
+        reason = str(error)
+    finally:
+        if process is not None and process.poll() is None:
+            now = time.monotonic()
+            try:
+                process.terminate_group(now + 1, now + 3)
+            except TimeoutError as error:
+                reason = f"{reason}; cleanup failed: {error}"
+                passed = False
+        if slave >= 0:
+            os.close(slave)
+        transcript = serial.transcript if serial is not None else b""
+        if master >= 0:
+            os.close(master)
+    return SessionEvidence(
+        passed, reason, phase, transcript,
+        round(time.monotonic() - started, 3),
+        process.poll() if process is not None else None,
+    )
+
+
+def publish_evidence(
+    output_root: Path,
+    host: str,
+    session: SessionEvidence,
+    kernel: ArtifactIdentity,
+    initramfs: ArtifactIdentity,
+    nonce: str,
+) -> Path:
+    """Keep each virtual host's bounded serial transcript and result separate."""
+
+    if host not in {"developer-qemu", "rockos-qemu-tcg"}:
+        raise ValueError("unsupported QEMU probe host label")
+    if re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise ValueError("invalid QEMU probe nonce")
+    if len(session.serial) > 256 * 1024:
+        raise ValueError("QEMU serial evidence exceeds the byte cap")
+    directory = Path(output_root) / host
+    directory.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1,
+        "host": host,
+        "physical": False,
+        "machine": "qemu-virt-tcg",
+        "passed": session.passed,
+        "reason": session.reason,
+        "phase": session.phase,
+        "nonce": nonce,
+        "selected_probes": ["boot", "syscall213"],
+        "kernel_sha256": kernel.sha256,
+        "kernel_size": kernel.size,
+        "initramfs_sha256": initramfs.sha256,
+        "initramfs_size": initramfs.size,
+        "elapsed_seconds": session.elapsed_seconds,
+        "qemu_exit_status": session.exit_status,
+    }
+    with PinnedOutputDirectory(directory) as output:
+        output.lock_exclusive()
+        output.atomic_write("serial.log", session.serial)
+        output.atomic_write(
+            "result.json", (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        )
+    return directory
