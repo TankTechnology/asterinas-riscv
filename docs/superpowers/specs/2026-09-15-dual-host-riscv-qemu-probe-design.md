@@ -13,10 +13,16 @@ image, a network device in the guest, or the Debian/Firefox rootfs.
 Add one host-side dual-run command, backed by the existing
 `megrez_probe.qemu_probe_argv` and `classify_probe_transcript` protocol. It
 accepts explicit kernel and Stage1 initramfs paths and runs the fixed
-`boot,syscall213` selection with a fresh nonce. The local path starts QEMU
-directly; the RockOS path invokes its installed `qemu-system-riscv64` over
-SSH. Both QEMU processes use `virt`, Sv39-compatible CPU settings, 2 GiB RAM,
+`boot,syscall213` selection with a fresh nonce.
+The developer path starts QEMU in the existing persistent project Docker
+container, because this developer host has no RISC-V QEMU binary installed.
+The RockOS path invokes its installed `qemu-system-riscv64` over SSH.
+Both QEMU processes use `virt`, Sv39-compatible CPU settings, 2 GiB RAM,
 four vCPUs, `-nographic`, `-nic none`, and `-no-reboot`.
+Before launching either QEMU, the runner makes a unique read-only local
+snapshot of the pair and checks each snapshot's size and full SHA-256 against
+the initially hashed sources. Docker and SCP open the snapshots, not mutable
+build-output paths; a source replacement during snapshot creation fails closed.
 
 The RockOS path does not copy the repository or build there. It stages only
 the two bounded artifacts in an isolated `/tmp/asterinas-qemu-probe/<identity>`
