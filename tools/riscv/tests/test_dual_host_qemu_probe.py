@@ -77,5 +77,100 @@ class DualHostQemuCommandTests(unittest.TestCase):
         self.assertIn("-accel tcg", command)
 
 
+class RockOsArtifactCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.probe = importlib.import_module("tools.riscv.dual_host_qemu_probe")
+
+    def fake_transport(self, initial: dict[Path, object]):
+        probe = self.probe
+
+        class FakeTransport:
+            def __init__(self):
+                self.files = dict(initial)
+                self.calls = []
+
+            def ensure_directory(self, path):
+                self.calls.append(("mkdir", path))
+
+            def identity(self, path):
+                self.calls.append(("identity", path))
+                return self.files.get(path)
+
+            def copy(self, source, destination):
+                self.calls.append(("copy", source, destination))
+                self.files[destination] = probe.read_identity(source)
+
+            def promote(self, partial, destination):
+                self.calls.append(("promote", partial, destination))
+                self.files[destination] = self.files[partial]
+                del self.files[partial]
+
+            def remove_partial(self, path):
+                self.calls.append(("remove", path))
+                self.files.pop(path, None)
+
+        return FakeTransport()
+
+    def test_cached_correct_bytes_skip_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "kernel.Image"
+            source.write_bytes(b"kernel")
+            expected = self.probe.read_identity(source)
+            destination = self.probe.cache_directory(expected, expected) / "kernel.Image"
+            transport = self.fake_transport({destination: expected})
+            actual = self.probe.stage_artifact(
+                transport, source, expected, destination, nonce="0123456789abcdef"
+            )
+            self.assertEqual(actual, destination)
+            self.assertFalse(any(call[0] == "copy" for call in transport.calls))
+
+    def test_missing_bytes_copy_partial_verify_and_promote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "initramfs.cpio"
+            source.write_bytes(b"stage1")
+            expected = self.probe.read_identity(source)
+            destination = self.probe.cache_directory(expected, expected) / "initramfs.cpio"
+            transport = self.fake_transport({})
+            actual = self.probe.stage_artifact(
+                transport, source, expected, destination, nonce="0123456789abcdef"
+            )
+            self.assertEqual(actual, destination)
+            self.assertEqual(transport.files[destination], expected)
+            self.assertEqual([call[0] for call in transport.calls].count("copy"), 1)
+            self.assertEqual([call[0] for call in transport.calls].count("promote"), 1)
+
+    def test_wrong_cached_bytes_fail_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "kernel.Image"
+            source.write_bytes(b"kernel")
+            expected = self.probe.read_identity(source)
+            wrong = self.probe.ArtifactIdentity(6, "0" * 64)
+            destination = self.probe.cache_directory(expected, expected) / "kernel.Image"
+            transport = self.fake_transport({destination: wrong})
+            with self.assertRaisesRegex(ValueError, "cached artifact identity mismatch"):
+                self.probe.stage_artifact(
+                    transport, source, expected, destination,
+                    nonce="0123456789abcdef",
+                )
+            self.assertEqual(transport.files[destination], wrong)
+            self.assertFalse(any(call[0] == "copy" for call in transport.calls))
+
+    def test_ssh_identity_command_rejects_symlinks(self) -> None:
+        argv = self.probe.remote_identity_argv(
+            "debian@10.100.19.200",
+            Path("/tmp/asterinas-qemu-probe/a/kernel.Image"),
+        )
+        self.assertIn("test -L", argv[-1])
+        self.assertIn("sha256sum", argv[-1])
+        self.assertIn("stat -c", argv[-1])
+
+    def test_remote_cache_path_rejects_parent_traversal(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsafe RockOS probe cache path"):
+            self.probe.remote_identity_argv(
+                "debian@10.100.19.200",
+                Path("/tmp/asterinas-qemu-probe/a/../../boot/kernel.Image"),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
