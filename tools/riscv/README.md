@@ -523,6 +523,50 @@ presented as an HDMI capture.
 
 Use the fast probe path for routine kernel work that does not need Debian,
 systemd, Firefox, network access, or partition 2.
+For a lightweight simulation on both the developer host and the running RockOS,
+use one kernel/Stage1 pair with the dual-host QEMU gate:
+
+```bash
+make test_riscv_dual_host_probe ROCKOS_SSH=debian@10.100.19.200
+```
+
+The developer run uses the already-running persistent Docker container's
+RISC-V QEMU; RockOS uses its installed QEMU in TCG mode.
+On the tested artifact pair, the developer probe took 6–8 seconds and
+RockOS TCG about 140–190 seconds; without KVM, do not treat the board run as a
+low-latency substitute for the developer gate.
+The command copies only a kernel Image and small Stage1 archive into a
+hash-named RockOS `/tmp/asterinas-qemu-probe/` cache.
+Before either guest starts, it copies the pair into a unique, read-only local
+snapshot and checks that both copies still match the source hashes. This keeps
+the Docker and SCP opens tied to the same verified bytes even if build outputs
+are replaced during the run.
+After the first copy, the full size and SHA-256 are checked on every run;
+unchanged bytes are not transferred again.
+Both guests are diskless and networkless, run `boot,syscall213`, and have a
+bounded reboot/exit deadline.
+Independent serial logs and JSON results are written under
+`target-ubuntu/dual-host-qemu-probe/runs/` with `physical:false`.
+QEMU `virt` does not exercise the real Megrez DTB, MMC, HDMI, USB, or Firefox.
+It is a lightweight kernel regression gate, not a replacement for the physical test.
+
+If the pair has not been built yet, prepare it once in the cached project
+containers (the RISC-V rootfs-builder image supplies the cross libc headers):
+
+```bash
+tools/docker/run_dev_container.sh --offline -- make kernel \
+  TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+tools/docker/run_dev_container.sh \
+  --image asterinas/asterinas:0.18.0-20260702-riscv-rootfs --offline -- \
+  tools/riscv/debian/rootfs/build_stage1.sh \
+  target/dual-host-qemu-probe/artifacts/initramfs.cpio
+```
+
+Set `DUAL_HOST_PROBE_KERNEL` and `DUAL_HOST_PROBE_INITRAMFS` on the `make`
+command when comparing another prebuilt pair.
+The dual-host gate never changes RockOS boot configuration or partitions,
+and does not need `/dev/kvm`.
+
 Build and deploy a versioned kernel, Stage1 initramfs, and DTB only when their
 identity changes, then select them once with `configure`.
 Routine runs use only the immutable bundle and the files already on MMC

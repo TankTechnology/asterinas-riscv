@@ -494,6 +494,17 @@ test_riscv_megrez_probe_qemu:
 		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)" \
 		--qemu-deadline-only
 
+DUAL_HOST_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
+DUAL_HOST_PROBE_INITRAMFS ?= target/dual-host-qemu-probe/artifacts/initramfs.cpio
+ROCKOS_SSH ?=
+
+.PHONY: test_riscv_dual_host_probe
+test_riscv_dual_host_probe:
+	@python3 -m tools.riscv.dual_host_qemu_probe \
+		--kernel "$(DUAL_HOST_PROBE_KERNEL)" \
+		--initramfs "$(DUAL_HOST_PROBE_INITRAMFS)" \
+		--rockos "$(ROCKOS_SSH)"
+
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
