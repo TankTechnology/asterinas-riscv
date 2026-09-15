@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -170,6 +172,83 @@ class RockOsArtifactCacheTests(unittest.TestCase):
                 "debian@10.100.19.200",
                 Path("/tmp/asterinas-qemu-probe/a/../../boot/kernel.Image"),
             )
+
+
+FAKE_PROBE_GUEST = r'''
+import re
+import sys
+print("ASTERINAS_PROBE_READY v=1 pid=1", flush=True)
+request = sys.stdin.readline()
+match = re.fullmatch(r"ASTERINAS_PROBE_RUN v=1 nonce=([0-9a-f]{32}) probes=boot,syscall213 shell=0\n", request)
+if match is None:
+    sys.exit(3)
+nonce = match.group(1)
+print(f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=0 name=boot", flush=True)
+print(f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=0 name=boot detail=boot-ok", flush=True)
+print(f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=1 name=syscall213", flush=True)
+print(f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=1 name=syscall213 detail=syscall-ok", flush=True)
+print(f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=2 status=pass", flush=True)
+print(f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}", flush=True)
+reboot = sys.stdin.readline()
+if reboot != f"ASTERINAS_PROBE_REBOOT v=1 nonce={nonce}\n":
+    sys.exit(4)
+'''
+
+
+class DualHostQemuSessionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.probe = importlib.import_module("tools.riscv.dual_host_qemu_probe")
+
+    def test_nonce_bound_probe_and_reboot_require_clean_exit(self) -> None:
+        result = self.probe.run_session(
+            (sys.executable, "-u", "-c", FAKE_PROBE_GUEST),
+            nonce="00112233445566778899aabbccddeeff", seconds=5,
+        )
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(result.phase, "qemu-exited")
+        self.assertEqual(result.exit_status, 0)
+        self.assertIn(b"ASTERINAS_PROBE_DONE", result.serial)
+
+    def test_guest_that_never_reaches_ready_fails_with_phase(self) -> None:
+        result = self.probe.run_session(
+            (sys.executable, "-u", "-c", "import time; time.sleep(10)"),
+            nonce="00112233445566778899aabbccddeeff", seconds=1,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.phase, "waiting-ready")
+        self.assertIn("not seen", result.reason)
+
+    def test_developer_and_rockos_evidence_are_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            identity = self.probe.ArtifactIdentity(6, hashlib.sha256(b"kernel").hexdigest())
+            developer = self.probe.SessionEvidence(
+                True, "probe-pass", "qemu-exited", b"developer serial\n", 1.2, 0
+            )
+            rockos = self.probe.SessionEvidence(
+                False, "QEMU timeout", "waiting-ready", b"rockos serial\n", 3.4, -15
+            )
+            self.probe.publish_evidence(
+                root, "developer-qemu", developer, identity, identity,
+                "00112233445566778899aabbccddeeff",
+            )
+            self.probe.publish_evidence(
+                root, "rockos-qemu-tcg", rockos, identity, identity,
+                "ffeeddccbbaa99887766554433221100",
+            )
+            self.assertEqual(
+                (root / "developer-qemu" / "serial.log").read_bytes(),
+                b"developer serial\n",
+            )
+            self.assertEqual(
+                (root / "rockos-qemu-tcg" / "serial.log").read_bytes(),
+                b"rockos serial\n",
+            )
+            result = json.loads((root / "rockos-qemu-tcg" / "result.json").read_text())
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["host"], "rockos-qemu-tcg")
+            self.assertEqual(result["kernel_sha256"], identity.sha256)
+            self.assertEqual(result["selected_probes"], ["boot", "syscall213"])
 
 
 if __name__ == "__main__":
