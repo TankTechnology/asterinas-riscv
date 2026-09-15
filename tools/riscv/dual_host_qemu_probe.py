@@ -5,15 +5,18 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import stat
 import subprocess
+import sys
 import time
 from typing import Protocol
 import tty
@@ -49,7 +52,10 @@ def read_identity(path: Path) -> ArtifactIdentity:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= MAX_ARTIFACT_BYTES:
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or not 0 < metadata.st_size <= MAX_ARTIFACT_BYTES
+        ):
             raise ValueError("artifact must be a nonempty regular file below 64 MiB")
         digest = hashlib.sha256()
         observed_size = 0
@@ -92,8 +98,17 @@ def developer_argv(
     if _SAFE_CONTAINER.fullmatch(container) is None:
         raise ValueError("unsafe developer container name")
     return (
-        "docker", "exec", "-it", "--workdir", "/root/asterinas", container,
-        "timeout", "-k", "5", _seconds(seconds), *_qemu(kernel, initramfs),
+        "docker",
+        "exec",
+        "-it",
+        "--workdir",
+        "/root/asterinas",
+        container,
+        "timeout",
+        "-k",
+        "5",
+        _seconds(seconds),
+        *_qemu(kernel, initramfs),
     )
 
 
@@ -107,18 +122,28 @@ def rockos_argv(
     for artifact in (kernel, initramfs):
         _remote_path(artifact)
     remote = (
-        "timeout", "-k", "5", _seconds(seconds), "nice", "-n", "10",
+        "timeout",
+        "-k",
+        "5",
+        _seconds(seconds),
+        "nice",
+        "-n",
+        "10",
         *_qemu(kernel, initramfs),
     )
     return (
-        "ssh", "-tt", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-        target, shlex.join(remote),
+        "ssh",
+        "-tt",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        target,
+        shlex.join(remote),
     )
 
 
-def cache_directory(
-    kernel: ArtifactIdentity, initramfs: ArtifactIdentity
-) -> Path:
+def cache_directory(kernel: ArtifactIdentity, initramfs: ArtifactIdentity) -> Path:
     """Name one immutable temporary cache for an exact artifact pair."""
 
     for identity in (kernel, initramfs):
@@ -140,8 +165,15 @@ def _ssh_argv(target: str, command: str) -> tuple[str, ...]:
     if _SAFE_TARGET.fullmatch(target) is None:
         raise ValueError("unsafe RockOS SSH target")
     return (
-        "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-        "-o", "ConnectTimeout=5", target, command,
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=5",
+        target,
+        command,
     )
 
 
@@ -256,9 +288,16 @@ class RockOsArtifactTransport:
         _remote_path(destination)
         result = self._run(
             (
-                "scp", "-q", "-o", "BatchMode=yes", "-o",
-                "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
-                str(source), f"{self.target}:{destination}",
+                "scp",
+                "-q",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "ConnectTimeout=5",
+                str(source),
+                f"{self.target}:{destination}",
             )
         )
         if result.returncode != 0:
@@ -309,17 +348,20 @@ def run_session(argv: tuple[str, ...], nonce: str, seconds: int) -> SessionEvide
         serial.wait_for(b"ASTERINAS_PROBE_READY v=1 pid=1", deadline)
         phase = "running-probes"
         serial.send(encode_probe_request(nonce, selected), deadline)
-        reboot_ready = (
-            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
-        )
+        reboot_ready = f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}".encode()
         serial.wait_for(reboot_ready, deadline)
         exchange = classify_probe_transcript(
             serial.transcript, nonce, ("boot", "syscall213")
         )
-        phase = "requesting-reboot"
-        serial.send(
-            f"ASTERINAS_PROBE_REBOOT v=1 nonce={nonce}\n".encode(), deadline
+        fatal_markers = (
+            b"kernel panic",
+            b"uncaught panic:",
+            b"not syncing",
+            b"oops:",
+            b"fatal exception",
         )
+        phase = "requesting-reboot"
+        serial.send(f"ASTERINAS_PROBE_REBOOT v=1 nonce={nonce}\n".encode(), deadline)
         phase = "waiting-qemu-exit"
         while process.poll() is None:
             now = time.monotonic()
@@ -327,12 +369,26 @@ def run_session(argv: tuple[str, ...], nonce: str, seconds: int) -> SessionEvide
                 raise TimeoutError("QEMU reboot exit deadline expired")
             serial.drain(min(deadline, now + 0.05))
         exit_status = process.wait(deadline)
+        if time.monotonic() < deadline:
+            serial.drain(min(deadline, time.monotonic() + 0.2))
         if exit_status != 0:
             raise RuntimeError(f"QEMU exited with status {exit_status}")
         phase = "qemu-exited"
+        if any(marker in serial.transcript.lower() for marker in fatal_markers):
+            raise RuntimeError("fatal kernel panic or exception marker in QEMU serial")
+        exchange = classify_probe_transcript(
+            serial.transcript, nonce, ("boot", "syscall213")
+        )
         passed = exchange.passed
         reason = "probe-pass" if passed else "guest probe failed"
-    except (OSError, ValueError, RuntimeError, TimeoutError, EOFError, BufferError) as error:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        TimeoutError,
+        EOFError,
+        BufferError,
+    ) as error:
         reason = str(error)
     finally:
         if process is not None and process.poll() is None:
@@ -348,7 +404,10 @@ def run_session(argv: tuple[str, ...], nonce: str, seconds: int) -> SessionEvide
         if master >= 0:
             os.close(master)
     return SessionEvidence(
-        passed, reason, phase, transcript,
+        passed,
+        reason,
+        phase,
+        transcript,
         round(time.monotonic() - started, 3),
         process.poll() if process is not None else None,
     )
@@ -393,6 +452,216 @@ def publish_evidence(
         output.lock_exclusive()
         output.atomic_write("serial.log", session.serial)
         output.atomic_write(
-            "result.json", (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            "result.json",
+            (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode(),
         )
     return directory
+
+
+def container_path(source: Path, workspace: Path) -> Path:
+    """Map an artifact in this worktree to its persistent-container mount."""
+
+    actual = Path(source).absolute()
+    try:
+        relative = actual.relative_to(Path(workspace).resolve())
+    except ValueError as error:
+        raise ValueError("QEMU artifact is outside the mounted worktree") from error
+    if any(part in {".", ".."} for part in relative.parts):
+        raise ValueError("QEMU artifact is outside the mounted worktree")
+    return Path("/root/asterinas") / relative
+
+
+def snapshot_artifacts(
+    workspace: Path,
+    kernel_source: Path,
+    kernel_identity: ArtifactIdentity,
+    initramfs_source: Path,
+    initramfs_identity: ArtifactIdentity,
+    *,
+    nonce: str,
+) -> tuple[Path, Path]:
+    """Copy both sources into a unique read-only run snapshot before either host opens them."""
+
+    if re.fullmatch(r"[0-9a-f]{16}", nonce) is None:
+        raise ValueError("invalid artifact snapshot nonce")
+    root = Path(workspace) / "target-ubuntu/dual-host-qemu-probe/snapshots"
+    root.mkdir(parents=True, exist_ok=True)
+    directory = root / nonce
+    directory.mkdir(exist_ok=False)
+    kernel = directory / "kernel.Image"
+    initramfs = directory / "initramfs.cpio"
+    with PinnedOutputDirectory(directory) as output:
+        output.lock_exclusive()
+        output.atomic_copy(kernel.name, kernel_source, mode=0o444)
+        output.atomic_copy(initramfs.name, initramfs_source, mode=0o444)
+    if (
+        read_identity(kernel) != kernel_identity
+        or read_identity(initramfs) != initramfs_identity
+    ):
+        raise ValueError("artifact snapshot identity mismatch after source changed")
+    return kernel, initramfs
+
+
+def parse_args(arguments: tuple[str, ...]) -> argparse.Namespace:
+    """Require an explicit immutable artifact pair and RockOS SSH target."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--kernel", type=Path, required=True)
+    parser.add_argument("--initramfs", type=Path, required=True)
+    parser.add_argument("--rockos", required=True)
+    parser.add_argument("--container")
+    parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--qemu-seconds", type=int, default=210)
+    values = parser.parse_args(arguments)
+    if _SAFE_TARGET.fullmatch(values.rockos) is None:
+        raise ValueError("unsafe RockOS SSH target")
+    _seconds(values.qemu_seconds)
+    if (
+        values.container is not None
+        and _SAFE_CONTAINER.fullmatch(values.container) is None
+    ):
+        raise ValueError("unsafe developer container name")
+    return values
+
+
+def discover_container(workspace: Path) -> str:
+    """Find the already-running persistent container bound to this worktree."""
+
+    launcher = workspace / "tools/docker/run_dev_container.sh"
+    result = subprocess.run(
+        (str(launcher), "--status"), capture_output=True, check=False, timeout=15
+    )
+    if result.returncode != 0:
+        raise RuntimeError("persistent developer container status is unavailable")
+    status = json.loads(result.stdout)
+    if status.get("workspace") != str(workspace) or status.get("state") != "running":
+        raise RuntimeError("start the persistent developer container before the probe")
+    container = status.get("container")
+    if not isinstance(container, str) or _SAFE_CONTAINER.fullmatch(container) is None:
+        raise RuntimeError("invalid persistent developer container identity")
+    return container
+
+
+def _failure(reason: str, phase: str) -> SessionEvidence:
+    return SessionEvidence(False, reason, phase, b"", 0.0, None)
+
+
+def default_output_root(workspace: Path, *, timestamp: str, suffix: str) -> Path:
+    """Choose an ignored host-owned tree rather than Docker's root-owned target."""
+
+    if (
+        re.fullmatch(r"[0-9]{8}T[0-9]{6}", timestamp) is None
+        or re.fullmatch(r"[0-9a-f]{8}", suffix) is None
+    ):
+        raise ValueError("invalid dual-host evidence run identity")
+    return (
+        Path(workspace)
+        / "target-ubuntu/dual-host-qemu-probe/runs"
+        / f"{timestamp}-{suffix}"
+    )
+
+
+def main(arguments: tuple[str, ...] | None = None) -> int:
+    """Publish separate results for two virtual hosts using identical bytes."""
+
+    try:
+        values = parse_args(tuple(sys.argv[1:] if arguments is None else arguments))
+        workspace = Path(__file__).resolve().parents[2]
+        kernel_source = values.kernel.absolute()
+        initramfs_source = values.initramfs.absolute()
+        kernel = read_identity(kernel_source)
+        initramfs = read_identity(initramfs_source)
+        container_path(kernel_source, workspace)
+        container_path(initramfs_source, workspace)
+        kernel_snapshot, initramfs_snapshot = snapshot_artifacts(
+            workspace,
+            kernel_source,
+            kernel,
+            initramfs_source,
+            initramfs,
+            nonce=secrets.token_hex(8),
+        )
+        kernel_container = container_path(kernel_snapshot, workspace)
+        initramfs_container = container_path(initramfs_snapshot, workspace)
+        output_root = values.output_directory or default_output_root(
+            workspace,
+            timestamp=time.strftime("%Y%m%dT%H%M%S", time.gmtime()),
+            suffix=secrets.token_hex(4),
+        )
+        output_root.mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"dual-host-qemu-probe: {error}", file=sys.stderr)
+        return 2
+
+    developer_nonce = secrets.token_hex(16)
+    try:
+        container = values.container or discover_container(workspace)
+        developer = run_session(
+            developer_argv(
+                container,
+                kernel_container,
+                initramfs_container,
+                values.qemu_seconds,
+            ),
+            developer_nonce,
+            values.qemu_seconds + 10,
+        )
+    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+        developer = _failure(str(error), "launching-developer-qemu")
+    publish_evidence(
+        output_root,
+        "developer-qemu",
+        developer,
+        kernel,
+        initramfs,
+        developer_nonce,
+    )
+
+    rockos_nonce = secrets.token_hex(16)
+    try:
+        transport = RockOsArtifactTransport(values.rockos)
+        cached = cache_directory(kernel, initramfs)
+        rockos_kernel = stage_artifact(
+            transport,
+            kernel_snapshot,
+            kernel,
+            cached / "kernel.Image",
+            nonce=secrets.token_hex(8),
+        )
+        rockos_initramfs = stage_artifact(
+            transport,
+            initramfs_snapshot,
+            initramfs,
+            cached / "initramfs.cpio",
+            nonce=secrets.token_hex(8),
+        )
+        rockos = run_session(
+            rockos_argv(
+                values.rockos,
+                rockos_kernel,
+                rockos_initramfs,
+                values.qemu_seconds,
+            ),
+            rockos_nonce,
+            values.qemu_seconds + 10,
+        )
+    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+        rockos = _failure(str(error), "staging-or-launching-rockos-qemu")
+    publish_evidence(
+        output_root,
+        "rockos-qemu-tcg",
+        rockos,
+        kernel,
+        initramfs,
+        rockos_nonce,
+    )
+    print(
+        f"DUAL_HOST_QEMU_PROBE developer={int(developer.passed)} "
+        f"rockos={int(rockos.passed)} kernel_sha256={kernel.sha256} "
+        f"initramfs_sha256={initramfs.sha256} evidence={output_root}"
+    )
+    return 0 if developer.passed and rockos.passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
