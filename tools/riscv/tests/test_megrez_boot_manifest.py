@@ -238,6 +238,29 @@ class ExtlinuxGenerationTests(unittest.TestCase):
 
 
 class RockOsPublicationCommandTests(unittest.TestCase):
+    def test_capacity_gate_counts_only_missing_immutable_artifacts(self) -> None:
+        plan = _plan()
+        generation = manifest.ExtlinuxGeneration.from_bytes(_rendered(plan))
+
+        commands = manifest.rockos_publication_commands(
+            generation,
+            plan,
+            "http://10.100.19.216:18081/generation",
+            "4" * 32,
+        )
+        capacity_gate = commands[0]
+
+        self.assertIn(f"_required={len(generation.canonical_bytes())}", capacity_gate)
+        for name in manifest.ARTIFACT_ORDER:
+            identity = next(item for item in plan.artifacts if item.name == name)
+            destination = generation.artifact_paths[name]
+            self.assertIn(
+                f'[ -e /boot/{destination.removeprefix("/")} ] || '
+                f'_required=$((_required + {identity.size}))',
+                capacity_gate,
+            )
+        self.assertIn('[ "$_available" -ge "$_required" ]', capacity_gate)
+
     def test_artifacts_are_verified_before_atomic_config_publication(self) -> None:
         plan = _plan()
         generation = manifest.ExtlinuxGeneration.from_bytes(_rendered(plan))
