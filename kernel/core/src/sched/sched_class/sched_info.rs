@@ -73,6 +73,16 @@ impl SchedInfo {
             dispatches: self.dispatches.load(Ordering::Relaxed),
         })
     }
+
+    #[cfg(ktest)]
+    pub(super) fn is_queued(&self) -> bool {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    #[cfg(ktest)]
+    pub(super) fn queued_at(&self) -> u64 {
+        self.queued_at.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(ktest)]
