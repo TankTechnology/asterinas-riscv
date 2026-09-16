@@ -1680,6 +1680,10 @@ class BootTransactionTests(unittest.TestCase):
         physical_session.milestones = {}
         physical_session.log = mock.Mock()
         physical_session.fd = -1
+        # Only the debug-root-console profile fills this transcript; the
+        # firmware-drm profile observes the recovery epoch in the
+        # milestone-read buffer instead.
+        physical_session.debug_console_transcript = b""
 
         def record(text: str) -> None:
             if "Enter riscv_boot" in text:

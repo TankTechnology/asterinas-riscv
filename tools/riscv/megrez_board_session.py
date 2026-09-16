@@ -1230,7 +1230,12 @@ def main(argv: list[str]) -> int:
             retained = session.debug_console_transcript.decode(
                 "utf-8", errors="replace"
             )
-            if not _has_recovery_epoch(retained):
+            # The debug-console transcript only exists for the
+            # debug-root-console profile; other profiles observe the recovery
+            # epoch in the milestone-read buffer instead.
+            if not _has_recovery_epoch(retained) and not _has_recovery_epoch(
+                recovery_window
+            ):
                 remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
                 if remaining <= 0:
                     return 2
