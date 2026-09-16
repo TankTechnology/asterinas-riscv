@@ -69,6 +69,7 @@ use super::{
     impl_syscall_nums_and_dispatch_fn,
     inotify::{sys_inotify_add_watch, sys_inotify_init, sys_inotify_init1, sys_inotify_rm_watch},
     ioctl::sys_ioctl,
+    kcmp::sys_kcmp,
     kill::sys_kill,
     link::{sys_link, sys_linkat},
     listen::sys_listen,
@@ -439,6 +440,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SENDMMSG = 307         => sys_sendmmsg(args[..4]);
     SYS_SETNS = 308            => sys_setns(args[..2]);
     SYS_GETCPU = 309           => sys_getcpu(args[..3]);
+    SYS_KCMP = 312             => sys_kcmp(args[..5]);
     SYS_SCHED_SETATTR = 314    => sys_sched_setattr(args[..3]);
     SYS_SCHED_GETATTR = 315    => sys_sched_getattr(args[..4]);
     SYS_RENAMEAT2 = 316        => sys_renameat2(args[..5]);

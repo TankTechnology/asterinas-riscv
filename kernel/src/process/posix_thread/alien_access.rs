@@ -48,7 +48,6 @@ pub struct AlienAccessMode {
 
 impl AlienAccessMode {
     /// Read-only alien access check using real credentials.
-    #[expect(dead_code)]
     pub const READ_WITH_REAL_CREDS: Self = Self::new(AlienAccessKind::Read, CredsSource::RealCreds);
     /// Attach-level alien access check using real credentials.
     pub const ATTACH_WITH_REAL_CREDS: Self =

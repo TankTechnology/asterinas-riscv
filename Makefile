@@ -167,6 +167,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
 else ifeq ($(AUTO_TEST), sched_policy)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
+else ifeq ($(AUTO_TEST), kcmp)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_kcmp_test.sh"
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 ifneq ($(TARGET_ARCH), riscv64)
 $(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
@@ -1082,6 +1086,10 @@ else ifeq ($(AUTO_TEST), sched_policy)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Scheduler policy regression passed." \
 		|| (echo "Scheduler policy regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), kcmp)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "kcmp regression passed." \
+		|| (echo "kcmp regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
