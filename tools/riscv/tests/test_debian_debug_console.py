@@ -15,6 +15,7 @@ from tools.riscv.debian.rootfs.debug_console_protocol import (
     DebugConsoleEvidence,
     DebugConsoleProtocolError,
     classify_debug_console,
+    classify_system_identity,
     debug_console_commands,
     run_debug_console_phase,
 )
@@ -173,6 +174,25 @@ class CorruptDesktopStatusOnceSerial(CorruptPid1BeginOnceSerial):
 
 
 class DebugConsoleProtocolTests(unittest.TestCase):
+    def test_base_identity_classifier_does_not_require_graphics(self) -> None:
+        lines: list[str] = []
+        for command in debug_console_commands(NONCE)[:3]:
+            lines.extend(
+                (
+                    command.begin_marker,
+                    f"{command.value_prefix}{PASSING_OUTPUTS[command.name]}",
+                    f"{command.status_prefix}0",
+                    command.end_marker,
+                )
+            )
+
+        evidence = classify_system_identity("\n".join(lines) + "\n", NONCE)
+
+        self.assertEqual(evidence.uid, 0)
+        self.assertEqual(evidence.pid1, "systemd")
+        self.assertEqual(evidence.root_device, "/dev/mmcblk0p2")
+        self.assertEqual(evidence.root_filesystem, "ext2")
+
     def test_passing_transcript_yields_exact_evidence(self) -> None:
         self.assertEqual(
             classify_debug_console(make_transcript(), NONCE),

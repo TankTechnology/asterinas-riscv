@@ -115,6 +115,89 @@ def identity(data: bytes, path: str) -> dict:
     }
 
 
+def _fdt_property(path: Path, kind: str, node: str, name: str, label: str) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["fdtget", "-t", kind, str(path), node, name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise BootManifestError(f"cannot inspect prepared DTB: {error}") from error
+    require(result.returncode == 0, f"prepared DTB lacks {label}")
+    return result.stdout.split()
+
+
+def validate_prepared_dtb(path: Path) -> None:
+    """Reject a desktop selector whose immutable DTB lacks the hardware handoff."""
+
+    require(path.is_file() and not path.is_symlink(), "prepared DTB is not a file")
+    framebuffer = MEGREZ_FRAMEBUFFER
+    expected = (
+        (
+            "s",
+            framebuffer.node_path,
+            "compatible",
+            ["simple-framebuffer"],
+            "framebuffer compatible",
+        ),
+        (
+            "x",
+            framebuffer.node_path,
+            "reg",
+            ["0", f"{framebuffer.address:x}", "0", f"{framebuffer.size:x}"],
+            "framebuffer registers",
+        ),
+        (
+            "u",
+            framebuffer.node_path,
+            "width",
+            [str(framebuffer.width)],
+            "framebuffer width",
+        ),
+        (
+            "u",
+            framebuffer.node_path,
+            "height",
+            [str(framebuffer.height)],
+            "framebuffer height",
+        ),
+        (
+            "u",
+            framebuffer.node_path,
+            "stride",
+            [str(framebuffer.stride)],
+            "framebuffer stride",
+        ),
+        (
+            "s",
+            framebuffer.node_path,
+            "format",
+            [framebuffer.pixel_format],
+            "framebuffer format",
+        ),
+        ("s", framebuffer.node_path, "status", ["okay"], "framebuffer status"),
+        (
+            "s",
+            "/chosen",
+            "asterinas,usb-host",
+            [
+                "/soc/usb0@50480000/dwc3@50480000",
+                "/soc/usb1@50490000/dwc3@50490000",
+            ],
+            "USB host handoff",
+        ),
+    )
+    for kind, node, name, values, label in expected:
+        require(
+            _fdt_property(path, kind, node, name, label) == values,
+            f"prepared DTB has invalid {label}",
+        )
+
+
 def validate(document: dict) -> None:
     require(
         isinstance(document, dict)
@@ -210,6 +293,7 @@ def render(document: dict) -> str:
 def prepare(
     vendor: Path, sources: dict[str, Path], desktop_args: str, output: Path
 ) -> dict:
+    validate_prepared_dtb(sources["dtb"])
     output.mkdir(parents=True, exist_ok=False)
     document = {
         "schema_version": 3,

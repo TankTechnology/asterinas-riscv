@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import shutil
 import socket
+import subprocess
 import unittest
 
 from tools.riscv.megrez_network_fixture import (
@@ -23,6 +25,10 @@ from tools.riscv.megrez_network_fixture import (
     BROWSER_IMAGE_PATH,
     BROWSER_INDEX,
     BROWSER_INDEX_PATH,
+    BROWSER_PERF,
+    BROWSER_PERF_PATH,
+    BROWSER_PERF_SECOND,
+    BROWSER_PERF_SECOND_PATH,
     BROWSER_SEARCH,
     BROWSER_SECOND,
     BROWSER_SECOND_PATH,
@@ -164,7 +170,78 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                         self.request(server, BROWSER_INDEX_PATH + invalid_query)[0],
                         400,
                     )
+        self.assertEqual(server.summary()["request_count"], 0)
+
+    def test_serves_isolated_performance_pages_without_capability_work(self) -> None:
+        expected = {
+            BROWSER_PERF_PATH: BROWSER_PERF,
+            BROWSER_PERF_SECOND_PATH: BROWSER_PERF_SECOND,
+        }
+        with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:
+            for path, expected_body in expected.items():
+                with self.subTest(path=path):
+                    status, body, headers = self.request(server, path)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body, expected_body)
+                    self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
+                    self.assertEqual(self.request(server, path + "?q=x")[0], 400)
             self.assertEqual(server.summary()["request_count"], 0)
+
+        self.assertIn(b"__asterinasTimingSnapshot", BROWSER_PERF)
+        self.assertIn(b"requestAnimationFrame", BROWSER_PERF)
+        self.assertIn(b"event.isTrusted", BROWSER_PERF)
+        self.assertIn(b"keyboard", BROWSER_PERF)
+        self.assertIn(b"pointer", BROWSER_PERF)
+        self.assertIn(b"scroll", BROWSER_PERF)
+        self.assertIn(BROWSER_PERF_SECOND_PATH.encode(), BROWSER_PERF)
+        self.assertIn(b"getEntriesByType('navigation')", BROWSER_PERF_SECOND)
+        for contaminant in (b"indexedDB", b"WebAssembly", b"__asterinasCapabilities"):
+            self.assertNotIn(contaminant, BROWSER_PERF)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS smoke")
+    def test_performance_page_js_keeps_trusted_and_synthetic_samples_separate(self) -> None:
+        script = BROWSER_PERF.split(b"<script>\n", 1)[1].split(b"</script>", 1)[0]
+        harness = r"""
+const vm = require('vm');
+const fs = require('fs');
+const handlers = Object.create(null);
+const elements = Object.create(null);
+for (const id of ['#timing-token', '#timing-input', '#timing-pointer']) {
+  elements[id] = {
+    textContent: '0',
+    addEventListener(name, handler) { handlers[id + ':' + name] = handler; }
+  };
+}
+let now = 0;
+const sandbox = {
+  document: {
+    querySelector(id) { return elements[id]; },
+    addEventListener(name, handler) { handlers['document:' + name] = handler; }
+  },
+  performance: {now() { return ++now; }},
+  requestAnimationFrame(callback) { setTimeout(callback, 0); },
+  window: {}, Promise, Number, Object, String, Error
+};
+vm.runInNewContext(fs.readFileSync(0, 'utf8'), sandbox);
+handlers['#timing-input:input']({isTrusted: true});
+handlers['#timing-pointer:pointermove']({isTrusted: true});
+handlers['document:scroll']({isTrusted: true});
+(async () => {
+  await sandbox.window.__asterinasRunSyntheticTiming(1);
+  const samples = sandbox.window.__asterinasTimingSnapshot().samples;
+  if (samples.length !== 6 || samples.filter(s => s.source === 'trusted').length !== 3 ||
+      samples.filter(s => s.source === 'synthetic').length !== 3 ||
+      samples.some(s => s.nextRafMs < s.firstRafMs)) process.exitCode = 1;
+})().catch(() => { process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            [shutil.which("node") or "node", "-e", harness],
+            input=script,
+            capture_output=True,
+            check=False,
+            timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_accepts_one_bounded_capture_and_reports_immutable_evidence(self) -> None:
         payload = b"xwd-capture"

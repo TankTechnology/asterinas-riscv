@@ -24,7 +24,6 @@ from typing import Any, Protocol
 
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
-    run_debug_console_phase,
 )
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_board_session import (
@@ -757,6 +756,11 @@ def boot_diagnostics_commands(nonce: str) -> tuple[str, ...]:
 class RealBootCycleOperations(RealPhysicalGraphicsOperations):
     """Physical graphics adapter extended with unattended boot operations."""
 
+    def _prepare_boot_readiness(self, deadline: float) -> None:
+        """Isolate the offline stability workload before its preflight."""
+
+        self._quiesce_external_services(deadline)
+
     def prove_boot_readiness(self, timeout: float) -> BootReadinessEvidence:
         serial = self._require_serial()
         deadline = self._guest_phase_deadline(timeout)
@@ -766,44 +770,27 @@ class RealBootCycleOperations(RealPhysicalGraphicsOperations):
         except UnicodeDecodeError as error:
             raise HostGateError("debug console transcript is not UTF-8") from error
         validate_debug_console_readiness(transcript)
-        self._quiesce_external_services(deadline)
-        run_debug_console_phase(
-            serial,
-            deadline,
-            secrets.token_hex(16),
-            ready_seen=True,
-        )
+        self._prepare_boot_readiness(deadline)
+        self._probe_system_readiness(deadline)
 
         last_error: HostGateError | None = None
         while True:
             try:
-                nonce = secrets.token_hex(8)
-                commands = boot_readiness_commands(nonce)
-                for step, command in enumerate(commands[:-1], start=1):
-                    self._send_guest_step(command, f"readiness-{step}", nonce, deadline)
-                cursor = serial.checkpoint()
-                probe_deadline = min(deadline, time.monotonic() + GUEST_STEP_TIMEOUT)
-                self._send_bounded(serial, commands[-1], probe_deadline)
-                while True:
-                    line, cursor = self._next_line(serial, cursor, probe_deadline)
-                    if not line.startswith("__ASTERINAS_BOOT_PREFLIGHT__"):
-                        continue
-                    try:
-                        evidence = parse_boot_readiness_marker(line, nonce)
-                    except HostGateError as error:
-                        last_error = error
-                    else:
-                        self._browser_pid = evidence.browser_pid
-                        self._sync_serial_log()
-                        return evidence
-                    break
-            except TimeoutError as error:
-                self._abort_guest_shell()
-                if last_error is not None:
-                    raise last_error from error
-                if deadline - time.monotonic() > GUEST_STEP_TIMEOUT:
-                    continue
-                raise HostGateError("boot readiness timed out") from error
+                graphical = self._probe_graphical_readiness(deadline)
+                evidence = BootReadinessEvidence(
+                    browser_pid=graphical.browser_pid,
+                    framebuffer=graphical.framebuffer,
+                    xorg_fbdev=graphical.xorg_fbdev,
+                    openbox=graphical.openbox,
+                    firefox=graphical.firefox,
+                    browser_service=graphical.browser_service,
+                    browser_restarts=graphical.browser_restarts,
+                )
+                self._browser_pid = evidence.browser_pid
+                self._sync_serial_log()
+                return evidence
+            except HostGateError as error:
+                last_error = error
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise last_error or HostGateError("boot readiness timed out")

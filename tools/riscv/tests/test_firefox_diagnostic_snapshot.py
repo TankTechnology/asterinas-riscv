@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -82,6 +83,31 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn("UNRELATED_PAYLOAD", json.dumps(result))
         current = result["processes"][0]["threads"][0]["syscall"]["value"]["current"]
         self.assertEqual(current["number"], 212)
+
+    def test_thread_snapshot_exposes_cpu_ticks_without_changing_identity(self):
+        root = self.process(10, 1, (11,))
+        stat_file = root / "task/11/stat"
+        raw = stat_file.read_text()
+        prefix, fields_text = raw.rsplit(") ", 1)
+        fields = fields_text.split()
+        fields[11] = "40"
+        fields[12] = "12"
+        stat_file.write_text(prefix + ") " + " ".join(fields) + "\n")
+
+        result = self.snapshot()
+
+        thread = result["processes"][0]["threads"][1]
+        self.assertEqual(thread["tid"], 11)
+        self.assertEqual(
+            thread["identity"], {"pid": 11, "ppid": 1, "start_time_ticks": 100}
+        )
+        self.assertEqual(thread["cpu_time_ticks"], {"user": 40, "kernel": 12})
+        self.assertTrue(thread["identity_verified_after"])
+        self.assertEqual(result["clock_domain"], "guest-monotonic")
+        self.assertLess(
+            result["guest_monotonic_start_ns"], result["guest_monotonic_end_ns"]
+        )
+        self.assertEqual(result["clock_ticks_per_second"], os.sysconf("SC_CLK_TCK"))
 
     def test_missing_interface_is_unsupported_not_empty_success(self):
         self.process(10, 1, diagnostic=False)

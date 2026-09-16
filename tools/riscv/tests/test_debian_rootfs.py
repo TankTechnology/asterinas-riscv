@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools.riscv.debian.rootfs import fsops as fsops_module
+from tools.riscv.debian.rootfs import desktop_input_identity
 from tools.riscv.debian.rootfs import gate_runtime as gate_runtime_module
 from tools.riscv.debian.rootfs import rootfs_gate as rootfs_gate_module
 from tools.riscv.debian.rootfs import rootfs_gate_backend as gate_backend_module
@@ -103,6 +104,9 @@ DESKTOP_M3_EVIDENCE_SCRIPT = (
 DESKTOP_M3_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_session.sh"
 )
+DESKTOP_INPUT_IDENTITY_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_input_identity.py"
+)
 DESKTOP_M4_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
 )
@@ -131,16 +135,33 @@ STAGE1_BROWSER_GATE = (
 STAGE1_BROWSER_INTERACTION_PERF = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_interaction_perf.py"
 )
+STAGE1_BROWSER_SYSTEM_TIME = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_system_time.py"
+)
+STAGE1_BROWSER_LATENCY_CONTRACT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_latency_contract.py"
+)
+STAGE1_BROWSER_PERF_CAPTURE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_perf_capture.py"
+)
 STAGE1_BROWSER_M5_MARIONETTE_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py"
 )
 STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
 STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
-    REPOSITORY_ROOT
-    / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
 )
 STAGE1_PHYSICAL_GRAPHICS_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_gate.py"
+)
+STAGE1_PHYSICAL_GRAPHICS_CONTROL = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_control.sh"
+)
+STAGE1_DESKTOP_INPUT_IDENTITY = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_input_identity.py"
+)
+STAGE1_PHYSICAL_GRAPHICS_PAGE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_interaction.html"
 )
 STAGE1_PHYSICAL_SYSTEM_PROBE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
@@ -469,6 +490,105 @@ configure_and_normalize_rootfs
         capture_output=True,
         text=True,
     )
+
+
+class DesktopInputIdentityTests(unittest.TestCase):
+    def test_reads_only_supported_evdev_ioctls_and_closes_descriptor(self) -> None:
+        def ioctl(_descriptor: int, code: int, buffer: bytearray, mutate: bool) -> None:
+            self.assertTrue(mutate)
+            payloads = {
+                0x80084502: b"\x03\0\x01\0\x02\0\x03\0",
+                0x81004506: b"usb_boot_keyboard\0",
+                0x81004507: b"xhci/input0\0",
+            }
+            buffer[: len(payloads[code])] = payloads[code]
+
+        with (
+            mock.patch.object(
+                desktop_input_identity.os, "open", return_value=42
+            ) as opened,
+            mock.patch.object(desktop_input_identity.os, "close") as closed,
+            mock.patch.object(
+                desktop_input_identity.fcntl, "ioctl", side_effect=ioctl
+            ) as queried,
+        ):
+            self.assertEqual(
+                desktop_input_identity.read_identity("/dev/input/event9"),
+                (3, "usb_boot_keyboard", "xhci/input0"),
+            )
+        self.assertEqual(opened.call_args.args[0], "/dev/input/event9")
+        self.assertEqual(
+            [call.args[1] for call in queried.call_args_list],
+            [
+                0x80084502,
+                0x81004506,
+                0x81004507,
+            ],
+        )
+        closed.assert_called_once_with(42)
+
+    def test_both_physical_evdev_enumeration_orders_keep_the_same_roles(self) -> None:
+        physical = (
+            (3, "usb_boot_keyboard", "xhci/input0"),
+            (3, "usb_boot_mouse", "xhci/input1"),
+        )
+        for identities, expected in (
+            (physical, ("/dev/null", "/dev/zero")),
+            (physical[::-1], ("/dev/zero", "/dev/null")),
+        ):
+            with (
+                self.subTest(identities=identities),
+                mock.patch.object(
+                    desktop_input_identity.glob,
+                    "glob",
+                    return_value=["/dev/null", "/dev/zero"],
+                ),
+            ):
+                observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                self.assertEqual(
+                    desktop_input_identity.resolve_input_nodes(
+                        identity_reader=observed.__getitem__
+                    ),
+                    expected,
+                )
+
+    def test_virtio_evdev_and_duplicate_or_missing_identities(self) -> None:
+        keyboard = (6, "QEMU Virtio Keyboard", "virtio/input0")
+        pointer = (6, "QEMU Virtio Tablet", "virtio/input0")
+        with mock.patch.object(
+            desktop_input_identity.glob,
+            "glob",
+            return_value=["/dev/null", "/dev/zero"],
+        ):
+            for identities, expected in (
+                ((keyboard, pointer), ("/dev/null", "/dev/zero")),
+                ((keyboard, keyboard), None),
+                ((pointer, pointer), None),
+                (((3, "usb_boot_keyboard", "wrong/port"), pointer), None),
+            ):
+                if identities == (keyboard, keyboard) or identities == (
+                    pointer,
+                    pointer,
+                ):
+                    with (
+                        self.subTest(identities=identities),
+                        self.assertRaisesRegex(
+                            ValueError, "ambiguous desktop input device identity"
+                        ),
+                    ):
+                        observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                        desktop_input_identity.resolve_input_nodes(
+                            identity_reader=observed.__getitem__
+                        )
+                else:
+                    observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                    with self.subTest(identities=identities):
+                        self.assertEqual(
+                            desktop_input_identity.resolve_input_nodes(
+                                identity_reader=observed.__getitem__
+                            ),
+                            expected,
+                        )
 
 
 class DebianStage1Tests(unittest.TestCase):
@@ -1265,6 +1385,7 @@ int main(void)
             tools.stdout.splitlines(),
             ["riscv64-linux-gnu-gcc", "cpio", "python3"],
         )
+
         self.assertEqual(entries.returncode, 0, entries.stderr)
         self.assertEqual(
             entries.stdout.splitlines(),
@@ -1275,13 +1396,48 @@ int main(void)
                 "usr/lib",
                 "usr/lib/asterinas",
                 "usr/lib/asterinas/browser_interaction_perf.py",
+                "usr/lib/asterinas/browser_system_time.py",
+                "usr/lib/asterinas/browser_latency_contract.py",
+                "usr/lib/asterinas/browser_perf_capture.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
                 "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/megrez-clock-sync",
                 "usr/lib/asterinas/physical-external-services-quiesce",
+                "usr/lib/asterinas/desktop-input-identity",
+                "usr/lib/asterinas/physical-graphics-control",
                 "usr/lib/asterinas/physical-graphics-gate",
+                "usr/lib/asterinas/physical-graphics-interaction.html",
                 "usr/lib/asterinas/physical-system-probe",
+                "usr/lib/asterinas/g",
+                "usr/lib/asterinas/q",
+                "usr/lib/asterinas/s",
             ],
+        )
+
+    def test_stage1_carries_nonblocking_desktop_input_identity(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "input-identity" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        helper = entries["usr/lib/asterinas/desktop-input-identity"]
+        self.assertEqual(stat.S_IMODE(helper[1]), 0o755)
+        self.assertEqual(helper[5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertIn(b"os.O_NONBLOCK", helper[5])
+
+    def test_physical_graphics_control_uses_stage1_input_identity(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+
+        self.assertIn(
+            'runpy.run_path("/run/asterinas-tools/desktop-input-identity")',
+            source,
+        )
+        self.assertNotIn(
+            'runpy.run_path("/usr/lib/asterinas/desktop-input-identity")',
+            source,
         )
 
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
@@ -1329,6 +1485,47 @@ int main(void)
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown option", result.stderr)
 
+    def test_physical_graphics_control_rejects_untrusted_arguments(self) -> None:
+        for arguments in (
+            (),
+            ("unknown",),
+            ("preflight", "extra"),
+            ("cycle", "1", "not-a-nonce", "180", "540", "41", "1920", "1080"),
+            ("final", "2", "0123456789abcdef", "180", "540", "41"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["/bin/sh", STAGE1_PHYSICAL_GRAPHICS_CONTROL, *arguments],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+
+    def test_physical_graphics_control_accepts_a_six_digit_linux_pid(self) -> None:
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                STAGE1_PHYSICAL_GRAPHICS_CONTROL,
+                "final",
+                "3",
+                "0123",
+                "180",
+                "540",
+                "123456",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertRegex(
+            result.stdout, r"^__ASTERINAS_PHYSICAL_FINAL_STATUS__ status=12[46]\n$"
+        )
+        self.assertEqual(result.stderr, "")
+
     def test_builder_is_deterministic_with_exact_raw_newc_metadata(self) -> None:
         environment = os.environ.copy()
         environment["RISC_V_CC"] = "cc"
@@ -1369,6 +1566,27 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/browser_system_time.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_latency_contract.py",
+                    stat.S_IFREG | 0o644,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_perf_capture.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/browser-web-marionette-gate",
                     stat.S_IFREG | 0o755,
                     0,
@@ -1397,8 +1615,29 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/desktop-input-identity",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-graphics-control",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/physical-graphics-gate",
                     stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-graphics-interaction.html",
+                    stat.S_IFREG | 0o644,
                     0,
                     0,
                     1700000000,
@@ -1410,19 +1649,49 @@ int main(void)
                     0,
                     1700000000,
                 ),
+                (
+                    "usr/lib/asterinas/g",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/q",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/s",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
             ],
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
         self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
         self.assertEqual(entries[5][5], STAGE1_BROWSER_INTERACTION_PERF.read_bytes())
-        self.assertEqual(entries[6][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[7][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
-        self.assertEqual(entries[8][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(entries[6][5], STAGE1_BROWSER_SYSTEM_TIME.read_bytes())
+        self.assertEqual(entries[7][5], STAGE1_BROWSER_LATENCY_CONTRACT.read_bytes())
+        self.assertEqual(entries[8][5], STAGE1_BROWSER_PERF_CAPTURE.read_bytes())
+        self.assertEqual(entries[9][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[10][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[11][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[9][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[12][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[10][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[11][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[13][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[14][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[15][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[16][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[17][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[18][5], b"physical-graphics-control")
+        self.assertEqual(entries[19][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[20][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
@@ -1974,20 +2243,31 @@ WantedBy=multi-user.target
             self.assertIn(directive, unit_text)
         device_access = stage / "usr/lib/asterinas/desktop-m3-device-access"
         self.assertEqual(stat.S_IMODE(device_access.stat().st_mode), 0o755)
+        identity_helper = stage / "usr/lib/asterinas/desktop-input-identity"
+        self.assertTrue(identity_helper.is_file())
+        self.assertEqual(
+            identity_helper.read_bytes(), DESKTOP_INPUT_IDENTITY_SOURCE.read_bytes()
+        )
+        self.assertEqual(stat.S_IMODE(identity_helper.stat().st_mode), 0o755)
         self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
         self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
         self.assertIn("chown asterinas:input", device_access.read_text())
-        self.assertIn(
+        self.assertNotIn(
             'if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then',
             device_access.read_text(),
         )
-        self.assertIn(
-            "while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]",
-            device_access.read_text(),
-        )
+        self.assertIn("desktop-input-identity", device_access.read_text())
         self.assertIn(
             "failed: desktop input devices did not appear", device_access.read_text()
         )
+        for fragment in (
+            "ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input",
+            '"$STABLE_INPUT_DIRECTORY/keyboard"',
+            '"$STABLE_INPUT_DIRECTORY/pointer"',
+            "ambiguous desktop input device identity",
+        ):
+            self.assertIn(fragment, device_access.read_text())
+        self.assertNotIn("/sys/class/input", device_access.read_text())
         self.assertFalse((getty_wants / "getty@tty1.service").exists())
         evidence_unit = (
             stage / "etc/systemd/system/asterinas-desktop-m3-evidence.service"
@@ -2010,9 +2290,7 @@ WantedBy=multi-user.target
                 / "asterinas-desktop-m3.service"
             ).is_symlink()
         )
-        xorg_directory = (
-            stage / "etc/asterinas/display-providers/fbdev/xorg.conf.d"
-        )
+        xorg_directory = stage / "etc/asterinas/display-providers/fbdev/xorg.conf.d"
         self.assertEqual(stat.S_IMODE(xorg_directory.stat().st_mode), 0o755)
         xorg_config_path = xorg_directory / "20-asterinas.conf"
         self.assertEqual(stat.S_IMODE(xorg_config_path.stat().st_mode), 0o644)
@@ -2020,9 +2298,9 @@ WantedBy=multi-user.target
         self.assertIn('Driver "fbdev"', xorg_config)
         self.assertIn('Driver "evdev"', xorg_config)
         self.assertIn('Identifier "Asterinas keyboard"', xorg_config)
-        self.assertIn('Option "Device" "/dev/input/event0"', xorg_config)
+        self.assertIn('Option "Device" "/run/asterinas-input/keyboard"', xorg_config)
         self.assertIn('Identifier "Asterinas pointer"', xorg_config)
-        self.assertIn('Option "Device" "/dev/input/event1"', xorg_config)
+        self.assertIn('Option "Device" "/run/asterinas-input/pointer"', xorg_config)
         self.assertIn('Identifier "Asterinas layout"', xorg_config)
         self.assertIn('InputDevice "Asterinas keyboard" "CoreKeyboard"', xorg_config)
         self.assertIn('InputDevice "Asterinas pointer" "CorePointer"', xorg_config)

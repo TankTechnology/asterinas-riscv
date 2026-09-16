@@ -3,7 +3,7 @@
 
 set -u
 
-nonce=${1-}
+nonce=${1-${N-}}
 if [ "${#nonce}" -ne 32 ]; then
     exit 2
 fi
@@ -28,24 +28,3 @@ emit_probe PID1 "$value" "$?"
 
 value=$(awk '$2 == "/" { print $1, $3; exit }' /proc/mounts)
 emit_probe ROOT "$value" "$?"
-
-attempt=0
-while ! systemctl is-active --quiet asterinas-desktop-m4-evidence.service &&
-    ! systemctl is-active --quiet asterinas-desktop-m5.service; do
-    attempt=$((attempt + 1))
-    [ "$attempt" -ge 45 ] && break
-    sleep 1
-done
-if systemctl is-active --quiet asterinas-desktop-m4-evidence.service ||
-    systemctl is-active --quiet asterinas-desktop-m5.service; then
-    emit_probe GRAPHICAL active 0
-else
-    emit_probe GRAPHICAL inactive 1
-fi
-
-if systemctl is-active --quiet asterinas-desktop-m4.service ||
-    systemctl is-active --quiet asterinas-desktop-m5.service; then
-    emit_probe DESKTOP active 0
-else
-    emit_probe DESKTOP inactive 1
-fi

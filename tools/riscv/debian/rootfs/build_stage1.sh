@@ -38,12 +38,21 @@ if (( $# == 1 )); then
                 usr/lib \
                 usr/lib/asterinas \
                 usr/lib/asterinas/browser_interaction_perf.py \
+                usr/lib/asterinas/browser_system_time.py \
+                usr/lib/asterinas/browser_latency_contract.py \
+                usr/lib/asterinas/browser_perf_capture.py \
                 usr/lib/asterinas/browser-web-marionette-gate \
                 usr/lib/asterinas/browser_m5_marionette_gate.py \
                 usr/lib/asterinas/megrez-clock-sync \
                 usr/lib/asterinas/physical-external-services-quiesce \
+                usr/lib/asterinas/desktop-input-identity \
+                usr/lib/asterinas/physical-graphics-control \
                 usr/lib/asterinas/physical-graphics-gate \
-                usr/lib/asterinas/physical-system-probe
+                usr/lib/asterinas/physical-graphics-interaction.html \
+                usr/lib/asterinas/physical-system-probe \
+                usr/lib/asterinas/g \
+                usr/lib/asterinas/q \
+                usr/lib/asterinas/s
             exit 0
             ;;
         -h | --help)
@@ -63,10 +72,16 @@ DEBUG_CONSOLE_SOURCE="$SCRIPT_DIR/stage1_debug_console.c"
 PROBE_SOURCE="$SCRIPT_DIR/stage1_probe.c"
 BROWSER_GATE_SOURCE="$SCRIPT_DIR/browser_web_marionette_gate.py"
 BROWSER_INTERACTION_PERF_SOURCE="$SCRIPT_DIR/browser_interaction_perf.py"
+BROWSER_SYSTEM_TIME_SOURCE="$SCRIPT_DIR/browser_system_time.py"
+BROWSER_LATENCY_CONTRACT_SOURCE="$SCRIPT_DIR/browser_latency_contract.py"
+BROWSER_PERF_CAPTURE_SOURCE="$SCRIPT_DIR/browser_perf_capture.py"
 BROWSER_M5_MARIONETTE_GATE_SOURCE="$SCRIPT_DIR/browser_m5_marionette_gate.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
+DESKTOP_INPUT_IDENTITY_SOURCE="$SCRIPT_DIR/desktop_input_identity.py"
+PHYSICAL_GRAPHICS_CONTROL_SOURCE="$SCRIPT_DIR/physical_graphics_control.sh"
 PHYSICAL_GRAPHICS_GATE_SOURCE="$SCRIPT_DIR/physical_graphics_gate.py"
+PHYSICAL_GRAPHICS_PAGE_SOURCE="$SCRIPT_DIR/physical_graphics_interaction.html"
 PHYSICAL_SYSTEM_PROBE_SOURCE="$SCRIPT_DIR/physical_system_probe.sh"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
@@ -164,16 +179,31 @@ install -D -m 0755 -- "$BROWSER_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate"
 install -D -m 0755 -- "$BROWSER_INTERACTION_PERF_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_interaction_perf.py"
+install -D -m 0755 -- "$BROWSER_SYSTEM_TIME_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_system_time.py"
+install -D -m 0644 -- "$BROWSER_LATENCY_CONTRACT_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_latency_contract.py"
+install -D -m 0755 -- "$BROWSER_PERF_CAPTURE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_perf_capture.py"
 install -D -m 0755 -- "$BROWSER_M5_MARIONETTE_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py"
 install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync"
 install -D -m 0755 -- "$PHYSICAL_EXTERNAL_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce"
+install -D -m 0755 -- "$DESKTOP_INPUT_IDENTITY_SOURCE" \
+    "$STAGE/usr/lib/asterinas/desktop-input-identity"
+install -D -m 0755 -- "$PHYSICAL_GRAPHICS_CONTROL_SOURCE" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-control"
 install -D -m 0755 -- "$PHYSICAL_GRAPHICS_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-graphics-gate"
+install -D -m 0644 -- "$PHYSICAL_GRAPHICS_PAGE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-interaction.html"
 install -D -m 0755 -- "$PHYSICAL_SYSTEM_PROBE_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-system-probe"
+ln -s physical-external-services-quiesce "$STAGE/usr/lib/asterinas/q"
+ln -s physical-system-probe "$STAGE/usr/lib/asterinas/s"
+ln -s physical-graphics-control "$STAGE/usr/lib/asterinas/g"
 if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
     PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.riscv.debian.rootfs.stage1_basic \
         --stage "$STAGE" --busybox "$STAGE1_BUSYBOX"
@@ -186,12 +216,22 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib" \
     "$STAGE/usr/lib/asterinas" \
     "$STAGE/usr/lib/asterinas/browser_interaction_perf.py" \
+    "$STAGE/usr/lib/asterinas/browser_system_time.py" \
+    "$STAGE/usr/lib/asterinas/browser_latency_contract.py" \
+    "$STAGE/usr/lib/asterinas/browser_perf_capture.py" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce" \
+    "$STAGE/usr/lib/asterinas/desktop-input-identity" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-control" \
     "$STAGE/usr/lib/asterinas/physical-graphics-gate" \
+    "$STAGE/usr/lib/asterinas/physical-graphics-interaction.html" \
     "$STAGE/usr/lib/asterinas/physical-system-probe"
+touch -h -d "@$SOURCE_DATE_EPOCH" \
+    "$STAGE/usr/lib/asterinas/g" \
+    "$STAGE/usr/lib/asterinas/q" \
+    "$STAGE/usr/lib/asterinas/s"
 
 ARCHIVE="$STAGE/initramfs.cpio"
 : >"$ARCHIVE"
@@ -203,12 +243,21 @@ printf '%s\n' \
     usr/lib \
     usr/lib/asterinas \
     usr/lib/asterinas/browser_interaction_perf.py \
+    usr/lib/asterinas/browser_system_time.py \
+    usr/lib/asterinas/browser_latency_contract.py \
+    usr/lib/asterinas/browser_perf_capture.py \
     usr/lib/asterinas/browser-web-marionette-gate \
     usr/lib/asterinas/browser_m5_marionette_gate.py \
     usr/lib/asterinas/megrez-clock-sync \
     usr/lib/asterinas/physical-external-services-quiesce \
+    usr/lib/asterinas/desktop-input-identity \
+    usr/lib/asterinas/physical-graphics-control \
     usr/lib/asterinas/physical-graphics-gate \
-    usr/lib/asterinas/physical-system-probe |
+    usr/lib/asterinas/physical-graphics-interaction.html \
+    usr/lib/asterinas/physical-system-probe \
+    usr/lib/asterinas/g \
+    usr/lib/asterinas/q \
+    usr/lib/asterinas/s |
     cpio --quiet --reproducible --owner=0:0 --create --format=newc \
         --directory="$STAGE" >"$ARCHIVE"
 if [[ -n "${STAGE1_BUSYBOX:-}" ]]; then
@@ -225,12 +274,21 @@ fi
 ARCHIVE_ENTRIES="$(cpio --quiet --list <"$ARCHIVE")"
 EXPECTED_ARCHIVE_ENTRIES=$'.\ninit\nusr\nusr/lib\nusr/lib/asterinas\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_interaction_perf.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_system_time.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_latency_contract.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_perf_capture.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-external-services-quiesce\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/desktop-input-identity\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-control\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-gate\n'
-EXPECTED_ARCHIVE_ENTRIES+='usr/lib/asterinas/physical-system-probe'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-interaction.html\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-system-probe\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/g\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/q\n'
+EXPECTED_ARCHIVE_ENTRIES+='usr/lib/asterinas/s'
 if [[ -z "${STAGE1_BUSYBOX:-}" &&
     "$ARCHIVE_ENTRIES" != "$EXPECTED_ARCHIVE_ENTRIES" ]]; then
     printf 'error: generated initramfs has unexpected entries\n' >&2

@@ -14,6 +14,7 @@ from pathlib import Path
 import selectors
 import struct
 import sys
+import tempfile
 import unittest
 from unittest import mock
 import urllib.error
@@ -68,6 +69,20 @@ class PhysicalGraphicsPageTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', page)
         self.assertIn("window.__asterinasPhysicalGraphicsSnapshot", page)
 
+    def test_page_accepts_one_four_digit_human_code(self) -> None:
+        page = self._page()
+        self.assertIn('maxlength="4"', page)
+        self.assertIn('nonceLengthText === "4"', page)
+        self.assertIn("const noncePattern = /^[0-9]{4}$/", page)
+
+    def test_page_preserves_bounded_stage_fetch_outcomes_separately(self) -> None:
+        page = self._page()
+        self.assertIn('id="interaction-stage-report"', page)
+        self.assertIn("stageOutcomes.length < 3", page)
+        self.assertIn("function recordStageOutcome(stage, outcome)", page)
+        self.assertIn("recordStageOutcome(stage, `http${response.status}`)", page)
+        self.assertIn("recordStageOutcome(stage, safeErrorName(error))", page)
+
     def test_page_records_only_trusted_physical_events(self) -> None:
         page = self._page()
         for event_name in ("keydown", "input", "pointermove", "click"):
@@ -112,6 +127,20 @@ class PhysicalGraphicsPageTests(unittest.TestCase):
 
 
 class EvdevCycleTests(unittest.TestCase):
+    def test_page_is_bound_to_the_stage1_tool_generation(self) -> None:
+        gate = load_gate(self)
+        self.assertEqual(
+            gate.PAGE_PATH,
+            Path("/run/asterinas-tools/physical-graphics-interaction.html"),
+        )
+
+    def test_guest_accepts_exactly_four_decimal_code_digits(self) -> None:
+        gate = load_gate(self)
+        self.assertEqual(gate.NONCE_PATTERN.fullmatch("0427").group(), "0427")
+        for wrong in ("042", "04270", "abcd"):
+            with self.subTest(wrong=wrong):
+                self.assertIsNone(gate.NONCE_PATTERN.fullmatch(wrong))
+
     def test_real_source_returns_every_complete_record(self) -> None:
         gate = load_gate(self)
         first = gate.INPUT_EVENT_STRUCT.pack(1, 2, gate.EV_KEY, 30, 1)
@@ -135,6 +164,14 @@ class EvdevCycleTests(unittest.TestCase):
         self.assertEqual(cycle.key_downs, 1)
         self.assertEqual(cycle.relative_events, 1)
         self.assertEqual(cycle.absolute_events, 0)
+        self.assertTrue(cycle.left_click_complete)
+
+    def test_accepts_two_ordered_left_clicks_for_input_focus_and_button(self) -> None:
+        gate = load_gate(self)
+        cycle = gate.EvdevCycle()
+        for _ in range(2):
+            cycle.feed(gate.InputEvent(0, 0, gate.EV_KEY, gate.BTN_LEFT, 1))
+            cycle.feed(gate.InputEvent(0, 0, gate.EV_KEY, gate.BTN_LEFT, 0))
         self.assertTrue(cycle.left_click_complete)
 
     def test_counts_qemu_tablet_absolute_axis_events_separately(self) -> None:
@@ -166,7 +203,7 @@ class EvdevCycleTests(unittest.TestCase):
 
 class PhysicalGraphicsSnapshotTests(unittest.TestCase):
     @staticmethod
-    def _snapshot(nonce: str = "0123456789abcdef", cycle: int = 1) -> dict[str, object]:
+    def _snapshot(nonce: str = "0123", cycle: int = 1) -> dict[str, object]:
         return {
             "cycle": cycle,
             "nonce": nonce,
@@ -186,7 +223,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
         )
         expected = self._snapshot()
         validated = gate.validate_snapshot(
-            expected, expected_nonce="0123456789abcdef", cycle=1
+            expected, expected_nonce="0123", cycle=1
         )
         self.assertEqual(
             validated["inputLatencySummary"],
@@ -200,7 +237,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
         )
         for name, value in (
             ("cycle", 2),
-            ("nonce", "fedcba9876543210"),
+            ("nonce", "9876"),
             ("trustedKey", False),
             ("trustedInput", False),
             ("trustedPointer", False),
@@ -212,7 +249,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
                 mutated = {**expected, name: value}
                 with self.assertRaises(gate.GateError):
                     gate.validate_snapshot(
-                        mutated, expected_nonce="0123456789abcdef", cycle=1
+                        mutated, expected_nonce="0123", cycle=1
                     )
 
     def test_rejects_invalid_input_latency_samples(self) -> None:
@@ -231,7 +268,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
                 with self.assertRaises(gate.GateError):
                     gate.validate_snapshot(
                         {**expected, "inputLatenciesMs": samples},
-                        expected_nonce="0123456789abcdef",
+                        expected_nonce="0123",
                         cycle=1,
                     )
 
@@ -248,10 +285,10 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
         ):
             with self.assertRaises(gate.GateError):
                 gate.validate_snapshot(
-                    mutated, expected_nonce="0123456789abcdef", cycle=1
+                    mutated, expected_nonce="0123", cycle=1
                 )
 
-    def test_ready_marionette_allows_only_snapshot_and_screenshot(self) -> None:
+    def test_ready_marionette_allows_only_read_only_evidence_queries(self) -> None:
         gate = load_gate(self)
         self.assertTrue(
             hasattr(gate, "GuardedMarionette"), "guarded Marionette is missing"
@@ -269,11 +306,22 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
         guarded = gate.GuardedMarionette(client)
         guarded.mark_ready()
         guarded.snapshot()
+        guarded.stage_report()
         guarded.screenshot()
         self.assertEqual(
             [name for name, _ in client.calls],
-            ["WebDriver:ExecuteScript", "WebDriver:TakeScreenshot"],
+            [
+                "WebDriver:ExecuteScript",
+                "WebDriver:ExecuteScript",
+                "WebDriver:TakeScreenshot",
+            ],
         )
+        self.assertEqual(client.calls[1][1], gate.STAGE_REPORT_PARAMETERS)
+        with self.assertRaisesRegex(gate.GateError, "input-synthesis"):
+            guarded.command(
+                "WebDriver:ExecuteScript",
+                dict(gate.STAGE_REPORT_PARAMETERS, args=["inject"]),
+            )
         for name in ("WebDriver:PerformActions", "WebDriver:ElementClick"):
             with (
                 self.subTest(name=name),
@@ -297,7 +345,7 @@ class PhysicalGraphicsSnapshotTests(unittest.TestCase):
         self.assertIs(parameters["newSandbox"], True)
         for changed in (
             dict(parameters, script="document.querySelector('button').click();"),
-            dict(parameters, args=["0123456789abcdef"]),
+            dict(parameters, args=["0123"]),
             dict(parameters, sandbox="other"),
         ):
             with self.assertRaisesRegex(gate.GateError, "input-synthesis"):
@@ -358,7 +406,7 @@ class FirefoxNamespaceTests(unittest.TestCase):
 class X11WindowTitleSourceTests(unittest.TestCase):
     def test_reads_only_the_active_window_owned_by_firefox(self) -> None:
         gate = load_gate(self)
-        title = gate.dom_stage_title(nonce="0123456789abcdef", cycle=1, stage="key")
+        title = gate.dom_stage_title(nonce="0123", cycle=1, stage="key")
         replies = (
             mock.Mock(returncode=0, stdout="4194305\n", stderr=""),
             mock.Mock(returncode=0, stdout="42\n", stderr=""),
@@ -404,7 +452,7 @@ class X11WindowTitleSourceTests(unittest.TestCase):
         ):
             gate.X11WindowTitleSource(42).read_title(5)
         with self.assertRaisesRegex(gate.GateError, "title-stage"):
-            gate.dom_stage_title(nonce="0123456789abcdef", cycle=1, stage="unknown")
+            gate.dom_stage_title(nonce="0123", cycle=1, stage="unknown")
 
     def test_query_failure_identifies_the_operation_exit_status_and_stderr(
         self,
@@ -426,16 +474,48 @@ class X11WindowTitleSourceTests(unittest.TestCase):
 
 
 class DomStageServerTests(unittest.TestCase):
+    def test_records_sanitized_stage_http_decisions(self) -> None:
+        gate = load_gate(self)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        markers: list[str] = []
+        with gate.DomStageServer(
+            nonce="9829", cycle=1, page_path=PAGE, emit=markers.append
+        ) as server:
+            wrong = f"{server.origin}/stage?cycle=1&stage=key&nonce=1234"
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                opener.open(wrong, timeout=2)
+            self.assertEqual(rejected.exception.code, 400)
+
+            premature = f"{server.origin}/stage?cycle=1&stage=pointer&nonce=9829"
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                opener.open(premature, timeout=2)
+            self.assertEqual(rejected.exception.code, 409)
+
+        self.assertEqual(
+            markers,
+            [
+                "ASTERINAS_PHYSICAL_STAGE_HTTP cycle=1 stage=key "
+                "previous=waiting status=400 nonce_match=0 reason=nonce-mismatch",
+                "ASTERINAS_PHYSICAL_STAGE_HTTP cycle=1 stage=pointer "
+                "previous=waiting status=409 nonce_match=1 reason=stage-regression",
+            ],
+        )
+        self.assertNotIn("1234", "\n".join(markers))
+        self.assertNotIn("9829", "\n".join(markers))
+
     def test_serves_the_frozen_page_and_accepts_only_nonce_bound_stages(self) -> None:
         gate = load_gate(self)
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with gate.DomStageServer(nonce=nonce, cycle=2, page_path=PAGE) as server:
+        markers: list[str] = []
+        with gate.DomStageServer(
+            nonce=nonce, cycle=2, page_path=PAGE, emit=markers.append
+        ) as server:
             with opener.open(server.page_url, timeout=2) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.read(), PAGE.read_bytes())
 
-            invalid = f"{server.origin}/stage?cycle=2&stage=key&nonce=fedcba9876543210"
+            invalid = f"{server.origin}/stage?cycle=2&stage=key&nonce=9876"
             with self.assertRaises(urllib.error.HTTPError) as rejected:
                 opener.open(invalid, timeout=2)
             self.assertEqual(rejected.exception.code, 400)
@@ -447,10 +527,15 @@ class DomStageServerTests(unittest.TestCase):
                 server.read_title(1),
                 gate.dom_stage_title(nonce=nonce, cycle=2, stage="key"),
             )
+        self.assertIn(
+            "ASTERINAS_PHYSICAL_STAGE_HTTP cycle=2 stage=key "
+            "previous=waiting status=204 nonce_match=1 reason=accepted",
+            markers,
+        )
 
     def test_rejects_a_stage_regression_and_bounds_waiting(self) -> None:
         gate = load_gate(self)
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with gate.DomStageServer(nonce=nonce, cycle=1, page_path=PAGE) as server:
             for stage in ("pointer", "key"):
@@ -489,6 +574,86 @@ class ScreenshotValidationTests(unittest.TestCase):
 
 
 class PhysicalGraphicsRunTests(unittest.TestCase):
+    def test_main_uses_the_opt_in_ready_trigger_without_changing_protocol(self) -> None:
+        gate = load_gate(self)
+        client = self.Client(PhysicalGraphicsSnapshotTests._snapshot("0123", 1))
+        client.close = mock.Mock()
+        output = io.StringIO()
+
+        def cycle(_client, _events, _stages, **options) -> None:
+            options["emit"](
+                "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256=abc"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            marker_path = Path(directory) / "ready"
+            with (
+                mock.patch.dict(gate.os.environ, {"ASTERINAS_KEY_THREAD_CPU": "1"}),
+                mock.patch.object(gate, "diagnostic_ready_marker_path", return_value=marker_path),
+                mock.patch.object(gate, "validate_firefox_namespace"),
+                mock.patch.object(gate, "_connect", return_value=client),
+                mock.patch.object(gate, "RealEvdevSource", return_value=self.Events([])),
+                mock.patch.object(
+                    gate,
+                    "DomStageServer",
+                    return_value=self.Stages("waiting"),
+                ),
+                mock.patch.object(gate, "run_cycle", side_effect=cycle),
+                mock.patch("sys.stdout", output),
+            ):
+                status = gate.main(
+                    ["--nonce", "0123", "--cycle", "1", "--firefox-pid", "42"]
+                )
+
+            self.assertEqual(status, 0)
+            self.assertTrue(marker_path.is_file())
+            self.assertEqual(
+                output.getvalue().splitlines(),
+                ["ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256=abc"],
+            )
+            client.close.assert_called_once()
+
+    def test_ready_trigger_requires_explicit_first_cycle_opt_in(self) -> None:
+        gate = load_gate(self)
+        selector = getattr(gate, "diagnostic_ready_marker_path", None)
+        self.assertIsNotNone(selector, "diagnostic opt-in selector is missing")
+
+        self.assertEqual(
+            selector(1, {"ASTERINAS_KEY_THREAD_CPU": "1"}),
+            Path("/run/asterinas-key-thread-ready"),
+        )
+        for cycle, environment in (
+            (2, {"ASTERINAS_KEY_THREAD_CPU": "1"}),
+            (1, {}),
+            (1, {"ASTERINAS_KEY_THREAD_CPU": "0"}),
+        ):
+            with self.subTest(cycle=cycle, environment=environment):
+                self.assertIsNone(selector(cycle, environment))
+
+    def test_diagnostic_ready_marker_exists_before_ready_is_emitted(self) -> None:
+        gate = load_gate(self)
+        with tempfile.TemporaryDirectory() as directory:
+            marker_path = Path(directory) / "ready"
+            emitted: list[str] = []
+
+            def output(marker: str) -> None:
+                self.assertTrue(marker_path.is_file())
+                emitted.append(marker)
+
+            emit_with_ready_marker = getattr(gate, "emit_with_ready_marker", None)
+            self.assertIsNotNone(
+                emit_with_ready_marker, "phase-triggered diagnostic emitter is missing"
+            )
+            emit_with_ready_marker(
+                "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256=abc",
+                output=output,
+                marker_path=marker_path,
+            )
+
+            self.assertEqual(len(emitted), 1)
+            self.assertEqual(marker_path.stat().st_mode & 0o777, 0o600)
+            self.assertGreater(int(marker_path.read_text().strip()), 0)
+
     def test_main_normalizes_transport_failure_and_closes_resources(self) -> None:
         gate = load_gate(self)
         transport = importlib.import_module(
@@ -505,7 +670,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                         for GATE_EVENT in (
                             *(
                                 struct.pack("=qqHHi", 0, index, 1, 30, 1)
-                                for index in range(16)
+                                for index in range(4)
                             ),
                             struct.pack("=qqHHi", 0, 20, 2, 0, 1),
                             struct.pack("=qqHHi", 0, 21, 1, 0x110, 1),
@@ -526,7 +691,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                 output = io.StringIO()
                 args = [
                     "--nonce",
-                    "0123456789abcdef",
+                    "0123",
                     "--cycle",
                     "3",
                     "--firefox-pid",
@@ -550,7 +715,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                         "DomStageServer",
                         return_value=self.Stages(
                             gate.dom_stage_title(
-                                nonce="0123456789abcdef",
+                                nonce="0123",
                                 cycle=3,
                                 stage="complete",
                             )
@@ -627,7 +792,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
     class Stages:
         def __init__(self, title: str) -> None:
             self.title = title
-            self.page_url = "http://127.0.0.1:12345/index.html?cycle=3&nonce_length=16"
+            self.page_url = "http://127.0.0.1:12345/index.html?cycle=3&nonce_length=4"
 
         def __enter__(self):
             return self
@@ -642,7 +807,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         self,
     ) -> None:
         gate = load_gate(self)
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         client = self.Client(PhysicalGraphicsSnapshotTests._snapshot(nonce, 1))
         events = self.Events([])
         markers: list[str] = []
@@ -695,7 +860,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         self.assertEqual(len(focus_calls), 3)
         for parameters in focus_calls:
             self.assertEqual(
-                parameters["args"], [f"{gate.PAGE_URL}?cycle=1&nonce_length=16"]
+                parameters["args"], [f"{gate.PAGE_URL}?cycle=1&nonce_length=4"]
             )
         self.assertEqual(sleep.call_count, 2)
         self.assertEqual(client.timeouts, [5])
@@ -706,7 +871,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
     def test_pending_document_expires_without_ready_or_input_drain(self) -> None:
         gate = load_gate(self)
         client = self.Client(
-            PhysicalGraphicsSnapshotTests._snapshot("0123456789abcdef", 1)
+            PhysicalGraphicsSnapshotTests._snapshot("0123", 1)
         )
         events = self.Events([])
         markers: list[str] = []
@@ -734,10 +899,10 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                 events,
                 stages=self.Stages(
                     gate.dom_stage_title(
-                        nonce="0123456789abcdef", cycle=1, stage="waiting"
+                        nonce="0123", cycle=1, stage="waiting"
                     )
                 ),
-                nonce="0123456789abcdef",
+                nonce="0123",
                 cycle=1,
                 timeout=5,
                 emit=markers.append,
@@ -761,7 +926,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
     def test_run_cycle_correlates_evdev_dom_and_png_after_ready(self) -> None:
         gate = load_gate(self)
         self.assertTrue(hasattr(gate, "run_cycle"), "guest cycle runner is missing")
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         snapshot = PhysicalGraphicsSnapshotTests._snapshot(nonce, 2)
         client = self.Client(snapshot)
         records = [
@@ -792,9 +957,32 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
         self.assertEqual(result.absolute_events, 0)
         self.assertEqual(result.input_latency_p95_ms, 18.5)
         self.assertEqual(client.timeouts, [5.0])
-        self.assertEqual(len(markers), 23)
+        time_markers = [
+            marker for marker in markers if marker.startswith("ASTERINAS_PHYSICAL_TIME ")
+        ]
         self.assertEqual(
-            markers[:12],
+            [marker.split(" phase=", 1)[1].split(" ", 1)[0] for marker in time_markers],
+            [
+                "newsession-start",
+                "newsession-done",
+                "ready",
+                "key-ready",
+                "pointer-ready",
+                "pass",
+            ],
+        )
+        times = [
+            int(marker.rsplit(" guest_monotonic_ns=", 1)[1])
+            for marker in time_markers
+        ]
+        self.assertEqual(times, sorted(times))
+        self.assertTrue(all(value > 0 for value in times))
+        protocol_markers = [
+            marker for marker in markers if not marker.startswith("ASTERINAS_PHYSICAL_TIME ")
+        ]
+        self.assertEqual(len(protocol_markers), 23)
+        self.assertEqual(
+            protocol_markers[:12],
             [
                 f"ASTERINAS_PHYSICAL_SETUP cycle=2 phase={phase} state={state}"
                 for phase in (
@@ -809,23 +997,23 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             ],
         )
         self.assertTrue(
-            markers[12].startswith("ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=2 ")
+            protocol_markers[12].startswith("ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=2 ")
         )
         self.assertTrue(
-            markers[13].startswith("ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=2 ")
+            protocol_markers[13].startswith("ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=2 ")
         )
         self.assertEqual(
-            markers[14], "ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=2"
+            protocol_markers[14], "ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=2"
         )
-        self.assertEqual(markers[-1], "ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=2")
+        self.assertEqual(protocol_markers[-1], "ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=2")
         digest = hashlib.sha256(client.screenshot).hexdigest()
         self.assertEqual(
-            markers[-4],
+            protocol_markers[-4],
             f"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle=2 "
             f"size={len(client.screenshot)} sha256={digest}",
         )
-        self.assertEqual(base64.b64decode(markers[-3]), client.screenshot)
-        self.assertEqual(markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=2")
+        self.assertEqual(base64.b64decode(protocol_markers[-3]), client.screenshot)
+        self.assertEqual(protocol_markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=2")
         names = [name for name, _ in client.calls]
         ready_index = names.index("WebDriver:GetWindowRect") + 2
         self.assertEqual(
@@ -854,6 +1042,95 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             ],
         )
 
+    def test_stage_failure_emits_page_outcome_and_raw_input_counts(self) -> None:
+        gate = load_gate(self)
+        client = self.Client(PhysicalGraphicsSnapshotTests._snapshot("9829", 1))
+        records = [
+            gate.INPUT_EVENT_STRUCT.pack(0, index, gate.EV_KEY, 30, 1)
+            for index in range(4)
+        ] + [gate.INPUT_EVENT_STRUCT.pack(0, 5, gate.EV_REL, gate.REL_X, 3)]
+        events = self.Events(records)
+        markers: list[str] = []
+        original_command = client.command
+
+        def command(name: str, parameters: object | None = None) -> object:
+            if (
+                name == "WebDriver:ExecuteScript"
+                and isinstance(parameters, dict)
+                and parameters.get("filename") == "asterinas-physical-stage-report"
+            ):
+                return {
+                    "value": "stage=key outcome=error-TypeError | "
+                    "stage=pointer outcome=http409"
+                }
+            return original_command(name, parameters)
+
+        class FailedStages(self.Stages):
+            def read_title(self, _timeout: float) -> str:
+                raise gate.GateError("physical-graphics-stage-regression")
+
+        with (
+            mock.patch.object(client, "command", side_effect=command),
+            self.assertRaisesRegex(gate.GateError, "stage-regression"),
+        ):
+            gate.run_cycle(
+                client,
+                events,
+                stages=FailedStages(""),
+                nonce="9829",
+                cycle=1,
+                timeout=5,
+                emit=markers.append,
+            )
+        self.assertTrue(events.closed)
+        self.assertIn(
+            "ASTERINAS_PHYSICAL_STAGE_DIAG cycle=1 key_downs=4 "
+            "relative_events=1 absolute_events=0 left_down=0 left_up=0 "
+            "report=key:error-TypeError,pointer:http409",
+            markers,
+        )
+
+    def test_stage_diagnostic_query_failure_preserves_original_error(self) -> None:
+        gate = load_gate(self)
+        client = self.Client(PhysicalGraphicsSnapshotTests._snapshot("9829", 1))
+        events = self.Events(
+            [
+                gate.INPUT_EVENT_STRUCT.pack(0, index, gate.EV_KEY, 30, 1)
+                for index in range(4)
+            ]
+        )
+        markers: list[str] = []
+        original_command = client.command
+
+        def command(name: str, parameters: object | None = None) -> object:
+            if (
+                name == "WebDriver:ExecuteScript"
+                and isinstance(parameters, dict)
+                and parameters.get("filename") == "asterinas-physical-stage-report"
+            ):
+                raise OSError("diagnostic transport unavailable")
+            return original_command(name, parameters)
+
+        class FailedStages(self.Stages):
+            def read_title(self, _timeout: float) -> str:
+                raise gate.GateError("physical-graphics-stage-regression")
+
+        with (
+            mock.patch.object(client, "command", side_effect=command),
+            self.assertRaisesRegex(gate.GateError, "stage-regression"),
+        ):
+            gate.run_cycle(
+                client,
+                events,
+                stages=FailedStages(""),
+                nonce="9829",
+                cycle=1,
+                timeout=5,
+                emit=markers.append,
+            )
+        self.assertTrue(events.closed)
+        self.assertIn("report=unavailable", markers[-1])
+
     def test_main_reserves_setup_budget_without_reducing_interaction_budget(
         self,
     ) -> None:
@@ -869,7 +1146,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                 "DomStageServer",
                 return_value=self.Stages(
                     gate.dom_stage_title(
-                        nonce="0123456789abcdef", cycle=1, stage="complete"
+                        nonce="0123", cycle=1, stage="complete"
                     )
                 ),
             ),
@@ -879,7 +1156,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             result = gate.main(
                 [
                     "--nonce",
-                    "0123456789abcdef",
+                    "0123",
                     "--cycle",
                     "1",
                     "--firefox-pid",
@@ -897,7 +1174,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
 
     def test_run_cycle_accepts_qemu_tablet_and_requested_geometry(self) -> None:
         gate = load_gate(self)
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         snapshot = PhysicalGraphicsSnapshotTests._snapshot(nonce, 1)
         client = self.Client(snapshot)
         client.screenshot = png_payload(width=1280, height=1024, value=0x42)
@@ -942,20 +1219,25 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
             "WebDriver:FullscreenWindow",
             [call.args[0] for call in command.call_args_list],
         )
-        self.assertIn("absolute_events=1", markers[-8])
+        protocol_markers = [
+            marker for marker in markers if not marker.startswith("ASTERINAS_PHYSICAL_TIME ")
+        ]
+        self.assertIn("absolute_events=1", protocol_markers[-8])
         self.assertEqual(
-            markers[-6],
+            protocol_markers[-6],
             "ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle=1 count=2 "
             "min_ms=16.000 p50_ms=16.000 p95_ms=18.500 max_ms=18.500",
         )
-        self.assertEqual(base64.b64decode(markers[-3]), client.screenshot)
-        self.assertEqual(markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=1")
+        self.assertEqual(base64.b64decode(protocol_markers[-3]), client.screenshot)
+        self.assertEqual(
+            protocol_markers[-2], "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=1"
+        )
 
     def test_run_cycle_closes_input_source_on_snapshot_failure(self) -> None:
         gate = load_gate(self)
         self.assertTrue(hasattr(gate, "run_cycle"), "guest cycle runner is missing")
         client = self.Client(
-            PhysicalGraphicsSnapshotTests._snapshot("fedcba9876543210", 1)
+            PhysicalGraphicsSnapshotTests._snapshot("9876", 1)
         )
         events = self.Events([])
         with self.assertRaisesRegex(gate.GateError, r"key_downs=0:.*stage=waiting"):
@@ -964,10 +1246,10 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
                 events,
                 stages=self.Stages(
                     gate.dom_stage_title(
-                        nonce="0123456789abcdef", cycle=1, stage="waiting"
+                        nonce="0123", cycle=1, stage="waiting"
                     )
                 ),
-                nonce="0123456789abcdef",
+                nonce="0123",
                 cycle=1,
                 timeout=0.01,
                 emit=lambda _marker: None,
@@ -976,7 +1258,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
 
     def test_final_state_verifier_only_reads_existing_cycle_three_dom(self) -> None:
         gate = load_gate(self)
-        nonce = "0011223344556677"
+        nonce = "0011"
         client = self.Client(PhysicalGraphicsSnapshotTests._snapshot(nonce, 3))
         gate.verify_final_state(client, nonce=nonce, cycle=3)
         self.assertEqual(
@@ -986,7 +1268,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
 
     def test_final_state_verifier_accepts_one_cycle_gate(self) -> None:
         gate = load_gate(self)
-        nonce = "0011223344556677"
+        nonce = "0011"
         client = self.Client(PhysicalGraphicsSnapshotTests._snapshot(nonce, 1))
         gate.verify_final_state(client, nonce=nonce, cycle=1)
         self.assertEqual(

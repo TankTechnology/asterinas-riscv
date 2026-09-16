@@ -229,7 +229,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                     "nonce_sha256": hashlib.sha256(
                         f"nonce-{cycle}".encode()
                     ).hexdigest(),
-                    "key_downs": 16,
+                    "key_downs": 4,
                     "relative_events": 0,
                     "absolute_events": 4,
                     "left_down": 1,
@@ -325,8 +325,9 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                         f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={number} nonce_sha256={nonce_hash}",
                         f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={number} nonce_sha256={nonce_hash}",
                         f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={number}",
-                        f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={number} key_downs=16 relative_events=0 absolute_events=4 left_down=1 left_up=1 digest={cycle['evdev_sha256']}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={number} key_downs=4 relative_events=0 absolute_events=4 left_down=1 left_up=1 digest={cycle['evdev_sha256']}",
                         f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={number} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle={number} count=4 min_ms=1.000 p50_ms=2.000 p95_ms=4.000 max_ms=4.000",
                         f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={number} sha256={cycle['screenshot_sha256']}",
                         f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={number}",
                     )
