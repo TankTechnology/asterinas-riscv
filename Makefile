@@ -167,6 +167,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
 else ifeq ($(AUTO_TEST), sched_policy)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
+else ifeq ($(AUTO_TEST), schedstat)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_schedstat_test.sh"
 else ifeq ($(AUTO_TEST), kcmp)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "process" ]
