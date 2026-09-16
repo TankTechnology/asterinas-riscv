@@ -77,11 +77,8 @@ impl HwIrqLine {
                     *interrupt_source_on_chip,
                 );
             }
-            InterruptSource::Software => {
-                // SAFETY: We have already handled the IPI. So clearing the
-                // software interrupt pending bit is safe.
-                unsafe { riscv::register::sip::clear_ssoft() };
-            }
+            // The trap entry acknowledges SSIP before running IPI callbacks.
+            InterruptSource::Software => {}
         }
     }
 }

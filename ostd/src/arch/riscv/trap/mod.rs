@@ -121,6 +121,12 @@ pub(super) fn handle_irq(trap_frame: &TrapFrame, interrupt: Interrupt, priv_leve
             }
         }
         Interrupt::SupervisorSoft => {
+            // Clear SSIP before draining IPI callbacks. A sender can enqueue
+            // another callback while this handler runs; a post-callback clear
+            // would erase its new pending interrupt and strand the callback.
+            // SAFETY: We are handling the supervisor software interrupt on
+            // this hart, so acknowledging its pending bit is permitted.
+            unsafe { riscv::register::sip::clear_ssoft() };
             let ipi_irq_num = super::irq::ipi::IPI_IRQ.get().unwrap().num();
             call_irq_callback_functions(
                 trap_frame,
