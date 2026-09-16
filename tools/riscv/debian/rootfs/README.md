@@ -217,9 +217,11 @@ wall intervals, per-process user/kernel CPU ticks, global and per-core CPU
 tick deltas, per-core busy fractions, context-switch deltas, and runnable counts.
 CPU time is *not* input latency or
 HDMI scanout latency. This Asterinas image does not yet expose reliable
-per-process I/O, per-thread runnable wait, or physical scanout timestamps; the
-sampler marks them unsupported instead of filling them with zeros. Keep syscall
-profiling disabled for this baseline, since detailed logs perturb timing.
+per-process I/O or physical scanout timestamps; the sampler marks them
+unsupported instead of filling them with zeros. Thread mode obtains runnable
+wait from the Linux-compatible `/proc/<pid>/task/<tid>/schedstat` interface.
+Keep syscall profiling disabled for this baseline, since detailed logs perturb
+timing.
 
 Three physical Megrez workload samples on the kernel identified by SHA-256
 `5444c9eb40e10d26278affb00f69bb8c212ce94091204cf94a6209899d2f588c`
